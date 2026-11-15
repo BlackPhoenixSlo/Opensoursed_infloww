@@ -4,7 +4,7 @@
 Cases:
   case_pure_mint_digest_verdict — `ifw_` token, sha256 digest, hint, verdict table.
   case_allowlist                — token_auth.allowlist() = a literal list (the Toolbox's non-send routes +
-                                  the report download + /admin/mcp), each a real (method, route template) in
+                                  the report download + /admin/mcp, its GET/DELETE/PUT a 405), each a real (method, route template) in
                                   server.app.routes; a send tool's route is never on it.
   case_api_create_list_revoke   — /admin/owner-tokens: plaintext once, days 30|90|365
                                   (default 90), own rows only, revoke.
@@ -150,6 +150,7 @@ def case_allowlist() -> None:
         ("POST", "/admin/bio-pages/{pid}/avatar/vault"), ("POST", "/admin/bio-pages/{pid}/background/vault"),
         ("POST", "/admin/bio-pages/{pid}/links"),
         ("POST", "/admin/bio-pages/{pid}/links/{lid}/background/vault"), ("POST", "/admin/mcp"),
+        ("GET", "/admin/mcp"), ("DELETE", "/admin/mcp"), ("PUT", "/admin/mcp"),  # mcp_other: its 405 only
         ("GET", "/admin/reports/catalogue"), ("POST", "/admin/reports/files"), ("GET", "/admin/reports/files/{file_id}"),
         ("POST", "/admin/reports/run"), ("GET", "/admin/stats/per-model"), ("GET", "/admin/vault-ai/describe-all/plan"),
         ("GET", "/admin/vault-ai/describe-all/status"),
@@ -273,7 +274,7 @@ def case_blocked_routes_http() -> None:
         ("POST", "/admin/employees/1/password", {"password": "x"}), ("POST", "/admin/employees/1/2fa/reset", {}),
         ("POST", "/admin/link-shares", {}), ("PATCH", "/api/of/v2/users/me/settings/security", {}),
         ("PUT", "/api/of/v2/users/me/settings/security", {}), ("POST", "/admin/reports/files/x", None),
-        ("GET", "/admin/reports/filesx", None), ("GET", "/admin/mcp", None),
+        ("GET", "/admin/reports/filesx", None), ("PATCH", "/admin/mcp", None),  # GET/DELETE/PUT: its 405
     ]:
         r = client.request(method, path, json=body, headers=_bearer(tok))
         assert r.status_code == 403 and "access token" in r.json()["detail"], (method, path, r.status_code, r.text[:120])

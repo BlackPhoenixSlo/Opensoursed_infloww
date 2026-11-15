@@ -25,6 +25,12 @@ export interface FullAiConfig {
   writers?: string[];
   gifs?: boolean;
   sell_on?: boolean;
+  /** The plain switches (`chatSwitch`): Sexting, Lead-in questions, Read his photos, Strip emojis. */
+  sext_on?: boolean;
+  lead_in?: boolean;
+  describe_fan_photos?: boolean;
+  /** Questions: "pick" (default) = Jev asks one thing, "list" = the whole still-need list. */
+  info_questions?: string;
   /** PPV caption: "chat" (default) = the chat Writer's last bubble, "caption" = its own call. */
   caption_writer?: string;
   /** Content folders: `include: []` = all (ticket 49, `sellFoldersForm.ts`). */
@@ -46,15 +52,15 @@ export interface FullAiConfig {
   sell_spacing?: boolean;
   /** He likes: what he likes steers what the AI sends. */
   he_likes?: boolean;
-  /** JSON-only, test Mode: a fresh offer aims at the number of pieces he names (at most 5); absent = on. */
+  /** Match his count (Sell group): a fresh offer aims at the number of pieces he names (at most 5); absent = on. */
   sell_count?: boolean;
-  /** JSON-only, every Mode: emojis stripped from her replies; off / absent = the account's strip-emojis setting. */
+  /** Strip emojis, every Mode: emojis stripped from her replies; off / absent = the account's strip-emojis setting. */
   strip_emojis?: boolean;
   /** Chance (%, 0-100) a Turn offers the GIF (sticker) block while GIFs is on; null / absent = auto (every eligible Turn). */
   gif_pct?: number | null;
-  /** Live only, JSON-only: lifetime spend (cents) at which a Fan is left to humans; 0 = off ("Top spend limit"). */
+  /** Top spend limit, live only: lifetime spend (cents; the page edits dollars) at which a Fan is left to humans; 0 = off. */
   top_spend_cents?: number;
-  /** Live only, JSON-only: the Fans list, OF fan-list ids; empty include = every Fan, exclude wins ("Fans"). */
+  /** Fans, live only: OF fan-list ids; empty include = every Fan, exclude wins (`fansForm.ts`). */
   fans?: { include: number[]; exclude: number[] };
   [key: string]: unknown;
 }
@@ -75,8 +81,12 @@ export interface ConfigBody {
   /** The controls' server constants (`full_ai_config.limits`). */
   limits: ConfigLimits;
 }
-/** GET config's `limits`: the Writer chain's max length, the reply speeds and the one a config without the key runs on. */
-export interface ConfigLimits { max_writers: number; reply_speeds: string[]; default_reply_speed: string }
+/** GET config's `limits`: the Writer chain's max length, the reply speeds and the one a config without the key runs on,
+ *  the Questions and PPV caption options (the default first). */
+export interface ConfigLimits {
+  max_writers: number; reply_speeds: string[]; default_reply_speed: string;
+  info_questions: string[]; caption_writers: string[];
+}
 
 /** Same config whatever the key order (the server's JSON may order a side's keys differently). */
 function stable(v: unknown): unknown {
@@ -103,6 +113,12 @@ export function settingRows(reference: SettingRef[], side: FullAiConfig | null):
 /** A reply speed's label (the speeds come from `limits.reply_speeds`); one without an entry shows as itself. */
 const SPEED_LABEL: Record<string, string> = { "0-2m": "0-2 min" };
 export const speedLabel = (speed: string) => SPEED_LABEL[speed] ?? speed;
+/** The Questions / PPV caption options' labels (the values come from `limits`); one without an entry shows as itself.
+ *  test_full_ai_config pins the keys to `full_ai_config.INFO_QUESTIONS` / `CAPTION_WRITERS`. */
+const INFO_QUESTIONS_LABEL: Record<string, string> = { pick: "Pick one", list: "Whole list" };
+const CAPTION_LABEL: Record<string, string> = { chat: "Last bubble", caption: "Own call" };
+export const infoQuestionsLabel = (v: string) => INFO_QUESTIONS_LABEL[v] ?? v;
+export const captionLabel = (v: string) => CAPTION_LABEL[v] ?? v;
 const allLayers = (on: boolean) => Object.fromEntries(STYLE_LAYERS.map((k) => [k, on])) as StyleLayers;
 
 /** The side's layers as the server reads them (`full_ai_config.style_layers`): a valid legacy `text_style` wins
@@ -160,7 +176,8 @@ export const gifPct = (cfg: FullAiConfig | null) => pctOf(cfg, "gif_pct");
 export const gifPctPatch = (text: string) => pctPatch("gif_pct", text);
 
 /** A switch in the Sell group (shown while Sell is on): its key, label, state and hint. */
-export type SellSwitchKey = "draft_questions" | "chat_tease" | "ask_implied" | "sell_nearest" | "sell_bundle" | "sell_spacing" | "he_likes";
+export type SellSwitchKey =
+  | "draft_questions" | "chat_tease" | "ask_implied" | "sell_nearest" | "sell_bundle" | "sell_count" | "sell_spacing" | "he_likes";
 export interface SellSwitch { key: SellSwitchKey; label: string; checked: boolean; hint: string }
 
 /** In page order: the value each switch stores on / off. Any stored value but `off` reads on (absent = on, as the
@@ -178,6 +195,8 @@ const SELL_SWITCHES: { key: SellSwitchKey; label: string; on: boolean | string; 
   { key: "sell_bundle", label: "Fill the set", on: "fill", off: "shoot",
     hint: "A photo offer holds up to 5 photos, filled to 3 with others that match his ask. Off: only photos from the same "
       + "shoot, up to 4." },
+  { key: "sell_count", label: "Match his count", on: true, off: false,
+    hint: "He names a number (\"bundle of 5 videos\"): the offer aims at it, at most 5. Fewer when there are fewer." },
   { key: "sell_spacing", label: "Spacing", on: true, off: false,
     hint: "Unasked pieces wait for his lines since the last one and count the pieces this sitting. An ask always goes through." },
   { key: "he_likes", label: "He likes", on: true, off: false,
@@ -197,6 +216,36 @@ export function sellSwitches(cfg: FullAiConfig | null): SellSwitch[] {
 export function sellSwitchPatch(key: SellSwitchKey, on: boolean): Partial<FullAiConfig> {
   const s = SELL_SWITCHES.find((x) => x.key === key)!;
   return { [key]: on ? s.on : s.off };
+}
+
+/** A plain on / off switch at the top level of Settings: its label, hint and the server's default (what a side without
+ *  the key reads; test_full_ai_config pins `def` to `full_ai_config.DEFAULTS`). */
+export type ChatSwitchKey = "sext_on" | "lead_in" | "describe_fan_photos" | "strip_emojis";
+const CHAT_SWITCHES: Record<ChatSwitchKey, { label: string; def: boolean; hint: string }> = {
+  sext_on: { label: "Sexting", def: true, hint: "Off: normal chat only." },
+  lead_in: { label: "Lead-in questions", def: true,
+    hint: "Get-to-know asks are led into, not asked straight. Test chat + live." },
+  describe_fan_photos: { label: "Read his photos", def: true, hint: "The AI reads a photo he sends: one paid vision call per photo." },
+  strip_emojis: { label: "Strip emojis", def: false, hint: "No emojis in the AI's replies. Off: the account's own strip-emojis setting decides." },
+};
+/** A plain switch's label, hint and state: a stored boolean, else the default. */
+export function chatSwitch(cfg: FullAiConfig | null, key: ChatSwitchKey): { label: string; hint: string; checked: boolean } {
+  const { label, def, hint } = CHAT_SWITCHES[key];
+  const v = cfg?.[key];
+  return { label, hint, checked: typeof v === "boolean" ? v : def };
+}
+
+/** The Top spend limit box's value in dollars ("" when the side holds no whole cents >= 0). */
+export function topSpendDollars(cfg: FullAiConfig | null): string {
+  const c = cfg?.top_spend_cents;
+  return typeof c === "number" && Number.isInteger(c) && c >= 0 ? String(c / 100) : "";
+}
+/** The Top spend limit box's edit: dollars (up to 2 decimals) to whole cents, 0 = no limit; anything else (empty too:
+ *  a limit is never dropped by clearing the box) is refused (null). */
+export function topSpendPatch(text: string): Partial<FullAiConfig> | null {
+  const t = text.trim();
+  if (!/^\d{1,7}(\.\d{1,2})?$/.test(t)) return null;
+  return { top_spend_cents: Math.round(Number(t) * 100) };
 }
 
 /** The Writer select's edit: `model` first, the others keep their order as fallbacks (a full list of `maxWriters`,

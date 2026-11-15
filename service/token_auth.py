@@ -3,7 +3,8 @@ owner_tokens; docs/plans/ultra-mode/issues/03-owner-tokens.md, build-log F3).
 
 A token is for an MCP client, not a browser, so it reaches an ALLOWLIST and nothing else:
 the routes of the Toolbox's non-send tools (`toolbox_decide.TOOLS`; send tools run only from
-an owner-approved plan), the report-file download pair and `POST /admin/mcp`. Matched on
+an owner-approved plan), the report-file download pair and `/admin/mcp` (POST; GET/DELETE/PUT only reach
+its 405). Matched on
 (method, route template) of the route Starlette dispatches the request to (`matched`, the
 same first-FULL-match walk over `app.routes` as Starlette's router; auth walks it once and
 hands template + path params to both checks), never on a path prefix: a new route is closed
@@ -50,10 +51,13 @@ MCP_PATH = "/admin/mcp"
 # an MCP client finds where to sign in.
 PRM_MCP_PATH = "/.well-known/oauth-protected-resource" + MCP_PATH
 
+MCP_OTHER_METHODS = ("GET", "DELETE", "PUT")  # mcp_api.mcp_other: a 405 (no SSE stream), to anyone
+
 # Besides the tools' own routes: the report_file download, and the MCP endpoint itself.
 EXTRA: frozenset[tuple[str, str]] = frozenset({
     ("GET", report_files.ROUTE),
     ("POST", MCP_PATH),
+    *((m, MCP_PATH) for m in MCP_OTHER_METHODS),
 })
 
 # Headers a bearer request must not carry past this layer: every cookie identity (owner

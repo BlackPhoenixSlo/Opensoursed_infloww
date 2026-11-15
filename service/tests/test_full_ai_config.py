@@ -23,7 +23,7 @@
   case_sell_bundle_table    (03d ticket 61) `sell_bundle` shoot|fill, default fill, a stored v1
                             without it reads fill, labelled "Fill the set" on the page
   case_sell_count_strip_emojis_table  `sell_count` (default true) and `strip_emojis` (default false) bools,
-                            JSON-only, labelled "Asked count" / "Strip emojis", in CONFIG_KEYS; a stored v1
+                            page controls "Match his count" / "Strip emojis", in CONFIG_KEYS; a stored v1
                             without them reads the defaults
   case_typo_pct_table       `typo_pct` null (auto) or a whole 0-100, labelled "Typos %"; a stored
                             v1 without it reads null
@@ -37,7 +37,9 @@
   case_transitions_and_stale_rev put_draft / save / rollback, StaleRev on a rev mismatch,
                             Invalid on a bad draft, nothing to save, nothing to roll back to
   case_ts_constants_match   the page's copies it keeps (fullAiConfig.ts STYLE_LAYERS, the legacy text_style pair,
-                            the Sell switches' sell_nearest / sell_bundle values, the reply speed labels) match these
+                            the Sell switches' sell_nearest / sell_bundle values, the reply speed / Questions / PPV
+                            caption labels, the plain switches' defaults) match these; `limits` lists the default first
+  case_page_labels          the keys the page now edits (2026-11-15) carry their control label in REFERENCE
   case_config_api_round_trip GET defaults (+ `reference`, `limits`), PUT 422 / 409 / 200, save, roll back twice =
                             identity; the `full_ai_chat` rule row byte-identical throughout
 
@@ -59,9 +61,9 @@ from sqlalchemy import text  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 from automations.full_ai_config import (  # noqa: E402
-    DEFAULTS, REFERENCE, REPLY_SPEEDS, SELL_BUNDLE, SELL_NEAREST, STYLE_LAYERS, TEXT_STYLES, TURN_BOUND_MAX_S,
-    WRITER_PROVIDERS, Invalid, StaleRev, merged, put_checkpoint, put_draft, reference, rollback, save, style_layers,
-    turn_bound_s, validate,
+    CAPTION_WRITERS, DEFAULTS, INFO_QUESTIONS, REFERENCE, REPLY_SPEEDS, SELL_BUNDLE, SELL_NEAREST, STYLE_LAYERS,
+    TEXT_STYLES, TURN_BOUND_MAX_S, WRITER_PROVIDERS, Invalid, StaleRev, limits, merged, put_checkpoint, put_draft,
+    reference, rollback, save, style_layers, turn_bound_s, validate,
 )
 from db.engine import get_session  # noqa: E402
 from db.models import AutomationRule  # noqa: E402
@@ -238,6 +240,28 @@ def case_ts_constants_match():
         assert DEFAULTS[key] != sw[2], (key, "the default must read on")
     labels = re.search(r"const SPEED_LABEL: Record<string, string> = \{([^}]*)\}", ts)
     assert labels and set(re.findall(r'"([^"]+)":', labels[1])) <= set(REPLY_SPEEDS), labels
+    for name, values in (("INFO_QUESTIONS_LABEL", INFO_QUESTIONS), ("CAPTION_LABEL", CAPTION_WRITERS)):
+        m = re.search(rf"const {name}: Record<string, string> = \{{([^}}]*)\}}", ts)
+        assert m and set(re.findall(r'(\w+):', m[1])) == set(values), (name, m)
+    # The plain switches' defaults (what a side without the key reads) are the server's.
+    sw = re.findall(r'(\w+): \{ label: "[^"]+", def: (true|false)', ts)
+    assert {k for k, _ in sw} == {"sext_on", "lead_in", "describe_fan_photos", "strip_emojis"}, sw
+    for k, d in sw:
+        assert DEFAULTS[k] is (d == "true"), (k, d)
+    # A side without the key reads the first option (`limits` lists the default first).
+    lim = limits()
+    assert lim["info_questions"][0] == DEFAULTS["info_questions"], lim
+    assert lim["caption_writers"][0] == DEFAULTS["caption_writer"], lim
+
+
+def case_page_labels():
+    """The keys the page edits since 2026-11-15 name their control (REFERENCE `page`, the plan card's label too)."""
+    import assistant_full_ai
+    want = {"sext_on": "Sexting", "lead_in": "Lead-in questions", "info_questions": "Questions",
+            "caption_writer": "PPV caption", "sell_count": "Match his count", "describe_fan_photos": "Read his photos",
+            "strip_emojis": "Strip emojis", "top_spend_cents": "Top spend limit", "fans": "Fans"}
+    for k, lab in want.items():
+        assert REFERENCE[k]["page"] == lab and assistant_full_ai.label(k) == lab, (k, REFERENCE[k], assistant_full_ai.label(k))
 
 
 def case_style_layers_table():
@@ -368,16 +392,16 @@ def case_sell_bundle_table():
 
 
 def case_sell_count_strip_emojis_table():
-    """`sell_count` (a fresh offer aims at the count he names) and `strip_emojis` (every Mode): JSON-only bools."""
+    """`sell_count` (a fresh offer aims at the count he names) and `strip_emojis` (every Mode): page-switch bools."""
     import assistant_full_ai
     assert DEFAULTS["sell_count"] is True and DEFAULTS["strip_emojis"] is False, DEFAULTS
-    for k, lab in (("sell_count", "Asked count"), ("strip_emojis", "Strip emojis")):
+    for k, lab in (("sell_count", "Match his count"), ("strip_emojis", "Strip emojis")):
         for ok in (True, False):
             assert validate({**DEFAULTS, k: ok}) == [], (k, ok)
         for bad in ("yes", 1, 0, None, "true"):
             assert validate({**DEFAULTS, k: bad}) == [f"{k}: must be true or false"], (k, bad)
         assert assistant_full_ai.label(k) == lab and k in assistant_full_ai.CONFIG_KEYS, k
-        assert REFERENCE[k]["page"] is None, k
+        assert REFERENCE[k]["page"] == lab, k
     pre = {k: v for k, v in DEFAULTS.items() if k not in ("sell_count", "strip_emojis")}
     got = merged({"checkpoint": pre, "previous": pre, "draft": pre, "rev": 2})
     for side in ("checkpoint", "previous", "draft"):
@@ -432,7 +456,7 @@ def case_top_spend_cents_table():
             "top_spend_cents: must be a whole number of cents, 0 or more (0 = off)"], bad
     assert "top_spend_cents" in assistant_full_ai.CONFIG_KEYS
     assert assistant_full_ai.label("top_spend_cents") == "Top spend limit"
-    assert REFERENCE["top_spend_cents"]["page"] is None      # JSON-only
+    assert REFERENCE["top_spend_cents"]["page"] == "Top spend limit"      # the page's dollars box
     pre = {k: v for k, v in DEFAULTS.items() if k != "top_spend_cents"}
     got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "top_spend_cents": 0}, "rev": 2})
     assert got["checkpoint"]["top_spend_cents"] == got["previous"]["top_spend_cents"] == 100000, got
@@ -455,7 +479,7 @@ def case_fans_table():
         assert len(errs) == 1 and errs[0].startswith("fans: "), (bad, errs)
     assert "fans" in assistant_full_ai.CONFIG_KEYS
     assert assistant_full_ai.label("fans") == "Fans"
-    assert REFERENCE["fans"]["page"] is None      # JSON-only
+    assert REFERENCE["fans"]["page"] == "Fans"      # the page's Fans dialog
     pre = {k: v for k, v in DEFAULTS.items() if k != "fans"}
     got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "fans": {"include": [3], "exclude": []}},
                   "rev": 2})
@@ -518,7 +542,8 @@ A = IDS["creator_a"]
 OWNER_A = fx.login_owner("agency_a_owner")
 CONFIG = "/admin/full-ai/config"
 REF = json.loads(json.dumps(reference()))     # as the wire carries it
-LIMITS = {"max_writers": 6, "reply_speeds": ["0-2m", "0-15-60"], "default_reply_speed": "0-2m"}
+LIMITS = {"max_writers": 6, "reply_speeds": ["0-2m", "0-15-60"], "default_reply_speed": "0-2m",
+          "info_questions": ["pick", "list"], "caption_writers": ["chat", "caption"]}
 
 
 def _db(fn):

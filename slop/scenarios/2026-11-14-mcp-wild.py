@@ -27,7 +27,7 @@ Checks:
                               Creator/page/plan/file refused (403/404); B's rows hash the same before/after; no
                               bio page on B's Creator but B's own
   send_tools_never_listed     tools/list for tokens A and B (cases + mix) names no send tool, lists both builtins
-  anonymous_only_three_tools  anon (and token-in-query) tools/list == connect_account/register_account/login, and
+  anonymous_only_three_tools  anon (and token-in-query) tools/list == sign_in/connect_account/register_account/login, and
                               an anon data tool / propose_plan / plan_status call is HTTP 401 -32001 (the MCP
                               sign-in challenge) with open_url in error.data
   revoked_token_dead          the revoked token: 401 on MCP (cases + mix) and on its report file

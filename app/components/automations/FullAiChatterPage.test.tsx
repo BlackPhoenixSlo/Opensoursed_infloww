@@ -1,5 +1,5 @@
 /**
- * Full AI Chat: the settings column (ten controls, Save / Roll back / JSON over the draft config, the persona block), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the Mode control (Off / Live over GET / PUT /admin/full-ai/mode; Live behind a confirm),
+ * Full AI Chat: the settings column (eighteen controls, Save / Roll back / JSON over the draft config, the persona block), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the Mode control (Off / Live over GET / PUT /admin/full-ai/mode; Live behind a confirm),
  * and today's Decision rows (GET /admin/full-ai/today): counts in Route order, then the newest rows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -65,7 +65,8 @@ const REFERENCE = [
   { key: "sext_on", default: true, allowed: "true | false", about: "Sexting. Off: she stays in normal chat.", page: null },
 ];
 /** The GET's `limits` (`full_ai_config.limits`). */
-const LIMITS = { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_reply_speed: "0-2m" };
+const LIMITS = { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_reply_speed: "0-2m",
+  info_questions: ["pick", "list"], caption_writers: ["chat", "caption"] };
 const configBody = (over: Record<string, unknown> = {}) =>
   ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], reference: REFERENCE, limits: LIMITS, ...over });
 const MODE_OFF = { mode: "off", off_switch: false, blockers: [] as string[] };
@@ -503,12 +504,12 @@ const loadedConfig = async () => waitFor(() => expect(settings().getByRole("swit
 describe("Full AI Chat page › Settings", () => {
   beforeEach(() => { relayPut.mockReset(); });
 
-  it("holds ten controls: on/off, LLM keys, reply speed, Human style, Typos, Writer, GIFs, Sell, Content folders, Prepare content; the config is read for this Creator", async () => {
+  it("holds eighteen controls: on/off, LLM keys, reply speed, Human style, Typos, Writer, GIFs, Sexting, Lead-in questions, Questions, Read his photos, Strip emojis, Sell, PPV caption, Content folders, Prepare content, Top spend limit, Fans; the config is read for this Creator", async () => {
     mountSettings();
     await loadedConfig();
     // Top-level items only: Prepare content's step list nests its own.
     const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
-    expect(items.length).toBe(10);
+    expect(items.length).toBe(18);
     expect(within(items[0]).getByRole("group", { name: "Mode" })).toBeTruthy();
     expect(within(items[1]).getByText("LLM keys")).toBeTruthy();
     const speed = within(items[2]).getByRole("radiogroup", { name: "Reply speed" });
@@ -518,10 +519,23 @@ describe("Full AI Chat page › Settings", () => {
     expect(within(items[4]).getByRole("switch", { name: "Typos" }).getAttribute("aria-checked")).toBe("true");
     expect((within(items[5]).getByRole("checkbox", { name: "euryale-v2.3" }) as HTMLInputElement).checked).toBe(true);
     expect(within(items[6]).getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("false");
-    expect(within(items[7]).getByRole("switch", { name: "Sell" }).getAttribute("aria-checked")).toBe("false");
-    expect(within(items[8]).getByText("Content folders")).toBeTruthy();
-    expect(within(items[8]).getByText("All")).toBeTruthy();
-    expect(within(items[9]).getByRole("button", { name: "Prepare content" })).toBeTruthy();
+    // The plain switches read the server defaults on a draft without the keys.
+    expect(within(items[7]).getByRole("switch", { name: "Sexting" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(items[8]).getByRole("switch", { name: "Lead-in questions" }).getAttribute("aria-checked")).toBe("true");
+    const questions = within(items[9]).getByRole("radiogroup", { name: "Questions" });
+    expect(within(questions).getAllByRole("radio").map((r) => [r.textContent, r.getAttribute("aria-checked")]))
+      .toEqual([["Pick one", "true"], ["Whole list", "false"]]);
+    expect(within(items[10]).getByRole("switch", { name: "Read his photos" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(items[11]).getByRole("switch", { name: "Strip emojis" }).getAttribute("aria-checked")).toBe("false");
+    expect(within(items[12]).getByRole("switch", { name: "Sell" }).getAttribute("aria-checked")).toBe("false");
+    const caption = within(items[13]).getByRole("radiogroup", { name: "PPV caption" });
+    expect(within(caption).getAllByRole("radio").map((r) => [r.textContent, r.getAttribute("aria-checked")]))
+      .toEqual([["Last bubble", "true"], ["Own call", "false"]]);
+    expect(within(items[14]).getByText("Content folders")).toBeTruthy();
+    expect(within(items[14]).getByText("All")).toBeTruthy();
+    expect(within(items[15]).getByRole("button", { name: "Prepare content" })).toBeTruthy();
+    expect((within(items[16]).getByRole("spinbutton", { name: "Top spend limit" }) as HTMLInputElement).value).toBe("");
+    expect(within(items[17]).getByText("Every Fan · live only")).toBeTruthy();
     expect(relayGet.mock.calls.some((c) => String(c[0]) === "/admin/full-ai/config?account_id=acc-a")).toBe(true);
   });
 
@@ -594,6 +608,83 @@ describe("Full AI Chat page › Settings", () => {
     await waitFor(() => expect(box().value).toBe("25"));
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "GIFs" })); });
     await waitFor(() => expect(settings().queryByRole("spinbutton", { name: "GIFs %" })).toBeNull());
+  });
+
+  it.each<[string, string, Record<string, unknown>]>([
+    ["Sexting", "sext_on", { sext_on: false }],
+    ["Lead-in questions", "lead_in", { lead_in: false }],
+    ["Read his photos", "describe_fan_photos", { describe_fan_photos: false }],
+    ["Strip emojis", "strip_emojis", { strip_emojis: true }],
+  ])("%s: a click stores %s", async (name, _key, patch) => {
+    mountSettings();
+    await loadedConfig();
+    await act(async () => { fireEvent.click(settings().getByRole("switch", { name })); });
+    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, ...patch }, rev: 3 });
+  });
+
+  it.each<[string, string, Record<string, unknown>]>([
+    ["Questions", "Whole list", { info_questions: "list" }],
+    ["PPV caption", "Own call", { caption_writer: "caption" }],
+  ])("%s: picking %s stores it", async (group, radio, patch) => {
+    mountSettings();
+    await loadedConfig();
+    await act(async () => { fireEvent.click(within(settings().getByRole("radiogroup", { name: group })).getByRole("radio", { name: radio })); });
+    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, ...patch }, rev: 3 });
+  });
+
+  it("Top spend limit: shows dollars, stores cents on blur, 0 = no limit, empty / bad snaps back", async () => {
+    mountSettings(configBody({ draft: { ...CONFIG, top_spend_cents: 100000 } }));
+    await loadedConfig();
+    const box = () => settings().getByRole("spinbutton", { name: "Top spend limit" }) as HTMLInputElement;
+    expect(box().value).toBe("1000");
+    await act(async () => { fireEvent.change(box(), { target: { value: "" } }); fireEvent.blur(box()); });
+    expect(putCalls().length).toBe(0);
+    expect(box().value).toBe("1000");
+    await act(async () => { fireEvent.change(box(), { target: { value: "1000" } }); fireEvent.blur(box()); });
+    expect(putCalls().length).toBe(0);   // unchanged: nothing stored
+    await act(async () => { fireEvent.change(box(), { target: { value: "250.5" } }); fireEvent.blur(box()); });
+    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, top_spend_cents: 25050 }, rev: 3 });
+    await waitFor(() => expect(box().value).toBe("250.5"));
+    await act(async () => { fireEvent.change(box(), { target: { value: "0" } }); fireEvent.blur(box()); });
+    expect(putCalls()[1][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, top_spend_cents: 0 }, rev: 4 });
+  });
+
+  it("Fans: per OF fan list Include / Exclude / Neither; Save sends the whole fans object", async () => {
+    const lists = { list: [{ id: 11, name: "VIP", usersCount: 4, type: "custom" }, { id: 12, name: "Cheap", usersCount: 9, type: "custom" },
+      { id: "fans", name: "Fans", type: "build-in" }, { id: 13, name: "Old", usersCount: 2, type: "custom" }], hasMore: false };
+    mountSettings(configBody({ draft: { ...CONFIG, fans: { include: [13], exclude: [] } } }), {
+      get: (p) => (p.startsWith("/api/of/v2/lists") ? lists : undefined),
+    });
+    await loadedConfig();
+    expect(settings().getByText("1 included · live only")).toBeTruthy();
+    await act(async () => { fireEvent.click(btn("Choose fans")); });
+    const dialog = within(await screen.findByRole("dialog", { name: "Fans" }));
+    const seg = (name: string) => within(dialog.getByRole("radiogroup", { name }));
+    expect(await dialog.findByRole("radiogroup", { name: "VIP" })).toBeTruthy();
+    expect(dialog.queryByRole("radiogroup", { name: "Fans" })).toBeNull();   // a built-in (no whole-number id) is not offered
+    expect(seg("Old").getByRole("radio", { name: "Include" }).getAttribute("aria-checked")).toBe("true");
+    expect(seg("VIP").getByRole("radio", { name: "Neither" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(seg("VIP").getByRole("radio", { name: "Include" }));
+    fireEvent.click(seg("Cheap").getByRole("radio", { name: "Exclude" }));
+    fireEvent.click(seg("Old").getByRole("radio", { name: "Neither" }));
+    await act(async () => { fireEvent.click(dialog.getByRole("button", { name: "Save" })); });
+    expect(putCalls()[0][1]).toEqual({
+      account_id: "acc-a", draft: { ...CONFIG, fans: { include: [11], exclude: [12] } }, rev: 3,
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(settings().getByText("1 included · 1 excluded · live only")).toBeTruthy());
+    expect(relayGet.mock.calls.some((c) => String(c[0]).startsWith("/api/of/v2/lists") && c[1]?.accountId === "acc-a")).toBe(true);
+  });
+
+  it("Fans: Cancel stores nothing", async () => {
+    mountSettings(configBody(), { get: (p) => (p.startsWith("/api/of/v2/lists") ? { list: [{ id: 11, name: "VIP" }] } : undefined) });
+    await loadedConfig();
+    await act(async () => { fireEvent.click(btn("Choose fans")); });
+    const dialog = within(await screen.findByRole("dialog", { name: "Fans" }));
+    fireEvent.click(within(await dialog.findByRole("radiogroup", { name: "VIP" })).getByRole("radio", { name: "Exclude" }));
+    await act(async () => { fireEvent.click(dialog.getByRole("button", { name: "Cancel" })); });
+    expect(putCalls().length).toBe(0);
+    expect(settings().getByText("Every Fan · live only")).toBeTruthy();
   });
 
   it("GIFs %: no box while GIFs is off", async () => {
@@ -950,7 +1041,7 @@ describe("Full AI Chat page › Selling settings", () => {
     expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, folders: FOLDERS, sell_on: true }, rev: 3 });
   });
 
-  it("the Sell settings group shows only with Sell on: seven switches, all on by default; a click stores its off value", async () => {
+  it("the Sell settings group shows only with Sell on: eight switches, all on by default; a click stores its off value", async () => {
     mountSettings();
     await loadedConfig();
     const group = () => screen.queryByRole("list", { name: "Sell settings" });
@@ -961,13 +1052,13 @@ describe("Full AI Chat page › Selling settings", () => {
     await waitFor(() => expect(group()).not.toBeNull());
     const sws = within(group()!).getAllByRole("switch") as HTMLButtonElement[];
     expect(sws.map((s) => [s.getAttribute("aria-label"), s.getAttribute("aria-checked"), s.disabled])).toEqual(
-      ["Unasked offers", "Chat tease", "Implied asks", "Nearest piece", "Fill the set", "Spacing", "He likes"]
+      ["Unasked offers", "Chat tease", "Implied asks", "Nearest piece", "Fill the set", "Match his count", "Spacing", "He likes"]
         .map((n) => [n, "true", false]));
     expect(settings().getByText("Test chat + live. Shadow ignores these.")).toBeTruthy();
     // Sell group sits inside Sell's own top-level item.
     const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
-    expect(items.length).toBe(10);
-    expect(within(items[7]).getByRole("list", { name: "Sell settings" })).toBeTruthy();
+    expect(items.length).toBe(18);
+    expect(within(items[12]).getByRole("list", { name: "Sell settings" })).toBeTruthy();
     const sw = (name: string) => within(group()!).getByRole("switch", { name }) as HTMLButtonElement;
     await act(async () => { fireEvent.click(sw("Unasked offers")); });
     expect(putCalls()[1][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, sell_on: true, draft_questions: false }, rev: 4 });
@@ -979,6 +1070,10 @@ describe("Full AI Chat page › Selling settings", () => {
     await act(async () => { fireEvent.click(sw("Nearest piece")); });
     expect(putCalls()[3][1]).toEqual({ account_id: "acc-a",
       draft: { ...CONFIG, sell_on: true, draft_questions: false, sell_nearest: "note" }, rev: 6 });
+    await waitFor(() => expect(sw("Nearest piece").getAttribute("aria-checked")).toBe("true"));
+    await act(async () => { fireEvent.click(sw("Match his count")); });
+    expect(putCalls()[4][1]).toEqual({ account_id: "acc-a",
+      draft: { ...CONFIG, sell_on: true, draft_questions: false, sell_nearest: "note", sell_count: false }, rev: 7 });
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
     await waitFor(() => expect(group()).toBeNull());
   });

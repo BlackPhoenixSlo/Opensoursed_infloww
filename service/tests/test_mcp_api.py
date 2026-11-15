@@ -4,12 +4,13 @@ two-Agency bench, through the real app in-process with real minted owner tokens.
 
 Cases:
   case_handshake               — initialize (version echo / newest for an unknown one) → initialized 202 →
-                                 ping → tools/list (the Toolbox + propose_plan / plan_status) → tools/call creators_list (A's own Creator).
+                                 ping → tools/list (the Toolbox + propose_plan / plan_status) → tools/call creators_list (A's own Creator);
+                                 sign_in (not listed for a token) answers "signed in", not an error.
   case_origin_refused          — any Origin → 403, even with a good token; no tool runs.
   case_auth_refused            — cookie-only, a bad ifw_ token, a foreign Bearer, Basic → 401.
-  case_anonymous_surface       — no credential: initialize + tools/list = connect_account, register_account, login
-                                 (test_mcp_auth.py); its links
-                                 (MCP_SIGNUP_URL, else this host); a data tool or propose_plan → HTTP 401 with
+  case_anonymous_surface       — no credential: initialize + tools/list = sign_in, connect_account, register_account,
+                                 login (test_mcp_auth.py); its links
+                                 (MCP_SIGNUP_URL, else this host); sign_in, a data tool or propose_plan → HTTP 401 with
                                  WWW-Authenticate resource_metadata and the link as the JSON-RPC error's data.
   case_share_token_gate        — SHARE_TOKEN set: anonymous POST /admin/mcp still serves initialize / tools/list
                                  (the anonymous builtins only); GET /admin/mcp is its 405; a data tool,
@@ -19,7 +20,7 @@ Cases:
   case_cross_agency_refused    — B's token never reads Creator A (403) and lists only B.
   case_protocol_errors         — unknown method/tool, bad params/arguments, bad args (isError 422), malformed
                                  JSON, deep nesting, batch, no jsonrpc, bad id (a readable id echoed), unsupported
-                                 version header, GET/DELETE/PUT 405.
+                                 version header, GET/DELETE/PUT 405 (with a token too).
   case_hostile_values          — a lone surrogate in id / method / tool name answers (\\u-escaped), never 500;
                                  NaN, a lone surrogate or a 100k query in tool args → isError 422, never 500.
   case_send_tools_absent       — an effect="send" tool is not listed and not callable.
@@ -125,6 +126,10 @@ def case_handshake() -> None:
     assert res["isError"] is False, res
     assert [c["id"] for c in res["structuredContent"]["accounts"]] == [CA], res
     assert res["structuredContent"]["open_url"].endswith("/creators"), res
+    res = _tool("sign_in")  # mcp-remote repeats the call that drew the 401 once signed in
+    s = res["structuredContent"]
+    assert res["isError"] is False and s["signed_in"] is True and s["username"] == "agency_a_owner", res
+    assert s["next_step"] == mcp_api.SIGNED_IN and s["open_url"].endswith(mcp_api.NEXT), s
 
 
 def case_origin_refused() -> None:
@@ -149,7 +154,8 @@ def case_anonymous_surface() -> None:
     r = _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, {})
     assert r.status_code == 202, r.status_code
     tools = _rpc("tools/list", headers={})["result"]["tools"]
-    assert [t["name"] for t in tools] == ["connect_account", "register_account", "login"], tools
+    assert [t["name"] for t in tools] == ["sign_in", "connect_account", "register_account", "login"], tools
+    assert tools[0]["inputSchema"].get("properties", {}) == {}, tools[0]  # no arguments
     fwd = {"X-Forwarded-Host": "app.example.com", "X-Forwarded-Proto": "https"}
     out = _tool("connect_account", headers=fwd)
     s = out["structuredContent"]
@@ -168,6 +174,9 @@ def case_anonymous_surface() -> None:
         _anon_refused(name, {"recipe": {}} if name == "report_run" else {}, fwd)
     _anon_refused("creators_list")  # no public address: plain Bearer
     _anon_refused("propose_plan", {"summary": "x", "steps": []}, fwd)  # a token builtin: the link
+    _anon_refused("sign_in", None, fwd)  # the client's browser sign-in, on purpose
+    r = _post({"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "sign_in"}}, {})
+    assert r.status_code == 401 and r.json()["error"]["message"] == mcp_api.SIGN_IN_NEEDED, r.text
     assert _rpc("tools/call", {"name": "mass_send", "arguments": {}}, {})["error"]["code"] == -32602
     assert _rpc("resources/list", headers={})["error"]["code"] == -32601
 
@@ -180,7 +189,7 @@ def case_share_token_gate() -> None:
         init = _rpc("initialize", {"protocolVersion": "2025-06-18"}, {})["result"]
         assert init["protocolVersion"] == "2025-06-18", init
         anon = [t["name"] for t in _rpc("tools/list", headers={})["result"]["tools"]]
-        assert anon == ["connect_account", "register_account", "login"], anon
+        assert anon == ["sign_in", "connect_account", "register_account", "login"], anon
         _anon_refused("creators_list")
         assert ANON.get(mcp_api.PATH).status_code == 405  # anonymous_surface: the 405-only GET too
         assert ANON.post(mcp_api.PATH + "-x", json={}).status_code == 401  # exact path only
@@ -247,7 +256,8 @@ def case_protocol_errors() -> None:
     for method in ("GET", "DELETE", "PUT"):
         r = ANON.request(method, mcp_api.PATH)
         assert r.status_code == 405 and r.headers["allow"] == "POST", (method, r.status_code)
-        assert ANON.request(method, mcp_api.PATH, headers=HA).status_code == 403  # off the token allowlist
+        r = ANON.request(method, mcp_api.PATH, headers=HA)  # mcp-remote probes GET for SSE with its token
+        assert r.status_code == 405 and r.headers["allow"] == "POST", (method, r.status_code, r.text)
 
 
 def case_hostile_values() -> None:

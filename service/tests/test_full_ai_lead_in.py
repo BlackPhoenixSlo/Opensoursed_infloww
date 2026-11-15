@@ -197,7 +197,7 @@ def case_config_key():
     assert DEFAULTS["lead_in"] is True
     assert validate({**DEFAULTS, "lead_in": False}) == []
     assert validate({**DEFAULTS, "lead_in": "yes"}) == ["lead_in: must be true or false"]
-    assert label("lead_in") == "Lead-in asks"
+    assert label("lead_in") == "Lead-in questions"
 
 
 def case_constants_in_catalog():

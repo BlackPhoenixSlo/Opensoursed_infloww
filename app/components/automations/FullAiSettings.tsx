@@ -1,16 +1,21 @@
 "use client";
 
 /**
- * Full AI Chat's settings column (spec phase-03a, 03b): ten controls in a list named "Settings":
+ * Full AI Chat's settings column (spec phase-03a, 03b): eighteen controls in a list named "Settings":
  *   1. the Mode control (Off / Live, `FullAiModeControl`);
  *   2. LLM keys: whether NanoGPT and OpenRouter are set (never a value or hint), linking to the agency keys form;
  *   3. reply speed ("0-2 min" / "0-15-60"), 4. Human style (every `style` layer; mixed when they differ), 5. Typos
  *   (the typos layer alone; on, a "%" box sets `typo_pct`, empty = auto), 6. Writers (a checklist over `writers`: tick / untick, "Make Writer" moves one first), 7. GIFs
  *   (on, a "%" box sets `gif_pct`, empty = auto);
- *   8. Sell (on, the "Sell settings" group under it: seven switches, all on by default, owner 2026-11-14: Unasked
- *   offers, Chat tease, Implied asks, Nearest piece, Fill the set, Spacing, He likes; `sellSwitches`), 9. Content
- *   folders, 10. Prepare content (`FullAiSellSettings.tsx`, ticket 49).
- * Controls 3-9 edit the draft config and store it at once (`useFullAiConfig.edit`); the Test chat's Send waits meanwhile.
+ *   8. Sexting (`sext_on`), 9. Lead-in questions (`lead_in`), 10. Questions (`info_questions`: Pick one / Whole list),
+ *   11. Read his photos (`describe_fan_photos`), 12. Strip emojis (`strip_emojis`): plain switches (`chatSwitch`), owner 2026-11-15;
+ *   13. Sell (on, the "Sell settings" group under it: eight switches, all on by default, owner 2026-11-14/15: Unasked
+ *   offers, Chat tease, Implied asks, Nearest piece, Fill the set, Match his count, Spacing, He likes; `sellSwitches`),
+ *   14. PPV caption (`caption_writer`: Last bubble / Own call), 15. Content folders, 16. Prepare content
+ *   (`FullAiSellSettings.tsx`, ticket 49), 17. Top spend limit (`top_spend_cents`, edited in dollars, 0 = no limit),
+ *   18. Fans (`fans`: per OF fan list Include / Exclude, `FullAiFans.tsx`). The Questions / PPV caption options are the
+ *   server's (`limits`).
+ * Controls 3-15, 17 and 18 edit the draft config and store it at once (`useFullAiConfig.edit`); the Test chat's Send waits meanwhile.
  * Under them: Save (draft → checkpoint), Roll back (swap checkpoint and previous), JSON (checkpoint and draft side by
  * side, each editable and stored on its own, validated by the server; under them the read-only "All settings" table off the
  * GET's `reference`: every key's default, the draft's value, what it accepts and does), the field errors, and on a stale rev a reload message. Reload
@@ -25,10 +30,12 @@ import { useReducer, useState } from "react";
 
 import { ROW, SwitchRow } from "@/components/automations/automationPage";
 import { FullAiModeControl } from "@/components/automations/FullAiModeControl";
+import { FansRow } from "@/components/automations/FullAiFans";
 import { ContentFoldersRow, PrepareRow } from "@/components/automations/FullAiSellSettings";
 import {
-  humanStyle, humanStylePatch, layersOff, sellSwitches, speedLabel, styleLayers, gifPct, gifPctPatch, sellSwitchPatch,
-  settingRows, toggleWriterPatch, typoPct, typoPctPatch, typosPatch, writerPatch, type FullAiConfig, type SettingRow,
+  captionLabel, chatSwitch, humanStyle, humanStylePatch, infoQuestionsLabel, layersOff, sellSwitches, speedLabel,
+  styleLayers, gifPct, gifPctPatch, sellSwitchPatch, settingRows, toggleWriterPatch, topSpendDollars, topSpendPatch,
+  typoPct, typoPctPatch, typosPatch, writerPatch, type ChatSwitchKey, type FullAiConfig, type SettingRow,
 } from "@/components/automations/fullAiConfig";
 import {
   jsonEditInit, jsonEditReducer, jsonMoved, jsonTyped, prettyJson, type JsonSide,
@@ -89,14 +96,34 @@ export function FullAiSettings({ state, cfg, accountId }: {
             {draft?.gifs === true && <GifPctBox draft={draft} off={off} cfg={cfg} />}
           </SwitchRow>
         </li>
+        <li><ChatSwitchRow k="sext_on" draft={draft} off={off} cfg={cfg} /></li>
+        <li><ChatSwitchRow k="lead_in" draft={draft} off={off} cfg={cfg} /></li>
+        {cfg.limits && (
+          <li>
+            <ChoiceRow label="Questions" hint="Pick one: Jev asks one thing. Whole list: the whole still-need list."
+              value={draft?.info_questions ?? cfg.limits.info_questions[0]} values={cfg.limits.info_questions}
+              toLabel={infoQuestionsLabel} off={off} onChange={(info_questions) => cfg.edit({ info_questions })} />
+          </li>
+        )}
+        <li><ChatSwitchRow k="describe_fan_photos" draft={draft} off={off} cfg={cfg} /></li>
+        <li><ChatSwitchRow k="strip_emojis" draft={draft} off={off} cfg={cfg} /></li>
         <li>
           <SwitchRow label="Sell" hint="Offer PPVs from the content folders. Off: the AI never sells." checked={draft?.sell_on === true}
             disabled={off} onChange={(sell_on) => cfg.edit({ sell_on })}>
             {draft?.sell_on === true && <SellGroup draft={draft} off={off} cfg={cfg} />}
           </SwitchRow>
         </li>
+        {cfg.limits && (
+          <li>
+            <ChoiceRow label="PPV caption" hint="Last bubble: the reply's last bubble is the caption. Own call: a separate caption call."
+              value={draft?.caption_writer ?? cfg.limits.caption_writers[0]} values={cfg.limits.caption_writers}
+              toLabel={captionLabel} off={off} onChange={(caption_writer) => cfg.edit({ caption_writer })} />
+          </li>
+        )}
         <li><ContentFoldersRow accountId={accountId} draft={draft} off={off} cfg={cfg} /></li>
         <li><PrepareRow accountId={accountId} /></li>
+        <li><TopSpendRow draft={draft} off={off} cfg={cfg} /></li>
+        <li><FansRow accountId={accountId} draft={draft} off={off} cfg={cfg} /></li>
       </ul>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -144,6 +171,59 @@ function SellGroup({ draft, off, cfg }: { draft: FullAiConfig | null; off: boole
         ))}
       </ul>
       <p className="text-[12px] text-muted">Test chat + live. Shadow ignores these.</p>
+    </div>
+  );
+}
+
+/** A plain top-level switch (`chatSwitch`): stores its key true / false. */
+function ChatSwitchRow({ k, draft, off, cfg }: { k: ChatSwitchKey; draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
+  const s = chatSwitch(draft, k);
+  return <SwitchRow label={s.label} hint={s.hint} checked={s.checked} disabled={off} onChange={(on) => cfg.edit({ [k]: on })} />;
+}
+
+/** A segmented choice over the server's values (`limits`), stored at once. */
+function ChoiceRow({ label, hint, value, values, toLabel, off, onChange }: {
+  label: string; hint: string; value: string; values: string[]; toLabel: (v: string) => string; off: boolean;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className={ROW}>
+      <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
+        <div className="min-w-0">
+          <div className="text-[14px] text-fg">{label}</div>
+          <div className="mt-0.5 text-[12px] text-muted">{hint}</div>
+        </div>
+        <IfSegmented aria-label={label} value={value}
+          options={values.map((v) => ({ value: v, label: toLabel(v), disabled: off }))} onChange={onChange} />
+      </div>
+    </div>
+  );
+}
+
+/** Top spend limit: dollars on the page, cents stored (`top_spend_cents`); 0 = no limit. Stored on blur / Enter; a refused
+ *  entry (empty too) snaps back. */
+function TopSpendRow({ draft, off, cfg }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
+  const dollars = topSpendDollars(draft);
+  const commit = (el: HTMLInputElement) => {
+    const patch = topSpendPatch(el.value);
+    if (patch === null) el.value = dollars;
+    else if (patch.top_spend_cents !== draft?.top_spend_cents) cfg.edit(patch);
+  };
+  return (
+    <div className={ROW}>
+      <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
+        <div className="min-w-0">
+          <div className="text-[14px] text-fg">Top spend limit</div>
+          <div className="mt-0.5 text-[12px] text-muted">Live only. A Fan who has spent this much is left to humans. 0 = no limit.</div>
+        </div>
+        <label className="flex items-center gap-1.5 text-[14px] text-fg">
+          <span>$</span>
+          <IfInput key={dollars} type="number" inputMode="decimal" min={0} step={0.01} aria-label="Top spend limit"
+            className="w-28" disabled={off} defaultValue={dollars}
+            onBlur={(e) => commit(e.currentTarget)}
+            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+        </label>
+      </div>
     </div>
   );
 }

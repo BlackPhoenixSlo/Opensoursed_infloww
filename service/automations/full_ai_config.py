@@ -44,12 +44,12 @@ DEFAULTS: dict[str, Any] = {
     "style": {"texting": True, "nonnative": True, "spacing": True, "typos": True, "painful": True},
     "gifs": False,
     "sell_on": False,           # settable since 03b; off by default
-    "sext_on": True,
+    "sext_on": True,            # page switch "Sexting"; off = normal chat only
     # Test + live (`full_ai_mode.full`), Shadow ignores: the Jev-run sext scene (scene questions, saved scene state, scene Writer
     # prompt, content level, price Jev; owner 2026-11-14). JSON-only switch (12-control limit).
     "sext_scene": True,
     # Test + live (`full_ai_mode.full`), Shadow ignores: get-to-know asks led into, not asked straight (lead-in lines, few-shots, a
-    # beat of her own, the info Jev's lead wording; owner 2026-11-14). JSON-only switch.
+    # beat of her own, the info Jev's lead wording; owner 2026-11-14). Page switch "Lead-in questions".
     "lead_in": True,
     "folders": {"include": [], "exclude": []},   # 03b: Content folders, empty include = all
     "draft_questions": True,    # 03b: DRAFT Router questions count (test + live, ticket 47); Sell group switch "Unasked offers" (on, owner 2026-11-14)
@@ -63,11 +63,11 @@ DEFAULTS: dict[str, Any] = {
     "writer_retries": 0,
     "floor_on": True,
     "info_fields": list(INFO_FIELDS),
-    "info_questions": "pick",   # pick: info Jev picks one | list: wcfi's whole still-need list
+    "info_questions": "pick",   # pick: info Jev picks one | list: wcfi's whole still-need list; page "Questions"
     "reply_by_webhook": True,   # D59 defaults on; read by 04a's live sender
     "typing_sign": True,
     "typing_notification": True,
-    "caption_writer": "chat",   # PPV caption: "chat" = the chat Writer's last bubble; "caption" = its own call
+    "caption_writer": "chat",   # "chat" = the chat Writer's last bubble; "caption" = its own call; page "PPV caption"
     # Test + live (`full_ai_mode.full`), Shadow ignores: a sell ask nothing in the vault matches sells the nearest piece (same subject,
     # then same format, then anything) instead of no PPV. "off" = no_match as before; "plain" = the
     # caption as today; "note" = the Writer also plays his ask out as a story from what the piece shows (NEW-140).
@@ -79,9 +79,9 @@ DEFAULTS: dict[str, Any] = {
     "sell_bundle": "fill",
     # Test + live (`full_ai_mode.full`), Shadow ignores: a fresh sell Offer aims at the number of pieces he names ("bundle of 5 videos",
     # "three pics"; `full_ai_sell.asked_count`, at most 5): a clip sells with more clips, a photo set
-    # fills to it. A suggestion: fewer when the vault holds fewer. JSON-only switch.
+    # fills to it. A suggestion: fewer when the vault holds fewer. Sell group switch "Match his count".
     "sell_count": True,
-    "describe_fan_photos": True,    # read his photo (inbound_describe, DeepInfra); on by default (owner 2026-11-15); JSON-only switch
+    "describe_fan_photos": True,    # read his photo (inbound_describe, DeepInfra); on by default (owner 2026-11-15); page switch "Read his photos"
     # Test + live (`full_ai_mode.full`), Shadow ignores (03d): Spacing, the unasked-offer questions read the Sitting's counts
     # (`full_ai_test.spacing_of`). Sell group switch "Spacing".
     "sell_spacing": True,
@@ -110,13 +110,13 @@ DEFAULTS: dict[str, Any] = {
     # listening to right now as his hobbies (owner 2026-11-14). JSON-only switch.
     "info_wide": True,
     # Emojis are stripped from her replies in every Mode (the shared chain's `strip_emoji`); off = the
-    # account's own strip-emojis style setting decides, as before. JSON-only switch.
+    # account's own strip-emojis style setting decides, as before. Page switch "Strip emojis".
     "strip_emojis": False,
     # Live only (04b): a Fan whose lifetime spend reaches this many cents is left to humans; 0 = no
-    # limit. JSON-only, label "Top spend limit".
+    # limit. Page box "Top spend limit" (in dollars).
     "top_spend_cents": 100000,
     # Live only (04b): the Fans list, OF fan-list ids. Full AI claims a Fan on an include list (empty
-    # include = every Fan) and never one on an exclude list. JSON-only, label "Fans".
+    # include = every Fan) and never one on an exclude list. Page row "Fans" (a dialog over the OF lists).
     "fans": {"include": [], "exclude": []},
 }
 
@@ -198,9 +198,9 @@ REFERENCE: dict[str, dict[str, str | None]] = {
                   "Human style / Typos"),
     "gifs": _ref(_BOOL, "Sticker GIFs in her replies.", "GIFs"),
     "sell_on": _ref(_BOOL, "She offers PPVs from the content folders. Off: she never sells.", "Sell"),
-    "sext_on": _ref(_BOOL, "Sexting. Off: she stays in normal chat."),
+    "sext_on": _ref(_BOOL, "Sexting. Off: she stays in normal chat.", "Sexting"),
     "sext_scene": _ref(_BOOL, _TEST + "The Jev-run sext scene (stages, content level, its own price Jev)."),
-    "lead_in": _ref(_BOOL, _TEST + "Get-to-know questions are led into, not asked straight."),
+    "lead_in": _ref(_BOOL, _TEST + "Get-to-know questions are led into, not asked straight.", "Lead-in questions"),
     "folders": _ref(f"{{include: [refs], exclude: [refs]}}, a ref matches {FOLDER_REF.pattern}",
                     "Content folders she sells from. Empty include = all; exclude wins.", "Content folders"),
     "draft_questions": _ref(_BOOL, _TEST + "Unasked offers: she may send a PPV he did not ask for and answer "
@@ -220,20 +220,20 @@ REFERENCE: dict[str, dict[str, str | None]] = {
     "floor_on": _ref(_BOOL, "Reply checks: a reply that fails them is rejected and the next Writer tries; and the Heat check on a sext reply."),
     "info_fields": _ref("distinct, any of " + ", ".join(INFO_FIELDS), "The facts she tries to learn about him."),
     "info_questions": _ref(_one_of(INFO_QUESTIONS),
-                           "pick = Jev picks one thing to ask; list = the old whole still-needed list."),
+                           "pick = Jev picks one thing to ask; list = the old whole still-needed list.", "Questions"),
     "reply_by_webhook": _ref(_BOOL, "Live: on = his DM queues her reply at the reply speed; off = only the missed-message sweep answers."),
     "typing_sign": _ref(_BOOL, "Live: she waits her typing time before each text bubble. Off: no typing wait."),
     "typing_notification": _ref(_BOOL, "Live: OF shows her typing during that wait (the account's typing indicator must be on too). Off: never."),
     "caption_writer": _ref(_one_of(CAPTION_WRITERS),
-                           "PPV caption: chat = the last bubble of her reply; caption = its own call."),
+                           "PPV caption: chat = the last bubble of her reply; caption = its own call.", "PPV caption"),
     "sell_nearest": _ref(_one_of(SELL_NEAREST), _TEST + "Nothing matches his ask: off = no PPV, plain = sell the "
                          "nearest piece, note = sell it and play his ask out as a story.", "Nearest piece"),
     "sell_bundle": _ref(_one_of(SELL_BUNDLE), _TEST + "fill = a photo offer holds up to 5 of its shoot, filled to 3 "
                         "with other photos matching his ask; shoot = shoot mates only, up to 4.", "Fill the set"),
     "sell_count": _ref(_BOOL, _TEST + "A fresh offer aims at the number he names (\"bundle of 5 videos\", at most 5): "
                        "a video goes with more of his asked videos priced at their sum (up to $200), a photo set "
-                       "fills to it. Fewer when there are fewer."),
-    "describe_fan_photos": _ref(_BOOL, "She reads a photo he sends (one paid vision call per photo)."),
+                       "fills to it. Fewer when there are fewer.", "Match his count"),
+    "describe_fan_photos": _ref(_BOOL, "She reads a photo he sends (one paid vision call per photo).", "Read his photos"),
     "sell_spacing": _ref(_BOOL, _TEST + "Unasked offers respect spacing: his lines since the last piece and pieces "
                          "this sitting.", "Spacing"),
     "he_likes": _ref(_BOOL, _TEST + "What he likes is stored and steers what she sends.", "He likes"),
@@ -251,13 +251,13 @@ REFERENCE: dict[str, dict[str, str | None]] = {
     "info_wide": _ref(_BOOL, _TEST + "What he is watching, playing, reading or listening to right now counts as a "
                       "hobby and is stored."),
     "strip_emojis": _ref(_BOOL, "Emojis are removed from her replies. The account's own strip-emojis setting "
-                         "still applies when this is off."),
+                         "still applies when this is off.", "Strip emojis"),
     "top_spend_cents": _ref("whole cents >= 0, 0 = off",
                             "Live only. A Fan whose lifetime spend reaches this is left to humans: Full AI stops and "
-                            "the other reply automations stay off him."),
+                            "the other reply automations stay off him.", "Top spend limit"),
     "fans": _ref("{include: [OF list ids], exclude: [OF list ids]}",
                  "Live only. The Fans Full AI answers: on an include list (empty include = every Fan) and on no "
-                 "exclude list. A list OF will not read leaves the Fan to the other automations."),
+                 "exclude list. A list OF will not read leaves the Fan to the other automations.", "Fans"),
 }
 
 
@@ -267,9 +267,11 @@ def reference() -> list[dict[str, Any]]:
 
 
 def limits() -> dict[str, Any]:
-    """The constants the page's controls read off GET config's `limits` instead of copying them. Pure."""
+    """The constants the page's controls read off GET config's `limits` instead of copying them. Pure. The Questions /
+    PPV caption options list the default first (a side without the key reads the first)."""
     return {"max_writers": MAX_WRITERS, "reply_speeds": list(REPLY_SPEEDS),
-            "default_reply_speed": DEFAULTS["reply_speed"]}
+            "default_reply_speed": DEFAULTS["reply_speed"],
+            "info_questions": list(INFO_QUESTIONS), "caption_writers": list(CAPTION_WRITERS)}
 
 
 class StaleRev(Exception):

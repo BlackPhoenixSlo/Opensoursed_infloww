@@ -8,7 +8,8 @@ const run = (s: TestChatState, ...actions: TestChatAction[]) => actions.reduce(t
 const CP = { version: 1, reply_speed: "0-2m", text_style: "girl", gifs: false, writers: ["euryale-v2.3"] };
 const body = (over: Partial<ConfigBody> = {}): ConfigBody =>
   ({ checkpoint: CP, previous: null, draft: CP, rev: 3, errors: [],
-    limits: { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_reply_speed: "0-2m" }, ...over });
+    limits: { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_reply_speed: "0-2m",
+      info_questions: ["pick", "list"], caption_writers: ["chat", "caption"] }, ...over });
 const slower = { ...CP, reply_speed: "0-15-60" };
 const external = (draft: FullAiConfig = slower, rev = 4): TestChatAction => ({ type: "externalDraft", body: body({ draft, rev }) });
 /** Loaded at rev 3 with a Fan line typed. */

@@ -30,6 +30,7 @@ Cases:
                                never stops another owner; a full store drops its oldest instead of refusing.
   case_full_flow             — Allow → code → token; it works on tools/call, shows on GET /admin/owner-tokens as
                                `MCP <client> <time>`, expires_in = its lifetime; revoking it cuts access.
+  case_token_name            — `MCP <client> <time>`; a client named "MCP …" (mcp-remote) gets no second MCP.
   case_code_rules            — single use (replay → invalid_grant), expires, bound to client_id and
                                redirect_uri; a wrong verifier → invalid_grant and the code is burned.
   case_secrets_never_logged  — password, code, verifier, CSRF value and token appear in no log record and no
@@ -456,6 +457,19 @@ def case_full_flow() -> None:
     assert A.delete(f"/admin/owner-tokens/{row['id']}").status_code == 200
     r = _call(tok)
     assert r.status_code == 401 and "resource_metadata=" in r.headers["www-authenticate"], (r.status_code, r.headers)
+
+
+def case_token_name() -> None:
+    t = r" \d{4}-\d\d-\d\d \d\d:\d\d:\d\d"
+    for client, want in (("MCP CLI Proxy", "MCP CLI Proxy"), ("mcp inspector", "mcp inspector"),
+                         ("Claude Code", "MCP Claude Code"), ("MCPHub", "MCP MCPHub"), ("", "MCP")):
+        name = mcp_api.token_name(client)
+        assert re.fullmatch(re.escape(want) + t, name), (client, name)
+    cid = _client("MCP CLI Proxy")  # the real path: registered name → the token row's name
+    verifier, ch = _pkce()
+    assert _token(_code(B, cid, ch), verifier, cid).status_code == 200
+    row = B.get("/admin/owner-tokens").json()["tokens"][0]
+    assert re.fullmatch("MCP CLI Proxy" + t, row["name"]), row
 
 
 def case_code_rules() -> None:

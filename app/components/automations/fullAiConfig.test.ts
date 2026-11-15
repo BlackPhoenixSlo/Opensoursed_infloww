@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   configLine, gifPct, gifPctPatch, humanStyle, humanStylePatch, layersOff, styleLayers, toggleWriterPatch, typoPct,
   typoPctPatch, typosPatch, writerPatch, writersLine, type HumanStyle, type StyleLayers, type FullAiConfig,
-  sellSwitches, sellSwitchPatch, type SellSwitchKey, settingRows, type SettingRef,
+  sellSwitches, sellSwitchPatch, type SellSwitchKey, settingRows, type SettingRef, chatSwitch, type ChatSwitchKey,
+  topSpendDollars, topSpendPatch, infoQuestionsLabel, captionLabel,
 } from "./fullAiConfig";
 
 const CP = { version: 1, reply_speed: "0-2m", text_style: "girl", gifs: false, writers: ["euryale-v2.3"] };
@@ -91,14 +92,14 @@ describe("typoPct / typoPctPatch (the Typos % box: empty = auto, a whole 0-100, 
   });
 });
 
-describe("sellSwitches / sellSwitchPatch (the Sell group: seven switches, all on by default)", () => {
-  const LABELS = ["Unasked offers", "Chat tease", "Implied asks", "Nearest piece", "Fill the set", "Spacing", "He likes"];
-  const KEYS: SellSwitchKey[] = ["draft_questions", "chat_tease", "ask_implied", "sell_nearest", "sell_bundle", "sell_spacing", "he_likes"];
+describe("sellSwitches / sellSwitchPatch (the Sell group: eight switches, all on by default)", () => {
+  const LABELS = ["Unasked offers", "Chat tease", "Implied asks", "Nearest piece", "Fill the set", "Match his count", "Spacing", "He likes"];
+  const KEYS: SellSwitchKey[] = ["draft_questions", "chat_tease", "ask_implied", "sell_nearest", "sell_bundle", "sell_count", "sell_spacing", "he_likes"];
   const NEAREST = "Nothing matches his ask: the AI sells the nearest piece and plays his ask out as a story. Off: no PPV.";
   const checked = (cfg: FullAiConfig | null) => Object.fromEntries(sellSwitches(cfg).map((s) => [s.key, s.checked]));
   const allOn = Object.fromEntries(KEYS.map((k) => [k, true]));
 
-  it("lists the seven in page order with their hints", () => {
+  it("lists the eight in page order with their hints", () => {
     const got = sellSwitches({});
     expect(got.map((s) => [s.key, s.label])).toEqual(KEYS.map((k, i) => [k, LABELS[i]]));
     expect(got.map((s) => s.hint)).toEqual([
@@ -107,6 +108,7 @@ describe("sellSwitches / sellSwitchPatch (the Sell group: seven switches, all on
       "\"send me something fun\" counts as asking for content.",
       NEAREST,
       "A photo offer holds up to 5 photos, filled to 3 with others that match his ask. Off: only photos from the same shoot, up to 4.",
+      "He names a number (\"bundle of 5 videos\"): the offer aims at it, at most 5. Fewer when there are fewer.",
       "Unasked pieces wait for his lines since the last one and count the pieces this sitting. An ask always goes through.",
       "What he says he likes is stored and steers what the AI sends.",
     ]);
@@ -116,13 +118,14 @@ describe("sellSwitches / sellSwitchPatch (the Sell group: seven switches, all on
     ["no config: all on", null, {}],
     ["defaults (keys absent): all on", {}, {}],
     ["stored on values", { draft_questions: true, chat_tease: true, ask_implied: true, sell_nearest: "note", sell_bundle: "fill",
-      sell_spacing: true, he_likes: true }, {}],
+      sell_count: true, sell_spacing: true, he_likes: true }, {}],
     ["draft_questions false", { draft_questions: false }, { draft_questions: false }],
     ["chat_tease false", { chat_tease: false }, { chat_tease: false }],
     ["ask_implied false", { ask_implied: false }, { ask_implied: false }],
     ["sell_nearest off", { sell_nearest: "off" }, { sell_nearest: false }],
     ["sell_nearest plain reads on", { sell_nearest: "plain" }, {}],
     ["sell_bundle shoot", { sell_bundle: "shoot" }, { sell_bundle: false }],
+    ["sell_count false", { sell_count: false }, { sell_count: false }],
     ["sell_spacing false", { sell_spacing: false }, { sell_spacing: false }],
     ["he_likes false", { he_likes: false }, { he_likes: false }],
   ])("checked: %s", (_n, cfg, offs) => {
@@ -140,11 +143,60 @@ describe("sellSwitches / sellSwitchPatch (the Sell group: seven switches, all on
     ["ask_implied", { ask_implied: true }, { ask_implied: false }],
     ["sell_nearest", { sell_nearest: "note" }, { sell_nearest: "off" }],
     ["sell_bundle", { sell_bundle: "fill" }, { sell_bundle: "shoot" }],
+    ["sell_count", { sell_count: true }, { sell_count: false }],
     ["sell_spacing", { sell_spacing: true }, { sell_spacing: false }],
     ["he_likes", { he_likes: true }, { he_likes: false }],
   ])("sellSwitchPatch %s", (key, on, off) => {
     expect(sellSwitchPatch(key, true)).toEqual(on);
     expect(sellSwitchPatch(key, false)).toEqual(off);
+  });
+});
+
+describe("chatSwitch (the plain top-level switches: a stored boolean, else the server default)", () => {
+  it.each<[string, ChatSwitchKey, FullAiConfig | null, string, boolean]>([
+    ["Sexting absent reads on", "sext_on", {}, "Sexting", true],
+    ["Sexting off", "sext_on", { sext_on: false }, "Sexting", false],
+    ["Lead-in absent reads on", "lead_in", null, "Lead-in questions", true],
+    ["Lead-in off", "lead_in", { lead_in: false }, "Lead-in questions", false],
+    ["Read his photos absent reads on", "describe_fan_photos", {}, "Read his photos", true],
+    ["Read his photos off", "describe_fan_photos", { describe_fan_photos: false }, "Read his photos", false],
+    ["Strip emojis absent reads off", "strip_emojis", {}, "Strip emojis", false],
+    ["Strip emojis on", "strip_emojis", { strip_emojis: true }, "Strip emojis", true],
+    ["a non-boolean reads the default", "sext_on", { sext_on: "no" as unknown as boolean }, "Sexting", true],
+  ])("%s", (_n, key, cfg, label, checked) => {
+    expect([chatSwitch(cfg, key).label, chatSwitch(cfg, key).checked]).toEqual([label, checked]);
+  });
+  it("names the paid call on Read his photos", () => {
+    expect(chatSwitch(null, "describe_fan_photos").hint).toBe("The AI reads a photo he sends: one paid vision call per photo.");
+  });
+});
+
+describe("topSpendDollars / topSpendPatch (the Top spend limit box: dollars on the page, cents stored, 0 = no limit)", () => {
+  it.each<[string, string, Partial<FullAiConfig> | null]>([
+    ["whole dollars", "1000", { top_spend_cents: 100000 }],
+    ["zero = no limit", "0", { top_spend_cents: 0 }],
+    ["cents", "10.29", { top_spend_cents: 1029 }],
+    ["one decimal", " 2.5 ", { top_spend_cents: 250 }],
+    ["empty refused", "", null],
+    ["three decimals refused", "1.005", null],
+    ["negative refused", "-5", null],
+    ["text refused", "lots", null],
+  ])("%s", (_n, text, want) => {
+    expect(topSpendPatch(text)).toEqual(want);
+  });
+  it.each<[string, FullAiConfig | null, string]>([
+    ["no config", null, ""], ["absent", {}, ""], ["default", { top_spend_cents: 100000 }, "1000"],
+    ["off", { top_spend_cents: 0 }, "0"], ["cents", { top_spend_cents: 1029 }, "10.29"],
+    ["negative reads empty", { top_spend_cents: -1 }, ""], ["fraction reads empty", { top_spend_cents: 1.5 }, ""],
+  ])("topSpendDollars %s", (_n, cfg, want) => {
+    expect(topSpendDollars(cfg)).toBe(want);
+  });
+});
+
+describe("infoQuestionsLabel / captionLabel", () => {
+  it("labels the server's values; an unknown one shows as itself", () => {
+    expect(["pick", "list", "x"].map(infoQuestionsLabel)).toEqual(["Pick one", "Whole list", "x"]);
+    expect(["chat", "caption", "y"].map(captionLabel)).toEqual(["Last bubble", "Own call", "y"]);
   });
 });
 

@@ -24,12 +24,10 @@ from automations import full_ai_config
 # `style` reads like the page's switch (its page entry also names Typos); the legacy `text_style` lands on `style`.
 _LABEL_OVERRIDES: dict[str, str] = {
     "style": "Human style", "text_style": "Human style",
-    "sext_on": "Sexting", "sext_scene": "Sext scene", "lead_in": "Lead-in asks",
+    "sext_scene": "Sext scene",
     "writer_timeout_s": "Writer timeout (s)", "writer_timeouts": "Writer timeouts per model (s)",
     "writer_retries": "Writer retries", "floor_on": "Reply checks", "info_fields": "Facts to learn",
     "chat_tease_prices": "Chat tease prices", "info_wide": "Wider hobbies",
-    "sell_count": "Asked count", "strip_emojis": "Strip emojis",
-    "top_spend_cents": "Top spend limit", "fans": "Fans",
 }
 LABELS: dict[str, str] = {
     **{k: ref["page"] for k, ref in full_ai_config.REFERENCE.items() if ref["page"]}, **_LABEL_OVERRIDES,

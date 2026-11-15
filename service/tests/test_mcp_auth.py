@@ -4,8 +4,8 @@ called with no bearer, they run /auth/register or /auth/sign-in (+ /auth/2fa/log
 owner token with that fresh session. Two-Agency bench, real app, no network.
 
 Cases:
-  case_anonymous_list        — no credential: tools/list = connect_account, register_account, login; a token
-                               caller lists none of them (register_account is Unknown tool for it).
+  case_anonymous_list        — no credential: tools/list = sign_in, connect_account, register_account, login; a
+                               token caller lists none of them (register_account is Unknown tool for it).
   case_register              — a new owner + agency_name → a working token, the name saved, open_url on the
                                Access tokens card; a taken username 409; a bad username / short password 400.
   case_register_closed_shard — MCP_SIGNUP_URL set and OI_ORIGIN unset / another origin → 403 + the open
@@ -88,14 +88,14 @@ def _works(token: str) -> None:
 
 def case_anonymous_list() -> None:
     names = [t["name"] for t in _rpc("tools/list")["result"]["tools"]]
-    assert names == ["connect_account", "register_account", "login"], names
+    assert names == ["sign_in", "connect_account", "register_account", "login"], names
     tok = fx.mint_token(fx.login_owner("agency_a_owner"))
     bearer = {"Authorization": f"Bearer {tok}"}
     listed = {t["name"] for t in _rpc("tools/list", headers=bearer)["result"]["tools"]}
-    assert not {"connect_account", "register_account", "login"} & listed, listed
+    assert not {"sign_in", "connect_account", "register_account", "login"} & listed, listed
     assert _rpc("tools/call", {"name": "register_account", "arguments": {}}, bearer)["error"]["code"] == -32602
     init = _rpc("initialize", {"protocolVersion": "2025-06-18"})["result"]["instructions"]
-    assert "register_account" in init and "login" in init and "logins_url" in init, init
+    assert "register_account" in init and "login" in init and "logins_url" in init and "sign_in" in init, init
 
 
 def case_register() -> None:

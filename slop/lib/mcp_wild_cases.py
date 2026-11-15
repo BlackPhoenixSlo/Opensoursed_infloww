@@ -22,7 +22,7 @@ from typing import Any
 
 MCP = "/admin/mcp"
 SEND_TOOLS = ("mass_send", "post_create", "auto_mass", "auto_story")
-ANON_TOOLS = frozenset({"connect_account", "register_account", "login"})
+ANON_TOOLS = frozenset({"sign_in", "connect_account", "register_account", "login"})
 TOKEN_BUILTINS = frozenset({"propose_plan", "plan_status"})
 RPC_CODES = frozenset({-32700, -32600, -32601, -32602, -32001})
 RPC_HTTP = {-32700: (400,), -32600: (400, 403, 413), -32601: (200,), -32602: (200,), -32001: (401,)}
