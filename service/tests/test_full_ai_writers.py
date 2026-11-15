@@ -378,15 +378,15 @@ def case_sext_is_old_aic_08_at_heat_with_her_model_info():
 
 
 def case_bot_check_is_two_steps():
-    """Step 1 (he asks): the joke alone. Step 2 (his next Turn, `dare_due`): chat / sext keep
-    their goal and add DARE_NEXT; asked again, the joke then the dare in one reply. While her dare
+    """Step 1 (he asks): the joke alone. Step 2 (his next Turn, `dare_due`): on chat / sext
+    DARE_NEXT is the goal; asked again, the joke then the dare in one reply. While her dare
     stands, or with no bot check behind, no dare."""
     sys_ = _system("ai_dare", "asks_if_ai")
     assert sys_.count(wr.BRUSH_OFF) == 1 and wr.DARE not in sys_ and wr.DARE_NEXT not in sys_
     for route, row in (("chat", "otherwise"), ("sext", "sexual_now")):
         due = _photo_system(route, row, read=False, dared=False, photo=False, due=True)
         assert wr.DARE_NEXT in due and wr.BRUSH_OFF not in due and wr.DARE not in due, route
-        assert (wr.SEXT_HOT in due) is (route == "sext"), route          # the Turn's own goal stays
+        assert wr.SEXT_HOT not in due, route                              # the dare is the goal
         for kw in ({"dared": False}, {"dared": True}):
             assert wr.DARE_NEXT not in _photo_system(route, row, read=False, photo=False, **kw), (route, kw)
     again = _photo_system("ai_dare", "asks_if_ai", read=False, dared=False, photo=False, due=True)

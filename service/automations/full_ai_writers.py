@@ -231,12 +231,11 @@ DARE_BLIND = ("HE SENT A PHOTO you can't make out — [he sent a photo] in the c
 GIF_NOW = "\n- THIS message: a sticker fits the moment. Attach one, after your text."
 # NEW-160 (owner 2026-11-15 "2 step is good"): the dare on his next Turn, under that Turn's own
 # goal (chat / sext), when he did not ask again; OLD-AIC-07 with "answer him first".
-DARE_NEXT = ("\nTWO THINGS GO IN THIS ONE REPLY. First, a short answer to what he just said. Then the "
-             "dare, which you MUST include, as its own short message, last: a moment ago he questioned "
-             "whether you're real and you joked it off — now DARE him to send a picture right now and "
-             "you'll tell him exactly what you see, a bot couldn't. Promise a rating out of ten; filthy "
-             "about what you want a picture OF if the thread's explicit, cheeky if tame. A dare, not a "
-             "sale: no price, no offer.")
+DARE_NEXT = ("He questioned whether you're real a moment ago and you laughed it off. This reply is the "
+             "DARE: tell him to send a picture right now and you'll tell him exactly what you see — a bot "
+             "couldn't. Promise a rating out of ten; filthy about what you want a picture OF if the "
+             "thread's explicit, cheeky if tame. You may open with a few words answering what he just "
+             "said, but the dare MUST be in this reply. A dare, not a sale: no price, no offer, no questions.")
 # NEW-113 (ticket 34): the dare joining, one reply holding both beats, when he asks again on the
 # Turn her dare is due (no pending-dare state, D32).
 DARE_JOIN = ("\n\nBOTH BEATS GO IN THIS ONE REPLY: the brush-off above first, then right after it "
@@ -620,7 +619,7 @@ def _dare_beat(route: str, need: str, photo: str | None, dared: bool, due: bool 
     (`dared`, `TurnFacts.dared`) she never dares twice: the joke alone, with DARE_BLIND when his
     picture could not be read; asked again on the Turn her dare is `due` (`TurnFacts.dare_due`):
     the joke, DARE_JOIN and the dare in one reply. chat / sext: a read picture while her dare
-    stands or is due gets DARE_RATE under the goal; else, `due`, DARE_NEXT under the goal (step 2).
+    stands or is due gets DARE_RATE under the goal; else, `due`, DARE_NEXT is the goal (step 2).
     Anything else: `need` as it was."""
     if route == "ai_dare":
         if photo == "seen":
@@ -633,7 +632,7 @@ def _dare_beat(route: str, need: str, photo: str | None, dared: bool, due: bool 
         if (dared or due) and photo == "seen":
             return need.rstrip("\n") + "\n" + DARE_RATE
         if due and not photo:
-            return need.rstrip("\n") + "\n" + DARE_NEXT
+            return DARE_NEXT
     return need
 
 
