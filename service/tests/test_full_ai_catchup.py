@@ -5,8 +5,11 @@ OF's chat list faked (`ChatsOF`: `_of_fixtures.FakeOF` + `list_chats`, OF's 10-r
 `ax._make_client`, Jev and the Writers faked (`_full_ai_live_helpers.world`); the loop's sleep
 swapped for a recorder. Temp DB only; no OF, no paid call.
 
-  case_schedule_offsets            passes at 0, +5, +15, then every 50 min (offset_s / gap_s table)
-  case_start_passes_now_then_sleeps   start: a pass at once, then 300, 600, 3000, 3000 s waits
+  case_schedule_offsets            defaults: passes at 0, +5, +15, then every 25 min (offset_s / gap_s table); a
+                                   custom `catchup_minutes` is followed; a missing / invalid one reads the defaults
+  case_start_passes_now_then_sleeps   start: a pass at once, then 300, 600, 1500, 1500 s waits
+  case_config_change_next_wait     a checkpoint saved while the loop waits sets the next wait (no restart); an
+                                   after_live not starting at 0 delays the first pass
   case_unsaved_dm_saved_one_turn   his DM not in `messages`: saved, one-Fan scrape queued, one Turn job
                                    (no sooner than the scrape grace); the job replies once, row `sent`
   case_skips                       answered (row on the key) / she wrote last / a funnel walk owns him /
@@ -39,8 +42,10 @@ from _full_ai_live_helpers import world  # noqa: E402
 from _of_fixtures import FakeOF  # noqa: E402
 from automation_executor import run_once  # noqa: E402
 from automations import full_ai_catchup as cu  # noqa: E402
+from automations import full_ai_config  # noqa: E402
+from automations.full_ai_config import DEFAULTS  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import AiDecision, AutomationRule, FunnelState, MassRun, Message, ScheduledJob  # noqa: E402
+from db.models import AccountAiConfig, AiDecision, AutomationRule, FunnelState, MassRun, Message, ScheduledJob  # noqa: E402
 
 
 class ChatsOF(FakeOF):
@@ -106,8 +111,14 @@ class Sleeps:
 
 
 def case_schedule_offsets():
-    assert [cu.offset_s(i) for i in range(6)] == [0, 300, 900, 3900, 6900, 9900]
-    assert [cu.gap_s(i) for i in range(5)] == [300, 600, 3000, 3000, 3000]
+    assert cu.DEFAULT_SCHEDULE == cu.schedule(None) == cu.schedule(DEFAULTS) == ((0, 300, 900), 1500)
+    assert [cu.offset_s(i) for i in range(6)] == [0, 300, 900, 2400, 3900, 5400]
+    assert [cu.gap_s(i) for i in range(5)] == [300, 600, 1500, 1500, 1500]
+    custom = cu.schedule({"catchup_minutes": {"after_live": [0, 2], "then_every": 60}})
+    assert custom == ((0, 120), 3600), custom
+    assert [cu.gap_s(i, custom) for i in range(3)] == [120, 3600, 3600]
+    for bad in ({"after_live": [5, 0], "then_every": 25}, {"after_live": [0], "then_every": 1}, None, "x"):
+        assert cu.schedule({"catchup_minutes": bad}) == cu.DEFAULT_SCHEDULE, bad   # a bad stored side never stalls
 
 
 async def case_start_passes_now_then_sleeps():
@@ -131,9 +142,59 @@ async def case_start_passes_now_then_sleeps():
     finally:
         cu.run_pass, cu._sleep = real_pass, real_sleep
     assert passes == [0, 1, 2, 3], passes            # the first pass before any wait
-    assert sleeps.calls == [300, 600, 3000, 3000], sleeps.calls
+    assert sleeps.calls == [300, 600, 1500, 1500], sleeps.calls
     assert task.cancelled() and aid not in cu._tasks
     assert len(await _jobs(aid)) == 1                 # four passes, one Turn
+
+
+async def _store_checkpoint(aid: str, catchup_minutes: dict) -> None:
+    """The page's checkpoint write (`put_checkpoint`) with `catchup_minutes`, stored for `aid`."""
+    async with get_session() as s:
+        row = await s.get(AccountAiConfig, aid)
+        if row is None:
+            row = AccountAiConfig(account_id=aid)
+            s.add(row)
+        stored = json.loads(row.full_ai_config_json) if row.full_ai_config_json else None
+        blob = full_ai_config.put_checkpoint(stored, {**DEFAULTS, "catchup_minutes": catchup_minutes},
+                                             full_ai_config.merged(stored)["rev"])
+        row.full_ai_config_json = json.dumps(blob)
+
+
+async def case_config_change_next_wait():
+    aid = "fa_cu_cfg"
+    await seed_live(aid)
+    real_sleep = cu._sleep
+    calls: list[int] = []
+    hit, change = asyncio.Event(), [{"after_live": [0, 5, 30], "then_every": 60}]
+
+    async def sleep(secs):
+        calls.append(secs)
+        if change:                             # saved while the loop waits after its first pass
+            await _store_checkpoint(aid, change.pop())
+        if len(calls) >= 3:
+            hit.set()
+            await asyncio.Event().wait()
+    cu._sleep = sleep
+    try:
+        with world(fake=ChatsOF([])):
+            task = cu.start(aid)
+            await asyncio.wait_for(hit.wait(), 30)
+            cu.stop(aid)
+            await asyncio.gather(task, return_exceptions=True)
+        assert calls == [300, 1500, 3600], calls    # old first wait; then 30 - 5 min, then every 60 min
+        # after_live not starting at 0: the first pass waits it (after the boot delay).
+        await _store_checkpoint(aid, {"after_live": [2, 7], "then_every": 25})
+        calls.clear()
+        hit.clear()
+        with world(fake=ChatsOF([])):
+            task = cu.start(aid, 60)
+            await asyncio.wait_for(hit.wait(), 30)
+            cu.stop(aid)
+            await asyncio.gather(task, return_exceptions=True)
+        assert calls == [60, 120, 300], calls
+    finally:
+        cu._sleep = real_sleep
+        await _store_checkpoint(aid, DEFAULTS["catchup_minutes"])    # boot's case runs every Live Creator
 
 
 async def case_unsaved_dm_saved_one_turn():

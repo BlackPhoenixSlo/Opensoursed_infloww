@@ -1604,7 +1604,8 @@ def case_config_word_matches_every_config_key_and_writer_model():
     for m in models:
         short = re.match(r"[a-z]+", m).group(0)
         assert assistant_draft.CONFIG_WORD.search(f"use {short.capitalize()} first"), m
-    for text in ("send a mass at 9pm", "make an auto mass every 3 hours", "export last month's sales"):
+    for text in ("send a mass at 9pm", "make an auto mass every 3 hours", "export last month's sales",
+                 "make an auto mass every 30 minutes", "unsend after 15 min"):
         assert not assistant_draft.CONFIG_WORD.search(text), text
 
 

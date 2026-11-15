@@ -28,6 +28,7 @@ _LABEL_OVERRIDES: dict[str, str] = {
     "writer_timeout_s": "Writer timeout (s)", "writer_timeouts": "Writer timeouts per model (s)",
     "writer_retries": "Writer retries", "floor_on": "Reply checks", "info_fields": "Facts to learn",
     "chat_tease_prices": "Chat tease prices", "info_wide": "Wider hobbies",
+    "catchup_minutes": "Catch-up passes (min)",
 }
 LABELS: dict[str, str] = {
     **{k: ref["page"] for k, ref in full_ai_config.REFERENCE.items() if ref["page"]}, **_LABEL_OVERRIDES,
@@ -107,7 +108,8 @@ def draft_line(cur: dict) -> str:
 
 _FIXED = ("reply", "speed", "slow", "fast", "gif", "style", "formal", "girl", "sext", "writer", "timeout",
           "question", "info", "learn", "check", "floor", "sell", "folder", "setting", "config", "json")
-_STOP = frozenset({"his", "the", "and"})      # key words that name nothing (`his_age`); < 3 letters drop too
+# Key words that name nothing (`his_age`; `catchup_minutes`: "every 30 minutes" is a mass ask); < 3 letters drop too.
+_STOP = frozenset({"his", "the", "and", "min", "minutes"})
 
 
 def writer_short_names() -> list[str]:

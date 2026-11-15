@@ -26,7 +26,7 @@ live, Shadow and Test chat Decision rows of today (`ai_decisions`, automations/f
   PUT /admin/full-ai/mode {account_id, mode: "off" | "live"}   → the GET shape after the write.
       `live`: 409 naming the blockers, else the Creator's one `full_ai_chat` rule (created or the
       legacy one updated in place) enabled with `trigger_json` {"every_seconds": 300, "mode": "live"},
-      and the waiting-chats catch-up (`full_ai_catchup.start`) started: a pass now, +5, +15, every 50 min.
+      and the waiting-chats catch-up (`full_ai_catchup.start`) started: a pass now, +5, +15, every 25 min.
       `off`: the catch-up stopped, every rule of the kind disabled, trigger {"every_seconds": 300}, every
       pending job of the kind cancelled ("rule switched off"). `shadow` or anything else: 422. A failed blocker read
       answers one blocker (Live refused), never an error. The shared rule routes never
@@ -283,7 +283,7 @@ async def full_ai_mode_write(body: ModeWrite) -> dict[str, Any]:
             raise HTTPException(409, "Can't go Live: " + "; ".join(blockers))
         async with get_session() as s:
             action = await ensure_kind_rule(s, aid, KIND, enable=True, trigger=LIVE_TRIGGER)
-        full_ai_catchup.start(aid)     # Fans already waiting: a pass now, +5, +15, every 50 min
+        full_ai_catchup.start(aid)     # Fans already waiting: a pass now, +5, +15, every 25 min
     else:
         full_ai_catchup.stop(aid)
         async with get_session() as s:

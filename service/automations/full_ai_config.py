@@ -118,6 +118,10 @@ DEFAULTS: dict[str, Any] = {
     # Live only (04b): the Fans list, OF fan-list ids. Full AI claims a Fan on an include list (empty
     # include = every Fan) and never one on an exclude list. Page row "Fans" (a dialog over the OF lists).
     "fans": {"include": [], "exclude": []},
+    # Live only: the waiting-chats catch-up (`full_ai_catchup`) passes at these minutes after Live / relay start,
+    # then every `then_every` minutes (owner 2026-11-15). Read before each wait, so a save bites at the next one.
+    # JSON-only.
+    "catchup_minutes": {"after_live": [0, 5, 15], "then_every": 25},
 }
 
 
@@ -172,6 +176,11 @@ _BOOLS = ("gifs", "sext_on", "sext_scene", "lead_in", "sell_on", "draft_question
 # Chat tease prices: 1-12 distinct prices in cents, each 0 (a free photo) or $3-$200.
 TEASE_PRICES = (1, 12)
 TEASE_CENTS = (300, 20000)
+# Catch-up schedule: 1-6 strictly ascending whole minutes 0-1440 after Live, then every 5-1440 minutes (5 = the floor
+# that keeps a 200-chat OF read from hammering).
+CATCHUP_PASSES = (1, 6)
+CATCHUP_MAX_MIN = 1440
+CATCHUP_EVERY_MIN = 5
 
 # The JSON's reading aid (the page's "All settings" table, GET config's `reference`): per DEFAULTS key, in its
 # order, the values it accepts (off the constants above where there is one), what it does, and the Settings page
@@ -258,6 +267,10 @@ REFERENCE: dict[str, dict[str, str | None]] = {
     "fans": _ref("{include: [OF list ids], exclude: [OF list ids]}",
                  "Live only. The Fans Full AI answers: on an include list (empty include = every Fan) and on no "
                  "exclude list. A list OF will not read leaves the Fan to the other automations.", "Fans"),
+    "catchup_minutes": _ref("{{after_live: {}-{} ascending whole minutes 0-{}, then_every: whole minutes {}-{}}}".format(
+                                *CATCHUP_PASSES, CATCHUP_MAX_MIN, CATCHUP_EVERY_MIN, CATCHUP_MAX_MIN),
+                            "Live only. Waiting-chats catch-up: a pass at each after_live minute from Live (or relay "
+                            "start + 1 min), then every then_every minutes. A saved change applies from the next wait."),
 }
 
 
@@ -363,6 +376,20 @@ def _fans_error(fs: Any) -> str | None:
     return None
 
 
+def catchup_error(cm: Any) -> str | None:
+    """`catchup_minutes: {after_live, then_every}` (the bounds above); None when valid."""
+    (n0, n1), hi = CATCHUP_PASSES, CATCHUP_MAX_MIN
+    if not isinstance(cm, dict) or set(cm) != {"after_live", "then_every"}:
+        return "want exactly after_live and then_every"
+    al, ev = cm["after_live"], cm["then_every"]
+    if (not isinstance(al, list) or not n0 <= len(al) <= n1 or not all(type(m) is int and 0 <= m <= hi for m in al)
+            or any(a >= b for a, b in zip(al, al[1:]))):
+        return f"after_live must be {n0} to {n1} ascending whole minutes from 0 to {hi}"
+    if type(ev) is not int or not CATCHUP_EVERY_MIN <= ev <= hi:
+        return f"then_every must be whole minutes from {CATCHUP_EVERY_MIN} to {hi}"
+    return None
+
+
 def has_fans_list(cfg: dict) -> bool:
     """D61: Live needs an include or an exclude list (both empty = every Fan, so no list)."""
     fs = cfg.get("fans")
@@ -447,6 +474,8 @@ def validate(cfg: Any) -> list[str]:
         bad("top_spend_cents", "must be a whole number of cents, 0 or more (0 = off)")
     if (why := _fans_error(c["fans"])) is not None:
         bad("fans", why)
+    if (why := catchup_error(c["catchup_minutes"])) is not None:
+        bad("catchup_minutes", why)
     return errs
 
 

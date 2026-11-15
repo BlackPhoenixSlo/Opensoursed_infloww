@@ -34,13 +34,16 @@
   case_fans_table           (04b ticket 76) `fans` {include, exclude} lists of distinct OF list ids, default both
                             empty, each refusal names the key, labelled "Fans", in CONFIG_KEYS; a stored v1
                             without it reads the default
+  case_catchup_minutes_table `catchup_minutes` {after_live: 1-6 ascending whole minutes 0-1440, then_every: 5-1440},
+                            default 0/5/15 then 25, each refusal names the key, JSON-only, in CONFIG_KEYS; a stored
+                            v1 without it reads the default
   case_transitions_and_stale_rev put_draft / save / rollback, StaleRev on a rev mismatch,
                             Invalid on a bad draft, nothing to save, nothing to roll back to
   case_ts_constants_match   the page's copies it keeps (fullAiConfig.ts STYLE_LAYERS, the legacy text_style pair,
                             the Sell switches' sell_nearest / sell_bundle values, the reply speed / Questions / PPV
                             caption labels, the plain switches' defaults) match these; `limits` lists the default first
   case_page_labels          the keys the page now edits (2026-11-15) carry their control label in REFERENCE
-  case_config_api_round_trip GET defaults (+ `reference`, `limits`), PUT 422 / 409 / 200, save, roll back twice =
+  case_config_api_round_trip GET defaults (+ `reference`, `limits`), PUT 422 (unknown key, catch-up too fast) / 409 / 200, save, roll back twice =
                             identity; the `full_ai_chat` rule row byte-identical throughout
 
 Run: ./venv/bin/python service/tests/test_full_ai_config.py  (exit 0 = pass)
@@ -488,6 +491,31 @@ def case_fans_table():
     assert got["draft"]["fans"] == {"include": [3], "exclude": []}, got["draft"]
 
 
+def case_catchup_minutes_table():
+    """`catchup_minutes` (owner 2026-11-15): the catch-up's passes after Live, then every N minutes; JSON-only."""
+    import assistant_full_ai
+    assert DEFAULTS["catchup_minutes"] == {"after_live": [0, 5, 15], "then_every": 25}, DEFAULTS
+    for ok in ({"after_live": [0], "then_every": 5}, {"after_live": [2, 7], "then_every": 1440},
+               {"after_live": [0, 1, 2, 3, 4, 1440], "then_every": 60}):
+        assert validate({**DEFAULTS, "catchup_minutes": ok}) == [], ok
+    for bad in (None, [], "25", {"after_live": [0, 5]}, {"after_live": [0], "then_every": 25, "x": 1},
+                {"after_live": [], "then_every": 25}, {"after_live": [0, 1, 2, 3, 4, 5, 6], "then_every": 25},
+                {"after_live": [5, 0], "then_every": 25}, {"after_live": [0, 0], "then_every": 25},
+                {"after_live": [-1], "then_every": 25}, {"after_live": [0, 1441], "then_every": 25},
+                {"after_live": [0, 2.5], "then_every": 25}, {"after_live": [True], "then_every": 25},
+                {"after_live": "0", "then_every": 25}, {"after_live": [0], "then_every": 4},
+                {"after_live": [0], "then_every": 1441}, {"after_live": [0], "then_every": 25.0},
+                {"after_live": [0], "then_every": None}):
+        errs = validate({**DEFAULTS, "catchup_minutes": bad})
+        assert len(errs) == 1 and errs[0].startswith("catchup_minutes: "), (bad, errs)
+    assert "catchup_minutes" in assistant_full_ai.CONFIG_KEYS
+    assert assistant_full_ai.label("catchup_minutes") == "Catch-up passes (min)"
+    assert REFERENCE["catchup_minutes"]["page"] is None       # JSON only
+    pre = {k: v for k, v in DEFAULTS.items() if k != "catchup_minutes"}
+    got = merged({"checkpoint": pre, "previous": None, "draft": pre, "rev": 1})
+    assert got["checkpoint"]["catchup_minutes"] == got["draft"]["catchup_minutes"] == DEFAULTS["catchup_minutes"]
+
+
 # ── Transitions ───────────────────────────────────────────────────────
 
 def _raises(exc, fn, *a):
@@ -582,6 +610,10 @@ def case_config_api_round_trip():
     bad = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": {**formal, "fans_list": []},
                                                "rev": 0})
     assert bad.status_code == 422 and bad.json() == {"errors": ["fans_list: unknown key"]}, bad.text
+    fast = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": {
+        **formal, "catchup_minutes": {"after_live": [0, 5], "then_every": 1}}, "rev": 0})
+    assert fast.status_code == 422 and fast.json() == {"errors": [
+        "catchup_minutes: then_every must be whole minutes from 5 to 1440"]}, fast.text
     stale = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": formal, "rev": 7})
     assert stale.status_code == 409 and stale.json()["rev"] == 0, stale.text
     ok = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": formal, "rev": 0})

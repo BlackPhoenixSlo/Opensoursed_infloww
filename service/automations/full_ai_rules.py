@@ -51,8 +51,9 @@ GATES = {"sext_scene": writers.scene_flag, "lead_in": writers.lead_flag, "sell_n
          "info_wide": writers.wide_flag, "sell_count": writers.count_flag}
 # `chat_tease_prices` is read only on a Chat tease Turn (`tease_flag`).
 TEST_ONLY_KEYS = (*GATES, "draft_questions", "chat_tease_prices")
-# Config keys only the live sender's owner check reads (spec 04b, `full_ai_owner_io`): Test and Shadow ignore them.
-LIVE_ONLY_KEYS = ("top_spend_cents", "fans")
+# Config keys only live reads: the live sender's owner check (spec 04b, `full_ai_owner_io`) and the catch-up's
+# schedule (`full_ai_catchup`). Test and Shadow ignore them.
+LIVE_ONLY_KEYS = ("top_spend_cents", "fans", "catchup_minutes")
 # The only config key Shadow reads (full_ai_chat._photos_on; its Facts keep every route flag on).
 SHADOW_READS = (photo.KEY,)
 # Router wording variants a test-only key swaps in: (router dict, flag, label).
@@ -672,6 +673,7 @@ def _send(mode: str) -> dict:
 
 def _scope(k: str) -> str:
     return ("test + live (off in Shadow)" if k in TEST_ONLY_KEYS else "test + live + Shadow" if k in SHADOW_READS
+            else "live only (catch-up schedule)" if k == "catchup_minutes"
             else "live only (who owns a Fan)" if k in LIVE_ONLY_KEYS else "test + live; Shadow ignores")
 
 
