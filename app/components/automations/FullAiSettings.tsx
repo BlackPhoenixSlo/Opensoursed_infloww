@@ -21,7 +21,7 @@
  * Under them: Save (draft → checkpoint), Roll back (swap checkpoint and previous), JSON (checkpoint and draft side by
  * side, each editable and stored on its own, validated by the server; under them the read-only "All settings" table off the
  * GET's `reference`: every key's default, the draft's value, what it accepts and does), then right under them the field
- * errors (a 409 without `rev`, e.g. D61, shows its words), and on a stale rev a reload message. Reload shows with either: it reads the stored config again, the way back from a refused edit or a failed read.
+ * errors (a 409 without `rev` shows its words), and on a stale rev a reload message. Reload shows with either: it reads the stored config again, the way back from a refused edit or a failed read.
  * A draft stored elsewhere (the assistant's Apply) while an edit is unsaved raises the Keep mine / Take theirs bar on
  * top (ticket 57); controls, Save and Send wait until one is picked.
  * State lives in the Test chat reducer (`fullAiTestChat.ts`); this file renders and calls the hook.

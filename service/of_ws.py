@@ -63,7 +63,8 @@ class OFWebSocket:
 
     def __init__(self, client_source: Callable[[], OFClient],
                  session_dead: Callable[[BaseException], str | None] | None = None,
-                 *, account_id: str | None = None):
+                 *, account_id: str | None = None,
+                 on_reconnect: Callable[[], None] | None = None):
         # Each (re)connect takes /users/me, proxy and UA from the account's
         # current client. Eviction retires the prior client's signed sessions,
         # so no client is kept between connects.
@@ -75,6 +76,9 @@ class OFWebSocket:
         # instead of reconnecting forever (server.py's pump passes
         # account_health.is_session_dead_error).
         self._session_dead = session_dead
+        # Called each time the socket is open again after a drop: OF does not replay the
+        # events sent meanwhile (server.py passes relay_hooks.fire_socket_reconnected).
+        self._on_reconnect = on_reconnect
         self._ws_url: str | None = None
         self._token: str | None = None
         self._stop = asyncio.Event()
@@ -129,6 +133,7 @@ class OFWebSocket:
         flag it as a shared-session anomaly.
         """
         state = of_ws_decide.Pump()
+        opened = False                      # a socket of this pump has been open before
         while not self._stop.is_set():
             connected_at: float | None = None
             client: OFClient | None = None
@@ -164,6 +169,12 @@ class OFWebSocket:
                     await ws.send(json.dumps({"act": "connect", "token": self._token}))
                     connected_at = time.monotonic()
                     log.info("connected account=%s proxy=%s", self._account_id(client), self._proxy_desc(client))
+                    if opened and self._on_reconnect is not None:
+                        try:
+                            self._on_reconnect()
+                        except Exception:  # noqa: BLE001 — a hook never costs the socket
+                            log.warning("on_reconnect failed account=%s", self._account_id(client), exc_info=True)
+                    opened = True
                     # Expose the open socket so send_typing()/other tasks can
                     # push outbound frames on it. Cleared in finally below.
                     self._live_ws = ws

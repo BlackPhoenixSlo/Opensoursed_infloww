@@ -1240,7 +1240,8 @@ async def _ws_pump_for_account(account_id: str) -> bool:
             else:
                 ws = OFWebSocket(lambda: _load_client(account_id),
                                  session_dead=account_health.is_session_dead_error,
-                                 account_id=account_id)
+                                 account_id=account_id,
+                                 on_reconnect=lambda: relay_hooks.fire_socket_reconnected(account_id))
             # Publish this live pump so the automation layer can push outbound
             # frames (e.g. the typing indicator) on the same socket. Both
             # platforms share this registry, so `of_ws.emit_typing` finds a

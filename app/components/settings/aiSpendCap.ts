@@ -47,4 +47,6 @@ export function spentText(millicents: number): string {
 }
 
 /** A provider id as it reads ("DeepSeek"); one the UI does not know reads as itself. */
-export const providerName = (id: string): string => (LABELS[id] ?? id).replace(/ API key$/, "");
+/** `describe` is llm_client.DESCRIBE_BUDGET: vault describe's own budget row, not a provider. */
+export const providerName = (id: string): string =>
+  id === "describe" ? "Vault describe" : id === "chat" ? "Chats and other AI" : (LABELS[id] ?? id).replace(/ API key$/, "");

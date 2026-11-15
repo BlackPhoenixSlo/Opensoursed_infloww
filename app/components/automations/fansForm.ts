@@ -74,25 +74,16 @@ export function fanRows(lists: OfList[], s: FansPick): FanRow[] {
   return rows;
 }
 
-/** D61 (`full_ai_config.has_fans_list`): an include or an exclude list. Live refuses a checkpoint without one. */
-export const hasFansList = (f: StoredFans): boolean => f.include.length > 0 || f.exclude.length > 0;
-
-/** The D61 rule in the server's words (`full_ai_api`'s 409 detail): the row / dialog pre-warning and the refusal read the same. */
-export const LIVE_NO_LIST = "Live needs a Fans list: keep an include or exclude list, or set Off first.";
-
 /** An audience control's save (the Fans dialog, the Top spend box): idle (with the last failure's words), a write out
- *  (`saving`), stored (`saved`, the Top spend box's "Saved" until the next edit), or the D61 refusal (the Fans dialog
- *  offers Turn Off and save / Cancel). */
+ *  (`saving`), or stored (`saved`, the Top spend box's "Saved" until the next edit). */
 export type AudienceSave =
   | { phase: "idle"; error: string | null }
   | { phase: "saving" }
-  | { phase: "saved" }
-  | { phase: "needsOff"; reason: string };
+  | { phase: "saved" };
 
 export type AudienceSaveAction =
   | { type: "save" }
   | { type: "result"; result: AudienceResult }
-  | { type: "dismiss" }
   /** The value was edited again: drops "Saved" and the last failure. */
   | { type: "edit" };
 
@@ -103,11 +94,8 @@ export function audienceSaveReducer(s: AudienceSave, a: AudienceSaveAction): Aud
     case "save":
       return s.phase === "saving" ? s : { phase: "saving" };
     case "result":
-      if (a.result.kind === "needsOff") return { phase: "needsOff", reason: a.result.reason };
       return a.result.kind === "failed" ? { phase: "idle", error: a.result.reason } : { phase: "saved" };
-    case "dismiss":
-      return AUDIENCE_SAVE_IDLE;
     case "edit":
-      return s.phase === "saving" || s.phase === "needsOff" ? s : AUDIENCE_SAVE_IDLE;
+      return s.phase === "saving" ? s : AUDIENCE_SAVE_IDLE;
   }
 }

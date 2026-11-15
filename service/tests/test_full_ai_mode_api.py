@@ -20,12 +20,13 @@ owner and chatter, Agency B's Creator); the live job body through `run_once` wit
   case_off_then_live_drops_the_old_job  Off then Live inside the reply wait: the job queued before Off is
                                       cancelled, never runs
   case_two_rules_of_the_kind          Live leaves one enabled; Off parks both, trigger {"every_seconds": 300}
-  case_live_keeps_its_fans_list       while Live, the audience PUT to no Fans list: 409 {detail} (no rev); a
-                                      checkpoint PUT / rollback never moves fans; Off: 200
+  case_live_with_no_fans_list         no Fans list = every Fan (owner 2026-11-15): Live goes on with none,
+                                      the audience PUT to none while Live is 200; checkpoint PUT / rollback
+                                      never move fans
   case_blocker_read_fails_closed      the blocker read raising: GET 200 with one blocker, PUT live 409, Off 200
   case_refusals                       shadow / anything else 422; Agency B's Creator 403; chatter 403
                                       (the opt-in guard); nothing written
-  case_live_blockers                  no Fans list / a Writer without a key / no TypeSafe key → 409 naming it,
+  case_live_blockers                  a Writer without a key / no TypeSafe key → 409 naming it,
                                       no rule written, GET lists them; all set → []
   case_shared_routes_never_turn_live  the rule editor's trigger edit, switch-on and re-enable of a parked Live
                                       rule: 409; switch-off stays open (reads off); `_validate_trigger` drops
@@ -249,10 +250,10 @@ def case_two_rules_of_the_kind():
     assert rules == [(a, False, {"every_seconds": 300}), (b, False, {"every_seconds": 300})], rules
 
 
-def case_live_keeps_its_fans_list():
-    # D61 holds while Live: the audience write may not leave the checkpoint with no Fans list (409 {detail}, no rev);
-    # the config writes never move `fans` (owner 2026-11-15), so a checkpoint PUT / rollback naming none passes.
-    _run(_reset())
+def case_live_with_no_fans_list():
+    # Owner 2026-11-15: both lists empty = every Fan, never a Live blocker; the audience write while Live takes it.
+    # The config writes never move `fans` (owner 2026-11-15), so a checkpoint PUT / rollback naming another passes.
+    none = {"include": [], "exclude": []}
 
     def put_fans(fans):
         return OWNER.put("/admin/full-ai/config/audience", json={"account_id": AID, "fans": fans})
@@ -266,23 +267,19 @@ def case_live_keeps_its_fans_list():
     def rollback():
         rev = OWNER.get(f"/admin/full-ai/config?account_id={AID}").json()["rev"]
         return OWNER.post("/admin/full-ai/config/rollback", json={"account_id": AID, "rev": rev})
-    assert _put("live").status_code == 200
-    kept = OWNER.get(f"/admin/full-ai/config?account_id={AID}").json()["checkpoint"]["fans"]
-    r = put_fans({"include": [], "exclude": []})
-    assert r.status_code == 409 and "Fans list" in r.json()["detail"] and "rev" not in r.json(), r.text
-    ck = put_ck({"include": [], "exclude": []})                             # the body's fans are ignored
-    assert ck.status_code == 200 and ck.json()["checkpoint"]["fans"] == kept, ck.text
+    _run(_reset(fans=none))
+    assert _get().json()["blockers"] == [], _get().json()
+    assert _put("live").status_code == 200 and _get().json()["mode"] == "live"
+    ok = put_fans({"include": [9], "exclude": []})                          # a list while Live
+    assert ok.status_code == 200 and ok.json()["checkpoint"]["fans"] == ok.json()["draft"]["fans"] == {
+        "include": [9], "exclude": []}, ok.text
+    ck = put_ck(none)                                                       # the body's fans are ignored
+    assert ck.status_code == 200 and ck.json()["checkpoint"]["fans"] == {"include": [9], "exclude": []}, ck.text
+    r = put_fans(none)                                                      # back to every Fan, still Live: every side
+    assert r.status_code == 200, r.text
+    assert r.json()["checkpoint"]["fans"] == r.json()["draft"]["fans"] == r.json()["previous"]["fans"] == none, r.json()
     assert rollback().status_code == 200
-    assert OWNER.get(f"/admin/full-ai/config?account_id={AID}").json()["checkpoint"]["fans"] == kept
-    ok = put_fans({"include": [9], "exclude": []})                          # another list: fine, every side
-    assert ok.status_code == 200, ok.text
-    assert ok.json()["checkpoint"]["fans"] == ok.json()["draft"]["fans"] == ok.json()["previous"]["fans"] == {
-        "include": [9], "exclude": []}, ok.json()
-    assert _put("off").status_code == 200
-    assert put_fans({"include": [], "exclude": []}).status_code == 200      # Off: any list
-    assert _put("live").status_code == 409
-    assert rollback().status_code == 200 and _put("live").status_code == 409   # rollback never brings a list back
-    assert put_fans({"include": [], "exclude": [4]}).status_code == 200 and _put("live").status_code == 200
+    assert OWNER.get(f"/admin/full-ai/config?account_id={AID}").json()["checkpoint"]["fans"] == none
     assert _get().json()["mode"] == "live"
 
 
@@ -320,8 +317,6 @@ def case_refusals():
 
 def case_live_blockers():
     for kw, want in (
-        ({"fans": {"include": [], "exclude": []}},
-         ["No Fans list: tap Choose under Fans and pick an Include or Exclude list."]),
         ({"keys": {**KEYS, "openrouter": None}},
          ["No OpenRouter key for Writers euryale-v2.2, hermes-4-405b: add one in Settings → AI keys, or untick them "
           "under Writers and Save"]),
@@ -334,7 +329,7 @@ def case_live_blockers():
         assert r.status_code == 409 and r.json()["detail"] == "Can't go Live: " + "; ".join(want), (kw, r.status_code, r.text)
         assert _run(_rules()) == [], kw
         assert _get().json()["blockers"] == want, _get().json()
-    _run(_reset(fans={"include": [7], "exclude": []}))
+    _run(_reset(fans={"include": [], "exclude": []}))                     # no Fans list = every Fan: no blocker
     assert _get().json()["blockers"] == [] and _put("live").status_code == 200
 
 
@@ -394,7 +389,7 @@ def case_live_starts_catchup_off_stops():
     full_ai_catchup.start = lambda aid: calls.append(("start", aid))
     full_ai_catchup.stop = lambda aid: calls.append(("stop", aid))
     try:
-        _run(_reset(fans={"include": [], "exclude": []}))
+        _run(_reset(keys={**KEYS, "openrouter": None}))
         assert _put("live").status_code == 409 and calls == []          # refused: no catch-up
         _run(_reset())
         assert _put("live").status_code == 200 and calls == [("start", AID)], calls

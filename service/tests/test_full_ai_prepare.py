@@ -24,6 +24,7 @@ a real LLM.
   case_cap_mid_sweep_fails_describe     the cap trips during the sweep → the same budget sentence
   case_no_key_refuses_flags             described, unflagged, no vision key → failed, no Jev call (flags_all's rule)
   case_all_items_failed_fails_describe  every vision call errors → describe `failed` "2 of 2 items failed", not done
+  case_describe_walks_in_chunks         CHUNK=2: sweeps of 2, left count rechecked between, done
   case_turn_path_never_imports_prepare  import isolation (no-send scan)
 
 Run: ./venv/bin/python service/tests/test_full_ai_prepare.py   (exit 0 = pass)
@@ -424,7 +425,7 @@ async def case_vision_cap_fails_describe():
     await _seed_vault(aid, [1, 2])
     async with get_session() as s:
         s.add(GrokDailyCost(day=datetime.utcnow().strftime("%Y-%m-%d"), account_id=aid,
-                            provider="deepinfra", cost_cents=10_000, call_count=1,
+                            provider="describe", cost_cents=10_000, call_count=1,
                             is_capped=False, updated_at=datetime.utcnow()))
         await s.commit()
     _CLIENTS[aid] = FakeOF(aid, 2)
@@ -487,7 +488,7 @@ async def case_cap_mid_sweep_fails_describe():
         spent.append(1)
         async with get_session() as s:
             s.add(GrokDailyCost(day=datetime.utcnow().strftime("%Y-%m-%d"), account_id=aid,
-                                provider="deepinfra", cost_cents=10_000, call_count=1,
+                                provider="describe", cost_cents=10_000, call_count=1,
                                 is_capped=False, updated_at=datetime.utcnow()))
             await s.commit()
         return await _vision(**kw)
@@ -612,6 +613,33 @@ def importers(mods: list[str], target: str = "full_ai_prepare") -> list[str]:
             and target in _imports(p.read_text(encoding="utf-8"), m)]
 
 
+async def case_describe_walks_in_chunks():
+    """CHUNK=2 over 5 clips: describe sweeps 2+2+1, the running step shows the rechecked left
+    count between chunks, then done with every clip described and flagged."""
+    aid = await _account()
+    await _seed_vault(aid, [1, 2, 3, 4, 5])
+    _reset_spies()
+    seen: list[int] = []
+    real = vault_ai_vision._run_describe_all
+
+    async def _spy(account_id, mode, *a, limit=0, **k):
+        seen.append(limit)
+        return await real(account_id, mode, *a, limit=limit, **k)
+
+    lefts: list[int] = []
+    prep.CHUNK, vault_ai_vision._run_describe_all = 2, _spy
+    try:
+        step = await prep._describe(aid, await prep.read_facts(aid),
+                                    lambda c: lefts.append(c["undescribed"]) if "undescribed" in c else None)
+    finally:
+        prep.CHUNK, vault_ai_vision._run_describe_all = 2000, real
+    assert seen == [2, 2, 2], seen
+    assert lefts == [3, 1, 0], lefts
+    assert (step["state"], step["counts"]["described"]) == ("done", 5), step
+    f = await prep.read_facts(aid)
+    assert (f["undescribed"], f["unflagged"]) == (0, 0), f
+
+
 async def case_turn_path_never_imports_prepare():
     missing = [m for m in TURN_PATH if _file(m) is None]
     assert missing == [], f"a scanned module moved: {missing}"
@@ -638,6 +666,7 @@ CASES = [
     case_cap_mid_sweep_fails_describe,
     case_no_key_refuses_flags,
     case_all_items_failed_fails_describe,
+    case_describe_walks_in_chunks,
     case_turn_path_never_imports_prepare,
 ]
 

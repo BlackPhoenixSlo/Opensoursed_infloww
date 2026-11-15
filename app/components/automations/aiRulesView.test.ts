@@ -1,4 +1,4 @@
-/** AI rules view reducer + layout: zoom keeps the pointer's point, clamps, Fit centres, select/close, Mode loads;
+/** AI rules view reducer + layout: zoom keeps the pointer's point, clamps, Fit centres, select/close, loads;
  *  layout places every node once, without overlap, in payload order. */
 import { describe, expect, it } from "vitest";
 import { CARD_W, layout, ranks, type Box, type LayoutEdge } from "./aiRulesLayout";
@@ -56,10 +56,9 @@ describe("aiRulesReducer", () => {
     ["panBy moves", sized, { type: "panBy", dx: 5, dy: -3 }, { view: { x: 5, y: -3, k: 1 } }],
     ["select opens", sized, { type: "select", id: "sell" }, { selected: "sell" }],
     ["close closes", { ...sized, selected: "sell" }, { type: "close" }, { selected: null }],
-    ["loaded for this Mode lands and asks for a fit", sized, { type: "loaded", mode: "test", data: RULES },
+    ["loaded lands and asks for a fit", sized, { type: "loaded", data: RULES },
       { status: "ready", data: RULES, pendingFit: true }],
-    ["late load for the other Mode is dropped", sized, { type: "loaded", mode: "shadow", data: RULES }, { status: "loading", data: null }],
-    ["failed shows the error", sized, { type: "failed", mode: "test", error: "boom" }, { status: "error", error: "boom" }],
+    ["failed shows the error", sized, { type: "failed", error: "boom" }, { status: "error", error: "boom" }],
     ["first size asks for a fit", INITIAL, { type: "resize", w: 390, h: 700 }, { viewport: { w: 390, h: 700 }, pendingFit: true }],
     ["same-orientation resize keeps the view", sized, { type: "resize", w: 1200, h: 800 }, { pendingFit: false }],
     ["desktop → phone flip asks for a fit", sized, { type: "resize", w: 390, h: 700 }, { pendingFit: true }],

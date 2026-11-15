@@ -1,5 +1,5 @@
 /**
- * AI rules page view state: the read (Mode, load status, payload), the pan/zoom transform, the viewport size and
+ * AI rules page view state: the read (load status, payload), the pan/zoom transform, the viewport size and
  * the open card. Pure reducer; the page only dispatches. `view` maps diagram coords to screen: screen = d * k + (x, y).
  */
 
@@ -35,7 +35,6 @@ export interface Rules {
 
 export interface View { x: number; y: number; k: number }
 export interface AiRulesState {
-  mode: Mode;
   status: "loading" | "ready" | "error";
   data: Rules | null;
   error: string | null;
@@ -55,8 +54,8 @@ export type Action =
   | { type: "resize"; w: number; h: number }
   | { type: "select"; id: string }
   | { type: "close" }
-  | { type: "loaded"; mode: Mode; data: Rules }
-  | { type: "failed"; mode: Mode; error: string };
+  | { type: "loaded"; data: Rules }
+  | { type: "failed"; error: string };
 
 export const MIN_K = 0.1;
 export const MAX_K = 2.5;
@@ -66,7 +65,6 @@ export const STEP = 1.25;
 const FIT_PAD = 24;
 
 export const INITIAL: AiRulesState = {
-  mode: "test",
   status: "loading",
   data: null,
   error: null,
@@ -124,10 +122,9 @@ export function aiRulesReducer(s: AiRulesState, a: Action): AiRulesState {
     case "close":
       return s.selected === null ? s : { ...s, selected: null };
     case "loaded":
-      // A late answer for the other Mode is dropped.
-      return a.mode !== s.mode ? s : { ...s, status: "ready", data: a.data, error: null, pendingFit: true };
+      return { ...s, status: "ready", data: a.data, error: null, pendingFit: true };
     case "failed":
-      return a.mode !== s.mode ? s : { ...s, status: "error", error: a.error };
+      return { ...s, status: "error", error: a.error };
   }
 }
 

@@ -24,9 +24,15 @@ vi.mock("@/hooks/useAccounts", () => ({
   useAccounts: () => ({ isLoading: false }),
 }));
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null }) }));
+/** The session's granted pages (`useGrantedPages`; null is every page) and whether its Applied settings read is pending. */
+const role = vi.hoisted(() => ({ pages: null as Set<string> | null, pending: false }));
+vi.mock("@/components/shell/useGrantedPages", () => ({ useGrantedPages: () => role.pages }));
+vi.mock("@/lib/appliedSettings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/appliedSettings")>()),
+  useAppliedSettings: () => ({ isPending: role.pending }),
+}));
 
 import FullAiChatterPage from "@/components/automations/FullAiChatterPage";
-import { LIVE_NO_LIST } from "@/components/automations/fansForm";
 import { STALE_TEXT } from "@/components/automations/fullAiTestChat";
 import { fullAiConfigKey } from "@/hooks/useFullAiConfig";
 import { relay, RelayError } from "@/lib/relay";
@@ -102,6 +108,8 @@ beforeEach(() => {
   relayPost.mockResolvedValue({ action: "created" });
   relayPut.mockReset();
   modeRead = MODE_OFF;
+  role.pages = null;
+  role.pending = false;
 });
 afterEach(() => {
   cleanup();
@@ -160,11 +168,11 @@ describe("Full AI Chat page", () => {
   });
 
   it("keeps Live disabled while the server names a blocker, and shows the global off switch", async () => {
-    modeRead = { mode: "off", off_switch: true, blockers: ["No Fans list: tap Choose under Fans and pick an Include or Exclude list."] };
+    modeRead = { mode: "off", off_switch: true, blockers: ["No TypeSafe key (the Router)"] };
     mount([]);
     await waitFor(() => expect(modeNow()).toBe("Off"));
     expect(modeButton("Live").disabled).toBe(true);
-    expect(within(screen.getByRole("list", { name: "Live blockers" })).getByText(/^No Fans list/)).toBeTruthy();
+    expect(within(screen.getByRole("list", { name: "Live blockers" })).getByText(/^No TypeSafe key/)).toBeTruthy();
     expect(screen.getByText(/FULL_AI_CHAT_OFF is on: nothing is sent on any Creator/)).toBeTruthy();
   });
 
@@ -180,7 +188,7 @@ describe("Full AI Chat page", () => {
 
   it("re-reads the Mode after a refusal, and keeps Off pressable when the Mode read fails", async () => {
     const modeGets = () => relayGet.mock.calls.filter((c) => String(c[0]).startsWith("/admin/full-ai/mode")).length;
-    relayPut.mockRejectedValue(new Error("Can't go Live: No Fans list"));
+    relayPut.mockRejectedValue(new Error("Can't go Live: No TypeSafe key (the Router)"));
     mount([]);
     await waitFor(() => expect(modeButton("Live").disabled).toBe(false));
     const before = modeGets();
@@ -265,6 +273,20 @@ describe("Full AI Chat page", () => {
     fireEvent.click(screen.getByRole("button", { name: "AI rules" }));
     fireEvent.click(within(await screen.findByRole("dialog", { name: "AI rules" })).getByRole("button", { name: "Close" }));
     expect(popup()).toBeNull();
+  });
+
+  // GET /admin/full-ai/rules answers to the /ai-rules grant, not /full-ai-chatter's.
+  it.each<[string, Set<string> | null, boolean, boolean]>([
+    ["owner (every page)", null, false, true],
+    ["role granted /ai-rules", new Set(["/full-ai-chatter", "/ai-rules"]), false, true],
+    ["role denied /ai-rules", new Set(["/full-ai-chatter"]), false, false],
+    ["Applied settings read pending", null, true, false],
+  ])("AI rules button: %s", async (_n, pages, pending, shown) => {
+    role.pages = pages;
+    role.pending = pending;
+    mount([]);
+    await screen.findByRole("group", { name: "Mode" });
+    expect(screen.queryByRole("button", { name: "AI rules" }) !== null).toBe(shown);
   });
 });
 
@@ -510,7 +532,6 @@ describe("Full AI Chat page › Test chat", () => {
 const putCalls = () => relayPut.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/config/draft");
 const postsTo = (path: string) => relayPost.mock.calls.filter((c) => String(c[0]) === path);
 const AUDIENCE = "/admin/full-ai/config/audience";
-const NO_FANS_BLOCKER = "No Fans list: tap Choose under Fans and pick an Include or Exclude list.";
 const blockers = () => screen.queryByRole("list", { name: "Live blockers" });
 const audiencePuts = () => relayPut.mock.calls.filter((c) => String(c[0]) === AUDIENCE);
 /** The audience write's answer: the patch on every side, rev + 1 per write (from the mount's 3). */
@@ -776,58 +797,24 @@ describe("Full AI Chat page › Settings", () => {
     expect(audience().getByText("Every Fan")).toBeTruthy();
   });
 
-  it("Fans while Live: refused for no list (D61) → popup in the dialog; Turn Off and save PUTs Mode Off, then the same fans", async () => {
+  it("Fans while Live: no list is stored at once (every Fan), no popup, the Mode stays Live", async () => {
     modeRead = { ...MODE_OFF, mode: "live" };
-    const d61 = LIVE_NO_LIST;
     const stored = { ...CONFIG, fans: { include: [11], exclude: [] } };
-    let refused = false;
     mountSettings(configBody({ checkpoint: stored, draft: stored }), {
       get: (p) => (p.startsWith("/api/of/v2/lists") ? { list: [{ id: 11, name: "VIP" }] } : undefined),
-      put: (b, path) => {
-        if (path === "/admin/full-ai/mode") { modeRead = MODE_OFF; return MODE_OFF; }
-        if (b.fans) modeRead = { ...MODE_OFF, blockers: [NO_FANS_BLOCKER] };   // the lists cleared: Live is blocked again
-        if (!refused) { refused = true; throw new RelayError(409, { detail: d61 }, d61); }
-        return audienceAnswer({ fans: b.fans }, 4);
-      },
+      put: (b) => audienceAnswer({ fans: b.fans }, 4),
     });
     await loadedConfig();
     await act(async () => { fireEvent.click(btn("Choose fans")); });
     const dialog = within(await screen.findByRole("dialog", { name: "Fans" }));
     fireEvent.click(within(await dialog.findByRole("radiogroup", { name: "VIP" })).getByRole("radio", { name: "Neither" }));
     await act(async () => { fireEvent.click(dialog.getByRole("button", { name: "Save" })); });
-    const pop = within(await screen.findByRole("alertdialog", { name: "Save refused" }));
-    expect(pop.getByText(d61)).toBeTruthy();
-    expect(screen.queryByText(STALE_TEXT)).toBeNull();
-    await act(async () => { fireEvent.click(pop.getByRole("button", { name: "Turn Off and save" })); });
     const none = { include: [], exclude: [] };
-    await waitFor(() => expect(relayPut.mock.calls.map((c) => [String(c[0]), (c[1] as Record<string, unknown>).fans ?? (c[1] as Record<string, unknown>).mode]))
-      .toEqual([[AUDIENCE, none], ["/admin/full-ai/mode", "off"], [AUDIENCE, none]]));
+    expect(relayPut.mock.calls.map((c) => [String(c[0]), (c[1] as Record<string, unknown>).fans])).toEqual([[AUDIENCE, none]]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(audience().getByText("Every Fan")).toBeTruthy());
-    // The Mode read is refetched after the fans write: the blocker is back under the Mode control.
-    await waitFor(() => expect(within(blockers()!).getByText(NO_FANS_BLOCKER)).toBeTruthy());
-  });
-
-  it("a stored Fans list refetches the Mode read: the No Fans list blocker goes away", async () => {
-    modeRead = { ...MODE_OFF, blockers: [NO_FANS_BLOCKER] };
-    mountSettings(configBody(), {
-      get: (p) => (p.startsWith("/api/of/v2/lists") ? { list: [{ id: 11, name: "VIP" }] } : undefined),
-      put: (b, path) => {
-        if (path !== AUDIENCE) return configBody();
-        modeRead = MODE_OFF;
-        return audienceAnswer({ fans: b.fans }, 4);
-      },
-    });
-    await loadedConfig();
-    await waitFor(() => expect(within(blockers()!).getByText(NO_FANS_BLOCKER)).toBeTruthy());
-    const modeReads = () => relayGet.mock.calls.filter((c) => String(c[0]).startsWith("/admin/full-ai/mode")).length;
-    const before = modeReads();
-    await act(async () => { fireEvent.click(btn("Choose fans")); });
-    const dialog = within(await screen.findByRole("dialog", { name: "Fans" }));
-    fireEvent.click(within(await dialog.findByRole("radiogroup", { name: "VIP" })).getByRole("radio", { name: "Include" }));
-    await act(async () => { fireEvent.click(dialog.getByRole("button", { name: "Save" })); });
-    await waitFor(() => expect(modeReads()).toBe(before + 1));
-    await waitFor(() => expect(blockers()).toBeNull());
+    expect(blockers()).toBeNull();
   });
 
   it("GIFs %: no box while GIFs is off", async () => {
@@ -913,15 +900,15 @@ describe("Full AI Chat page › Settings", () => {
     await waitFor(() => expect(screen.queryByText("Someone saved this config meanwhile. Reload.")).toBeNull());
   });
 
-  it("a Save refused for Live without a Fans list (409, no rev) shows the server's words beside Save, not the reload line", async () => {
-    const d61 = LIVE_NO_LIST;
+  it("a Save refused with a 409 without rev shows the server's words beside Save, not the reload line", async () => {
+    const refused = "Not allowed now.";
     mountSettings(configBody({ draft: { ...CONFIG, gifs: true } }), {
-      post: () => { throw new RelayError(409, { detail: d61 }, d61); },
+      post: () => { throw new RelayError(409, { detail: refused }, refused); },
     });
     await loadedConfig();
     await waitFor(() => expect(btn("Save").disabled).toBe(false));
     await act(async () => { fireEvent.click(btn("Save")); });
-    expect(await screen.findByText(d61)).toBeTruthy();
+    expect(await screen.findByText(refused)).toBeTruthy();
     expect(screen.queryByText(STALE_TEXT)).toBeNull();
     expect(settings().getByRole("switch", { name: "GIFs" }).hasAttribute("disabled")).toBe(false);
   });

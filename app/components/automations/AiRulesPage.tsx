@@ -32,11 +32,11 @@ export function AiRulesDiagram({ fill = false }: { fill?: boolean }) {
 
   useEffect(() => {
     let live = true;
-    relay.get<Rules>(`/admin/full-ai/rules?mode=${s.mode}`, { priority: "background" })
-      .then((data) => live && dispatch({ type: "loaded", mode: s.mode, data }))
-      .catch((e: unknown) => live && dispatch({ type: "failed", mode: s.mode, error: e instanceof Error ? e.message : String(e) }));
+    relay.get<Rules>("/admin/full-ai/rules?mode=test", { priority: "background" })
+      .then((data) => live && dispatch({ type: "loaded", data }))
+      .catch((e: unknown) => live && dispatch({ type: "failed", error: e instanceof Error ? e.message : String(e) }));
     return () => { live = false; };
-  }, [s.mode]);
+  }, []);
 
   useEffect(() => {
     const el = box.current;

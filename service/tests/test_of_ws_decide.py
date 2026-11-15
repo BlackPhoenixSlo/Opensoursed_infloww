@@ -21,7 +21,8 @@ WebSocket pump's reconnect rules (service/of_ws.py's events() is the shell) as t
                                          a real loopback socket that OF closes after each
                                          hello: /users/me, then the socket, then the hello
                                          with THAT ticket's token, every pass; decide saw a
-                                         Failed per drop and the shell waited ~1 then ~2 s
+                                         Failed per drop and the shell waited ~1 then ~2 s;
+                                         on_reconnect ran on opens 2 and 3 only (it raises)
   case_shell_transient_then_dead         socket drop -> Wait(1) -> /users/me answers 101
                                          -> Wait 2, 4, 8 s (retry 1..3, logged n/3) -> the
                                          4th 101 -> GiveUp: SessionDead("otp_required")
@@ -239,7 +240,12 @@ async def case_shell_refreshes_ticket_before_every_reconnect() -> None:
     hellos: list = []
     srv, port = await _dropping_server(hellos)
     c = _Client(port)
-    ws = of_ws.OFWebSocket(lambda: c, session_dead=account_health.is_session_dead_error)
+    recon: list = []
+
+    def on_reconnect():
+        recon.append(len(hellos))
+        raise RuntimeError("a hook that raises never costs the socket")
+    ws = of_ws.OFWebSocket(lambda: c, session_dead=account_health.is_session_dead_error, on_reconnect=on_reconnect)
     try:
         with _Spy() as spy:
             task = asyncio.create_task(_drain(ws))
@@ -250,6 +256,7 @@ async def case_shell_refreshes_ticket_before_every_reconnect() -> None:
         srv.close()
         await srv.wait_closed()
     assert len(hellos) == 3 and frames == [{"connected": True, "v": "5.4.0"}] * 3, (hellos, frames)
+    assert len(recon) == 2, recon               # on_reconnect: each open after the first, never the first
     assert [h for _, h in hellos] == [{"act": "connect", "token": t} for _, t in c.issued], (hellos, c.issued)
     # Each pass: the ticket first, then the socket (its hello carries that ticket's token).
     for (t_me, _), (t_hello, _) in zip(c.issued, hellos):

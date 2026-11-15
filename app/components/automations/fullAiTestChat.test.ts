@@ -710,11 +710,11 @@ describe("his photo (attach → described once → both sides' Turns)", () => {
 });
 
 describe("writeFailed / audienceFailed: a failed config write", () => {
-  const D61 = "Live needs a Fans list: keep an include or exclude list, or set Off first.";
+  const NO = "Not allowed now.";
   const STALE = "Someone saved this config meanwhile. Reload.";
   it.each<[string, unknown, TestChatAction]>([
     ["409 with a rev: stale", new RelayError(409, { detail: STALE, rev: 9 }, STALE), { type: "stale" }],
-    ["409 without rev (D61): its words, not stale", new RelayError(409, { detail: D61 }, D61), { type: "configFailed", errors: [D61] }],
+    ["409 without rev: its words, not stale", new RelayError(409, { detail: NO }, NO), { type: "configFailed", errors: [NO] }],
     ["409 with a non-number rev: its words", new RelayError(409, { detail: "x", rev: "9" }, "x"), { type: "configFailed", errors: ["x"] }],
     ["422 field errors", new RelayError(422, { errors: ["gifs: must be true or false"] }), { type: "configFailed", errors: ["gifs: must be true or false"] }],
     ["a network error", new Error("offline"), { type: "configFailed", errors: ["offline"] }],
@@ -722,7 +722,7 @@ describe("writeFailed / audienceFailed: a failed config write", () => {
     expect(writeFailed(e)).toEqual(want);
   });
   it.each<[string, unknown, AudienceResult]>([
-    ["D61 offers Turn Off", new RelayError(409, { detail: D61 }, D61), { kind: "needsOff", reason: D61 }],
+    ["409 without rev: its words", new RelayError(409, { detail: NO }, NO), { kind: "failed", reason: NO }],
     ["a lost race asks to try again", new RelayError(409, { detail: STALE, rev: 4 }, STALE),
       { kind: "failed", reason: "Someone saved this config meanwhile. Try again." }],
     ["422 its words", new RelayError(422, { errors: ["top_spend_cents: must be a whole number"] }),

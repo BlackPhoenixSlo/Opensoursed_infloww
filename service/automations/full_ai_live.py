@@ -688,7 +688,10 @@ async def sweep(account_id: str) -> dict:
     except Exception:  # noqa: BLE001 — a failed settle never costs the missed-DM recovery
         log.warning("full_ai_live sweep settle_pull failed account=%s", aid, exc_info=True)
     since = now - timedelta(seconds=SWEEP_WINDOW_S)
-    fans = select(Fan.fan_id).where(Fan.account_id == aid, Fan.last_message_received_at >= since)
+    # From `messages`, not `fans.last_message_received_at`: a DM saved by a chat read or a reconcile
+    # (missed on the socket) never bumps that column, and its Fan would wait for the catch-up.
+    fans = select(Message.fan_id).where(Message.account_id == aid, Message.direction == "in",
+                                        Message.created_at >= since)
     swept, queued = await _queue_ends(aid, rule_id, now, fans, since, SWEEP_MAX)
     if swept:
         log.info("full_ai_live_sweep account=%s swept=%d queued=%d", aid, swept, queued)

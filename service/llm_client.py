@@ -216,6 +216,17 @@ def llm_attempt_outcome(status_or_exc_kind: int | str, attempt: int,
 # money-counting, but it is ONE map beside the error it describes rather than a
 # copy per caller (and never re-composed in the browser).
 KEY_FIX_URL = "/settings/ai-keys"
+# Vault prep (describe + Jev flags) spends its OWN daily budget row, not its provider's: a $1 cap
+# = $1 vault describe + $1 for all other AI, so a vault sweep never starves chats (owner 2026-11-15).
+DESCRIBE_BUDGET = "describe"
+_DESCRIBE_PURPOSES = frozenset({"describe_media", "describe_flags", "vault_jev_flags"})
+
+
+def budget_key(purpose: str) -> str:
+    """The daily-cap row a call reserves on: `DESCRIBE_BUDGET` for vault prep, else the shared chat budget."""
+    return DESCRIBE_BUDGET if purpose in _DESCRIBE_PURPOSES else "chat"
+
+
 PROVIDER_LABELS = {"deepseek": "DeepSeek", "deepinfra": "DeepInfra",
                     "zai": "Z.ai (GLM)", "anthropic": "Anthropic (Claude)",
                     "typesafe": "TypeSafe (Jev)"}
@@ -695,7 +706,7 @@ async def _get_cap_cents(account_id: str | None) -> int:
 
 async def cap_state(account_id: str | None, provider: str,
                     model: str | None = None, *, user_id: str | None = None) -> dict[str, Any]:
-    """Today's spend against the per-(account, provider) daily cap. Read-only.
+    """Today's spend against the describe or shared chat daily cap. Read-only.
 
     The cap is ENFORCED in `_reserve`, per call, which is the only place it can
     be enforced correctly. This is the same row read for callers that need to
@@ -722,6 +733,7 @@ async def cap_state(account_id: str | None, provider: str,
 
     `user_id` reads the agency rollup instead (see `_ledger`).
     """
+    provider = provider if provider == DESCRIBE_BUDGET else "chat"
     day = datetime.utcnow().strftime("%Y-%m-%d")
     cap_mc = int(await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT)
     table, col, key = _ledger(account_id, user_id)
@@ -1172,7 +1184,8 @@ async def chat(
 
     # ── 2. Atomic pre-flight cap reservation (in millicents) ────────────
     hold = await _reserve_call(model, messages, account_id=account_id, user_id=user_id,
-                               provider=prov.name, now=now, tools=tools)  # raises LLMCapExceeded
+                               provider=budget_key(purpose), now=now,
+                               tools=tools)  # raises LLMCapExceeded
 
     # ── 3. Pending audit row ────────────────────────────────────────────
     call_id = await _insert_pending_call(
@@ -1260,13 +1273,13 @@ class ExternalHold:
 async def reserve_external(account_id: str | None, provider: str, model: str,
                            reserve_mc: int, *, purpose: str, request: dict,
                            endpoint: str = "") -> ExternalHold:
-    """Reserve `reserve_mc` on the account's (day, account, `provider`) rollup
+    """Reserve `reserve_mc` on the account's purpose-selected daily budget
     against the same daily cap `chat()` uses, and write the pending audit row.
     Raises LLMCapExceeded. `request` is the audit body (no image bytes)."""
     now = datetime.utcnow()
-    hold = _Hold(now, account_id, None, provider, int(reserve_mc))
+    hold = _Hold(now, account_id, None, budget_key(purpose), int(reserve_mc))
     cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
-    await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, provider)  # raises LLMCapExceeded
+    await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, hold.provider)  # raises LLMCapExceeded
     call_id = await _insert_pending_call(
         purpose=purpose, provider=provider, account_id=account_id, fan_id=None,
         model=model, endpoint=endpoint or provider, temperature=0.0,
@@ -1292,7 +1305,7 @@ async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
     """POST with retries; on a terminal failure also finalizes the error row,
     refunds `hold` and raises LLMKeyError / LLMHTTPError. `timeout_s` /
     `max_attempts` None = the module defaults, read at call time."""
-    provider = hold.provider
+    provider = MODELS[model].provider
     tries = _LLM_MAX_ATTEMPTS if max_attempts is None else max_attempts
     timeout = _REQUEST_TIMEOUT_S if timeout_s is None else timeout_s
     # ── 4. Fire (retry transient faults; see _LLM_MAX_ATTEMPTS) ─────────
@@ -1419,7 +1432,7 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
     return LLMResult(
         call_id=call_id,
         model=model,
-        provider=hold.provider,
+        provider=MODELS[model].provider,
         content=content,
         parsed=parsed,
         reasoning_content=reasoning_content,

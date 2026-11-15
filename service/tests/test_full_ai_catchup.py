@@ -5,9 +5,9 @@ OF's chat list faked (`ChatsOF`: `_of_fixtures.FakeOF` + `list_chats`, OF's 10-r
 `ax._make_client`, Jev and the Writers faked (`_full_ai_live_helpers.world`); the loop's sleep
 swapped for a recorder. Temp DB only; no OF, no paid call.
 
-  case_schedule_offsets            defaults: passes at 0, +5, +15, then every 25 min (offset_s / gap_s table); a
+  case_schedule_offsets            defaults: passes at 0, +5, +15, then every 15 min (offset_s / gap_s table); a
                                    custom `catchup_minutes` is followed; a missing / invalid one reads the defaults
-  case_start_passes_now_then_sleeps   start: a pass at once, then 300, 600, 1500, 1500 s waits
+  case_start_passes_now_then_sleeps   start: a pass at once, then 300, 600, 900, 900 s waits
   case_config_change_next_wait     a checkpoint saved while the loop waits sets the next wait (no restart); an
                                    after_live not starting at 0 delays the first pass
   case_unsaved_dm_saved_one_turn   his DM not in `messages`: saved, one-Fan scrape queued, one Turn job
@@ -15,7 +15,7 @@ swapped for a recorder. Temp DB only; no OF, no paid call.
   case_skips                       answered (row on the key) / she wrote last / a funnel walk owns him /
                                    8 days old: nothing queued, nothing saved for her chat
   case_unhealthy_creator_skipped   deactivated / Dead session: a skip, no OF read, no job; the loop goes on
-  case_more_than_twenty_cap_200    205 waiting chats: 200 read, 200 queued in one pass (the sweep's 20 cap
+  case_more_than_twenty_cap_40     45 waiting chats: 40 read, 40 queued in one pass (the sweep's 20 cap
                                    not applied)
   case_second_pass_no_double       two passes: one job; after his reply, a third pass queues none
   case_running_fan_skipped         a Fan whose job runs in this process (`full_ai_live._running`): not queued
@@ -112,9 +112,9 @@ class Sleeps:
 
 
 def case_schedule_offsets():
-    assert cu.DEFAULT_SCHEDULE == cu.schedule(None) == cu.schedule(DEFAULTS) == ((0, 300, 900), 1500)
-    assert [cu.offset_s(i) for i in range(6)] == [0, 300, 900, 2400, 3900, 5400]
-    assert [cu.gap_s(i) for i in range(5)] == [300, 600, 1500, 1500, 1500]
+    assert cu.DEFAULT_SCHEDULE == cu.schedule(None) == cu.schedule(DEFAULTS) == ((0, 300, 900), 900)
+    assert [cu.offset_s(i) for i in range(6)] == [0, 300, 900, 1800, 2700, 3600]
+    assert [cu.gap_s(i) for i in range(5)] == [300, 600, 900, 900, 900]
     custom = cu.schedule({"catchup_minutes": {"after_live": [0, 2], "then_every": 60}})
     assert custom == ((0, 120), 3600), custom
     assert [cu.gap_s(i, custom) for i in range(3)] == [120, 3600, 3600]
@@ -143,7 +143,7 @@ async def case_start_passes_now_then_sleeps():
     finally:
         cu.run_pass, cu._sleep = real_pass, real_sleep
     assert passes == [0, 1, 2, 3], passes            # the first pass before any wait
-    assert sleeps.calls == [300, 600, 1500, 1500], sleeps.calls
+    assert sleeps.calls == [300, 600, 900, 900], sleeps.calls
     assert task.cancelled() and aid not in cu._tasks
     assert len(await _jobs(aid)) == 1                 # four passes, one Turn
 
@@ -260,14 +260,14 @@ async def case_unhealthy_creator_skipped():
         assert fake.pages == [] and await _jobs(aid) == [], (fake.pages, await _jobs(aid))
 
 
-async def case_more_than_twenty_cap_200():
+async def case_more_than_twenty_cap_40():
     aid = "fa_cu_many"
     await seed_live(aid)
-    chats = [_chat(2000 + i, 72000 + i, _ago(10 + i)) for i in range(205)]
+    chats = [_chat(2000 + i, 72000 + i, _ago(10 + i)) for i in range(45)]
     res, fake = await _pass(aid, chats)
-    assert (res["chats"], res["waiting"], res["saved"], res["queued"]) == (200, 200, 200, 200), res
-    assert sorted(p["only_fan_ids"][0] for p in await _payloads(aid)) == list(range(2000, 2200))
-    assert fake.pages == list(range(0, 200, 10)), fake.pages        # 20 paged reads, none past 200
+    assert (res["chats"], res["waiting"], res["saved"], res["queued"]) == (40, 40, 40, 40), res
+    assert sorted(p["only_fan_ids"][0] for p in await _payloads(aid)) == list(range(2000, 2040))
+    assert fake.pages == list(range(0, 40, 10)), fake.pages         # 4 paged reads, none past 40
 
 
 async def case_second_pass_no_double():
@@ -328,6 +328,34 @@ async def case_off_stops():
             await asyncio.wait_for(task, 30)                                   # ends by itself
         assert not task.cancelled() and task.exception() is None and aid not in cu._tasks
         assert cu._sleep.calls == [300] and fake.pages == [0], (cu._sleep.calls, fake.pages)
+    finally:
+        cu._sleep = real_sleep
+
+
+async def case_socket_reconnect_restarts():
+    """A socket drop: a running schedule restarts (first pass after RECONNECT_DELAY_S); none running: nothing."""
+    aid = "fa_cu_recon"
+    await seed_live(aid)
+    real_sleep = cu._sleep
+    try:
+        cu.reconnected(aid)                                                    # no schedule: not started
+        assert aid not in cu._tasks
+        cu._sleep = Sleeps(1)
+        fake = ChatsOF([])
+        with world(fake=fake):
+            first = cu.start(aid)
+            await asyncio.wait_for(cu._sleep.hit.wait(), 30)                   # pass 1 done, waiting 5 min
+            cu._sleep = Sleeps(2)
+            import full_ai_catchup_wiring  # noqa: F401 — registers the hook
+            import relay_hooks
+            relay_hooks.fire_socket_reconnected(aid)
+            task = cu._tasks[aid]
+            await asyncio.wait_for(cu._sleep.hit.wait(), 30)
+            cu.stop(aid)
+            await asyncio.gather(first, task, return_exceptions=True)
+        assert first.cancelled() and task is not first
+        assert cu._sleep.calls == [cu.RECONNECT_DELAY_S, 300], cu._sleep.calls
+        assert fake.pages == [0, 0], fake.pages                                # one pass each
     finally:
         cu._sleep = real_sleep
 

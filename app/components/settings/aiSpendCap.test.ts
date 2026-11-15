@@ -46,6 +46,8 @@ describe("spentText / providerName", () => {
   it("names known providers and keeps an unknown id", () => {
     expect(providerName("deepseek")).toBe("DeepSeek");
     expect(providerName("deepinfra")).toBe("DeepInfra");
+    expect(providerName("describe")).toBe("Vault describe");
+    expect(providerName("chat")).toBe("Chats and other AI");
     expect(providerName("newco")).toBe("newco");
   });
 });

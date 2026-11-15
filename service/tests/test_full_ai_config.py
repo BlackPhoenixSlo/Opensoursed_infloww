@@ -35,7 +35,7 @@
                             empty, each refusal names the key, labelled "Fans", in CONFIG_KEYS; a stored v1
                             without it reads the default
   case_catchup_minutes_table `catchup_minutes` {after_live: 1-6 ascending whole minutes 0-1440, then_every: 5-1440},
-                            default 0/5/15 then 25, each refusal names the key, JSON-only, in CONFIG_KEYS; a stored
+                            default 0/5/15 then 15, each refusal names the key, JSON-only, in CONFIG_KEYS; a stored
                             v1 without it reads the default
   case_transitions_and_stale_rev put_draft / save / rollback, StaleRev on a rev mismatch,
                             Invalid on a bad draft, nothing to save, nothing to roll back to
@@ -540,7 +540,7 @@ def case_audience_keys_carried_table():
 def case_catchup_minutes_table():
     """`catchup_minutes` (owner 2026-11-15): the catch-up's passes after Live, then every N minutes; JSON-only."""
     import assistant_full_ai
-    assert DEFAULTS["catchup_minutes"] == {"after_live": [0, 5, 15], "then_every": 25}, DEFAULTS
+    assert DEFAULTS["catchup_minutes"] == {"after_live": [0, 5, 15], "then_every": 15}, DEFAULTS
     for ok in ({"after_live": [0], "then_every": 5}, {"after_live": [2, 7], "then_every": 1440},
                {"after_live": [0, 1, 2, 3, 4, 1440], "then_every": 60}):
         assert validate({**DEFAULTS, "catchup_minutes": ok}) == [], ok

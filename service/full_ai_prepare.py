@@ -11,7 +11,8 @@ Creator's vault sellable for Full AI (docs/spec/phase-03b-full-ai-selling-test-c
 The chain, in order, each step only if still missing (facts re-read before each step):
   harvest   the Collect button's setup (`vault_ai_api.claim_collect`) + `_run_collect`
   describe  `_claim_describe` + `_run_describe_all("undescribed")`, then the flags sweep on
-            items still missing Jev flags (`_flags_todo` / `_run_flags_all`)
+            items still missing Jev flags (`_flags_todo` / `_run_flags_all`); both in CHUNK
+            (2000) sweeps, rechecking budget + the left count between them
   folders   `vault_of_folders.build_ai_folders` with the Folder plan's defaults, never mirrored to OF
   feet      the Feet pack's one-click "File N preselected" (`vault_pack_picker`): every photo Jev scores
             feet at the confident gate goes on its preselected rung; the possible ones stay in the picker
@@ -62,6 +63,7 @@ FOLDER_DEFAULTS: dict[str, Any] = {"keep": vault_scripts.DEFAULT_KEEP_SCRIPTS, "
                                    "split": True}
 STOPPED = "not run: an earlier step stopped the chain"
 FEET = vault_pack_picker.category("feet")
+CHUNK = 2000   # describe / flags walk this many per sweep, then recheck budget + what is left
 
 _running: set[str] = set()              # accounts whose chain runs now (process-local)
 _runs: dict[str, dict[str, Any]] = {}   # account → its latest run (in memory; a restart forgets it)
@@ -77,8 +79,6 @@ async def read_facts(account_id: str) -> dict[str, Any]:
     async with get_session() as s:
         harvested = (await s.execute(select(VaultCacheRun.id).where(
             VaultCacheRun.account_id == account_id, vault_runs._walked()).limit(1))).first() is not None
-        undescribed = await s.scalar(select(func.count()).select_from(VaultItem).where(
-            describe_selection(account_id, "undescribed", "v2")))
         ai_folders = (await s.execute(select(VaultFolder.id).where(
             VaultFolder.account_id == account_id, VaultFolder.deleted_at.is_(None),
             VaultFolder.name.startswith(vault_scripts.AI_FOLDER_PREFIX)).limit(1))).first() is not None
@@ -86,7 +86,7 @@ async def read_facts(account_id: str) -> dict[str, Any]:
             VaultFolder.account_id == account_id, VaultFolder.deleted_at.is_(None),
             VaultFolder.name.in_(FEET.folder_names)).limit(1))).first() is not None
     unflagged = len(await vault_ai_vision._flags_todo(account_id))
-    return {"harvested": harvested, "undescribed": int(undescribed or 0),
+    return {"harvested": harvested, "undescribed": await _undescribed(account_id),
             "unflagged": unflagged, "ai_folders": ai_folders, "feet_pack": feet_pack}
 
 
@@ -156,28 +156,47 @@ def _sweep_counts(prog: dict[str, Any] | None) -> dict[str, Any]:
     return {"described": prog["done"] - prog["failed"], "failed": prog["failed"], "total": prog["total"]}
 
 
-async def _describe(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
+def _add(total: dict[str, Any], prog: dict[str, Any] | None) -> None:
+    for k, v in _sweep_counts(prog).items():
+        total[k] = total.get(k, 0) + v
+
+
+async def _undescribed(account_id: str) -> int:
+    async with get_session() as s:
+        return int(await s.scalar(select(func.count()).select_from(VaultItem).where(
+            describe_selection(account_id, "undescribed", "v2"))) or 0)
+
+
+async def _describe(account_id: str, facts: dict[str, Any], progress=lambda counts: None) -> dict[str, Any]:
+    """Describe then flag, each in CHUNK-sized sweeps. Between chunks it rechecks: the claim
+    re-reads the budget (a cap fails the step), the left count is re-read and shown via `progress`,
+    and a chunk that shrinks nothing ends the loop (what is left keeps getting skipped)."""
     counts: dict[str, Any] = {}
-    if facts["undescribed"]:
+    left = facts["undescribed"]
+    while left:
         try:
             await vault_ai_vision._claim_describe(account_id, "qwen3-vl-30b")
         except HTTPException as e:
             if e.status_code == 409:
-                return _step("describe", "busy", "a describe sweep is already running")
+                return _step("describe", "busy", "a describe sweep is already running", counts)
             if e.status_code != 429:
                 raise
-            return _step("describe", "failed", await _budget_sentence(account_id))
+            return _step("describe", "failed", await _budget_sentence(account_id), counts)
         except llm_client.LLMKeyError:
-            return _step("describe", "failed", await _budget_sentence(account_id))
+            return _step("describe", "failed", await _budget_sentence(account_id), counts)
         vault_ai_vision._describe_progress.pop(account_id, None)
-        await vault_ai_vision._run_describe_all(account_id, "undescribed")
+        await vault_ai_vision._run_describe_all(account_id, "undescribed", limit=CHUNK)
         prog = vault_ai_vision._describe_progress.get(account_id)
-        counts = _sweep_counts(prog)
+        _add(counts, prog)
         stop = await _sweep_failure(account_id, prog)
         if stop:
             return _step("describe", "failed", stop, counts)
-    todo = await vault_ai_vision._flags_todo(account_id)
-    if todo:
+        before, left = left, await _undescribed(account_id)
+        progress({**counts, "undescribed": left})
+        if left >= before:
+            break
+    todo = await vault_ai_vision._flags_todo(account_id, limit=CHUNK)
+    while todo:
         budget = await vault_ai_vision._vision_budget(account_id)
         if budget["key_missing"]:   # the Flags button's own refusal (`flags_all`'s 424)
             return _step("describe", "failed", budget["blocked_reason"], counts)
@@ -186,10 +205,14 @@ async def _describe(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
         vault_ai_vision._flags_progress.pop(account_id, None)
         await vault_ai_vision._run_flags_all(account_id, todo)   # releases the claim in its finally
         prog = vault_ai_vision._flags_progress.get(account_id)
-        counts["flagged"] = _sweep_counts(prog).get("described", 0)
+        counts["flagged"] = counts.get("flagged", 0) + _sweep_counts(prog).get("described", 0)
         stop = await _sweep_failure(account_id, prog)
         if stop:
             return _step("describe", "failed", stop, counts)
+        prev, todo = set(todo), await vault_ai_vision._flags_todo(account_id, limit=CHUNK)
+        progress({**counts, "unflagged": len(await vault_ai_vision._flags_todo(account_id))})
+        if set(todo) == prev:
+            break
     return _step("describe", "done", "", counts)
 
 
@@ -225,7 +248,12 @@ async def _chain(account_id: str, run: dict[str, Any]) -> None:
                 continue
             steps[i] = _step(name, "running", counts=decided["counts"])
             try:
-                steps[i] = await _RUN[name](account_id, facts)
+                if name == "describe":
+                    def _progress(counts: dict[str, Any], i: int = i) -> None:
+                        steps[i] = _step("describe", "running", counts=counts)
+                    steps[i] = await _describe(account_id, facts, _progress)
+                else:
+                    steps[i] = await _RUN[name](account_id, facts)
             except Exception as e:  # noqa: BLE001 — the step's failure, recorded, never the relay's
                 log.exception("prepare_content %s failed account=%s", name, account_id)
                 steps[i] = _step(name, "failed", f"{type(e).__name__}: {e}"[:300])

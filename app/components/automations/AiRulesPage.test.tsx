@@ -33,8 +33,8 @@ const rules = (mode: "test" | "shadow"): Rules => ({
 afterEach(() => { cleanup(); relayGet.mockReset(); });
 
 describe("AiRulesPage", () => {
-  it("renders cards, opens the drawer with the prompt, and refetches on Mode", async () => {
-    relayGet.mockImplementation((url: string) => Promise.resolve(rules(url.endsWith("shadow") ? "shadow" : "test")));
+  it("renders cards, and opens the drawer with the prompt", async () => {
+    relayGet.mockResolvedValue(rules("test"));
     render(<AiRulesPage />);
 
     expect(await screen.findByRole("button", { name: "Router Jev" })).toBeTruthy();

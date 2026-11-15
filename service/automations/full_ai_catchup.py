@@ -4,7 +4,8 @@ Fans may already wait when a Creator goes Live (unread chats he wrote last, neve
 socket: written before Live, or during a disconnect / deploy). Per Creator in Live a process-local
 loop runs a pass at Live (PUT /admin/full-ai/mode `start`), or `BOOT_DELAY_S` after relay start
 (`boot`: a deploy's reads not all at once with the socket connects), then +5 min, +15 min, then every
-25 min: the checkpoint's `catchup_minutes` (`schedule`; read before each wait, so a saved change bites
+15 min; a socket drop restarts that schedule `RECONNECT_DELAY_S` after the reconnect (`reconnected`:
+OF replays nothing): the checkpoint's `catchup_minutes` (`schedule`; read before each wait, so a saved change bites
 at the next wait without a restart; an unreadable or invalid one runs the defaults). Off (`stop`) or a
 rule no longer live ends it. A pass (`run_pass`): OF's top `CHATS` chats, most recent first
 (`chats_page`, paced as a background walk) -> the chats whose last message is the Fan's and at most `MAX_AGE_S` old
@@ -28,11 +29,12 @@ from isotime import parse_iso
 
 log = logging.getLogger("of-relay.automation.full_ai_catchup")
 
-CHATS = 200                     # OF's most recent chats a pass reads (and the most Turns it queues)
+CHATS = 40                      # OF's most recent chats a pass reads (and the most Turns it queues; owner 2026-11-15: 200 was too many)
 MAX_AGE_S = 7 * 86400           # an older waiting DM is left to humans (owner to confirm)
 SCRAPE_GRACE_S = 60             # a DM only just saved: its Turn waits this long for the chat's scrape
 SOURCE = "full_ai_catchup"      # the one-Fan scrape's source and the walk's kind
 BOOT_DELAY_S = 60               # relay start: the first pass waits this long (Mode -> Live: at once)
+RECONNECT_DELAY_S = 10          # socket back after a drop: the first pass waits this long (a flapping socket: one pass)
 
 _sleep = asyncio.sleep          # tests swap it
 _tasks: dict[str, asyncio.Task] = {}
@@ -50,7 +52,7 @@ def schedule(cfg: dict | None) -> Schedule:
     return tuple(60 * m for m in cm["after_live"]), 60 * cm["then_every"]
 
 
-DEFAULT_SCHEDULE: Schedule = schedule(None)   # 0, +5, +15 min, then every 25 min
+DEFAULT_SCHEDULE: Schedule = schedule(None)   # 0, +5, +15 min, then every 15 min
 
 
 def offset_s(step: int, sched: Schedule = DEFAULT_SCHEDULE) -> int:
@@ -164,13 +166,20 @@ async def _loop(account_id: str, delay_s: float = 0) -> None:
 
 
 def start(account_id: str, delay_s: float = 0) -> asyncio.Task:
-    """(Re)start the Creator's schedule: after `delay_s` (0: at once), passes on `catchup_minutes` (`schedule`; default 0/5/15, then 25)."""
+    """(Re)start the Creator's schedule: after `delay_s` (0: at once), passes on `catchup_minutes` (`schedule`; default 0/5/15, then every 15)."""
     aid = str(account_id)
     stop(aid)
     task = asyncio.get_running_loop().create_task(_loop(aid, delay_s), name=f"full-ai-catchup:{aid}")
     _tasks[aid] = task
     task.add_done_callback(lambda t: _tasks.pop(aid, None) if _tasks.get(aid) is t else None)
     return task
+
+
+def reconnected(account_id: str) -> None:
+    """The Creator's OF socket is open again after a drop (DMs sent meanwhile never arrive on it):
+    a Creator with a running schedule restarts it, first pass in `RECONNECT_DELAY_S`. No I/O."""
+    if str(account_id) in _tasks:
+        start(account_id, RECONNECT_DELAY_S)
 
 
 def stop(account_id: str) -> None:

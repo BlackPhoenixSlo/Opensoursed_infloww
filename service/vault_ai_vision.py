@@ -68,8 +68,8 @@ describe_router = APIRouter()
 
 # ── Constants & prompts ─────────────────────────────────────────────
 
-# Every describe/flags call goes to this provider, and the daily cap is held
-# per-(account, provider) — so this one row IS the budget a vision sweep spends.
+# Every describe call goes to this provider (its key); the spend lands on the
+# account's own vault-describe budget row (`llm_client.DESCRIBE_BUDGET`).
 _VISION_PROVIDER = "deepinfra"
 
 
@@ -257,7 +257,7 @@ async def _vision_budget(account_id: str,
     which is empty exactly when nothing is blocking.
     """
     # `capped` is "no call on `model` fits" (llm_client.cap_state).
-    state = await llm_client.cap_state(account_id, _VISION_PROVIDER, model)
+    state = await llm_client.cap_state(account_id, llm_client.DESCRIBE_BUDGET, model)
     reason = ""
     # No vision key: nothing can be described at all, so it outranks the cap.
     # The sentence is the same one the 424 carries (`key_error_payload`).

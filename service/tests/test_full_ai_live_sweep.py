@@ -11,6 +11,8 @@ OF, Jev and the Writers faked (`_full_ai_fixtures.live_world`). Temp DB only.
   case_pending_job_not_doubled      two passes: one job
   case_her_outbound_newest          her newest row (another Lane, a human): not queued
   case_older_than_a_day             inbound older than 24 h: not queued
+  case_dm_saved_by_chat_read        his DM in `messages`, `fans.last_message_received_at` a week old
+                                    (saved by a chat read after a socket drop): queued
   case_prelook_stands_down          a fake last-look check standing down: not queued, no Jev call
   case_cap_twenty_oldest_first      25 Turn ends: 20 queued (oldest), the next pass the other 5
   case_webhook_off_sweep_answers    reply_by_webhook off + a hook-delivered DM: only the sweep queues
@@ -164,6 +166,17 @@ async def case_older_than_a_day():
     with live_world():
         assert await _pass(aid) == {"swept": 0, "queued": 0}
     assert await _jobs(aid) == []
+
+
+async def case_dm_saved_by_chat_read():
+    aid, fan = "fa_sw_read", 720
+    await seed_live(aid)
+    await _dm(aid, fan, 9651, datetime.utcnow() - timedelta(days=6))       # fans row: 6 days old
+    await _msg(aid, fan, 9652, "out", "hey", datetime.utcnow() - timedelta(days=5))
+    await _msg(aid, fan, 9653, "in", "Yeah", _ago(3))                      # no fans bump (a chat read)
+    with live_world():
+        assert await _pass(aid) == {"swept": 1, "queued": 1}
+    assert [(p["only_fan_ids"], p["anchor"]) for p in await _fan_jobs(aid)] == [([fan], 9653)]
 
 
 async def case_prelook_stands_down():

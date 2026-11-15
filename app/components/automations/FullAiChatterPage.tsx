@@ -30,10 +30,13 @@ import { FullAiTestChat } from "@/components/automations/FullAiTestChatWindows";
 import { ModelInfoBlock } from "@/components/automations/ModelInfoBlock";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
+import { useGrantedPages } from "@/components/shell/useGrantedPages";
 import { IF_BTN } from "@/components/settings/ifButton";
 import { IF_TABLE, IfModal } from "@/components/ui/infloww";
 import { useFullAiTestChat } from "@/hooks/useFullAiTestChat";
 import { ROUTE_LABEL, ROUTES, useFullAiToday } from "@/hooks/useFullAiToday";
+import { useAppliedSettings } from "@/lib/appliedSettings";
+import { deniedPage } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
 const TITLE = "Full AI Chat";
@@ -51,9 +54,14 @@ export default function FullAiChatterPage() {
   return <FullAiChatter key={accountId} accountId={accountId} creators={creators} />;
 }
 
-/** The header's "AI rules": the diagram in a popup over this page (X, Escape), near full-screen on a phone too. */
+/** The header's "AI rules": the diagram in a popup over this page (X, Escape), near full-screen on a phone too.
+ *  Its read answers to the /ai-rules page grant, not this page's: hidden while the Applied settings read is pending
+ *  and for a role that is denied /ai-rules (the Relay refuses it either way). */
 function AiRulesButton() {
   const [open, setOpen] = useState(false);
+  const pending = useAppliedSettings().isPending;
+  const denied = deniedPage("/ai-rules", useGrantedPages()) !== null;
+  if (pending || denied) return null;
   return (
     <>
       <button type="button" className={IF_BTN} onClick={() => setOpen(true)}>AI rules</button>

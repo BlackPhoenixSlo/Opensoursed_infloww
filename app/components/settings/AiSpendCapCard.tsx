@@ -84,8 +84,7 @@ function CapForm({ accountId, resp }: { accountId: string; resp: AccountConfigRe
           <span className="text-muted">per day</span>
         </div>
         <IfHelp id={`${inputId}-help`}>
-          Each AI provider this creator uses (for example the chat model&apos;s and the photo describer&apos;s)
-          can spend up to this much per day; resets at 00:00 UTC. 0 pauses all AI for this creator. A change
+          Vault describe and chats / other AI can each spend up to this much per day; resets at 00:00 UTC. 0 pauses all AI for this creator. A change
           applies to the next AI call. Up to $100.
         </IfHelp>
       </div>

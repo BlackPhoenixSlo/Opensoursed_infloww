@@ -9,12 +9,11 @@
  *   `useFanLists`; the live owner check reads the same OF list ids, `full_ai_owner_io._listed`). A dialog sets each list
  *   to Include / Exclude / Neither; Save sends the whole `fans` object. Empty include = every Fan; exclude wins. The top
  *   "Fans & Following" row only reads the pick: Include while no list is included, Neither once one is; picking Include
- *   there clears the includes. It is never stored. Live with no list (D61) warns in the row and the dialog; a refused
- *   Save shows inside the dialog with Turn Off and save (Mode Off through `useSetFullAiMode`, then the same save) /
- *   Cancel; any other failure shows above its Save.
+ *   there clears the includes. It is never stored. No list = every Fan, Live or not (owner 2026-11-15); a failed
+ *   Save shows above its Save.
  *   Top spend limit: dollars on the page, cents stored (`top_spend_cents`); 0 = no limit. Stored on blur / Enter; a
  *   refused entry (empty too) snaps back, a refused write shows beside the box; a stored one reads "Saved" until the
- *   next edit. A stored Fans change refetches the Mode read (its Live blockers).
+ *   next edit.
  * State: `fansForm.ts` (pure reducers: the pick, the save).
  */
 
@@ -23,15 +22,14 @@ import { useReducer, useState } from "react";
 import { useFanLists } from "@/components/audience/fanLists";
 import { ROW } from "@/components/automations/automationPage";
 import {
-  AUDIENCE_SAVE_IDLE, audienceSaveReducer, buildPayload, everyoneOn, fanRows, fansReducer, fansSummary, hasFansList,
-  initFans, LIVE_NO_LIST, NO_FANS, sideOf, type FanSide, type StoredFans,
+  AUDIENCE_SAVE_IDLE, audienceSaveReducer, buildPayload, everyoneOn, fanRows, fansReducer, fansSummary,
+  initFans, NO_FANS, sideOf, type FanSide, type StoredFans,
 } from "@/components/automations/fansForm";
 import { topSpendDollars, topSpendPatch, type FullAiConfig } from "@/components/automations/fullAiConfig";
 import type { TestChatState } from "@/components/automations/fullAiTestChat";
 import { IfButton, IfInput, IfModal, IfSegmented } from "@/components/ui/infloww";
 import type { FullAiConfigApi } from "@/hooks/useFullAiConfig";
-import { useFullAiMode, useSetFullAiMode } from "@/hooks/useFullAiMode";
-import { errText } from "@/lib/errText";
+import { useFullAiMode } from "@/hooks/useFullAiMode";
 
 const SIDES: { value: FanSide; label: string }[] = [
   { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }, { value: "none", label: "Neither" },
@@ -63,7 +61,6 @@ export function FansRow({ accountId, stored, cfg }: { accountId: string; stored:
         <div className="min-w-0">
           <div className="text-[14px] text-fg">Fans</div>
           <div className="mt-0.5 text-[12px] text-muted">{fansSummary(fans)}</div>
-          {live && !hasFansList(fans) && <div role="alert" className="mt-0.5 text-[12px] text-warn">{LIVE_NO_LIST}</div>}
         </div>
         <IfButton aria-label="Choose fans" disabled={stored === null} onClick={() => setOpen(true)}>Choose</IfButton>
       </div>
@@ -77,43 +74,27 @@ function FansDialog({ accountId, stored, live, cfg, onClose }: {
 }) {
   const [pick, dispatch] = useReducer(fansReducer, stored, initFans);
   const [save, dispatchSave] = useReducer(audienceSaveReducer, AUDIENCE_SAVE_IDLE);
-  const setMode = useSetFullAiMode(accountId);
   const lists = useFanLists(accountId);
   const failed = !lists.isLoading && lists.data === undefined;
   const rows = lists.isLoading || failed ? [] : fanRows(lists.customLists, pick);
   const busy = save.phase === "saving";
-  /** Store the pick (applied at once); `turnOff` first sets the Mode Off (the D61 popup's way out). */
-  const onSave = async (turnOff = false) => {
+  /** Store the pick (applied at once). */
+  const onSave = async () => {
     dispatchSave({ type: "save" });
-    if (turnOff) {
-      try { await setMode.mutateAsync("off"); } catch (e) {
-        dispatchSave({ type: "result", result: { kind: "failed", reason: `Couldn't turn Full AI Off: ${errText(e, "Request failed")}` } });
-        return;
-      }
-    }
     const result = await cfg.putAudience({ fans: buildPayload(pick) });
     dispatchSave({ type: "result", result });
     if (result.kind === "ok") onClose();
   };
   return (
-    <IfModal title="Fans" onClose={onClose} footer={save.phase === "needsOff" ? (
-      <div role="alertdialog" aria-label="Save refused" className="w-full space-y-2 rounded-lg border border-warn/50 p-3">
-        <p className="text-[12px] text-warn">{save.reason}</p>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <IfButton onClick={() => dispatchSave({ type: "dismiss" })}>Cancel</IfButton>
-          <IfButton variant="primary" onClick={() => void onSave(true)}>Turn Off and save</IfButton>
-        </div>
-      </div>
-    ) : (
+    <IfModal title="Fans" onClose={onClose} footer={
       <div className="w-full space-y-2">
-        {live && !hasFansList(pick) && <p role="alert" className="border-t border-border pt-3 text-[12px] text-warn">{LIVE_NO_LIST}</p>}
         {save.phase === "idle" && save.error && <p role="alert" className="text-[12px] text-err">{save.error}</p>}
         <div className="flex flex-wrap items-center justify-end gap-2">
           <IfButton onClick={onClose}>Cancel</IfButton>
           <IfButton variant="primary" disabled={busy} onClick={() => void onSave()}>{busy ? "Saving…" : "Save"}</IfButton>
         </div>
       </div>
-    )}>
+    }>
       <div className="space-y-3">
         <p className="text-[12px] text-muted">
           Save applies at once{live ? " and changes who Full AI answers right now" : ""}. Nothing included = every Fan. A Fan on
@@ -164,8 +145,7 @@ export function TopSpendRow({ stored, cfg }: { stored: FullAiConfig | null; cfg:
     if (patch.top_spend_cents === stored?.top_spend_cents) return;
     dispatchSave({ type: "save" });
     const result = await cfg.putAudience({ top_spend_cents: patch.top_spend_cents });
-    // The box shows words only; a D61 refusal (the stored list already empty while Live) reads like any other.
-    dispatchSave({ type: "result", result: result.kind === "needsOff" ? { kind: "failed", reason: result.reason } : result });
+    dispatchSave({ type: "result", result });
     if (result.kind !== "ok") el.value = dollars;
   };
   return (

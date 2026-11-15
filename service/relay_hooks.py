@@ -16,7 +16,9 @@ public checkout without the feature simply has nothing registered):
 Outbound fires on every successful send path (manual, scheduled, automation);
 inbound fires before SSE fan-out; thread head fires after a head-page read;
 failed send fires on any HTTPException from the manual send route, which the
-hook classifies; mute fires only after the platform accepts the change. Hooks
+hook classifies; mute fires only after the platform accepts the change; socket
+reconnected fires when an account's OF socket is open again after a drop (events
+sent meanwhile are lost). Hooks
 run synchronously on the event loop without I/O and must not raise.
 
 Background loops are starters, not event hooks: server.py's event-pump startup
@@ -52,6 +54,7 @@ inbound_message: list[Callable[[str | None, str | None, dict], None]] = []
 thread_head: list[Callable[[str, int, Any], None]] = []
 send_failed: list[Callable[[str, int, HTTPException], None]] = []
 mute: list[Callable[[int, bool], None]] = []
+socket_reconnected: list[Callable[[str], None]] = []
 background_loops: list[Callable[[], None]] = []
 blast_scrape_gates: list[Callable[["AsyncSession", str], Awaitable[bool]]] = []
 fan_row_fields: list[Callable[["Fan"], dict[str, Any]]] = []
@@ -87,6 +90,11 @@ def fire_send_failed(account_id: str, chat_id: int, exc: HTTPException) -> None:
 def fire_mute(chat_id: int, muted: bool) -> None:
     for hook in mute:
         hook(chat_id, muted)
+
+
+def fire_socket_reconnected(account_id: str) -> None:
+    for hook in socket_reconnected:
+        hook(account_id)
 
 
 def start_background_loops() -> None:

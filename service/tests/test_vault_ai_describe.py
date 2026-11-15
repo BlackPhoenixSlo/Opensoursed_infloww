@@ -713,7 +713,7 @@ async def case_a_dead_collect_stops_claiming_it_is_running() -> None:
         assert vault_ai_api._run_status(row, aid) == done, done
 
 
-async def _spend_today(aid: str, millicents: int, *, provider: str = "deepinfra",
+async def _spend_today(aid: str, millicents: int, *, provider: str = "describe",
                        flagged: bool = False) -> None:
     """Put `millicents` on today's per-(account, provider) rollup — the row the
     cap is enforced against."""
@@ -878,7 +878,7 @@ async def case_cap_state_reads_the_money_not_the_sticky_flag() -> None:
             update(AccountAiConfig).where(AccountAiConfig.account_id == aid)
             .values(daily_cost_cap_cents=500))
         await s.commit()
-    state = await llm_client.cap_state(aid, "deepinfra")
+    state = await llm_client.cap_state(aid, "describe")
     assert state["capped"] is False, state
     assert state["flagged"] is True, "the day's cap-hit is still worth reporting"
     assert state["remaining_millicents"] == 40_000, state
@@ -905,7 +905,7 @@ async def case_capped_means_no_call_on_the_model_fits() -> None:
         aid = _fresh_account()
         await _seed_account(aid, cap_cents=100)  # 10,000 mc
         await _spend_today(aid, 10_000 - left, flagged=flagged)
-        return await llm_client.cap_state(aid, "deepinfra", model)
+        return await llm_client.cap_state(aid, "describe", model)
 
     assert (await _state(floor - 1))["capped"] is True                      # no room at all
     assert (await _state(floor + 1))["capped"] is False                     # still fits

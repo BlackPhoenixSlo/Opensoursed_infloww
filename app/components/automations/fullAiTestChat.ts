@@ -424,12 +424,12 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
 export const STALE_TEXT = "Someone saved this config meanwhile. Reload.";
 
 const relayBody = (e: unknown) => (e instanceof RelayError ? (e.body as { errors?: unknown; rev?: unknown } | null) : null);
-/** 409 `{detail}` with no `rev`: not stale but refused, e.g. D61 "Live needs a Fans list". */
+/** 409 `{detail}` with no `rev`: not stale but refused (its words shown). */
 const refused409 = (e: unknown): boolean =>
   e instanceof RelayError && e.status === 409 && typeof relayBody(e)?.rev !== "number";
 
 /** A failed config write as one action: a 409 carrying a numeric `rev` is stale (someone stored meanwhile); any other
- *  refusal (a 409 without `rev`, e.g. D61, 422 field errors, a network error) is `configFailed` with the server's words. */
+ *  refusal (a 409 without `rev`, 422 field errors, a network error) is `configFailed` with the server's words. */
 export function writeFailed(e: unknown): TestChatAction {
   if (e instanceof RelayError && e.status === 409 && !refused409(e)) return { type: "stale" };
   const errors = relayBody(e)?.errors;
@@ -448,13 +448,13 @@ const withAudience = (c: FullAiConfig | null, src: FullAiConfig | null): FullAiC
   return out;
 };
 
-/** An audience write's answer: stored; refused by D61 (`needsOff`: Live needs a Fans list, offer Turn Off and save);
- *  or failed (a field error, a lost race, the network), shown beside the control. */
-export type AudienceResult = { kind: "ok" } | { kind: "needsOff"; reason: string } | { kind: "failed"; reason: string };
+/** An audience write's answer: stored, or failed (a refusal, a field error, a lost race, the network), shown beside
+ *  the control. */
+export type AudienceResult = { kind: "ok" } | { kind: "failed"; reason: string };
 
 /** A failed audience write as the control shows it (never on the page's config errors). */
 export function audienceFailed(e: unknown): AudienceResult {
-  if (refused409(e)) return { kind: "needsOff", reason: errText(e, "Refused") };
+  if (refused409(e)) return { kind: "failed", reason: errText(e, "Refused") };
   if (e instanceof RelayError && e.status === 409) return { kind: "failed", reason: "Someone saved this config meanwhile. Try again." };
   const errors = relayBody(e)?.errors;
   return { kind: "failed", reason: Array.isArray(errors) ? errors.map(String).join(" ") : errText(e, "Request failed") };

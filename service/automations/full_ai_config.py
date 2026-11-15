@@ -125,9 +125,9 @@ DEFAULTS: dict[str, Any] = {
     # include = every Fan) and never one on an exclude list. Page row "Fans" (a dialog over the OF lists).
     "fans": {"include": [], "exclude": []},
     # Live only: the waiting-chats catch-up (`full_ai_catchup`) passes at these minutes after Live / relay start,
-    # then every `then_every` minutes (owner 2026-11-15). Read before each wait, so a save bites at the next one.
+    # then every `then_every` minutes (owner 2026-11-15: 25, then 15). Read before each wait, so a save bites at the next one.
     # JSON-only.
-    "catchup_minutes": {"after_live": [0, 5, 15], "then_every": 25},
+    "catchup_minutes": {"after_live": [0, 5, 15], "then_every": 15},
 }
 
 
@@ -183,7 +183,7 @@ _BOOLS = ("gifs", "sext_on", "sext_scene", "lead_in", "sell_on", "draft_question
 TEASE_PRICES = (1, 12)
 TEASE_CENTS = (300, 20000)
 # Catch-up schedule: 1-6 strictly ascending whole minutes 0-1440 after Live, then every 5-1440 minutes (5 = the floor
-# that keeps a 200-chat OF read from hammering).
+# that keeps a 40-chat OF read from hammering).
 CATCHUP_PASSES = (1, 6)
 CATCHUP_MAX_MIN = 1440
 CATCHUP_EVERY_MIN = 5
@@ -394,12 +394,6 @@ def catchup_error(cm: Any) -> str | None:
     if type(ev) is not int or not CATCHUP_EVERY_MIN <= ev <= hi:
         return f"then_every must be whole minutes from {CATCHUP_EVERY_MIN} to {hi}"
     return None
-
-
-def has_fans_list(cfg: dict) -> bool:
-    """D61: Live needs an include or an exclude list (both empty = every Fan, so no list)."""
-    fs = cfg.get("fans")
-    return _fans_error(fs) is None and bool(fs["include"] or fs["exclude"])
 
 
 def style_layers(cfg: dict) -> dict[str, bool]:

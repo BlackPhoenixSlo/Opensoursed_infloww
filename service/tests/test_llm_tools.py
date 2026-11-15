@@ -124,7 +124,7 @@ async def case_cap_state_user() -> None:
     async with get_session() as s:
         s.add(User(id="u_tools", username="u_tools", password="x"))
         await s.flush()
-        s.add(GrokUserDailyCost(day=day, user_id="u_tools", provider="deepseek", cost_cents=10_000, call_count=1))
+        s.add(GrokUserDailyCost(day=day, user_id="u_tools", provider="chat", cost_cents=10_000, call_count=1))
     user = await llm_client.cap_state(None, "deepseek", "deepseek-v4-flash", user_id="u_tools")
     house = await llm_client.cap_state(None, "deepseek", "deepseek-v4-flash")
     assert user["spent_millicents"] == 10_000 and user["capped"], user

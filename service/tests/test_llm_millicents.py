@@ -199,7 +199,7 @@ async def case_daily_cap_trips_with_llmcapexceeded():
     async with get_session() as s:
         row = await s.scalar(
             select(GrokDailyCost).where(
-                GrokDailyCost.account_id == acct, GrokDailyCost.provider == "deepseek"
+                GrokDailyCost.account_id == acct, GrokDailyCost.provider == "chat"
             )
         )
     assert row is not None and row.cost_cents > 0, row
@@ -261,7 +261,7 @@ async def case_live_deepseek_records_nonzero_cost():
         assert (call.cost_cents or 0) > 0, call.cost_cents
         daily = await s.scalar(
             select(GrokDailyCost.cost_cents).where(
-                GrokDailyCost.account_id == acct, GrokDailyCost.provider == "deepseek"
+                GrokDailyCost.account_id == acct, GrokDailyCost.provider == "chat"
             )
         )
     assert (daily or 0) > 0, f"daily rollup must reflect the call, got {daily}"
