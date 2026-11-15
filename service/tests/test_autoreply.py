@@ -72,8 +72,8 @@ from autoreply_config_api import _validate  # noqa: E402
 from automation_executor import run_once  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, AccountAiConfig, AutoreplyState, Fan, Message, SkipList, Transaction,
-    User, UserAccount,
+    Account, AccountAiConfig, AutoreplyState, Fan, FanLease, Message, SkipList,
+    Transaction, User, UserAccount,
 )
 import tenant_keys  # noqa: E402
 
@@ -1037,10 +1037,59 @@ async def case_slot_lost_after_a_bubble_still_records_the_nudge():
     assert res["sent"] == 0 and len(fake.sent) == 1, (res, fake.sent)
 
 
+async def _leased(aid: str) -> set[int]:
+    async with get_session() as s:
+        return set((await s.execute(select(FanLease.fan_id).where(
+            FanLease.account_id == aid))).scalars())
+
+
+async def case_model_wait_frees_the_slot():
+    """While the model writes the nudge the run holds no slot: a second run
+    takes the one permit meanwhile, and the nudge still goes out once."""
+    aid = "ar_freed"
+    await _seed_account(aid)
+    await _seed_fan(aid, 3601)
+    fake = _use_fake(); _patch_llm()
+    chat = llm_client.chat = _harness.parking_chat(llm_client.chat, 1)
+    res = await _harness.slot_parked(lambda: run_once(aid, "autoreply", payload={}), chat)
+    assert res["sent"] == 1 and [c for c, _ in fake.sent] == [3601], (res, fake.sent)
+
+
+async def case_slot_lost_in_model_wait_sends_no_more():
+    """The slot is not back within the take-back budget after the 2nd fan's
+    model call: he gets nothing and keeps no lease and no nudge (the next run
+    nudges him); the 1st fan's nudge stays recorded and is not sent again."""
+    aid = "ar_freed_lost"
+    await _seed_account(aid)
+    for fid in (3611, 3612):
+        await _seed_fan(aid, fid)
+    fake = _use_fake(); _patch_llm()
+    chat = llm_client.chat = _harness.parking_chat(llm_client.chat, 2)
+    real, _autoreply.INLINE_MAX_S = _autoreply.INLINE_MAX_S, 0.2
+    try:
+        res = await _harness.slot_parked(lambda: run_once(aid, "autoreply", payload={}),
+                                         chat, keep_s=0.5)
+    finally:
+        _autoreply.INLINE_MAX_S = real
+    assert res["status"] == "error", res
+    assert len(fake.sent) == 1, fake.sent
+    first = fake.sent[0][0]
+    (other,) = {3611, 3612} - {first}
+    assert (await _state(aid, first)).nudges_sent == 1
+    st = await _state(aid, other)
+    assert st is None or st.nudges_sent == 0, st
+    assert other not in await _leased(aid)
+    _patch_llm()
+    res = await run_once(aid, "autoreply", payload={})
+    assert res["sent"] == 1 and [c for c, _ in fake.sent] == [first, other], (res, fake.sent)
+
+
 _harness.run(
     case_disabled_no_send,
     case_eligible_one_nudge,
     case_slot_lost_after_a_bubble_still_records_the_nudge,
+    case_model_wait_frees_the_slot,
+    case_slot_lost_in_model_wait_sends_no_more,
     case_nudge_cap,
     case_new_message_covered_again,
     case_reply_gap_holds_fast_remessage,

@@ -57,12 +57,14 @@ from sqlalchemy import select  # noqa: E402
 import automation_executor as ax  # noqa: E402
 import llm_client  # noqa: E402
 from automations import send_followup  # noqa: E402  (preview_compose unit test)
+from automations import rhythm  # noqa: E402
 from automation_executor import acquire_fan_lease, run_once  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account,
     AutomationRun,
     Fan,
+    FanLease,
     FollowupState,
     Message,
     NudgeState,
@@ -789,7 +791,60 @@ async def case_empty_draft_is_counted_and_named() -> None:
     assert fake.sent == [], "nothing may be sent for an empty draft"
 
 
+async def case_model_wait_frees_the_slot() -> None:
+    """While the model writes the nudge the run holds no slot: a second run
+    takes the one permit meanwhile, and the nudge still goes out once."""
+    aid = "acc_ffreed"
+    await _seed_account(aid)
+    await _seed_fan(aid, 7301)
+    await _seed_msg(aid, 7301, 1, "out", age_hours=48)
+    fake = _use_fake()
+    captured: list = []
+    _patch_llm(captured=captured)
+    chat = llm_client.chat = _harness.parking_chat(llm_client.chat, 1)
+    res = await _harness.slot_parked(
+        lambda: run_once(aid, "send_followup", payload={"with_image": False}), chat)
+    assert res["followups_sent"] == 1 and [c for c, *_ in fake.sent] == [7301], (res, fake.sent)
+    assert [(c["timeout_s"], c["max_attempts"]) for c in captured] == [(rhythm.MODEL_WAIT_S, rhythm.MODEL_TRIES)]
+
+
+async def case_slot_lost_in_model_wait_sends_no_more() -> None:
+    """The slot is not back within the take-back budget after the 2nd fan's
+    model call: he gets nothing (no step recorded, no marker, no lease; the next
+    run nudges him); the 1st fan's step stays recorded and is not sent again."""
+    aid = "acc_ffreed_lost"
+    await _seed_account(aid)
+    for fid in (7311, 7312):
+        await _seed_fan(aid, fid)
+        await _seed_msg(aid, fid, fid, "out", age_hours=48)
+    fake = _use_fake()
+    _patch_llm()
+    chat = llm_client.chat = _harness.parking_chat(llm_client.chat, 2)
+    real, rhythm.INLINE_MAX_S = rhythm.INLINE_MAX_S, 0.2
+    try:
+        res = await _harness.slot_parked(
+            lambda: run_once(aid, "send_followup", payload={"with_image": False}),
+            chat, keep_s=0.5)
+    finally:
+        rhythm.INLINE_MAX_S = real
+    assert res["status"] == "error", res
+    assert len(fake.sent) == 1, fake.sent
+    first = fake.sent[0][0]
+    (other,) = {7311, 7312} - {first}
+    async with get_session() as s:
+        assert "1" in json.loads((await s.get(FollowupState, (aid, first))).messages_sent)
+        st = await s.get(FollowupState, (aid, other))
+        assert st is None or ("1" not in json.loads(st.messages_sent or "{}")
+                              and st.sending_at is None), st.__dict__
+        assert await s.get(FanLease, (aid, other)) is None
+    _patch_llm()
+    res = await run_once(aid, "send_followup", payload={"with_image": False})
+    assert res["followups_sent"] == 1 and [c for c, *_ in fake.sent] == [first, other], (res, fake.sent)
+
+
 _harness.run(
+    case_model_wait_frees_the_slot,
+    case_slot_lost_in_model_wait_sends_no_more,
     case_eligible_fan_gets_followup,
     case_completed_fan_rearms_on_inbound,
     case_final_step_fires_under_silence_cap,

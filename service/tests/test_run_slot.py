@@ -625,6 +625,14 @@ def case_auto_runs_follows_the_sweep():
     assert got == {0: 4, 1: 4, 5: 4, 10: 4, 20: 4, 21: 5, 35: 5, 36: 6, 50: 6, 51: 7, 500: 16}, got
 
 
+def case_auto_bulk_follows_the_sweep_cost():
+    """Bulk slots: 2 up to 10 models, one more per started 10 after, clamped
+    to 2..8 (~5k sweep slot-s/day per creator keeps the lane <= ~50% busy)."""
+    got = {n: run_slot.auto_bulk(n) for n in (0, 1, 10, 11, 13, 20, 21, 30, 50, 51, 70, 71, 500)}
+    assert got == {0: 2, 1: 2, 10: 2, 11: 3, 13: 3, 20: 3, 21: 4, 30: 4, 50: 6, 51: 7,
+                   70: 8, 71: 8, 500: 8}, got
+
+
 async def case_a_grown_pool_serves_its_waiters_at_once():
     pool = run_slot.SlotPool(1)
     go = asyncio.Event()

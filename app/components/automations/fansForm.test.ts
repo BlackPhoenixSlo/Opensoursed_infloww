@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildPayload, fanRows, fansReducer, fansSummary, initFans, sideOf, type Action, type FansPick, type OfList,
+  buildPayload, everyoneOn, fanRows, fansReducer, fansSummary, initFans, sideOf, type Action, type FansPick, type OfList,
 } from "./fansForm";
 
 const stored = (include: number[], exclude: number[] = []) => ({ include, exclude });
@@ -20,6 +20,7 @@ describe("fansReducer", () => {
     ["neither drops it from both", initFans(stored([4], [6])), [set(4, "none"), set(6, "none")], stored([])],
     ["include twice keeps one", initFans(stored([])), [set(4, "include"), set(4, "include")], stored([4])],
     ["others keep their order", initFans(stored([1, 2, 3])), [set(2, "none"), set(9, "include")], stored([1, 3, 9])],
+    ["everyone clears includes, keeps excludes", initFans(stored([1, 2], [3])), [{ type: "everyone" }], stored([], [3])],
     ["reset drops edits", initFans(stored([1])), [set(2, "exclude"), { type: "reset", stored: stored([7], [8]) }], stored([7], [8])],
   ])("%s", (_n, from, actions, want) => {
     expect(run(actions, from)).toEqual(want);
@@ -49,6 +50,18 @@ describe("sideOf / buildPayload / fansSummary", () => {
     ["both", stored([1], [3, 4]), "1 included · 2 excluded"],
   ])("fansSummary %s", (_n, s, want) => {
     expect(fansSummary(s)).toBe(want);
+  });
+});
+
+describe("everyoneOn", () => {
+  it.each<[string, FansPick, boolean]>([
+    ["nothing picked", stored([]), true],
+    ["only excludes", stored([], [3]), true],
+    ["a list included", stored([1]), false],
+    ["last include back to neither", [set(1, "none")].reduce(fansReducer, stored([1])), true],
+    ["include a list flips it off", [set(1, "include")].reduce(fansReducer, stored([])), false],
+  ])("%s", (_n, s, want) => {
+    expect(everyoneOn(s)).toBe(want);
   });
 });
 

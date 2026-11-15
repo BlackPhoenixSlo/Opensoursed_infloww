@@ -352,7 +352,7 @@ async def _scrape_allowed(account_id: str, *, s=None) -> bool:
 
 async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | None = None,
                               scrape_allowed: bool | None = None) -> None:
-    """First inbound from a fan after a blast → one bounded `scrape_chats` job for
+    """First inbound from a fan after a blast → one bounded `scrape_fan` job for
     HIM, now, but ONLY when a registered scrape gate allows it. Never raises:
     this is an inbox repair, and the chat dispatch it sits in front of must not
     care whether it worked.
@@ -380,8 +380,9 @@ async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | N
 
 
 async def enqueue_fan_scrape(account_id: str, fan_id: int, source: str) -> bool:
-    """One bounded one-fan `scrape_chats` job `{"fan_ids": [fan], "source": source}`,
-    due now, supervisor woken, unless the fan's scrape is claimed inside
+    """One bounded one-fan `scrape_fan` job `{"fan_ids": [fan], "source": source}`
+    (scrape_chats' handler on the sender lane, its own run key: never queued behind
+    the account's sweep, automations/scrape_chats.py), due now, supervisor woken, unless the fan's scrape is claimed inside
     `_FAN_SCRAPE_DEDUP_S`: every trigger (a blast reply, a deferred chat's reply, open
     or gen_info pick) shares the claim, so they make one job per fan per window.
     True = this call enqueued it. Never raises.
@@ -395,7 +396,7 @@ async def enqueue_fan_scrape(account_id: str, fan_id: int, source: str) -> bool:
         if not claimed:
             return False
         await ax.enqueue_job(
-            account_id, "scrape_chats",
+            account_id, "scrape_fan",
             payload={"fan_ids": [int(fan_id)], "source": source},
             run_at=datetime.utcnow())
         ax.wake_supervisor()

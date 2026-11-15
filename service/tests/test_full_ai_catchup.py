@@ -210,7 +210,7 @@ async def case_unsaved_dm_saved_one_turn():
     (job,) = await _jobs(aid)
     assert json.loads(job.payload_json) == {"only_fan_ids": [fan], "anchor": mid, "_rule_id": rid, "tries": 0}
     assert job.run_at >= t0 + timedelta(seconds=cu.SCRAPE_GRACE_S), job.run_at   # the scrape first
-    assert await _payloads(aid, "scrape_chats") == [{"fan_ids": [fan], "source": cu.SOURCE}]
+    assert await _payloads(aid, "scrape_fan") == [{"fan_ids": [fan], "source": cu.SOURCE}]
     assert fake.sent == [] and fake.read == []        # sends nothing, marks nothing read
     async with get_session() as s:
         await s.execute(update(ScheduledJob).where(ScheduledJob.id == job.id)
@@ -279,7 +279,7 @@ async def case_second_pass_no_double():
     assert (await _pass(aid, chats))[0]["queued"] == 0
     (job,) = await _jobs(aid)
     assert job.run_at <= datetime.utcnow(), job.run_at                         # already saved: no grace
-    assert await _payloads(aid, "scrape_chats") == []
+    assert await _payloads(aid, "scrape_fan") == []
     with world():
         assert (await run_once(aid, KIND))["status"] == "ok"
     assert len(await _rows(aid)) == 1

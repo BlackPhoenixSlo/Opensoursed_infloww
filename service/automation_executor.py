@@ -162,6 +162,10 @@ _MAX_CONCURRENT_RUNS = lane_config.resolve("AUTOMATION_MAX_CONCURRENT_RUNS", 4)
 # _bulk_sem. Independent → at most RUNS+BULK concurrent (fine: per-account OF
 # pacing + different accounts/sessions).
 _MAX_CONCURRENT_BULK = lane_config.resolve("AUTOMATION_MAX_CONCURRENT_BULK", 2)
+# …sized from the active Creators every pass like the run slots
+# (run_slot.auto_bulk) unless the env or the panel sets it. One of them is held
+# for an operator's bulk run (priority_mass): it never waits behind sweeps.
+_OPERATOR_RESERVED_BULK = 1
 # Run slots only an OPERATOR's run may take (a job of an operator kind started
 # from the app: a premade mass, a scheduled send, an unsend, a priority mass;
 # its scheduled_jobs row carries `created_by_employee_id`, `_OPERATOR_KINDS`). Operator runs also go ahead of every
@@ -1066,21 +1070,29 @@ async def _active_models() -> int:
         )).scalar_one())
 
 
-async def _size_run_slots(pool: run_slot.SlotPool) -> None:
-    """Size the run slots from the active Creators (run_slot.auto_runs) unless
-    the env or the panel sets AUTOMATION_MAX_CONCURRENT_RUNS. The panel shows
-    the auto size as the knob's default and live value, so nothing reads as a
-    pending restart."""
-    knob = "AUTOMATION_MAX_CONCURRENT_RUNS"
+async def _size_slots(pool: run_slot.SlotPool, knob: str, auto, event: str) -> None:
+    """Size `pool` from the active Creators (`auto(models)`) unless the env or
+    the panel sets `knob`. The panel shows the auto size as the knob's default
+    and live value, so nothing reads as a pending restart."""
     if lane_config.overridden(knob):
         return
     models = await _active_models()
-    n = run_slot.auto_runs(models)
+    n = auto(models)
     if n != pool.n:
-        log.info("automation_run_slots_resized from=%d to=%d active_models=%d", pool.n, n, models)
+        log.info("%s from=%d to=%d active_models=%d", event, pool.n, n, models)
         pool.resize(n)
     lane_config.resolve(knob, n)
     lane_config.record_live(knob, n)
+
+
+async def _size_run_slots(pool: run_slot.SlotPool) -> None:
+    await _size_slots(pool, "AUTOMATION_MAX_CONCURRENT_RUNS", run_slot.auto_runs,
+                      "automation_run_slots_resized")
+
+
+async def _size_bulk_slots(pool: run_slot.SlotPool) -> None:
+    await _size_slots(pool, "AUTOMATION_MAX_CONCURRENT_BULK", run_slot.auto_bulk,
+                      "automation_bulk_slots_resized")
 
 
 async def _drain_due_jobs_once() -> None:
@@ -1122,11 +1134,15 @@ async def _drain_due_jobs_once() -> None:
     if _run_sem is None:
         _run_sem = run_slot.SlotPool(_MAX_CONCURRENT_RUNS, reserve=_OPERATOR_RESERVED_RUNS)
     if _bulk_sem is None:
-        _bulk_sem = run_slot.SlotPool(_MAX_CONCURRENT_BULK)
+        _bulk_sem = run_slot.SlotPool(_MAX_CONCURRENT_BULK, reserve=_OPERATOR_RESERVED_BULK)
     try:
         await _size_run_slots(_run_sem)
     except Exception:
         log.warning("automation_run_slots_size_failed", exc_info=True)
+    try:
+        await _size_bulk_slots(_bulk_sem)
+    except Exception:
+        log.warning("automation_bulk_slots_size_failed", exc_info=True)
 
     per_fan = _per_fan_caps()
 

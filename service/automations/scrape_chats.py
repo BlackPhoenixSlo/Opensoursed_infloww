@@ -620,7 +620,8 @@ async def _scrape_one_chat(
 
 # An explicit scrape of a chat whose history was deferred at job start (webhook_dispatch's
 # open / reply / gen_info trigger, or a blast reply that won the shared claim) counts that
-# chat's OF calls under its own Caller kind, not `auto:scrape_chats`, so the sweep's cut
+# chat's OF calls under its own Caller kind, not `auto:scrape_chats` (nor `auto:scrape_fan`,
+# the one-fan kind those triggers enqueue since 2026-11), so the sweep's cut
 # and the on-demand backfill it buys show apart (scripts/proxy-health/flag_report.py
 # FLAG_CANDIDATES `eager_history`). A `{}` sweep never does.
 DEFERRED_HISTORY_CALLER = "auto:scrape_chats:deferred_history"
@@ -765,3 +766,16 @@ async def _automation_scrape_chats(
                                f"scraped {chats_scanned} of {len(targets)}")
         out["full_sweep"] = True
     return out
+
+
+@register("scrape_fan")
+async def _automation_scrape_fan(
+    account_id: str, payload: dict, *, run_id: int
+) -> dict:
+    """The one-fan scrape (webhook_dispatch.enqueue_fan_scrape): scrape_chats with
+    `fan_ids`, under its own kind so it is not a bulk kind (it runs on the sender
+    lane, seconds long) and has its own run key, never queued behind the account's
+    sweep. No ids: nothing, never a sweep on the sender lane."""
+    if not (payload.get("chat_ids") or payload.get("fan_ids")):
+        return {"skipped": "no_fan_ids"}
+    return await _automation_scrape_chats(account_id, payload, run_id=run_id)

@@ -1,5 +1,5 @@
 ---
-kinds: [apply_profiles, auto_follow, auto_posts, auto_stories, autoreply, birthday_message, customs_watch, expired_message, expiry_message, full_ai_chat, gen_info, mass_premade, nudge_online, nudge_online_fire, priority_mass, process_old_fans, promo_reactivate, purchase_followup, reply_mass_funnel, resubscribe_message, s4s_check, s4s_post, scheduled_send, scrape_chats, send_followup, send_mass_message, send_welcome, smart_list_sync, unsend_messages, welcome_chatter_for_info]
+kinds: [apply_profiles, auto_follow, auto_posts, auto_stories, autoreply, birthday_message, customs_watch, expired_message, expiry_message, full_ai_chat, gen_info, mass_premade, nudge_online, nudge_online_fire, priority_mass, process_old_fans, promo_reactivate, purchase_followup, reply_mass_funnel, resubscribe_message, s4s_check, s4s_post, scheduled_send, scrape_chats, scrape_fan, send_followup, send_mass_message, send_welcome, smart_list_sync, unsend_messages, welcome_chatter_for_info]
 verified: 2026-10-21
 ---
 
@@ -1513,6 +1513,22 @@ actually covers 100) · `max_pages` 40 · `fan_ids` to backfill specific chats.
   past whatever limit you set — name the fan in `fan_ids` to reach him.
 - Every connected account gets one automatic sweep when the relay restarts, so
   the operator's run log shows backfill runs nobody scheduled.
+
+## kind: scrape_fan — Backfill one chat (internal)
+
+**What it does:** The same backfill as `scrape_chats`, for one fan only, started
+by itself when a fan answers a mass, when a chat whose history was skipped gets a
+reply or is opened, or when the profile writer needs more of his history.
+
+**Where:** No screen of its own; the operator's run log shows it under this
+name.
+
+**How to enable:** Nothing to enable — it exists only because one of those
+triggers created it.
+
+**Caveats:** it runs beside a full `scrape_chats` sweep of the same account, not
+after it, so the fan's chat fills in within seconds. One per fan per 10 minutes,
+however many triggers fire.
 
 ## kind: smart_list_sync — Smart List → OnlyFans list sync
 

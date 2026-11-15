@@ -689,7 +689,7 @@ async def _backfills(aid):
     from db.models import ScheduledJob
     async with get_session() as s:
         rows = (await s.execute(select(ScheduledJob.payload_json).where(
-            ScheduledJob.account_id == aid, ScheduledJob.kind == "scrape_chats"))).scalars().all()
+            ScheduledJob.account_id == aid, ScheduledJob.kind == "scrape_fan"))).scalars().all()
     out = Counter()
     for p in rows:
         p = json.loads(p)

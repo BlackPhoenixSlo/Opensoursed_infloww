@@ -161,6 +161,56 @@ def slot_lost_at_hold(module, n: int):
         module.hold_with_typing = real
 
 
+def parking_chat(fake, n=1):
+    """A `llm_client.chat` stand-in: `fake(**kw)` answers, but the n-th call
+    (1-based), or the first one the predicate `n(kw)` is true for, first sets
+    `.parked` and waits for `.go` (a model still answering)."""
+    calls = [0]
+
+    async def chat(**kw):
+        calls[0] += 1
+        if (n(kw) if callable(n) else calls[0] == n) and not chat.parked.is_set():
+            chat.parked.set()
+            await chat.go.wait()
+        return await fake(**kw)
+    chat.parked, chat.go = asyncio.Event(), asyncio.Event()
+    return chat
+
+
+async def slot_parked(run, chat, *, keep_s: float = 0.0, wait_s: float = 5.0):
+    """`run()` inside `run_slot.hold(SlotPool(1))`, as the executor runs it. When
+    `chat` (a `parking_chat`) parks, a second run must take the one permit while
+    the model answers (AssertionError otherwise: the wait pinned the slot). It
+    lets the model answer, keeps the permit `keep_s` more (past a patched
+    take-back budget = SlotLost), then gives it back. → run()'s result, or its
+    exception raised."""
+    import run_slot
+    pool, took = run_slot.SlotPool(1), []
+
+    async def first():
+        async with run_slot.hold(pool):
+            return await run()
+
+    async def second():
+        async with run_slot.hold(pool):
+            took.append(True)
+            chat.go.set()
+            await asyncio.sleep(keep_s)
+
+    task = asyncio.create_task(first())
+    try:
+        await asyncio.wait_for(chat.parked.wait(), wait_s)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(second(), wait_s + keep_s)
+    finally:
+        chat.go.set()
+    (res,) = await asyncio.gather(task, return_exceptions=True)
+    assert took, "no second run got the slot while the model answered: the wait pinned it"
+    if isinstance(res, BaseException):
+        raise res
+    return res
+
+
 def xfail(reason: str, strict: bool = True):
     """Mark a case as KNOWN-FAILING: it still RUNS, but its failure does not fail the
     suite — and by default, if it starts PASSING that IS a failure, so the marker

@@ -24,6 +24,11 @@ stats), called directly on a real gathered candidate, a fake OF and a patched LL
   case_fold_table            `_fold` (pure): each outcome's counters summed under the
                              stats keys run() returns, newly_skiplisted in the skips
   case_run_stats_keys        run_once: the stats keys (in order) run() always returned
+  case_model_waits_free_the_slot  the extract and the reply wait on the model off the
+                             run slot (a 2nd run gets the one permit); the reply lands once
+  case_slot_lost_in_model_wait_sends_no_more  slot not back after the 2nd fan's reply
+                             call: run errors, he gets nothing (no turn, no lease), the
+                             1st reply stays recorded; the next run answers only him
 
 Run: ./venv/bin/python service/tests/test_wcfi_turn.py  (exit 0 = pass)
 """
@@ -311,6 +316,76 @@ async def case_run_stats_keys():
                     *wcfi_decide.COUNTERS, "skipped_locked", "skipped_cooldown",
                     "skipped_banned", "errors", "cap_hit", "dry_run", "model"], keys
     assert (res["replies_sent"], res["errors"], res["cap_hit"]) == (1, 0, False), res
+
+
+def _extract_call(kw) -> bool:
+    return "profile analyzer" in kw["messages"][0]["content"]
+
+
+async def _profile_chat(**kw):
+    if _extract_call(kw):
+        return SimpleNamespace(content='{"his_age":"31"}', parsed={"his_age": "31"}, call_id=1)
+    return SimpleNamespace(content="mmm tell me more 😏", call_id=2)
+
+
+@contextlib.contextmanager
+def _run_seams(chat):
+    """run_once's OF client is a FakeOF and llm_client.chat is `chat`; both put back."""
+    of, real_client, real_chat = FakeOF(), ax._make_client, llm_client.chat
+    ax._make_client = lambda account_id: of  # type: ignore[attr-defined]
+    llm_client.chat = chat  # type: ignore[attr-defined]
+    try:
+        yield of
+    finally:
+        ax._make_client, llm_client.chat = real_client, real_chat  # type: ignore[attr-defined]
+
+
+async def case_model_waits_free_the_slot():
+    """The extract and the reply each wait on the model off the run slot: a
+    second run takes the one permit meanwhile, and the reply still goes out once
+    (extract before reply, its facts saved)."""
+    for aid, fid, park in (("turn_freed_x", 7121, _extract_call),
+                           ("turn_freed_r", 7122, lambda kw: not _extract_call(kw))):
+        await _seed(aid, fid, [("in", "haha im 31 btw")])
+        chat = _harness.parking_chat(_profile_chat, park)
+        with _run_seams(chat) as of:
+            res = await _harness.slot_parked(
+                lambda: run_once(aid, "welcome_chatter_for_info", payload={}), chat)
+        assert res["replies_sent"] == 1 and [c for c, _ in of.sent] == [fid], (aid, res, of.sent)
+        assert (await _fan(aid, fid)).his_age == "31", aid
+
+
+async def case_slot_lost_in_model_wait_sends_no_more():
+    """The slot is not back within the take-back budget after the 2nd fan's
+    reply call: he gets nothing (no turn counted, no lease left; the next run
+    answers him); the 1st fan's reply stays recorded and is not sent again."""
+    aid = "turn_freed_lost"
+    for fid in (7123, 7124):
+        await _seed(aid, fid, [("in", "hey")])
+    replies = [0]
+
+    def _second_reply(kw) -> bool:
+        replies[0] += not _extract_call(kw)
+        return replies[0] == 2
+    chat = _harness.parking_chat(_profile_chat, _second_reply)
+    real, a05.INLINE_MAX_S = a05.INLINE_MAX_S, 0.2
+    try:
+        with _run_seams(chat) as of:
+            res = await _harness.slot_parked(
+                lambda: run_once(aid, "welcome_chatter_for_info", payload={}), chat, keep_s=0.5)
+    finally:
+        a05.INLINE_MAX_S = real
+    assert res["status"] == "error", res
+    assert len(of.sent) == 1, of.sent
+    first = of.sent[0][0]
+    (other,) = {7123, 7124} - {first}
+    f = await _fan(aid, other)
+    assert not f.turn_counter and f.last_message_sent_at is None, (f.turn_counter, f.last_message_sent_at)
+    assert await _lease(aid, other) is None
+    assert (await _fan(aid, first)).turn_counter == 1
+    with _run_seams(_profile_chat) as of2:
+        res = await run_once(aid, "welcome_chatter_for_info", payload={})
+    assert res["replies_sent"] == 1 and [c for c, _ in of2.sent] == [other], (res, of2.sent)
 
 
 _harness.run()

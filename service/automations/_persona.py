@@ -37,12 +37,14 @@ import logging
 import re
 
 import llm_client                   # call .chat at runtime so tests can patch it
+import run_slot
 from db.models import Fan
 from jsonsafe import load_dict, load_json
 from llm_client import LLMCapExceeded
 
 from . import _voice
 from ._common import nonempty
+from .rhythm import INLINE_MAX_S, MODEL_TRIES, MODEL_WAIT_S
 
 log = logging.getLogger("of-relay.persona")
 
@@ -599,7 +601,8 @@ async def verify_self_consistency(account_id: str, fan_id: int, f: Fan,
     timeout, a bad parse or an unusable verdict all return the draft untouched — a
     verifier that can silently swallow replies would be a worse failure than the
     contradiction it exists to catch. LLMCapExceeded is caught here for the same
-    reason: the reply must still go out."""
+    reason: the reply must still go out. A lost run slot is not this check's
+    failure: it raises (the caller sends no more)."""
     # Two triggers. Her own first-person claim, OR his biographical question —
     # an elliptical answer ("en córdoba, cora 😅") states a fact while matching no
     # first-person pattern, and that was step three of the real Chile cascade.
@@ -611,7 +614,8 @@ async def verify_self_consistency(account_id: str, fan_id: int, f: Fan,
     if not persona.strip() and not claims_block:
         return draft            # nothing to be inconsistent WITH
     try:
-        res = await llm_client.chat(
+        # Off the run slot while the model answers (no OF call, no lock held).
+        res = await run_slot.freed(llm_client.chat(
             model=model,
             messages=consistency_messages(draft, persona, claims_block),
             # Deliberately the CALLING ENGINE's purpose, not a distinct
@@ -623,10 +627,13 @@ async def verify_self_consistency(account_id: str, fan_id: int, f: Fan,
             # rather than queryable in prod.
             purpose=purpose, account_id=account_id, fan_id=fan_id,
             temperature=0.0, response_format={"type": "json_object"},
-        )
+            timeout_s=MODEL_WAIT_S, max_attempts=MODEL_TRIES,
+        ), budget_s=INLINE_MAX_S)
         verdict = getattr(res, "parsed", None)
         contradicts, which, fix = parse_consistency_verdict(
             verdict if verdict is not None else res.content)
+    except run_slot.SlotLost:
+        raise
     except LLMCapExceeded:
         return draft
     except Exception:

@@ -158,7 +158,7 @@ from db.models import (
 )
 from llm_client import LLMCapExceeded
 from of_client import OFClient
-from automations.rhythm import INLINE_MAX_S
+from automations.rhythm import INLINE_MAX_S, MODEL_TRIES, MODEL_WAIT_S
 
 log = logging.getLogger("of-relay.automation.reply_mass_funnel")
 
@@ -699,7 +699,8 @@ async def _step_texts(
         f"Recent conversation (oldest→newest):\n{convo}\n\n"
         "Send the next funnel message now."
     )
-    res = await llm_client.chat(
+    # Off the run slot while the model answers (no OF call, no lock held).
+    res = await run_slot.freed(llm_client.chat(
         model=model,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}],
@@ -707,7 +708,8 @@ async def _step_texts(
         account_id=account_id,
         fan_id=fan_id,
         temperature=_STEP_TEMPERATURE,
-    )
+        timeout_s=MODEL_WAIT_S, max_attempts=MODEL_TRIES,
+    ), budget_s=INLINE_MAX_S)
     text = (res.content or "").strip()
     return [text] if text else []
 
@@ -950,9 +952,12 @@ async def _facts(t: _Tick, entry: fd.Entry, fan_id: int, a: _Anchor) -> fd.Facts
 
 async def _compose(t: _Tick, fan_id: int, step: dict, c: int) -> list[str] | None:
     """The step's texts, or None: an LLM cap sets tally.cap_hit (the walk stops); a key
-    error stops generated steps this run; a failure / empty text is an error."""
+    error stops generated steps this run; a failure / empty text is an error; a lost
+    run slot raises (the walk sends no more)."""
     try:
         texts = await _step_texts(t.account_id, fan_id, step, t.persona, t.model)
+    except run_slot.SlotLost:
+        raise
     except LLMCapExceeded:
         t.tally.cap_hit = True
         log.warning("reply_mass_funnel daily LLM cap reached account=%s — stopping",

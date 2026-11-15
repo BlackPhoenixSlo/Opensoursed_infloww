@@ -11,6 +11,7 @@ export type FansPick = { include: number[]; exclude: number[] };
 
 export type Action =
   | { type: "set"; id: number; side: FanSide }
+  | { type: "everyone" }
   | { type: "reset"; stored: StoredFans };
 
 /** The stored lists; an id on both reads exclude (exclude wins), so Save stores it once. */
@@ -26,6 +27,8 @@ export function fansReducer(s: FansPick, a: Action): FansPick {
       if (a.side === "exclude") exclude.push(a.id);
       return { include, exclude };
     }
+    case "everyone":
+      return { include: [], exclude: [...s.exclude] };
     case "reset":
       return initFans(a.stored);
   }
@@ -33,6 +36,10 @@ export function fansReducer(s: FansPick, a: Action): FansPick {
 
 export const sideOf = (s: FansPick, id: number): FanSide =>
   s.exclude.includes(id) ? "exclude" : s.include.includes(id) ? "include" : "none";
+
+/** The top "Fans & Following" row, read-only state of the pick: on while no list is included (= every Fan), off once
+ *  one is. Never stored; picking it (`everyone`) just clears the includes. */
+export const everyoneOn = (s: FansPick): boolean => s.include.length === 0;
 
 export const buildPayload = (s: FansPick): StoredFans => ({ include: [...s.include], exclude: [...s.exclude] });
 

@@ -321,6 +321,39 @@ def case_claims_block_has_one_construction_site():
     assert _persona.fan_claims_block(Fan(account_id="a", fan_id=2)) == ""
 
 
+def case_check_waits_off_the_run_slot():
+    """The check's model call holds no run slot: a second run takes the one
+    permit meanwhile, and the verdict still applies."""
+    f = Fan(account_id="acc", fan_id=1, persona_claims_json=_CLAIMED)
+    chat = llm_client.chat = _harness.parking_chat(_fake_llm(
+        [], content='{"contradicts": true, "which": "w", "fix": "estoy en argentina"}'))
+    out = asyncio.run(_harness.slot_parked(lambda: verify_self_consistency(
+        "acc", 1, f, "y sí, estoy acá en Chile", _PERSONA, "deepseek-v4-flash",
+        "welcome_chatter_for_info"), chat))
+    assert out == "estoy en argentina", out
+
+
+def case_lost_slot_is_not_failed_open():
+    """The slot is not back within the take-back budget after the check: that
+    is the run's end, not a check failure, so it raises instead of handing the
+    draft on to be sent."""
+    import run_slot
+    f = Fan(account_id="acc", fan_id=1, persona_claims_json=_CLAIMED)
+    chat = llm_client.chat = _harness.parking_chat(_fake_llm(
+        [], content='{"contradicts": false}'))
+    real, _persona.INLINE_MAX_S = _persona.INLINE_MAX_S, 0.2
+    try:
+        asyncio.run(_harness.slot_parked(lambda: verify_self_consistency(
+            "acc", 1, f, "y sí, estoy acá en Chile", _PERSONA, "deepseek-v4-flash",
+            "welcome_chatter_for_info"), chat, keep_s=0.5))
+    except run_slot.SlotLost:
+        pass
+    else:
+        raise AssertionError("a lost slot was swallowed into 'send the draft'")
+    finally:
+        _persona.INLINE_MAX_S = real
+
+
 CASES = [
     case_flag_is_off_unless_explicitly_enabled,
     case_no_inert_flags,
@@ -334,6 +367,8 @@ CASES = [
     case_prompt_forbids_apologising_and_prefers_false,
     case_verifier_lives_with_its_prompt_not_in_an_engine,
     case_claims_block_has_one_construction_site,
+    case_check_waits_off_the_run_slot,
+    case_lost_slot_is_not_failed_open,
 ]
 
 if __name__ == "__main__":

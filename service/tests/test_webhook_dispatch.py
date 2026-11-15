@@ -583,7 +583,7 @@ async def case_inbound_after_a_blast_enqueues_a_one_fan_scrape():
     await _seed_blast_run(aid, minutes_ago=5)
 
     await wd.on_inbound_message(aid, fan, 1)
-    jobs = await _pending_jobs(aid, "scrape_chats")
+    jobs = await _pending_jobs(aid, "scrape_fan")
     assert len(jobs) == 1, [j.payload_json for j in jobs]
     assert json.loads(jobs[0].payload_json) == {
         "fan_ids": [fan], "source": "blast_reply"}, jobs[0].payload_json
@@ -604,7 +604,7 @@ async def case_inbound_after_a_blast_enqueues_a_one_fan_scrape():
     async with get_session() as s:
         total = len((await s.execute(
             select(ScheduledJob).where(ScheduledJob.account_id == aid,
-                                       ScheduledJob.kind == "scrape_chats")
+                                       ScheduledJob.kind == "scrape_fan")
         )).scalars().all())
     assert total == 1, f"{total} scrapes for one fan inside the dedup window"
 
@@ -620,7 +620,7 @@ async def case_inbound_after_a_blast_enqueues_a_one_fan_scrape():
     async with get_session() as s:
         raced = len((await s.execute(
             select(ScheduledJob).where(ScheduledJob.account_id == aid2,
-                                       ScheduledJob.kind == "scrape_chats")
+                                       ScheduledJob.kind == "scrape_fan")
         )).scalars().all())
     assert raced == 1, f"two concurrent handlers queued {raced} scrapes"
 
@@ -647,7 +647,7 @@ async def case_a_human_of_app_blast_triggers_the_scrape_too():
         "isCouplePeopleMedia": False}, "__account_id": aid}
     await et.transcode(dict(frame))
     await wd.on_inbound_message(aid, fan, 1)
-    assert len(await _pending_jobs(aid, "scrape_chats")) == 1, "frame ignored"
+    assert len(await _pending_jobs(aid, "scrape_fan")) == 1, "frame ignored"
 
     # A canceled frame is not a blast anyone is answering.
     aid2, fan2 = "w7_blast_cancel", 6304
@@ -660,7 +660,7 @@ async def case_a_human_of_app_blast_triggers_the_scrape_too():
                 "__account_id": aid2}
     await et.transcode(dict(canceled))
     await wd.on_inbound_message(aid2, fan2, 1)
-    assert await _pending_jobs(aid2, "scrape_chats") == [], "canceled frame counted"
+    assert await _pending_jobs(aid2, "scrape_fan") == [], "canceled frame counted"
 
     # …and a cancel that arrives AFTER the finish frame removes it.
     aid3, fan3 = "w7_blast_late_cancel", 6305
@@ -673,7 +673,7 @@ async def case_a_human_of_app_blast_triggers_the_scrape_too():
                                               "pending": 0, "isCanceled": True},
                         "__account_id": aid3})
     await wd.on_inbound_message(aid3, fan3, 1)
-    assert await _pending_jobs(aid3, "scrape_chats") == [], "late cancel ignored"
+    assert await _pending_jobs(aid3, "scrape_fan") == [], "late cancel ignored"
 
     # Control: no blast in the window at all → no scrape, on either source.
     aid4, fan4 = "w7_no_blast", 6306
@@ -683,7 +683,7 @@ async def case_a_human_of_app_blast_triggers_the_scrape_too():
     et._queue_finishes.clear()
     await _seed_blast_run(aid4, minutes_ago=90)      # older than the 60-min window
     await wd.on_inbound_message(aid4, fan4, 1)
-    assert await _pending_jobs(aid4, "scrape_chats") == [], "scraped without a blast"
+    assert await _pending_jobs(aid4, "scrape_fan") == [], "scraped without a blast"
 
 
 async def case_the_scrape_runs_even_for_a_fan_nobody_will_answer():
@@ -698,9 +698,9 @@ async def case_the_scrape_runs_even_for_a_fan_nobody_will_answer():
     await _seed_skip(aid, fan, "unreachable")
 
     await wd.on_inbound_message(aid, fan, 1)
-    scrapes = await _pending_jobs(aid, "scrape_chats")
+    scrapes = await _pending_jobs(aid, "scrape_fan")
     assert len(scrapes) == 1, [j.kind for j in await _pending_jobs(aid)]
-    chat = [j for j in await _pending_jobs(aid) if j.kind != "scrape_chats"]
+    chat = [j for j in await _pending_jobs(aid) if j.kind != "scrape_fan"]
     assert chat == [], [j.kind for j in chat]
 
 
@@ -716,11 +716,11 @@ async def _seed_deferred(aid: str, fan_id: int, *, cursor: int | None = None) ->
 
 
 async def _scrapes(aid: str) -> list[dict]:
-    """Every scrape_chats job's payload on `aid`, whatever its status."""
+    """Every scrape_fan job's payload on `aid`, whatever its status."""
     async with get_session() as s:
         return [json.loads(j.payload_json) for j in (await s.execute(
             select(ScheduledJob).where(ScheduledJob.account_id == aid,
-                                       ScheduledJob.kind == "scrape_chats").order_by(ScheduledJob.id)
+                                       ScheduledJob.kind == "scrape_fan").order_by(ScheduledJob.id)
         )).scalars().all()]
 
 
@@ -739,7 +739,7 @@ async def case_deferred_fan_dm_enqueues_one_backfill():
             await wd.on_inbound_message(aid, fan, 1)
         finally:
             ax.wake_supervisor = orig
-        jobs = await _pending_jobs(aid, "scrape_chats")
+        jobs = await _pending_jobs(aid, "scrape_fan")
         assert [json.loads(j.payload_json) for j in jobs] == [
             {"fan_ids": [fan], "source": "deferred_history"}], [j.payload_json for j in jobs]
         assert jobs[0].run_at <= datetime.utcnow() + timedelta(seconds=2), jobs[0].run_at

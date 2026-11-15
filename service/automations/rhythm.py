@@ -3,9 +3,9 @@ service/automations/rhythm.py — the creator's clock and the inline-hold ceilin
 
 What is left of Human Rhythm after the AI Chatter reply engine was removed: the
 one clock resolver every engine reads (`tz_offset_for` / `tz_hours_for`), the
-house sleep window (`DEFAULT_SLEEP` / `in_sleep_window`), and `INLINE_MAX_S`, the
-ceiling on any inline hold. Pure stdlib, imports nothing of ours, so any module
-may import it without a cycle.
+house sleep window (`DEFAULT_SLEEP` / `in_sleep_window`), `INLINE_MAX_S`, the
+ceiling on any inline hold, and `MODEL_WAIT_S`, a freed model call's timeout.
+Pure stdlib, imports nothing of ours, so any module may import it without a cycle.
 """
 from __future__ import annotations
 
@@ -17,6 +17,14 @@ log = logging.getLogger("of-relay.automation.rhythm")
 # The ceiling on any INLINE hold. Longer than this and the hold outlives the 900s
 # fan lease (a hold no longer pins a run slot — service/run_slot.py).
 INLINE_MAX_S = 120
+
+# One try's timeout for a sender's model call made off the run slot (`run_slot.freed`:
+# autoreply, welcome_chatter_for_info, send_followup, reply_mass_funnel, the free stream's
+# FU script), passed as Full AI's Writers pass theirs (`timeout_s`, `max_attempts`). Measured p95 of these
+# calls in prod 2026-11: 1.5-2.8 s (max 10.6 s).
+# A miss is that fan's provider error: skipped this run, retried on the next.
+MODEL_WAIT_S = 30
+MODEL_TRIES = 2      # these senders have no fallback writer: one quick retry (llm_client backoff 1.5 s)
 
 # The HOUSE NIGHT, on the creator's own clock. Operator ruling 2026-08-04: a
 # four-hour pause, 02:00-06:00. NOT "always awake" — a girl who never sleeps is a

@@ -99,7 +99,7 @@ from ._wordfilter import (  # compliance word filter
 )
 from ._clock import clock_block, clock_line, load_clock_tz
 from automations._outbound import finalize_draft
-from automations.rhythm import INLINE_MAX_S
+from automations.rhythm import INLINE_MAX_S, MODEL_TRIES, MODEL_WAIT_S
 from ._bubbles import _history_text, _strip_html
 from . import _reply_shape  # the reply's sync shaping middle (shared with wcfi)
 from .welcome_chatter_for_info import _is_info_complete
@@ -807,9 +807,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                    painful_on=painful_on, clock=clock_line(clock_tz),
                                    v=voice_blocks, photo=photo)
             try:
-                res = await llm_client.chat(model=model, messages=msgs, purpose=_PURPOSE,
-                                            account_id=account_id, fan_id=fid,
-                                            temperature=_TEMPERATURE)
+                # Off the run slot while the model answers (no OF call, no lock held).
+                res = await run_slot.freed(llm_client.chat(
+                    model=model, messages=msgs, purpose=_PURPOSE, account_id=account_id,
+                    fan_id=fid, temperature=_TEMPERATURE, timeout_s=MODEL_WAIT_S,
+                    max_attempts=MODEL_TRIES), budget_s=INLINE_MAX_S)
+            except run_slot.SlotLost:
+                raise                   # not this fan's failure: send no more (the lease goes back)
             except LLMCapExceeded:
                 log.warning("autoreply LLM cap reached account=%s — stopping", account_id)
                 break

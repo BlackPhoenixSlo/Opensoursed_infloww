@@ -905,6 +905,7 @@ async def case_every_live_kind_is_classified_for_absence():
         "scheduled_send": "enqueued by a human from the composer",
         "send_mass_message": "composer one-offs and funnel openers run with no rule",
         "scrape_chats": "reads chats, sends nothing",
+        "scrape_fan": "scrape_chats for one fan, sends nothing",
         "smart_list_sync": "mirrors lists to OnlyFans, sends nothing",
         "unsend_messages": "removes messages, sends none",
     }

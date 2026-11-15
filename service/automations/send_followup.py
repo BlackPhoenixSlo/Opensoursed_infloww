@@ -66,6 +66,7 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import dm_rate
 import llm_client                  # call .chat at runtime so tests can patch it
 import of_write                    # _may_have_sent, read at call time
+import run_slot
 from . import rhythm  # tz_hours_for — THE clock (fixed offset first, zone as fallback)
 from . import _voice  # whose voice this account writes in (NULL → 'her')
 from . import send_marker_decide as smd  # the send-once marker's rules (pure)
@@ -754,7 +755,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         sent_ok = False
         try:
             try:
-                res = await llm_client.chat(
+                # Off the run slot while the model answers (no OF call, no lock held).
+                res = await run_slot.freed(llm_client.chat(
                     model=model,
                     messages=[
                         {"role": "system", "content": _compose_system(
@@ -768,7 +770,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     account_id=account_id,
                     fan_id=fid,
                     temperature=_TEMPERATURE,
-                )
+                    timeout_s=rhythm.MODEL_WAIT_S, max_attempts=rhythm.MODEL_TRIES,
+                ), budget_s=rhythm.INLINE_MAX_S)
+            except run_slot.SlotLost:
+                raise           # not this fan's failure: send no more (the lease goes back)
             except LLMCapExceeded:
                 cap_hit = True
                 log.warning("send_followup daily LLM cap reached account=%s — stopping",

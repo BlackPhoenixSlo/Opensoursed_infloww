@@ -1007,7 +1007,60 @@ async def case_slot_lost_mid_step_records_the_step_and_never_resends_it():
     assert [_strip(m["text"]) for m in fake.sent] == ["m1a"], fake.sent
 
 
+_GEN_STEP = [{"step": 1, "prompt": "tease him about losing count"}]
+
+
+async def case_model_wait_frees_the_slot():
+    """While the model writes a generated step the run holds no slot: a second
+    run takes the one permit meanwhile, and the step still goes out once."""
+    aid = "acc_freed"
+    await _seed_account(aid)
+    mr = await _seed_mass_run(aid, await _seed_funnel("freed", _GEN_STEP))
+    await _broadcast(aid, mr, 66101)
+    await _seed_msg(aid, 66101, 7961, "in", T_REPLY1, body="lots")
+    fake = _use_fake()
+    _patch_llm()
+    chat = llm_client.chat = _harness.parking_chat(llm_client.chat, 1)
+    res = await _harness.slot_parked(lambda: run_once(aid, "reply_mass_funnel", payload={}), chat)
+    assert res["advanced"] == 1 and [m["fan_id"] for m in fake.sent] == [66101], (res, fake.sent)
+
+
+async def case_slot_lost_in_model_wait_sends_no_more():
+    """The slot is not back within the take-back budget after the 2nd fan's
+    model call: he gets nothing (step not advanced, no marker, no lease; it
+    retries when due); the 1st fan's step stays recorded and is not sent again."""
+    aid = "acc_freed_lost"
+    await _seed_account(aid)
+    mr = await _seed_mass_run(aid, await _seed_funnel("freed_lost", _GEN_STEP))
+    for fan, mid in ((66111, 7971), (66112, 7972)):
+        await _broadcast(aid, mr, fan)
+        await _seed_msg(aid, fan, mid, "in", T_REPLY1, body="lots")
+    fake = _use_fake()
+    _patch_llm()
+    chat = llm_client.chat = _harness.parking_chat(llm_client.chat, 2)
+    real, a11.INLINE_MAX_S = a11.INLINE_MAX_S, 0.2
+    try:
+        res = await _harness.slot_parked(lambda: run_once(aid, "reply_mass_funnel", payload={}),
+                                         chat, keep_s=0.5)
+    finally:
+        a11.INLINE_MAX_S = real
+    assert res["status"] == "error", res
+    assert len(fake.sent) == 1, fake.sent
+    first = fake.sent[0]["fan_id"]
+    (other,) = {66111, 66112} - {first}
+    assert (await _state(mr, first)).current_step == 1
+    st = await _state(mr, other)
+    assert st.current_step == 0 and st.status == "pending" and st.sending_at is None, st.__dict__
+    async with get_session() as s:
+        assert await s.get(FanLease, (aid, other)) is None
+    await _force_due(aid, mr, other)
+    res = await run_once(aid, "reply_mass_funnel", payload={})
+    assert res["advanced"] == 1 and [m["fan_id"] for m in fake.sent] == [first, other], (res, fake.sent)
+
+
 _harness.run(
+    case_model_wait_frees_the_slot,
+    case_slot_lost_in_model_wait_sends_no_more,
     case_discover_and_advance,
     case_slot_lost_mid_step_records_the_step_and_never_resends_it,
     case_cooldown_skips_funnel,

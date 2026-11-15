@@ -326,7 +326,8 @@ async def case_thin_paying_fan_autoscraped():
 async def _scrape_jobs(aid: str) -> list[dict]:
     async with get_session() as s:
         return [json.loads(j.payload_json) for j in (await s.execute(
-            select(ScheduledJob).where(ScheduledJob.account_id == aid, ScheduledJob.kind == "scrape_chats")
+            select(ScheduledJob).where(ScheduledJob.account_id == aid,   # deferred picks: scrape_fan
+                                       ScheduledJob.kind.in_(("scrape_chats", "scrape_fan")))
             .order_by(ScheduledJob.id))).scalars().all()]
 
 

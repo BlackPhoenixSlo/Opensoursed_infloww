@@ -145,7 +145,7 @@ from ._persona import (
     merge_persona_claims, parse_persona_claims, persona_register_age,
 )
 from ._outbound import ConsistencyCtx, finalize_draft
-from .rhythm import INLINE_MAX_S
+from .rhythm import INLINE_MAX_S, MODEL_TRIES, MODEL_WAIT_S
 from . import cat_stickers  # reaction-gif pack
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
 import smart_message_extras as extras  # media + price readers (the closing PPV)
@@ -996,12 +996,14 @@ async def _extract_and_fill(account_id: str, fan_id: int, f: Fan,
     # eliminated in steady state (see _extract_worthwhile).
     if not _extract_worthwhile(f, c):
         return f
-    res = await llm_client.chat(
+    # Off the run slot while the model answers (no OF call, no lock held).
+    res = await run_slot.freed(llm_client.chat(
         model=model, messages=_extract_messages(f, c, history_tail, persona),
         purpose=purpose,
         account_id=account_id, fan_id=fan_id, temperature=0.2,
         response_format={"type": "json_object"},
-    )
+        timeout_s=MODEL_WAIT_S, max_attempts=MODEL_TRIES,
+    ), budget_s=INLINE_MAX_S)
     data = getattr(res, "parsed", None)
     if data is None:
         try:
@@ -1610,8 +1612,8 @@ async def _close_with_ppv(t: _Turn) -> bool:
 async def _turn_fill_facts(t: _Turn) -> None:
     """Inline fact fill (V1): save the facts he just stated BEFORE replying, so
     age/job/location land this turn (t.f refreshed), then push the structured
-    nickname. Cap / a rejected key raise (run() stops); any other failure is
-    logged and skipped."""
+    nickname. Cap / a rejected key / a lost run slot raise (run() stops); any
+    other failure is logged and skipped."""
     account_id, fan_id = t.cfg.account_id, t.c.fan_id
     try:
         # Extract sees only the last few turns (a newly-stated fact is
@@ -1624,6 +1626,8 @@ async def _turn_fill_facts(t: _Turn) -> None:
         raise                     # run() records cap_hit and stops
     except llm_client.LLMKeyError:
         raise                     # run() records key_error and stops
+    except run_slot.SlotLost:
+        raise                     # send no more: _turn's finally gives the lease back
     except Exception:
         log.debug("welcome_chatter_for_info fact-extract failed account=%s fan=%s",
                   account_id, fan_id, exc_info=True)
@@ -1668,7 +1672,7 @@ def _turn_sticker_roll(t: _Turn) -> str:
 async def _turn_generate(t: _Turn, asked: set, opener, fan_lang: str,
                          sticker_mode: str) -> tuple[str, list[str]] | None:
     """Build the prompt and generate → (raw reply, the topics presented), or None when
-    the call failed (out: generate_failed); the cap / a rejected key raise."""
+    the call failed (out: generate_failed); the cap / a rejected key / a lost run slot raise."""
     cfg, c = t.cfg, t.c
     msgs, presented = _build_messages(
         cfg.persona, t.f, c, asked, cfg.history_tail,
@@ -1680,14 +1684,18 @@ async def _turn_generate(t: _Turn, asked: set, opener, fan_lang: str,
         day=cfg.day,
         opener=opener, v=cfg.voice_blocks)
     try:
-        res = await llm_client.chat(
+        # Off the run slot while the model answers (no OF call, no lock held).
+        res = await run_slot.freed(llm_client.chat(
             model=cfg.model,
             messages=msgs,
             purpose=_PURPOSE,
             account_id=cfg.account_id,
             fan_id=c.fan_id,
             temperature=_REPLY_TEMPERATURE,
-        )
+            timeout_s=MODEL_WAIT_S, max_attempts=MODEL_TRIES,
+        ), budget_s=INLINE_MAX_S)
+    except run_slot.SlotLost:
+        raise                     # send no more: _turn's finally gives the lease back
     except LLMCapExceeded:
         log.warning("welcome_chatter_for_info daily LLM cap reached account=%s — stopping",
                     cfg.account_id)

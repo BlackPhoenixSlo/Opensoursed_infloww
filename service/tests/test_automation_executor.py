@@ -1138,6 +1138,173 @@ async def case_the_run_slots_size_from_the_active_creators():
     assert pool.n == run_slot.auto_runs(base), (pool.n, base)
 
 
+async def _settle_jobs(*aids: str) -> None:
+    """A fake run_once never claims: mark the accounts' jobs done so no later drain runs them."""
+    async with get_session() as s:
+        await s.execute(ScheduledJob.__table__.update()
+                        .where(ScheduledJob.account_id.in_(aids)).values(status="done"))
+
+
+async def case_the_bulk_slots_size_from_the_active_creators():
+    """The supervisor's pass sizes the bulk pool from the active Creators
+    (run_slot.auto_bulk), like the run slots, with one operator slot on top;
+    the panel row shows the size as default and live, not a pending restart.
+    The env (or a stored panel value) pins it."""
+    import os
+    import account_health
+    import lane_config
+    import run_slot
+    knob = "AUTOMATION_MAX_CONCURRENT_BULK"
+    assert not lane_config.overridden(knob)
+    base = await ax._active_models()
+    extra = [f"acc_bulk_size_{i}" for i in range(max(0, 41 - base))]
+    for a in extra:
+        await _seed_account(a)
+    models = base + len(extra)
+    aid = "acc_bulk_size_job"
+    await _seed_account(aid)
+    models += 1
+    saved_sem, orig = ax._bulk_sem, ax.run_once
+
+    async def _ok(account_id, kind, **kw):
+        return {"status": "ok"}
+    ax._bulk_sem, ax.run_once = None, _ok  # type: ignore[attr-defined]
+    try:
+        await enqueue_job(aid, "scrape_chats", payload={})      # a due pair: the pass gets past its early return
+        await ax._drain_due_jobs_once()
+        await ax._join_inflight_runs()
+        pool = ax._bulk_sem
+        assert pool.n == run_slot.auto_bulk(models) >= 5 and pool.reserve == 1, (pool.n, pool.reserve, models)
+        row = next(r for r in lane_config.describe() if r["name"] == knob)
+        assert row["live"] == row["value"] == row["default"] == pool.n and not row["pending"], row
+        os.environ[knob] = "3"
+        try:
+            for a in extra:
+                await account_health.deactivate(a)
+            n_before = pool.n
+            await ax._drain_due_jobs_once()
+            await ax._join_inflight_runs()
+            assert pool.n == n_before, ("an env-pinned bulk pool was resized", pool.n)
+        finally:
+            del os.environ[knob]
+        await ax._size_bulk_slots(pool)
+        assert pool.n == run_slot.auto_bulk(models - len(extra)), (pool.n, models, len(extra))
+    finally:
+        ax._bulk_sem, ax.run_once = saved_sem, orig  # type: ignore[attr-defined]
+        await _settle_jobs(aid)
+
+
+async def case_an_operators_priority_mass_takes_the_bulk_reserve_past_two_sweeps():
+    """Two automation sweeps hold both shared bulk slots; an operator's
+    priority_mass still starts at once, on the bulk pool's reserve."""
+    import os
+    knob = "AUTOMATION_MAX_CONCURRENT_BULK"
+    op_id, _auto_id = await _employees()
+    a, b, c = "acc_bulk_res_a", "acc_bulk_res_b", "acc_bulk_res_op"
+    for x in (a, b, c):
+        await _seed_account(x)
+    go = asyncio.Event()
+    held: list[str] = []
+    op_slot: dict = {}
+    saved_sem, orig = ax._bulk_sem, ax.run_once
+
+    async def _run(account_id, kind, **kw):
+        slot = ax.run_slot.current()
+        if kind == "scrape_chats" and account_id in (a, b):
+            held.append(account_id)
+            await go.wait()
+        elif kind == "priority_mass" and account_id == c:
+            op_slot.update(pool=slot.pool, reserve=slot.reserve, operator=slot.operator)
+        return {"status": "ok"}
+    os.environ[knob] = "2"                       # two shared slots, whatever the Creator count
+    ax._bulk_sem, ax.run_once = None, _run  # type: ignore[attr-defined]
+    try:
+        await enqueue_job(a, "scrape_chats", payload={})
+        await enqueue_job(b, "scrape_chats", payload={})
+        await ax._drain_due_jobs_once()
+        for _ in range(200):
+            if len(held) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert sorted(held) == [a, b] and ax._bulk_sem.free == 0, (held, ax._bulk_sem.free)
+        await enqueue_job(c, "priority_mass", payload={}, created_by_employee_id=op_id)
+        await ax._drain_due_jobs_once()
+        for _ in range(200):
+            if op_slot:
+                break
+            await asyncio.sleep(0.01)
+        assert op_slot == {"pool": ax._bulk_sem, "reserve": True, "operator": True}, (
+            "the operator's priority_mass waited behind the sweeps", op_slot)
+    finally:
+        go.set()
+        await ax._join_inflight_runs()
+        del os.environ[knob]
+        ax._bulk_sem, ax.run_once = saved_sem, orig  # type: ignore[attr-defined]
+        await _settle_jobs(a, b, c)
+
+
+async def case_a_one_fan_scrape_runs_beside_the_accounts_sweep():
+    """A `{}` sweep of account A is parked on OF holding a bulk slot and A's
+    scrape_chats run lock; the one-fan scrape webhook_dispatch enqueues for A
+    (kind scrape_fan) starts and finishes meanwhile, on the sender pool, through
+    the real run_once and scrape handler. Then the sweep ends ok too."""
+    import threading
+    import webhook_dispatch as wd
+    aid, sweep_chat, fan = "acc_fan_beside_sweep", 9101, 9102
+    await _seed_account(aid)
+    entered, release = threading.Event(), threading.Event()
+
+    class _ParkedSweep(FakeClient):
+        def get_messages(self, chat_id, **kw):
+            if int(chat_id) == sweep_chat:
+                entered.set()
+                release.wait(10)
+            return super().get_messages(chat_id, **kw)
+    fake = _ParkedSweep({
+        sweep_chat: [_of_msg(91011, True, "sweep", "2026-06-03T10:00:00+00:00", fan_id=sweep_chat)],
+        fan: [_of_msg(91021, True, "after the blast", "2026-06-03T10:01:00+00:00", fan_id=fan)],
+    })
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    pools: dict = {}
+    orig = ax.run_once
+
+    async def _spy(account_id, kind, **kw):
+        if account_id == aid:
+            pools[kind] = ax.run_slot.current().pool
+        return await orig(account_id, kind, **kw)
+
+    async def _run(kind):
+        async with get_session() as s:
+            return (await s.execute(select(AutomationRun).where(
+                AutomationRun.account_id == aid, AutomationRun.kind == kind))).scalar_one_or_none()
+    ax.run_once = _spy  # type: ignore[attr-defined]
+    try:
+        await enqueue_job(aid, "scrape_chats", payload={})
+        await ax._drain_due_jobs_once()
+        assert await asyncio.to_thread(entered.wait, 5), "the sweep never reached OF"
+        wd._fan_scrape_claims.pop((aid, fan), None)
+        assert await wd.enqueue_fan_scrape(aid, fan, "blast_reply") is True
+        await ax._drain_due_jobs_once()
+        run = None
+        for _ in range(250):
+            run = await _run("scrape_fan")
+            if run is not None and run.status == "ok":
+                break
+            await asyncio.sleep(0.02)
+        assert run is not None and run.status == "ok", ("the one-fan scrape waited for the sweep", run)
+        assert not release.is_set() and (await _run("scrape_chats")).status == "running"
+        assert pools == {"scrape_chats": ax._bulk_sem, "scrape_fan": ax._run_sem}, pools
+        async with get_session() as s:
+            got = (await s.execute(select(Message.message_id).where(
+                Message.account_id == aid, Message.fan_id == fan))).scalars().all()
+        assert got == [91021], got
+    finally:
+        release.set()
+        await ax._join_inflight_runs()
+        ax.run_once = orig  # type: ignore[attr-defined]
+    assert (await _run("scrape_chats")).status == "ok"
+
+
 # ── Client pool: one client per account, evictable ───────────────────
 #
 # Tested against client_pool directly, not through ax._make_client — the seam
@@ -1939,6 +2106,9 @@ _harness.run(
     case_the_claim_takes_the_operators_job_first,
     case_run_now_on_an_automation_kind_is_rate_limited_as_automation,
     case_the_run_slots_size_from_the_active_creators,
+    case_the_bulk_slots_size_from_the_active_creators,
+    case_an_operators_priority_mass_takes_the_bulk_reserve_past_two_sweeps,
+    case_a_one_fan_scrape_runs_beside_the_accounts_sweep,
     case_client_pool_reuses_and_evicts,
     case_unknown_kind_errors,
     case_unknown_kind_consumes_ghost_job,

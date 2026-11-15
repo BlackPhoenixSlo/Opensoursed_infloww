@@ -216,6 +216,14 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "max_pages", "type": "int", "min": 1, "default": 40, "hint": "History pages pulled per chat"},
         ],
     },
+    "scrape_fan": {
+        "label": "Backfill one chat (internal)", "recurring": False, "surface": "internal",
+        "summary": "Internal one-shot: scrape_chats for one fan (a blast reply, a deferred chat's reply/open, a gen_info pick). Runs beside the sweep, not behind it. Not scheduled directly.",
+        "example": "internal · fan_ids set by the trigger",
+        "knobs": [
+            {"key": "fan_ids", "type": "ids", "hint": "[fan_id] the chat to scrape (set by the trigger)"},
+        ],
+    },
     "process_old_fans": {
         "label": "Onboard pre-AI fans", "recurring": False, "surface": "rules",
         "group": "advanced",

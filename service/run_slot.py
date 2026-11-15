@@ -116,6 +116,22 @@ def auto_runs(models: int) -> int:
     return max(AUTO_RUNS_MIN, min(AUTO_RUNS_MAX, AUTO_RUNS_MIN + extra))
 
 
+# Bulk slots by active models when nobody set AUTOMATION_MAX_CONCURRENT_BULK:
+# 2 up to 10 models, one more per started 10 after (3 at 11-20, 6 at 41-50),
+# clamped to 2..8. Why: sweeps cost ~5k slot-s/day per creator (measured, AE
+# 2026-11); this keeps the lane at <= ~50% busy. Read by soak/timing.
+AUTO_BULK_MIN = 2
+AUTO_BULK_MAX = 8
+AUTO_BULK_FLAT_UNTIL = 10
+AUTO_BULK_PER_SLOT = 10
+
+
+def auto_bulk(models: int) -> int:
+    """The bulk slots `models` active creators get by default."""
+    extra = -(-(models - AUTO_BULK_FLAT_UNTIL) // AUTO_BULK_PER_SLOT)   # ceil
+    return max(AUTO_BULK_MIN, min(AUTO_BULK_MAX, AUTO_BULK_MIN + extra))
+
+
 def release_floor_s() -> int:
     """The shortest hold that hands its slot back (and the kill switch). Read
     on every hold; the literals are what the panel and the timing model read."""
