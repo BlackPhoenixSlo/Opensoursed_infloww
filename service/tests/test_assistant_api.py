@@ -67,9 +67,9 @@ import llm_client  # noqa: E402
 from assistant_api import AskBody, ask  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, AccountAiConfig, AutomationRule, AutomationRun, Blacklist, Fan,
-    FollowupState, List, ListMember, MassRun, Message, SkipList, Transaction,
-    WelcomeSent,
+    Account, AccountAiConfig, AiDecision, AutomationRule, AutomationRun,
+    Blacklist, Fan, FollowupState, List, ListMember, MassRun, Message,
+    ScheduledJob, SkipList, Transaction, WelcomeSent,
 )
 from llm_client import (  # noqa: E402
     LLMCapExceeded, LLMConfigError, LLMHTTPError, LLMKeyError, LLMResult,
@@ -2635,6 +2635,218 @@ def case_the_migration_creates_the_table_on_a_bare_db():
     assert "assistant_turns" not in _insp(eng).get_table_names()
 
 
+# ── Full AI Chat facts in the fan pack ────────────────────────────────
+
+_FA_CHECKPOINT = {"reply_speed": "0-15-60", "top_spend_cents": 100000,
+                  "fans": {"include": [1187168089], "exclude": []}}
+
+
+async def _seed_full_ai(aid, fan_id, *, enabled=True, mode="live",
+                        checkpoint=None, spend=0, last_in=None):
+    """The acceptance shape: a live full_ai_chat rule (id 13 in prod), its
+    checkpoint, a fan whose two newest inbound messages are undecided."""
+    await _seed_fan(aid, fan_id, custom_nickname="Fa/Rome,Italy/40",
+                    lifetime_spend_cents=spend)
+    last_in = last_in or datetime.utcnow() - timedelta(minutes=2)
+    async with get_session() as s:
+        s.add(AutomationRule(account_id=aid, name="Full AI Chat", kind="full_ai_chat",
+                             trigger_json=json.dumps({"every_seconds": 300, "mode": mode}),
+                             steps_json="{}", is_enabled=enabled))
+        s.add(AccountAiConfig(account_id=aid, full_ai_config_json=json.dumps(
+            {"checkpoint": checkpoint or _FA_CHECKPOINT, "rev": 1})))
+        s.add(Message(account_id=aid, fan_id=fan_id, message_id=fan_id * 10 + 1,
+                      direction="in", created_at=last_in - timedelta(hours=3)))
+        s.add(Message(account_id=aid, fan_id=fan_id, message_id=fan_id * 10 + 2,
+                      direction="out", created_at=last_in - timedelta(hours=2, minutes=50)))
+        s.add(Message(account_id=aid, fan_id=fan_id, message_id=fan_id * 10 + 3,
+                      direction="in", created_at=last_in - timedelta(seconds=40)))
+        s.add(Message(account_id=aid, fan_id=fan_id, message_id=fan_id * 10 + 4,
+                      direction="in", created_at=last_in))
+        s.add(AiDecision(account_id=aid, fan_id=fan_id, mode="live",
+                         trigger_kind="inbound", trigger_key=str(fan_id * 10 + 1),
+                         anchor_message_id=fan_id * 10 + 1,
+                         anchor_created_at=last_in - timedelta(hours=3),
+                         route="chat", heat=1, route_row="r", question_version="v",
+                         status="sent", created_at=last_in - timedelta(hours=2, minutes=50),
+                         reply_json=json.dumps({"parts": [{"text": "PLANTED HER WORDS"}],
+                                                "fan_info": {"city": "PLANTED CITY"}})))
+    return last_in
+
+
+async def _fa_pack(aid, fan_id) -> str:
+    async with get_session() as s:
+        fan = await s.get(Fan, (aid, fan_id))
+    return await assistant_fan_pack._pack(assistant_fan_pack.Subject(aid, aid, fan, None))
+
+
+async def case_full_ai_a_queued_reply_is_named_with_its_due_time():
+    """THE acceptance case: Live, Reply speed 0-15-60, a pending job off his
+    newest message. The answer must be in the pack: queued for <time>, not a
+    failure. Routed by a plain "why didn't Full AI reply" with his handle."""
+    aid, fan_id = "acc_fa_queued", 1187168089
+    last_in = await _seed_full_ai(aid, fan_id)
+    run_at = last_in + timedelta(minutes=46, seconds=37)
+    async with get_session() as s:
+        s.add(ScheduledJob(account_id=aid, kind="full_ai_chat", status="pending",
+                           run_at=run_at, created_at=last_in + timedelta(seconds=1),
+                           payload_json=json.dumps({"only_fan_ids": [fan_id],
+                                                    "anchor": fan_id * 10 + 4,
+                                                    "_rule_id": 13, "tries": 0})))
+    spy = _Spy()
+    _patch(spy)
+    await _ask(question=f"@u{fan_id} why didn't Full AI reply to him?", account_id=aid)
+    user = _user_of(spy)
+    stamp = f"{last_in:%Y-%m-%d %H:%M:%S}"
+    assert f"QUEUED — a reply to his message of {stamp}" in user, user
+    assert f"is due {run_at:%Y-%m-%d %H:%M:%S} (in " in user, user
+    assert "Reply speed 0-15-60 (most near 15 min, none past 1h)" in user, user
+    assert "Not a failure" in user, user
+    assert "Full AI Chat: LIVE" in user and "every 300s" in user, user
+    assert ": chat, sent" in user, user                  # the earlier decision
+    assert "1 include list(s)" in user and "NOT known here" in user, user
+    assert "nothing stops him" in user, user
+    assert "UNANSWERED" not in user, user                # it is queued
+    for msg in spy.calls[-1]["messages"]:
+        assert "PLANTED" not in msg["content"], "reply_json words reached a prompt"
+    assert len(user) < 40000
+
+
+async def case_full_ai_unanswered_with_nothing_queued_is_flagged():
+    """Live, his message undecided, no job: the real-bug signal."""
+    aid, fan_id = "acc_fa_unanswered", 1187168090
+    last_in = await _seed_full_ai(aid, fan_id)
+    out = await _fa_pack(aid, fan_id)
+    assert (f"his message of {last_in:%Y-%m-%d %H:%M:%S}" in out
+            and "UNANSWERED with NOTHING QUEUED" in out), out
+    assert "no job for him in the last 48h" in out, out
+
+
+async def case_full_ai_over_top_spend_names_the_stop():
+    aid, fan_id = "acc_fa_topspend", 1187168091
+    await _seed_full_ai(aid, fan_id, spend=150000)
+    out = await _fa_pack(aid, fan_id)
+    assert assistant_evidence.FULL_AI_STOP["top_spend"] in out, out
+    assert "Lifetime $1,500.00 vs top spend $1,000.00" in out, out
+
+
+async def case_full_ai_off_rule_says_off():
+    aid, fan_id = "acc_fa_off", 1187168092
+    await _seed_full_ai(aid, fan_id, enabled=False)
+    out = await _fa_pack(aid, fan_id)
+    assert "Full AI Chat: OFF — its rule is switched off" in out, out
+    assert "UNANSWERED" not in out, out
+
+
+async def case_no_full_ai_rule_adds_no_full_ai_line():
+    aid, fan_id = "acc_fa_none", 1187168093
+    await _seed_fan(aid, fan_id)
+    async with get_session() as s:
+        s.add(Message(account_id=aid, fan_id=fan_id, message_id=1, direction="in",
+                      created_at=datetime.utcnow() - timedelta(minutes=5)))
+    out = await _fa_pack(aid, fan_id)
+    assert "Full AI" not in out, out
+
+
+async def case_a_failing_full_ai_read_degrades_to_one_line():
+    aid, fan_id = "acc_fa_boom", 1187168094
+    await _seed_full_ai(aid, fan_id)
+
+    async def boom(*_a):
+        raise RuntimeError("db exploded")
+
+    orig = assistant_fan_pack._full_ai
+    assistant_fan_pack._full_ai = boom
+    try:
+        out = await _fa_pack(aid, fan_id)
+    finally:
+        assistant_fan_pack._full_ai = orig
+    assert "its rows could not be read just now" in out, out
+    assert "- skip_list: no row." in out and "turn ownership" in out, out
+
+
+async def case_every_full_ai_stop_reason_is_worded():
+    from automations import full_ai_owner
+    assert set(assistant_evidence.FULL_AI_STOP) == set(full_ai_owner.REASONS)
+
+
+def _fa(**kw) -> assistant_evidence.FullAi:
+    base = dict(off=None, mode="live", every_s=300, speed="0-15-60", by_webhook=True,
+                fans={"include": [], "exclude": []}, fans_ok=True, spend_cents=0,
+                top_spend_cents=100000, stop=None, audience_why=None, jobs=[],
+                decisions=[], open_at=None, open_due=None, open_decided=False)
+    return assistant_evidence.FullAi(**{**base, **kw})
+
+
+def _fa_dec(route="chat", status="sent", reply=None, jev_error=None):
+    t = datetime.utcnow() - timedelta(minutes=30)
+    return assistant_evidence.FullAiDecision(t, t - timedelta(minutes=1), route, status,
+                                             reply or {}, jev_error)
+
+
+def _fa_job(status, run_at, **kw):
+    t = datetime.utcnow()
+    return assistant_evidence.FullAiJob(**{**dict(
+        id=7, status=status, run_at=run_at, created_at=t - timedelta(hours=1),
+        anchor_at=t - timedelta(hours=1), tries=0, last_error=None), **kw})
+
+
+async def case_full_ai_lines_read_each_state():
+    """Pure: one FullAi per state, the words that must (and must not) appear."""
+    now = datetime.utcnow()
+    table = [
+        ("off global", _fa(off="off_global"), ["OFF on every creator"], ["Full AI Chat: LIVE"]),
+        ("old shadow", _fa(off="off_mode", mode="shadow"),
+         ["old shadow mode", "sends nothing"], ["Full AI Chat: LIVE"]),
+        ("no_send floor", _fa(decisions=[_fa_dec("no_send", "no_send",
+                                                 {"floor_reason": "min_price"})]),
+         ["the Router chose no_send", "floor 'min_price'"], []),
+        ("stood down", _fa(decisions=[_fa_dec("chat", "no_send", {
+            "stood_down": {"check": "human", "reason": "operator_sent"}})]),
+         ["stood down at human: operator_sent"], []),
+        ("failed", _fa(decisions=[_fa_dec("chat", "failed", {"attempts": [
+            {"writer": "deepseek", "outcome": "timeout"}]}, "429 upstream")]),
+         ["chat, failed", "every Writer failed: deepseek timeout",
+          "Router error '429 upstream'"], []),
+        ("job error", _fa(jobs=[_fa_job("error", now - timedelta(hours=1),
+                                        last_error="boom")]),
+         ["job 7 error", "error 'boom'"], ["QUEUED"]),
+        ("done, no decision", _fa(jobs=[_fa_job("done", now - timedelta(hours=1))]),
+         ["stood down before its Router"], []),
+        ("done, decided", _fa(jobs=[_fa_job("done", now - timedelta(hours=1),
+                                            decided=True)]),
+         ["job 7 done"], ["stood down before"]),
+        ("past due", _fa(jobs=[_fa_job("pending", now - timedelta(minutes=30))]),
+         ["STILL PENDING"], ["QUEUED"]),
+        ("busy retry", _fa(jobs=[_fa_job("pending", now + timedelta(seconds=20),
+                                         tries=1)]),
+         ["QUEUED", "busy retry 1"], []),
+        ("top spend", _fa(stop="top_spend", spend_cents=150000),
+         [assistant_evidence.FULL_AI_STOP["top_spend"], "vs top spend $1,000.00"], []),
+        ("no limit", _fa(top_spend_cents=0), ["vs top spend off"], []),
+        ("unanswered", _fa(open_at=now - timedelta(minutes=40),
+                           open_due=now - timedelta(minutes=10)),
+         ["UNANSWERED with NOTHING QUEUED", "was due"], []),
+        ("unanswered but decided", _fa(open_at=now, open_due=now, open_decided=True),
+         [], ["UNANSWERED"]),
+        ("every fan", _fa(), ["Fans list: every fan"], ["NOT known"]),
+        ("lists set", _fa(fans={"include": [1, 2], "exclude": [3]}),
+         ["2 include list(s), 1 exclude list(s)", "NOT known here"], []),
+        ("malformed", _fa(fans={}, fans_ok=False), ["nobody is listed"], []),
+        ("never ran", _fa(), ["it has never run a Turn for him"], []),
+    ]
+    fan = Fan(account_id="acc_pure", fan_id=123456789, lifetime_spend_cents=0)
+    for name, fa, want, absent in table:
+        out = assistant_evidence.render(assistant_evidence.Evidence(
+            account_id="acc_pure", label="Rae", fan=fan, skip=None, banned=None,
+            welcomed=None, drip=None, memberships=[], rows=[], paid_ids=set(),
+            runs={}, money=[], missing=[], is_payer=False, muted_creator=False,
+            audiences=[], audiences_other=False, full_ai=fa))
+        for w in want:
+            assert w in out, (name, w, out)
+        for w in absent:
+            assert w not in out, (name, w, out)
+
+
 _harness.run(
     case_happy_path_returns_the_model_answer,
     case_an_empty_question_never_buys_a_call,
@@ -2714,4 +2926,12 @@ _harness.run(
     case_a_failing_keyed_opus_default_retries_once_on_deepseek,
     case_history_over_http_is_the_askers_own,
     case_the_migration_creates_the_table_on_a_bare_db,
+    case_full_ai_a_queued_reply_is_named_with_its_due_time,
+    case_full_ai_unanswered_with_nothing_queued_is_flagged,
+    case_full_ai_over_top_spend_names_the_stop,
+    case_full_ai_off_rule_says_off,
+    case_no_full_ai_rule_adds_no_full_ai_line,
+    case_a_failing_full_ai_read_degrades_to_one_line,
+    case_every_full_ai_stop_reason_is_worded,
+    case_full_ai_lines_read_each_state,
 )

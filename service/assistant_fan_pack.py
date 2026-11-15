@@ -27,8 +27,10 @@ mode the whole feature exists to avoid.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+from datetime import datetime, timedelta
 from typing import Any, NamedTuple
 
 from sqlalchemy import func, or_, select
@@ -37,9 +39,9 @@ import assistant_evidence as ev
 from auth import _actor_account_ids
 from db.engine import get_session
 from db.models import (
-    Account, AutomationRule, Blacklist, Fan, FollowupState,
-    List, ListMember, MassRun, Message, SkipList, Transaction, WelcomeSent,
-    created_at_text,
+    Account, AiDecision, AutomationRule, Blacklist, Fan, FollowupState,
+    List, ListMember, MassRun, Message, ScheduledJob, SkipList, Transaction,
+    WelcomeSent, created_at_text, parse_ts,
 )
 
 log = logging.getLogger("of-relay.assistant_fan_pack")
@@ -86,6 +88,9 @@ _FAN_FACING_KINDS: tuple[str, ...] = (
 )
 
 _DEAD_TX_STATUSES = ("chargedback", "refund_pending")
+
+_FULL_AI_KIND = "full_ai_chat"
+_JOB_STATUSES = ("pending", "running", "done", "error", "cancelled")
 
 # The chat header's nickname shape, "Name/City,Country/Age". Matched anywhere
 # in a line, so a fan named mid-sentence ("why is Marco/Turin,Italy/38 quiet")
@@ -303,11 +308,15 @@ async def _pack(subject: Subject) -> str:
         banned = await s.get(Blacklist, fan_id)
         welcomed = await s.get(WelcomeSent, (account_id, fan_id))
         drip = await s.get(FollowupState, (account_id, fan_id))
-        rules = [(canonical_kind(k), steps, bool(on)) for k, steps, on in (
-            await s.execute(
-                select(AutomationRule.kind, AutomationRule.steps_json,
-                       AutomationRule.is_enabled)
-                .where(AutomationRule.account_id == account_id))).all()]
+        rule_rows = (await s.execute(
+            select(AutomationRule.kind, AutomationRule.steps_json,
+                   AutomationRule.is_enabled, AutomationRule.trigger_json)
+            .where(AutomationRule.account_id == account_id)
+            .order_by(AutomationRule.id))).all()
+        rules = [(canonical_kind(k), steps, bool(on))
+                 for k, steps, on, _t in rule_rows]
+        fa_rules = [(bool(on), trig) for k, _s, on, trig in rule_rows
+                    if canonical_kind(k) == _FULL_AI_KIND]
         # LIVE kinds only: a leftover row of a retired kind reaches nobody from
         # now on, so it has no "today" to describe and must not stand in for one.
         rules = [r for r in rules if r[0] in live_kinds]
@@ -381,13 +390,168 @@ async def _pack(subject: Subject) -> str:
 
     missing = sorted((set(_FAN_FACING_KINDS) & live_kinds) - rule_kinds)
 
+    # No full_ai_chat rule = not one Full AI line. A failing read costs only
+    # the Full AI lines, never the rest of the pack.
+    full_ai, full_ai_failed = None, False
+    if fa_rules:
+        try:
+            full_ai = await _full_ai(account_id, fan, rows, fa_rules)
+        except Exception:  # noqa: BLE001 — degrade to one honest line
+            log.warning("assistant: full_ai facts failed account=%s fan=%s",
+                        account_id, fan_id, exc_info=True)
+            full_ai_failed = True
+
     return ev.render(ev.Evidence(
         account_id=account_id, label=label, fan=fan, skip=skip,
         banned=banned, welcomed=welcomed,
         drip=drip, memberships=memberships, rows=rows, paid_ids=paid_ids,
         runs=runs, money=money, missing=missing, is_payer=is_payer,
         muted_creator=should_skip_muted_creator(fan),
-        audiences=audiences, audiences_other=other_engines))
+        audiences=audiences, audiences_other=other_engines,
+        full_ai=full_ai, full_ai_failed=full_ai_failed))
+
+
+def _turn_end(rows) -> tuple[datetime | None, int | None]:
+    """His unanswered message as Full AI's sweep sees it: the newest in/out row,
+    a welcome outbound not counting (it never answers his DM), when that row is
+    his. (None, None) when she spoke last. Pure, over the pack's own rows."""
+    for r in rows:                                   # newest first
+        if r.direction == "out" and r.automation_kind == "welcome":
+            continue
+        if r.direction == "in":
+            return parse_ts(r.created_at), r.message_id
+        if r.direction == "out":
+            return None, None
+    return None, None
+
+
+def _rule_trigger(fa_rules) -> dict:
+    """The rule Full AI runs on: the enabled one in Live mode, else the enabled
+    one, else the first — its trigger_json, {} when unreadable."""
+    trigs = [(on, _payload(t)) for on, t in fa_rules]
+    return (next((t for on, t in trigs if on and t.get("mode") == "live"), None)
+            or next((t for on, t in trigs if on), None) or trigs[0][1])
+
+
+def _reply_why(raw) -> dict:
+    """reply_json cut to `ev.FULL_AI_REPLY_KEYS`: it also holds her bubbles and
+    his `fan_info`, and no written word goes in the pack."""
+    v = _payload(raw)
+    out = {k: v[k] for k in ev.FULL_AI_REPLY_KEYS if k in v}
+    if isinstance(out.get("attempts"), list):
+        out["attempts"] = [{"writer": a.get("writer"), "outcome": a.get("outcome")}
+                           for a in out["attempts"] if isinstance(a, dict)]
+    return out
+
+
+async def _full_ai(account_id: str, fan, rows, fa_rules) -> ev.FullAi:
+    """Full AI Chat's LOCAL facts for him. Reuses full_ai_owner_io's local reads
+    and `full_ai_owner.who_owns`; never its Fans list read (`_listed` opens an
+    OnlyFans client) nor `_human` (it can scan the account's broadcasts, and a
+    human answer after his message already shows as her turn in the thread)."""
+    from audience_include import audience_allows_fan
+    from automations import full_ai_config, full_ai_live, full_ai_owner
+    from automations import full_ai_owner_io as io
+    from webhook_dispatch_decide import targets_fan
+
+    fan_id = int(fan.fan_id)
+    trigger = _rule_trigger(fa_rules)
+    open_at, open_id = _turn_end(rows)
+    since = datetime.utcnow() - timedelta(hours=48)
+    async with get_session() as s:
+        off = await io._off(account_id, s)
+        cfg = await io._checkpoint(account_id, s)
+        hard = await io._hard_skip(account_id, fan_id, fan, s)
+        walk = await io._walk_advancing(account_id, fan_id, s)
+        jobs = [j for j in (await s.execute(
+            select(ScheduledJob).where(
+                ScheduledJob.account_id == account_id,
+                ScheduledJob.kind == _FULL_AI_KIND,
+                ScheduledJob.status.in_(_JOB_STATUSES),
+                ScheduledJob.run_at >= since,
+                ScheduledJob.payload_json.like(f"%{fan_id}%"))
+            .order_by(ScheduledJob.created_at.desc()).limit(20))).scalars()
+            if targets_fan(_payload(j.payload_json), fan_id)]
+        jobs.sort(key=lambda j: j.status not in ("pending", "running"))
+        jobs = jobs[:3]
+        anchors = {int(a) for j in jobs
+                   if isinstance(a := _payload(j.payload_json).get("anchor"), int)}
+        anchor_at = {int(m): parse_ts(t) for m, t in (await s.execute(
+            select(Message.message_id, created_at_text())
+            .where(Message.account_id == account_id,
+                   Message.message_id.in_(anchors or [0])))).all()}
+        # A job answers his NEWEST unanswered message when it runs, so "did it
+        # decide" = a live row on its anchor or a later message of his.
+        answered = set()
+        for j in jobs:
+            a_at = anchor_at.get(_payload(j.payload_json).get("anchor"))
+            if a_at is not None and (await s.execute(select(AiDecision.id).where(
+                    AiDecision.account_id == account_id, AiDecision.fan_id == fan_id,
+                    AiDecision.mode == full_ai_live.MODE,
+                    AiDecision.anchor_created_at >= a_at).limit(1))).first():
+                answered.add(j.id)
+        decisions = (await s.execute(
+            select(AiDecision.created_at, AiDecision.anchor_created_at,
+                   AiDecision.route, AiDecision.status, AiDecision.reply_json,
+                   AiDecision.jev_error)
+            .where(AiDecision.account_id == account_id,
+                   AiDecision.fan_id == fan_id, AiDecision.mode == full_ai_live.MODE)
+            .order_by(AiDecision.created_at.desc()).limit(3))).all()
+        decided = open_id is not None and (await s.execute(
+            select(AiDecision.id).where(
+                AiDecision.account_id == account_id, AiDecision.fan_id == fan_id,
+                AiDecision.mode == full_ai_live.MODE,
+                AiDecision.trigger_key == str(open_id)).limit(1))).first() is not None
+    audience_ok, audience_why = await audience_allows_fan(
+        account_id, fan_id, kind=io.AUDIENCE_KIND)
+    fans = cfg.get("fans")
+    fans_ok = full_ai_config._fans_error(fans) is None
+    top = io._top_spend_cents(cfg)
+    spend = int(fan.lifetime_spend_cents or 0)
+    # Fans list membership is an OnlyFans read: a SET list is assumed passed
+    # here (the Fans line says it is unknown); a malformed one lists nobody.
+    stop = full_ai_owner.who_owns(full_ai_owner.OwnerFacts(
+        off=off, listed=fans_ok, hard_skip=hard, audience_ok=bool(audience_ok),
+        human=None, human_at=None, walk_advancing=walk, spend_cents=spend,
+        top_spend_cents=top))
+    open_due = None
+    if open_at is not None and open_id is not None:
+        try:                          # an unknown stored reply_speed: no due time
+            open_due = full_ai_live.due(cfg, _Dm(open_at, int(open_id)))
+        except (KeyError, TypeError, ValueError):
+            open_due = None
+    return ev.FullAi(
+        off=off, mode=trigger.get("mode"), every_s=trigger.get("every_seconds", "?"),
+        speed=str(cfg.get("reply_speed")), by_webhook=bool(cfg.get("reply_by_webhook")),
+        fans=fans if fans_ok else {}, fans_ok=fans_ok, spend_cents=spend,
+        top_spend_cents=top, stop=stop.reason if stop else None,
+        audience_why=None if audience_ok else audience_why,
+        jobs=[ev.FullAiJob(
+            id=j.id, status=j.status, run_at=j.run_at, created_at=j.created_at,
+            anchor_at=anchor_at.get(_payload(j.payload_json).get("anchor")),
+            tries=int(_payload(j.payload_json).get("tries") or 0),
+            last_error=j.last_error,
+            decided=j.id in answered)
+            for j in jobs],
+        decisions=[ev.FullAiDecision(
+            created_at=d.created_at, anchor_at=d.anchor_created_at, route=d.route,
+            status=d.status, reply=_reply_why(d.reply_json), jev_error=d.jev_error)
+            for d in decisions],
+        open_at=open_at, open_due=open_due, open_decided=decided)
+
+
+class _Dm(NamedTuple):
+    """The two fields `full_ai_live.due` reads off his message."""
+    created_at: datetime
+    message_id: int
+
+
+def _payload(raw) -> dict:
+    try:
+        v = json.loads(raw or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return v if isinstance(v, dict) else {}
 
 
 async def build(scoped: str, question: str) -> FanPack:

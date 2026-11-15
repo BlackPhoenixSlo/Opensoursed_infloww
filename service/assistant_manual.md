@@ -913,9 +913,13 @@ Revenue, Newest.
 - "FULL_AI_CHAT_OFF is on": the deployment operator stopped Full AI on every
   creator, whatever the Mode.
 
-**Who Live never answers:** a blacklisted, skip-listed or unreachable fan, a
-muted creator, a fan outside the account's audience limits, a fan in a running
-Auto Funnel walk, and a chat a human answered since his message.
+**Who Live never answers**, checked in this order, first match wins: Full AI
+off → not on the Fans list → a blacklisted, skip-listed or unreachable fan or a
+muted creator → outside the account's audience limits → a chat a human answered
+since his message → a running Auto Funnel walk → over the Top spend limit.
+A queued reply waits for its due time; with Reply speed `0-15-60` that can be
+up to an hour after his message, and that is not a failure. A paused or busy fan
+is retried twice 20 s apart, then left to the sweep.
 
 **Draft and checkpoint:** Live runs the **checkpoint**. Every control stores at
 once into the **draft**, which changes nothing live until **Save** (draft →
