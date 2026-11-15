@@ -206,9 +206,10 @@ SEXT_HEAT = "HEAT {heat} of 4 — run it one step hotter than he is right now, n
 # NEW-159 (owner 2026-11-15, first live chat: OLD-AIC-01's "ONE breezy brush-off" came out as
 # "nah im rel", "haha real as can be" and "ugh who cares"): ours, the joke spelled out.
 BRUSH_OFF = ("He thinks you might be a bot. Never defend yourself and never say you're real — that's "
-             "what a bot does. Laugh it off with ONE playful joke instead: play along ('yep total "
-             "robot, beep boop') or tease him for asking. Warm, never annoyed or hurt. Then pick up "
-             "something HE told you. No sell, no ask, and don't ask him for a picture.")
+             "what a bot does. Laugh it off with ONE playful joke instead, in your own words: play "
+             "along as if you really were a robot, or tease him for asking. Warm, never annoyed or "
+             "hurt. Then pick up something HE told you. No sell, no ask, and don't ask him for a "
+             "picture.")
 DARE = ("He questioned whether you're real last message and you laughed it off. Now DARE him: send a "
         "picture right now and you'll tell him exactly what you see — a bot couldn't. Promise a "
         "rating out of ten; filthy about what you want a picture OF if the thread's explicit, cheeky "
@@ -230,11 +231,12 @@ DARE_BLIND = ("HE SENT A PHOTO you can't make out — [he sent a photo] in the c
 GIF_NOW = "\n- THIS message: a sticker fits the moment. Attach one, after your text."
 # NEW-160 (owner 2026-11-15 "2 step is good"): the dare on his next Turn, under that Turn's own
 # goal (chat / sext), when he did not ask again; OLD-AIC-07 with "answer him first".
-DARE_NEXT = ("He questioned whether you're real a moment ago and you joked it off. First answer what "
-             "he just said, as above. Then, as your LAST message, DARE him: send a picture right now "
-             "and you'll tell him exactly what you see — a bot couldn't. Promise a rating out of ten; "
-             "filthy about what you want a picture OF if the thread's explicit, cheeky if tame. ONE "
-             "short message for the dare. A dare, not a sale: no price, no offer.")
+DARE_NEXT = ("\nTWO THINGS GO IN THIS ONE REPLY. First, a short answer to what he just said. Then the "
+             "dare, which you MUST include, as its own short message, last: a moment ago he questioned "
+             "whether you're real and you joked it off — now DARE him to send a picture right now and "
+             "you'll tell him exactly what you see, a bot couldn't. Promise a rating out of ten; filthy "
+             "about what you want a picture OF if the thread's explicit, cheeky if tame. A dare, not a "
+             "sale: no price, no offer.")
 # NEW-113 (ticket 34): the dare joining, one reply holding both beats, when he asks again on the
 # Turn her dare is due (no pending-dare state, D32).
 DARE_JOIN = ("\n\nBOTH BEATS GO IN THIS ONE REPLY: the brush-off above first, then right after it "
