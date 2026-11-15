@@ -487,11 +487,10 @@ describe("the Extras overflow", () => {
     expect(extrasButton()).toHaveAttribute("title", EXTRAS_OVERFLOW_LABEL);
     const box = overflow();
     expect(within(box).getByRole("heading", { name: EXTRAS_OVERFLOW_LABEL })).toHaveAttribute("title", EXTRA_LABEL);
-    // Collect, AI describe and its prompt picker, harvest, duplicates, the pack picker and AI folders.
+    // Collect, AI describe, harvest, duplicates, the pack picker and AI folders.
     const tools = [
       screen.getByRole("button", { name: "Collect all" }),
       screen.getByRole("button", { name: /^Describe all/ }),
-      screen.getByTitle("Describe prompt variant"),
       screen.getByRole("button", { name: /^Harvest OF/ }),
       screen.getByRole("button", { name: "Duplicates" }),
       screen.getByRole("button", { name: "Feet pack" }),

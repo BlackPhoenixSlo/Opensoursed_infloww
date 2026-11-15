@@ -1,10 +1,12 @@
 "use client";
 
 /** The money rail's panel (MoneyRail.tsx's gate mounts it on the surfaces the user ticked): the feed, the rows,
- *  the dock and the ⚙ panel. Its own module so none of it is in the shell's first load. */
+ *  the dock and the ⚙ panel. Its own module so none of it is in the shell's first load. The Creators of the rows on
+ *  screen hold a View lease (`useOnScreenLease`, ADR-0031). */
 import { useMemo, useState } from "react";
 
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useOnScreenLease } from "@/hooks/useViewLease";
 import { cn } from "@/lib/utils";
 import { GROUP_SLOT_CAP, openGroupTabWithSlots, type GroupSlot } from "@/lib/groupChannel";
 import type { RailSettings, Surface } from "@/lib/moneyRailStorage";
@@ -40,6 +42,7 @@ export function MoneyRailPanel({
   const {
     targetAccountIds, merged, unseen, replyStates, placeholderAids, anyRefreshing, anyLoading,
   } = useMoneyRailFeed({ settings, activeAccounts, open });
+  const track = useOnScreenLease("rail");
 
   // The newest GROUP_SLOT_CAP distinct payers, in the rail's own order
   // (most recent money first) — what the 👥 button seeds the group tab with.
@@ -196,9 +199,11 @@ export function MoneyRailPanel({
           )}
           {merged.map((m, i) => {
             const fanId = payerIdOf(m);
+            const key = `${m.accountId}:${m.n.id ?? i}`;
             return (
               <Row
-                key={`${m.accountId}:${m.n.id ?? i}`}
+                key={key}
+                leaseRef={track(m.accountId, key)}
                 m={m}
                 accountLabel={showAccountTag ? (accountLabel.get(m.accountId) ?? null) : null}
                 reply={fanId ? (replyStates.get(`${m.accountId}:${fanId}`) ?? null) : null}

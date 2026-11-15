@@ -27,9 +27,11 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
       background` /users/list name fill, server.py): user-triggered, so never paced. The
       wait is on the loop (no worker thread), but inside the request's background
       admission: it holds the Creator's background lane slot (<= RETRY_MAX_S).
-  upstream(exc) / parse_allow(text)
-      The one reader of OF's answer behind an exception: (status, body); "Please allow N
-      seconds" as N, capped. retry_after (this module's wait) reads through them.
+  upstream(exc) / allow_s(text) / asked_wait(header, allow)
+      The one reader of OF's answer behind an exception: (status, body, Retry-After header);
+      "Please allow N seconds" as N, uncapped; OF's asked wait (the header first, else the
+      text), uncapped. retry_after (this module's capped wait) and the purchases poll's
+      Backoff ladder read through them.
   note_user(account_id) / last_user_at(account_id) / user_active(account_id)
       A person's request for the Creator (server._lane_entered: a non-background lane entry
       made from a real request; the Promotions page) / its monotonic time (vault_collect) /
@@ -128,28 +130,48 @@ def user_active(account_id: Any, now: float | None = None) -> bool:
     return t is not None and (time.monotonic() if now is None else now) - t < USER_WINDOW_S
 
 
+def allow_s(text: str | None) -> float | None:
+    """OF's "Please allow N seconds" as N (uncapped, >= 0), None when the text names none."""
+    m = _ALLOW.search(text or "")
+    return max(float(m.group(1)), 0.0) if m else None
+
+
+def asked_wait(header: str | None, allow: float | None) -> float | None:
+    """OF's asked wait, uncapped: its `Retry-After` header in seconds first, else
+    `allow` (the body's "Please allow N seconds", allow_s), else None."""
+    if header is not None:
+        try:
+            v = float(str(header).strip())
+            if v >= 0:
+                return v
+        except ValueError:
+            pass
+    return allow
+
+
 def parse_allow(text: str | None) -> float:
     """OF's asked wait ("Please allow N seconds"), RETRY_DEFAULT_S when it names none,
     never above RETRY_MAX_S (nor below 0)."""
-    m = _ALLOW.search(text or "")
-    return min(max(float(m.group(1)), 0.0) if m else RETRY_DEFAULT_S, RETRY_MAX_S)
+    a = allow_s(text)
+    return min(RETRY_DEFAULT_S if a is None else a, RETRY_MAX_S)
 
 
-def upstream(exc: BaseException) -> tuple[int | None, str]:
-    """OF's answer behind `exc`: (status, body text). An OFAPIError's `response`, or
-    server._proxy's 502 whose detail carries upstream_status / upstream_body. Anything
-    else: (None, "")."""
+def upstream(exc: BaseException) -> tuple[int | None, str, str | None]:
+    """OF's answer behind `exc`: (status, body text, Retry-After header). An OFAPIError's
+    `response`, or server._proxy's 502 whose detail carries upstream_status / upstream_body
+    (no header there: None). Anything else: (None, "", None)."""
     detail = getattr(exc, "detail", None)
     if isinstance(detail, dict):
-        return detail.get("upstream_status"), str(detail.get("upstream_body") or "")
+        return detail.get("upstream_status"), str(detail.get("upstream_body") or ""), None
     resp = getattr(exc, "response", None)
-    return getattr(resp, "status_code", None), getattr(resp, "text", "") or ""
+    header = (getattr(resp, "headers", None) or {}).get("Retry-After")   # curl_cffi headers: case-insensitive
+    return getattr(resp, "status_code", None), getattr(resp, "text", "") or "", header
 
 
 def retry_after(exc: BaseException) -> float | None:
     """The wait OF asks for when `exc` is its 429 (see `upstream`), capped (parse_allow),
     else None."""
-    status, body = upstream(exc)
+    status, body, _ = upstream(exc)
     return parse_allow(body) if status == 429 else None
 
 

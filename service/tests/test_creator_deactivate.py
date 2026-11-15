@@ -536,10 +536,10 @@ async def case_ledger_polls_skip() -> None:
 
     saved = {k: getattr(ti, k) for k in (
         "run_one_tick", "run_fast_tick", "boot_grace", "_is_paused", "_decide_mode",
-        "_clear_stale_inflight", "_fast_poll_account_ids")}
+        "_clear_stale_inflight", "_seller_account_ids")}
     ti.run_one_tick, ti.run_fast_tick, ti.boot_grace = _tick, _fast, _none
     ti._is_paused, ti._decide_mode, ti._clear_stale_inflight = _false, _refresh, _zero
-    ti._fast_poll_account_ids = _wanted
+    ti._seller_account_ids = _wanted
     try:
         await _run_briefly(ti.start_supervisor())
         await _run_briefly(ti.start_fast_poll())
@@ -556,7 +556,7 @@ async def case_executor_skips() -> None:
         for aid in (OFF, ON):
             s.add(ScheduledJob(account_id=aid, kind="t_deact_noop", payload_json="{}",
                                status="pending", run_at=now - timedelta(seconds=5)))
-    pairs = [(a, k) for a, k, _op, _due in await ax._due_job_pairs()]
+    pairs = [(a, k) for a, k, _op, *_ in await ax._due_job_pairs()]
     assert (ON, "t_deact_noop") in pairs and (OFF, "t_deact_noop") not in pairs, pairs
 
     before = CALLS["noop"]

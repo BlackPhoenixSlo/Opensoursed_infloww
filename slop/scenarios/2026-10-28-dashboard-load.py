@@ -446,7 +446,7 @@ SWEEP_ROUTES = """/ /analytics/creator-reports /analytics/employee-reports /anal
 /growth/auto-story /growth/free-trial-links /growth/gen-info /growth/get-to-know-fans
 /growth/profile-promotion /growth/scripts /growth/sensitive-words /growth/smart-lists /growth/smart-messages
 /growth/tracking-links /growth/vault-pro /help-center /messages-pro /notifications /admin/manage
-/settings/about /settings/account /settings/ai-keys /settings/audit /settings/billing
+/settings/about /settings/account /settings/ai-keys /settings/audit /settings/billing /settings/consent
 /settings/cotag /settings/messaging /settings/preferences /settings/roles /settings/sales /settings/security-org
 /settings/security-personal /settings/system /settings/time-tracking /share-for-share/discover-creators
 /share-for-share/requests /share-for-share/schedule /share-for-share/settings /fansly-manager/notifications

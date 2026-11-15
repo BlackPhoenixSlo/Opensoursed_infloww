@@ -4,8 +4,8 @@ The Heat check (spec 06 › Contracts › Heat check; `full_ai_turn._heat_check`
 `floor_on`, on a Route sext Turn whose chain left text, Jev scores ONE Score `reply_level` over
 `{"her_reply": <the parts joined>}`: the Router's `intensity` scale (0-4) turned on her. Her level
 above the Turn's Heat (the Heat the Writer was given) -> one rewrite. Any failure is `GateError`
-(the caller ships the text). No Mode check: it runs wherever a Writer writes. Wording: new, DRAFT
-docs/prompts NEW-155 (pending the owner's OK); not probed yet. `HEAT_VERSION` goes on the row.
+(the caller ships the text). No Mode check: it runs wherever a Writer writes. Wording: new,
+docs/prompts NEW-155 (owner OK 2026-11-15); not probed yet. `HEAT_VERSION` goes on the row.
 
   - `REPLY_LEVEL`, `HEAT_VERSION`.
   - `level_of(score)`, `over(score, cap)`: pure.
@@ -28,7 +28,7 @@ TIMEOUT_S = 10.0
 MAX_RETRIES = 1
 QID = "reply_level"
 
-# DRAFT wording (owner edits it; docs/prompts NEW-155): `_router_jev.INTENSITY` turned on her.
+# Wording (owner OK 2026-11-15; docs/prompts NEW-155): `_router_jev.INTENSITY` turned on her.
 REPLY_LEVEL: dict[str, Any] = {
     "instructions": "How sexual is what she writes in `her_reply`?",
     "criteria": [

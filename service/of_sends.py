@@ -119,6 +119,13 @@ class SendsMixin:
                              native_rf=retry_plan.native_rf)
             return self.post_json(path, json_body=retry)
 
+    def _consent(self, body: dict) -> None:
+        """OF's consent "Yes", given once: `isConsentAccepted: true` on a body
+        that carries media when the account's "Auto-accept OnlyFans consent"
+        switch is on (of_consent). Called last on every media body below,
+        before its POST/PUT, where OF's web client adds it."""
+        of_consent.apply(body, getattr(self, "account_id", None))
+
     # ── Messages: write ─────────────────────────────────────────
 
     def send_message(self, chat_id: str | int, text: str, *,
@@ -165,6 +172,7 @@ class SendsMixin:
         # the contract: only ids it surfaces will succeed. Set before the log
         # below so the diagnostic reports what OF actually receives.
         retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        self._consent(body)
         # Diagnostic — confirms OF receives the previews subset we expect.
         # OF silently ignores previews on free messages, so price=0 + a
         # non-empty previews list is also worth flagging.
@@ -663,6 +671,7 @@ class SendsMixin:
             "userIds": [int(chat_id)],
         }
         retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        self._consent(body)
         return self._post_dropping_auto_cotag(
             f"{API_BASE}/messages/queue", body, retry_plan)
 
@@ -718,6 +727,7 @@ class SendsMixin:
         retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
         if giphy_id:
             body["giphyId"] = str(giphy_id)
+        self._consent(body)
         return self._post_dropping_auto_cotag(
             f"{API_BASE}/messages/queue", body, retry_plan)
 
@@ -777,6 +787,7 @@ class SendsMixin:
         else:
             body["isPublishedWithPeriod"] = 1
         self._apply_cotags(body, media_files, tagged_users, False)
+        self._consent(body)
         return self.put_json(f"{API_BASE}/messages/queue/{queue_id}", json_body=body)
 
     def cancel_scheduled(self, queue_id: int) -> Any:
@@ -856,6 +867,7 @@ class SendsMixin:
             # of `mediaFiles`. OF web includes GIFs on broadcasts; mirror the
             # field so the relay forwards rather than dropping silently.
             body["giphyId"] = str(giphy_id)
+        self._consent(body)
         return self._post_dropping_auto_cotag(
             f"{API_BASE}/messages/queue", body, retry_plan)
 
@@ -912,6 +924,7 @@ class SendsMixin:
         if carrier_posted_at:   body["postedAt"] = carrier_posted_at
         if giphy_id:            body["giphyId"] = str(giphy_id)
         retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
+        self._consent(body)
         result = self._post_dropping_auto_cotag(
             f"{API_BASE}/posts", body, retry_plan)
         # Proof a poll went out (02-gaps G2); never the text or the options.
@@ -966,6 +979,7 @@ class SendsMixin:
         if text is not None:        body["text"] = of_text(text)
         if price is not None:       body["price"] = price
         if media_files is not None: body["mediaFiles"] = media_files
+        self._consent(body)
         return self.put_json(f"{API_BASE}/posts/{post_id}", json_body=body)
 
     def save_queued_post(self, post_id: int, text: str, *,
@@ -978,6 +992,7 @@ class SendsMixin:
         operator's picks). Not verified live (no live write was made)."""
         body = self._post_body(text, **fields)
         self._apply_cotags(body, fields.get("media_files"), tagged_users, False)
+        self._consent(body)
         return self.put_json(f"{API_BASE}/posts/{post_id}", json_body=body)
 
     def delete_post(self, post_id: int) -> Any:
@@ -1303,6 +1318,7 @@ class SendsMixin:
                     editor[pid] = {"baseFile": {}, "stickers": []}
             if editor:
                 body["mediaEditorFiles"] = editor
+        self._consent(body)
 
         return self.post_json(f"{API_BASE}/stories", json_body=body)
 
@@ -1390,4 +1406,5 @@ from of_client import (  # noqa: E402
     API_BASE, OFAPIError, _CoTagRetry, _guard_outbound, _wrap_text_as_p,
     _write_tag_block, log_of,
 )
+import of_consent  # noqa: E402
 from of_rich_text import of_text  # noqa: E402

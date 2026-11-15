@@ -20,6 +20,7 @@ import { usePageCreator } from "@/contexts/PageCreatorContext";
 import { useScope } from "@/contexts/ScopeContext";
 import { useCreatorProfiles } from "@/lib/creatorProfiles";
 import { useRosterCounts } from "@/hooks/useRosterCounts";
+import { useOnScreenLease } from "@/hooks/useViewLease";
 import { ofMeQuery } from "@/lib/ofMe";
 import { relay, type AccountMeta, type WatcherAccount } from "@/lib/relay";
 import { subscribeToStorage } from "@/lib/storageSync";
@@ -65,7 +66,8 @@ export type S4SMark = { optedIn: boolean; pending: number };
  *  avatars with the S4S tag and the request count from `marks` in place of the online dot and the OF count.
  *  Every copy filters 300ms after typing stops, ↑/↓ walk its rows and Enter picks one; a logged-out row says so and
  *  reads no OF count. OF Manager's own (`ofManager`) also collapses to Infloww's 70px avatar strip (kept across loads),
- *  warms a creator's `/users/me` on hover or focus, and focuses Search on `/` (Infloww has no keys). */
+ *  warms a creator's `/users/me` on hover or focus, focuses Search on `/` (Infloww has no keys), and leases the
+ *  creator rows on screen (`useOnScreenLease`, ADR-0031: only the visible ones, never every row). */
 export function CreatorColumn(props: {
   accounts: AccountMeta[];
   onPicked?: () => void;
@@ -133,6 +135,8 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
   // Chats with unread messages per creator, from the badge counts Messages Pro's Creator tabs read (one query for every row).
   const rosterCounts = useRosterCounts();
   const qc = useQueryClient();
+  // OF Manager's own column leases the creator rows on screen: the row decides (`leaseRef`).
+  const track = useOnScreenLease("ofm-column");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("");
   useEffect(() => {
@@ -293,6 +297,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
               onPick={() => onChange(a.id)}
               collapsed={collapsed}
               prefetch={ofManager}
+              leaseRef={ofManager && a.role !== "watcher" ? track(a.id) : undefined}
             />
           ))
         )}
@@ -317,7 +322,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
   );
 }
 
-function CreatorRow({ account, active, unread, onPick, collapsed = false, prefetch = false }: {
+function CreatorRow({ account, active, unread, onPick, collapsed = false, prefetch = false, leaseRef }: {
   account: AccountMeta;
   active: boolean;
   /** Chats with unread messages (the roster counts). */
@@ -327,6 +332,8 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
   collapsed?: boolean;
   /** Warm the creator's `/users/me` (the mirror's first read for any page) on hover or focus, so a switch paints at once. */
   prefetch?: boolean;
+  /** OF Manager's on-screen lease (`useOnScreenLease`): OF Manager's own column only, never a watcher row. */
+  leaseRef?: (el: Element | null) => void;
 }) {
   const name = account.nickname || account.id;
   const online = liveSession(account);
@@ -354,6 +361,7 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
   const cool = () => clearTimeout(dwell.current);
   return (
     <button
+      ref={leaseRef}
       type="button"
       onClick={onPick}
       onMouseEnter={warm}

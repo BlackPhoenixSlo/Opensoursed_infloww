@@ -132,6 +132,7 @@ from vault_ai_api import router as _vault_ai_router  # noqa: E402
 from vault_download_api import CUT_SHORT as _vault_cut_short, router as _vault_download_router  # noqa: E402
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
+from of_consent_api import router as _of_consent_router  # noqa: E402
 from assistant_api import router as _assistant_router  # noqa: E402
 from assistant_draft import router as _assistant_draft_router  # noqa: E402
 from report_recipe_api import router as _report_recipe_router  # noqa: E402
@@ -404,6 +405,8 @@ app.include_router(_vault_ai_router)
 app.include_router(_vault_download_router)
 app.include_router(_style_config_router)
 app.include_router(_account_config_router)
+# A Creator's "Auto-accept OnlyFans consent" switch (/admin/of-consent/{id}); its PUT is owner-only.
+app.include_router(_of_consent_router)
 # In-product help bot (POST /admin/assistant/ask). Under /admin/* so it
 # inherits the share-token gate + account-isolation middleware; chatters
 # may ask (deliberately not in _CHATTER_BLOCKED_ADMIN_PREFIXES) and the
@@ -1723,7 +1726,7 @@ async def _start_event_pumps() -> None:
     )
     _tx_ingest_task = asyncio.create_task(_start_tx_ingest(), name="tx-ingest-supervisor")
     # 30s freshness poll layered on the 15-min supervisor: reads OF's purchases
-    # notification feed (no ledger read) per online/selling account so a PPV
+    # notification feed (no ledger read) per due account (leased/Seller 30s, Idle 5min) so a PPV
     # unlock flips messages.is_paid within ~30s and the automations see it the
     # next tick. Shares the per-account lock with the supervisor. Cancelled in _stop_event_pumps.
     _tx_fast_task = _spawn_bg(_start_tx_fast(), "tx-ingest-fast-poll")

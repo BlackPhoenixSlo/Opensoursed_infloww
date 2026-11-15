@@ -30,6 +30,8 @@ owner and chatter, Agency B's Creator); the live job body through `run_once` wit
                                       rule: 409; switch-off stays open (reads off); `_validate_trigger` drops
                                       `mode` (fail closed: Shadow)
   case_interval_job_every_300s        `dispatch_plan.parse_trigger` reads the live trigger as a 300 s interval
+  case_live_starts_catchup_off_stops  PUT live starts the waiting-chats catch-up (a pass now); a refused
+                                      live does not; PUT off stops it
 
 Run: ./venv/bin/python service/tests/test_full_ai_mode_api.py  (exit 0 = pass)
 """
@@ -54,7 +56,7 @@ from _full_ai_fixtures import _msg  # noqa: E402
 from _full_ai_live_helpers import world  # noqa: E402
 from automation_executor import run_once  # noqa: E402
 from automation_rules_api import _validate_trigger  # noqa: E402
-from automations import full_ai_live  # noqa: E402
+from automations import full_ai_catchup, full_ai_live  # noqa: E402
 from automations.full_ai_config import DEFAULTS  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import AccountAiConfig, AiDecision, AutomationRule, Message, ScheduledJob  # noqa: E402
@@ -305,16 +307,20 @@ def case_refusals():
 
 def case_live_blockers():
     for kw, want in (
-        ({"fans": {"include": [], "exclude": []}}, "No Fans list"),
-        ({"keys": {**KEYS, "openrouter": None}}, "No key for openrouter"),
-        ({"keys": {**KEYS, "deepseek": None, "nanogpt": None}}, "No key for deepseek, nanogpt"),
+        ({"fans": {"include": [], "exclude": []}},
+         ["No Fans list: pick an Include or Exclude list under Fans, then Save"]),
+        ({"keys": {**KEYS, "openrouter": None}},
+         ["No OpenRouter key for Writers euryale-v2.2, hermes-4-405b: add one in Settings → AI keys, or untick them "
+          "under Writers and Save"]),
+        ({"keys": {**KEYS, "deepseek": None, "nanogpt": None}},
+         ["No DeepSeek key for Writer deepseek-v4-flash: add one in Settings → AI keys, or untick it under Writers and Save",
+          "No NanoGPT key for Writer euryale-v2.3: add one in Settings → AI keys, or untick it under Writers and Save"]),
     ):
         _run(_reset(**kw))
         r = _put("live")
-        assert r.status_code == 409 and want in r.json()["detail"], (kw, r.status_code, r.text)
+        assert r.status_code == 409 and r.json()["detail"] == "Can't go Live: " + "; ".join(want), (kw, r.status_code, r.text)
         assert _run(_rules()) == [], kw
-        blockers = _get().json()["blockers"]
-        assert len(blockers) == 1 and blockers[0].startswith(want), blockers
+        assert _get().json()["blockers"] == want, _get().json()
     _run(_reset(fans={"include": [7], "exclude": []}))
     assert _get().json()["blockers"] == [] and _put("live").status_code == 200
 
@@ -367,6 +373,21 @@ def case_shared_routes_never_turn_live():
 def case_interval_job_every_300s():
     t = parse_trigger(LIVE)
     assert t is not None and getattr(t, "every", None) == 300, t
+
+
+def case_live_starts_catchup_off_stops():
+    calls: list[tuple[str, str]] = []
+    real = full_ai_catchup.start, full_ai_catchup.stop
+    full_ai_catchup.start = lambda aid: calls.append(("start", aid))
+    full_ai_catchup.stop = lambda aid: calls.append(("stop", aid))
+    try:
+        _run(_reset(fans={"include": [], "exclude": []}))
+        assert _put("live").status_code == 409 and calls == []          # refused: no catch-up
+        _run(_reset())
+        assert _put("live").status_code == 200 and calls == [("start", AID)], calls
+        assert _put("off").status_code == 200 and calls == [("start", AID), ("stop", AID)], calls
+    finally:
+        full_ai_catchup.start, full_ai_catchup.stop = real
 
 
 _harness.run()

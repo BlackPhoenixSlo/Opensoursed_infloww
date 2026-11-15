@@ -17,7 +17,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import NamedTuple, assert_never
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import write_telemetry
@@ -139,10 +139,19 @@ async def enqueue_job(
 _FOLLOW_UP_JOB = func.coalesce(ScheduledJob.payload_json, "").contains('"follow_up"', autoescape=True)
 
 
-async def _claim_due_job(account_id: str, kind: str) -> _ClaimedJob | None:
+# The one Fan a job targets (`payload_json.only_fan_ids[0]`), NULL when it names
+# none or its payload is not JSON: a per-fan kind's run key (automation_executor
+# `_PER_FAN_KINDS`). SQLite evaluates only the CASE branch that matches.
+JOB_FAN = case((func.json_valid(ScheduledJob.payload_json),
+                func.json_extract(ScheduledJob.payload_json, "$.only_fan_ids[0]")), else_=None)
+ANY_FAN = object()   # `_claim_due_job` default: whichever Fan, as before
+
+
+async def _claim_due_job(account_id: str, kind: str, *, fan=ANY_FAN) -> _ClaimedJob | None:
     """Claim the earliest due pending job for (account, kind): flip it to
     'running' and bump attempts in one transaction so a concurrent tick can't
-    grab the same row. Returns a detached (id, payload) tuple or None.
+    grab the same row. Returns a detached (id, payload) tuple or None. `fan`
+    (a per-fan run): only a job whose `JOB_FAN` is that value (None: names no Fan).
 
     Queries by kind_family: a pre-rename job row (migration 0062 not yet run)
     still claims under its kind's live name — without this, run_once (which
@@ -159,6 +168,7 @@ async def _claim_due_job(account_id: str, kind: str) -> _ClaimedJob | None:
                     ScheduledJob.kind.in_(kind_family(kind)),
                     ScheduledJob.status == "pending",
                     ScheduledJob.run_at <= now,
+                    *(() if fan is ANY_FAN else (JOB_FAN.is_(None) if fan is None else JOB_FAN == fan,)),
                 )
                 # An operator's job (started from the app) before automation's:
                 # the supervisor took this run's slot in the operator tier.

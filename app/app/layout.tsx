@@ -10,6 +10,7 @@ import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 import { NotificationToaster } from "@/components/NotificationToaster";
 import { IfConfirmHost } from "@/components/ui/ifConfirm";
 import { IdleOverlay } from "@/components/IdleOverlay";
+import { ViewLeaseHeartbeat } from "@/components/ViewLeaseHeartbeat";
 import { ApiKeyToaster } from "@/components/ApiKeyToaster";
 import { MoneyRail } from "@/components/MoneyRail";
 import { AssistantProvider, AssistantWidget } from "@/components/assistant/AssistantWidget";
@@ -223,6 +224,8 @@ export default async function RootLayout({
                   {/* ifConfirm / ifAlert: the app's confirm() and alert() dialogs. */}
                   <IfConfirmHost />
                   <IdleOverlay />
+                  {/* Every signed-in tab, any page: its View lease and the App-open warm. */}
+                  <ViewLeaseHeartbeat />
                   <ApiKeyToaster />
                   <MoneyRail />
                   <AssistantWidget />

@@ -574,9 +574,9 @@ describe("heatTail: the Heat check under a sext reply", () => {
   it.each<[string, HeatCheck | null | undefined, string]>([
     ["absent", undefined, ""],
     ["null", null, ""],
-    ["ok", h({}), " · her level 3 of Heat 3"],
-    ["rewritten", h({ outcome: "regen_ok", redo_score: 3, first_level: 4 }), " · her level 3 of Heat 3 · rewritten (was 4)"],
-    ["over twice", h({ outcome: "over_sent", score: 4, level: 4, redo_score: 4, first_level: 4 }), " · her level 4 of Heat 3 · over Heat, sent"],
+    ["ok", h({}), " · reply level 3 of Heat 3"],
+    ["rewritten", h({ outcome: "regen_ok", redo_score: 3, first_level: 4 }), " · reply level 3 of Heat 3 · rewritten (was 4)"],
+    ["over twice", h({ outcome: "over_sent", score: 4, level: 4, redo_score: 4, first_level: 4 }), " · reply level 4 of Heat 3 · over Heat, sent"],
     ["failed", h({ outcome: "error", score: null, level: null, error: "GateError: deadline" }), " · Heat check failed"],
   ])("%s", (_n, hc, tail) => {
     expect(heatTail(hc)).toBe(tail);
@@ -584,7 +584,7 @@ describe("heatTail: the Heat check under a sext reply", () => {
   it("rides the reply line after the scene tail", () => {
     const r = reply({ attempts: [{ writer: "euryale-v2.3", outcome: "ok", ms: 100 }], route: "sext", heat: 3,
       scene: { n: 2, stage: "building", heat: 3 }, heat_check: h({ outcome: "regen_ok", first_level: 4 }) });
-    expect(replyLine(r).endsWith(" · scene building · 2 · her level 3 of Heat 3 · rewritten (was 4)")).toBe(true);
+    expect(replyLine(r).endsWith(" · scene building · 2 · reply level 3 of Heat 3 · rewritten (was 4)")).toBe(true);
   });
 });
 

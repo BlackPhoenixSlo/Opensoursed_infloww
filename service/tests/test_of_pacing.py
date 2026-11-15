@@ -5,8 +5,10 @@ one retry, no claim; the browser name fill's retry; link_prewarm.prewarm_all's
 busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
 
   case_parse_allow_table:   "Please allow N seconds" -> N; none -> default; cap.
-  case_upstream_table:      (status, body) from an OFAPIError-like response or a _proxy
-                            502 detail.
+  case_upstream_and_allow_s_table: (status, body, Retry-After) from an OFAPIError-like
+                            response or a _proxy 502 detail (no header); "allow N" uncapped.
+  case_asked_wait_table:    Retry-After header (seconds) first, else the body's "allow N"
+                            (allow_s), uncapped; neither: None.
   case_retry_after_table:   OFAPIError-like 429 response; _proxy 502 detail with
                             upstream_status 429; anything else -> None.
   case_outside_walk_plain:  no walk -> call() as is: no pause, a 429 raises at once.
@@ -96,16 +98,37 @@ def case_retry_after_table():
     assert of_pacing.retry_after(ValueError("x")) is None
 
 
-def case_upstream_table():
+def case_upstream_and_allow_s_table():
     _knobs()
     e = Exception()
     e.response = SimpleNamespace(status_code=429, text="Please allow 45 seconds", headers={"Retry-After": "120"})
-    assert of_pacing.upstream(e) == (429, "Please allow 45 seconds"), of_pacing.upstream(e)
-    assert of_pacing.upstream(_E429("x")) == (429, "x")
+    assert of_pacing.upstream(e) == (429, "Please allow 45 seconds", "120"), of_pacing.upstream(e)
+    assert of_pacing.upstream(_E429("x")) == (429, "x", None)   # a response with no headers
     p = Exception()
     p.detail = {"upstream_status": 429, "upstream_body": "Please allow 4 seconds"}
-    assert of_pacing.upstream(p) == (429, "Please allow 4 seconds")
-    assert of_pacing.upstream(ValueError("x")) == (None, "")
+    assert of_pacing.upstream(p) == (429, "Please allow 4 seconds", None)
+    assert of_pacing.upstream(ValueError("x")) == (None, "", None)
+    for text, want in [
+        ('{"error":{"code":429,"message":"Too many requests. Please allow 45 seconds"}}', 45.0),
+        ("Please allow 600 seconds", 600.0),   # uncapped, unlike parse_allow
+        ("please ALLOW 2.5 sec", 2.5),
+        ("Too many requests", None),
+        (None, None),
+    ]:
+        assert of_pacing.allow_s(text) == want, (text, of_pacing.allow_s(text))
+
+
+def case_asked_wait_table():
+    for args, want in [
+        (("120", None), 120.0),          # the header
+        (("5", 1.0), 5.0),               # the header wins over the body
+        ((None, 45.0), 45.0),            # the body
+        ((None, 600.0), 600.0),          # uncapped
+        (("soon", 3.0), 3.0),            # a malformed header: the body
+        (("-1", 3.0), 3.0),              # a negative header: the body
+        ((None, None), None),            # nothing
+    ]:
+        assert of_pacing.asked_wait(*args) == want, (args, want)
 
 
 def case_outside_walk_plain():

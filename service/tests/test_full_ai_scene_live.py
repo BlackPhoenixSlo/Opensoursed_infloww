@@ -126,9 +126,9 @@ class _Feed:
                      "replacePairs": {"{NAME}": "D", "{AMOUNT}": f"${cents / 100:.2f}",
                                       "{MESSAGE_LINK}": f"/chats/chat/{fan}?firstId={mid}"}}
 
-    def get(self, path):
+    def get_json(self, path):
         assert "type=purchases" in path, path
-        return SimpleNamespace(json=lambda: {"list": [self.item]})
+        return {"list": [self.item]}
 
 
 def case_scene_sell_and_purchases():

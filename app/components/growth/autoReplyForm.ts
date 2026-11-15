@@ -9,8 +9,13 @@
  *   • `buildPayload` sends the STORED blob back with only this page's fields
  *     changed: the PUT replaces the whole blob, so the engine's other knobs
  *     (quiet hours, reply caps) keep whatever they hold.
- *   • Number inputs arrive as the raw text and are clamped to `LIMITS` here;
- *     blank / junk reads as the low bound.
+ *   • Number inputs arrive as the raw text and are clamped to `LIMITS` here
+ *     (dollars to cents); blank / junk reads as the low bound. The draft holds
+ *     the clamped value (what Save sends); the input shows the text as typed
+ *     (`typing`, so a cleared box stays blank instead of snapping to the low
+ *     bound under the next keystroke) until blur, when it shows the clamped
+ *     value (`numberText`). `typing` sits beside the draft, not in it, so a
+ *     blur never turns "Saved" off.
  *   • The state is the draft plus the draft the last Save sent
  *     (automations/sentDraft.ts: `unsaved` holds "Saved" off over an edit made
  *     while that save was in flight).
@@ -65,6 +70,8 @@ export type NumberKey = KeysOf<number>;
 export type AutoReplyState = SentState<AutoReplyDraft> & {
   /** A model/effort pick made here that no brain PUT has landed yet. */
   modelTouched: boolean;
+  /** A number input's text as typed, until its blur. */
+  typing: Partial<Record<NumberKey, string>>;
 };
 
 /** An edit of the draft. */
@@ -80,10 +87,13 @@ export type AutoReplyEdit =
 /** The brain PUT carrying `pick` landed. */
 type BrainSaved = { type: "brainSaved"; pick: Pick2 };
 
+/** A number input lost focus: it shows its clamped draft value again. */
+type NumberBlur = { type: "numberBlur"; k: NumberKey };
+
 /** The header switch flipped (its PUT is out), or flipped back (that PUT failed). */
 export type Switched = { type: "switched"; on: boolean };
 
-export type AutoReplyAction = AutoReplyEdit | Saved | BrainSaved | Switched;
+export type AutoReplyAction = AutoReplyEdit | Saved | BrainSaved | Switched | NumberBlur;
 
 /** [lo, hi] per number input. The delay tops out well under the engine's
  *  `silence_max_minutes` (default 1115), past which a delay (or its randomised
@@ -101,6 +111,12 @@ const toDollars = (cents: number) => Math.round(cents) / 100;
 /** A number input's value, clamped; blank / junk reads as `lo`. */
 const clamp = (raw: string, lo: number, hi: number) =>
   Math.max(lo, Math.min(Number(raw) || lo, hi));
+
+/** The dollar inputs: kept to whole cents, so the box shows what Save sends. */
+const DOLLARS: ReadonlySet<NumberKey> = new Set<NumberKey>(["cap", "newMax"]);
+
+/** A number input's text: as typed while it has focus, else the draft's clamped value. */
+export const numberText = (s: AutoReplyState, k: NumberKey): string => s.typing[k] ?? String(s.draft[k]);
 
 /** The model/effort the Model row starts on. A stored model the server no longer
  *  offers runs the default (resolve_model), so it reads "" — and so does an
@@ -159,7 +175,7 @@ export function draftFromConfig(eff: AutoreplyConfig, brain?: BrainPick | null):
 
 /** The form's state for an effective config: its draft, nothing sent yet. */
 export const initState = (eff: AutoreplyConfig, brain?: BrainPick | null): AutoReplyState =>
-  ({ ...sentState(draftFromConfig(eff, brain)), modelTouched: false });
+  ({ ...sentState(draftFromConfig(eff, brain)), modelTouched: false, typing: {} });
 
 /** Randomise only means something above a 0 delay (the switch is disabled at 0). */
 export const randomiseOn = (d: AutoReplyDraft) => d.randomise && d.delay > 0;
@@ -203,7 +219,8 @@ function editDraft(d: AutoReplyDraft, action: AutoReplyEdit): AutoReplyDraft {
       return { ...d, [action.k]: action.on };
     case "number": {
       const [lo, hi] = LIMITS[action.k];
-      return { ...d, [action.k]: clamp(action.raw, lo, hi) };
+      const v = clamp(action.raw, lo, hi);
+      return { ...d, [action.k]: DOLLARS.has(action.k) ? toDollars(toCents(v)) : v };
     }
     case "toggleFolder": {
       const folders = new Set(d.folders);
@@ -221,6 +238,12 @@ const sentReducer = withSent(editDraft);
 
 export function autoReplyReducer(s: AutoReplyState, a: AutoReplyAction): AutoReplyState {
   // A landed brain PUT clears the pick, unless it moved again while the PUT ran.
+  if (a.type === "numberBlur") {
+    if (!(a.k in s.typing)) return s;
+    const typing = { ...s.typing };
+    delete typing[a.k];
+    return { ...s, typing };
+  }
   if (a.type === "brainSaved") return samePick(s.draft, a.pick) ? { ...s, modelTouched: false } : s;
   if (a.type === "switched") {
     const draft = { ...s.draft, enabled: a.on };
@@ -228,5 +251,9 @@ export function autoReplyReducer(s: AutoReplyState, a: AutoReplyAction): AutoRep
     const sent = s.sent === s.draft ? draft : s.sent && { ...s.sent, enabled: a.on };
     return { ...s, draft, sent };
   }
-  return { ...sentReducer(s, a), modelTouched: s.modelTouched || a.type === "model" || a.type === "effort" };
+  return {
+    ...sentReducer(s, a),
+    modelTouched: s.modelTouched || a.type === "model" || a.type === "effort",
+    typing: a.type === "number" ? { ...s.typing, [a.k]: a.raw } : s.typing,
+  };
 }

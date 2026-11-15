@@ -193,6 +193,24 @@ describe("AutoReplyPage", () => {
     });
   });
 
+  it("a cleared number box stays blank while typing; blur shows the clamped value; Save sends what was typed", async () => {
+    mockReads();
+    renderWithProviders(<AutoReplyPage />);
+    await screen.findByText("No folder ticked = every fan.");
+    fireEvent.click(screen.getByRole("switch", { name: "New fans" }));
+    const hours = screen.getByRole("spinbutton", { name: "New fan window in hours" });
+    fireEvent.change(hours, { target: { value: "" } });
+    expect(hours).toHaveValue(null);   // not snapped to 1
+    for (const v of ["7", "72", "728", "7289"]) fireEvent.change(hours, { target: { value: v } });
+    expect(hours).toHaveValue(7289);
+    const cap = screen.getByRole("spinbutton", { name: "New fan spend cap in dollars" });
+    fireEvent.change(cap, { target: { value: "" } });
+    fireEvent.blur(cap);
+    expect(cap).toHaveValue(0);
+    const cfg = await saved();
+    expect(cfg).toMatchObject({ new_fans_enabled: true, new_fan_hours: 7289, new_fan_max_spend_cents: 0 });
+  });
+
   it("shows the add-a-key notice only when the provider has no key", async () => {
     mockReads({ keyAvailable: false });
     const { unmount } = renderWithProviders(<AutoReplyPage />);

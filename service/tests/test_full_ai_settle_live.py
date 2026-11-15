@@ -46,17 +46,12 @@ S = timedelta(seconds=1)
 IDENTITY = {"id", "fan_id", "mode", "trigger_kind", "trigger_key", "offer_message_id"}
 
 
-class _FakeResp:
-    def __init__(self, payload): self._p = payload
-    def json(self): return self._p
-
-
 class _FakeClient:
-    """As test_purchase_notifications._FakeClient: only `get`, the notifications envelope."""
+    """As test_purchase_notifications._FakeClient: only `get_json`, the notifications envelope."""
     def __init__(self, items): self.items = items
-    def get(self, path):
+    def get_json(self, path):
         assert "type=purchases" in path, path
-        return _FakeResp({"list": self.items})
+        return {"list": self.items}
 
 
 _NID = iter(range(900_000_000, 999_999_999))

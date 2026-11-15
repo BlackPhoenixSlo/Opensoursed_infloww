@@ -35,6 +35,9 @@
  * - Right-clicking a tab offers "Open in a new window" (the Fan List row's
  *   menu, `OpenInNewWindowMenu`): a Pop-out window on that Creator, at the
  *   Creator window URL (`creatorWindowHref`).
+ * - The tabs on screen hold a View lease (`useOnScreenLease`, ADR-0031): only
+ *   those the strip shows, found by an IntersectionObserver, never every
+ *   open tab, so scrolling the strip moves the lease.
  */
 
 import { useLayoutEffect, useRef, type HTMLAttributes, type RefObject } from "react";
@@ -45,6 +48,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useCreatorWarmUp } from "@/hooks/useCreatorWarmUp";
 import { useOfNotifCount } from "@/hooks/useOfNotifCount";
 import { useReorder } from "@/hooks/useReorder";
+import { useOnScreenLease } from "@/hooks/useViewLease";
 import { MP } from "@/lib/messagesPro";
 import type { AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
@@ -74,6 +78,7 @@ export function CreatorTabs() {
   const { ready, close, reopen, reorder, sort, setSort } = store;
   // The strip's order: the store's, in the chosen sort.
   const { open, counts } = useShownCreatorTabs(store);
+  const track = useOnScreenLease("strip");
   const { scope, setScope } = useScope();
   const { warm, hoverThen, clearHover } = useCreatorWarmUp();
   const activeId = scope.kind === "model" ? scope.accountId : null;
@@ -148,6 +153,7 @@ export function CreatorTabs() {
                 if (el) tabRefs.current.set(a.id, el);
                 else tabRefs.current.delete(a.id);
               }}
+              leaseRef={track(a.id)}
               onPick={() => pick(a.id)}
               onClose={() => closeTab(a.id)}
               onHover={() => hoverThen(() => warm(a.id))}
@@ -172,7 +178,7 @@ export function CreatorTabs() {
 }
 
 function CreatorTab({
-  account, unread, active, dragging, dropMark, dragProps, onMove, tabRef, onPick, onClose, onHover, onHoverEnd,
+  account, unread, active, dragging, dropMark, dragProps, onMove, tabRef, leaseRef, onPick, onClose, onHover, onHoverEnd,
 }: {
   account: AccountMeta;
   unread: number;
@@ -185,6 +191,8 @@ function CreatorTab({
   /** Move this tab one place left (-1) or right (1). */
   onMove: (dir: -1 | 1) => void;
   tabRef: (el: HTMLButtonElement | null) => void;
+  /** The whole tab, for the strip's on-screen lease (`useOnScreenLease`). */
+  leaseRef: (el: Element | null) => void;
   onPick: () => void;
   onClose: () => void;
   onHover: () => void;
@@ -198,6 +206,7 @@ function CreatorTab({
     <OpenInNewWindowMenu href={creatorWindowHref(account.id)}>
       <div
         {...dragProps}
+        ref={leaseRef}
         className={cn(
           G.tab,
           "flex flex-none items-center",

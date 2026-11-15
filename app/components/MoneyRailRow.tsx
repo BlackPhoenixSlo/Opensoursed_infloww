@@ -37,12 +37,15 @@ export function Row({
   accountLabel,
   reply,
   dim = false,
+  leaseRef,
 }: {
   m: MergedItem;
   accountLabel: string | null;
   reply: ReplyState | null;
   /** Last session's snapshot, still being revalidated for this account. */
   dim?: boolean;
+  /** The rail's on-screen lease (`useOnScreenLease`). */
+  leaseRef?: (el: Element | null) => void;
 }) {
   const { n, accountId, typeKey } = m;
   const user = n.user || n.fromUser || {};
@@ -93,6 +96,7 @@ export function Row({
   if (href) {
     return (
       <a
+        ref={leaseRef}
         href={href}
         className={cls}
         title={text}
@@ -102,7 +106,7 @@ export function Row({
       </a>
     );
   }
-  return <div className={cls} title={text}>{body}</div>;
+  return <div ref={leaseRef} className={cls} title={text}>{body}</div>;
 }
 
 /** Last message in the thread + where it stands.

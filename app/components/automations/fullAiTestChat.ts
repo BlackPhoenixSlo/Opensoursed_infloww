@@ -501,12 +501,12 @@ function sceneTail(r: TurnResponse): string {
   return s + px;
 }
 
-/** The Heat check's tail: ` · her level 3 of Heat 3`, then ` · rewritten (was 4)` or ` · over Heat, sent`; a failed
+/** The Heat check's tail: ` · reply level 3 of Heat 3`, then ` · rewritten (was 4)` or ` · over Heat, sent`; a failed
  *  check ` · Heat check failed`; nothing when it did not run. */
 export function heatTail(h: HeatCheck | null | undefined): string {
   if (!h) return "";
   if (h.outcome === "error" || h.level == null) return " · Heat check failed";
-  const lvl = ` · her level ${h.level} of Heat ${h.cap}`;
+  const lvl = ` · reply level ${h.level} of Heat ${h.cap}`;
   if (h.outcome === "regen_ok") return `${lvl} · rewritten${h.first_level != null ? ` (was ${h.first_level})` : ""}`;
   return h.outcome === "over_sent" ? `${lvl} · over Heat, sent` : lvl;
 }

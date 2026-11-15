@@ -71,11 +71,14 @@ from typing import Any, NamedTuple
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import account_health
+import of_pacing
 import ownership
 import relay_cache
 from db.engine import get_session
 from db.models import Message, PurchaseNotice
 from of_coerce import cents_or_zero
+from purchase_poll_decide import Outcome
 
 log = logging.getLogger("of-relay.purchase_notif")
 
@@ -422,6 +425,7 @@ async def _apply_chat(account_id: str, n: Any, out: dict[str, int],
             and await _broadcast_purchase(account_id, parsed)):
         _remember(_ANNOUNCED_NOTIFS, key)
     if _is_done(key):
+        out["known"] += 1
         return False
     flipped = await _flip_paid(
         account_id, parsed["fan_id"], parsed["message_id"], parsed["created_at"])
@@ -456,6 +460,7 @@ async def _apply_post(account_id: str, client: Any, n: Any,
     out["posts"] += 1
     key = _NotifKey("post", str(account_id), post["notif_id"])
     if _is_done(key):
+        out["known"] += 1
         return
     res = await ownership.try_stamp_post(
         account_id, post["fan_id"], post["post_id"],
@@ -476,8 +481,9 @@ async def _handle_items(account_id: str, client: Any, items: list,
     on the next sighting. Fully-handled events are remembered so re-sightings
     stop costing queries; an event whose message row hasn't landed yet (scrape
     lag) or whose post can't be resolved yet (wall scan lag) is NOT marked
-    done and retries on the next poll."""
-    out = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0}
+    done and retries on the next poll. `known`: sightings already remembered done (the
+    catch-up's stop: poll_purchases)."""
+    out = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0, "known": 0}
     fresh_purchase = False
     for n in (items or []):
         kind = classify(n)
@@ -499,13 +505,29 @@ async def _handle_items(account_id: str, client: Any, items: list,
 def _fetch_feed(client: Any, limit: int, offset: int) -> list:
     """Blocking OF GET + JSON decode — always call via asyncio.to_thread; the
     supervisor holds the per-account tick lock while polling, and a
-    synchronous socket read on the event loop would stall every account."""
-    r = client.get(
+    synchronous socket read on the event loop would stall every account.
+    Status-checked (OFClient.get_json): a non-2xx raises OFAPIError with OF's
+    response, never reads as an empty page (`feed_outcome` names it)."""
+    raw = client.get_json(
         f"/api2/v2/users/notifications?limit={int(limit)}"
         f"&offset={int(offset)}&type=purchases")
-    raw = r.json() if hasattr(r, "json") else r
     items = raw.get("list") if isinstance(raw, dict) else raw
     return items if isinstance(items, list) else []
+
+
+def feed_outcome(exc: BaseException) -> Outcome:
+    """A failed feed read as the poll's outcome: `dead` only when the strict classifier
+    (account_health.is_session_dead_error) names a reason; OF's 429 `rate_limited`; any other 401
+    `unauthorized` (backs off, never flags); everything else `error` (a proxy failure included)."""
+    reason = account_health.is_session_dead_error(exc)
+    if reason:
+        return Outcome("dead", reason=reason)
+    status, body, header = of_pacing.upstream(exc)
+    if status == 429:
+        return Outcome("rate_limited", retry_after_s=of_pacing.asked_wait(header, of_pacing.allow_s(body)))
+    if status == 401:
+        return Outcome("unauthorized")
+    return Outcome("error")
 
 
 def _of_lane(account_id: str):
@@ -529,22 +551,39 @@ def _fetch_feed_in_lane(account_id: str, client: Any, limit: int, offset: int) -
         return _fetch_feed(client, limit, offset)
 
 
-async def poll_purchases(account_id: str, client: Any, *, limit: int = 10) -> dict[str, int]:
+async def poll_purchases(account_id: str, client: Any, *, limit: int = 10,
+                         pages: int = 1) -> dict[str, Any]:
     """Fetch the newest purchase notifications; flip is_paid for chat buys and
     stamp media ownership for chat AND wall-post buys.
 
+    `pages` > 1 is the catch-up after a gap (purchase_poll_decide.catch_up): it
+    reads further pages of `limit` until a page holds a notification already
+    handled (`_handle_items`' `known`: in the done memo when sighted), a short page
+    (the feed's end), or `pages` pages.
+
     Never raises: this rides on the freshness tick, and a notifications hiccup
-    must not take down transaction ingest. Returns counts for the caller's log.
+    must not take down transaction ingest. Returns counts for the caller's log
+    plus `outcome` (purchase_poll_decide.Outcome: ok, or what the failing read
+    answered, `feed_outcome`); pages read before a failure keep their counts.
     """
+    totals = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0}
     try:
-        items = await asyncio.to_thread(_fetch_feed_in_lane, account_id, client, limit, 0)
-        # BOTH callers announce — the 30s fast tick AND the post-ownership sweep
-        # (transaction_ingest); noise stays bounded by the _ANNOUNCED_NOTIFS dedupe
-        # + the 2h freshness gate. The silent path is backfill_purchases below.
-        return await _handle_items(account_id, client, items, announce=True)
-    except Exception:  # noqa: BLE001
-        log.debug("purchase_notif_poll_failed account=%s", account_id, exc_info=True)
-        return {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0}
+        for page in range(max(1, int(pages))):
+            items = await asyncio.to_thread(_fetch_feed_in_lane, account_id, client, limit, page * int(limit))
+            # BOTH callers announce — the 30s fast tick AND the post-ownership sweep
+            # (transaction_ingest); noise stays bounded by the _ANNOUNCED_NOTIFS dedupe
+            # + the 2h freshness gate. The silent path is backfill_purchases below.
+            got = await _handle_items(account_id, client, items, announce=True)
+            known = got.pop("known")
+            for k, v in got.items():
+                totals[k] += v
+            if known or len(items) < int(limit):
+                break
+        outcome = Outcome("ok")
+    except Exception as e:  # noqa: BLE001
+        outcome = feed_outcome(e)
+        log.debug("purchase_notif_poll_failed account=%s outcome=%s", account_id, outcome.kind, exc_info=True)
+    return {**totals, "outcome": outcome}
 
 
 async def backfill_purchases(
@@ -581,6 +620,7 @@ async def backfill_purchases(
         # Silent by construction: a deep repair walks months of purchases, and
         # announcing them would fire hundreds of toasts for sales long past.
         got = await _handle_items(account_id, client, fresh)
+        got.pop("known")
         for k, v in got.items():
             totals[k] += v
         totals["pages"] += 1

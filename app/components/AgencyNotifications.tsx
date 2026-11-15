@@ -22,8 +22,8 @@
  *
  * `pinned` rows (a Creator OnlyFans wants a signed consent form from) sit on
  * top, apart from the paged ones: no read, nothing to dismiss (the relay
- * refuses it, 409); a click opens where it gets fixed (`consentFixHref`, when
- * there is one). They go when the relay clears them (the problem is solved, or
+ * refuses it, 409); a click opens where it gets fixed (`consentFixHref`, the
+ * Creator's consent switch). They go when the relay clears them (the problem is solved, or
  * the Agency dropped the Creator). The shell's ConsentBanner reads them from
  * this same query.
  */
@@ -96,11 +96,12 @@ export function useAgencyPinned(): AgencyNotification[] {
 }
 const NO_ROWS: AgencyNotification[] = [];
 
-/** The page where a pinned row's Creator gets fixed (that Creator's consent switch, a plugin's:
- *  lib/chatSlots.ts `consentFixHref`), else null: the pinned row links there, and so does the
- *  banner's View while only one Creator is flagged. None: the rows stay plain and View opens the bell. */
+/** The page where a pinned row's Creator gets fixed (that Creator's consent switch:
+ *  lib/chatSlots.ts `consentFixHref`, by default Settings › OnlyFans consent), null without an
+ *  account: the pinned row links there, and so does the banner's View while only one Creator is
+ *  flagged. Null: the row stays plain and View opens the bell. */
 export function consentFixHref(accountId: string | null): string | null {
-  return accountId && CONSENT_FIX_HREF ? CONSENT_FIX_HREF(accountId) : null;
+  return accountId ? CONSENT_FIX_HREF(accountId) : null;
 }
 
 /** A pinned row's Creator name (`data.name`), else its account id. */

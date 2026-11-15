@@ -123,6 +123,9 @@ keep theirs); diff = those three names + the sha; inspected, intentional.
 Golden refresh (2026-11-14, full-ai folder prices): adds GET + POST /admin/vault-ai/folder-prices (vault_ai_api,
 an agency's price per vault folder) right after /admin/vault-ai/internal-folders; diff = those two rows + the sha.
 
+Golden refresh (2026-11-15, fetch-diet P1a onto main 774d6d410): adds POST /admin/view-lease (accounts_admin_api,
+the View lease renewal) after the roster-counts row; diff vs main's golden = that one row + the sha.
+
 Golden refresh (2026-11-14, Inflowwww folders editor): the internal-folders routes move to vault_internal_folders,
 included from vault_ai_api where the GET stood, so GET /admin/vault-ai/internal-folders keeps its row and its name
 list_internal_folders; adds right after it POST /admin/vault-ai/internal-folders (create_internal_folder), POST
@@ -142,6 +145,11 @@ intentional.
 
 Golden refresh (2026-11-15, Full AI ticket 74): adds GET + PUT /admin/full-ai/mode (full_ai_api, the Mode
 control); full_ai_api's module docstring changed too; no existing row moves; diff = those two rows + the sha.
+
+Golden refresh (2026-11-15, OnlyFans consent switch shared): its GET + PUT move out of an optional wiring
+module's router to of_consent_api as /admin/of-consent/{account_id} (get_of_consent, put_of_consent), included
+right after /admin/account-config; no existing row moves; diff = those two rows + the sha (the wiring golden
+loses its two consent rows).
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """

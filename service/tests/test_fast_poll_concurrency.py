@@ -45,14 +45,15 @@ async def _one_cycle(fake_tick, failures):
         failures.append((aid, str(e)))
 
     saved = {k: getattr(ti, k) for k in (
-        "run_fast_tick", "boot_grace", "_is_paused", "_fast_poll_account_ids",
+        "run_fast_tick", "boot_grace", "_is_paused", "_seller_account_ids",
         "_record_failure", "_FAST_POLL_STAGGER_S")}
     saved_list, saved_off = ti.account_registry.list_accounts, ti.account_health.deactivated_ids
     ti.run_fast_tick, ti.boot_grace, ti._is_paused = fake_tick, _none, _false
-    ti._fast_poll_account_ids, ti._record_failure = _wanted, _fail
+    ti._seller_account_ids, ti._record_failure = _wanted, _fail
     ti._FAST_POLL_STAGGER_S = 0.01
     ti.account_registry.list_accounts = lambda: [{"id": a, "has_session": True} for a in ACCOUNTS]
     ti.account_health.deactivated_ids = _off
+    ti._poll_state.clear()  # in-memory poll state: every account due on this cycle
     try:
         task = asyncio.create_task(ti.start_fast_poll())
         await asyncio.sleep(2.0)
@@ -128,7 +129,7 @@ async def case_feed_read_holds_the_account_lane():
             inside = False
 
     class _Client:
-        def get(self, _path):
+        def get_json(self, _path):
             reads.append(inside)  # poll_purchases swallows raises: record, assert below
             return {"list": []}
 

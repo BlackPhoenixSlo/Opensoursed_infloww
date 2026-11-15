@@ -72,20 +72,18 @@ import fansly_backend
 import of_pacing
 import fansly_revenue
 from db.models import (
-    Account,
     AutomationRule,
-    Chatter,
-    ChatterUser,
     Fan,
     Message,
     Transaction,
     TransactionScanHistory,
-    User,
-    UserAccount,
 )
 from of_client import OFClient, proxy_refused
 import ownership
 import purchase_notifications
+import purchase_poll_decide as poll_decide
+from purchase_poll_decide import PollState, Tier
+import view_lease
 import transaction_backfill
 from tip_ledger import TIP_LEDGER_PREFIX
 
@@ -179,7 +177,7 @@ _ATTR_SWEEP_SINCE_DAYS = 14
 # stamping is idempotent). Deliberately its own knob — tuning the attribution
 # window above must not silently retune this safety gate.
 _POST_OWNERSHIP_SINCE_DAYS = 14
-# Escape valve for crashed ticks (see the comment below _ONLINE_WINDOW_S). Below
+# Escape valve for crashed ticks (see the comment below _tick_locks). Below
 # the tick interval so the next supervisor visit (~one interval after the dead
 # stamp) always finds it stale and clears it; equal to it, that visit landed
 # either side of the threshold. 720 s at the 900 s default; never above 15 min.
@@ -189,13 +187,6 @@ _STALE_INFLIGHT_S = min(900.0, 0.8 * _TICK_INTERVAL_S)
 # supervisor cycle (or the fast poll / a manual /run) would fire concurrently
 # and double-write. Per-account asyncio.Lock.
 _tick_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-# Cycle gate: only scan accounts whose owner (User) or linked chatter has
-# been active within the last _ONLINE_WINDOW_S seconds. last_seen_at is
-# bumped per-request with a ~5-min throttle (auth.py / chatters.py), so a
-# 10-min window covers the throttle slack without keeping a logged-out
-# dashboard's broken sessions burning OF proxy quota every fast-poll tick.
-_ONLINE_WINDOW_S = 600
 
 # A run_one_tick stamps current_status='refreshing'/'backfilling' at start
 # (scan_started) and overwrites it at end via _mark_success / _record_failure.
@@ -1538,9 +1529,10 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
 
             # Wall-POST ownership belt: the ledger's ppv_post row names WHO and
             # HOW MUCH but never WHICH post — only the purchases-notification
-            # feed carries the post id. The 30s fast poll parses it live, but
-            # that loop is GATED (selling automations ∪ online principals), so
-            # an account selling only off its wall would never stamp. Whenever
+            # feed carries the post id. The purchases loop parses it live, but
+            # reads only its newest page and an Idle account (no View lease, no
+            # Seller, `_seller_account_ids`) only every SLOW_S, so a wall sale can
+            # scroll off before it is read. Whenever
             # this account has a recent ppv_post txn, re-read the feed here —
             # stamping is idempotent, and the announce channel this also feeds
             # is DEDUPED against the fast poll (not absent from this path).
@@ -1584,11 +1576,12 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 await _mark_interrupted(account_id)
 
 
-# ── Fast freshness poll (30s) ────────────────────────────────────────
-# Layered ON TOP of the 15-min supervisor: one tiny request per online/selling
-# account reading OF's purchases notification feed, so a PPV unlock flips
-# `messages.is_paid` within ~30s and the automations see the payment the tick
-# after the fan pays. The supervisor owns the ledger: the authoritative 7-day
+# ── Fast freshness poll (30s tick) ───────────────────────────────────
+# Layered ON TOP of the 15-min supervisor: one tiny request per due account
+# reading OF's purchases notification feed, so a PPV unlock flips
+# `messages.is_paid` within ~30s on a Demand Creator (View lease or Seller;
+# 5 min on an Idle one, purchase_poll_decide) and the automations see the
+# payment the tick after the fan pays. The supervisor owns the ledger: the authoritative 7-day
 # window, relink sweep, orphan attribution, and backfill.
 #
 # This tick used to ALSO re-read the newest ledger page every 30s. The ledger
@@ -1596,7 +1589,6 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
 # freshness over the then 5-min supervisor and cost 120 OF calls an hour per selling
 # account (about 40% of its OF traffic). A DM tip is recorded instantly off the
 # WS pump (event_transcoder); a purchase is seen off the feed below.
-_FAST_TICK_INTERVAL_S = 30
 _FAST_PAGE_LIMIT = 10
 # Accounts polled at once, and the gap between their starts. One account's
 # tick is ~0.7 s of OF round-trip, so walking 20 one by one took ~14 s of the
@@ -1623,7 +1615,7 @@ async def run_fast_tick(account_id: str) -> dict:
     # fell straight through to `_client_for` -> no OFClient -> "no_session"
     # every 30 seconds forever: a permanently dead path. That is not merely a
     # wasted call — this loop exists so a SELLING automation learns about a
-    # payment in seconds rather than minutes (see _fast_poll_account_ids), and
+    # payment in seconds rather than minutes (see _SELLING_KINDS), and
     # on Fansly the purchases feed IS the payment signal. Skipping it left
     # Fansly sellers on the 15-minute supervisor cadence, still saying "waiting
     # on your tip" to a fan who had already paid. The read is cheap here: one
@@ -1640,38 +1632,178 @@ async def run_fast_tick(account_id: str) -> dict:
     # paid — flipping is_paid off it lets every reader of `messages.is_paid` see
     # the buy on its next tick. Writes NO money: the ledger (supervisor) stays the
     # sole revenue writer, so nothing here can double-count. Never raises.
-    await purchase_notifications.poll_purchases(
-        account_id, client, limit=_FAST_PAGE_LIMIT)
-    return {"rows_inserted": 0, "rows_patched": 0, "error": None}
+    # After a gap (an Idle interval, a backoff, a restart) it pages back
+    # (purchase_poll_decide.catch_up).
+    pages = (poll_decide.CATCHUP_MAX_PAGES
+             if poll_decide.catch_up(_poll_state.get(account_id), time.monotonic()) else 1)
+    r = await purchase_notifications.poll_purchases(
+        account_id, client, limit=_FAST_PAGE_LIMIT, pages=pages)
+    return {"rows_inserted": 0, "rows_patched": 0, "outcome": r["outcome"]}
+
+
+# Per-Creator poll state (purchase_poll_decide.PollState), in Relay memory by design: a restart
+# polls every live Creator on its first cycle.
+_poll_state: dict[str, PollState] = {}
+# The purchases poll running now per Creator: the loop's tick and `poll_now` join it, never a second.
+_poll_inflight: dict[str, asyncio.Task] = {}
+# A loop poll the gate refused inside the last cycle before the Demand cap, set for the hold's end
+# (`_poll_at_hold_end`): at most one per Creator, cancelled when any poll of it starts first.
+_poll_timers: dict[str, asyncio.TimerHandle] = {}
+# Past the hold's end on the loop's clock: never a hair early, which the gate would refuse.
+_HOLD_END_PAD_S = 0.01
+
+
+async def _poll_once(account_id: str, tier: Tier) -> dict:
+    """run_fast_tick, then its outcome folded into the Creator's poll state
+    (purchase_poll_decide.after: last-ok from this poll's actual start, a hold from OF's answer;
+    the loop's and a Select refresh's alike). A `dead` outcome flags the Creator through
+    account_health (it then leaves `live_account_ids`); no feed outcome is a supervisor failure
+    (`_record_failure` stays for a raise: the Fansly lane's)."""
+    started = time.monotonic()
+    r = await run_fast_tick(account_id)
+    answered = time.monotonic()
+    outcome = r.get("outcome")
+    if outcome is None:          # Fansly, no session: the ladder is OnlyFans-only
+        return r
+    st = _poll_state[account_id] = poll_decide.after(_poll_state.get(account_id), outcome, started, answered)
+    if outcome.kind == "dead":
+        try:
+            if await account_health.mark_session_dead(account_id, outcome.reason):
+                log.warning("ingest_tx_feed_session_dead account=%s reason=%s — purchases poll stops",
+                            account_id, outcome.reason)
+        except Exception:
+            log.warning("ingest_tx_feed_mark_dead_failed account=%s", account_id, exc_info=True)
+    elif outcome.kind in ("rate_limited", "unauthorized"):
+        log.info("ingest_tx_feed_backoff account=%s outcome=%s step=%d hold_s=%.0f tier=%s",
+                 account_id, outcome.kind, st.step,
+                 poll_decide.hold_s(st, tier), tier)
+    return r
+
+
+def _single_flight(account_id: str, tier: Tier) -> asyncio.Task | None:
+    """The Creator's running purchases poll, or a new one (`_poll_once`: run_fast_tick + its
+    outcome), or None while its 429 / unauthorized hold is on: the one hold gate for the loop and
+    a Select refresh, checked where a poll starts (purchase_poll_decide.held, no look-ahead). The
+    task copies the caller's context, so its OF calls carry the starter's Caller kind (the loop's,
+    or `select_refresh`)."""
+    t = _poll_inflight.get(account_id)
+    if t is None or t.done():
+        if poll_decide.held(_poll_state.get(account_id), tier, time.monotonic(), 0.0):
+            return None
+        timer = _poll_timers.pop(account_id, None)
+        if timer is not None:
+            timer.cancel()
+        t = asyncio.create_task(
+            _poll_once(account_id, tier),
+            name=f"purchases-poll:{account_id}")
+        _poll_inflight[account_id] = t
+
+        def _done(task: asyncio.Task, aid: str = account_id) -> None:
+            if _poll_inflight.get(aid) is task:
+                del _poll_inflight[aid]
+            if not task.cancelled():
+                task.exception()  # retrieved: a joiner logs it, never "exception was never retrieved"
+        t.add_done_callback(_done)
+    return t
+
+
+def _poll_at_hold_end(account_id: str, tier: Tier) -> None:
+    """The loop's poll of a Demand Creator the gate refused in the last cycle before its cap (`due`
+    looks a tick ahead): started at its hold's end instead of the next cycle, so the next poll never
+    starts past PURCHASES_BACKOFF_DEMAND_MAX_S; also armed by the loop for a held Demand Creator whose
+    hold ends before the next tick (FAST_S + the cycle's work away). One pending timer per Creator; a
+    hold ending past 2 * FAST_S is a later cycle's. The timer copies the loop's context (its Caller kind)."""
+    st = _poll_state.get(account_id)
+    if account_id in _poll_timers or st is None or st.held_at is None:
+        return
+    wait = st.held_at + poll_decide.hold_s(st, tier) - time.monotonic()
+    if wait > 2 * poll_decide.FAST_S:
+        return
+
+    def _fire() -> None:
+        _poll_timers.pop(account_id, None)
+        if _single_flight(account_id, tier) is not None:
+            _poll_state[account_id] = poll_decide.polled(_poll_state.get(account_id), time.monotonic())
+
+    _poll_timers[account_id] = asyncio.get_running_loop().call_later(max(0.0, wait) + _HOLD_END_PAD_S, _fire)
+
+
+def last_ok_poll_age_s(account_id: str) -> float | None:
+    """Seconds since `account_id`'s last ok purchases poll started (its PollState `last_ok_s`); None
+    if none since boot. The App-open warm skips a Creator polled ok within PURCHASES_POLL_FAST_S."""
+    st = _poll_state.get(account_id)
+    return None if st is None or st.last_ok_s is None else time.monotonic() - st.last_ok_s
+
+
+async def poll_now(account_id: str) -> dict | None:
+    """The Select refresh: one purchases poll for `account_id` right away, single-flight with the
+    loop's tick (joins one already running). Skips a Creator with no live session, deactivated,
+    flagged a Dead session or paused, and one inside its 429 / unauthorized hold (None: the
+    `_single_flight` gate). Never raises. Does not move the loop's schedule (a Demand Creator
+    keeps its FAST_S cadence); its outcome stamps last-ok and the hold like the loop's."""
+    try:
+        if account_id not in await live_account_ids() or await _is_paused(account_id):
+            return None
+        tier = poll_decide.tier(view_lease.is_leased(account_id), account_id in await _seller_account_ids())
+        t = _single_flight(account_id, tier)
+        return None if t is None else await asyncio.shield(t)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.warning("ingest_tx_poll_now_failed account=%s", account_id, exc_info=True)
+        return None
 
 
 async def start_fast_poll() -> None:
-    """30s freshness loop — see run_fast_tick. Same online-gate and pause
-    respect as the main supervisor (idle dashboards ⇒ no proxy burn; an account
-    the supervisor backed off after 3 fails stays skipped). Accounts run
-    _FAST_POLL_CONCURRENCY at a time, starts _FAST_POLL_STAGGER_S apart —
-    bounded OF load without the last account waiting out the whole fleet.
-    Sleep AT END so the gap is _FAST_TICK_INTERVAL_S regardless of cycle
-    duration."""
-    log.info("ingest_tx_fast_poll_started tick=%ds limit=%d",
-             _FAST_TICK_INTERVAL_S, _FAST_PAGE_LIMIT)
+    """The purchases loop — see run_fast_tick. Ticks every FAST_S (PURCHASES_POLL_FAST_S, 30 s)
+    and polls only the Creators purchase_poll_decide.due says are due: every tick a Demand
+    Creator (a View lease, `view_lease`, or an enabled Seller, `_seller_account_ids`), every
+    SLOW_S (PURCHASES_POLL_SLOW_S, 5 min) an Idle one, at its own phase, whoever is signed in.
+    A Dead-session Creator is not in the live set; one inside its 429 / unauthorized hold
+    (purchase_poll_decide.held, the Backoff ladder) waits it out, and nobody else does; a Demand
+    one whose capped hold ends before the next tick is polled at its end (`_poll_at_hold_end`).
+    Demand Creators start first in a cycle. An account the supervisor
+    backed off after 3 fails stays skipped. Due accounts run _FAST_POLL_CONCURRENCY at a time,
+    starts _FAST_POLL_STAGGER_S apart — bounded OF load without the last account waiting out the
+    whole fleet. Sleep AT END so the gap is FAST_S regardless of cycle duration."""
+    log.info("ingest_tx_fast_poll_started tick=%ds slow=%ds limit=%d",
+             poll_decide.FAST_S, poll_decide.SLOW_S, _FAST_PAGE_LIMIT)
     # One tick interval of politeness, once, so the first fleet walk does not
     # land on top of the pumps still connecting. See _FAST_BOOT_GRACE_S.
     await boot_grace(_FAST_BOOT_GRACE_S, name="ingest-fast-poll")
     while True:
         try:
             cycle_started = time.monotonic()
-            account_ids = await _live_account_ids()
-            wanted = await _fast_poll_account_ids()
-            account_ids = [aid for aid in account_ids
-                           if aid in wanted and not await _is_paused(aid)]
+            live = await live_account_ids()
+            leased = view_lease.leased_ids()
+            sellers = await _seller_account_ids()
+            due_now: list[tuple[bool, str, Tier]] = []
+            for aid in live:
+                t = poll_decide.tier(aid in leased, aid in sellers)
+                state = _poll_state.get(aid)
+                if (state is None or state.last_s is None) and t == "slow":
+                    # Spread Idle Creators over SLOW_S, so they never all land in one cycle.
+                    state = _poll_state[aid] = poll_decide.first_idle_state(aid, cycle_started, state)
+                if poll_decide.due(state, t, cycle_started) and not await _is_paused(aid):
+                    due_now.append((t != "fast", aid, t))
+                elif t == "fast" and poll_decide.held(state, t, cycle_started, 0.0):
+                    # The next tick lands FAST_S + this cycle's work away: a hold ending before it
+                    # starts at its end, not a tick late.
+                    _poll_at_hold_end(aid, t)
+            # Demand Creators first: an Idle batch never pushes a Seller's start back.
+            due_now.sort(key=lambda x: x[0])
             sem = asyncio.Semaphore(_FAST_POLL_CONCURRENCY)
 
-            async def _fast(i: int, aid: str) -> None:
+            async def _fast(i: int, aid: str, t: Tier) -> None:
                 await asyncio.sleep(i * _FAST_POLL_STAGGER_S)
                 async with sem:
                     try:
-                        await run_fast_tick(aid)
+                        task = _single_flight(aid, t)
+                        if task is None:     # still inside its hold: started at the hold's end
+                            _poll_at_hold_end(aid, t)
+                            return
+                        _poll_state[aid] = poll_decide.polled(_poll_state.get(aid), cycle_started)
+                        await task
                     except Exception as e:
                         # RECORD it, don't just whisper. This was `log.debug` and
                         # nothing else, which was harmless while run_fast_tick
@@ -1687,49 +1819,51 @@ async def start_fast_poll() -> None:
                             aid, exc_info=True)
                         await _record_failure(aid, e)
 
-            await asyncio.gather(*(_fast(i, a) for i, a in enumerate(account_ids)))
+            await asyncio.gather(*(_fast(i, a, t) for i, (_, a, t) in enumerate(due_now)))
             elapsed = time.monotonic() - cycle_started
-            await asyncio.sleep(max(_MIN_CYCLE_GAP_S, _FAST_TICK_INTERVAL_S - elapsed))
+            await asyncio.sleep(max(_MIN_CYCLE_GAP_S, poll_decide.FAST_S - elapsed))
         except asyncio.CancelledError:
             return
         except Exception:
             log.warning("ingest_tx_fast_poll cycle failed", exc_info=True)
-            await asyncio.sleep(_FAST_TICK_INTERVAL_S)
+            await asyncio.sleep(poll_decide.FAST_S)
 
 
-# Automations whose behaviour changes the moment a fan pays: they hold an open
-# offer, or they gate on spend. For these, "did he buy?" is the purchases
+# Sellers: automations whose behaviour changes the moment a fan pays — they hold an
+# open offer, or they gate on spend. For these, "did he buy?" is the purchases
 # notification feed the fast tick reads (`messages.is_paid`) — the WS pump
 # catches ~0 unlock events and the ledger lands hours late. They run around the
-# clock, so their purchase detection cannot wait for someone to open the app.
-_SELLING_KINDS = ("welcome_chatter_for_info", "ppv_send", "reengage_buyers")
+# clock, so their Creator stays on the fast tier with nobody signed in, overnight
+# included.
+_SELLING_KINDS = ("reply_mass_funnel", "purchase_followup")
 
 
-async def _live_account_ids() -> list[str]:
-    """Every account with a session that is not deactivated, in registry order.
-    Both registries are read through their modules at call time (tests swap them)."""
+async def live_account_ids() -> list[str]:
+    """Every account with a session that is neither deactivated nor flagged a Dead session, in
+    registry order: the ledger supervisor (its chargebacks walk and post sweep inside the tick),
+    the purchases loop and poll_now make no call for a dead one. Read fresh each call, so the
+    recovery probe's or a re-capture's clear resumes it on the next cycle. Both registries are
+    read through their modules at call time (tests swap them)."""
     off = await account_health.deactivated_ids()
+    dead = await account_health.dead_session_map()
     return [
         m["id"] for m in account_registry.list_accounts()
-        if m.get("has_session") and m["id"] not in off
+        if m.get("has_session") and m["id"] not in off and m["id"] not in dead
     ]
 
 
-async def _fast_poll_account_ids() -> set[str]:
-    """Accounts the 30s loop should cover.
 
-    Two independent reasons to poll fast, unioned:
+async def _seller_account_ids() -> set[str]:
+    """Creators with an enabled Seller (`_SELLING_KINDS`, or a Full AI rule in Mode live): the Functional half of Demand (ADR-0031);
+    the loop adds the Viewing half, `view_lease.leased_ids()`. Used only to pick the tier; an Idle
+    Creator is still polled, every SLOW_S.
 
-      • a SELLING automation is enabled on the account — it may be sitting on an
-        open offer right now, and the only fresh "he paid" signal is OF's
-        purchases notification. At 15-minute granularity the AI keeps saying "waiting on your tip"
-        and re-offering content the fan already bought, at 3am with nobody
-        watching. This half does NOT depend on anyone being online.
-      • somebody is actually looking at the account — dashboard freshness, the
-        original reason this loop was gated at all.
-
-    So an idle, non-selling account still costs nothing when no one is around,
-    but a live seller never learns about a purchase late.
+    A Seller may be sitting on an open offer right now, and the only fresh "he paid" signal is OF's
+    purchases notification. At 5-minute granularity the AI keeps saying "waiting on your tip" to a
+    fan who already paid, at 3am with nobody watching. So this does NOT depend on anyone being
+    signed in. Who is signed in no longer matters at all: presence said who is online, not what is
+    on screen (an online admin made every Creator fast). The 15-min supervisor, the ledger's only
+    writer, never consulted this gate.
     """
     async with get_session() as s:
         selling = {r[0] for r in (await s.execute(
@@ -1737,66 +1871,9 @@ async def _fast_poll_account_ids() -> set[str]:
             .where(AutomationRule.kind.in_(_SELLING_KINDS),
                    AutomationRule.is_enabled.is_(True))
         )).all()}
+    # A Full AI Creator in Mode live sells off the feed too (ticket 90): Seller-tier fast.
     from automations import full_ai_live      # lazy: the automation stack imports this module
-    return selling | await full_ai_live.live_accounts() | await _online_account_ids()
-
-
-async def _online_account_ids() -> set[str]:
-    """Union of OF accounts visible to any principal active within the last
-    _ONLINE_WINDOW_S seconds.
-
-    Sources combined:
-      • ADMINS (users.is_admin + last_seen_at) → EVERY account. An admin sees
-        the whole roster in the UI, so scoping their tick to the accounts they
-        happen to be listed against in `user_accounts` silently starves the
-        rest. That is not hypothetical: Sophiepaid had NO user_accounts row at
-        all and Ellapaid's owner was offline, so neither account's ledger was
-        ever scanned — no `transactions` rows, an empty PPV chart on every one
-        of their fans, and `fans.lifetime_spend_cents` frozen at 0 (which also
-        starves the welcome_chatter_for_info "hand payers to humans" gate). Ownership is NOT
-        the right lever for "should this run": a live, connected account must
-        be ingested regardless of who is listed as its owner.
-      • owners (users.last_seen_at) → user_accounts.account_id
-      • chatters (chatters.last_seen_at + is_active=True) →
-            chatter_users → user_accounts.account_id
-
-    Non-admin principals stay scoped to their own accounts, so a multi-tenant
-    box doesn't burn one agency's proxy because another agency is online.
-
-    ⚠️ FAST-POLL ONLY. The 15-minute supervisor deliberately does NOT consult
-    this: it is the sole writer of the `transactions` ledger that
-    `fans.lifetime_spend_cents` — and therefore every automation's spend
-    decision — is derived from, and automations run whether or not anyone is
-    watching. Only the 30s freshness loop, which exists purely so an open
-    dashboard updates quickly, may be skipped when nobody is looking.
-
-    Empty set ⇒ nobody's online; the fast poll skips this tick. The
-    /admin/ingest/transactions/{aid}/run admin endpoint stays unaffected —
-    a manual re-sync is an explicit user gesture and bypasses this gate.
-    """
-    cutoff = datetime.utcnow() - timedelta(seconds=_ONLINE_WINDOW_S)
-    async with get_session() as s:
-        admin_online = (await s.execute(
-            select(User.id).where(User.last_seen_at >= cutoff,
-                                  User.is_admin.is_(True)).limit(1)
-        )).first()
-        if admin_online:
-            # Every known account — the per-account `has_session` / paused
-            # filters in the callers still decide what actually gets scanned.
-            return {r[0] for r in (await s.execute(select(Account.id))).all()}
-        owner_rows = (await s.execute(
-            select(UserAccount.account_id)
-            .join(User, User.id == UserAccount.user_id)
-            .where(User.last_seen_at >= cutoff)
-        )).all()
-        chatter_rows = (await s.execute(
-            select(UserAccount.account_id)
-            .join(ChatterUser, ChatterUser.user_id == UserAccount.user_id)
-            .join(Chatter, Chatter.id == ChatterUser.chatter_id)
-            .where(Chatter.last_seen_at >= cutoff)
-            .where(Chatter.is_active.is_(True))
-        )).all()
-    return {r[0] for r in owner_rows} | {r[0] for r in chatter_rows}
+    return selling | await full_ai_live.live_accounts()
 
 
 async def trigger_backfill(account_id: str, *, since: datetime | None = None) -> None:
@@ -1830,7 +1907,7 @@ async def supervisor_cycle() -> None:
     """One pass over every live account (start_supervisor's loop body): recent /
     full refresh ticks _REFRESH_CONCURRENCY accounts at once, then backfills
     _BACKFILL_CONCURRENCY."""
-    account_ids = await _live_account_ids()
+    account_ids = await live_account_ids()
     # NO online gate here. This loop is not a dashboard convenience —
     # it is the only writer of the `transactions` ledger, and
     # `event_transcoder` bumps `fans.lifetime_spend_cents` off those

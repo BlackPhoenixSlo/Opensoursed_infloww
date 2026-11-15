@@ -22,7 +22,7 @@ Jev and Writers faked at their clients. Temp DB, no paid call, no real OF call.
   case_media_refused              OF refuses the media: no Offer on the row, no Pending offer next
   case_raise_after_send_keeps_offer  send_priced raises after the OF send: unknown, Offer kept, still open
   case_row_diff_vs_test_chat      the same 2-Turn script live vs `/admin/full-ai/test/turn` + fake Buy
-  case_fast_poll_live_only        `_fast_poll_account_ids` has the live Creator only; a Shadow rule
+  case_fast_poll_live_only        `_seller_account_ids` (fast tier) has the live Creator only; a Shadow rule
                                   makes no OF call and no priced row
 
 Run: ./venv/bin/python service/tests/test_full_ai_sell_live.py  (exit 0 = pass)
@@ -87,17 +87,12 @@ class MediaRejectOF(LiveOF):
 
 # ── The purchases feed (test_full_ai_settle_live's twin of test_purchase_notifications) ──
 
-class _FakeResp:
-    def __init__(self, payload): self._p = payload
-    def json(self): return self._p
-
-
 class _Feed:
     def __init__(self, items): self.items = items
 
-    def get(self, path):
+    def get_json(self, path):
         assert "type=purchases" in path, path
-        return _FakeResp({"list": self.items})
+        return {"list": self.items}
 
 
 _NID = iter(range(910_000_000, 999_999_999))
@@ -382,15 +377,7 @@ def case_fast_poll_live_only():
             await s.flush()
             s.add(AutomationRule(account_id="fa_poll_shadow", name="Full AI Chat", kind="full_ai_chat",
                                  trigger_json=json.dumps({"every_seconds": 300}), steps_json="{}", is_enabled=True))
-        real = ti._online_account_ids
-
-        async def none():
-            return set()
-        ti._online_account_ids = none
-        try:
-            return await ti._fast_poll_account_ids()
-        finally:
-            ti._online_account_ids = real
+        return await ti._seller_account_ids()
     got = R(go())
     assert "fa_poll_live" in got and not {"fa_poll_shadow", "fa_poll_none"} & got, got
     assert R(full_ai_live.live_accounts()) >= {"fa_poll_live"}

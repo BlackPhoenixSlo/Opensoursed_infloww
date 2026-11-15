@@ -25,9 +25,10 @@ live, Shadow and Test chat Decision rows of today (`ai_decisions`, automations/f
       why Live would be refused now (`live_blockers`), empty when it may go Live.
   PUT /admin/full-ai/mode {account_id, mode: "off" | "live"}   → the GET shape after the write.
       `live`: 409 naming the blockers, else the Creator's one `full_ai_chat` rule (created or the
-      legacy one updated in place) enabled with `trigger_json` {"every_seconds": 300, "mode": "live"}.
-      `off`: every rule of the kind disabled, trigger {"every_seconds": 300}, every pending job of the
-      kind cancelled ("rule switched off"). `shadow` or anything else: 422. A failed blocker read
+      legacy one updated in place) enabled with `trigger_json` {"every_seconds": 300, "mode": "live"},
+      and the waiting-chats catch-up (`full_ai_catchup.start`) started: a pass now, +5, +15, every 50 min.
+      `off`: the catch-up stopped, every rule of the kind disabled, trigger {"every_seconds": 300}, every
+      pending job of the kind cancelled ("rule switched off"). `shadow` or anything else: 422. A failed blocker read
       answers one blocker (Live refused), never an error. The shared rule routes never
       turn this kind on (`automation_rules_api._refuse_config_route_kind`): this route is the only way
       Live is set.
@@ -94,7 +95,8 @@ turn take the same gate (`require_opt_in_kind`: the owner or a granted member).
       writes, the persona is never saved. No line after that → need_describe and
       no text call. 429 on the cost cap, 502 on a bad reply.
 
-  GET  /admin/full-ai/config?account_id=           → {checkpoint, previous, draft, rev, errors, writer_models, reference, limits}
+  GET  /admin/full-ai/config?account_id=           → {checkpoint, previous, draft, rev, errors, writer_models, writer_providers,
+                                                      reference, limits}
   PUT  /admin/full-ai/config/draft {account_id, draft, rev}
   PUT  /admin/full-ai/config/checkpoint {account_id, checkpoint, rev}   the checkpoint JSON typed in; the old
       checkpoint becomes `previous` (Roll back undoes it), the draft stays
@@ -107,7 +109,8 @@ turn take the same gate (`require_opt_in_kind`: the owner or a granted member).
       (`account_ai_config.full_ai_config_json`, automations/full_ai_config.py): the checkpoint
       drives Shadow and the Test chat's checkpoint side, the stored draft only its draft side.
       `errors` is the stored draft's; `writer_models` the models a `writers` entry may name (the page's
-      Writer select); `reference` every key's {key, default, allowed, about, page} (`full_ai_config.reference`, the
+      Writer select); `writer_providers` {model: provider} for those and every saved / draft Writer (the LLM keys
+      row names the providers the Writers run on); `reference` every key's {key, default, allowed, about, page} (`full_ai_config.reference`, the
       JSON modal's "All settings" table); `limits` the controls' constants (`full_ai_config.limits`). Writes take
       the `full_ai_chat` opt-in gate (as the test turn) and touch nothing but that column; the GET follows the page grant.
 """
@@ -136,7 +139,9 @@ import runtime_switches
 import tenant_keys
 from auth import assert_account_owned, require_actor_account_ids
 from automation_registry import kind_family
-from automations import full_ai_config, full_ai_live, full_ai_photo, full_ai_rules, full_ai_test, full_ai_turn
+from automations import (
+    full_ai_catchup, full_ai_config, full_ai_live, full_ai_photo, full_ai_rules, full_ai_test, full_ai_turn,
+)
 from automations.full_ai_owner_io import OFF_SWITCH
 from automations.full_ai_writers import PURPOSE as WRITER_PURPOSE
 from automations._model_pick import resolve_model_and_fallback
@@ -155,7 +160,9 @@ ROWS = 50
 KIND = full_ai_live.KIND
 OFF_TRIGGER = {"every_seconds": 300}
 LIVE_TRIGGER = {**OFF_TRIGGER, "mode": full_ai_live.MODE}
-NO_FANS_LIST = "No Fans list: set an include or exclude list in the saved config"
+NO_FANS_LIST = "No Fans list: pick an Include or Exclude list under Fans, then Save"
+# A key's provider as Settings → AI keys names it (llm_client's map lacks the two Writer-only providers).
+_KEY_LABELS = {"nanogpt": "NanoGPT", "openrouter": "OpenRouter", **llm_client._PROVIDER_LABELS}
 
 router = APIRouter()
 log = logging.getLogger("of-relay.full_ai_api")
@@ -222,10 +229,15 @@ async def live_blockers(account_id: str) -> list[str]:
     out: list[str] = []
     if not full_ai_config.has_fans_list(cfg):
         out.append(NO_FANS_LIST)
-    missing = sorted({m.provider for w in cfg["writers"] if (m := full_ai_config.MODELS.get(w)) is not None
-                      and not await llm_client.llm_key_available(account_id, m.provider, WRITER_PURPOSE)})
-    if missing:
-        out.append(f"No key for {', '.join(missing)}: add it or untick its Writers in the saved config")
+    by_provider: dict[str, list[str]] = {}
+    for w in cfg["writers"]:
+        if (m := full_ai_config.MODELS.get(w)) is not None:
+            by_provider.setdefault(m.provider, []).append(w)
+    for prov, writers in sorted(by_provider.items()):
+        if not await llm_client.llm_key_available(account_id, prov, WRITER_PURPOSE):
+            many = len(writers) > 1
+            out.append(f"No {_KEY_LABELS.get(prov, prov)} key for Writer{'s' * many} {', '.join(writers)}: add one in "
+                       f"Settings → AI keys, or untick {'them' if many else 'it'} under Writers and Save")
     if not await tenant_keys.typesafe_key_for(account_id):
         out.append("No TypeSafe key (the Router)")
     return out
@@ -271,7 +283,9 @@ async def full_ai_mode_write(body: ModeWrite) -> dict[str, Any]:
             raise HTTPException(409, "Can't go Live: " + "; ".join(blockers))
         async with get_session() as s:
             action = await ensure_kind_rule(s, aid, KIND, enable=True, trigger=LIVE_TRIGGER)
+        full_ai_catchup.start(aid)     # Fans already waiting: a pass now, +5, +15, every 50 min
     else:
+        full_ai_catchup.stop(aid)
         async with get_session() as s:
             action = await ensure_kind_rule(s, aid, KIND, enable=False)
             family = kind_family(KIND)
@@ -518,7 +532,9 @@ WRITER_MODELS: list[str] = full_ai_config.WRITER_MODELS
 
 
 def _config_view(cfg: dict) -> dict[str, Any]:
+    models = {*WRITER_MODELS, *cfg["checkpoint"].get("writers", []), *cfg["draft"].get("writers", [])}
     return {**cfg, "errors": full_ai_config.validate(cfg["draft"]), "writer_models": WRITER_MODELS,
+            "writer_providers": {w: m.provider for w in sorted(models) if (m := full_ai_config.MODELS.get(w))},
             "reference": full_ai_config.reference(), "limits": full_ai_config.limits()}
 
 

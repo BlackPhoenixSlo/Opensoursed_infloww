@@ -629,7 +629,7 @@ def _chain(mode: str) -> dict:
         blocks.insert(0, _note("Shadow", _SHADOW_NOTE, f"{_FT}:_chain"))
     else:   # the Heat check runs wherever a Writer writes (spec 06); Shadow writes nothing
         blocks.insert(-1, _prompt(
-            f"Heat check: {heat.QID} (Score · DRAFT)", heat.REPLY_LEVEL["instructions"],
+            f"Heat check: {heat.QID} (Score)", heat.REPLY_LEVEL["instructions"],
             "service/automations/_heat_jev.py:REPLY_LEVEL", items=_criteria(heat.REPLY_LEVEL["criteria"])
             + ["a Route sext reply with text: her level above the Heat the Writer got -> one rewrite "
                "(same Writer, same messages), sent only if not over; else, or a failed check, the "

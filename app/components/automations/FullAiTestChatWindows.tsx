@@ -249,7 +249,7 @@ function PpvBubble({ text, offer, turn, rowId, accountId, onSettle }: {
         PPV_BORDER, PPV_FILL)}>
         <span className={MP.messageList.ppvTitle}>{text}</span>
         <MediaStrip media={media} accountId={accountId} thumbSrc={(m) => mirrorThumbSrc(accountId, m.id)} />
-        {kinds && <span data-testid="ppv-media" className="text-[12px] text-white/80">{kinds}</span>}
+        {kinds && <span data-testid="ppv-media" className={cn(MP.ours.FullAiTestChatWindows.ppvMedia, "text-white/80")}>{kinds}</span>}
         {line?.kind === "settled" && <PpvStatusLine price={line.dollars} paid={line.paid} />}
         {line?.kind === "price" && <div className={MP.messageList.paidTag}>{ppvPriceLabel(line.dollars)}</div>}
         {line?.kind === "free" && <div className={MP.messageList.paidTag}>Free</div>}

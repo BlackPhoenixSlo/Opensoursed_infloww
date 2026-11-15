@@ -7,6 +7,7 @@ import AuditTab from "@/components/settings/AuditTab";
 import BillingTab from "@/components/settings/BillingTab";
 import CotagTab from "@/components/settings/CotagTab";
 import MessagingSettingsTab from "@/components/settings/MessagingSettingsTab";
+import OfConsentTab from "@/components/settings/OfConsentTab";
 import PreferencesTab from "@/components/settings/PreferencesTab";
 import RoleSettingsTab from "@/components/settings/RoleSettingsTab";
 import SalesSettingsTab from "@/components/settings/SalesSettingsTab";
@@ -31,6 +32,7 @@ const SETTINGS_PANELS: Partial<Record<string, ComponentType>> = {
   "/settings/time-tracking": TimeTrackingTab,
   "/settings/messaging": MessagingSettingsTab,
   "/settings/cotag": CotagTab,
+  "/settings/consent": OfConsentTab,
   "/settings/ai-keys": AiKeysTab,
   "/settings/audit": AuditTab,
   "/settings/about": AboutTab,

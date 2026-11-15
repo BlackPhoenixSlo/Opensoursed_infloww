@@ -7,6 +7,7 @@ block, moved wholesale.
   POST   /admin/session/fansly              register a Fansly session blob
   GET    /admin/accounts                    the principal's accounts
   GET    /admin/accounts/roster-counts      per-model inbox badge counts
+  POST   /admin/view-lease                  renew a tab's View lease (owner or chatter)
   POST   /admin/accounts/active             default account
   PATCH  /admin/accounts/{account_id}       rename / recolor
   DELETE /admin/accounts/{account_id}       remove an account
@@ -52,6 +53,7 @@ from relay_host import load_client as _load_client
 from relay_host import post_bootstrap_hooks
 from relay_host import roster_window_max_age_s
 from relay_host import server_module_name
+from relay_host import spawn_bg as _spawn_bg
 from relay_host import stop_account_pump as _stop_account_pump
 from relay_host import sync_and_link_after_bootstrap as _sync_and_link_after_bootstrap
 
@@ -517,6 +519,68 @@ async def admin_accounts_roster_counts(
 
     pairs = await asyncio.gather(*[_one(a) for a in ids])
     return {"counts": {aid: c for aid, c in pairs}}
+
+
+# View lease (ADR-0031, phase-01 1a): the Creators a tab has on screen.
+_VIEW_LEASE_MAX_IDS = 200
+
+
+async def _select_refresh(account_id: str) -> None:
+    """One Select refresh. The Caller kind is set inside the task: spawn_bg labels its task
+    `loop:<name>`, and the innermost label wins."""
+    import of_call_counter
+    import transaction_ingest
+    with of_call_counter.caller("select_refresh"):
+        await transaction_ingest.poll_now(account_id)
+
+
+class _ViewLeaseBody(BaseModel):
+    tab: str = Field(min_length=1, max_length=64)
+    account_ids: list[str] = Field(max_length=_VIEW_LEASE_MAX_IDS)
+    selected: str | None = None
+    opened: bool = False
+
+
+@router.post("/admin/view-lease")
+async def admin_view_lease(body: _ViewLeaseBody = Body(...)) -> dict[str, Any]:
+    """Renew this tab's View lease: the Creators it shows now (`view_lease`). Owner or chatter
+    session, no X-Account-Id. Ids outside the principal's Creators, and watchers, are dropped
+    silently (as roster-counts), re-filtered on every renewal; `selected` is leased too; no ids and
+    no `selected` releases the tab; no wildcard. A Creator nobody leased before (unless `app_open_warm.current`: polled
+    ok within PURCHASES_POLL_FAST_S or warmed within APP_OPEN_WARM_REUSE_S; or the post is `opened`: the warm reads
+    it, leased first, paced per proxy), and a changed `selected` (always), get one purchases poll now
+    (`transaction_ingest.poll_now`, Caller kind `select_refresh`), in the background.
+    `opened` (a document load's first renewal) also starts the App-open warm of every Creator the
+    principal can access (`app_open_warm.start`; the Select-refreshed ones count as warmed); `warm` answers
+    started | reused | none, "none" unless `opened`. Not audited (audit_log skip list)."""
+    import app_open_warm
+    import view_lease
+
+    user = _get_request_user()
+    if user is not None:
+        kind, pid, order = "user", str(user.id), list(user.account_ids or ())
+    else:
+        chatter = _get_request_chatter()
+        if chatter is None:
+            raise HTTPException(status_code=401, detail="sign in required")
+        kind, pid, order = "chatter", str(chatter.id), list(chatter.account_ids or ())
+    allowed = set(order)
+
+    def ok(a: str | None) -> bool:
+        return a is not None and a in allowed and not account_registry.is_watcher(a)
+
+    selected = body.selected if ok(body.selected) else None
+    ids = [a for a in dict.fromkeys([*body.account_ids, *([selected] if selected else [])]) if ok(a)]
+    refreshed = [a for a in view_lease.renew((kind, pid, body.tab), ids, selected)
+                 if a == selected or not (body.opened or app_open_warm.current(a))]
+    for aid in refreshed:
+        _spawn_bg(_select_refresh(aid), f"select-refresh:{aid}")
+    warm = "none"
+    if body.opened:
+        got = await app_open_warm.start((kind, pid), [a for a in order if ok(a)], view_lease.leased_ids(),
+                                        refreshed=refreshed)
+        warm = app_open_warm.summary(got)
+    return {"leased": ids, "ttl_s": view_lease.TTL_S, "warm": warm}
 
 
 class _ActivateBody(BaseModel):

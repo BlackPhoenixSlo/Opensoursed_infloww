@@ -1006,7 +1006,7 @@ async def case_an_operators_job_dispatches_first_in_the_operator_tier():
     await enqueue_job(a_sys, "unsend_messages", payload={}, created_by_employee_id=auto_id)
     await enqueue_job(a_op, "unsend_messages", payload={}, created_by_employee_id=op_id)
 
-    pairs = {(a, k): op for a, k, op, _due in await ax._due_job_pairs()}
+    pairs = {(a, k): op for a, k, op, *_ in await ax._due_job_pairs()}
     assert pairs[(a_op, "unsend_messages")] is True, pairs
     assert pairs[(a_auto, "send_welcome")] is False, pairs
     assert pairs[(a_sys, "unsend_messages")] is False, ("the Automation employee is not an operator", pairs)
@@ -1047,7 +1047,7 @@ async def case_run_now_on_an_automation_kind_is_rate_limited_as_automation():
         await _seed_account(a)
     await enqueue_job(a_ar, "autoreply", payload={}, created_by_employee_id=op_id)
     await enqueue_job(a_uns, "unsend_messages", payload={}, created_by_employee_id=op_id)
-    pairs = {(a, k): op for a, k, op, _due in await ax._due_job_pairs()}
+    pairs = {(a, k): op for a, k, op, *_ in await ax._due_job_pairs()}
     assert pairs[(a_ar, "autoreply")] is False, ("Run now made autoreply an operator run", pairs)
     assert pairs[(a_uns, "unsend_messages")] is True, pairs
 

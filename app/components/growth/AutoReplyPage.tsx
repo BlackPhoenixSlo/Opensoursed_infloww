@@ -53,8 +53,8 @@ import {
 } from "@/hooks/useAutoreplyConfig";
 
 import {
-  answersWith, autoReplyReducer, brainPayload, buildPayload, canSubmit, effortChoices, initState, LIMITS, pickOf,
-  randomiseOn, switchPayload, type AutoReplyDraft, type AutoReplyEdit, type NumberKey, type SwitchKey,
+  answersWith, autoReplyReducer, brainPayload, buildPayload, canSubmit, effortChoices, initState, LIMITS, numberText,
+  pickOf, randomiseOn, switchPayload, type AutoReplyDraft, type AutoReplyEdit, type NumberKey, type SwitchKey,
 } from "./autoReplyForm";
 
 const TITLE = "Auto-reply";
@@ -144,10 +144,12 @@ function AutoReplyFields({
   const verdict = usePageSave(saveM, style, unsaved(state), dispatch);
 
   const sw = (k: SwitchKey) => (on: boolean) => verdict.edit({ type: "switch", k, on });
-  /** A number input's bounds and edit, from `LIMITS[k]`. */
+  /** A number input's bounds, text (as typed until blur, then clamped) and edit, from `LIMITS[k]`. */
   const num = (k: NumberKey) => ({
     min: LIMITS[k][0], max: LIMITS[k][1],
+    value: numberText(state, k),
     onChange: (e: { target: { value: string } }) => verdict.edit({ type: "number", k, raw: e.target.value }),
+    onBlur: () => dispatch({ type: "numberBlur", k }),
   });
   const { delay } = draft;
   const noSource = !canSubmit(draft);
@@ -188,7 +190,6 @@ function AutoReplyFields({
               type="number"
               aria-label="Reply delay in minutes"
               className={NUMBER}
-              value={delay}
               {...num("delay")}
             />
             <span className="text-[12px] text-muted">min (0 = right away)</span>
@@ -225,7 +226,6 @@ function AutoReplyFields({
                     className={NUMBER}
                     step={1}
                     disabled={!draft.capOn}
-                    value={draft.cap}
                     {...num("cap")}
                   />
                 </div>
@@ -241,7 +241,6 @@ function AutoReplyFields({
                   type="number"
                   aria-label="New fan window in hours"
                   className={NUMBER}
-                  value={draft.newHours}
                   {...num("newHours")}
                 />
                 <span>hours ago and spent less than $</span>
@@ -250,7 +249,6 @@ function AutoReplyFields({
                   aria-label="New fan spend cap in dollars"
                   className={NUMBER}
                   step={1}
-                  value={draft.newMax}
                   {...num("newMax")}
                 />
               </div>

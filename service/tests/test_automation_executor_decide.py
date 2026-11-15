@@ -38,6 +38,10 @@ these; `_drain_due_jobs_once` spawns what plan_dispatch returns). No DB, no loop
   case_dispatch_order_table:   operator first, then kind rank, then least recently served,
                                then account id; in-flight pairs not spawned; the bulk lane.
   case_dispatch_never_mutates: inputs untouched.
+  case_per_fan_dispatch_table: a per-fan kind (Full AI Chat): one run per Fan, Fans of one
+                               account at once up to the cap (in-flight runs, the sweep's Fan
+                               None too, count), oldest due Fan first; other kinds one per account;
+                               round robin: every account's 1st Fan and other kinds before a 2nd Fan.
   case_parse_iso_table:        isotime.parse_iso (the shell's `_parse_iso`): naive UTC out; an
                                offset converted, Z, naive, fractional; garbage / non-str -> None.
 
@@ -56,7 +60,7 @@ from isotime import parse_iso  # noqa: E402
 from dispatch_plan import (  # noqa: E402
     POKE_FLOOR_S, CheckQuiet, Clock, Disable, Enqueue, Interval, Pair, Repoke, Skip, Spawn, clock_due,
     in_quiet_hours, interval_due, next_due, parse_trigger, plan_dispatch, plan_rule, quiet_plan,
-    trigger_of,
+    run_key, trigger_of,
 )
 
 NOW = datetime(2026, 10, 30, 12, 0, 0)
@@ -364,6 +368,47 @@ def case_dispatch_never_mutates():
     inflight, served, pairs = {("x", K)}, {"a": 1.0}, [Pair("a", K, False), Pair("x", K, False)]
     plan_dispatch(pairs, inflight, served, lambda k: 4, set())
     assert inflight == {("x", K)} and served == {"a": 1.0} and pairs == [Pair("a", K, False), Pair("x", K, False)]
+
+
+def case_per_fan_dispatch_table():
+    F = "full_ai_chat"
+    cap = {F: 4}
+
+    def plan(pairs, inflight=frozenset(), per_fan=cap):
+        return [(s.account_id, s.kind, s.fan) for s in
+                plan_dispatch(pairs, set(inflight), {}, lambda k: 4, set(), per_fan)]
+    # two Fans of one Creator: both spawned (each run claims only its Fan)
+    assert plan([Pair("a", F, False, 1.0, 1), Pair("a", F, False, 2.0, 2)]) == [("a", F, 1), ("a", F, 2)]
+    # the same Fan twice: one run
+    assert plan([Pair("a", F, False, 1.0, 1), Pair("a", F, True, 2.0, 1)]) == [("a", F, 1)]
+    # a Fan in flight: not spawned again; another Fan is
+    assert plan([Pair("a", F, False, 1.0, 1), Pair("a", F, False, 2.0, 2)], {("a", F, 1)}) == [("a", F, 2)]
+    # six Fans, cap 4: the four oldest due
+    six = [Pair("a", F, False, float(10 - i), i) for i in range(6)]
+    assert plan(six) == [("a", F, i) for i in (5, 4, 3, 2)], plan(six)
+    # in-flight runs count toward the cap, the sweep's (Fan None) too; per account
+    assert plan(six, {("a", F, 9), ("a", F, None)}) == [("a", F, 5), ("a", F, 4)]
+    assert plan(six + [Pair("b", F, False, 1.0, 1)], {("a", F, i) for i in range(10, 14)}) == [("b", F, 1)]
+    # cap 1: the old one run per account
+    assert plan(six, per_fan={F: 1}) == [("a", F, 5)]
+    # no per_fan: one run per (account, kind), as before
+    assert len(plan_dispatch(six, set(), {}, lambda k: 4, set())) == 1
+    # another kind with two Fans in its pairs: one run, Fan ignored by the key
+    assert plan([Pair("a", K, False, 1.0, None), Pair("a", K, False, 2.0, None)]) == [("a", K, None)]
+    assert plan([Pair("a", K, False)], {("a", K)}) == []
+    assert run_key("a", K, 7, cap) == ("a", K) and run_key("a", F, 7, cap) == ("a", F, 7)
+    # round robin: 2 Creators x 4 Fans + another kind, 4 run slots (FIFO in spawn order): the first
+    # 4 spawns serve both Creators and the other kind, never one Creator's 2nd+ Fans first
+    rr = [Pair(a, F, False, float(i), 10 * i + (a == "b")) for a in ("a", "b") for i in range(4)]
+    rr.append(Pair("c", K, False, 9.0))
+    got = plan(rr)
+    assert len(got) == 9, got
+    assert got[:3] == [("a", F, 0), ("b", F, 1), ("c", K, None)], got
+    assert got[3:] == [("a", F, 10), ("b", F, 11), ("a", F, 20), ("b", F, 21), ("a", F, 30), ("b", F, 31)], got
+    assert {acc for acc, *_ in got[:4]} == {"a", "b", "c"}, got
+    # a Creator with Fans in flight: its next Fan queues behind another Creator's 1st and 2nd
+    got = plan(rr[:-1], {("a", F, 99), ("a", F, 98)})
+    assert got[:2] == [("b", F, 1), ("b", F, 11)] and got[2] == ("a", F, 0), got
 
 
 def case_parse_iso_table():

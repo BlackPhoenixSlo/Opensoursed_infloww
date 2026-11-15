@@ -92,7 +92,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
   });
 
   it("shows an owner every Settings tab but the master's System tab", () => {
-    expect(visibleLinks(SETTINGS_TABS, OWNER)).toHaveLength(13);
+    expect(visibleLinks(SETTINGS_TABS, OWNER)).toHaveLength(14);
   });
 
   it("hides owner-only sections from a chatter-only session", () => {
@@ -166,7 +166,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(items.map((c) => c.href).filter((h) => !mirrorPageOfHref(h))).toEqual([]);
   });
 
-  it("builds every Settings tab (no placeholder), the six Blob tabs, Security (organization), AI keys and the Audit log hidden from a Chatter", () => {
+  it("builds every Settings tab (no placeholder), the six Blob tabs, Security (organization), Co-creator tag, OnlyFans consent, AI keys and the Audit log hidden from a Chatter", () => {
     expect(SETTINGS_TABS.filter((t) => t.notBuilt)).toEqual([]);
     expect(SETTINGS_TABS.filter((t) => t.chatterHidden).map((t) => t.href)).toEqual([
       "/settings/account",
@@ -177,6 +177,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "/settings/time-tracking",
       "/settings/messaging",
       "/settings/cotag",
+      "/settings/consent",
       "/settings/ai-keys",
       "/settings/audit",
     ]);

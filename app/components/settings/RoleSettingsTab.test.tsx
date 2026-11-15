@@ -33,12 +33,11 @@ const puts = () => calls().filter((c) => c.method === "PUT");
 
 /** Every SIDEBAR page a role is keyed by, collected here from the nav itself:
  *  links and group children, dividers and links answering to another page's
- *  grant (`permission`: Focus) skipped. */
+ *  grant (`permission`: Focus, Growth's Redirect links) skipped. */
 const HREFS: string[] = [];
 for (const n of SIDEBAR) {
   if ("divider" in n) continue;
-  if ("children" in n) n.children.forEach((c) => HREFS.push(c.href));
-  else if (!n.permission) HREFS.push(n.href);
+  for (const l of "children" in n ? n.children : [n]) if (!l.permission) HREFS.push(l.href);
 }
 const pages = (allowed: boolean) => Object.fromEntries(HREFS.map((h) => [h, allowed]));
 const actions = (allowed: boolean) => Object.fromEntries(Object.keys(PAGE_ACTIONS).map((k) => [k, allowed]));

@@ -528,6 +528,8 @@ export const OURS = {
     noReply: "text-[13px]",
     /** The failed-attempts line and the reply line under a reply: 11px. */
     meta: "text-[11px]",
+    /** A PPV's media line ("2 videos · 1:12") under its title: 12px. */
+    ppvMedia: "text-[12px]",
     /** The typing dots: 4px apart. */
     dots: "gap-1",
   },

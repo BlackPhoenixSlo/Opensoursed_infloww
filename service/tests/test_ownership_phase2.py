@@ -47,11 +47,6 @@ _REAL_POST_NOTIF = {
 }
 
 
-class _FakeResp:
-    def __init__(self, payload): self._p = payload
-    def json(self): return self._p
-
-
 class _NotifClient:
     """Purchase-notifications feed + optional single-post GET."""
     def __init__(self, items, post_media=None, post_boom=False):
@@ -60,9 +55,9 @@ class _NotifClient:
         self.post_boom = post_boom
         self.post_calls = []
 
-    def get(self, path):
+    def get_json(self, path):
         assert "type=purchases" in path, path
-        return _FakeResp({"list": self.items})
+        return {"list": self.items}
 
     def get_post(self, post_id):
         self.post_calls.append(int(post_id))

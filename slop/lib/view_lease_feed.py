@@ -1,0 +1,33 @@
+"""The purchases-feed reads scenarios/2026-11-09-view-lease-purchases-tiers.py and its legs
+(lib/view_lease_tiers_<leg>_leg.py) share: a purchases poll is a fake-OF call on POLL_ROUTE with `type=purchases`.
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+from urllib.parse import parse_qs
+
+POLL_ROUTE = "GET /api2/v2/users/notifications"
+
+
+async def until(pred, timeout_s: float, step: float = 0.05) -> bool:
+    end = time.monotonic() + timeout_s
+    while time.monotonic() < end:
+        if pred():
+            return True
+        await asyncio.sleep(step)
+    return False
+
+
+def feed(fake, aid: str, lo: float, hi: float = float("inf")) -> list[tuple[float, int]]:
+    """`aid`'s purchases-feed calls (t0, status) in [lo, hi]."""
+    with fake.lock:
+        return [(c["t0"], c["status"]) for c in fake.calls
+                if c["route"] == POLL_ROUTE and c["account"] == aid and c["t0"] is not None and lo <= c["t0"] <= hi
+                and (parse_qs(c.get("query") or "").get("type") or [""])[0] == "purchases"]
+
+
+async def next_poll(fake, aid: str, timeout_s: float) -> bool:
+    """Until `aid`'s next purchases-feed call (one arriving from now on) is answered."""
+    t0 = time.time()
+    return await until(lambda: bool(feed(fake, aid, t0)), timeout_s)

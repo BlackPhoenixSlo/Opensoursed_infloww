@@ -16,12 +16,15 @@ the Turn down. Each bubble goes out through its kind's `BUBBLE_SENDERS` entry.
   due(config, dm)                    when the reply to `dm` may go: its time + the drawn reply speed
   enqueue(account, fan, mid, rule)   the Fan's job at `due` (hook + sweep); False = one is pending
   load(account_id, fan_id, client)   TurnFacts | None (no unanswered Turn, or its row exists)
-  reap(account_id)                   `sending` rows -> `unconfirmed`, the Creator's full_ai_chat leases dropped
+  reap(account_id, mine)             `sending` rows -> `unconfirmed`, the Creator's full_ai_chat leases dropped,
+                                     but a Fan whose job runs in this process (`_running`, not `mine`)
   run(account_id, payload, *, run_id)   reap -> cooldown -> lease -> load -> pre-look -> run_turn
                                      -> cooldown 10 s + release; busy -> the same payload at +20 s,
                                      3 runs at most (ticket 67); no anchor (the interval job) -> sweep
   sweep(account_id)                  missed DMs: due Turn ends with no row / job / cooldown and a clear
                                      pre-look (no OF read) -> enqueue, 20 per pass
+  catchup_queue(account, fans, ...)  full_ai_catchup's waiting Fans: the sweep's checks over just them
+  catchup_client(account)            full_ai_catchup's OF client (reads only)
 
 The only Full AI module that may import the OF client factory, the lease, the DM rate or the OF
 write seam (AST scan in test_full_ai_live.py).
@@ -69,6 +72,9 @@ WELCOME = "welcome"                    # send_welcome's automation_kind: never a
 _TURN_KEY = ["account_id", "fan_id", "mode", "trigger_key"]
 BUSY_RETRY_S, BUSY_RUNS = 20, 3        # a busy Fan: same payload at +20 s; after 3 runs the sweep (68)
 SWEEP_WINDOW_S, SWEEP_MAX = 86400, 20  # the sweep answers DMs of the last 24 h, 20 Turns per pass
+# (account, Fan) whose live job runs in this process now: jobs for different Fans of one Creator
+# overlap (automation_executor `_PER_FAN_KINDS`), so `reap` leaves these and the sweep skips them.
+_running: set[tuple[str, int]] = set()
 
 
 def _is_live(raw: str | None) -> bool:
@@ -101,10 +107,11 @@ def due(config: dict, dm) -> datetime:
     return dm.created_at + timedelta(seconds=full_ai_test.hold(config, str(dm.message_id)))
 
 
-async def enqueue(account_id: str, fan_id: int, message_id: int, rule_id: int) -> bool:
-    """Queue the Fan's job at `due(config, his DM)`. A pending `full_ai_chat` job for the Fan absorbs
-    this DM (it loads facts when it fires): False, nothing queued; so is a DM not in `messages`.
-    The supervisor is woken at `run_at`, not at its next 30 s tick."""
+async def enqueue(account_id: str, fan_id: int, message_id: int, rule_id: int, *,
+                  not_before: datetime | None = None) -> bool:
+    """Queue the Fan's job at `due(config, his DM)` (or `not_before`, if later). A pending `full_ai_chat`
+    job for the Fan absorbs this DM (it loads facts when it fires): False, nothing queued; so is a DM
+    not in `messages`. The supervisor is woken at `run_at`, not at its next 30 s tick."""
     from webhook_dispatch import _FULL_AI_PENDING_S, _imminent_pending_job   # lazy: imports widely
     aid, fan, mid = str(account_id), int(fan_id), int(message_id)
     if await _imminent_pending_job(aid, KIND, fan, _FULL_AI_PENDING_S) is not None:
@@ -115,8 +122,9 @@ async def enqueue(account_id: str, fan_id: int, message_id: int, rule_id: int) -
     if dm is None:
         log.warning("full_ai_live_enqueue_no_dm account=%s fan=%s msg=%s", aid, fan, mid)
         return False
+    run_at = due(cfg, dm)
     await _queue(aid, {"only_fan_ids": [fan], "anchor": mid, "_rule_id": int(rule_id), "tries": 0},
-                 due(cfg, dm))
+                 max(run_at, not_before) if not_before is not None else run_at)
     return True
 
 
@@ -581,17 +589,21 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
     return full_ai_turn.TurnIO(TRIGGER_KIND, full_ai_test.hold, send, record)
 
 
-async def reap(account_id: str) -> int:
+async def reap(account_id: str, mine: int | None = None) -> int:
     """A dead run's leftovers, at the top of every live run: the Creator's `sending` rows become
-    `unconfirmed` (a bubble may be on OF: never re-sent) and their full_ai_chat leases go. Valid
-    because the executor runs one full_ai_chat job per Creator at a time (`_run_locks`, one relay
-    process per Creator). Returns the rows reaped."""
+    `unconfirmed` (a bubble may be on OF: never re-sent) and their full_ai_chat leases go, except
+    for a Fan whose job is running in this process (`_running`; `mine`, the caller's own Fan, is
+    reaped). Valid because one relay process runs a Creator's jobs, one job per Fan at a time
+    (the executor's (account, kind, fan) run lock). Returns the rows reaped."""
     aid = str(account_id)
+    live = [f for a, f in _running if a == aid and f != mine]
     async with get_session() as s:
         n = (await s.execute(update(AiDecision).where(
-            AiDecision.account_id == aid, AiDecision.mode == MODE, AiDecision.status == "sending")
+            AiDecision.account_id == aid, AiDecision.mode == MODE, AiDecision.status == "sending",
+            AiDecision.fan_id.not_in(live))
             .values(status="unconfirmed", updated_at=datetime.utcnow()))).rowcount or 0
-        await s.execute(delete(FanLease).where(FanLease.account_id == aid, FanLease.automation_kind == KIND))
+        await s.execute(delete(FanLease).where(FanLease.account_id == aid, FanLease.automation_kind == KIND,
+                                               FanLease.fan_id.not_in(live)))
     if n:
         log.warning("full_ai_live_reaped account=%s rows=%d", aid, n)
     return n
@@ -655,7 +667,6 @@ async def sweep(account_id: str) -> dict:
     are not answers) with `now >= due`, no live row on its key, no pending job, not on cooldown and a
     clear pre-look (`Look.client` None: no OF read) gets `enqueue`, at most `SWEEP_MAX` per pass,
     oldest first. Sends nothing, holds no lease. Stats: `swept` Turn ends found, `queued`."""
-    from webhook_dispatch import _FULL_AI_PENDING_S, _imminent_pending_job   # lazy: imports widely
     aid, now = str(account_id), datetime.utcnow()
     rule_id = await live_rule(aid)
     if rule_id is None:
@@ -664,13 +675,43 @@ async def sweep(account_id: str) -> dict:
         await full_ai_settle.settle_pull(aid)
     except Exception:  # noqa: BLE001 — a failed settle never costs the missed-DM recovery
         log.warning("full_ai_live sweep settle_pull failed account=%s", aid, exc_info=True)
-    cfg = (await full_ai_turn.stored_config(aid))["checkpoint"]
     since = now - timedelta(seconds=SWEEP_WINDOW_S)
+    fans = select(Fan.fan_id).where(Fan.account_id == aid, Fan.last_message_received_at >= since)
+    swept, queued = await _queue_ends(aid, rule_id, now, fans, since, SWEEP_MAX)
+    if swept:
+        log.info("full_ai_live_sweep account=%s swept=%d queued=%d", aid, swept, queued)
+    return {"swept": swept, "queued": queued}
+
+
+async def catchup_client(account_id: str):
+    """`full_ai_catchup`'s OF client (reads only: the chat list, the Fans list)."""
+    return await asyncio.to_thread(ax._make_client, str(account_id))
+
+
+async def catchup_queue(account_id: str, fan_ids: list[int], *, max_age_s: int, cap: int,
+                        late: set[int], not_before: datetime) -> dict:
+    """`full_ai_catchup`'s waiting Fans (their DMs saved): the sweep's checks over just them, Turn ends
+    up to `max_age_s` old, `cap` per pass (no socket-date gate); a Fan in `late` (his DM only just
+    saved, his chat's scrape queued) is queued no sooner than `not_before`. Stats: `swept`, `queued`."""
+    aid, now = str(account_id), datetime.utcnow()
+    rule_id = await live_rule(aid)
+    if rule_id is None or not fan_ids:
+        return {"swept": 0, "queued": 0}
+    swept, queued = await _queue_ends(aid, rule_id, now, [int(f) for f in fan_ids],
+                                      now - timedelta(seconds=max_age_s), cap, late, not_before)
+    return {"swept": swept, "queued": queued}
+
+
+async def _queue_ends(aid: str, rule_id: int, now: datetime, fans, since: datetime, cap: int,
+                      late: set[int] = frozenset(), not_before: datetime | None = None) -> tuple[int, int]:
+    """The sweep's body over `fans` (a fan-id select or list): each due Turn end since `since` with no
+    live row, job or cooldown and a clear pre-look -> `enqueue`, `cap` at most, oldest first."""
+    from webhook_dispatch import _FULL_AI_PENDING_S, _imminent_pending_job   # lazy: imports widely
+    cfg = (await full_ai_turn.stored_config(aid))["checkpoint"]
     chat = (Message.account_id == aid, Message.direction.in_(("in", "out")),
             or_(Message.direction == "in", _not_welcome()))
     rn = func.row_number().over(partition_by=Message.fan_id,
                                 order_by=(Message.created_at.desc(), Message.message_id.desc())).label("rn")
-    fans = select(Fan.fan_id).where(Fan.account_id == aid, Fan.last_message_received_at >= since)
     ends = select(Message.fan_id, Message.message_id, Message.created_at, Message.direction, rn).where(
         *chat, Message.fan_id.in_(fans)).subquery()
     async with get_session() as s:
@@ -686,29 +727,41 @@ async def sweep(account_id: str) -> dict:
             continue
         if await _imminent_pending_job(aid, KIND, r.fan_id, _FULL_AI_PENDING_S) is not None:
             continue
-        if await ax.fan_on_cooldown(aid, r.fan_id):
+        if (aid, int(r.fan_id)) in _running or await ax.fan_on_cooldown(aid, r.fan_id):
             continue
         swept += 1
-        if queued >= SWEEP_MAX:
+        if queued >= cap:
             continue
         stood = await _look(Look(aid, int(r.fan_id), (r.created_at, int(r.message_id)), None, None, None, -1, 0, {}))
         if stood is not None:
             log.debug("full_ai_live_sweep_stood_down account=%s fan=%s check=%s reason=%s", aid, r.fan_id, *stood)
             continue
-        queued += await enqueue(aid, int(r.fan_id), int(r.message_id), rule_id)
-    if swept:
-        log.info("full_ai_live_sweep account=%s swept=%d queued=%d", aid, swept, queued)
-    return {"swept": swept, "queued": queued}
+        queued += await enqueue(aid, int(r.fan_id), int(r.message_id), rule_id,
+                                not_before=not_before if int(r.fan_id) in late else None)
+    return swept, queued
 
 
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     """One Fan's live Turn (`payload["only_fan_ids"]`). Stats: the row, or `skipped` with why.
     Raises `run_slot.SlotLost` (lost before the reserve: the retry reruns the Turn; after a bubble:
-    recorded `sent` + `cut slot_lost` first)."""
-    await reap(account_id)
+    recorded `sent` + `cut slot_lost` first). The Fan is in `_running` from before the reap to the
+    end; a second job of his while one runs here is busy."""
     if payload.get("anchor") is None:      # the rule's interval tick (or Run now): the sweep
+        await reap(account_id)
         return await sweep(account_id)
+    key = (str(account_id), int(payload["only_fan_ids"][0]))
+    if key in _running:
+        return await _busy(key[0], payload)
+    _running.add(key)
+    try:
+        return await _run(account_id, payload)
+    finally:
+        _running.discard(key)
+
+
+async def _run(account_id: str, payload: dict) -> dict:
     aid, fan = str(account_id), int(payload["only_fan_ids"][0])
+    await reap(aid, fan)
     cfg = (await full_ai_turn.stored_config(aid))["checkpoint"]
     ttl = int(max(900, full_ai_turn.turn_bound_s(cfg) + 600))
     if await ax.fan_on_cooldown(aid, fan) or not await ax.acquire_fan_lease(aid, fan, KIND, ttl_s=ttl):

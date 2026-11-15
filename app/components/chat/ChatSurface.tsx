@@ -34,6 +34,7 @@ import { scriptDraftFromMessage } from "@/lib/messageScripts";
 import { useFan } from "@/hooks/useFan";
 import { ofUserNameKey, useCachedOFUser } from "@/hooks/useOFUser";
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
+import { useViewLease } from "@/hooks/useViewLease";
 import {
   useServerScheduledSends,
   scheduledToPseudoMessage,
@@ -133,6 +134,8 @@ export function ChatSurface({
   const qc = useQueryClient();
   // This open's local reads in one relay call (first, during render: the hooks below join it).
   useChatScreen(accountId, fanId);
+  // The open chat's Creator holds a View lease while this chat is open (ADR-0031), in the All view too.
+  useViewLease(accountId ? [accountId] : [], "chat");
   const { refreshOne: refreshRosterOne } = useRosterCountActions();
 
   // Fan insights, and the header's Notes / Edit name focus requests (chatDrawer).

@@ -42,8 +42,13 @@ _harness.bootstrap()
 import asyncio  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
+import json  # noqa: E402
+from urllib.parse import parse_qs, urlsplit  # noqa: E402
+
 import events  # noqa: E402
 import purchase_notifications as pn  # noqa: E402
+from of_client import OFAPIError  # noqa: E402
+from purchase_poll_decide import Outcome  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Fan, Message  # noqa: E402
 
@@ -51,6 +56,7 @@ _ACC = "acc_pn"
 _FAN = 800000741
 _MSG = 10491720677794
 _NOW = datetime(2026, 7, 21, 15, 26, 0)
+_OK = Outcome("ok")
 
 # Captured verbatim from prod (account/fan ids are the ones under test).
 _REAL = {
@@ -71,18 +77,13 @@ _REAL = {
 }
 
 
-class _FakeResp:
-    def __init__(self, payload): self._p = payload
-    def json(self): return self._p
-
-
 class _FakeClient:
-    """Only `get` is touched; returns the notifications envelope."""
+    """Only `get_json` (OFClient's status-checked read) is touched; returns the notifications envelope."""
     def __init__(self, items): self.items = items; self.calls = 0
-    def get(self, path):
+    def get_json(self, path):
         self.calls += 1
         assert "type=purchases" in path, path
-        return _FakeResp({"list": self.items})
+        return {"list": self.items}
 
 
 async def _seed(*, msg_id: int = _MSG, fan_id: int = _FAN,
@@ -169,12 +170,12 @@ async def case_flip_and_idempotent() -> None:
 
     client = _FakeClient([_REAL])
     r1 = await pn.poll_purchases(_ACC, client)
-    assert r1 == {"seen": 1, "flipped": 1, "posts": 0, "stamped": 0}, r1
+    assert r1 == {"seen": 1, "flipped": 1, "posts": 0, "stamped": 0, "outcome": _OK}, r1
     assert await _is_paid(), "the purchased message must be marked paid"
 
     # The notification stays in the feed; re-polling must change nothing.
     r2 = await pn.poll_purchases(_ACC, client)
-    assert r2 == {"seen": 1, "flipped": 0, "posts": 0, "stamped": 0}, r2
+    assert r2 == {"seen": 1, "flipped": 0, "posts": 0, "stamped": 0, "outcome": _OK}, r2
     assert await _is_paid()
 
 
@@ -212,10 +213,111 @@ async def case_scoped_to_the_right_fan() -> None:
 async def case_poll_survives_a_broken_feed() -> None:
     """A notifications hiccup must never break the ingest tick it rides on."""
     class _Boom:
-        def get(self, path): raise RuntimeError("OF 500")
+        def get_json(self, path): raise RuntimeError("OF 500")
     _empty = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0}
-    assert await pn.poll_purchases(_ACC, _Boom()) == _empty
-    assert await pn.poll_purchases(_ACC, _FakeClient("not-a-list")) == _empty
+    assert await pn.poll_purchases(_ACC, _Boom()) == {**_empty, "outcome": Outcome("error")}
+    assert await pn.poll_purchases(_ACC, _FakeClient("not-a-list")) == {**_empty, "outcome": _OK}
+
+
+class _Resp:
+    """What OFAPIError carries: curl_cffi's response (status, text, case-insensitive headers)."""
+    def __init__(self, status: int, body, headers=None):
+        self.status_code, self._body = status, body
+        self.text = body if isinstance(body, str) else json.dumps(body)
+        self.headers = headers or {}
+        self.url = "https://onlyfans.com/api2/v2/users/notifications"
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class _Answers:
+    """The feed answering `status` (OFClient._get_json raises OFAPIError on a non-2xx, as here)."""
+    def __init__(self, status: int, body, headers=None): self.r = _Resp(status, body, headers); self.calls = 0
+    def get_json(self, path):
+        self.calls += 1
+        raise OFAPIError(f"{self.r.status_code} for {self.r.url}\n{self.r.text[:500]}", response=self.r)
+
+
+async def case_poll_outcome_per_answer() -> None:
+    """The poll reports what OF answered and never raises: ok on 200; rate_limited with OF's
+    Retry-After header, else its "allow N seconds" text, else none; dead with the strict
+    classifier's reason; a plain 401 unauthorized (never dead); anything else error."""
+    too_many = {"error": {"code": 0, "message": "Too many requests. Please allow 7 seconds"}}
+    rows = [
+        (_FakeClient([]), _OK),
+        (_Answers(429, {"error": {"code": 0, "message": "Too many requests."}}, {"Retry-After": "45"}),
+         Outcome("rate_limited", retry_after_s=45.0)),
+        (_Answers(429, too_many, {"Retry-After": "12"}), Outcome("rate_limited", retry_after_s=12.0)),
+        (_Answers(429, too_many), Outcome("rate_limited", retry_after_s=7.0)),
+        (_Answers(429, too_many, {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}),
+         Outcome("rate_limited", retry_after_s=7.0)),
+        (_Answers(429, {"error": {"code": 0, "message": "Too many requests."}}), Outcome("rate_limited")),
+        (_Answers(400, {"error": {"code": 301, "message": "Wrong user."}}), Outcome("dead", reason="wrong_user")),
+        (_Answers(400, {"error": {"code": 101, "message": "Confirm", "payload": {"otpState": {}, "strong": False}}}),
+         Outcome("dead", reason="otp_required")),
+        (_Answers(401, {"error": {"code": 401, "message": "Unauthorized"}}), Outcome("unauthorized")),
+        (_Answers(500, {"error": {"code": 0, "message": "internal"}}), Outcome("error")),
+        (_Answers(403, "<html>cf</html>"), Outcome("error")),
+    ]
+    for client, want in rows:
+        got = await pn.poll_purchases(_ACC, client)
+        assert got["outcome"] == want, (client, got, want)
+        assert got["seen"] == 0 or want == _OK
+
+
+class _Paged:
+    """OF's feed paged by `offset` / `limit`, newest first; records each read's offset."""
+    def __init__(self, items): self.items = items; self.offsets = []
+    def get_json(self, path):
+        q = parse_qs(urlsplit(path).query)
+        off, lim = int(q["offset"][0]), int(q["limit"][0])
+        self.offsets.append(off)
+        return {"list": self.items[off:off + lim]}
+
+
+async def case_catch_up_pages_back_to_a_seen_notification() -> None:
+    """After a gap the poll reads further pages until a page holds a notification it already
+    handled (the done memo), or `pages` pages; without catch-up one page, as before."""
+    base_msg, base_id = 991_000, 117_400_000
+    await _seed(msg_id=base_msg)
+    old = _fresh_notif(base_id, fan_id=_FAN, msg_id=base_msg, age_s=600)
+    assert (await pn.poll_purchases(_ACC, _Paged([old])))["flipped"] == 1   # handled: in the memo
+    new = []
+    for i in range(1, 13):
+        await _seed(msg_id=base_msg + i)
+        new.append(_fresh_notif(base_id + i, fan_id=_FAN, msg_id=base_msg + i, age_s=60 - i))
+    new.reverse()                                                          # newest first
+    tail = [_fresh_notif(base_id - j, fan_id=_FAN, msg_id=1 + j, age_s=900) for j in range(1, 20)]
+    feed = _Paged(new + [old] + tail)
+    got = await pn.poll_purchases(_ACC, feed, limit=10, pages=3)
+    assert feed.offsets == [0, 10], f"stops at the page holding the seen one, read {feed.offsets}"
+    assert got["flipped"] == 12 and got["outcome"] == _OK, got
+    for i in range(1, 13):
+        assert await _is_paid(base_msg + i), i
+    # the page cap: 40 unseen, 3 pages read, 30 of them handled
+    many = [_fresh_notif(117_500_000 + i, fan_id=_FAN, msg_id=992_000 + i) for i in range(40)]
+    feed = _Paged(many)
+    got = await pn.poll_purchases(_ACC, feed, limit=10, pages=3)
+    assert feed.offsets == [0, 10, 20] and got["seen"] == 30, (feed.offsets, got)
+    # no catch-up: one page
+    feed = _Paged(many)
+    await pn.poll_purchases(_ACC, feed, limit=10)
+    assert feed.offsets == [0], feed.offsets
+    # a short page is the feed's end
+    feed = _Paged(many[:4])
+    await pn.poll_purchases(_ACC, feed, limit=10, pages=3)
+    assert feed.offsets == [0], feed.offsets
+    # a failure on a later page: what was read is kept, the outcome is the failure's
+    class _Second(_Paged):
+        def get_json(self, path):
+            if self.offsets:
+                self.offsets.append(-1)
+                raise OFAPIError("429 for x\n{}", response=_Resp(429, {"error": {"message": "Too many"}}))
+            return super().get_json(path)
+    feed = _Second([_fresh_notif(117_600_000 + i, fan_id=_FAN, msg_id=993_000 + i) for i in range(15)])
+    got = await pn.poll_purchases(_ACC, feed, limit=10, pages=3)
+    assert got["seen"] == 10 and got["outcome"] == Outcome("rate_limited"), got
 
 
 def _fresh_notif(notif_id: int, *, fan_id: int, msg_id: int, age_s: int = 5) -> dict:
@@ -411,6 +513,8 @@ _harness.run(
     case_never_flips_inbound_or_free,
     case_scoped_to_the_right_fan,
     case_poll_survives_a_broken_feed,
+    case_poll_outcome_per_answer,
+    case_catch_up_pages_back_to_a_seen_notification,
     case_live_poll_announces_the_buy_once,
     case_backfill_never_announces,
     case_stale_purchase_is_not_announced,

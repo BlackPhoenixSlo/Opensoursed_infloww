@@ -4,7 +4,7 @@
   case_level_of_table        2.49 -> 2, 2.5 -> 3, 3.5 -> 4, 0 -> 0 (`heat_of`'s rounding, a tie up)
   case_over_table            her level above the cap; at cap 4 nothing is over
   case_wording_is_intensity  REPLY_LEVEL is INTENSITY turned on her: same shape, his -> her
-  case_wording_in_catalog    REPLY_LEVEL pinned to docs/prompts NEW-155 (DRAFT) and its README row
+  case_wording_in_catalog    REPLY_LEVEL pinned to docs/prompts NEW-155 and its README row
   case_version_moves         HEAT_VERSION moves with the wording
   case_no_mode_check         `_heat_jev` and `_heat_check` read no Mode
 
@@ -52,7 +52,7 @@ def case_wording_in_catalog():
     doc = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")
     assert "### NEW-155 " in doc
     entry = doc.split("### NEW-155 ", 1)[1].split("\n### ", 1)[0]
-    assert "DRAFT" in entry.split("\n", 1)[0], entry.split("\n", 1)[0]
+    assert "owner OK" in entry.split("\n", 1)[0], entry.split("\n", 1)[0]
     assert hj.HEAT_VERSION in entry, "version line"
     block = entry.split("```text\n", 1)[1].split("\n```", 1)[0]
     assert json.loads(block) == hj.REPLY_LEVEL, block

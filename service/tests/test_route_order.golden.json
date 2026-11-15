@@ -1,4 +1,4 @@
-{"openapi_sha1": "7543de0cb8514fed000fbffbeb03dc4ab59a45fd",
+{"openapi_sha1": "13345dede8bfd4057720ba004393483405b61027",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -153,6 +153,8 @@
   ["PUT", "/admin/style-config", "put_style_config"],
   ["GET", "/admin/account-config", "get_account_config"],
   ["PUT", "/admin/account-config", "put_account_config"],
+  ["GET", "/admin/of-consent/{account_id}", "get_of_consent"],
+  ["PUT", "/admin/of-consent/{account_id}", "put_of_consent"],
   ["POST", "/admin/assistant/ask", "ask"],
   ["GET", "/admin/assistant/history", "history"],
   ["POST", "/admin/assistant/draft", "draft"],
@@ -607,6 +609,7 @@
   ["POST", "/admin/session/fansly", "bootstrap_fansly_session"],
   ["GET", "/admin/accounts", "admin_accounts_list"],
   ["GET", "/admin/accounts/roster-counts", "admin_accounts_roster_counts"],
+  ["POST", "/admin/view-lease", "admin_view_lease"],
   ["POST", "/admin/accounts/active", "admin_accounts_activate"],
   ["PATCH", "/admin/accounts/{account_id}", "admin_accounts_update"],
   ["DELETE", "/admin/accounts/{account_id}", "admin_accounts_remove"],

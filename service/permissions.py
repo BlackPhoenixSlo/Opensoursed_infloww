@@ -481,6 +481,8 @@ UNMAPPED: dict[str, str] = {
     "/lanes-panel": "operator lanes panel, no nav page",
     "/admin/accounts": "the shell's Creator switcher (ScopeSwitcher) and its recolor, the one write"
                        " a chatter may make here (chatters.py); the rest is owner-only",
+    "/admin/view-lease": "every open tab's View lease renewal (accounts_admin_api): ids outside the"
+                         " session's Creators are dropped; answers only the kept ids",
     "/admin/screens": "a screen's reads in one call (screens_api): each inner read is checked as its own route",
     "/admin/settings": "Settings blobs (owner-only) and the Applied settings read every session needs",
     "/admin/shifts/me": "the top bar's clock", "/admin/shifts/clock-in": "the top bar's clock",

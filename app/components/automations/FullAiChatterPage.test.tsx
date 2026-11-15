@@ -67,8 +67,11 @@ const REFERENCE = [
 /** The GET's `limits` (`full_ai_config.limits`). */
 const LIMITS = { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_reply_speed: "0-2m",
   info_questions: ["pick", "list"], caption_writers: ["chat", "caption"] };
+/** The GET's `writer_providers` (model → provider). */
+const WRITER_PROVIDERS = { "euryale-v2.3": "nanogpt", "hermes-4-405b": "openrouter", "glm-5.3-flash": "zai" };
 const configBody = (over: Record<string, unknown> = {}) =>
-  ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], reference: REFERENCE, limits: LIMITS, ...over });
+  ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], reference: REFERENCE, limits: LIMITS,
+    writer_providers: WRITER_PROVIDERS, ...over });
 const MODE_OFF = { mode: "off", off_switch: false, blockers: [] as string[] };
 let modeRead: Record<string, unknown> = MODE_OFF;
 const PREPARE_IDLE = { run_id: null, steps: [], started_at: null, finished_at: null };
@@ -152,7 +155,7 @@ describe("Full AI Chat page", () => {
   });
 
   it("keeps Live disabled while the server names a blocker, and shows the global off switch", async () => {
-    modeRead = { mode: "off", off_switch: true, blockers: ["No Fans list: set an include or exclude list in the saved config"] };
+    modeRead = { mode: "off", off_switch: true, blockers: ["No Fans list: pick an Include or Exclude list under Fans, then Save"] };
     mount([]);
     await waitFor(() => expect(modeNow()).toBe("Off"));
     expect(modeButton("Live").disabled).toBe(true);
@@ -539,11 +542,15 @@ describe("Full AI Chat page › Settings", () => {
     expect(relayGet.mock.calls.some((c) => String(c[0]) === "/admin/full-ai/config?account_id=acc-a")).toBe(true);
   });
 
-  it("LLM keys shows whether NanoGPT and OpenRouter are set, never a value, and links to the keys form", async () => {
-    mountSettings();
+  it("LLM keys shows whether each Writer provider (draft + checkpoint) is set, never a value, and links to the keys form", async () => {
+    mountSettings(configBody({ checkpoint: { ...CONFIG, writers: ["euryale-v2.3", "glm-5.3-flash"] },
+      draft: { ...CONFIG, writers: ["euryale-v2.3", "hermes-4-405b"] } }));
     const keys = within(settings().getAllByRole("listitem")[1]);
     expect(await keys.findByText("NanoGPT set")).toBeTruthy();
-    expect(keys.getByText("OpenRouter not set")).toBeTruthy();
+    expect(keys.getByText("OpenRouter not set").className).toContain("text-err");
+    expect(keys.getByText("Z.ai not set").className).toContain("text-err");
+    expect(keys.getByText("NanoGPT set").className).not.toContain("text-err");
+    expect(keys.queryByText(/DeepSeek/)).toBeNull();
     expect(screen.queryByText(/n4n0/)).toBeNull();
     expect(keys.getByRole("link", { name: "Open keys form" }).getAttribute("href")).toBe("/settings/ai-keys");
   });

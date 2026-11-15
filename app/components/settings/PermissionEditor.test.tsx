@@ -15,16 +15,15 @@ import { CARD_PERMISSIONS, pageCards } from "@/lib/dashboardCards";
 import { PAGE_ACTIONS } from "@/lib/permissionActions";
 
 /** Every non-divider SIDEBAR href: top-level links and group children. A link that answers to
- *  another page's grant (`permission`: Focus) is not a page. */
+ *  another page's grant (`permission`: Focus, Growth's Redirect links) is not a page. */
 const ALL: string[] = [];
 for (const n of SIDEBAR) {
   if ("divider" in n) continue;
-  if ("children" in n) n.children.forEach((c) => ALL.push(c.href));
-  else if (!n.permission) ALL.push(n.href);
+  for (const l of "children" in n ? n.children : [n]) if (!l.permission) ALL.push(l.href);
 }
 const groupOf = (nodes: NavNode[], label: string) =>
   nodes.find((n): n is NavGroup => "children" in n && n.label === label)!;
-const childHrefs = (label: string) => groupOf(SIDEBAR, label).children.map((c) => c.href);
+const childHrefs = (label: string) => groupOf(SIDEBAR, label).children.filter((c) => !c.permission).map((c) => c.href);
 
 const ROLE: PermissionRole = { id: "role-alpha", name: "Alpha Role", description: "", permissions: {}, scope: "self" };
 

@@ -12,7 +12,8 @@ no loop, no clock: automation_executor reads the facts and calls these.
     plan_rule(trig, busy=, poked=, last_fired=, run_count=, quiet_hours_json=, now=)
         -> Enqueue | Skip | Repoke | Disable | CheckQuiet
     quiet_plan(band, tz_off_min, now) -> Enqueue | Skip
-    plan_dispatch(pairs, inflight, last_served, rank, bulk_kinds) -> [Spawn]
+    plan_dispatch(pairs, inflight, last_served, rank, bulk_kinds, per_fan=) -> [Spawn]
+    run_key(account_id, kind, fan, per_fan) -> the in-flight key of one run
 
 plan_rule is the materializer's (`_materialize_due_rules`) gates for one rule, in their order
 (busy, run limit, due), over the facts the shell read (the one-job-per-(account, kind) gate's
@@ -27,6 +28,7 @@ once per distinct raw value, kept in a module-level set; trigger_of is its quiet
 """
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import math
@@ -340,11 +342,12 @@ def quiet_plan(band: str, tz_off_min: int | None, now: datetime) -> QuietPlan:
 
 # ── the supervisor pass ──
 class Pair(NamedTuple):
-    """A due (account, kind) of `_due_job_pairs`."""
+    """A due (account, kind) of `_due_job_pairs`; for a per-fan kind, one per (account, kind, fan)."""
     account_id: str
     kind: str
     operator: bool                  # an operator started one of its due jobs
     due_at: float = 0.0             # its oldest due job's run_at (epoch s): bulk lane order
+    fan: int | None = None          # a per-fan kind's job Fan (job_queue.JOB_FAN); else None
 
 
 @dataclass(frozen=True)
@@ -353,26 +356,56 @@ class Spawn:
     kind: str
     operator: bool                  # the run takes the operator tier of the run slots
     bulk: bool                      # the run takes the bulk lane, not the senders'
+    fan: int | None = None          # a per-fan kind's run claims only this Fan's jobs
 
 
-def plan_dispatch(pairs: Iterable[Pair], inflight: AbstractSet[tuple[str, str]],
+def run_key(account_id: str, kind: str, fan: int | None, per_fan: AbstractSet[str] | Mapping[str, int]) -> tuple:
+    """A run's in-flight key: (account, kind), or (account, kind, fan) for a per-fan kind, so
+    one Fan never has two runs at once while different Fans of one account may."""
+    return (account_id, kind, fan) if kind in per_fan else (account_id, kind)
+
+
+def plan_dispatch(pairs: Iterable[Pair], inflight: AbstractSet[tuple],
                   last_served: Mapping[str, float], rank: Callable[[str], int],
-                  bulk_kinds: AbstractSet[str]) -> list[Spawn]:
+                  bulk_kinds: AbstractSet[str], per_fan: Mapping[str, int] | None = None) -> list[Spawn]:
     """The runs to spawn, in spawn order: operator runs first, then kind priority (`rank`),
     then the account served longest ago, account id breaking a tie. A bulk pair goes by its
     oldest due job instead: `last_served` is process-local, so after a restart it would
     queue the bulk lane in account-id order, the same accounts last every time. A pair
-    already in flight is not spawned again (no stacking over a slow run). `bulk`: the bulk lane."""
+    already in flight is not spawned again (no stacking over a slow run). `bulk`: the bulk lane.
+    `per_fan` (kind -> cap): such a kind runs one run per Fan (`run_key`), at most cap at once
+    per account, the Fans by their oldest due job. Round robin across accounts: a per-fan pair
+    goes by its place in its account (runs in flight first, then its Fans oldest due first),
+    ahead of kind priority, so a pass spawns every account's 1st Fan and every other kind's
+    run before any account's 2nd Fan: one Creator's Fans never fill the run slots."""
+    per_fan = per_fan or {}
+    pairs = list(pairs)
+    taken = set(inflight)
+    running = collections.Counter(k[:2] for k in taken if k[1] in per_fan)
+    place: dict[tuple, int] = {}            # a per-fan run key -> its place in its account
+    queued = running.copy()
+    for p in sorted((p for p in pairs if p.kind in per_fan),
+                    key=lambda p: (p.due_at, -1 if p.fan is None else p.fan)):
+        rk = run_key(p.account_id, p.kind, p.fan, per_fan)
+        if rk not in place and rk not in taken:
+            place[rk] = queued[rk[:2]]
+            queued[rk[:2]] += 1
+
     def key(p: Pair):
         bulk = p.kind in bulk_kinds
-        return (not p.operator, rank(p.kind), bulk,
-                p.due_at if bulk else last_served.get(p.account_id, 0.0), p.account_id)
+        return (not p.operator, place.get(run_key(p.account_id, p.kind, p.fan, per_fan), 0),
+                rank(p.kind), bulk, p.due_at if bulk else last_served.get(p.account_id, 0.0),
+                p.account_id, p.due_at if p.kind in per_fan else 0.0)
     order = sorted(pairs, key=key)
-    taken = set(inflight)
     out: list[Spawn] = []
     for p in order:
-        if (p.account_id, p.kind) in taken:
+        rk = run_key(p.account_id, p.kind, p.fan, per_fan)
+        if rk in taken:
             continue
-        taken.add((p.account_id, p.kind))
-        out.append(Spawn(p.account_id, p.kind, p.operator, p.kind in bulk_kinds))
+        if p.kind in per_fan:
+            if running[rk[:2]] >= per_fan[p.kind]:
+                continue
+            running[rk[:2]] += 1
+        taken.add(rk)
+        out.append(Spawn(p.account_id, p.kind, p.operator, p.kind in bulk_kinds, p.fan))
     return out

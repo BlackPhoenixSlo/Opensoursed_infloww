@@ -113,7 +113,9 @@ from of_write import (  # noqa: F401 — re-exports
 # (`ax.enqueue_job is job_queue.enqueue_job`, one `_current_rule_id` ContextVar).
 # Patch queue internals on job_queue: a patch on ax misses job_queue's own calls.
 from job_queue import (  # noqa: F401 — re-exports
+    ANY_FAN,
     FOLLOWUP_MARK,
+    JOB_FAN,
     JOB_CANCELLED,
     MISSED_WHILE_OFF_REASON,
     RULE_OFF_REASON,
@@ -175,6 +177,25 @@ _OPERATOR_RESERVED_RUNS = lane_config.resolve("AUTOMATION_OPERATOR_RESERVED_RUNS
 _OPERATOR_KINDS: frozenset[str] = frozenset({
     "scheduled_send", "mass_premade", "unsend_messages", "priority_mass",
 })
+# Per-fan kinds run one run per (account, kind, fan) instead of one per (account,
+# kind): Full AI Chat replies to DIFFERENT Fans of one Creator overlap (Router +
+# Writer calls, typing holds), up to AUTOMATION_FULL_AI_PER_CREATOR at once; one
+# Fan never has two (dispatch_plan.run_key). Their OF sends still queue at the
+# account's write gate (of_write_paced) and DM rate (dm_rate): overlap is for
+# the thinking and typing, never a burst of sends. Each run takes a run slot
+# (_run_sem: the fleet bound). Read every pass (panel save applies at once);
+# 1 = one at a time per Creator, as before.
+_FULL_AI_PER_CREATOR = 4
+_PER_FAN_KINDS: frozenset[str] = frozenset({"full_ai_chat"})
+
+
+def _per_fan_caps() -> dict[str, int]:
+    """kind -> runs at once per account, for the per-fan kinds."""
+    cap = lane_config.resolve_live("AUTOMATION_FULL_AI_PER_CREATOR", _FULL_AI_PER_CREATOR)
+    return dict.fromkeys(_PER_FAN_KINDS, cap)
+
+
+_per_fan_caps()   # on the panel from boot
 _BULK_KINDS: frozenset[str] = frozenset({
     "scrape_chats", "process_old_fans",
     "smart_list_sync",
@@ -271,7 +292,7 @@ def poke_rule(account_id: Any, kind: str) -> None:
 # on one account can no longer freeze a real-time welcome_chatter_for_info reply on another.
 _run_sem: run_slot.SlotPool | None = None
 _bulk_sem: run_slot.SlotPool | None = None
-_inflight_pairs: set[tuple[str, str]] = set()
+_inflight_pairs: set[tuple] = set()   # dispatch_plan.run_key of every run in flight
 # When each account last WON a run slot (loop time). Dispatch within a priority
 # rank goes least-recently-served first, so with 20 creators sharing the slots
 # the one that ran a moment ago queues behind the one that has been waiting —
@@ -360,7 +381,8 @@ async def _join_inflight_runs() -> None:
 # Per-(account, kind) lock: stops a slow run from stacking with the next tick.
 # Same idea as tx-ingest's per-account tick lock, scoped to the automation kind
 # (scrape and welcome_chatter_for_info for one account can run concurrently; two scrapes can't).
-_run_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+# A per-fan run's (account, kind, fan) lock is dropped when its run ends (`_one`).
+_run_locks: dict[tuple, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 # ── Tiny parsing helpers (callers use ax._parse_iso) ─────────────────
@@ -386,7 +408,8 @@ def _media_ids(media: list | None) -> list[int]:
 
 async def _due_job_pairs() -> list[dispatch_plan.Pair]:
     """Distinct (account_id, kind) over all pending, due jobs — the supervisor
-    spawns one bounded run per pair per tick — and whether an operator started
+    spawns one bounded run per pair per tick; a per-fan kind's pairs are per
+    (account_id, kind, its job's Fan) — and whether an operator started
     one of them (`_by_operator`) of an operator kind (`_OPERATOR_KINDS`),
     which puts the run in the operator tier. A deactivated Creator's jobs stay
     pending, unspawned; activating it cancels the ones that fell due meanwhile
@@ -394,21 +417,23 @@ async def _due_job_pairs() -> list[dispatch_plan.Pair]:
     now = datetime.utcnow()
     off = await account_health.deactivated_ids()
     auto_emp = await _automation_employee()
+    per_fan = [k for kind in _PER_FAN_KINDS for k in kind_family(kind)]
+    fan = case((ScheduledJob.kind.in_(per_fan), JOB_FAN), else_=None)
     async with get_session() as s:
         rows = (
             await s.execute(
                 select(ScheduledJob.account_id, ScheduledJob.kind,
                        func.max(case((_by_operator(auto_emp), 1), else_=0)),
-                       func.min(ScheduledJob.run_at))
+                       func.min(ScheduledJob.run_at), fan)
                 .where(
                     ScheduledJob.status == "pending",
                     ScheduledJob.run_at <= now,
                 )
-                .group_by(ScheduledJob.account_id, ScheduledJob.kind)
+                .group_by(ScheduledJob.account_id, ScheduledJob.kind, fan)
             )
         ).all()
     return [dispatch_plan.Pair(r[0], r[1], bool(r[2]) and canonical_kind(r[1]) in _OPERATOR_KINDS,
-                               _epoch(r[3]))
+                               _epoch(r[3]), r[4])
             for r in rows if r[0] not in off]
 
 
@@ -766,6 +791,7 @@ async def run_once(
     payload: dict | None = None,
     job_id: int | None = None,
     job_only: bool = True,
+    fan: Any = ANY_FAN,
 ) -> dict:
     """Execute exactly one automation run for (account_id, kind) and return a
     summary dict. No loop, no sleeping, no supervisor — tests call this
@@ -783,6 +809,10 @@ async def run_once(
     because its rule was switched off, or already claimed by the supervisor
     (fans.py kicks a run_once right after enqueueing). Pass `job_only=False`
     to get the old "run with {} anyway" behaviour.
+
+    `fan` (the supervisor, for a per-fan kind): the run claims only that Fan's
+    jobs (None: the kind's jobs that name no Fan) and its run lock is
+    (account, kind, fan), so runs for different Fans of one account overlap.
 
     Rule binding: while a claimed job of a LIVE rule (`scheduled_jobs.rule_id`)
     runs, `current_rule_id()` returns that rule, so follow-on jobs the automation
@@ -819,8 +849,8 @@ async def run_once(
         await _finalize_run(run_id, status, None, err, job_id=job_id, job_status=job_status)
         return {"status": "error", "reason": "unknown_kind", "run_id": run_id}
 
-    # Don't stack a second run of the same (account, kind) over a slow one.
-    lock = _run_locks[(account_id, kind)]
+    # Don't stack a second run of the same (account, kind) — or (account, kind, fan) — over a slow one.
+    lock = _run_locks[dispatch_plan.run_key(account_id, kind, fan, () if fan is ANY_FAN else _PER_FAN_KINDS)]
     if lock.locked():
         return {"status": "skipped", "reason": "in_flight"}
 
@@ -852,7 +882,7 @@ async def run_once(
     async with lock:
         rule_id: int | None = None
         if payload is None and job_id is None:
-            claimed = await _claim_due_job(account_id, kind)
+            claimed = await _claim_due_job(account_id, kind, fan=fan)
             if claimed is not None:
                 payload = run_decide.parse_payload(claimed.payload_json)
                 job_id = claimed.id
@@ -1053,8 +1083,9 @@ async def _size_run_slots(pool: run_slot.SlotPool) -> None:
 
 async def _drain_due_jobs_once() -> None:
     """One supervisor pass: materialize due rules → jobs, sweep expired leases,
-    then spawn ONE bounded `run_once` per due (account, kind) pair. Bounded by
-    `_MAX_CONCURRENT_RUNS`; the per-(account, kind) lock inside run_once keeps a
+    then spawn ONE bounded `run_once` per due (account, kind) pair (per
+    (account, kind, fan) for `_PER_FAN_KINDS`, `_per_fan_caps` per account).
+    Bounded by `_MAX_CONCURRENT_RUNS`; the run lock inside run_once keeps a
     slow run from stacking with the next tick."""
     try:
         await _materialize_due_rules()
@@ -1095,10 +1126,13 @@ async def _drain_due_jobs_once() -> None:
     except Exception:
         log.warning("automation_run_slots_size_failed", exc_info=True)
 
-    async def _one(aid: str, kind: str, operator: bool, bulk: bool) -> None:
+    per_fan = _per_fan_caps()
+
+    async def _one(aid: str, kind: str, operator: bool, bulk: bool, key: tuple, per_fan_run: bool) -> None:
         # Long bulk sweeps run in their own lane so they can't starve real-time
         # senders of a slot (see _BULK_KINDS).
         sem = _bulk_sem if bulk else _run_sem
+        ran = False
         try:
             # run_slot.hold == `async with sem`, except the run gives the slot
             # back during its typing holds (_common.hold_with_typing) and takes
@@ -1108,7 +1142,8 @@ async def _drain_due_jobs_once() -> None:
                 if _draining:   # shutting down: the job stays pending for the next process
                     return
                 _last_served[aid] = asyncio.get_running_loop().time()
-                await run_once(aid, kind)
+                res = await run_once(aid, kind, **({"fan": key[2]} if per_fan_run else {}))
+                ran = isinstance(res, dict) and res.get("status") in ("ok", "error")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1117,16 +1152,21 @@ async def _drain_due_jobs_once() -> None:
                 aid, kind, exc_info=True,
             )
         finally:
-            _inflight_pairs.discard((aid, kind))
+            _inflight_pairs.discard(key)
+            if per_fan_run:
+                _run_locks.pop(key, None)   # Fans churn: keep the lock dict small
+                if ran:                     # that Fan's next job, or another Fan's, without a tick wait
+                    wake_supervisor()
 
     # Spawn DETACHED, tracked tasks — do NOT await. The supervisor loop returns
     # immediately and keeps ticking/waking, so a slow run can't stall real-time
     # dispatch. The plan skips a pair already in flight (no stacking); the
     # shared semaphore bounds total concurrency across overlapping drains. No
     # await between the plan and the last spawn: the in-flight set it read holds.
-    for sp in dispatch_plan.plan_dispatch(pairs, _inflight_pairs, served, kind_priority, _BULK_KINDS):
-        _inflight_pairs.add((sp.account_id, sp.kind))
-        t = asyncio.create_task(_one(sp.account_id, sp.kind, sp.operator, sp.bulk))
+    for sp in dispatch_plan.plan_dispatch(pairs, _inflight_pairs, served, kind_priority, _BULK_KINDS, per_fan):
+        key = dispatch_plan.run_key(sp.account_id, sp.kind, sp.fan, per_fan)
+        _inflight_pairs.add(key)
+        t = asyncio.create_task(_one(sp.account_id, sp.kind, sp.operator, sp.bulk, key, sp.kind in per_fan))
         _inflight_tasks.add(t)
         t.add_done_callback(_inflight_tasks.discard)
 

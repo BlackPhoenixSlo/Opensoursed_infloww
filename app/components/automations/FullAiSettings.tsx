@@ -3,7 +3,8 @@
 /**
  * Full AI Chat's settings column (spec phase-03a, 03b): eighteen controls in a list named "Settings":
  *   1. the Mode control (Off / Live, `FullAiModeControl`);
- *   2. LLM keys: whether NanoGPT and OpenRouter are set (never a value or hint), linking to the agency keys form;
+ *   2. LLM keys: whether each provider the Writers run on (draft and checkpoint; the config GET's `writer_providers`)
+ *   is set (never a value or hint; "not set" in red), linking to the agency keys form;
  *   3. reply speed ("0-2 min" / "0-15-60"), 4. Human style (every `style` layer; mixed when they differ), 5. Typos
  *   (the typos layer alone; on, a "%" box sets `typo_pct`, empty = auto), 6. Writers (a checklist over `writers`: tick / untick, "Make Writer" moves one first), 7. GIFs
  *   (on, a "%" box sets `gif_pct`, empty = auto);
@@ -37,6 +38,7 @@ import {
   styleLayers, gifPct, gifPctPatch, sellSwitchPatch, settingRows, toggleWriterPatch, topSpendDollars, topSpendPatch,
   typoPct, typoPctPatch, typosPatch, writerPatch, type ChatSwitchKey, type FullAiConfig, type SettingRow,
 } from "@/components/automations/fullAiConfig";
+import { writerKeyRows } from "@/components/automations/fullAiKeys";
 import {
   jsonEditInit, jsonEditReducer, jsonMoved, jsonTyped, prettyJson, type JsonSide,
 } from "@/components/automations/fullAiConfigJson";
@@ -51,7 +53,6 @@ import { parseJsonObject } from "@/lib/rawJsonReducer";
 import { cn } from "@/lib/utils";
 
 const STALE = "Someone saved this config meanwhile. Reload.";
-const KEY_ROWS = [{ id: "nanogpt", label: "NanoGPT" }, { id: "openrouter", label: "OpenRouter" }] as const;
 
 export function FullAiSettings({ state, cfg, accountId }: {
   state: TestChatState; cfg: FullAiConfigApi; accountId: string;
@@ -66,7 +67,7 @@ export function FullAiSettings({ state, cfg, accountId }: {
       {state.conflict && <ConflictBar cfg={cfg} canKeep={keepMineSave(state) !== null} />}
       <ul aria-label="Settings" className="space-y-2">
         <li><FullAiModeControl accountId={accountId} /></li>
-        <li><KeysRow /></li>
+        <li><KeysRow state={state} cfg={cfg} /></li>
         {/* The speeds are the server's (`limits`): the row waits for the config read. */}
         {cfg.limits && (
           <li className={ROW}>
@@ -308,19 +309,23 @@ function ConflictBar({ cfg, canKeep }: { cfg: FullAiConfigApi; canKeep: boolean 
   );
 }
 
-/** Set / not set per provider, from GET /admin/my-llm-keys; the hint (last characters) is never shown. */
-function KeysRow() {
+/** Set / not set per Writer provider, from GET /admin/my-llm-keys; the hint (last characters) is never shown. The
+ *  model → provider map is the config read's `writer_providers`. */
+function KeysRow({ state, cfg }: { state: TestChatState; cfg: FullAiConfigApi }) {
   const keysQ = useTenantKeys();
   const providers = keysQ.data?.providers;
+  const rows = writerKeyRows([state.draft?.writers, state.checkpoint?.writers], cfg.writerProviders);
   return (
     <div className={ROW}>
       <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
         <div className="min-w-0">
           <div className="text-[14px] text-fg">LLM keys</div>
           <div className="mt-0.5 flex flex-wrap gap-x-3 text-[12px] text-muted">
-            {keysQ.isError ? <span className="text-err">Couldn&apos;t read the keys.</span> : KEY_ROWS.map((k) => (
-              <span key={k.id}>{providers ? `${k.label} ${providers[k.id]?.set ? "set" : "not set"}` : `${k.label} …`}</span>
-            ))}
+            {keysQ.isError ? <span className="text-err">Couldn&apos;t read the keys.</span> : !rows ? <span>…</span> : rows.map((k) => {
+              const set = providers?.[k.id]?.set;
+              return <span key={k.id} className={providers && !set ? "text-err" : undefined}>
+                {providers ? `${k.label} ${set ? "set" : "not set"}` : `${k.label} …`}</span>;
+            })}
           </div>
         </div>
         <Link href="/settings/ai-keys" className="text-[14px] text-accent hover:text-accent-hover">Open keys form</Link>

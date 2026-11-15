@@ -451,15 +451,15 @@ async def case_supervisor_passes_the_mode():
     async def _only():
         return [ACCT]
 
-    saved = ti.supervised_tick, ti._live_account_ids
-    ti.supervised_tick, ti._live_account_ids = _sup, _only
+    saved = ti.supervised_tick, ti.live_account_ids
+    ti.supervised_tick, ti.live_account_ids = _sup, _only
     try:
         await _set_full(_period_start() - timedelta(seconds=1))   # due
         await ti.supervisor_cycle()
         await _set_full(_period_start())
         await ti.supervisor_cycle()
     finally:
-        ti.supervised_tick, ti._live_account_ids = saved
+        ti.supervised_tick, ti.live_account_ids = saved
     assert ticked == [(ACCT, "refresh"), (ACCT, "recent")], ticked
 
 

@@ -137,6 +137,17 @@ export function fmtDateTime(iso: string | null): string {
   });
 }
 
+/** A UTC ISO time in the viewer's zone, named by its city:
+ *  "22 Oct 21:50 (Ljubljana)". */
+export function localWhen(iso: string): string {
+  const d = new Date(iso);
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const city = (tz.split("/").pop() ?? tz).replace(/_/g, " ");
+  const day = d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `${day} ${time} (${city})`;
+}
+
 /** "HH:MM" in the user's locale — used for "data through 13:45" captions. */
 export function fmtTimeOnly(iso: string | null): string {
   if (!iso) return "—";

@@ -51,7 +51,7 @@ export interface ChatPlugin {
    *  knows it; Fan insights' Total spend takes it when it beats our ledger's. */
   fanSpendCents?: (fan: FanRecord) => number | null | undefined;
   /** AgencyNotifications `consentFixHref`: the page where a Creator's consent
-   *  switch is (first plugin's). */
+   *  switch is (first plugin's; none: Settings › OnlyFans consent). */
   consentFixHref?: (accountId: string) => string;
 }
 
@@ -107,5 +107,6 @@ export function isSourceScript(scriptId: string | null | undefined): boolean {
 
 export const FAN_SPEND_SOURCES: readonly ((fan: FanRecord) => number | null | undefined)[] =
   PLUGINS.flatMap((p) => (p.fanSpendCents ? [p.fanSpendCents] : []));
-export const CONSENT_FIX_HREF: ((accountId: string) => string) | null =
-  PLUGINS.find((p) => p.consentFixHref)?.consentFixHref ?? null;
+export const CONSENT_FIX_HREF: (accountId: string) => string =
+  PLUGINS.find((p) => p.consentFixHref)?.consentFixHref
+  ?? ((accountId) => `/settings/consent?account=${encodeURIComponent(accountId)}`);

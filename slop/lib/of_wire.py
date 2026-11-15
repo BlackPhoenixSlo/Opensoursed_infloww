@@ -65,7 +65,9 @@ concurrently and are recorded in arrival order.
                                            OF's Subscriptions chart, no new fans (`subscribers` 0)
   GET  /api2/v2/payouts/referrals/chart    Statements › Referrals, $0 (`total` 0): the
                                            Dashboard's Referrals tile
-  GET  /api2/v2/users/notifications        the alerts feed, empty: the purchases poller
+  GET  /api2/v2/users/notifications        the alerts feed, empty; `type=purchases`: `purchases[uid]` (OF
+                                           notification items, newest first) as a scenario seeded them,
+                                           `offset` / `limit` (default 10): the purchases poller
   GET  /api2/v2/payouts/transactions       the payouts feed, empty: Messages Pro's money rail
   GET  /api2/v2/campaigns                  the tracking links: `campaigns[uid]` as a scenario set
                                            it (else none), `offset` / `limit` (bare: 10), deleted
@@ -175,6 +177,12 @@ the usual wait, recorded in `calls`; the call after them is answered as usual (a
 `min_gap` ((uid, route) -> seconds, set by the scenario at any time): that Creator's call on that route arriving sooner
 than this after its previous one (refused ones count) is answered 429 `TOO_MANY_BODY`: OF's per-account rate limit
 (AE 2026-11-10, measured: 76 unpaced by-id reads in 19 s, then 429; the real budget is a guess, declared).
+`status` ((uid, route) -> (code, retry_after_s[, body]), set and cleared by the scenario at any time): while armed,
+that Creator's every call on that route is answered `code` after the usual wait, recorded in `calls`: 401 with
+`UNAUTH_BODY` (a 401 the relay's dead-session classifier does not recognise), or 429 with `TOO_MANY_PLAIN_BODY` (no
+"allow N seconds" text) and, when `retry_after_s` is not None, a `Retry-After` header of that many seconds. `body`
+(not None) replaces the default: `TOO_MANY_BODY` is OF's own "Please allow 1 seconds" (measured on AE). The other
+bodies are guesses at OF's (declared).
 
 A Creator in `otp` (set by the scenario at any time) is a login OnlyFans has
 asked to confirm with a 2FA code: every /api2/ call it makes is answered 400
@@ -219,6 +227,8 @@ OTP_BODY = {"error": {"code": 101, "message": "Confirm it is you", "payload": {
     "strong": False}}}
 FAIL_BODY = {"error": {"code": 0, "message": "slop fake: OF internal error"}}
 TOO_MANY_BODY = {"error": {"code": 429, "message": "Too many requests. Please allow 1 seconds"}}
+TOO_MANY_PLAIN_BODY = {"error": {"code": 429, "message": "Too many requests."}}
+UNAUTH_BODY = {"error": {"code": 401, "message": "Unauthorized"}}
 CONSENT_BODY = {"error": {"code": 0, "message": "Consent not accepted"}}
 _SEND = re.compile(r"/api2/v2/chats/(\d+)/messages")
 _VAULT_ONE = re.compile(r"/api2/v2/vault/media/(\d+)")
@@ -237,6 +247,7 @@ class FakeOF:
         self.throttle: dict[tuple[str, str], int] = {}  # (Creator, route) -> its next n calls answered 429
         self.min_gap: dict[tuple[str, str], float] = {}  # (Creator, route) -> a call sooner after the last: 429
         self._gap_last: dict[tuple[str, str], float] = {}
+        self.status: dict[tuple[str, str], tuple] = {}  # (Creator, route) -> (401|429, Retry-After[, body])
         self.consent: dict[str, str] = {}  # Creator -> its consent law ("NC" / "AL"): media sends refused
         self.consent_signed: set[str] = set()  # of `consent`: signed, /users/me approved, sends go through
         self.extra_s: dict[str, float] = {}  # per Creator, seconds added to each /api2/ call
@@ -251,6 +262,7 @@ class FakeOF:
         self.messages: dict[str, dict[int, list[dict]]] = {}  # per Creator, fan -> OF's thread, newest first
         self.vault_media: dict[str, list[dict]] = {}  # per Creator, the vault page's media, newest first
         self.fan_counts: dict[str, int] = {}  # per Creator, `subscribers.active` (else id % 900 + 100)
+        self.purchases: dict[str, list[dict]] = {}  # per Creator, the type=purchases feed, newest first
         self.profiles: dict[str, dict] = {}  # per Creator, fields laid over its /users/me (name, username, avatar)
         self.lock = threading.Lock()
         self.calls: list[dict] = []          # every call, answer order: {t0, t, account, route, query, status}
@@ -471,6 +483,14 @@ class FakeOF:
                 if too_soon:
                     return self._record(uid, route, 429, TOO_MANY_BODY)
                 with fake.lock:
+                    mode = fake.status.get((uid, route))
+                if mode is not None:
+                    code, ra, body = (*mode, None)[:3]
+                    if body is None:
+                        body = UNAUTH_BODY if code == 401 else TOO_MANY_PLAIN_BODY
+                    return self._record(uid, route, code, body,
+                                        headers=() if ra is None else (("Retry-After", f"{ra:g}"),))
+                with fake.lock:
                     law = fake.consent.get(uid)
                     signed = uid in fake.consent_signed
                 if (law and not signed and method == "POST"
@@ -514,7 +534,13 @@ class FakeOF:
                 if method == "GET" and u.path == "/api2/v2/payouts/referrals/chart":
                     return self._record(uid, route, 200, {"total": 0, "delta": 0, "chartAmount": [], "chartCount": []})
                 if method == "GET" and u.path == "/api2/v2/users/notifications":
-                    return self._record(uid, route, 200, {"list": [], "hasMore": False})
+                    q = parse_qs(u.query)
+                    if (q.get("type") or [""])[0] != "purchases":
+                        return self._record(uid, route, 200, {"list": [], "hasMore": False})
+                    off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
+                    with fake.lock:
+                        feed = list(fake.purchases.get(uid, ()))
+                    return self._record(uid, route, 200, {"list": feed[off:off + lim], "hasMore": off + lim < len(feed)})
                 if method == "GET" and u.path == "/api2/v2/payouts/transactions":
                     return self._record(uid, route, 200, {"list": [], "hasMore": False})
                 # The page sweep's reads of a Creator with none of these yet: OF's empty pages (of_client's shapes;

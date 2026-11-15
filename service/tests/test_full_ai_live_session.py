@@ -261,23 +261,15 @@ async def prior_turn(aid: str, fan: int, his: int, out: int, *, ago: int = 5, sc
     return rid
 
 
-class _FeedResp:
-    def __init__(self, payload):
-        self._p = payload
-
-    def json(self):
-        return self._p
-
-
 class FeedClient:
-    """The purchases feed's client (as test_full_ai_settle_live._FakeClient): `get` only."""
+    """The purchases feed's client (as test_full_ai_settle_live._FakeClient): `get_json` only."""
 
     def __init__(self, items):
         self.items = items
 
-    def get(self, path):
+    def get_json(self, path):
         assert "type=purchases" in path, path
-        return _FeedResp({"list": self.items})
+        return {"list": self.items}
 
 
 _NID = iter(range(910_000_000, 999_999_999))

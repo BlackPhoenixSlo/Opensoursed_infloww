@@ -4,7 +4,7 @@ import { unsaved } from "@/components/automations/sentDraft";
 import type { AutoreplyConfig } from "@/hooks/useAutoreplyConfig";
 import {
   answersWith, autoReplyReducer, brainPayload, brainSeed, buildPayload, canSubmit, draftFromConfig, effortChoices,
-  initState, randomiseOn, switchPayload, type AutoReplyAction, type AutoReplyDraft, type AutoReplyEdit, type BrainPick, type NumberKey,
+  initState, numberText, randomiseOn, switchPayload, type AutoReplyAction, type AutoReplyDraft, type AutoReplyEdit, type BrainPick, type NumberKey,
 } from "./autoReplyForm";
 
 /** service/automations/autoreply.py `_defaults()`. */
@@ -18,7 +18,7 @@ const DEFAULTS: AutoreplyConfig = {
 
 /** The state after `actions`, from the draft `from`. */
 const runState = (actions: AutoReplyAction[], from: AutoReplyDraft = draftFromConfig(DEFAULTS)) =>
-  actions.reduce(autoReplyReducer, { draft: from, sent: null, modelTouched: false });
+  actions.reduce(autoReplyReducer, { draft: from, sent: null, modelTouched: false, typing: {} });
 /** The draft after `actions`, from `from`. */
 const run = (actions: AutoReplyEdit[], from?: AutoReplyDraft) => runState(actions, from).draft;
 
@@ -113,6 +113,14 @@ describe("edits", () => {
     expect(run([{ type: "number", k, raw }])[k]).toBe(want);
   });
 
+  it.each<{ k: NumberKey; raw: string; want: number }>([
+    { k: "cap", raw: "12.349", want: 12.35 },
+    { k: "cap", raw: "0.004", want: 0 },
+    { k: "newMax", raw: "3.456", want: 3.46 },
+  ])("dollars $k='$raw' round to cents ($want)", ({ k, raw, want }) => {
+    expect(run([{ type: "number", k, raw }])[k]).toBe(want);
+  });
+
   it("randomise is kept but off at delay 0, and back when the delay is", () => {
     const s0 = run([{ type: "number", k: "delay", raw: "5" }, { type: "switch", k: "randomise", on: true },
       { type: "number", k: "delay", raw: "0" }]);
@@ -126,6 +134,42 @@ describe("edits", () => {
   it("every edit returns a new draft (the page's Saved reads draft === the draft sent)", () => {
     const d = draftFromConfig(DEFAULTS);
     expect(run([{ type: "switch", k: "enabled", on: false }], d)).not.toBe(d);
+  });
+});
+
+describe("number text: as typed until blur, clamped in the draft and payload", () => {
+  const typed = (k: NumberKey, ...raws: string[]): AutoReplyAction[] => raws.map((raw) => ({ type: "number", k, raw }));
+  const blur = (k: NumberKey): AutoReplyAction => ({ type: "numberBlur", k });
+  it.each<[string, AutoReplyAction[], NumberKey, string, keyof AutoreplyConfig, number]>([
+    // name, actions, input, its text after, payload field, payload value
+    ["clear then type 7289 (no snap to 1 under the keystrokes)",
+      typed("newHours", "", "7", "72", "728", "7289"), "newHours", "7289", "new_fan_hours", 7289],
+    ["blank stays blank while typing", typed("newHours", ""), "newHours", "", "new_fan_hours", 1],
+    ["99999 hours: shown as typed, sent as 8760", typed("newHours", "99999"), "newHours", "99999", "new_fan_hours", 8760],
+    ["99999 hours, blur: shows 8760", [...typed("newHours", "99999"), blur("newHours")], "newHours", "8760", "new_fan_hours", 8760],
+    ["blank on blur: the low bound", [...typed("newHours", ""), blur("newHours")], "newHours", "1", "new_fan_hours", 1],
+    ["blank delay on blur: 0", [...typed("delay", ""), blur("delay")], "delay", "0", "silence_min_minutes", 0],
+    ["dollars: typed text kept, cents sent", typed("cap", "12.349"), "cap", "12.349", "folder_max_spend_cents", 1_235],
+    ["dollars, blur: shows the cents", [{ type: "switch", k: "capOn", on: true }, ...typed("cap", "12.349"), blur("cap")],
+      "cap", "12.35", "folder_max_spend_cents", 1_235],
+    ["untouched: the draft value", [], "newHours", "72", "new_fan_hours", 72],
+  ])("%s", (_n, actions, k, text, field, want) => {
+    const s = runState([{ type: "switch", k: "capOn", on: true }, ...actions]);
+    expect(numberText(s, k)).toBe(text);
+    expect(buildPayload(s.draft, DEFAULTS)[field]).toBe(want);
+  });
+
+  it("blur keeps the draft (never turns 'Saved' off), and is a no-op when nothing is typed", () => {
+    const s = [...typed("newHours", "48"), { type: "saved" } as AutoReplyAction].reduce(autoReplyReducer, initState(DEFAULTS));
+    const b = autoReplyReducer(s, blur("newHours"));
+    expect(b.draft).toBe(s.draft);
+    expect(unsaved(b)).toBe(false);
+    expect(autoReplyReducer(b, blur("newHours"))).toBe(b);
+  });
+
+  it("a blank delay disables randomise (the parsed value is 0)", () => {
+    const s = runState([...typed("delay", "5"), { type: "switch", k: "randomise", on: true }, ...typed("delay", "")]);
+    expect(randomiseOn(s.draft)).toBe(false);
   });
 });
 

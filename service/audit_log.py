@@ -44,6 +44,7 @@ _AUDIT_SKIP_PREFIXES = (
     "/admin/ultra/plans",
     "/push",             # a browser's push subscription sync, on every page load
     "/t/",               # public tracking-link verify: an anonymous fan's click, counted on its own row
+    "/admin/view-lease",  # every open tab's View lease renewal, every 20 s
 )
 # Exact paths skipped (not prefixes: a new route under one stays audited). The MCP host route
 # (mcp_api.PATH): its body may carry tool args with nested secrets, which `_safe_snapshot` does

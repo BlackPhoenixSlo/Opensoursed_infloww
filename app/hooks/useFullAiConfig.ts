@@ -153,11 +153,13 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
   const rollback = useCallback(() => void commit("rollback"), [commit]);
   /** The Writer select's options (the GET's `writer_models`; empty until it answers). */
   const writerModels = data?.writer_models ?? [];
+  /** Writer model → provider (the GET's `writer_providers`; undefined until it answers). */
+  const writerProviders = data?.writer_providers;
   /** Every key the JSON takes (the GET's `reference`; empty until it answers). */
   const reference = data?.reference ?? [];
   /** The controls' server constants (the GET's `limits`; null until it answers). */
   const limits = data?.limits ?? null;
-  return { edit, putDraft, putCheckpoint, save, rollback, reload, keepMine, takeTheirs, writerModels, reference, limits };
+  return { edit, putDraft, putCheckpoint, save, rollback, reload, keepMine, takeTheirs, writerModels, writerProviders, reference, limits };
 }
 
 export type FullAiConfigApi = ReturnType<typeof useFullAiConfig>;
