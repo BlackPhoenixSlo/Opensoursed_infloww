@@ -10,9 +10,10 @@
  * OF CALL BUDGET (20 Creators = 40 lists): SSE keeps the lists live — the
  * toaster seeds each tip/sale straight into them (`seedMoneyList`) — so OF's
  * feed is only re-read to reconcile, and only for a Creator this tab leases
- * (lib/ofReadGate.ts, ADR-0031): on mount or tab return once a list is
- * LIST_STALE_MS old, every LIST_SAFETY_POLL_MS while the tab is visible, on a
- * lease gain or selection once it is 30 s old, and on `resync`
+ * (lib/ofReadGate.ts, ADR-0031): on tab return once a list is LIST_STALE_MS
+ * old, every LIST_SAFETY_POLL_MS while the tab is visible, on a lease gain or
+ * selection once it is 30 s old (a mount counts every leased Creator as a
+ * gain: useOfReadGate starts from no lease), and on `resync`
  * (useAccountStateEvents). An unleased Creator's lists read once its
  * `creator_warmed` comes (the warm's cached copy), on a lease gain, or at the
  * APP_OPEN_WARM_FALLBACK_MS deadline, then only on its next `creator_warmed`.

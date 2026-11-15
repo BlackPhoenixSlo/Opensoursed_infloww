@@ -440,7 +440,7 @@ async def case_capped_account_still_cuts_and_skiplists_but_calls_no_llm():
     async with get_session() as s:
         s.add(GrokDailyCost(
             day=datetime.utcnow().strftime("%Y-%m-%d"), account_id=aid,
-            provider=llm_client.MODELS[model].provider, cost_cents=10**9,
+            provider=llm_client.budget_key(wc._PURPOSE), cost_cents=10**9,
             call_count=1, is_capped=True, updated_at=datetime.utcnow()))
     fake = _use_fake()
 

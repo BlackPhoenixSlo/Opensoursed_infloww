@@ -179,6 +179,57 @@ async def case_ring_overflow_resyncs():
         events.ed.RING_MAX = old
 
 
+async def case_any_scope_replay_reaches_a_model_scoped_tab():
+    """A tab scoped to A whose clamp also holds B reconnects: the money/warm events of B it would have got live
+    (events_decide.ANY_SCOPE_TYPES) are replayed, B's other events are not; an evicted any-scope frame of B resyncs
+    it, B's evicted DMs alone do not (fetch-diet rwl2 F1)."""
+    _reset()
+    clamp = frozenset({A, B})
+    old = events.ed.RING_MAX
+    try:
+        gen = _stream(accounts=clamp, scope=f"model:{A}")
+        _, head = await _frames(gen, 2)
+        await gen.aclose()
+        bought = {"purchase_notified": {"notif_id": "n1", "fan_id": 7}, "__account_id": B}
+        for ev in (_msg(B, 30), bought, _msg(A, 31)):
+            await events.broadcast(ev)
+        gen = _stream(head["id"], accounts=clamp, scope=f"model:{A}")
+        got = await _frames(gen, 3)
+        assert got[1].get("event") == "batch", got
+        kinds = [(m["type"], m["data"]["__account_id"]) for m in json.loads(got[1]["data"])]
+        assert kinds == [("purchase_notified", B), ("api2_chat_message", A)], kinds
+        assert set(got[2]) == {"id"}, got
+        await gen.aclose()
+
+        # B's ring drops only DMs: nothing this tab could see is lost, no resync.
+        _reset()
+        events.ed.RING_MAX = 3
+        gen = _stream(accounts=clamp, scope=f"model:{A}")
+        _, head = await _frames(gen, 2)
+        await gen.aclose()
+        for mid in range(40, 45):
+            await events.broadcast(_msg(B, mid))
+        gen = _stream(head["id"], accounts=clamp, scope=f"model:{A}")
+        assert [set(f) for f in await _frames(gen, 2)] == [set(), {"id"}]
+        await gen.aclose()
+
+        # B's ring drops a purchase: lost to this tab, so it resyncs.
+        _reset()
+        gen = _stream(accounts=clamp, scope=f"model:{A}")
+        _, head = await _frames(gen, 2)
+        await gen.aclose()
+        await events.broadcast(bought)
+        for mid in range(50, 53):
+            await events.broadcast(_msg(B, mid))
+        gen = _stream(head["id"], accounts=clamp, scope=f"model:{A}")
+        got = await _frames(gen, 3)
+        assert got[1] == {"event": "resync", "data": "{}"}, got
+        assert set(got[2]) == {"id"}, got
+        await gen.aclose()
+    finally:
+        events.ed.RING_MAX = old
+
+
 async def case_queue_overflow_resyncs():
     _reset()
     old = events._QUEUE_MAX

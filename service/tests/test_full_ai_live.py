@@ -287,4 +287,21 @@ def case_only_live_sends():
     assert _send_paths("x.send_message(1, 'a')\n") == ["send_message"]
 
 
+def case_write_gap_env_is_safe():
+    """rwl2 F7: FULL_AI_WRITE_GAP_S never raises and never closes the write gate: bad / inf / nan / negative
+    -> 2.0, above of_write's 11 s -> 11."""
+    import os
+    saved = os.environ.get("FULL_AI_WRITE_GAP_S")
+    try:
+        for raw, want in (("", 2.0), ("abc", 2.0), ("inf", 2.0), ("nan", 2.0), ("-1", 2.0), ("0", 0.0),
+                          ("5", 5.0), ("30", 11.0)):
+            os.environ["FULL_AI_WRITE_GAP_S"] = raw
+            assert full_ai_live._write_gap() == want, (raw, full_ai_live._write_gap())
+    finally:
+        if saved is None:
+            os.environ.pop("FULL_AI_WRITE_GAP_S", None)
+        else:
+            os.environ["FULL_AI_WRITE_GAP_S"] = saved
+
+
 _harness.run()

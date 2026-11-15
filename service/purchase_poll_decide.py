@@ -46,9 +46,10 @@ BACKOFF_BASE_S = env_float("PURCHASES_BACKOFF_BASE_S", 30.0, 1.0)
 BACKOFF_MAX_S = max(BACKOFF_BASE_S, env_float("PURCHASES_BACKOFF_MAX_S", 900.0, 1.0))
 BACKOFF_DEMAND_MAX_S = env_float("PURCHASES_BACKOFF_DEMAND_MAX_S", 120.0, 1.0)
 CATCHUP_MAX_PAGES = int(env_float("PURCHASES_CATCHUP_MAX_PAGES", 3.0, 1.0))
-# A Select refresh reads no feed whose last ok poll started under this long ago (5 s at the 30 s tick, the loop's
-# own floor between cycles): the data it would fetch is that fresh already, and alternating selections or new tab
-# ids read a Creator at most once per this. Scales with FAST_S (slop runs FAST_S 5 s).
+# A Select refresh reads no feed whose last poll started under this long ago, ok or not (5 s at the 30 s tick, the
+# loop's own floor between cycles): an ok one's data is that fresh already, a failed one (error, no session) is not
+# retried at once while its exit fails, and alternating selections or new tab ids read a Creator at most once per
+# this. A 429 / unauthorized hold still gates on its own (`held`). Scales with FAST_S (slop runs FAST_S 5 s).
 SELECT_MIN_AGE_S = FAST_S / 6
 
 OutcomeKind = Literal["ok", "rate_limited", "unauthorized", "dead", "error"]
@@ -72,12 +73,15 @@ class PollState:
     `last_s`: the loop cycle (monotonic s) that last polled it (None: only a Select refresh has).
     `last_ok_s`: when its last ok poll actually started. `step`: failures in a row on the ladder.
     `held_at` / `hold_s`: when OF answered the failing poll (the loop's or a Select refresh's) and
-    its hold, uncapped: the longer of OF's ask and the rung (the Demand cap is `hold_s()`'s)."""
+    its hold, uncapped: the longer of OF's ask and the rung (the Demand cap is `hold_s()`'s).
+    `last_started_s`: when its last poll started, whatever it answered (`started`): the Select refresh's
+    floor and the App-open warm's feed skip."""
     last_s: float | None = None
     last_ok_s: float | None = None
     step: int = 0
     held_at: float | None = None
     hold_s: float = 0.0
+    last_started_s: float | None = None
 
 
 def tier(leased: bool, seller: bool) -> Tier:
@@ -148,6 +152,11 @@ def catch_up(state: PollState | None, now: float) -> bool:
     """True when the last ok poll is older than FAST_S + one tick (or there is none: a restart),
     so this poll pages back for what the gap held; an Idle Creator's slow interval is such a gap."""
     return state is None or state.last_ok_s is None or now - state.last_ok_s > 2 * FAST_S
+
+
+def started(state: PollState | None, now: float) -> PollState:
+    """`state` once a poll of the Creator starts at `now` (`last_started_s`), before any answer."""
+    return replace(state or PollState(), last_started_s=now)
 
 
 def polled(state: PollState | None, now: float) -> PollState:

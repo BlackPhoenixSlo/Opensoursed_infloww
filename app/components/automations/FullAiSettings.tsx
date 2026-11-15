@@ -6,7 +6,7 @@
  * their own write, applied at once on every side; Save / Roll back / JSON never move them, owner 2026-11-15).
  * Then the bot config, controls in a list named "Settings" (numbered as before; 1, 17 and 18 moved up):
  *   2. LLM keys: whether each provider the Writers run on (draft and checkpoint; the config GET's `writer_providers`)
- *   and, while Read his photos is on, DeepInfra is set (never a value or hint; "not set" in red, no DeepInfra key a
+ *   and, while Read his photos is on, DeepInfra is set on the Creator's owner's keys (the GET's `owner_keys`, what Live checks) (never a value or hint; "not set" in red, no DeepInfra key a
  *   warning, not a Live blocker), linking to the agency keys form;
  *   3. reply speed ("0-2 min" / "0-15-60"), 4. Human style (every `style` layer; mixed when they differ), 5. Typos
  *   (the typos layer alone; on, a "%" box sets `typo_pct`, empty = auto), 6. Writers (a checklist over `writers`: tick / untick, "Make Writer" moves one first), 7. GIFs
@@ -48,7 +48,6 @@ import { RawJsonActions, RawJsonEditor } from "@/components/automations/RawJsonM
 import { IF_TABLE, IfButton, IfHelp, IfInput, IfModal, IfSegmented, IfSwitch } from "@/components/ui/infloww";
 import { Badge } from "@/components/ui/primitives";
 import { type FullAiConfigApi } from "@/hooks/useFullAiConfig";
-import { useTenantKeys } from "@/hooks/useTenantKeys";
 import { errText } from "@/lib/errText";
 import { parseJsonObject } from "@/lib/rawJsonReducer";
 import { cn } from "@/lib/utils";
@@ -281,11 +280,10 @@ function ConflictBar({ cfg, canKeep }: { cfg: FullAiConfigApi; canKeep: boolean 
   );
 }
 
-/** Set / not set per Writer provider and the photo provider (`keyRows`), from GET /admin/my-llm-keys; the hint (last
- *  characters) is never shown. The model → provider map is the config read's `writer_providers`. */
+/** Set / not set per Writer provider and the photo provider (`keyRows`), from the config read's `owner_keys` (the
+ *  Creator's billing owner's keys, the ones Live checks; booleans only). The model → provider map is its `writer_providers`. */
 function KeysRow({ state, cfg }: { state: TestChatState; cfg: FullAiConfigApi }) {
-  const keysQ = useTenantKeys();
-  const providers = keysQ.data?.providers;
+  const providers = cfg.ownerKeys ?? undefined;
   const sides = [state.draft, state.checkpoint];
   const rows = keyRows(sides, cfg.writerProviders, cfg.providerLabels);
   return (
@@ -294,7 +292,7 @@ function KeysRow({ state, cfg }: { state: TestChatState; cfg: FullAiConfigApi })
         <div className="min-w-0">
           <div className="text-[14px] text-fg">LLM keys</div>
           <div className="mt-0.5 flex flex-wrap gap-x-3 text-[12px] text-muted">
-            {keysQ.isError ? <span className="text-err">Couldn&apos;t read the keys.</span> : !rows ? <span>…</span> : rows.map((k) => {
+            {cfg.ownerKeys === null ? <span className="text-err">Couldn&apos;t read the keys.</span> : !rows ? <span>…</span> : rows.map((k) => {
               const set = providers?.[k.id]?.set;
               return <span key={k.id} className={providers && !set ? "text-err" : undefined}>
                 {providers ? `${k.label} ${set ? "set" : "not set"}` : `${k.label} …`}</span>;

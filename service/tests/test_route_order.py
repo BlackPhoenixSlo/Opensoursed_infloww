@@ -155,6 +155,9 @@ Golden refresh (2026-11-15, fetch-diet review H1): POST /admin/view-lease descri
 selection min age); no route row changes; diff = the sha.
 Golden refresh (2026-11-15, fetch-diet review H3): the same description names `purchase_poll.poll_now` (the poll
 scheduler moved out of transaction_ingest); no route row changes; diff = the sha.
+Golden refresh (2026-11-15, fetch-diet review rwl2 F2/F3): the same description: the selection floor counts any
+poll start, gains go through app_open_warm's one per-exit gate (`note_read`); no route row changes; diff = the sha
+(measured: HEAD's accounts_admin_api.py with every other change of this fix == the prior golden).
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """

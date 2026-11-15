@@ -17,12 +17,20 @@ transaction_ingest.live_account_ids), the reuse clock (`app_open_warm._clock`), 
   • case_reuse: a second start inside APP_OPEN_WARM_REUSE_S answers `reused` and reads nothing, also while the
     first is still running; a reused Creator whose warm ended publishes `creator_warmed` at once (one still queued
     publishes when its reads land); past the window it reads again.
-  • case_recently_polled_no_read: a Creator whose last ok purchases poll is younger than PURCHASES_POLL_FAST_S
+  • case_recently_polled_no_read: a Creator whose last purchases poll started under PURCHASES_POLL_FAST_S ago
     gets no feed read, still steps 2-4 and its event.
   • case_refreshed_first: a Creator the route Select-refreshes is `started`, gets no feed read here, its steps 2-4
-    first on its proxy one GAP_S late (the Select refresh reads there now); the others' groups at once.
-  • case_pace_lease_gains: a lease renewal's gains (`pace`): feed reads only, grouped per proxy GAP_S apart, a
-    proxy the selection reads on waits one GAP_S, a current Creator skipped; no steps 2-4, event or memo.
+    first on its proxy one GAP_S late (the route's `note_read`: the Select refresh reads there now); the others'
+    groups at once.
+  • case_pace_lease_gains: a lease renewal's gains (`pace`): feed reads only, per proxy GAP_S apart, a proxy the
+    selection reads on (`note_read`) waits one GAP_S, a current Creator skipped; no steps 2-4, event or memo.
+  • case_one_gate_per_exit: pace and start calls on one exit share ONE queue: every read on it GAP_S apart across
+    callers, a Creator already queued not queued again, a paced Creator no longer leased at its turn skipped.
+  • case_overlapping_refreshed_coalesce: overlapping opens naming the same Select-refreshed Creator run one warm.
+  • case_failed_warm_not_reused: a warm whose reads failed is never `reused` nor announced; a second open inside
+    REUSE_S skips it (no read, absent from the answer); past the window it is tried again.
+  • case_failed_poll_counts_as_attempt: a feed poll with no ok answer (error, no outcome) still counts for the
+    selection floor and the warm's feed skip: a failing exit is not read again at once.
   • case_dead_after_feed_read: a Creator its feed read flags a Dead session reads nothing more and publishes nothing.
   • case_read_set_on_the_real_routes: the real server helper and roster-counts recompute over a fake OF client:
     the four steps in order, at most 5 reads, the money lists at the rail's page size, `creator_warmed` in the house
@@ -50,6 +58,7 @@ import of_call_counter  # noqa: E402
 import purchase_poll_decide as decide  # noqa: E402
 import purchase_poll as pp  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
+import view_lease  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 P1A, P1B, P1C, P2A, P2B, D1, DEAD, OFF, WATCH, NOSESS = (f"77{i:02d}" for i in range(10))
@@ -127,7 +136,10 @@ def _patched():
     FLAG_DEAD.clear()
     DEAD_NOW.clear()
     aow._warmed_at.clear()
+    aow._failed_at.clear()
     aow._pending.clear()
+    aow._exits.clear()
+    view_lease._holders.clear()
     pp._poll_state.clear()
     pp._poll_inflight.clear()
     try:
@@ -216,8 +228,9 @@ async def case_reuse():
 async def case_recently_polled_no_read():
     with _patched():
         now = time.monotonic()
-        pp._poll_state[P1A] = decide.PollState(last_ok_s=now - (decide.FAST_S - 5))   # inside the fast interval
-        pp._poll_state[P1B] = decide.PollState(last_ok_s=now - (decide.FAST_S + 5))   # older: read
+        pp._poll_state[P1A] = decide.PollState(last_started_s=now - (decide.FAST_S - 5))   # inside the fast interval
+        pp._poll_state[P1B] = decide.PollState(last_ok_s=now - (decide.FAST_S - 5),      # an ok answer, but
+                                               last_started_s=now - (decide.FAST_S + 5))  # started older: read
         t0 = time.monotonic()
         got = await aow.start(("user", "u1"), [P1A, P1B, P1C], leased_first=())
         assert got == {P1A: "started", P1B: "started", P1C: "started"}, got
@@ -232,6 +245,7 @@ async def case_recently_polled_no_read():
 async def case_refreshed_first():
     with _patched():
         t0 = time.monotonic()
+        aow.note_read(P1A)                   # the route, as it spawns P1A's Select refresh
         got = await aow.start(("user", "u1"), [P1A, P1B, P2A], leased_first=(), refreshed=[P1A])
         assert got == {P1A: "started", P1B: "started", P2A: "started"}, got
         assert aow.current(P1A), "the Select-refreshed Creator counts as warmed (no second Select refresh)"
@@ -249,7 +263,7 @@ async def case_refreshed_first():
 
 async def case_pace_lease_gains():
     """A lease renewal's gains (app_open_warm.pace): feed reads only, per proxy one Creator at a time GAP_S apart,
-    proxies in parallel, a proxy the selection reads on now waits one GAP_S first; a Creator polled ok inside
+    proxies in parallel, a proxy the selection reads on now waits one GAP_S first; a Creator polled inside
     PURCHASES_POLL_FAST_S by its turn is skipped; no steps 2-4, no event, no warm memo."""
     polled: list[tuple[str, float]] = []
 
@@ -258,9 +272,11 @@ async def case_pace_lease_gains():
         await asyncio.sleep(READ_S)
 
     with _patched():
-        pp._poll_state[P1C] = decide.PollState(last_ok_s=time.monotonic())    # current: skipped
+        view_lease.renew(("user", "u1", "t1"), [P1A, P1B, P1C, P2A, D1], P2B)
+        pp._poll_state[P1C] = decide.PollState(last_ok_s=time.monotonic(), last_started_s=time.monotonic())
         t0 = time.monotonic()
-        aow.pace([P1A, P1B, P1C, P2A, D1], poll, busy=[P2B])
+        aow.note_read(P2B)                   # the selection reads on P2's exit now
+        aow.pace([P1A, P1B, P1C, P2A, D1], poll)
         await _drain()
     at = {a: t - t0 for a, t in polled}
     assert set(at) == {P1A, P1B, D1, P2A} and len(polled) == 4, f"each once, the current one skipped: {polled}"
@@ -268,6 +284,78 @@ async def case_pace_lease_gains():
     assert at[P1B] - at[P1A] >= GAP, f"same proxy: GAP_S apart: {at}"
     assert at[P2A] >= GAP, f"the selection reads on P2's proxy now: one GAP_S first: {at}"
     assert STEPS == [] and PUBLISHED == [] and aow._warmed_at == {} and aow._pending == set(), (STEPS, PUBLISHED)
+
+
+async def case_one_gate_per_exit():
+    polled: list[tuple[str, float]] = []
+
+    async def poll(aid):
+        polled.append((aid, time.monotonic()))
+        await asyncio.sleep(READ_S)
+
+    with _patched():
+        view_lease.renew(("user", "u1", "t1"), [P1A, P1B, P1C, P2A, P2B], None)
+        aow.pace([P1A], poll)                # two renewals' gains on one exit, a moment apart
+        aow.pace([P1B], poll)
+        aow.pace([P1A], poll)                # already queued: not again
+        await aow.start(("user", "u1"), [P1C], leased_first=())   # an open's warm on the same exit
+        aow.pace([P2B, P2A], poll)
+        view_lease.renew(("user", "u1", "t1"), [P1A, P1B, P1C, P2B], None)   # P2A's lease lapses before its turn
+        await _drain()
+    p1 = sorted([(t, a) for a, t in polled if a in (P1A, P1B)] + [(t, a) for a, t, _ in READS if a == P1C])
+    assert [a for _, a in p1] == [P1A, P1B, P1C], f"each once, in arrival order: {p1} {polled}"
+    gaps = [b[0] - a[0] for a, b in zip(p1, p1[1:])]
+    assert all(g >= GAP for g in gaps), f"one exit: every read GAP_S apart across callers: {gaps}"
+    assert [a for a, _ in polled if a in (P2A, P2B)] == [P2B], f"no longer leased at its turn: skipped: {polled}"
+
+
+async def case_overlapping_refreshed_coalesce():
+    with _patched():
+        got = [await aow.start(("user", f"u{i}"), [P1A], leased_first=(), refreshed=[P1A]) for i in range(3)]
+        await _drain()
+    assert got == [{P1A: "started"}, {P1A: "reused"}, {P1A: "reused"}], got
+    assert [a for a, _, _ in STEPS] == [P1A], f"three tabs opening on one selection: one warm job: {STEPS}"
+    assert READS == [], "the Select refresh reads its feed, not the warm"
+    assert _warmed_ids() == [P1A], PUBLISHED
+
+
+async def case_failed_warm_not_reused():
+    REFUSED.add(P1A)
+    try:
+        with _patched():
+            CLOCK[0] = 3000.0
+            await aow.start(("user", "u1"), [P1A, P1B], leased_first=())
+            await _drain()
+            assert _warmed_ids() == [P1B], PUBLISHED
+            PUBLISHED.clear()
+            n = len(STEPS)
+            CLOCK[0] = 3000.0 + aow.REUSE_S - 1
+            again = await aow.start(("user", "u2"), [P1A, P1B], leased_first=())
+            await _drain()
+            assert again == {P1B: "reused"}, f"a failed warm is never reused: {again}"
+            assert _warmed_ids() == [P1B], f"nothing announced for the failed one: {PUBLISHED}"
+            assert len(STEPS) == n, "inside the window the failed one is not read again"
+            pp._poll_state.clear()           # its feed poll counts for `current` on its own (F3): the memo alone
+            assert not aow.current(P1A) and aow.current(P1B)
+            CLOCK[0] = 3000.0 + aow.REUSE_S + 1
+            pp._poll_state.clear()
+            assert await aow.start(("user", "u3"), [P1A], leased_first=()) == {P1A: "started"}
+            await _drain()
+            assert [a for a, _, _ in STEPS[n:]] == [P1A], STEPS
+    finally:
+        REFUSED.discard(P1A)
+
+
+async def case_failed_poll_counts_as_attempt():
+    with _patched():
+        assert not aow.just_polled(P1A)
+        await pp.poll_now(P1A)               # the fake feed read answers no outcome (an error / no-session path)
+        n = len(READS)
+        assert n == 1, READS
+        assert aow.just_polled(P1A), "a poll that started now counts for the selection floor, ok or not"
+        await aow.start(("user", "u1"), [P1A], leased_first=())
+        await _drain()
+        assert len(READS) == n, f"the warm reads no feed a poll just tried: {READS}"
 
 
 async def case_dead_after_feed_read():

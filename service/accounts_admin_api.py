@@ -608,10 +608,12 @@ async def admin_view_lease(body: _ViewLeaseBody = Body(...)) -> dict[str, Any]:
     session, no X-Account-Id. Ids outside the principal's Creators, and watchers, are dropped
     silently (as roster-counts), re-filtered on every renewal; `selected` is leased too; no ids and
     no `selected` releases the tab; no wildcard. A changed `selected`, or one nobody leased before, gets one purchases
-    poll now (`purchase_poll.poll_now`, Caller kind `select_refresh`), in the background, unless polled ok within
-    SELECT_MIN_AGE_S. Any other Creator nobody leased before gets the same poll paced per proxy (`app_open_warm.pace`),
-    unless `app_open_warm.current` (polled ok within PURCHASES_POLL_FAST_S or warmed within APP_OPEN_WARM_REUSE_S) or
-    the post is `opened` (the warm reads it, leased first, paced per proxy) (`view_lease.refresh_plan`).
+    poll now (`purchase_poll.poll_now`, Caller kind `select_refresh`), in the background, unless a poll started
+    within SELECT_MIN_AGE_S (ok or not); its exit's next paced read waits GAP_S (`app_open_warm.note_read`). Any other
+    Creator nobody leased before gets the same poll through `app_open_warm`'s one per-exit gate (`pace`, shared with
+    every renewal and warm), unless `app_open_warm.current` (a poll started within PURCHASES_POLL_FAST_S or warmed
+    within APP_OPEN_WARM_REUSE_S) or the post is `opened` (the warm reads it, leased first, same gate)
+    (`view_lease.refresh_plan`).
     `opened` (a document load's first renewal) also starts the App-open warm of every Creator the
     principal can access (`app_open_warm.start`; the Select-refreshed ones count as warmed); `warm` answers
     started | reused | none, "none" unless `opened`. Not audited (audit_log skip list)."""
@@ -637,9 +639,10 @@ async def admin_view_lease(body: _ViewLeaseBody = Body(...)) -> dict[str, Any]:
                                                opened=body.opened, current=app_open_warm.current,
                                                fresh=app_open_warm.just_polled)
     for aid in refreshed:
+        app_open_warm.note_read(aid)
         _spawn_bg(_select_refresh(aid), f"select-refresh:{aid}")
     if paced:
-        app_open_warm.pace(paced, _select_refresh, busy=refreshed)
+        app_open_warm.pace(paced, _select_refresh)
     warm = "none"
     if body.opened:
         got = await app_open_warm.start((kind, pid), [a for a in order if ok(a)], view_lease.leased_ids(),

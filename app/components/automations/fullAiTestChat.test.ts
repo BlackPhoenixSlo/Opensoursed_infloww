@@ -764,4 +764,36 @@ describe("audienceSaved: who live answers moves on every side, nothing else", ()
   it("an older answer never lowers the rev", () => {
     expect(run(loaded(), { type: "audienceSaved", body: answer(2) }).rev).toBe(3);
   });
+  // F4 (rwl2): overlapping Fans / Top spend saves and a foreign change in between.
+  const fansA = { include: [7], exclude: [] }, fansB = { include: [8], exclude: [] };
+  it.each<[string, TestChatAction[], { rev: number; fans: unknown; top: number | undefined; sext: unknown; conflict: number | null }]>([
+    ["out of order: the older answer never puts old values back",
+      [{ type: "audienceSaved", body: answer(5, fansB, 700) }, { type: "audienceSaved", body: answer(4, fansA, 500) }],
+      { rev: 5, fans: fansB, top: 700, sext: undefined, conflict: null }],
+    ["in order: each next rev moves the keys",
+      [{ type: "audienceSaved", body: answer(4, fansA, 500) }, { type: "audienceSaved", body: answer(5, fansB, 700) }],
+      { rev: 5, fans: fansB, top: 700, sext: undefined, conflict: null }],
+    ["two revs ahead (someone stored meanwhile): adopted whole, never the rev over stale settings",
+      [{ type: "audienceSaved", body: body({ ...answer(5, fansA, 500), draft: { ...ck, gifs: true, sext_on: false, fans: fansA, top_spend_cents: 500 } }) }],
+      { rev: 5, fans: fansA, top: 500, sext: false, conflict: null }],
+    ["two revs ahead with an unstored edit: the conflict, the page's rev kept",
+      [{ type: "editDraft", draft: { ...ck, gifs: true, sext_on: true } }, { type: "configFailed", errors: ["x"] },
+        { type: "audienceSaved", body: body({ ...answer(5, fansA, 500), draft: { ...ck, gifs: true, sext_on: false, fans: fansA, top_spend_cents: 500 } }) }],
+      { rev: 3, fans: fansA, top: 500, sext: true, conflict: 5 }],
+  ])("%s", (_n, actions, want) => {
+    const s = run(loaded(), ...actions);
+    expect({ rev: s.rev, fans: s.draft?.fans, top: s.checkpoint?.top_spend_cents, sext: s.draft?.sext_on,
+      conflict: s.conflict?.rev ?? null }).toEqual(want);
+  });
+  // F5 (rwl2): an audience write out bumps the rev, so no draft write / Save / Roll back starts meanwhile.
+  it.each<[string, TestChatAction[], boolean]>([
+    ["out", [{ type: "audienceSave" }], false],
+    ["two out, one answered", [{ type: "audienceSave" }, { type: "audienceSave" }, { type: "audienceSaved", body: answer(4) }], false],
+    ["answered", [{ type: "audienceSave" }, { type: "audienceSaved", body: answer(4) }], true],
+    ["failed", [{ type: "audienceSave" }, { type: "audienceSaveFailed" }], true],
+  ])("audience write %s: canEdit / canSave / canRollback", (_n, actions, want) => {
+    const s = run(loaded(), { type: "editDraft", draft: { ...ck, gifs: true } }, { type: "saveDraft" },
+      { type: "draftSaved", rev: 3, draft: { ...ck, gifs: true } }, ...actions);
+    expect([canEdit(s), canSave(s), canRollback(s)]).toEqual([want, want, want]);
+  });
 });

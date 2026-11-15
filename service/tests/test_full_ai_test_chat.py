@@ -495,7 +495,7 @@ def case_typo_fix_throttled_per_session():
 # case_chain_floor_reject_falls      `framework:` -> floor:framework, then Euryale v2.2; floor_on off -> sent
 # case_chain_all_fail                four failures: failed, no parts, writer_model NULL, each outcome
 # case_chain_key_missing_or_refused  no NanoGPT key -> no_key (no request); 401 / 402 -> http_<status>
-# case_chain_provider_cap            NanoGPT capped -> cap, OpenRouter Euryale v2.2 answers; all capped -> failed
+# case_chain_provider_cap            one shared chat budget: provider rows cap nothing; chat budget spent -> every Writer cap, failed
 # case_chain_retries_and_timeouts    writer_retries: 429 / timeout tried again, 401 not; writer_timeouts
 #                                    overrides one Writer's timeout
 # case_chain_turn_deadline           stages faked slow on a fake clock: Writer timeouts never exceed
@@ -577,8 +577,8 @@ def case_chain_key_missing_or_refused():
 
 
 @contextlib.contextmanager
-def _capped(providers: tuple[str, ...]):
-    """Today's per-(account, provider) cost row at Creator A's daily cap, then removed."""
+def _capped(providers: tuple[str, ...] = ("chat",)):
+    """Today's shared chat-budget cost row (llm_client.budget_key) at Creator A's daily cap, then removed."""
     from db.models import GrokDailyCost
     import llm_client
     day = datetime.utcnow().strftime("%Y-%m-%d")
@@ -601,13 +601,11 @@ def _capped(providers: tuple[str, ...]):
 
 
 def case_chain_provider_cap():
-    with _capped(("nanogpt",)):
+    with _capped(("nanogpt", "openrouter", "zai", "deepseek")):   # per-provider rows no longer cap a chat call
         r, fw = _chain_post(_body("p-cap"), {})
     got = r.json()
-    assert (got["status"], got["writer"]) == ("sent", "euryale-v2.2"), got
-    assert _outcomes(got["attempts"]) == [("euryale-v2.3", "cap"), ("euryale-v2.2", "ok")], got
-    assert [x["host"] for x in fw.requests] == [OPENROUTER], fw.requests
-    with _capped(("nanogpt", "openrouter", "zai", "deepseek")):
+    assert (got["status"], got["writer"]) == ("sent", CHAIN[0]), got
+    with _capped():
         r, fw = _chain_post(_body("p-cap-all"), {})
     got = r.json()
     assert (got["status"], got["parts"], got["writer"]) == ("failed", [], None), got

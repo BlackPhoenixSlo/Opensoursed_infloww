@@ -13,13 +13,13 @@
   • case_no_session_401: no session -> 401, nothing leased.
   • case_over_200_refused: 201 ids -> 422; a 1-64 char tab only.
   • case_not_audited: the path is on audit_log's skip list and writes no actions row.
-  • case_gain_skips_current: a lease gain refreshes no Creator the Relay holds current (its last ok
-    poll younger than PURCHASES_POLL_FAST_S, or an App-open warm read it within APP_OPEN_WARM_REUSE_S);
+  • case_gain_skips_current: a lease gain refreshes no Creator the Relay holds current (its last
+    poll, ok or not, started under PURCHASES_POLL_FAST_S ago, or an App-open warm read it within APP_OPEN_WARM_REUSE_S);
     a changed `selected` still refreshes.
-  • case_selected_min_age: a selection reads nothing when the Creator's last ok poll started under
+  • case_selected_min_age: a selection reads nothing when the Creator's last poll (ok or not) started under
     SELECT_MIN_AGE_S ago; past it, it reads.
-  • case_gains_paced: other gains go to app_open_warm.pace (per proxy, GAP_S apart) with the selection as busy,
-    not one background poll each; an opening post's gains are the warm's.
+  • case_gains_paced: other gains go to app_open_warm.pace (the one per-exit gate), the selection reading now
+    is `note_read` (its exit's next gated read waits GAP_S), not one background poll each; an opening post's gains are the warm's.
   • case_opened_starts_warm: `opened` starts the App-open warm (app_open_warm.start, faked) with the
     principal's own Creators, the live leases first and the renewal's Select-refreshed ids;
     `warm` answers its summary; without `opened` no warm and "none".
@@ -80,8 +80,10 @@ def _spawn_inline(coro, name):
 
 
 accounts_admin_api._spawn_bg = _spawn_inline
-PACED: list[tuple[list[str], list[str]]] = []   # (ids, busy) per app_open_warm.pace call
-app_open_warm.pace = lambda ids, poll, busy=(): PACED.append((list(ids), list(busy)))
+PACED: list[list[str]] = []      # ids per app_open_warm.pace call
+NOTED: list[str] = []            # app_open_warm.note_read calls (a Select refresh reading on its exit now)
+app_open_warm.pace = lambda ids, poll: PACED.append(list(ids))
+app_open_warm.note_read = NOTED.append
 
 
 def _reset():
@@ -89,6 +91,7 @@ def _reset():
     view_lease._streams.clear()
     POLLS.clear()
     PACED.clear()
+    NOTED.clear()
 
 
 def _renew(client, ids, selected=None, tab="t1", opened=False):
@@ -131,7 +134,7 @@ def case_other_agency_dropped():
         r = _renew(owner, [B, A, "4242", "999999", A], B)
         assert r.status_code == 200 and r.json()["leased"] == [A], r.text
         assert view_lease.leased_ids() == {A}
-        assert POLLS == [] and PACED == [([A], [])], f"selected B ignored: {POLLS} {PACED}"
+        assert POLLS == [] and PACED == [[A]], f"selected B ignored: {POLLS} {PACED}"
     finally:
         accounts.is_watcher = saved
 
@@ -181,9 +184,9 @@ def case_not_audited():
 
 def case_gain_skips_current():
     _reset()
-    saved_age, saved_at = purchase_poll.last_ok_poll_age_s, dict(app_open_warm._warmed_at)
+    saved_age, saved_at = purchase_poll.last_poll_age_s, dict(app_open_warm._warmed_at)
     age: dict[str, float] = {}
-    purchase_poll.last_ok_poll_age_s = lambda a: age.get(a)
+    purchase_poll.last_poll_age_s = lambda a: age.get(a)
     try:
         owner = fx.login_owner("agency_a_owner")
         age[A] = decide.SELECT_MIN_AGE_S + 1.0     # current (under FAST_S), not just polled
@@ -195,20 +198,20 @@ def case_gain_skips_current():
         assert _renew(owner, [A], None, tab="t2").status_code == 200 and POLLS == [], f"just warmed: {POLLS}"
         _reset()
         app_open_warm._warmed_at.pop(A)
-        assert _renew(owner, [A], None, tab="t3").status_code == 200 and PACED == [([A], [])], PACED
+        assert _renew(owner, [A], None, tab="t3").status_code == 200 and PACED == [[A]], PACED
     finally:
-        purchase_poll.last_ok_poll_age_s = saved_age
+        purchase_poll.last_poll_age_s = saved_age
         app_open_warm._warmed_at.clear()
         app_open_warm._warmed_at.update(saved_at)
 
 
 def case_selected_min_age():
-    """A selection reads at once unless the Creator's last ok poll started under SELECT_MIN_AGE_S ago: alternating
+    """A selection reads at once unless the Creator's last poll (ok or not) started under SELECT_MIN_AGE_S ago: alternating
     selections (or new tab ids) read each Creator at most once per SELECT_MIN_AGE_S."""
     _reset()
-    saved_age = purchase_poll.last_ok_poll_age_s
+    saved_age = purchase_poll.last_poll_age_s
     age: dict[str, float] = {A: decide.SELECT_MIN_AGE_S - 1.0}
-    purchase_poll.last_ok_poll_age_s = lambda a: age.get(a)
+    purchase_poll.last_poll_age_s = lambda a: age.get(a)
     try:
         owner = fx.login_owner("agency_a_owner")
         assert _renew(owner, [A], A).status_code == 200 and POLLS == [], f"polled under the floor: {POLLS}"
@@ -216,22 +219,22 @@ def case_selected_min_age():
         age[A] = decide.SELECT_MIN_AGE_S + 0.1
         assert _renew(owner, [A], A).status_code == 200 and POLLS == [(A, "select_refresh")], POLLS
     finally:
-        purchase_poll.last_ok_poll_age_s = saved_age
+        purchase_poll.last_poll_age_s = saved_age
 
 
 def case_gains_paced():
-    """A renewal's other gains go to the paced queue (app_open_warm.pace: per proxy, GAP_S apart), never one
-    background read each; the selection reads at once and is named as reading now."""
+    """A renewal's other gains go to the gate (app_open_warm.pace: one queue per exit, GAP_S apart), never one
+    background read each; the selection reads at once and is noted as reading now (`note_read`)."""
     _reset()
     saved_at = dict(app_open_warm._warmed_at)
     app_open_warm._warmed_at.clear()
     try:
         cab = fx.login_chatter("chatter_ab")   # A and B
         assert _renew(cab, [A, B], None).status_code == 200
-        assert POLLS == [] and PACED == [([A, B], [])], (POLLS, PACED)
+        assert POLLS == [] and PACED == [[A, B]], (POLLS, PACED)
         _reset()
         assert _renew(cab, [A, B], B, tab="t2").status_code == 200
-        assert POLLS == [(B, "select_refresh")] and PACED == [([A], [B])], (POLLS, PACED)
+        assert POLLS == [(B, "select_refresh")] and PACED == [[A]] and NOTED == [B], (POLLS, PACED, NOTED)
         _reset()
         assert _renew(cab, [A, B], B, tab="t3", opened=True).status_code == 200
         assert PACED == [], f"an opening post's gains are the warm's: {PACED}"

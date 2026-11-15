@@ -105,8 +105,8 @@ def case_selected_is_leased():
 
 
 def case_refresh_plan():
-    cur = {"c"}                        # current: polled ok within FAST_S, or warmed
-    fresh = {"f"}                      # polled ok within SELECT_MIN_AGE_S
+    cur = {"c"}                        # current: a poll started within FAST_S, or warmed
+    fresh = {"f"}                      # a poll started within SELECT_MIN_AGE_S
     for gains, selected, opened, want in [
         (["a", "b"], None, False, ([], ["a", "b"])),          # gains are paced, never one read each at once
         (["a", "b"], "a", False, (["a"], ["b"])),             # the selection at once, the rest paced

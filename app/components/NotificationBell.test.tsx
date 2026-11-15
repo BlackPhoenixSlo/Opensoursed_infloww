@@ -3,7 +3,7 @@
  * Notifications page, and the bell's own click still opens the panel
  * (docs/spec/phase-05-remaining-parity-gaps.md, stories 44, Testing Decisions).
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -48,8 +48,15 @@ vi.mock("@/lib/webPush", () => ({
 
 import { renderWithProviders } from "@/test-utils";
 import { NOTIF_CLEARED_EVENT, appendNotifHistory, dispatchNotifArrived, markNotifHistoryResponded } from "@/lib/notifSettings";
+import { armRead, resetReadGate } from "@/lib/ofReadGate";
 import { NotificationBell, Row } from "./NotificationBell";
 import { DENIED_MSG, IOS_TAB_MSG } from "./OsPingSettings";
+
+// acc-1 is armed (lib/ofReadGate: its `creator_warmed` came), so the bell reads it; "not armed yet" has its own case.
+beforeEach(() => {
+  resetReadGate();
+  armRead("acc-1");
+});
 
 afterEach(() => {
   cleanup();
@@ -71,6 +78,19 @@ describe("NotificationBell (top bar)", () => {
 
     expect(await screen.findByText("No notifications.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "See all" })).toHaveAttribute("href", "/notifications");
+  });
+
+  it("a Creator not armed yet (its read gated off) shows Loading, never \"No notifications.\"", async () => {
+    resetReadGate();
+    relayGet.mockResolvedValue({ list: [] });
+    renderWithProviders(<NotificationBell />);
+    await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
+
+    expect(await screen.findByText("Loading…")).toBeInTheDocument();
+    expect(screen.queryByText("No notifications.")).toBeNull();
+    expect(relayGet).not.toHaveBeenCalled();
+    act(() => { armRead("acc-1"); });
+    expect(await screen.findByText("No notifications.")).toBeInTheDocument();
   });
 
   it("badges arrivals while closed, and each open clears it and sends the cleared event once", async () => {

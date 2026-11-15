@@ -282,7 +282,7 @@ async def case_pipeline_all_passes_and_spend():
     async with get_session() as s:
         row = (await s.execute(select(GrokDailyCost).where(GrokDailyCost.account_id == aid))).scalars().all()
         call = (await s.execute(select(GrokCall).where(GrokCall.account_id == aid))).scalars().one()
-    assert [(r.provider, r.cost_cents, r.call_count) for r in row] == [("typesafe", res["cost_millicents"], 1)], row
+    assert [(r.provider, r.cost_cents, r.call_count) for r in row] == [(llm_client.DESCRIBE_BUDGET, res["cost_millicents"], 1)], row
     assert call.provider == "typesafe" and call.status == "done" and call.tokens_in == tok
     assert call.purpose == "vault_jev_flags" and int(call.cost_cents) == res["cost_millicents"]
 

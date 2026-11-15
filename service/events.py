@@ -612,7 +612,8 @@ async def sse_stream(
     # A replay is a burst by definition: batched whenever batching is on,
     # so a tab waking from idle applies it in one pass, not hundreds.
     replay = ed.replay(_ring, last_event_id, lambda key: ed.sees(sub.scope, sub.accounts, key),
-                       lambda f: _wants(sub, f), _knobs())
+                       lambda f: _wants(sub, f), _knobs(),
+                       sees_any=lambda key: ed.sees(sub.scope, sub.accounts, key, any_scope=True))
     q = sub.q
     try:
         yield ew.CONNECTED

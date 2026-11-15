@@ -78,8 +78,9 @@ def renew(holder: Holder, account_ids: Iterable[str], selected: str | None,
 
 def refresh_plan(gains: Iterable[str], selected: str | None, *, opened: bool, current: Callable[[str], bool],
                  fresh: Callable[[str], bool]) -> tuple[list[str], list[str]]:
-    """`renew`'s answer split into (read now, paced). `selected` reads now unless `fresh` (polled ok within
-    purchase_poll_decide.SELECT_MIN_AGE_S). The other gains are paced per proxy (app_open_warm.pace), except a
+    """`renew`'s answer split into (read now, paced). `selected` reads now unless `fresh` (a poll, ok or
+    not, started within purchase_poll_decide.SELECT_MIN_AGE_S). The other gains go through app_open_warm's per-exit
+    gate (app_open_warm.pace), except a
     `current` one and all of them on an `opened` post (the App-open warm reads them)."""
     gains = list(gains)
     now = [a for a in gains if a == selected and not fresh(a)]

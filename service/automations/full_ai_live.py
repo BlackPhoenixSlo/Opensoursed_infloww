@@ -34,7 +34,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
@@ -45,6 +44,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax
 import dm_rate
 import run_slot
+from env_knob import env_float
 from attribution import write_outbound_attribution
 from automations import (
     _info_jev, cat_stickers, full_ai_chat, full_ai_owned, full_ai_owner, full_ai_owner_io, full_ai_photo,
@@ -77,7 +77,15 @@ SWEEP_WINDOW_S, SWEEP_MAX = 86400, 20  # the sweep answers DMs of the last 24 h,
 # other sender keeps of_write's 11 s). Measured 2026-11-15 on OF: 10 DMs each way (fan -> Creator,
 # Creator -> fan) 1.0-2.8 s apart, none refused. The DM window (dm_rate, OF_DM_PER_MIN) still caps
 # the minute. FULL_AI_WRITE_GAP_S=11 is the old spacing.
-WRITE_GAP_S = max(0.0, float(os.environ.get("FULL_AI_WRITE_GAP_S") or 2.0))
+
+
+def _write_gap() -> float:
+    """FULL_AI_WRITE_GAP_S, 0..11 s (of_write's gap the ceiling); unset, malformed, inf / nan or negative -> 2.0
+    (`env_knob`): a typo must neither stop Full AI at import nor close the account's write gate."""
+    return min(11.0, env_float("FULL_AI_WRITE_GAP_S", 2.0, lo=0.0))
+
+
+WRITE_GAP_S = _write_gap()
 # (account, Fan) whose live job runs in this process now: jobs for different Fans of one Creator
 # overlap (automation_executor `_PER_FAN_KINDS`), so `reap` leaves these and the sweep skips them.
 _running: set[tuple[str, int]] = set()
@@ -190,8 +198,8 @@ async def load(account_id: str, fan_id: int, client) -> full_ai_turn.TurnFacts |
             AiDecision.account_id == aid, AiDecision.fan_id == fan, AiDecision.mode == MODE)
             .order_by(AiDecision.id))).scalars())
     # Her standing dare promised to look (NEW-156): his photo is read with the key off too.
-    dared, due = full_ai_test.dared_of(rows), full_ai_test.dare_due_of(rows)
-    photos = bool(side[full_ai_photo.KEY]) or full_ai_test.looks_of(rows)
+    dared, due = full_ai_test.dared_of(rows), full_ai_test.dare_due_of(rows, anchor.created_at)
+    photos = bool(side[full_ai_photo.KEY]) or dared or due
     photo = await full_ai_photo.describe_turn(aid, turn, client) if photos else None
     async with get_session() as s:
         thread_rows, _other_lane, _tx = await full_ai_chat._reads(s, aid, fan, run_cut, turn)

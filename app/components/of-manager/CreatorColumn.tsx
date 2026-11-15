@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, RotateCw, Search } from "lucide-react";
 
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
@@ -19,13 +19,11 @@ import { EmptyState } from "@/components/ui/infloww";
 import { usePageCreator } from "@/contexts/PageCreatorContext";
 import { useScope } from "@/contexts/ScopeContext";
 import { useCreatorProfiles } from "@/lib/creatorProfiles";
-import { COUNT_ROOTS } from "@/hooks/useOfNotifCount";
-import { useOfReadGate } from "@/hooks/useOfReadGate";
+import { useOfNotifCount } from "@/hooks/useOfNotifCount";
 import { useRosterCounts } from "@/hooks/useRosterCounts";
 import { useOnScreenLease } from "@/hooks/useViewLease";
-import { gateOptions } from "@/lib/ofReadGate";
 import { ofMeQuery } from "@/lib/ofMe";
-import { relay, type AccountMeta, type WatcherAccount } from "@/lib/relay";
+import type { AccountMeta, WatcherAccount } from "@/lib/relay";
 import { subscribeToStorage } from "@/lib/storageSync";
 import { cn } from "@/lib/utils";
 
@@ -51,7 +49,6 @@ function setCollapsed(on: boolean) {
 /** Search filters this long after the last keystroke. Infloww waits 800ms, but its search is a server query; ours
  *  filters the loaded list, so a short wait only spares the rows' remounts while typing. */
 const SEARCH_WAIT_MS = 300;
-const NO_IDS: readonly string[] = [];
 
 /** A creator the OF view can show: a captured session not flagged dead. Every column lists `useActiveAccounts()`
  *  (captured sessions only), so a row that fails this is a logged-out one. */
@@ -344,22 +341,9 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
   // OF Manager's watcher account (useOfManagerAccounts): picked like a Creator, badged so it is not taken for one.
   const watcher = account.role === "watcher";
   const qc = useQueryClient();
-  // The OnlyFans notification count; same query as Messages Pro's bell, so the two share it. Fresh for 60s, as
+  // The OnlyFans notification count (useOfNotifCount: Messages Pro's bell's query, gated, shared). Fresh for 60s, as
   // Infloww's; a creator without a live session has none to read (Infloww shows the chip for linked ones only).
-  // Re-read only while this tab leases the creator; an unleased one reads once armed, then on its `creator_warmed`
-  // (lib/ofReadGate.ts).
-  const { enabled, ...gated } = gateOptions(useOfReadGate(online ? [account.id] : NO_IDS, COUNT_ROOTS)(account.id));
-  const countQ = useQuery<number>({
-    queryKey: ["of-notif-count", account.id],
-    queryFn: account.id && online && enabled !== false
-      ? async ({ signal }) => Number((await relay.get<{ all?: number }>(
-        "/api/of/v2/users/notifications/count", { accountId: account.id, priority: "background" }, signal))?.all) || 0
-      : skipToken,
-    staleTime: 60_000,
-    retry: false,
-    ...gated,
-  });
-  const count = !online || countQ.isError ? 0 : countQ.data ?? 0;
+  const { count } = useOfNotifCount(online ? account.id : null, 60_000);
   // Hover or focus has to rest 150ms, so a sweep of the mouse or the arrows does not read every creator on the way.
   const dwell = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(dwell.current), []);

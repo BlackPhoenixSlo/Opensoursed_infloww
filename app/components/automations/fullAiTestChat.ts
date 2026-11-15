@@ -161,6 +161,8 @@ export interface TestChatState {
   committing: boolean;
   /** Someone stored meanwhile: reload before anything else is written. */
   stale: boolean;
+  /** Audience writes out (`PUT config/audience` bumps the rev): no draft write, Save or Roll back starts meanwhile. */
+  audienceSaving: number;
   /** Field errors ("<key>: <why>") or a failed write's message. */
   errors: string[];
   /** A newer draft stored elsewhere while the page had an unsaved edit: Keep mine / Take theirs pending. */
@@ -193,8 +195,11 @@ export type TestChatAction =
   | { type: "saved"; rev: number }
   | { type: "rolledBack"; rev: number }
   | { type: "stale" }
-  /** The audience write's answer (`PUT config/audience`, the Fans dialog / Top spend box): its keys on every side. */
+  /** An audience write starts (`PUT config/audience`, the Fans dialog / Top spend box). */
+  | { type: "audienceSave" }
+  /** Its answer: its keys on every side (`audienceSaved`). */
   | { type: "audienceSaved"; body: ConfigBody }
+  | { type: "audienceSaveFailed" }
   | { type: "externalDraft"; body: ConfigBody }
   | { type: "keepMine" }
   | { type: "takeTheirs" }
@@ -208,7 +213,8 @@ export function initTestChat(pair: string, skipWait = false): TestChatState {
   return {
     pair, skipWait, text: "", photo: null, describing: null, photoError: null, sides: { L: EMPTY_SIDE, R: EMPTY_SIDE },
     checkpoint: null, previous: null, draft: null, rev: 0,
-    dirty: false, savingDraft: false, committing: false, stale: false, errors: [], conflict: null, held: null,
+    dirty: false, savingDraft: false, committing: false, stale: false, audienceSaving: 0, errors: [], conflict: null,
+    held: null,
   };
 }
 
@@ -229,10 +235,11 @@ export function canSend(state: TestChatState): boolean {
 }
 
 /** A control (or the JSON editor) may edit the draft: loaded, nothing out (no photo request either: `photoDescribed`
- *  then owes the draft side's Turn on the stored draft), not stale, no Keep mine / Take theirs pending. */
+ *  then owes the draft side's Turn on the stored draft; no audience write, whose rev bump would make ours stale), not
+ *  stale, no Keep mine / Take theirs pending. */
 export function canEdit(state: TestChatState): boolean {
   return state.draft !== null && !state.savingDraft && !state.committing && !state.stale && state.conflict === null
-    && state.describing === null;
+    && state.describing === null && state.audienceSaving === 0;
 }
 
 /** Keep mine's draft PUT: the page's draft on the conflict's rev; null without a conflict, or while the photo request
@@ -389,15 +396,12 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
       return offerHeld({ ...state, checkpoint: state.previous, previous: state.checkpoint, rev: action.rev, committing: false, errors: [] });
     case "stale":
       return { ...state, stale: true, savingDraft: false, committing: false };
-    case "audienceSaved": {
-      // Only the audience keys move (an unstored edit stays). A write of ours out will answer an older rev or 409:
-      // the body is held and offered once it settles (`offer`), as a read landing meanwhile is.
-      const src = action.body.checkpoint;
-      const s = { ...state, checkpoint: withAudience(state.checkpoint, src), previous: withAudience(state.previous, src),
-        draft: withAudience(state.draft, src) };
-      if (state.savingDraft || state.committing) return { ...s, held: state.held && state.held.rev > action.body.rev ? state.held : action.body };
-      return { ...s, rev: Math.max(state.rev, action.body.rev) };
-    }
+    case "audienceSave":
+      return { ...state, audienceSaving: state.audienceSaving + 1 };
+    case "audienceSaved":
+      return audienceSaved({ ...state, audienceSaving: Math.max(0, state.audienceSaving - 1) }, action.body);
+    case "audienceSaveFailed":
+      return { ...state, audienceSaving: Math.max(0, state.audienceSaving - 1) };
     case "externalDraft":
       return offer(state, action.body);
     case "keepMine": {
@@ -458,6 +462,20 @@ export function audienceFailed(e: unknown): AudienceResult {
   if (e instanceof RelayError && e.status === 409) return { kind: "failed", reason: "Someone saved this config meanwhile. Try again." };
   const errors = relayBody(e)?.errors;
   return { kind: "failed", reason: Array.isArray(errors) ? errors.map(String).join(" ") : errText(e, "Request failed") };
+}
+
+/** An audience write's answer. No newer than what the page holds (its rev, a held read's, a conflict's): dropped, so
+ *  a slower Fans / Top spend answer never puts old values back. Else only the audience keys move (an unstored edit
+ *  stays): with a write of ours out the body is held and offered once it settles (`offer`), as a read landing meanwhile
+ *  is; on exactly the next rev the page takes the rev; further ahead (someone stored meanwhile) the body is offered as
+ *  a read (`offer`: adopted whole, or the conflict), never its rev over settings the page has not seen. */
+function audienceSaved(state: TestChatState, body: ConfigBody): TestChatState {
+  if (body.rev <= Math.max(state.rev, state.held?.rev ?? 0, state.conflict?.rev ?? 0)) return state;
+  const src = body.checkpoint;
+  const s = { ...state, checkpoint: withAudience(state.checkpoint, src), previous: withAudience(state.previous, src),
+    draft: withAudience(state.draft, src) };
+  if (state.savingDraft || state.committing) return { ...s, held: body };
+  return body.rev === state.rev + 1 ? { ...s, rev: body.rev } : offer(s, body);
 }
 
 /** A read config body: held while a write of ours is out or a Reload is owed (the newest rev kept); else dropped

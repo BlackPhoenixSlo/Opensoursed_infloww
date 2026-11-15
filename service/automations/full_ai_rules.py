@@ -57,9 +57,10 @@ TEST_ONLY_KEYS = (*GATES, "draft_questions", "chat_tease_prices")
 LIVE_ONLY_KEYS = ("top_spend_cents", "fans", "catchup_minutes")
 # The only config key Shadow reads (full_ai_chat._photos_on; its Facts keep every route flag on).
 SHADOW_READS = (photo.KEY,)
-# Router wording variants a test-only key swaps in: (router dict, flag, label); flag None = always.
+# Router wording variants a test-only key swaps in: (router dict, flag, label). `TEST_NEW_ONLY` (no key: test and
+# live always ask it) is the main block in full modes (`_router`), as `_router_jev._questions` merges it.
 _VARIANTS = (("TEST_SPACING", "sell_spacing", "Spacing"), ("TEST_LIKES", "he_likes", "He likes"),
-             ("TEST_IMPLIED", "ask_implied", "Implied"), ("TEST_NEW_ONLY", None, "New only"))
+             ("TEST_IMPLIED", "ask_implied", "Implied"))
 # Router state key sets test Mode adds (`full_ai_test.fetch`): router `<NAME>_STATE_KEYS` -> flag.
 _KEYSET_FLAG = {"SCENE": "sext_scene", "SPACING": "sell_spacing", "LIKES": "he_likes", "TEASE": "chat_tease"}
 
@@ -211,7 +212,11 @@ def _question(qid: str, spec: dict, mode: str, src: str, *, kind: str = "Noul",
 def _router(mode: str) -> dict:
     blocks = []
     for q, s in router.QUESTIONS.items():
-        blocks.append(_question(q, s, mode, f"{_RJ}:QUESTIONS"))
+        if full(mode) and q in router.TEST_NEW_ONLY:
+            blocks.append(_question(q, router.TEST_NEW_ONLY[q], mode, f"{_RJ}:TEST_NEW_ONLY",
+                                    doc=_DOC.get(f"new only:{q}")))
+        else:
+            blocks.append(_question(q, s, mode, f"{_RJ}:QUESTIONS"))
         if full(mode):
             blocks += _variants(q, mode, "Noul")
     blocks.append(_question("intensity", router.INTENSITY, mode, f"{_RJ}:INTENSITY", kind="Score",

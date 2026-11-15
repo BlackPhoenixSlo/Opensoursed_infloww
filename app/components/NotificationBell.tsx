@@ -229,7 +229,9 @@ export function useNotificationFeed(
     accountIds,
     rows,
     reads,
-    loading: enabled && queries.some((q) => q.isLoading),
+    // A gated-off Creator (not armed yet: its query is disabled, so never `isLoading`) is not read yet, not empty.
+    loading: enabled && (queries.some((q) => q.isLoading)
+      || (gated && targets.some((t, i) => gateOf(t.aid) === "off" && queries[i]?.data === undefined))),
     error: queries.find((q) => q.error)?.error as Error | undefined,
     /** Re-reads every failed page. */
     refetch: () => { for (const q of queries) if (q.error) void q.refetch(); },

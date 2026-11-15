@@ -79,13 +79,16 @@ const LIMITS = { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_repl
 const WRITER_PROVIDERS = { "euryale-v2.3": "nanogpt", "hermes-4-405b": "openrouter", "glm-5.3-flash": "zai" };
 /** The GET's `provider_labels` (provider → name). */
 const PROVIDER_LABELS = { nanogpt: "NanoGPT", openrouter: "OpenRouter", zai: "Z.ai (GLM)", deepinfra: "DeepInfra" };
+/** The GET's `owner_keys` (the Creator's billing owner's keys, what Live checks): booleans only. */
+const OWNER_KEYS = { nanogpt: { set: true }, openrouter: { set: false }, zai: { set: false }, deepinfra: { set: false } };
 const configBody = (over: Record<string, unknown> = {}) =>
   ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], reference: REFERENCE, limits: LIMITS,
-    writer_providers: WRITER_PROVIDERS, provider_labels: PROVIDER_LABELS, ...over });
+    writer_providers: WRITER_PROVIDERS, provider_labels: PROVIDER_LABELS, owner_keys: OWNER_KEYS, ...over });
 const MODE_OFF = { mode: "off", off_switch: false, blockers: [] as string[] };
 let modeRead: Record<string, unknown> = MODE_OFF;
 const PREPARE_IDLE = { run_id: null, steps: [], started_at: null, finished_at: null };
-/** The reads every mount answers: the Full AI config, the account config (Model info) and the LLM keys status. */
+/** The reads every mount answers: the Full AI config, the account config (Model info); the signed-in user's keys
+ *  (GET /admin/my-llm-keys) say the opposite of `owner_keys`, so the LLM keys row proves which one it reads. */
 const baseGet = (p: string): unknown => {
   if (p.startsWith("/admin/full-ai/config")) return configBody();
   if (p.startsWith("/admin/account-config")) {
@@ -94,7 +97,8 @@ const baseGet = (p: string): unknown => {
   if (p.startsWith("/admin/full-ai/prepare-content/status")) return PREPARE_IDLE;
   if (p.startsWith("/admin/full-ai/mode")) return modeRead;
   if (p.startsWith("/admin/my-llm-keys")) {
-    return { providers: { nanogpt: { set: true, hint: "••••n4n0" }, openrouter: { set: false, hint: "" } } };
+    return { providers: { nanogpt: { set: false, hint: "••••n4n0" }, openrouter: { set: true, hint: "" },
+      zai: { set: true, hint: "" }, deepinfra: { set: true, hint: "" } } };
   }
   return {};
 };
@@ -623,6 +627,12 @@ describe("Full AI Chat page › Settings", () => {
     expect(keys.queryByText(/DeepSeek/)).toBeNull();
     expect(screen.queryByText(/n4n0/)).toBeNull();
     expect(keys.getByRole("link", { name: "Open keys form" }).getAttribute("href")).toBe("/settings/ai-keys");
+  });
+
+  it("LLM keys: a failed owner keys read says so (rwl2 L5)", async () => {
+    mountSettings(configBody({ owner_keys: null }));
+    const keys = within(settings().getAllByRole("listitem")[0]);
+    expect(await keys.findByText("Couldn't read the keys.")).toBeTruthy();
   });
 
   it("Read his photos on (default) adds DeepInfra to LLM keys; no DeepInfra key warns", async () => {

@@ -256,28 +256,49 @@ def _sitting(rows, now: datetime) -> list:
 
 
 DARED_ROWS = 3
+_READ_OUTCOMES = ("described", "cached")    # `full_ai_photo.describe_turn`: his picture was read
 
 
-def dare_due_of(rows) -> bool:
-    """Her dare is due this Turn (two steps, owner 2026-11-15): her newest reply was the ai_dare
-    Route's joke, and none of the `DARED_ROWS` rows before it was (she dares once). Read off the
-    rows (oldest first), so no pending-dare state (D32)."""
-    return bool(rows) and rows[-1].route == "ai_dare" and not _joked(rows[-1 - DARED_ROWS:-1])
+def dare_due_of(rows, now: datetime | None = None) -> bool:
+    """Her dare is due this Turn (two steps, owner 2026-11-15): her newest reply was an open joke
+    (`_joke`) in this Sitting (`_sitting` at `now`, default utcnow), and none of the `DARED_ROWS`
+    rows before it was (she dares once). Read off the rows (oldest first), so no pending-dare
+    state (D32)."""
+    return (bool(rows) and _joke(rows[-1]) and bool(_sitting(rows, now or datetime.utcnow()))
+            and not any(_joke(r) for r in rows[-1 - DARED_ROWS:-1]))
 
 
 def dared_of(rows) -> bool:
-    """Her dare stands: one of her newest `DARED_ROWS` replies carried it, the reply after an
-    ai_dare row (`dare_due_of`). Read off the rows, so no pending-dare state (D32)."""
-    return _joked(rows[-1 - DARED_ROWS:-1])
+    """Her dare stands: one of her newest `DARED_ROWS` replies carried it, a sent reply on a Turn
+    her dare was due (`dare_due_of` at its time) whose beat dares (`_dare_beat`: ai_dare with his
+    picture unread, chat / sext with no picture). Read off the rows, so no pending-dare state (D32)."""
+    return any(_carried(rows[j]) and dare_due_of(rows[:j], rows[j].created_at)
+               for j in range(max(1, len(rows) - DARED_ROWS), len(rows)))
 
 
-def looks_of(rows) -> bool:
+def looks_of(rows, now: datetime | None = None) -> bool:
     """She looks at his picture whatever `describe_fan_photos` says: her dare stands or is due."""
-    return dared_of(rows) or dare_due_of(rows)
+    return dared_of(rows) or dare_due_of(rows, now)
 
 
-def _joked(rows) -> bool:
-    return any(r.route == "ai_dare" for r in rows)
+def _photo_read(r) -> bool:
+    """The row's Turn read his picture: a Test chat photo's `read`, a live row's describe outcome."""
+    p = _loads(r.reply_json).get("fan_photo") or {}
+    return bool(p.get("read")) if "text" in p else p.get("outcome") in _READ_OUTCOMES
+
+
+def _joke(r) -> bool:
+    """A sent ai_dare reply that left the bot check open: the joke, not DARE_RATE on a read picture."""
+    return r.route == "ai_dare" and r.status == "sent" and not _photo_read(r)
+
+
+def _carried(r) -> bool:
+    """A sent reply whose beat carried the dare when it was due (`full_ai_writers._dare_beat`)."""
+    if r.status != "sent":
+        return False
+    if r.route == "ai_dare":
+        return not _photo_read(r)
+    return r.route in ("chat", "sext") and not _loads(r.reply_json).get("fan_photo")
 
 
 def _his_lines(rows) -> int:
@@ -443,8 +464,8 @@ async def fetch(account: str, pair: str, side: str, text: str, config: dict, pho
     spent, offer = bought_of(rows), offer_line(open_offer)
     bought = spent[-1] if spent else None
     # The one `pending_offer` source: a Pending tease first.
-    dared, due = dared_of(rows), dare_due_of(rows)
-    on = bool(config[PHOTOS_KEY]) or looks_of(rows)    # her dare promised to look; a bot check too
+    dared, due = dared_of(rows), dare_due_of(rows, now)
+    on = dared or due or bool(config[PHOTOS_KEY])    # her dare promised to look; a bot check too
     st, _ = build_state(turn, thread_rows, bought, offer, pending=pending_offer_text(rows, now), photos=on)
     fold = _loads(rows[-1].reply_json) if rows else {}
     scene = saved_scene(rows, now, SITTING_GAP_S)

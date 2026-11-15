@@ -96,7 +96,9 @@ turn take the same gate (`require_opt_in_kind`: the owner or a granted member).
       no text call. 429 on the cost cap, 502 on a bad reply.
 
   GET  /admin/full-ai/config?account_id=           → {checkpoint, previous, draft, rev, errors, writer_models, writer_providers,
-                                                      provider_labels, reference, limits}
+                                                      provider_labels, reference, limits, owner_keys}
+      `owner_keys` (the GET only): {provider: {set}} for every `writer_providers` provider and DeepInfra, on the
+      Creator's billing owner's keys, the ones the Live blocker reads (`_owner_keys`); booleans only; null on a failed read.
   PUT  /admin/full-ai/config/draft {account_id, draft, rev}
   PUT  /admin/full-ai/config/checkpoint {account_id, checkpoint, rev}   the checkpoint JSON typed in; the old
       checkpoint becomes `previous` (Roll back undoes it), the draft stays
@@ -538,10 +540,25 @@ def _config_view(cfg: dict) -> dict[str, Any]:
             "reference": full_ai_config.reference(), "limits": full_ai_config.limits()}
 
 
+async def _owner_keys(account_id: str, providers: set[str]) -> dict[str, dict[str, bool]] | None:
+    """{provider: {set}} for the LLM keys row on the policy the call and the Live blocker read (`llm_key_available`: the
+    Creator's billing owner, not the signed-in user); the photo provider, unless a Writer runs on it, on
+    `inbound_describe.key_available`'s. Booleans only, never key material; None when the read fails."""
+    try:
+        out = {p: {"set": await llm_client.llm_key_available(account_id, p, WRITER_PURPOSE)} for p in sorted(providers)}
+        if inbound_describe.PROVIDER not in out:
+            out[inbound_describe.PROVIDER] = {"set": await inbound_describe.key_available(account_id)}
+        return out
+    except Exception:
+        log.exception("full_ai_owner_keys_failed account=%s", account_id)
+        return None
+
+
 @router.get("/admin/full-ai/config")
 async def full_ai_config_get(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
-    return _config_view(await full_ai_turn.stored_config(account_id))
+    view = _config_view(await full_ai_turn.stored_config(account_id))
+    return {**view, "owner_keys": await _owner_keys(account_id, set(view["writer_providers"].values()))}
 
 
 async def _config_write(account_id: str, step: Callable[[dict | None], dict[str, Any]], *, retries: int = 0

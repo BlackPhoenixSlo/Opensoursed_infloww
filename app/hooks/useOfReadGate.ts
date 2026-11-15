@@ -4,7 +4,8 @@
  * useOfReadGate — lib/ofReadGate.ts in React, for the money rail, the bell and the count readers: returns each target
  * Creator's gate (`off` / `once` / `live`) from this tab's lease (lib/viewLease `tabLease`) and the armed set. It arms
  * the targets this tab leases, and on a lease gain or a selection refetches, under each of `roots`
- * (`[root, accountId, …]` keys), the target's active queries older than REFRESH_OLDER_MS.
+ * (`[root, accountId, …]` keys), the target's active queries older than REFRESH_OLDER_MS. It starts from no lease:
+ * on mount every Creator the tab leases counts as a gain.
  */
 
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";

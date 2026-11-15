@@ -649,9 +649,11 @@ def case_config_api_round_trip():
     assert len(rule) == 1, rule
     got = OWNER_A.get(CONFIG, params={"account_id": A})
     assert got.status_code == 200, got.text
-    assert got.json() == {"checkpoint": DEFAULTS, "previous": None, "draft": DEFAULTS, "rev": 0,
+    assert got.json().pop("owner_keys") == {p: {"set": False} for p in {*WRITER_PROVIDERS_OF.values(), "deepinfra"}}
+    got_body = {k: v for k, v in got.json().items() if k != "owner_keys"}
+    assert got_body == {"checkpoint": DEFAULTS, "previous": None, "draft": DEFAULTS, "rev": 0,
                           "errors": [], "writer_models": WRITER_MODELS, "writer_providers": WRITER_PROVIDERS_OF, "provider_labels": PROVIDER_LABELS, "reference": REF,
-                          "limits": LIMITS}, got.json()
+                          "limits": LIMITS}, got_body
     formal = FORMAL_IN
     bad = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": {**formal, "fans_list": []},
                                                "rev": 0})
@@ -691,8 +693,29 @@ def case_config_api_round_trip():
     assert forth.status_code == 200, forth.text
     assert {**forth.json(), "rev": 2} == after_save and forth.json()["rev"] == 4, forth.json()
     assert _rule_row() == rule
-    assert OWNER_A.get(CONFIG, params={"account_id": A}).json() == forth.json()
+    final = OWNER_A.get(CONFIG, params={"account_id": A}).json()
+    assert "owner_keys" not in forth.json() and {k: v for k, v in final.items() if k != "owner_keys"} == forth.json()
 
+
+
+def case_config_get_owner_keys():
+    """rwl2 L5: the GET's `owner_keys` reads the Creator's billing owner's keys (the Live blocker's policy), booleans
+    only; the write answers carry none."""
+    import tenant_keys
+    owner = IDS["agency_a_owner"]
+
+    async def keys(v):
+        await tenant_keys.set_keys(owner, {"nanogpt": v, "deepinfra": v})
+    _db(lambda: keys("sk-test-l5-secret"))
+    try:
+        got = OWNER_A.get(CONFIG, params={"account_id": A})
+        assert got.status_code == 200, got.text
+        ok = got.json()["owner_keys"]
+        assert ok["nanogpt"] == ok["deepinfra"] == {"set": True} and ok["openrouter"] == {"set": False}, ok
+        assert "sk-test-l5-secret" not in got.text and "l5-s" not in got.text
+    finally:
+        _db(lambda: keys(None))
+    assert OWNER_A.get(CONFIG, params={"account_id": A}).json()["owner_keys"]["nanogpt"] == {"set": False}
 
 
 def case_config_api_audience():

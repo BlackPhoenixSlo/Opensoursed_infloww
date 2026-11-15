@@ -12,7 +12,8 @@
  *   PUT  /admin/full-ai/config/checkpoint {account_id, checkpoint, rev}   the checkpoint JSON: `commit`, then `loaded`
  *                                            with the answer (a draft edit unstored is dropped, as on Reload)
  *   PUT  /admin/full-ai/config/audience {account_id, fans?, top_spend_cents?}   `putAudience` (the Fans dialog, the Top
- *                                            spend box): no rev, every side at once, then `audienceSaved`
+ *                                            spend box): no rev, every side at once; `audienceSave`, then
+ *                                            `audienceSaved` / `audienceSaveFailed` (draft writes wait meanwhile)
  *
  * Every write answers the GET shape. A field error is 422 `{errors: ["<key or page label>: <why>"]}` → `configFailed`; a stale rev is
  * 409 `{detail, rev}` → `stale` (the page asks for a reload instead of overwriting); a 409 without `rev` → `configFailed`
@@ -150,11 +151,13 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
    *  at once on every side (never a draft edit; the controls' `off` wait does not apply). The answer moves only those
    *  keys and the rev (`audienceSaved`); a failure is returned for the control to show, never a page error. */
   const putAudience = useCallback(async (patch: AudiencePatch): Promise<AudienceResult> => {
+    dispatch({ type: "audienceSave" });
     try {
       const body = await relay.put<ConfigBody>("/admin/full-ai/config/audience", { account_id: accountId, ...patch }, { accountId });
       dispatch({ type: "audienceSaved", body });
       return { kind: "ok" };
     } catch (e) {
+      dispatch({ type: "audienceSaveFailed" });
       return audienceFailed(e);
     }
   }, [accountId, dispatch]);
@@ -167,11 +170,13 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
   const writerProviders = data?.writer_providers;
   /** Provider → name (the GET's `provider_labels`). */
   const providerLabels = data?.provider_labels;
+  /** Provider → {set} on the owner's keys (the GET's `owner_keys`; undefined until it answers, null on a failed read). */
+  const ownerKeys = data?.owner_keys;
   /** Every key the JSON takes (the GET's `reference`; empty until it answers). */
   const reference = data?.reference ?? [];
   /** The controls' server constants (the GET's `limits`; null until it answers). */
   const limits = data?.limits ?? null;
-  return { edit, putDraft, putCheckpoint, putAudience, save, rollback, reload, keepMine, takeTheirs, writerModels, writerProviders, providerLabels, reference, limits };
+  return { edit, putDraft, putCheckpoint, putAudience, save, rollback, reload, keepMine, takeTheirs, writerModels, writerProviders, providerLabels, ownerKeys, reference, limits };
 }
 
 export type FullAiConfigApi = ReturnType<typeof useFullAiConfig>;

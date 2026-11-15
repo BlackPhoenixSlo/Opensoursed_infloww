@@ -87,9 +87,10 @@ async def run_fast_tick(account_id: str) -> dict:
 _poll_state: dict[str, PollState] = {}
 # The purchases poll running now per Creator: the loop's tick and `poll_now` join it, never a second.
 _poll_inflight: dict[str, asyncio.Task] = {}
-# A loop poll the gate refused inside the last cycle before the Demand cap, set for the hold's end
-# (`_poll_at_hold_end`): at most one per Creator, cancelled when any poll of it starts first.
+# A held Demand Creator's poll, set by the loop for the hold's end (`_poll_at_hold_end`): at most one per Creator,
+# cancelled when any poll of it starts first.
 _poll_timers: dict[str, asyncio.TimerHandle] = {}
+_hold_end_tasks: set[asyncio.Task] = set()   # a fired timer's gate + poll (held: a bare task may be collected)
 # Past the hold's end on the loop's clock: never a hair early, which the gate would refuse.
 _HOLD_END_PAD_S = 0.01
 
@@ -101,6 +102,7 @@ async def _poll_once(account_id: str, tier: Tier) -> dict:
     account_health (it then leaves `transaction_ingest.live_account_ids`); no feed outcome is a supervisor failure
     (`transaction_ingest._record_failure` stays for a raise: the Fansly lane's)."""
     started = time.monotonic()
+    _poll_state[account_id] = poll_decide.started(_poll_state.get(account_id), started)
     r = await run_fast_tick(account_id)
     answered = time.monotonic()
     outcome = r.get("outcome")
@@ -149,11 +151,12 @@ def _single_flight(account_id: str, tier: Tier) -> asyncio.Task | None:
 
 
 def _poll_at_hold_end(account_id: str, tier: Tier) -> None:
-    """The loop's poll of a Demand Creator the gate refused in the last cycle before its cap (`due`
-    looks a tick ahead): started at its hold's end instead of the next cycle, so the next poll never
-    starts past PURCHASES_BACKOFF_DEMAND_MAX_S; also armed by the loop for a held Demand Creator whose
-    hold ends before the next tick (FAST_S + the cycle's work away). One pending timer per Creator; a
-    hold ending past 2 * FAST_S is a later cycle's. The timer copies the loop's context (its Caller kind)."""
+    """The loop's poll of a Demand Creator held at the cycle's start (its one arm site, start_fast_poll): started
+    at its hold's end instead of the next cycle (FAST_S + the cycle's work away), so the next poll never starts
+    past PURCHASES_BACKOFF_DEMAND_MAX_S. One pending timer per Creator; a hold ending past 2 * FAST_S is a later
+    cycle's. At its end the timer asks the same gate as poll_now (`_poll_tier`: live, not deactivated, Dead or
+    paused) and the tier again: a Creator no longer eligible, or no longer Demand (its uncapped Idle hold then
+    rules), gets no poll. The timer copies the loop's context (its Caller kind)."""
     st = _poll_state.get(account_id)
     if account_id in _poll_timers or st is None or st.held_at is None:
         return
@@ -161,19 +164,38 @@ def _poll_at_hold_end(account_id: str, tier: Tier) -> None:
     if wait > 2 * poll_decide.FAST_S:
         return
 
+    async def _at_end() -> None:
+        try:
+            if await _poll_tier(account_id) != "fast":
+                return
+            if _single_flight(account_id, "fast") is not None:
+                _poll_state[account_id] = poll_decide.polled(_poll_state.get(account_id), time.monotonic())
+        except Exception:
+            log.warning("ingest_tx_hold_end_poll_failed account=%s", account_id, exc_info=True)
+
     def _fire() -> None:
         _poll_timers.pop(account_id, None)
-        if _single_flight(account_id, tier) is not None:
-            _poll_state[account_id] = poll_decide.polled(_poll_state.get(account_id), time.monotonic())
+        t = asyncio.ensure_future(_at_end())
+        _hold_end_tasks.add(t)
+        t.add_done_callback(_hold_end_tasks.discard)
 
     _poll_timers[account_id] = asyncio.get_running_loop().call_later(max(0.0, wait) + _HOLD_END_PAD_S, _fire)
 
 
-def last_ok_poll_age_s(account_id: str) -> float | None:
-    """Seconds since `account_id`'s last ok purchases poll started (its PollState `last_ok_s`); None
-    if none since boot. The App-open warm skips a Creator polled ok within PURCHASES_POLL_FAST_S."""
+def last_poll_age_s(account_id: str) -> float | None:
+    """Seconds since `account_id`'s last purchases poll started, ok or not (its PollState `last_started_s`); None
+    if none since boot. The App-open warm skips a Creator polled within PURCHASES_POLL_FAST_S, a selection one
+    polled within SELECT_MIN_AGE_S: a failing exit is not read again at once (its hold, if any, gates as well)."""
     st = _poll_state.get(account_id)
-    return None if st is None or st.last_ok_s is None else time.monotonic() - st.last_ok_s
+    return None if st is None or st.last_started_s is None else time.monotonic() - st.last_started_s
+
+
+async def _poll_tier(account_id: str) -> Tier | None:
+    """The Creator's tier now, or None when it gets no poll at all: no live session, deactivated, flagged a Dead
+    session, or paused. poll_now's and the hold-end timer's one eligibility gate."""
+    if account_id not in await ti.live_account_ids() or await ti._is_paused(account_id):
+        return None
+    return poll_decide.tier(view_lease.is_leased(account_id), account_id in await ti._seller_account_ids())
 
 
 async def poll_now(account_id: str) -> dict | None:
@@ -183,9 +205,9 @@ async def poll_now(account_id: str) -> dict | None:
     `_single_flight` gate). Never raises. Does not move the loop's schedule (a Demand Creator
     keeps its FAST_S cadence); its outcome stamps last-ok and the hold like the loop's."""
     try:
-        if account_id not in await ti.live_account_ids() or await ti._is_paused(account_id):
+        tier = await _poll_tier(account_id)
+        if tier is None:
             return None
-        tier = poll_decide.tier(view_lease.is_leased(account_id), account_id in await ti._seller_account_ids())
         t = _single_flight(account_id, tier)
         return None if t is None else await asyncio.shield(t)
     except asyncio.CancelledError:
@@ -202,7 +224,8 @@ async def start_fast_poll() -> None:
     SLOW_S (PURCHASES_POLL_SLOW_S, 5 min) an Idle one, at its own phase, whoever is signed in.
     A Dead-session Creator is not in the live set; one inside its 429 / unauthorized hold
     (purchase_poll_decide.held, the Backoff ladder) waits it out, and nobody else does; a Demand
-    one whose capped hold ends before the next tick is polled at its end (`_poll_at_hold_end`).
+    one held at the cycle's start is polled at its hold's end when that falls before a later cycle
+    (`_poll_at_hold_end`, re-gated there).
     Demand Creators start first in a cycle. An account the supervisor
     backed off after 3 fails stays skipped. Due accounts run _FAST_POLL_CONCURRENCY at a time,
     starts _FAST_POLL_STAGGER_S apart — bounded OF load without the last account waiting out the
@@ -225,12 +248,12 @@ async def start_fast_poll() -> None:
                 if (state is None or state.last_s is None) and t == "slow":
                     # Spread Idle Creators over SLOW_S, so they never all land in one cycle.
                     state = _poll_state[aid] = poll_decide.first_idle_state(aid, cycle_started, state)
-                if poll_decide.due(state, t, cycle_started) and not await ti._is_paused(aid):
-                    due_now.append((t != "fast", aid, t))
-                elif t == "fast" and poll_decide.held(state, t, cycle_started, 0.0):
+                if t == "fast" and poll_decide.held(state, t, cycle_started, 0.0):
                     # The next tick lands FAST_S + this cycle's work away: a hold ending before it
-                    # starts at its end, not a tick late.
+                    # starts at its end, not a tick late (the one arm site).
                     _poll_at_hold_end(aid, t)
+                elif poll_decide.due(state, t, cycle_started) and not await ti._is_paused(aid):
+                    due_now.append((t != "fast", aid, t))
             # Demand Creators first: an Idle batch never pushes a Seller's start back.
             due_now.sort(key=lambda x: x[0])
             sem = asyncio.Semaphore(_FAST_POLL_CONCURRENCY)
@@ -240,8 +263,7 @@ async def start_fast_poll() -> None:
                 async with sem:
                     try:
                         task = _single_flight(aid, t)
-                        if task is None:     # still inside its hold: started at the hold's end
-                            _poll_at_hold_end(aid, t)
+                        if task is None:     # held since this cycle began (a Select refresh's 429): next cycle
                             return
                         _poll_state[aid] = poll_decide.polled(_poll_state.get(aid), cycle_started)
                         await task

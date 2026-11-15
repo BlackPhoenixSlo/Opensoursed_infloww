@@ -326,6 +326,73 @@ def case_test_chat_dare_reads_and_rates_his_photo():
     assert DESC not in json.dumps(j_r.calls[0]["state"]) and wr.BRUSH_OFF in _writer_text_raw(w_r)
 
 
+def case_test_chat_rated_bot_check_dares_no_more():
+    """F1 (rwl2): "are u a bot" with a picture she reads gets DARE_RATE on the ai_dare row; that
+    closes the check, so his next chat Turn has no dare due (no DARE_NEXT "send a picture"), off
+    the stored rows."""
+    from automations import full_ai_writers as wr
+    _config(True, True)
+    pair, bot = "photo-dare-rated", {**QUIET, "asks_if_ai": 0.95}
+    with _vision():
+        photo = OWNER_A.post(PHOTO, json={"account_id": A, "image": _png(), "text": "are u a bot"}).json()
+        w1, _ = _turn({**_body(pair, text="are u a bot"), "photo": photo}, jev=bot)
+        w2, _ = _turn(_body(pair, n=2, text="hey"))
+    assert wr.DARE_RATE in _writer_text_raw(w1), _writer_text_raw(w1)
+    assert [r.route for r in _rows(A, pair)] == ["ai_dare", "chat"]
+    assert wr.DARE_NEXT not in _writer_text_raw(w2), _writer_text_raw(w2)
+
+
+def case_test_chat_dare_due_only_after_a_sent_joke_this_sitting():
+    """F2 (rwl2): the step-2 dare needs her joke sent (a failed row he never saw: no dare) and
+    inside this Sitting (a joke over `SITTING_GAP_S` ago: no dare); a fresh sent joke dares."""
+    from sqlalchemy import update
+    from automations import full_ai_test as ft
+    from automations import full_ai_writers as wr
+    _config(False, False)
+    bot = {**QUIET, "asks_if_ai": 0.95}
+
+    def joke_then_hey(pair: str, **col) -> str:
+        _turn(_body(pair, text="are u a bot"), jev=bot)
+        if col:
+            rid = _rows(A, pair)[0].id
+
+            async def set_col():
+                async with get_session() as s:
+                    await s.execute(update(AiDecision).where(AiDecision.id == rid).values(**col))
+            _db(set_col)
+        w, _ = _turn(_body(pair, n=2, text="hey"))
+        return _writer_text_raw(w)
+
+    assert wr.DARE_NEXT in joke_then_hey("dare-fresh")
+    assert wr.DARE_NEXT not in joke_then_hey("dare-failed", status="failed")
+    old = datetime.utcnow() - timedelta(seconds=ft.SITTING_GAP_S + 60)
+    assert wr.DARE_NEXT not in joke_then_hey("dare-stale", created_at=old)
+
+
+def case_dared_only_when_a_reply_carried_the_dare():
+    """F2 (rwl2), pure: her dare stands only when the reply after a sent joke dared (chat / sext with
+    no picture, or ai_dare again); a sell_now reply after it, an unsent follow-up or an unsent joke
+    never dared."""
+    from automations import full_ai_test as ft
+
+    def r(i, route, status="sent", photo=None):
+        reply = {"fan_photo": photo} if photo else {}
+        return SimpleNamespace(route=route, status=status, created_at=T0 + timedelta(minutes=i),
+                               reply_json=json.dumps(reply))
+    joke = r(0, "ai_dare")
+    for rows, want in (([joke, r(1, "chat")], True), ([joke, r(1, "sext")], True),
+                       ([joke, r(1, "ai_dare")], True), ([joke, r(1, "sell_now")], False),
+                       ([joke, r(1, "chat", status="failed")], False),
+                       ([r(0, "ai_dare", status="no_send"), r(1, "chat")], False),
+                       ([joke, r(1, "chat", photo={"outcome": "described"})], False),
+                       ([r(0, "ai_dare", photo={"text": "", "read": True}), r(1, "chat")], False)):
+        assert ft.dared_of(rows) is want, ([x.route for x in rows], want)
+    later = T0 + timedelta(minutes=1)
+    assert ft.dare_due_of([joke], later) and not ft.dare_due_of(
+        [r(0, "ai_dare", photo={"outcome": "cached"})], later)   # a live row's read picture
+    assert not ft.dare_due_of([joke], T0 + timedelta(seconds=ft.SITTING_GAP_S + 1))
+
+
 def _writer_text_raw(fake_w: FakeWriterHTTP) -> str:
     return "\n".join(m["content"] for m in fake_w.requests[0]["body"]["messages"])
 

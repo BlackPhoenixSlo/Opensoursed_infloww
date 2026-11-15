@@ -364,6 +364,41 @@ async def case_cap_poll_starts_at_the_hold_end():
         assert first.cancelled() and AUTO not in pp._poll_timers
 
 
+async def case_hold_end_timer_rechecks_eligibility():
+    """A hold-end timer armed for a Demand Creator polls nothing when, by its end, the Creator is paused, flagged a
+    Dead session, or no longer Demand (its lease lapsed: the uncapped Idle hold rules): the same gate as poll_now,
+    with the tier read at the hold's end (fetch-diet rwl2 F4)."""
+    _all_polled_long_ago()
+    cap = decide.BACKOFF_DEMAND_MAX_S
+    starts: list[str] = []
+
+    async def _tick(aid):
+        starts.append(aid)
+        return {"outcome": decide.Outcome("ok")}
+
+    def _held(aid):
+        pp._poll_state[aid] = dataclasses.replace(pp._poll_state[aid], step=6,
+                                                  held_at=time.monotonic() + 0.1 - cap, hold_s=600.0)
+    view_lease._holders.clear()
+    view_lease.renew(("user", "tier-owner", "t1"), [LEASED], None)
+    paused = {FU}
+    async with _patched(_tick):
+        async def _paused(aid):
+            return aid in paused
+        ti._is_paused = _paused
+        for aid in (AUTO, FU, LEASED, FUNNEL):
+            _held(aid)
+            pp._poll_at_hold_end(aid, "fast")
+        DEAD[AUTO] = object()                 # flagged dead before its hold ends
+        view_lease._holders.clear()           # LEASED's lease lapses: Idle, its 600 s hold uncapped
+        try:
+            await asyncio.sleep(0.4)
+        finally:
+            DEAD.clear()
+    assert starts == [FUNNEL], f"only the still-eligible Demand Creator is polled at its hold's end: {starts}"
+    assert not pp._poll_timers, pp._poll_timers
+
+
 async def case_held_past_next_tick_starts_at_the_hold_end():
     """A Demand hold ending just past the loop's look-ahead (due: held) starts at its end, not a tick
     late: the next tick is FAST_S + the cycle's work away."""

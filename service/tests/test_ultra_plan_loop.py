@@ -267,7 +267,7 @@ async def case_spend_cap() -> None:
 async def case_daily_cap_refused() -> None:
     LLM.reset(_res(("creators_list", {})))
     async with get_session() as s:
-        s.add(GrokUserDailyCost(day=datetime.utcnow().strftime("%Y-%m-%d"), user_id=OWNER_B, provider="deepseek",
+        s.add(GrokUserDailyCost(day=datetime.utcnow().strftime("%Y-%m-%d"), user_id=OWNER_B, provider="chat",
                                 cost_cents=100 * 100, call_count=1))
     before = await _rows()
     r = B.post("/admin/ultra/plans", json={"request": "anything"})

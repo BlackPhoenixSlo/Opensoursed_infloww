@@ -57,7 +57,9 @@ Any-scope (`ANY_SCOPE_TYPES`, phase-01 1b): the warm event and the rail's money 
 a model-scoped subscriber for any Creator in its clamp (its accessible set, resolved at
 subscribe for owners and chatters), so a tab scoped to one Creator still fills its rail with
 another's sale; never past the clamp (another Agency), never for an unclamped subscriber.
-Replay (a reconnect) still reads only the rings its scope sees.
+Replay (a reconnect) reads the same: the rings its scope sees, plus (`sees_any`) its other clamped
+Creators' rings for their any-scope frames only; an evicted any-scope frame there resyncs it
+(`evicted_any`), an evicted frame it could never get does not.
 
 Persist. events_persist.py's worker drains its queue of PersistItems in batches and
 transcodes every item's `event`; `persist_plan` is the event_inbox rows one batch
@@ -89,6 +91,7 @@ class Rings:
     seq: int = 0                   # the last seq handed out
     rings: Mapping[str, tuple[tuple[int, Any], ...]] = field(default_factory=dict)   # key -> ((seq, frame), ...)
     evicted: Mapping[str, int] = field(default_factory=dict)                         # key -> highest seq dropped
+    evicted_any: Mapping[str, int] = field(default_factory=dict)                     # key -> highest any-scope seq dropped
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,8 +372,10 @@ def wants(scope: str, accounts: Optional[frozenset], agencies: frozenset, event:
 
 # ── the rings ──
 def _missed(st: Rings, last_id: Optional[str], sees: Callable[[str], bool],
-            wants: Callable[[Any], bool]) -> tuple[list, bool]:
-    """What the stream missed after `last_id`, oldest first, and whether it must resync."""
+            wants: Callable[[Any], bool], sees_any: Optional[Callable[[str], bool]] = None) -> tuple[list, bool]:
+    """What the stream missed after `last_id`, oldest first, and whether it must resync. A ring the
+    stream does not `sees` but `sees_any` (a model-scoped stream's other clamped Creators) is read
+    too, `wants` keeping only its any-scope frames, and resyncs only when one of those was evicted."""
     if not last_id:
         return [], False
     epoch, _, n = last_id.partition(".")
@@ -383,9 +388,13 @@ def _missed(st: Rings, last_id: Optional[str], sees: Callable[[str], bool],
     gap = False
     missed: list[tuple[int, Any]] = []
     for key, ring in st.rings.items():
-        if key and not sees(key):
+        if not key or sees(key):
+            evicted = st.evicted
+        elif sees_any is not None and sees_any(key):
+            evicted = st.evicted_any
+        else:
             continue
-        if st.evicted.get(key, 0) > since:
+        if evicted.get(key, 0) > since:
             gap = True
         missed.extend((seq, f) for seq, f in ring if seq > since and wants(f))
     missed.sort(key=lambda t: t[0])
@@ -397,19 +406,23 @@ def decide_ring(st: Rings, ev: Published) -> Rings:
     seq = st.seq + 1
     key = ring_key(ev.frame)
     ring = st.rings.get(key, ())
-    evicted = st.evicted
+    evicted, evicted_any = st.evicted, st.evicted_any
     if len(ring) == RING_MAX:
-        evicted = {**evicted, key: ring[0][0]}
+        dropped, frame = ring[0]
+        evicted = {**evicted, key: dropped}
+        if isinstance(frame, Mapping) and any_scope(frame):
+            evicted_any = {**evicted_any, key: dropped}
         ring = ring[1:]
-    return Rings(st.epoch, seq, {**st.rings, key: ring + ((seq, ev.frame),)}, evicted)
+    return Rings(st.epoch, seq, {**st.rings, key: ring + ((seq, ev.frame),)}, evicted, evicted_any)
 
 
 def replay(st: Rings, last_id: Optional[str], sees: Callable[[str], bool], wants: Callable[[Any], bool],
-           knobs: Knobs) -> tuple[RingEffect, ...]:
+           knobs: Knobs, sees_any: Optional[Callable[[str], bool]] = None) -> tuple[RingEffect, ...]:
     """What a stream opening with `last_id` is sent before its live events: Resync?, Emit per chunk
     (BATCH_MAX when batching is on, else 1; each coalesced), Head. `sees(key)`: the stream sees that
-    account's ring; `wants(frame)`: that frame may reach it."""
-    missed, gap = _missed(st, last_id, sees, wants)
+    account's ring; `sees_any(key)`: it gets that account's any-scope events (ANY_SCOPE_TYPES);
+    `wants(frame)`: that frame may reach it."""
+    missed, gap = _missed(st, last_id, sees, wants, sees_any)
     effects: list[RingEffect] = [Resync()] if gap else []
     step = BATCH_MAX if batching_on(knobs) else 1
     effects.extend(Emit(tuple(coalesce(missed[i:i + step]))) for i in range(0, len(missed), step))

@@ -7,7 +7,7 @@
  * invalidated: its next `creator_warmed`). It is armed, for the rest of the document load, by its `creator_warmed`
  * (useAccountStateEvents), by this tab leasing it, or by APP_OPEN_WARM_FALLBACK_MS after the load (no warm result
  * came). On a lease gain or a selection, its queries older than REFRESH_OLDER_MS refetch at once (`gainedOf`).
- * Dead-session Creators are not in any reader's targets, so they get no query at all.
+ * Dead-session Creators are not in any reader's targets (each reader drops them itself), so nothing reads them.
  */
 
 import { APP_OPEN_WARM_FALLBACK_MS, type TabLease } from "@/lib/viewLease";

@@ -8,6 +8,7 @@
  * callers pass null for a Dead-session Creator). A failed read counts 0.
  * Re-read only while this tab leases the Creator; an unleased one reads once
  * armed and then only on its next `creator_warmed` (lib/ofReadGate.ts).
+ * `staleMs`: how long a read stays fresh (OF Manager's column: 60 s, as Infloww's).
  */
 
 import { skipToken, useQuery } from "@tanstack/react-query";
@@ -22,7 +23,7 @@ const NO_IDS: readonly string[] = [];
 /** The count's key, for the lease-gain refetch. */
 export const COUNT_ROOTS = ["of-notif-count"] as const;
 
-export function useOfNotifCount(accountId: string | null) {
+export function useOfNotifCount(accountId: string | null, staleMs = 30_000) {
   const gate = useOfReadGate(accountId ? [accountId] : NO_IDS, COUNT_ROOTS)(accountId ?? "");
   const { enabled, ...gated } = gateOptions(gate);
   const q = useQuery<number>({
@@ -32,7 +33,7 @@ export function useOfNotifCount(accountId: string | null) {
       ? async ({ signal }) => Number((await relay.get<NotifCountResp>(
         "/api/of/v2/users/notifications/count", { accountId, priority: "background" }, signal))?.all) || 0
       : skipToken,
-    staleTime: 30_000,
+    staleTime: staleMs,
     retry: false,
     ...gated,
   });

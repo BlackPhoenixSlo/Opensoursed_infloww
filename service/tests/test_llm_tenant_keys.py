@@ -1037,7 +1037,7 @@ async def case_a_call_with_no_account_is_capped_per_agency():
     day = datetime.utcnow().strftime("%Y-%m-%d")
     cap_mc = llm_client._DEFAULT_CAP_CENTS * llm_client._MILLICENTS_PER_CENT
     async with get_session() as s:
-        s.add(GrokUserDailyCost(day=day, user_id=spent, provider=HOUSE_PROVIDER,
+        s.add(GrokUserDailyCost(day=day, user_id=spent, provider="chat",
                                 cost_cents=cap_mc, call_count=40))
 
     _KeyCapturingClient.calls = 0
@@ -1053,7 +1053,7 @@ async def case_a_call_with_no_account_is_capped_per_agency():
             GrokDailyCost.day == day, GrokDailyCost.account_id.is_(None)))
     assert await _bearer_for_agency(other) == "sk-" + other[:6]
     async with get_session() as s:
-        row = await s.get(GrokUserDailyCost, (day, other, HOUSE_PROVIDER))
+        row = await s.get(GrokUserDailyCost, (day, other, "chat"))
         after = await s.scalar(select(GrokDailyCost.call_count).where(
             GrokDailyCost.day == day, GrokDailyCost.account_id.is_(None)))
         assert row is not None and row.call_count == 1, row

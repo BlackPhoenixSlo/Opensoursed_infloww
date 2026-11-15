@@ -94,11 +94,14 @@ def case_router_questions_are_the_code_constants():
             if "qid" in b:
                 by_id.setdefault(b["qid"], []).append(b["text"])
         want = {**rj.QUESTIONS, "intensity": rj.INTENSITY}
-        if full(mode):
-            want |= {**rj.TEST_NOULS, **rj.TEST_CHOICES}
+        if full(mode):      # test + live ask `TEST_NEW_ONLY`'s wording in its place (`_router_jev._questions`)
+            want |= {**rj.TEST_NEW_ONLY, **rj.TEST_NOULS, **rj.TEST_CHOICES}
         assert set(by_id) == set(want), (mode, set(want) ^ set(by_id))
         for qid, spec in want.items():
             assert spec["instructions"] in by_id[qid], (mode, qid)
+        if full(mode):      # rwl2 F6: Shadow's asks_if_ai wording is not shown as what test / live ask
+            for qid in rj.TEST_NEW_ONLY:
+                assert rj.QUESTIONS[qid]["instructions"] not in by_id[qid], (mode, qid)
         if full(mode):
             for qid, spec in rj.TEST_SPACING.items():
                 assert spec["instructions"] in by_id[qid], ("spacing", qid)

@@ -1594,7 +1594,7 @@ def case_vetoed_keeps_full_ai_config_only_on_a_config_word():
 def case_config_word_matches_every_config_key_and_writer_model():
     """Built from the schema: a new DEFAULTS key or Writer model with no word fails here."""
     from automations.full_ai_config import DEFAULTS, WRITER_MODELS
-    keys = [k for k in DEFAULTS if k != "version"]
+    keys = [k for k in DEFAULTS if k not in assistant_full_ai.LOCKED_KEYS]
     assert set(keys) == set(assistant_full_ai.CONFIG_KEYS), keys
     for k in keys:
         for text in (k, k.replace("_", " "), f"change the {k.replace('_', ' ')} please"):

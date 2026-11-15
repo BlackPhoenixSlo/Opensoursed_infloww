@@ -112,7 +112,7 @@ def case_non_object_200_body_fails_cleanly():
             llm_client.httpx.AsyncClient = lambda *a, _d=data, **k: _Client(_d)
             hold = _Hold()
             try:
-                asyncio.run(llm_client._fire("http://x", {}, {}, call_id=None, hold=hold, model="m",
+                asyncio.run(llm_client._fire("http://x", {}, {}, call_id=None, hold=hold, model=next(iter(llm_client.MODELS)),
                                              purpose="p", max_attempts=1))
             except llm_client.LLMHTTPError as e:
                 assert "not an object" in str(e), e
