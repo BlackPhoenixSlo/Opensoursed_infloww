@@ -1,4 +1,4 @@
-{"openapi_sha1": "25ded2ec2a521223a2d9365a6ac403cf174a710a",
+{"openapi_sha1": "8a1061fe0354184cf1b56c99944475c537d0d1a8",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -377,6 +377,7 @@
   ["PUT", "/admin/full-ai/config/draft", "full_ai_config_put_draft"],
   ["PUT", "/admin/full-ai/config/checkpoint", "full_ai_config_put_checkpoint"],
   ["POST", "/admin/full-ai/config/save", "full_ai_config_save"],
+  ["PUT", "/admin/full-ai/config/audience", "full_ai_config_put_audience"],
   ["POST", "/admin/full-ai/config/rollback", "full_ai_config_rollback"],
   ["GET", "/admin/secrets", "admin_secrets_status"],
   ["PUT", "/admin/secrets", "admin_secrets_set"],

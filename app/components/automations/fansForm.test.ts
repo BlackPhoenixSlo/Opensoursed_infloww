@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildPayload, everyoneOn, fanRows, fansReducer, fansSummary, initFans, sideOf, type Action, type FansPick, type OfList,
+  AUDIENCE_SAVE_IDLE, audienceSaveReducer, buildPayload, everyoneOn, fanRows, fansReducer, fansSummary, hasFansList,
+  initFans, LIVE_NO_LIST, sideOf, type Action, type AudienceSave, type AudienceSaveAction, type FansPick, type OfList,
 } from "./fansForm";
 
 const stored = (include: number[], exclude: number[] = []) => ({ include, exclude });
@@ -79,5 +80,40 @@ describe("fanRows", () => {
     expect(fanRows([{ id: 11, name: "VIP", usersCount: 4 }], stored([11, 99], [77])).map((r) => [r.id, r.name, r.count])).toEqual([
       [11, "VIP", 4], [99, "List #99 · not found", null], [77, "List #77 · not found", null],
     ]);
+  });
+});
+
+describe("hasFansList (D61)", () => {
+  it.each<[string, { include: number[]; exclude: number[] }, boolean]>([
+    ["both empty = every Fan, no list", stored([]), false],
+    ["an include list", stored([1]), true],
+    ["an exclude list", stored([], [2]), true],
+  ])("%s", (_n, f, want) => {
+    expect(hasFansList(f)).toBe(want);
+  });
+});
+
+it("LIVE_NO_LIST is the server's D61 sentence (full_ai_api's 409 detail)", () => {
+  expect(LIVE_NO_LIST).toBe("Live needs a Fans list: keep an include or exclude list, or set Off first.");
+});
+
+describe("audienceSaveReducer", () => {
+  const D61 = LIVE_NO_LIST;
+  it.each<[string, AudienceSave, AudienceSaveAction[], AudienceSave]>([
+    ["save marks it out", AUDIENCE_SAVE_IDLE, [{ type: "save" }], { phase: "saving" }],
+    ["ok reads Saved", AUDIENCE_SAVE_IDLE, [{ type: "save" }, { type: "result", result: { kind: "ok" } }], { phase: "saved" }],
+    ["the next edit drops Saved", { phase: "saved" }, [{ type: "edit" }], AUDIENCE_SAVE_IDLE],
+    ["the next edit drops the words", { phase: "idle", error: "x" }, [{ type: "edit" }], AUDIENCE_SAVE_IDLE],
+    ["an edit while a write is out changes nothing", { phase: "saving" }, [{ type: "edit" }], { phase: "saving" }],
+    ["D61 opens the Turn Off popup", AUDIENCE_SAVE_IDLE,
+      [{ type: "save" }, { type: "result", result: { kind: "needsOff", reason: D61 } }], { phase: "needsOff", reason: D61 }],
+    ["Cancel closes the popup", { phase: "needsOff", reason: D61 }, [{ type: "dismiss" }], AUDIENCE_SAVE_IDLE],
+    ["another failure keeps its words", AUDIENCE_SAVE_IDLE,
+      [{ type: "save" }, { type: "result", result: { kind: "failed", reason: "x" } }], { phase: "idle", error: "x" }],
+    ["the next save clears the words", { phase: "idle", error: "x" }, [{ type: "save" }], { phase: "saving" }],
+    ["Turn Off and save from the popup", { phase: "needsOff", reason: D61 },
+      [{ type: "save" }, { type: "result", result: { kind: "ok" } }], { phase: "saved" }],
+  ])("%s", (_n, from, actions, want) => {
+    expect(actions.reduce(audienceSaveReducer, from)).toEqual(want);
   });
 });

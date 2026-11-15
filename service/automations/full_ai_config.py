@@ -11,9 +11,15 @@ the checkpoint drives Shadow and later live, the draft only the Test chat's righ
   validate(cfg)     field errors ("<key or page label>: <why>"); a missing key is its default, an unknown one
                     an error (so no secret ever lands in the JSON), a `RETIRED` one an error naming its successor; a Turn
                     bound over `TURN_BOUND_MAX_S` is a `writers` error
-  put_draft(stored, draft, rev) / save(stored, rev) / rollback(stored, rev)
+  put_draft(stored, draft, rev) / save(stored, rev) / rollback(stored, rev) / put_checkpoint(stored, cfg, rev)
                     the next stored blob, rev + 1; `StaleRev` on a rev mismatch, `Invalid` on
-                    field errors, nothing to save, or nothing to roll back to
+                    field errors, nothing to save, or nothing to roll back to. None of them moves an `AUDIENCE_KEYS` key.
+  put_audience(stored, patch) the given `AUDIENCE_KEYS` on every side at once, rev + 1 (no rev check: it
+                    touches nothing else)
+
+`AUDIENCE_KEYS` (`fans`, `top_spend_cents`: who live answers) are not part of how the AI behaves (owner 2026-11-15):
+every side always holds the checkpoint's values (`merged`), the config writes carry them over whatever their body
+says, and only `put_audience` sets them.
 
 `style` holds the five layers the reply chain reads (`full_ai_writers.style_flags`). `text_style` is the
 pre-layers master key, still accepted on a write (Do mode's prompt names it): girl = every layer on, formal =
@@ -496,10 +502,24 @@ def merged(stored: dict | None) -> dict[str, Any]:
     checkpoint = side(stored.get("checkpoint"))
     return {
         "checkpoint": checkpoint,
-        "previous": side(stored["previous"]) if stored.get("previous") else None,
-        "draft": side(stored["draft"]) if stored.get("draft") else copy.deepcopy(checkpoint),
+        "previous": _audience_of(side(stored["previous"]), checkpoint) if stored.get("previous") else None,
+        "draft": _audience_of(side(stored["draft"]), checkpoint) if stored.get("draft") else copy.deepcopy(checkpoint),
         "rev": int(stored.get("rev") or 0),
     }
+
+
+# Who live answers, not how the AI behaves: one value on every side, set only by `put_audience`.
+AUDIENCE_KEYS: tuple[str, ...] = ("fans", "top_spend_cents")
+
+
+def _audience_of(cfg: dict, src: dict) -> dict[str, Any]:
+    """`cfg` holding `src`'s `AUDIENCE_KEYS` values (the stored ones: only `put_audience` changes them)."""
+    return {**cfg, **{k: copy.deepcopy(src[k]) for k in AUDIENCE_KEYS}}
+
+
+def _no_audience(cfg: Any) -> Any:
+    """A write's body without `AUDIENCE_KEYS` (validated and stored without them: the stored ones are carried over)."""
+    return {k: v for k, v in cfg.items() if k not in AUDIENCE_KEYS} if isinstance(cfg, dict) else cfg
 
 
 def _check(cur: dict, rev: int) -> None:
@@ -512,9 +532,9 @@ def put_draft(stored: dict | None, draft: Any, rev: int) -> dict[str, Any]:
     errors: the owner reloads first."""
     cur = merged(stored)
     _check(cur, rev)
-    if errs := validate(draft):
+    if errs := validate(_no_audience(draft)):
         raise Invalid(errs)
-    return {**cur, "draft": side(draft), "rev": rev + 1}
+    return {**cur, "draft": _audience_of(side(_no_audience(draft)), cur["checkpoint"]), "rev": rev + 1}
 
 
 def save(stored: dict | None, rev: int) -> dict[str, Any]:
@@ -535,9 +555,9 @@ def put_checkpoint(stored: dict | None, cfg: Any, rev: int) -> dict[str, Any]:
     the old checkpoint is kept as `previous`, so Roll back undoes it. The draft stays."""
     cur = merged(stored)
     _check(cur, rev)
-    if errs := validate(cfg):
+    if errs := validate(_no_audience(cfg)):
         raise Invalid(errs)
-    new = side(cfg)
+    new = _audience_of(side(_no_audience(cfg)), cur["checkpoint"])
     if new == cur["checkpoint"]:
         raise Invalid(["checkpoint: unchanged, nothing to store"])
     return {**cur, "checkpoint": new, "previous": cur["checkpoint"], "rev": rev + 1}
@@ -550,6 +570,20 @@ def rollback(stored: dict | None, rev: int) -> dict[str, Any]:
     if cur["previous"] is None:
         raise Invalid(["previous: nothing to roll back to"])
     return {**cur, "checkpoint": cur["previous"], "previous": cur["checkpoint"], "rev": rev + 1}
+
+
+def put_audience(stored: dict | None, patch: dict[str, Any]) -> dict[str, Any]:
+    """`patch` (some `AUDIENCE_KEYS`) on the checkpoint, the draft and `previous` (the Fans dialog's and the Top spend
+    box's own write); everything else stays. `Invalid` on no key, another key, or a bad value."""
+    if not patch:
+        raise Invalid([f"audience: want one of {', '.join(AUDIENCE_KEYS)}"])
+    if errs := [f"{k}: not an audience key" for k in patch if k not in AUDIENCE_KEYS] or validate(patch):
+        raise Invalid(errs)
+    cur = merged(stored)
+    src = {**cur["checkpoint"], **copy.deepcopy(patch)}
+    return {"checkpoint": _audience_of(cur["checkpoint"], src), "draft": _audience_of(cur["draft"], src),
+            "previous": _audience_of(cur["previous"], src) if cur["previous"] is not None else None,
+            "rev": cur["rev"] + 1}
 
 
 # Router Jev 10 s (`_router_jev.TIMEOUT_S`, retries included) + info Jev 10 s.

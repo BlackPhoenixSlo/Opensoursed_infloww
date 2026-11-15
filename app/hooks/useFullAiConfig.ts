@@ -11,36 +11,36 @@
  *   POST /admin/full-ai/config/save | rollback {account_id, rev}   `commit`, then `saved` / `rolledBack`
  *   PUT  /admin/full-ai/config/checkpoint {account_id, checkpoint, rev}   the checkpoint JSON: `commit`, then `loaded`
  *                                            with the answer (a draft edit unstored is dropped, as on Reload)
+ *   PUT  /admin/full-ai/config/audience {account_id, fans?, top_spend_cents?}   `putAudience` (the Fans dialog, the Top
+ *                                            spend box): no rev, every side at once, then `audienceSaved`
+ *                                            and the Mode read refetched (its Live blockers)
  *
  * Every write answers the GET shape. A field error is 422 `{errors: ["<key or page label>: <why>"]}` → `configFailed`; a stale rev is
- * 409 → `stale` (the page asks for a reload instead of overwriting). Both read through `RelayError.body`. Reload (a fresh
+ * 409 `{detail, rev}` → `stale` (the page asks for a reload instead of overwriting); a 409 without `rev` (D61: Live needs
+ * a Fans list) → `configFailed` with its detail (`writeFailed`). All read through `RelayError.body`. Reload (a fresh
  * GET → `loaded`) is also the way back from a refused edit or a failed read: it drops the unstored edit. Keep mine PUTs
  * the page's draft on the applied rev (`keepMineSave`); Take theirs only dispatches.
  * Called inside `useFullAiTestChat`, which owns the reducer.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, type Dispatch } from "react";
 
 import type { ConfigBody, FullAiConfig } from "@/components/automations/fullAiConfig";
 import {
-  canEdit, canRollback, canSave, keepMineSave, type TestChatAction, type TestChatState,
+  audienceFailed, canEdit, canRollback, canSave, keepMineSave, writeFailed, type AudiencePatch, type AudienceResult,
+  type TestChatAction, type TestChatState,
 } from "@/components/automations/fullAiTestChat";
+import { fullAiModeKey } from "@/hooks/useFullAiMode";
 import { errText } from "@/lib/errText";
-import { relay, RelayError } from "@/lib/relay";
-
-/** A failed write as reducer actions: 409 stale, 422 its field errors, else its message. */
-function failed(e: unknown): TestChatAction {
-  if (e instanceof RelayError && e.status === 409) return { type: "stale" };
-  const errors = e instanceof RelayError ? (e.body as { errors?: unknown } | null)?.errors : undefined;
-  return { type: "configFailed", errors: Array.isArray(errors) ? errors.map(String) : [errText(e, "Request failed")] };
-}
+import { relay } from "@/lib/relay";
 
 /** One account's Full AI config query key: Do mode's full_ai_config apply invalidates it on 200 (spec 03c), and the
  *  page's config read below refetches. */
 export const fullAiConfigKey = (accountId: string) => ["full-ai-config", accountId] as const;
 
 export function useFullAiConfig(accountId: string, state: TestChatState, dispatch: Dispatch<TestChatAction>) {
+  const qc = useQueryClient();
   // The handlers read the newest state (a click lands after the render that enabled it).
   const ref = useRef(state);
   useEffect(() => { ref.current = state; }, [state]);
@@ -88,7 +88,7 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
       dispatch({ type: "draftSaved", rev: body.rev, draft: body.draft });
       return true;
     } catch (e) {
-      dispatch(failed(e));
+      dispatch(writeFailed(e));
       return false;
     }
   }, [accountId, dispatch]);
@@ -128,7 +128,7 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
       const body = await relay.post<ConfigBody>(`/admin/full-ai/config/${step}`, { account_id: accountId, rev: s.rev }, { accountId });
       dispatch({ type: step === "save" ? "saved" : "rolledBack", rev: body.rev });
     } catch (e) {
-      dispatch(failed(e));
+      dispatch(writeFailed(e));
     }
   }, [accountId, dispatch]);
 
@@ -144,10 +144,25 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
       dispatch({ type: "loaded", body });
       return true;
     } catch (e) {
-      dispatch(failed(e));
+      dispatch(writeFailed(e));
       return false;
     }
   }, [accountId, dispatch]);
+
+  /** Who live answers (the Fans dialog, the Top spend box): `PUT config/audience` with only those keys, no rev, applied
+   *  at once on every side (never a draft edit; the controls' `off` wait does not apply). The answer moves only those
+   *  keys and the rev (`audienceSaved`); a failure is returned for the control to show, never a page error. */
+  const putAudience = useCallback(async (patch: AudiencePatch): Promise<AudienceResult> => {
+    try {
+      const body = await relay.put<ConfigBody>("/admin/full-ai/config/audience", { account_id: accountId, ...patch }, { accountId });
+      dispatch({ type: "audienceSaved", body });
+      // Fans move the mode read's Live blockers (D61); read them again.
+      void qc.invalidateQueries({ queryKey: fullAiModeKey(accountId) });
+      return { kind: "ok" };
+    } catch (e) {
+      return audienceFailed(e);
+    }
+  }, [accountId, dispatch, qc]);
 
   const save = useCallback(() => void commit("save"), [commit]);
   const rollback = useCallback(() => void commit("rollback"), [commit]);
@@ -161,7 +176,7 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
   const reference = data?.reference ?? [];
   /** The controls' server constants (the GET's `limits`; null until it answers). */
   const limits = data?.limits ?? null;
-  return { edit, putDraft, putCheckpoint, save, rollback, reload, keepMine, takeTheirs, writerModels, writerProviders, providerLabels, reference, limits };
+  return { edit, putDraft, putCheckpoint, putAudience, save, rollback, reload, keepMine, takeTheirs, writerModels, writerProviders, providerLabels, reference, limits };
 }
 
 export type FullAiConfigApi = ReturnType<typeof useFullAiConfig>;

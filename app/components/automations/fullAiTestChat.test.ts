@@ -5,8 +5,9 @@ import {
   buildSettlePayload, buildTurnPayload, canEdit, canRollback, canSave, canSend, canSettle, initTestChat, keepMineSave,
   MEDIA_ONLY, photoCaption, ppvLine, replyLine, sendBlock, testChatReducer, type FanPhoto, type PpvLine, type Offer,
   type TestChatAction, type TestChatState, type Turn, type TurnResponse, type UiSide, sessionTurns, noReplyText,
-  writersFailed, heatTail, type HeatCheck, mediaLine, type OfferItem,
+  writersFailed, heatTail, type HeatCheck, mediaLine, type OfferItem, writeFailed, audienceFailed, type AudienceResult,
 } from "./fullAiTestChat";
+import { RelayError } from "@/lib/relay";
 
 const reply = (over: Partial<TurnResponse> = {}): TurnResponse => ({
   row_id: 1, route: "chat", heat: 1, route_row: "otherwise", dropped: [], parts: [{ text: "hey you" }],
@@ -705,5 +706,62 @@ describe("his photo (attach → described once → both sides' Turns)", () => {
     ["no description", { ...PHOTO, desc: null, read: true }, MEDIA_ONLY],
   ])("photoCaption: %s", (_n, p, want) => {
     expect(photoCaption(p)).toBe(want);
+  });
+});
+
+describe("writeFailed / audienceFailed: a failed config write", () => {
+  const D61 = "Live needs a Fans list: keep an include or exclude list, or set Off first.";
+  const STALE = "Someone saved this config meanwhile. Reload.";
+  it.each<[string, unknown, TestChatAction]>([
+    ["409 with a rev: stale", new RelayError(409, { detail: STALE, rev: 9 }, STALE), { type: "stale" }],
+    ["409 without rev (D61): its words, not stale", new RelayError(409, { detail: D61 }, D61), { type: "configFailed", errors: [D61] }],
+    ["409 with a non-number rev: its words", new RelayError(409, { detail: "x", rev: "9" }, "x"), { type: "configFailed", errors: ["x"] }],
+    ["422 field errors", new RelayError(422, { errors: ["gifs: must be true or false"] }), { type: "configFailed", errors: ["gifs: must be true or false"] }],
+    ["a network error", new Error("offline"), { type: "configFailed", errors: ["offline"] }],
+  ])("writeFailed %s", (_n, e, want) => {
+    expect(writeFailed(e)).toEqual(want);
+  });
+  it.each<[string, unknown, AudienceResult]>([
+    ["D61 offers Turn Off", new RelayError(409, { detail: D61 }, D61), { kind: "needsOff", reason: D61 }],
+    ["a lost race asks to try again", new RelayError(409, { detail: STALE, rev: 4 }, STALE),
+      { kind: "failed", reason: "Someone saved this config meanwhile. Try again." }],
+    ["422 its words", new RelayError(422, { errors: ["top_spend_cents: must be a whole number"] }),
+      { kind: "failed", reason: "top_spend_cents: must be a whole number" }],
+    ["a network error", new Error("offline"), { kind: "failed", reason: "offline" }],
+  ])("audienceFailed %s", (_n, e, want) => {
+    expect(audienceFailed(e)).toEqual(want);
+  });
+});
+
+describe("audienceSaved: who live answers moves on every side, nothing else", () => {
+  const ck: FullAiConfig = { gifs: false, fans: { include: [1], exclude: [] }, top_spend_cents: 100000 };
+  const answer = (rev: number, fans: { include: number[]; exclude: number[] } = { include: [], exclude: [3] }, top = 500) => body({
+    checkpoint: { ...ck, fans, top_spend_cents: top }, previous: { ...ck, fans, top_spend_cents: top },
+    draft: { ...ck, gifs: true, fans, top_spend_cents: top }, rev,
+  });
+  const loaded = (): TestChatState => run(initTestChat("p1"), { type: "loaded", body: body({
+    checkpoint: ck, previous: { ...ck, gifs: true }, draft: { ...ck, gifs: true }, rev: 3 }) });
+  it("patches checkpoint, previous and draft; takes the newer rev; keeps the rest", () => {
+    const s = run(loaded(), { type: "audienceSaved", body: answer(4) });
+    for (const side of [s.checkpoint, s.previous, s.draft]) {
+      expect(side?.fans).toEqual({ include: [], exclude: [3] });
+      expect(side?.top_spend_cents).toBe(500);
+    }
+    expect([s.checkpoint?.gifs, s.previous?.gifs, s.draft?.gifs, s.rev, s.stale]).toEqual([false, true, true, 4, false]);
+  });
+  it("an unstored edit stays (its audience keys follow)", () => {
+    const s = run(loaded(), { type: "editDraft", draft: { ...ck, gifs: true, sext_on: false } },
+      { type: "configFailed", errors: ["x"] }, { type: "audienceSaved", body: answer(4) });
+    expect([s.draft?.sext_on, s.draft?.fans, s.dirty, s.rev]).toEqual([false, { include: [], exclude: [3] }, true, 4]);
+  });
+  it("a write of ours out: held and offered once it settles", () => {
+    const out = run(loaded(), { type: "editDraft", draft: { ...ck, gifs: true, sext_on: false } }, { type: "saveDraft" },
+      { type: "audienceSaved", body: answer(5) });
+    expect([out.rev, out.held?.rev, out.draft?.fans]).toEqual([3, 5, { include: [], exclude: [3] }]);
+    const settled = run(out, { type: "draftSaved", rev: 4, draft: { ...ck, gifs: true, sext_on: false } });
+    expect([settled.rev, settled.held]).toEqual([5, null]);
+  });
+  it("an older answer never lowers the rev", () => {
+    expect(run(loaded(), { type: "audienceSaved", body: answer(2) }).rev).toBe(3);
   });
 });

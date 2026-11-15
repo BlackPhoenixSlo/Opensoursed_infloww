@@ -43,6 +43,9 @@
                             the Sell switches' sell_nearest / sell_bundle values, the reply speed / Questions / PPV
                             caption labels, the plain switches' defaults) match these; `limits` lists the default first
   case_page_labels          the keys the page now edits (2026-11-15) carry their control label in REFERENCE
+  case_audience_keys_carried_table  (owner 2026-11-15) `fans` / `top_spend_cents` one value on every side: the config
+                            writes (JSON boxes too) keep them, `put_audience` sets them on all three sides
+  case_config_api_audience  PUT config/audience: no rev, all sides, rev bumped (next draft PUT not stale), 422s
   case_config_api_round_trip GET defaults (+ `reference`, `limits`), PUT 422 (unknown key, catch-up too fast) / 409 / 200, save, roll back twice =
                             identity; the `full_ai_chat` rule row byte-identical throughout
 
@@ -65,8 +68,8 @@ from sqlalchemy import text  # noqa: E402
 import _agency_fixtures as fx  # noqa: E402
 from automations.full_ai_config import (  # noqa: E402
     CAPTION_WRITERS, DEFAULTS, INFO_QUESTIONS, REFERENCE, REPLY_SPEEDS, SELL_BUNDLE, SELL_NEAREST, STYLE_LAYERS,
-    TEXT_STYLES, TURN_BOUND_MAX_S, WRITER_PROVIDERS, Invalid, StaleRev, limits, merged, put_checkpoint, put_draft,
-    reference, rollback, save, style_layers, turn_bound_s, validate,
+    TEXT_STYLES, TURN_BOUND_MAX_S, WRITER_PROVIDERS, Invalid, StaleRev, limits, merged, put_audience, put_checkpoint,
+    put_draft, reference, rollback, save, style_layers, turn_bound_s, validate,
 )
 from db.engine import get_session  # noqa: E402
 from db.models import AutomationRule  # noqa: E402
@@ -461,13 +464,14 @@ def case_top_spend_cents_table():
     for bad in (-1, 2.5, 100.0, "100", True, False, None, [1]):
         assert validate({**DEFAULTS, "top_spend_cents": bad}) == [
             "top_spend_cents: must be a whole number of cents, 0 or more (0 = off)"], bad
-    assert "top_spend_cents" in assistant_full_ai.CONFIG_KEYS
+    assert "top_spend_cents" not in assistant_full_ai.CONFIG_KEYS     # its own write (`put_audience`)
     assert assistant_full_ai.label("top_spend_cents") == "Top spend limit"
     assert REFERENCE["top_spend_cents"]["page"] == "Top spend limit"      # the page's dollars box
     pre = {k: v for k, v in DEFAULTS.items() if k != "top_spend_cents"}
     got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "top_spend_cents": 0}, "rev": 2})
+    # Every side reads the checkpoint's (an audience key: one value everywhere).
     assert got["checkpoint"]["top_spend_cents"] == got["previous"]["top_spend_cents"] == 100000, got
-    assert got["draft"]["top_spend_cents"] == 0, got["draft"]
+    assert got["draft"]["top_spend_cents"] == 100000, got["draft"]
     assert merged(None)["checkpoint"]["top_spend_cents"] == 100000
 
 
@@ -484,14 +488,53 @@ def case_fans_table():
                 {"include": [0], "exclude": []}, {"include": [], "exclude": [-3]}, {"include": [4, 4], "exclude": []}):
         errs = validate({**DEFAULTS, "fans": bad})
         assert len(errs) == 1 and errs[0].startswith("fans: "), (bad, errs)
-    assert "fans" in assistant_full_ai.CONFIG_KEYS
+    assert "fans" not in assistant_full_ai.CONFIG_KEYS     # its own write (`put_audience`)
     assert assistant_full_ai.label("fans") == "Fans"
     assert REFERENCE["fans"]["page"] == "Fans"      # the page's Fans dialog
     pre = {k: v for k, v in DEFAULTS.items() if k != "fans"}
     got = merged({"checkpoint": pre, "previous": pre, "draft": {**pre, "fans": {"include": [3], "exclude": []}},
                   "rev": 2})
-    assert got["checkpoint"]["fans"] == got["previous"]["fans"] == {"include": [], "exclude": []}, got
-    assert got["draft"]["fans"] == {"include": [3], "exclude": []}, got["draft"]
+    # Every side reads the checkpoint's list (an audience key: one value everywhere).
+    assert got["checkpoint"]["fans"] == got["previous"]["fans"] == got["draft"]["fans"] == {
+        "include": [], "exclude": []}, got
+
+
+def case_audience_keys_carried_table():
+    """(owner 2026-11-15) `fans` and `top_spend_cents` say who live answers, not how the AI behaves: put_draft /
+    put_checkpoint (the JSON boxes included) / save / rollback keep the stored values whatever their body says;
+    put_audience sets the given keys on all three sides at once (no rev), validates, refuses another key."""
+    aud = {"fans": {"include": [7], "exclude": [8]}, "top_spend_cents": 5000}
+    s0 = put_audience(put_draft(None, {"gifs": True}, 0), aud)
+    assert s0["rev"] == 2 and s0["previous"] is None, s0
+    assert all({k: s0[side][k] for k in aud} == aud for side in ("checkpoint", "draft")), s0
+    assert s0["draft"]["gifs"] is True and s0["checkpoint"]["gifs"] is False, s0      # nothing else moved
+    other = {"fans": {"include": [], "exclude": []}, "top_spend_cents": 0}
+    d = put_draft(s0, {**DEFAULTS, "gifs": True, "reply_speed": "0-15-60", **other}, 2)   # a body naming other values
+    assert {k: d["draft"][k] for k in aud} == aud, d["draft"]
+    sv = save(d, 3)
+    assert all({k: sv[side][k] for k in aud} == aud for side in ("checkpoint", "previous", "draft")), sv
+    c = put_checkpoint(sv, {**DEFAULTS, "sell_on": True, **other}, 4)
+    assert {k: c["checkpoint"][k] for k in aud} == aud and c["checkpoint"]["sell_on"] is True, c
+    # A body only changing an audience key is unchanged, not a new checkpoint.
+    assert _raises(Invalid, put_checkpoint, c, {**c["checkpoint"], **other}, 5).errors == [
+        "checkpoint: unchanged, nothing to store"]
+    rb = rollback(c, 5)
+    assert all({k: rb[side][k] for k in aud} == aud for side in ("checkpoint", "previous", "draft")), rb
+    # Set later, then roll back: the new value holds on every side.
+    a2 = put_audience(rb, {"top_spend_cents": 0})
+    assert all(a2[side]["top_spend_cents"] == 0 and a2[side]["fans"] == aud["fans"]
+               for side in ("checkpoint", "previous", "draft")) and a2["rev"] == 7, a2
+    assert all(rollback(a2, 7)[side]["top_spend_cents"] == 0 for side in ("checkpoint", "previous", "draft"))
+    # A JSON body's bad audience value is ignored like any other value of them; put_audience validates.
+    assert put_draft(a2, {**DEFAULTS, "fans": "all", "top_spend_cents": -1}, 7)["draft"]["fans"] == aud["fans"]
+    assert _raises(Invalid, put_audience, a2, {"fans": {"include": [0], "exclude": []}}).errors[0].startswith("fans: ")
+    assert _raises(Invalid, put_audience, a2, {"top_spend_cents": -1}).errors == [
+        "top_spend_cents: must be a whole number of cents, 0 or more (0 = off)"]
+    assert _raises(Invalid, put_audience, a2, {"gifs": True}).errors == ["gifs: not an audience key"]
+    assert _raises(Invalid, put_audience, a2, {}).errors
+    before = copy.deepcopy(a2)
+    put_audience(a2, aud)
+    assert a2 == before                                                 # pure
 
 
 def case_catchup_minutes_table():
@@ -649,6 +692,32 @@ def case_config_api_round_trip():
     assert {**forth.json(), "rev": 2} == after_save and forth.json()["rev"] == 4, forth.json()
     assert _rule_row() == rule
     assert OWNER_A.get(CONFIG, params={"account_id": A}).json() == forth.json()
+
+
+
+def case_config_api_audience():
+    """PUT config/audience: no rev, sets the given keys on all three sides, bumps rev (the next draft PUT on it is not
+    stale); 422 on a bad value or another key; a draft PUT naming other audience values keeps the stored ones."""
+    cur = OWNER_A.get(CONFIG, params={"account_id": A}).json()
+    r = OWNER_A.put(f"{CONFIG}/audience", json={"account_id": A, "fans": {"include": [5], "exclude": []}})
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["rev"] == cur["rev"] + 1, got
+    sides = [got["checkpoint"], got["draft"]] + ([got["previous"]] if got["previous"] else [])
+    assert all(x["fans"] == {"include": [5], "exclude": []} for x in sides), got
+    assert all(x["top_spend_cents"] == cur["checkpoint"]["top_spend_cents"] for x in sides), got
+    t = OWNER_A.put(f"{CONFIG}/audience", json={"account_id": A, "top_spend_cents": 2500})
+    assert t.status_code == 200 and t.json()["draft"]["top_spend_cents"] == 2500, t.text
+    assert t.json()["draft"]["fans"] == {"include": [5], "exclude": []}, t.json()
+    d = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "rev": t.json()["rev"], "draft": {
+        **t.json()["draft"], "gifs": True, "fans": {"include": [], "exclude": []}, "top_spend_cents": 0}})
+    assert d.status_code == 200, d.text
+    assert (d.json()["draft"]["gifs"], d.json()["draft"]["fans"], d.json()["draft"]["top_spend_cents"]) == (
+        True, {"include": [5], "exclude": []}, 2500), d.json()["draft"]
+    for bad in ({"top_spend_cents": "5"}, {"fans": {"include": [0], "exclude": []}}, {}):
+        b = OWNER_A.put(f"{CONFIG}/audience", json={"account_id": A, **bad})
+        assert b.status_code == 422 and b.json()["errors"], (bad, b.text)
+    assert OWNER_A.put(f"{CONFIG}/audience", json={"account_id": A, "gifs": True}).status_code == 422
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 "use client";
 
 /**
- * Full AI Chat's settings column (spec phase-03a, 03b): eighteen controls in a list named "Settings":
- *   1. the Mode control (Off / Live, `FullAiModeControl`);
+ * Full AI Chat's settings column (spec phase-03a, 03b). On top, apart from the bot config: the Mode control (Off / Live,
+ * `FullAiModeControl`) and "Who Full AI answers when Live" (`FullAiAudience` in `FullAiFans.tsx`: Fans and Top spend limit,
+ * their own write, applied at once on every side; Save / Roll back / JSON never move them, owner 2026-11-15).
+ * Then the bot config, controls in a list named "Settings" (numbered as before; 1, 17 and 18 moved up):
  *   2. LLM keys: whether each provider the Writers run on (draft and checkpoint; the config GET's `writer_providers`)
  *   and, while Read his photos is on, DeepInfra is set (never a value or hint; "not set" in red, no DeepInfra key a
  *   warning, not a Live blocker), linking to the agency keys form;
@@ -14,14 +16,12 @@
  *   13. Sell (on, the "Sell settings" group under it: eight switches, all on by default, owner 2026-11-14/15: Unasked
  *   offers, Chat tease, Implied asks, Nearest piece, Fill the set, Match his count, Spacing, He likes; `sellSwitches`),
  *   14. PPV caption (`caption_writer`: Last bubble / Own call), 15. Content folders, 16. Prepare content
- *   (`FullAiSellSettings.tsx`, ticket 49), 17. Top spend limit (`top_spend_cents`, edited in dollars, 0 = no limit),
- *   18. Fans (`fans`: per OF fan list Include / Exclude, `FullAiFans.tsx`). The Questions / PPV caption options are the
- *   server's (`limits`).
- * Controls 3-15, 17 and 18 edit the draft config and store it at once (`useFullAiConfig.edit`); the Test chat's Send waits meanwhile.
+ *   (`FullAiSellSettings.tsx`, ticket 49). The Questions / PPV caption options are the server's (`limits`).
+ * Controls 3-15 edit the draft config and store it at once (`useFullAiConfig.edit`); the Test chat's Send waits meanwhile.
  * Under them: Save (draft → checkpoint), Roll back (swap checkpoint and previous), JSON (checkpoint and draft side by
  * side, each editable and stored on its own, validated by the server; under them the read-only "All settings" table off the
- * GET's `reference`: every key's default, the draft's value, what it accepts and does), the field errors, and on a stale rev a reload message. Reload
- * shows with either: it reads the stored config again, the way back from a refused edit or a failed read.
+ * GET's `reference`: every key's default, the draft's value, what it accepts and does), then right under them the field
+ * errors (a 409 without `rev`, e.g. D61, shows its words), and on a stale rev a reload message. Reload shows with either: it reads the stored config again, the way back from a refused edit or a failed read.
  * A draft stored elsewhere (the assistant's Apply) while an edit is unsaved raises the Keep mine / Take theirs bar on
  * top (ticket 57); controls, Save and Send wait until one is picked.
  * State lives in the Test chat reducer (`fullAiTestChat.ts`); this file renders and calls the hook.
@@ -32,18 +32,18 @@ import { useReducer, useState } from "react";
 
 import { ROW, SwitchRow } from "@/components/automations/automationPage";
 import { FullAiModeControl } from "@/components/automations/FullAiModeControl";
-import { FansRow } from "@/components/automations/FullAiFans";
+import { FullAiAudience } from "@/components/automations/FullAiFans";
 import { ContentFoldersRow, PrepareRow } from "@/components/automations/FullAiSellSettings";
 import {
   captionLabel, chatSwitch, humanStyle, humanStylePatch, infoQuestionsLabel, layersOff, sellSwitches, speedLabel,
-  styleLayers, gifPct, gifPctPatch, sellSwitchPatch, settingRows, toggleWriterPatch, topSpendDollars, topSpendPatch,
+  styleLayers, gifPct, gifPctPatch, sellSwitchPatch, settingRows, toggleWriterPatch,
   typoPct, typoPctPatch, typosPatch, writerPatch, type ChatSwitchKey, type FullAiConfig, type SettingRow,
 } from "@/components/automations/fullAiConfig";
 import { keyRows, photoKeyMissing } from "@/components/automations/fullAiKeys";
 import {
   jsonEditInit, jsonEditReducer, jsonMoved, jsonTyped, prettyJson, type JsonSide,
 } from "@/components/automations/fullAiConfigJson";
-import { canEdit, canRollback, canSave, keepMineSave, type TestChatState } from "@/components/automations/fullAiTestChat";
+import { canEdit, canRollback, canSave, keepMineSave, STALE_TEXT, type TestChatState } from "@/components/automations/fullAiTestChat";
 import { RawJsonActions, RawJsonEditor } from "@/components/automations/RawJsonModal";
 import { IF_TABLE, IfButton, IfHelp, IfInput, IfModal, IfSegmented, IfSwitch } from "@/components/ui/infloww";
 import { Badge } from "@/components/ui/primitives";
@@ -53,7 +53,6 @@ import { errText } from "@/lib/errText";
 import { parseJsonObject } from "@/lib/rawJsonReducer";
 import { cn } from "@/lib/utils";
 
-const STALE = "Someone saved this config meanwhile. Reload.";
 
 export function FullAiSettings({ state, cfg, accountId }: {
   state: TestChatState; cfg: FullAiConfigApi; accountId: string;
@@ -66,8 +65,10 @@ export function FullAiSettings({ state, cfg, accountId }: {
   return (
     <div className="space-y-3">
       {state.conflict && <ConflictBar cfg={cfg} canKeep={keepMineSave(state) !== null} />}
+      {/* Live or not and who it answers: apart from the bot config below (its Save / Roll back never move these). */}
+      <FullAiModeControl accountId={accountId} />
+      <FullAiAudience accountId={accountId} state={state} cfg={cfg} />
       <ul aria-label="Settings" className="space-y-2">
-        <li><FullAiModeControl accountId={accountId} /></li>
         <li><KeysRow state={state} cfg={cfg} /></li>
         {/* The speeds are the server's (`limits`): the row waits for the config read. */}
         {cfg.limits && (
@@ -124,8 +125,6 @@ export function FullAiSettings({ state, cfg, accountId }: {
         )}
         <li><ContentFoldersRow accountId={accountId} draft={draft} off={off} cfg={cfg} /></li>
         <li><PrepareRow accountId={accountId} /></li>
-        <li><TopSpendRow draft={draft} off={off} cfg={cfg} /></li>
-        <li><FansRow accountId={accountId} draft={draft} off={off} cfg={cfg} /></li>
       </ul>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -134,11 +133,8 @@ export function FullAiSettings({ state, cfg, accountId }: {
         <IfButton disabled={off} onClick={() => setJsonOpen(true)}>JSON (old + new)</IfButton>
         {state.savingDraft && <span role="status" className="text-[12px] text-muted">Storing draft…</span>}
       </div>
-      <p className="text-[12px] text-muted">
-        Save makes the draft the checkpoint. Roll back swaps back; tap it again to undo.
-      </p>
-
-      {state.stale && <p role="alert" className="text-[12px] text-warn">{STALE}</p>}
+      {/* Right under Save: a refused Save / Roll back / edit shows where it was tapped. */}
+      {state.stale && <p role="alert" className="text-[12px] text-warn">{STALE_TEXT}</p>}
       {state.errors.length > 0 && !jsonOpen && (
         <ul aria-label="Config errors" className="space-y-1 text-[12px] text-err">
           {state.errors.map((e) => <li key={e}>{e}</li>)}
@@ -150,6 +146,9 @@ export function FullAiSettings({ state, cfg, accountId }: {
           <span className="text-[12px] text-muted">Reads the stored config again; an edit not stored is dropped.</span>
         </div>
       )}
+      <p className="text-[12px] text-muted">
+        Save makes the draft the checkpoint. Roll back swaps back; tap it again to undo.
+      </p>
 
       {jsonOpen && draft && <ConfigJson state={state} cfg={cfg} onClose={() => setJsonOpen(false)} />}
     </div>
@@ -197,34 +196,6 @@ function ChoiceRow({ label, hint, value, values, toLabel, off, onChange }: {
         </div>
         <IfSegmented aria-label={label} value={value}
           options={values.map((v) => ({ value: v, label: toLabel(v), disabled: off }))} onChange={onChange} />
-      </div>
-    </div>
-  );
-}
-
-/** Top spend limit: dollars on the page, cents stored (`top_spend_cents`); 0 = no limit. Stored on blur / Enter; a refused
- *  entry (empty too) snaps back. */
-function TopSpendRow({ draft, off, cfg }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
-  const dollars = topSpendDollars(draft);
-  const commit = (el: HTMLInputElement) => {
-    const patch = topSpendPatch(el.value);
-    if (patch === null) el.value = dollars;
-    else if (patch.top_spend_cents !== draft?.top_spend_cents) cfg.edit(patch);
-  };
-  return (
-    <div className={ROW}>
-      <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
-        <div className="min-w-0">
-          <div className="text-[14px] text-fg">Top spend limit</div>
-          <div className="mt-0.5 text-[12px] text-muted">Live only. A Fan who has spent this much is left to humans. 0 = no limit.</div>
-        </div>
-        <label className="flex items-center gap-1.5 text-[14px] text-fg">
-          <span>$</span>
-          <IfInput key={dollars} type="number" inputMode="decimal" min={0} step={0.01} aria-label="Top spend limit"
-            className="w-28" disabled={off} defaultValue={dollars}
-            onBlur={(e) => commit(e.currentTarget)}
-            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
-        </label>
       </div>
     </div>
   );
@@ -360,7 +331,7 @@ function ConfigJson({ state, cfg, onClose }: { state: TestChatState; cfg: FullAi
   const moved = jsonMoved(ed, state);
   // Escape closes only untouched boxes, and never mid-store.
   const typed = jsonTyped(ed);
-  const serverError = state.stale ? STALE : state.errors.length > 0 ? state.errors.join("\n") : null;
+  const serverError = state.stale ? STALE_TEXT : state.errors.length > 0 ? state.errors.join("\n") : null;
   const parse = (side: JsonSide): { v: Record<string, unknown> | null; err: string | null } => {
     try { return { v: parseJsonObject(text[side], "The config", '{"gifs": true}'), err: null }; }
     catch (e) { return { v: null, err: errText(e) }; }
@@ -373,7 +344,7 @@ function ConfigJson({ state, cfg, onClose }: { state: TestChatState; cfg: FullAi
   return (
     <IfModal width={1200} size="editor" title="Full AI config JSON" onClose={onClose} keyboard={!busy && !typed}
       footer={<IfButton onClick={onClose}>Cancel</IfButton>}>
-      <IfHelp className="-mt-3 mb-3">Old (checkpoint) left, new (draft) right: what the Test chat split-tests. Unknown keys are refused.</IfHelp>
+      <IfHelp className="-mt-3 mb-3">Old (checkpoint) left, new (draft) right: what the Test chat split-tests. Unknown keys are refused. fans and top_spend_cents are set above (Who Full AI answers); edits of them here are ignored.</IfHelp>
       {moved && !state.stale && (
         <p role="alert" className="-mt-1 mb-3 text-[12px] text-warn">
           The config changed elsewhere since you opened this (an assistant Apply), so these boxes can&apos;t be stored. Copy

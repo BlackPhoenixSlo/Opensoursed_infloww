@@ -102,6 +102,9 @@ turn take the same gate (`require_opt_in_kind`: the owner or a granted member).
       checkpoint becomes `previous` (Roll back undoes it), the draft stays
   POST /admin/full-ai/config/save {account_id, rev}
   POST /admin/full-ai/config/rollback {account_id, rev}
+  PUT  /admin/full-ai/config/audience {account_id, fans?, top_spend_cents?}   who live answers (the Fans dialog, the
+      Top spend box): the given keys on checkpoint, draft and previous at once, applied now; no `rev` (read and
+      compare-and-swap inside, one retry on a race). The four writes above never change these two keys.
       → each the GET shape after the write. 422 {errors: ["<key>: <why>"]} on field errors,
       nothing to save or nothing to roll back to; 409 {detail, rev} when `rev` is not the
       stored one (someone stored meanwhile: reload); 409 {detail} when the Creator is Live and the
@@ -160,7 +163,7 @@ ROWS = 50
 KIND = full_ai_live.KIND
 OFF_TRIGGER = {"every_seconds": 300}
 LIVE_TRIGGER = {**OFF_TRIGGER, "mode": full_ai_live.MODE}
-NO_FANS_LIST = "No Fans list: pick an Include or Exclude list under Fans, then Save"
+NO_FANS_LIST = "No Fans list: tap Choose under Fans and pick an Include or Exclude list."
 # A key's provider as Settings → AI keys names it (llm_client's map lacks the two Writer-only providers).
 _KEY_LABELS = {"nanogpt": "NanoGPT", "openrouter": "OpenRouter", **llm_client.PROVIDER_LABELS}
 
@@ -545,13 +548,23 @@ async def full_ai_config_get(account_id: str = Query(...)) -> dict[str, Any]:
     return _config_view(await full_ai_turn.stored_config(account_id))
 
 
-async def _config_write(account_id: str, step: Callable[[dict | None], dict[str, Any]]
+async def _config_write(account_id: str, step: Callable[[dict | None], dict[str, Any]], *, retries: int = 0
                         ) -> JSONResponse | dict[str, Any]:
     """Owner-only: `step(stored)` gives the next blob, stored only if the column still holds
-    what was read (compare-and-swap, so two tabs never both win)."""
+    what was read (compare-and-swap, so two tabs never both win). `retries`: a lost race reads and tries again
+    (only for a write that takes no `rev`)."""
     assert_account_owned(account_id)
     await require_opt_in_kind("full_ai_chat", account_id)
     live = await full_ai_live.live_rule(account_id) is not None
+    for _ in range(retries + 1):
+        if (out := await _config_cas(account_id, step, live)) is not None:
+            return out
+    return _stale((await full_ai_turn.stored_config(account_id))["rev"])
+
+
+async def _config_cas(account_id: str, step: Callable[[dict | None], dict[str, Any]], live: bool
+                      ) -> JSONResponse | dict[str, Any] | None:
+    """One read + compare-and-swap; None when someone stored between the read and the write."""
     col = AccountAiConfig.full_ai_config_json
     async with get_session() as s:
         found = (await s.execute(select(col).where(AccountAiConfig.account_id == account_id))).first()
@@ -574,9 +587,7 @@ async def _config_write(account_id: str, step: Callable[[dict | None], dict[str,
             done = await s.execute(update(AccountAiConfig).where(
                 AccountAiConfig.account_id == account_id, col.is_(None) if raw is None else col == raw)
                 .values(full_ai_config_json=blob))
-    if done.rowcount != 1:
-        return _stale((await full_ai_turn.stored_config(account_id))["rev"])
-    return _config_view(new)
+    return _config_view(new) if done.rowcount == 1 else None
 
 
 def _stale(rev: int) -> JSONResponse:
@@ -601,6 +612,12 @@ class ConfigRevBody(BaseModel):
     rev: int
 
 
+class ConfigAudienceBody(BaseModel):
+    account_id: str
+    fans: Any = None
+    top_spend_cents: Any = None     # Any: `full_ai_config.validate` words the refusal, not pydantic
+
+
 @router.put("/admin/full-ai/config/draft")
 async def full_ai_config_put_draft(body: ConfigDraftBody):
     return await _config_write(body.account_id,
@@ -616,6 +633,13 @@ async def full_ai_config_put_checkpoint(body: ConfigCheckpointBody):
 @router.post("/admin/full-ai/config/save")
 async def full_ai_config_save(body: ConfigRevBody):
     return await _config_write(body.account_id, lambda st: full_ai_config.save(st, body.rev))
+
+
+@router.put("/admin/full-ai/config/audience")
+async def full_ai_config_put_audience(body: ConfigAudienceBody):
+    patch = body.model_dump(exclude_unset=True)
+    patch.pop("account_id", None)
+    return await _config_write(body.account_id, lambda st: full_ai_config.put_audience(st, patch), retries=1)
 
 
 @router.post("/admin/full-ai/config/rollback")

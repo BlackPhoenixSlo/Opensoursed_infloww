@@ -29,6 +29,8 @@
 
 import { sameConfig, type ConfigBody, type FullAiConfig } from "@/components/automations/fullAiConfig";
 import type { Route } from "@/hooks/useFullAiToday";
+import { errText } from "@/lib/errText";
+import { RelayError } from "@/lib/relay";
 
 // `sellFoldersForm.ts` still imports the config type from here (outside this split's files); drop once it imports
 // `fullAiConfig`.
@@ -191,6 +193,8 @@ export type TestChatAction =
   | { type: "saved"; rev: number }
   | { type: "rolledBack"; rev: number }
   | { type: "stale" }
+  /** The audience write's answer (`PUT config/audience`, the Fans dialog / Top spend box): its keys on every side. */
+  | { type: "audienceSaved"; body: ConfigBody }
   | { type: "externalDraft"; body: ConfigBody }
   | { type: "keepMine" }
   | { type: "takeTheirs" }
@@ -385,6 +389,15 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
       return offerHeld({ ...state, checkpoint: state.previous, previous: state.checkpoint, rev: action.rev, committing: false, errors: [] });
     case "stale":
       return { ...state, stale: true, savingDraft: false, committing: false };
+    case "audienceSaved": {
+      // Only the audience keys move (an unstored edit stays). A write of ours out will answer an older rev or 409:
+      // the body is held and offered once it settles (`offer`), as a read landing meanwhile is.
+      const src = action.body.checkpoint;
+      const s = { ...state, checkpoint: withAudience(state.checkpoint, src), previous: withAudience(state.previous, src),
+        draft: withAudience(state.draft, src) };
+      if (state.savingDraft || state.committing) return { ...s, held: state.held && state.held.rev > action.body.rev ? state.held : action.body };
+      return { ...s, rev: Math.max(state.rev, action.body.rev) };
+    }
     case "externalDraft":
       return offer(state, action.body);
     case "keepMine": {
@@ -406,6 +419,45 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
       return withTurn(state, action.side, action.rowId,
         (t) => (t.settle?.kind === "pending" ? { ...t, settle: { kind: "failed", error: action.error } } : t));
   }
+}
+
+export const STALE_TEXT = "Someone saved this config meanwhile. Reload.";
+
+const relayBody = (e: unknown) => (e instanceof RelayError ? (e.body as { errors?: unknown; rev?: unknown } | null) : null);
+/** 409 `{detail}` with no `rev`: not stale but refused, e.g. D61 "Live needs a Fans list". */
+const refused409 = (e: unknown): boolean =>
+  e instanceof RelayError && e.status === 409 && typeof relayBody(e)?.rev !== "number";
+
+/** A failed config write as one action: a 409 carrying a numeric `rev` is stale (someone stored meanwhile); any other
+ *  refusal (a 409 without `rev`, e.g. D61, 422 field errors, a network error) is `configFailed` with the server's words. */
+export function writeFailed(e: unknown): TestChatAction {
+  if (e instanceof RelayError && e.status === 409 && !refused409(e)) return { type: "stale" };
+  const errors = relayBody(e)?.errors;
+  return { type: "configFailed", errors: Array.isArray(errors) ? errors.map(String) : [errText(e, "Request failed")] };
+}
+
+/** Who live answers (owner 2026-11-15): not how the AI behaves, so one value on every side, written only by
+ *  `PUT config/audience` (the config writes carry the stored ones over). */
+export const AUDIENCE_KEYS = ["fans", "top_spend_cents"] as const;
+export type AudiencePatch = Partial<Pick<FullAiConfig, (typeof AUDIENCE_KEYS)[number]>>;
+
+const withAudience = (c: FullAiConfig | null, src: FullAiConfig | null): FullAiConfig | null => {
+  if (!c || !src) return c;
+  const out = { ...c };
+  for (const k of AUDIENCE_KEYS) if (k in src) Object.assign(out, { [k]: src[k] });
+  return out;
+};
+
+/** An audience write's answer: stored; refused by D61 (`needsOff`: Live needs a Fans list, offer Turn Off and save);
+ *  or failed (a field error, a lost race, the network), shown beside the control. */
+export type AudienceResult = { kind: "ok" } | { kind: "needsOff"; reason: string } | { kind: "failed"; reason: string };
+
+/** A failed audience write as the control shows it (never on the page's config errors). */
+export function audienceFailed(e: unknown): AudienceResult {
+  if (refused409(e)) return { kind: "needsOff", reason: errText(e, "Refused") };
+  if (e instanceof RelayError && e.status === 409) return { kind: "failed", reason: "Someone saved this config meanwhile. Try again." };
+  const errors = relayBody(e)?.errors;
+  return { kind: "failed", reason: Array.isArray(errors) ? errors.map(String).join(" ") : errText(e, "Request failed") };
 }
 
 /** A read config body: held while a write of ours is out or a Reload is owed (the newest rev kept); else dropped

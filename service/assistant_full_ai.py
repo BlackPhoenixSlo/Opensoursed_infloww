@@ -35,8 +35,10 @@ LABELS: dict[str, str] = {
 }
 
 
-# The blob's own fields: only the page's Save / Roll back / PUT move them, never a patch.
-LOCKED_KEYS: tuple[str, ...] = ("version", "checkpoint", "previous", "rev")
+# The blob's own fields: only the page's Save / Roll back / PUT move them, never a patch. The audience keys (`fans`,
+# `top_spend_cents`) have their own write (`PUT /admin/full-ai/config/audience`); a draft PUT carries the stored ones
+# over, so a patch of them would apply as nothing: refused here instead.
+LOCKED_KEYS: tuple[str, ...] = ("version", "checkpoint", "previous", "rev", *full_ai_config.AUDIENCE_KEYS)
 # The draft fields `DEFAULTS` holds.
 CONFIG_KEYS: tuple[str, ...] = tuple(k for k in full_ai_config.DEFAULTS if k not in LOCKED_KEYS)
 
