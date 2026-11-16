@@ -154,6 +154,13 @@ def case_bracket_aside_never_reaches_the_fan():
     for keep in ("miss u :( come back :)", "(: hey u :)", "aww :( ok (;", "hi\nthere",
                  "u got me blushing over here n i barely woke up", "lol =) ok :-)"):
         assert strip_asides(keep) == keep, keep
+    # A blank line the model wrote is a one-message text's shape (a paid
+    # caption): only a line the cut emptied goes. #802 dropped them all.
+    caption = "B nothing much rn 🙈\n\nbut i made u something.. open it?"
+    assert strip_asides(caption) == caption
+    assert strip_asides(f"  {caption}\n") == caption
+    assert strip_asides("hey\n\n(Note: kept short.)\n\nopen it?") == "hey\n\nopen it?"
+    assert strip_asides("hey (short)\n\nopen it?") == "hey\n\nopen it?"
 
 
 _harness.run(

@@ -485,6 +485,15 @@ async def init_db() -> None:
                 except Exception:
                     _log.exception("MASSppvEXCLUDE → MASSdmEXCLUDE merge failed")
 
+            # One-way DATA catch-up (11-17 Twin OOM): vault_response_cache
+            # wiped, vault_items.raw_json listStates cut to the hasMedia
+            # entries. Marker-guarded, batched.
+            if _is_sqlite:
+                try:
+                    compact_vault_list_states_once(sync_engine)
+                except Exception:
+                    _log.exception("vault listStates compact failed")
+
         # Both branches: create_all builds no views, and nothing here runs
         # alembic, so the attribution view would otherwise exist only on a box
         # someone upgraded by hand.
@@ -733,3 +742,67 @@ def backfill_w7_rules_once(sync_engine) -> int:
     log.info("w7_rule_backfill created=%d rule(s) for Reply-Instant accounts with no "
              "info-gather / funnel-walker rule", created)
     return created
+
+
+_VAULT_LIST_STATES_COMPACT = "20261117_vault_list_states_compact"
+_VAULT_COMPACT_BATCH = 200  # measured peak RSS (~111 KB rows): +160 MB at 100, +235 at 200, +290 at 500
+
+
+def compact_vault_list_states_once(sync_engine, batch: int = _VAULT_COMPACT_BATCH) -> int:
+    """ONE-TIME (2026-11-17): cut each `vault_items.raw_json`'s `listStates` to
+    its `hasMedia` entries (`vault_mirror.compact_list_states`, the rule every
+    write now applies). OF sent every list on every media: 2 GB over 21k rows
+    on one box, OOM-killing the relay when the vault opened. First empties
+    `vault_response_cache` (1.2 GB there, same cause): a TTL cache of OF pages
+    that refills from OF, so it is wiped, not compacted. Streams by rowid,
+    `batch` rows per transaction (a kill mid-way keeps the batches done; the
+    rerun skips them as already compact). Writes `raw_json` only, and only where
+    the list shrank: no derived column (of_folder_ids, …) or updated_at moves.
+    No VACUUM: SQLite reuses the freed pages. SQLite only (rowid). Guarded by
+    a `data_migrations` marker, written once the walk finishes. Returns rows
+    rewritten. DELETE once every box has booted it: this function, its init_db
+    block, and the boot case in service/tests/test_vault_list_states_compact.py."""
+    import json
+    import logging
+    from sqlalchemy import inspect, text
+    from vault_mirror import compact_list_states
+
+    log = logging.getLogger("of-relay.engine")
+    with sync_engine.begin() as conn:
+        conn.execute(text(_DATA_MIGRATIONS_DDL))
+        if conn.execute(text("SELECT 1 FROM data_migrations WHERE name = :n"),
+                        {"n": _VAULT_LIST_STATES_COMPACT}).first() is not None:
+            return 0
+        tables = set(inspect(conn).get_table_names())
+        if "vault_response_cache" in tables:
+            wiped = conn.execute(text("DELETE FROM vault_response_cache")).rowcount or 0
+            log.info("vault listStates compact: %d cached vault response(s) dropped", wiped)
+        has_table = "vault_items" in tables
+    changed, last = 0, 0
+    while has_table:
+        with sync_engine.begin() as conn:
+            rows = conn.execute(text(
+                "SELECT rowid, raw_json FROM vault_items WHERE rowid > :r "
+                "AND raw_json IS NOT NULL ORDER BY rowid LIMIT :n"),
+                {"r": last, "n": batch}).all()
+            if not rows:
+                break
+            last = rows[-1][0]
+            for rid, raw in rows:
+                try:
+                    m = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(m, dict):
+                    continue
+                new = compact_list_states(m)
+                if new is m:
+                    continue
+                conn.execute(text("UPDATE vault_items SET raw_json = :j WHERE rowid = :r"),
+                             {"j": json.dumps(new, ensure_ascii=False, default=str), "r": rid})
+                changed += 1
+    with sync_engine.begin() as conn:
+        conn.execute(text("INSERT OR IGNORE INTO data_migrations (name) VALUES (:n)"),
+                     {"n": _VAULT_LIST_STATES_COMPACT})
+    log.info("vault listStates compact: %d row(s) rewritten", changed)
+    return changed

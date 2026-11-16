@@ -168,7 +168,19 @@ _ASIDE_RE = re.compile(r"[ \t]*(?<![:;=8xX])\((?![:;=])[^()\n]*(?<![:;=^-])\)")
 
 def strip_asides(raw: str) -> str:
     """Model prose with every `(...)` aside removed; "" when the aside WAS the
-    message (an empty draft is dropped, not sent). A line left empty goes too,
-    because every line downstream becomes its own bubble."""
-    text = _ASIDE_RE.sub("", raw or "")
-    return "\n".join(ln.strip() for ln in text.split("\n") if ln.strip())
+    message (an empty draft is dropped, not sent). A line the cut emptied goes
+    too, because every line downstream becomes its own bubble. A blank line the
+    model wrote stays: it is the shape of a one-message text (a paid
+    caption). The ends are stripped either way."""
+    raw = raw or ""
+    out: list[str] = []
+    for ln in raw.split("\n"):
+        kept = _ASIDE_RE.sub("", ln)
+        if kept == ln:
+            out.append(ln)
+        elif kept.strip():
+            out.append(kept.strip())
+    text = "\n".join(out)
+    if text != raw:     # a dropped line's two blank neighbours: one
+        text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()

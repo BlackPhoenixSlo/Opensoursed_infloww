@@ -93,6 +93,22 @@ def thumb_of(files: dict | None) -> str | None:
     return None
 
 
+def compact_list_states(m: dict) -> dict:
+    """`m` with `listStates` cut to the entries whose `hasMedia` is truthy — the
+    only ones any reader uses (of_folder_ids, the folder listings, the UI). OF
+    sends EVERY list the creator has on every media: measured 786 per item on
+    one creator, 780 of them `hasMedia: false`, ~97 KB of a ~100 KB raw_json,
+    2 GB over 21k rows — the relay OOM'd loading it. The key stays (an empty
+    list, never removed): a MISSING key means "no folder info"
+    (`vault_runs.upsert_page`). `m` itself is never mutated; it is returned
+    as-is when nothing would be dropped."""
+    ls = m.get("listStates")
+    if not isinstance(ls, list):
+        return m
+    kept = [x for x in ls if isinstance(x, dict) and x.get("hasMedia")]
+    return m if len(kept) == len(ls) else {**m, "listStates": kept}
+
+
 def row_values(account_id: str, m: dict,
                run_id: int | None = None) -> dict[str, Any] | None:
     """Mirror-field values for one OF media dict. None if it has no id.
@@ -129,7 +145,7 @@ def row_values(account_id: str, m: dict,
         "height": m.get("height") if isinstance(m.get("height"), int) else None,
         "thumb_url": thumb_of(files),
         "full_url": (files.get("full") or {}).get("url") if isinstance(files.get("full"), dict) else None,
-        "raw_json": json.dumps(m, ensure_ascii=False, default=str),
+        "raw_json": json.dumps(compact_list_states(m), ensure_ascii=False, default=str),
         "created_at": parse_iso(m.get("createdAt")) or now,
         "updated_at_of": m.get("updatedAt") if isinstance(m.get("updatedAt"), str) else None,
         "updated_at": now,

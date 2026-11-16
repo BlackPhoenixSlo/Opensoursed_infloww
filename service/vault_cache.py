@@ -57,6 +57,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from db.engine import get_session
 from db.models import VaultResponseCache
+from vault_mirror import compact_list_states
 
 log = logging.getLogger("of-relay.vault_cache")
 
@@ -178,6 +179,21 @@ async def get(account_id: str, query_key: str, *, max_age_s: float | None = None
         return None
 
 
+def _compact(payload: Any) -> Any:
+    """`payload` with each media's `listStates` cut to its `hasMedia` entries
+    (`vault_mirror.compact_list_states`): a media page's `list` items, or a
+    by-id media itself. OF sends every list the creator has on every media
+    (measured 91% of this table's bytes on one box); no reader of a cached
+    response uses the rest. A folder (`/vault/lists`) carries no `listStates`,
+    so its own `hasMedia` is untouched. Never mutates `payload`."""
+    if not isinstance(payload, dict):
+        return payload
+    rows = payload.get("list")
+    if isinstance(rows, list):
+        return {**payload, "list": [compact_list_states(m) if isinstance(m, dict) else m for m in rows]}
+    return compact_list_states(payload)
+
+
 def _is_empty_listing(payload: Any) -> bool:
     """True when `payload` carries no rows — the thing `put` refuses to cache.
 
@@ -238,7 +254,7 @@ async def put(account_id: str, query_key: str, payload: Any, *,
                   "invalidate — not cached", account_id, query_key)
         return
     try:
-        blob = json.dumps(payload, ensure_ascii=False, default=str)
+        blob = json.dumps(_compact(payload), ensure_ascii=False, default=str)
     except (TypeError, ValueError) as e:
         # Don't break the upstream response just because we couldn't cache it.
         log.warning("vault_cache: payload not serializable (%s) — skipping write", e)
