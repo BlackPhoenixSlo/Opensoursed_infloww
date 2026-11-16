@@ -9,7 +9,7 @@
  *   2. LLM keys: whether each provider the Writers run on (draft and checkpoint; the config GET's `writer_providers`)
  *   and, while Read his photos is on, DeepInfra is set on the Creator's owner's keys (the GET's `owner_keys`, what Live checks) (never a value or hint; "not set" in red, no DeepInfra key a
  *   warning, not a Live blocker), linking to the agency keys form;
- *   3. reply speed ("0-2 min" / "0-15-60"), 4. Human style (every `style` layer; mixed when they differ), 5. Typos
+ *   3. reply speed ("0-2 min" / "0-15-60 min"), 4. Human style (every `style` layer; mixed when they differ), 5. Typos
  *   (the typos layer alone; on, a "%" box sets `typo_pct`, empty = auto), 6. Writers (a checklist over `writers`: tick / untick, "Make Writer" moves one first), 7. GIFs
  *   (on, a "%" box sets `gif_pct`, empty = auto);
  *   8. Sexting (`sext_on`), 9. Lead-in questions (`lead_in`), 10. Questions (`info_questions`: Pick one / Whole list),

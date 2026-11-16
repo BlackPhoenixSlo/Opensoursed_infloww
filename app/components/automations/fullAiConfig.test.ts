@@ -12,7 +12,7 @@ const CP = { version: 1, reply_speed: "0-2m", text_style: "girl", gifs: false, w
 describe("configLine (a window header's config)", () => {
   it.each<[string, FullAiConfig, string]>([
     ["checkpoint", CP, "Reply 0-2 min · Human style on · GIFs off · Caption chat"],
-    ["slower, formal, GIFs on", { ...CP, reply_speed: "0-15-60", text_style: "formal", gifs: true }, "Reply 0-15-60 · Human style off · GIFs on · Caption chat"],
+    ["slower, formal, GIFs on", { ...CP, reply_speed: "0-15-60", text_style: "formal", gifs: true }, "Reply 0-15-60 min · Human style off · GIFs on · Caption chat"],
     ["layers all on", { reply_speed: "0-2m", style: ON }, "Reply 0-2 min · Human style on · GIFs off · Caption chat"],
     ["typos off", { reply_speed: "0-2m", style: { ...ON, typos: false }, gifs: true }, "Reply 0-2 min · Human style mixed · Typos off · GIFs on · Caption chat"],
     ["spacing off, typos on", { style: { ...ON, spacing: false } }, "Reply 0-2 min · Human style mixed · GIFs off · Caption chat"],

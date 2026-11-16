@@ -589,7 +589,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(within(items[0]).getByText("LLM keys")).toBeTruthy();
     const speed = within(items[1]).getByRole("radiogroup", { name: "Reply speed" });
     expect(within(speed).getAllByRole("radio").map((r) => [r.textContent, r.getAttribute("aria-checked")]))
-      .toEqual([["0-2 min", "true"], ["0-15-60", "false"]]);
+      .toEqual([["0-2 min", "true"], ["0-15-60 min", "false"]]);
     expect(within(items[2]).getByRole("switch", { name: "Human style" }).getAttribute("aria-checked")).toBe("true");
     expect(within(items[3]).getByRole("switch", { name: "Typos" }).getAttribute("aria-checked")).toBe("true");
     expect((within(items[4]).getByRole("checkbox", { name: "euryale-v2.3" }) as HTMLInputElement).checked).toBe(true);
@@ -676,7 +676,7 @@ describe("Full AI Chat page › Settings", () => {
     await waitFor(() => expect(sendBtn().disabled).toBe(false));
     expect(screen.queryByText("Storing draft…")).toBeNull();
     expect(settings().getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("true");
-    await act(async () => { fireEvent.click(within(settings().getByRole("radiogroup", { name: "Reply speed" })).getByRole("radio", { name: "0-15-60" })); });
+    await act(async () => { fireEvent.click(within(settings().getByRole("radiogroup", { name: "Reply speed" })).getByRole("radio", { name: "0-15-60 min" })); });
     await waitFor(() => expect(putCalls().length).toBe(2));
     expect(putCalls()[1][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true, reply_speed: "0-15-60" }, rev: 4 });
   });
@@ -1046,8 +1046,8 @@ describe("Full AI Chat page › applied draft", () => {
     await loadedConfig();
     expect(win("Draft").getByText("Reply 0-2 min · Human style on · GIFs off · Caption chat")).toBeTruthy();
     await apply();
-    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60" }).getAttribute("aria-checked")).toBe("true"));
-    expect(win("Draft").getByText("Reply 0-15-60 · Human style on · GIFs off · Caption chat")).toBeTruthy();
+    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60 min" }).getAttribute("aria-checked")).toBe("true"));
+    expect(win("Draft").getByText("Reply 0-15-60 min · Human style on · GIFs off · Caption chat")).toBeTruthy();
     expect(win("Checkpoint").getByText("Reply 0-2 min · Human style on · GIFs off · Caption chat")).toBeTruthy();
     expect(bar()).toBeNull();
     fireEvent.change(composer(), { target: { value: "hey" } });
@@ -1072,7 +1072,7 @@ describe("Full AI Chat page › applied draft", () => {
     expect(screen.getByText("Keep mine or Take theirs first")).toBeTruthy();
     await act(async () => { fireEvent.click(btn("Take theirs")); });
     expect(bar()).toBeNull();
-    expect(speed().getByRole("radio", { name: "0-15-60" }).getAttribute("aria-checked")).toBe("true");
+    expect(speed().getByRole("radio", { name: "0-15-60 min" }).getAttribute("aria-checked")).toBe("true");
     expect(settings().getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("false");
     expect(sendBtn().disabled).toBe(false);
     expect(putCalls().length).toBe(1);   // the refused edit only: Take theirs writes nothing
@@ -1107,7 +1107,7 @@ describe("Full AI Chat page › applied draft", () => {
     const box = await screen.findByRole("textbox", { name: "Draft · new JSON" }) as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, gifs: true }) } });
     await apply();
-    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60" }).getAttribute("aria-checked")).toBe("true"));
+    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60 min" }).getAttribute("aria-checked")).toBe("true"));
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByRole("alert").textContent).toMatch(/changed elsewhere since you opened this.*Copy your text before Cancel/);
     for (const name of ["Store draft", "Store checkpoint"]) {
@@ -1126,7 +1126,7 @@ describe("Full AI Chat page › applied draft", () => {
     fireEvent.click(btn("JSON (old + new)"));
     await screen.findByRole("textbox", { name: "Draft · new JSON" });
     await apply();
-    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60" }).getAttribute("aria-checked")).toBe("true"));
+    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60 min" }).getAttribute("aria-checked")).toBe("true"));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     fireEvent.click(btn("JSON (old + new)"));
@@ -1166,7 +1166,7 @@ describe("Full AI Chat page › applied draft", () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect([reads(), speed().getByRole("radio", { name: "0-2 min" }).getAttribute("aria-checked")]).toEqual([before + 1, "true"]);
     await act(async () => { land(configBody({ draft: { ...CONFIG, gifs: true }, rev: 4 })); });
-    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60" }).getAttribute("aria-checked")).toBe("true"));
+    await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60 min" }).getAttribute("aria-checked")).toBe("true"));
     expect(bar()).toBeNull();
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
     expect(putCalls()[1][1]).toMatchObject({ rev: 5 });

@@ -117,7 +117,7 @@ export function settingRows(reference: SettingRef[], side: FullAiConfig | null):
 }
 
 /** A reply speed's label (the speeds come from `limits.reply_speeds`); one without an entry shows as itself. */
-const SPEED_LABEL: Record<string, string> = { "0-2m": "0-2 min" };
+const SPEED_LABEL: Record<string, string> = { "0-2m": "0-2 min", "0-15-60": "0-15-60 min" };
 export const speedLabel = (speed: string) => SPEED_LABEL[speed] ?? speed;
 /** The Questions / PPV caption options' labels (the values come from `limits`); one without an entry shows as itself.
  *  test_full_ai_config pins the keys to `full_ai_config.INFO_QUESTIONS` / `CAPTION_WRITERS`. */
