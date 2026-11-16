@@ -21,6 +21,14 @@
       "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
       "type": "noul"
      },
+     "asks_offer_details": {
+      "criteria": {
+       "false": "He asks for something new, different, more or else, even when he also asks about the one already offered; asks the price of something she has not offered yet; asks for a lower price or a deal; says yes, buys or says no; only reacts with a short word such as ok, nice or lol; or chats, flirts or sexts without asking about something already offered",
+       "true": "He only asks what is in something she sent or offered, its type, count, length or price, which one she means, or whether it matches an earlier one, even when he is short or annoyed"
+      },
+      "instructions": "In `fan_new_messages`, is a factual question about content she already offered or sent him the only thing the fan wants: what is in it, whether it is a photo or a video, how many, how long, how much it was, which one, or whether it is the same as before?",
+      "type": "noul"
+     },
      "asks_subject": {
       "criteria": {
        "anything": "Nothing specific, or something not listed here",
@@ -207,6 +215,14 @@
       "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
       "type": "noul"
      },
+     "asks_offer_details": {
+      "criteria": {
+       "false": "He asks for something new, different, more or else, even when he also asks about the one already offered; asks the price of something she has not offered yet; asks for a lower price or a deal; says yes, buys or says no; only reacts with a short word such as ok, nice or lol; or chats, flirts or sexts without asking about something already offered",
+       "true": "He only asks what is in something she sent or offered, its type, count, length or price, which one she means, or whether it matches an earlier one, even when he is short or annoyed"
+      },
+      "instructions": "In `fan_new_messages`, is a factual question about content she already offered or sent him the only thing the fan wants: what is in it, whether it is a photo or a video, how many, how long, how much it was, which one, or whether it is the same as before?",
+      "type": "noul"
+     },
      "asks_subject": {
       "criteria": {
        "anything": "Nothing specific, or something not listed here",
@@ -370,6 +386,14 @@
        "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
       },
       "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "type": "noul"
+     },
+     "asks_offer_details": {
+      "criteria": {
+       "false": "He asks for something new, different, more or else, even when he also asks about the one already offered; asks the price of something she has not offered yet; asks for a lower price or a deal; says yes, buys or says no; only reacts with a short word such as ok, nice or lol; or chats, flirts or sexts without asking about something already offered",
+       "true": "He only asks what is in something she sent or offered, its type, count, length or price, which one she means, or whether it matches an earlier one, even when he is short or annoyed"
+      },
+      "instructions": "In `fan_new_messages`, is a factual question about content she already offered or sent him the only thing the fan wants: what is in it, whether it is a photo or a video, how many, how long, how much it was, which one, or whether it is the same as before?",
       "type": "noul"
      },
      "asks_subject": {
@@ -606,6 +630,14 @@
       "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
       "type": "noul"
      },
+     "asks_offer_details": {
+      "criteria": {
+       "false": "He asks for something new, different, more or else, even when he also asks about the one already offered; asks the price of something she has not offered yet; asks for a lower price or a deal; says yes, buys or says no; only reacts with a short word such as ok, nice or lol; or chats, flirts or sexts without asking about something already offered",
+       "true": "He only asks what is in something she sent or offered, its type, count, length or price, which one she means, or whether it matches an earlier one, even when he is short or annoyed"
+      },
+      "instructions": "In `fan_new_messages`, is a factual question about content she already offered or sent him the only thing the fan wants: what is in it, whether it is a photo or a video, how many, how long, how much it was, which one, or whether it is the same as before?",
+      "type": "noul"
+     },
      "asks_subject": {
       "criteria": {
        "anything": "Nothing specific, or something not listed here",
@@ -790,6 +822,14 @@
        "true": "He asks if she is real, a bot, an AI or ChatGPT, or says her replies sound automated or copy-pasted"
       },
       "instructions": "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a real person?",
+      "type": "noul"
+     },
+     "asks_offer_details": {
+      "criteria": {
+       "false": "He asks for something new, different, more or else, even when he also asks about the one already offered; asks the price of something she has not offered yet; asks for a lower price or a deal; says yes, buys or says no; only reacts with a short word such as ok, nice or lol; or chats, flirts or sexts without asking about something already offered",
+       "true": "He only asks what is in something she sent or offered, its type, count, length or price, which one she means, or whether it matches an earlier one, even when he is short or annoyed"
+      },
+      "instructions": "In `fan_new_messages`, is a factual question about content she already offered or sent him the only thing the fan wants: what is in it, whether it is a photo or a video, how many, how long, how much it was, which one, or whether it is the same as before?",
       "type": "noul"
      },
      "asks_subject": {

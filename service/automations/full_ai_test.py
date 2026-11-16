@@ -293,8 +293,9 @@ def _joke(r) -> bool:
 
 
 def _carried(r) -> bool:
-    """A sent reply whose beat carried the dare when it was due (`full_ai_writers._dare_beat`)."""
-    if r.status != "sent":
+    """A sent reply whose beat carried the dare when it was due (`full_ai_writers._dare_beat`). An
+    Offer-details answer has no dare beat (spec offer-details C)."""
+    if r.status != "sent" or r.route_row == "offer_details":
         return False
     if r.route == "ai_dare":
         return not _photo_read(r)
@@ -356,8 +357,8 @@ def chat_tease_of(rows, now: datetime) -> dict:
     return dict(zip(router.TEASE_STATE_KEYS, (_his_lines(_sitting(rows, now)) + 1, teases_sent_of(rows))))
 
 
-def open_offer_of(rows):
-    """The newest priced Offer with no outcome, else None. Never open again: an Offer a haggle row
+def open_offers_of(rows) -> list:
+    """Every Open Offer, oldest first: a priced Offer with no outcome. Never open again: an Offer a haggle row
     re-offered (ticket 47; its row id is the haggle row's item ref `over`, written by `send`), same
     piece or a re-pick, settled or not; and an Offer whose locked media he already owns (`owned_of`).
     ASSUMPTION: a superseded Offer stays unsettled and still settleable (`settle`: any unsettled
@@ -365,8 +366,14 @@ def open_offer_of(rows):
     void the Offer it replaces."""
     over = {_loads(r.offer_item_ref).get("over") for r in _offers(rows)}
     owned = owned_of(rows)
-    return next((r for r in reversed(_offers(rows)) if r.offer_price_cents > 0 and r.outcome is None
-                 and r.id not in over and not _media(r, "locked") <= owned), None)
+    return [r for r in _offers(rows) if r.offer_price_cents > 0 and r.outcome is None
+            and r.id not in over and not _media(r, "locked") <= owned]
+
+
+def open_offer_of(rows):
+    """The newest Open Offer (`open_offers_of`'s last), else None."""
+    opened = open_offers_of(rows)
+    return opened[-1] if opened else None
 
 
 def offer_line(r) -> SimpleNamespace | None:
@@ -381,8 +388,9 @@ def pending_tease_of(rows, now: datetime, ttl_s: float = TEASE_TTL_S):
     AI (test or live, `full`) tease carrying its Pick (`offer_item_ref` kind `tease`, price NULL), created at most `ttl_s`
     before `now` (his reply), with no Offer outcome (a purchase or a decline) set since. "No other
     outbound since" is the newest-sent-row rule: a test session's sent rows are its only outbound;
-    a failed / no_send row sent nothing, so it never ends the tease (story 38)."""
-    r = next((x for x in reversed(rows) if x.status == "sent"), None)
+    a failed / no_send row sent nothing, so it never ends the tease (story 38). An Offer-details
+    answer (row `offer_details`, spec offer-details C) is transparent: never the newest sent row."""
+    r = next((x for x in reversed(rows) if x.status == "sent" and x.route_row != "offer_details"), None)
     if r is None:
         return None
     if not (full(r.mode) and r.offer_price_cents is None
@@ -393,6 +401,13 @@ def pending_tease_of(rows, now: datetime, ttl_s: float = TEASE_TTL_S):
     if any(x.outcome_at is not None and x.outcome_at > r.created_at for x in rows):
         return None
     return r
+
+
+def tease_bubble_ids(rows, tease) -> set:
+    """The OF message ids live `_folds` reads as tease `tease`'s bubbles: its row's parts and those of
+    each Offer-details answer that held it (`reply_json.held_tease`, spec offer-details C). Pure."""
+    held = [r for r in rows if r.route_row == "offer_details" and _loads(r.reply_json).get("held_tease") == tease.id]
+    return {p.get("message_id") for r in (tease, *held) for p in _loads(r.reply_json).get("parts") or []}
 
 
 def teased_of(r) -> Teased | None:
@@ -443,16 +458,19 @@ def session_row(r: AiDecision) -> dict:
             "wait_s": reply.get("wait_s"), "status": r.status, "fan_info": reply.get("fan_info") or {},
             "offer": offer_of(r), "created_at": iso_z(r.created_at), **caption,
             # sext scene (config `sext_scene`): the saved scene and the price Jev; a chain drop's reason;
-            # the Heat check (spec 06); when set
-            **{k: reply[k] for k in ("scene", "price", "dropped_reason", "heat_check") if reply.get(k)}}
+            # the Heat check (spec 06); the owner's Quote-reply mark (offer-details B); when set
+            **{k: reply[k] for k in ("scene", "price", "dropped_reason", "heat_check", "reply_to_n")
+               if reply.get(k)}}
 
 
-async def fetch(account: str, pair: str, side: str, text: str, config: dict, photo: dict | None = None):
+async def fetch(account: str, pair: str, side: str, text: str, config: dict, photo: dict | None = None,
+                *, reply_to_n: int | None = None):
     """The Turn of his line `text` on the session's next Turn number: his run (with any line
     left unanswered before it), the `THREAD_LINES` before it, and the session fold (`fan_info`,
     `asked`, `typo_state` from the newest row's `reply_json`; his last purchase, the Pending offer,
     the Pending tease's Pick, the open Offer's piece, Owned and sent media and the bought list from the Offer columns,
-    this session's rows only)."""
+    this session's rows only), and the Offer ask (`reply_to_n`: the owner's Quote-reply mark)."""
+    from automations.full_ai_offer_details import session_ask
     from automations.full_ai_turn import TurnFacts
     rows = await session_rows(account, pair, side)
     lines, now = test_thread(rows), datetime.utcnow()
@@ -489,7 +507,8 @@ async def fetch(account: str, pair: str, side: str, text: str, config: dict, pho
         offer_piece=teased_of(open_offer), scene=scene,
         photo={**photo, "text": text, "read": bool(on and photo.get("desc"))} if photo else None,
         dared=dared, dare_due=due,
-        purchases=purchases_of(rows) if tease else [])
+        purchases=purchases_of(rows) if tease else [],
+        offer_ask=session_ask(rows, now, pending_tease_of(rows, now), turn, reply_to_n))
 
 
 def expect_n(facts, n: int) -> None:

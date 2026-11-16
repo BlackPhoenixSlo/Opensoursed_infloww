@@ -25,6 +25,9 @@
  * photo request (`describing`: described ONCE for both sides), then `photoDescribed` owes both sides' Turns carrying it
  * (`photo` in `buildTurnPayload`), or `photoFailed` puts his line and image back in the composer with the message
  * (as `photoDescribed` does while `sendBlock` holds: the draft side would not read the stored draft).
+ * Reply mark (offer-details B): `replyTo` marks his next line as a Quote-reply to an earlier Turn's bubble (`clearReply`
+ * drops it); Send carries it to both sides' Turns (`reply_to_n` in `buildTurnPayload`, the same Turn number on both)
+ * and clears it, as `newChat` does; a failed photo request puts it back with his line.
  */
 
 import { sameConfig, type ConfigBody, type FullAiConfig } from "@/components/automations/fullAiConfig";
@@ -127,9 +130,13 @@ export interface Turn {
 }
 export type Settle = { kind: "pending" | "done"; outcome: Outcome } | { kind: "failed"; error: string };
 /** The request a side owes: in flight, or failed and waiting for a retry with the same `n`. */
-export interface PendingTurn { n: number; text: string; photo?: FanPhoto; inFlight: boolean; error: string | null }
-/** The photo request Send owes before either side's Turn: his line and the image (a data URL). */
-export interface Describing { text: string; image: string }
+export interface PendingTurn {
+  n: number; text: string; photo?: FanPhoto; inFlight: boolean; error: string | null;
+  /** The earlier Turn his line quote-replies to (the reply mark); absent: none. */
+  replyTo?: number;
+}
+/** The photo request Send owes before either side's Turn: his line and the image (a data URL), and any reply mark. */
+export interface Describing { text: string; image: string; replyTo?: number }
 export interface SideState {
   turns: Turn[];
   pending: PendingTurn | null;
@@ -148,6 +155,8 @@ export interface TestChatState {
   describing: Describing | null;
   /** Why the last photo request failed (cleared by the next edit / attach / Send). */
   photoError: string | null;
+  /** The composer's reply mark: the earlier Turn his next line quote-replies to, or null. */
+  replyTo: number | null;
   sides: Record<UiSide, SideState>;
   /** null until `loaded`. */
   checkpoint: FullAiConfig | null;
@@ -176,6 +185,9 @@ export type TestChatAction =
   | { type: "edit"; text: string }
   | { type: "attach"; image: string }
   | { type: "detach" }
+  /** Mark his next line as a Quote-reply to Turn `n` (an earlier, answered Turn). */
+  | { type: "replyTo"; n: number }
+  | { type: "clearReply" }
   | { type: "send" }
   | { type: "photoDescribed"; pair: string; photo: FanPhoto }
   | { type: "photoFailed"; pair: string; error: string }
@@ -211,7 +223,8 @@ const EMPTY_SIDE: SideState = { turns: [], pending: null, revealAt: null };
 
 export function initTestChat(pair: string, skipWait = false): TestChatState {
   return {
-    pair, skipWait, text: "", photo: null, describing: null, photoError: null, sides: { L: EMPTY_SIDE, R: EMPTY_SIDE },
+    pair, skipWait, text: "", photo: null, describing: null, photoError: null, replyTo: null,
+    sides: { L: EMPTY_SIDE, R: EMPTY_SIDE },
     checkpoint: null, previous: null, draft: null, rev: 0,
     dirty: false, savingDraft: false, committing: false, stale: false, audienceSaving: 0, errors: [], conflict: null,
     held: null,
@@ -260,24 +273,28 @@ export function canRollback(state: TestChatState): boolean {
 }
 
 /** POST /admin/full-ai/test/turn's body without `account_id`. */
-export interface TurnPayload { pair: string; side: TestSide; n: number; text: string; photo?: FanPhoto }
+export interface TurnPayload { pair: string; side: TestSide; n: number; text: string; photo?: FanPhoto; reply_to_n?: number }
 
-/** The side's owed request; `n` = its Turn count + 1, the same on a retry. */
+/** The side's owed request; `n` = its Turn count + 1, the same on a retry; `reply_to_n` the reply mark it was sent with. */
 export function buildTurnPayload(state: TestChatState, ui: UiSide): TurnPayload | null {
   const p = state.sides[ui].pending;
   if (!p) return null;
-  const base = { pair: state.pair, side: SIDE_OF[ui], n: p.n, text: p.text };
-  return p.photo ? { ...base, photo: p.photo } : base;
+  return { pair: state.pair, side: SIDE_OF[ui], n: p.n, text: p.text, ...(p.photo ? { photo: p.photo } : {}),
+    ...(p.replyTo ? { reply_to_n: p.replyTo } : {}) };
 }
 
-const owe = (s: SideState, text: string, photo?: FanPhoto): SideState =>
-  ({ ...s, pending: { n: s.turns.length + 1, text, ...(photo ? { photo } : {}), inFlight: true, error: null } });
+const owe = (s: SideState, text: string, photo?: FanPhoto, replyTo?: number | null): SideState =>
+  ({ ...s, pending: { n: s.turns.length + 1, text, ...(photo ? { photo } : {}), ...(replyTo ? { replyTo } : {}),
+    inFlight: true, error: null } });
+
+/** The Turn number his next line gets (both sides share it): the fewer side's Turn count + 1. */
+const nextN = (state: TestChatState) => Math.min(...UI_SIDES.map((s) => state.sides[s].turns.length)) + 1;
 
 /** A photo request that sends nothing: his line and image back in the composer (a line typed meanwhile is kept after
  *  it), with why. */
 function unsent(state: TestChatState, d: Describing, why: string): TestChatState {
   const text = [d.text, state.text].filter((t) => t.trim() !== "").join(" ");
-  return { ...state, describing: null, text, photo: d.image, photoError: why };
+  return { ...state, describing: null, text, photo: d.image, photoError: why, replyTo: d.replyTo ?? state.replyTo };
 }
 
 const withSide = (state: TestChatState, ui: UiSide, side: SideState): TestChatState =>
@@ -315,13 +332,19 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
       return state.describing ? state : { ...state, photo: action.image, photoError: null };
     case "detach":
       return state.describing ? state : { ...state, photo: null };
+    case "replyTo":
+      return Number.isInteger(action.n) && action.n >= 1 && action.n < nextN(state) ? { ...state, replyTo: action.n } : state;
+    case "clearReply":
+      return { ...state, replyTo: null };
     case "send": {
       if (!canSend(state)) return state;
-      const text = state.text.trim();
+      const text = state.text.trim(), r = state.replyTo;
       if (state.photo !== null) {
-        return { ...state, text: "", photo: null, photoError: null, describing: { text, image: state.photo } };
+        return { ...state, text: "", photo: null, photoError: null, replyTo: null,
+          describing: { text, image: state.photo, ...(r ? { replyTo: r } : {}) } };
       }
-      return { ...state, text: "", photoError: null, sides: { L: owe(state.sides.L, text), R: owe(state.sides.R, text) } };
+      return { ...state, text: "", photoError: null, replyTo: null,
+        sides: { L: owe(state.sides.L, text, undefined, r), R: owe(state.sides.R, text, undefined, r) } };
     }
     case "photoDescribed": {
       const d = state.describing;
@@ -330,7 +353,7 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
       const block = sendBlock(state);
       if (block) return unsent(state, d, `Not sent: ${block}`);
       return { ...state, describing: null,
-        sides: { L: owe(state.sides.L, d.text, action.photo), R: owe(state.sides.R, d.text, action.photo) } };
+        sides: { L: owe(state.sides.L, d.text, action.photo, d.replyTo), R: owe(state.sides.R, d.text, action.photo, d.replyTo) } };
     }
     case "photoFailed": {
       const d = state.describing;
@@ -376,7 +399,7 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
       return { ...state, skipWait, sides: { L: shown(state.sides.L), R: shown(state.sides.R) } };
     }
     case "newChat":
-      return { ...state, pair: action.pair, text: "", photo: null, describing: null, photoError: null,
+      return { ...state, pair: action.pair, text: "", photo: null, describing: null, photoError: null, replyTo: null,
         sides: { L: EMPTY_SIDE, R: EMPTY_SIDE } };
     case "loaded":
       return offerHeld(adopt(state, action.body));

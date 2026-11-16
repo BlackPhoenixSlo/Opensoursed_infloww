@@ -1,0 +1,13 @@
+# An Offer-details question is answered on a Turn that every Router-state fold passes over
+
+**Status: proposed** (2026-11-16, `goal_offer_details.txt` tickets A and C; nothing built yet; amended 2026-11-16 after the six-hats review to match spec phase-01: the held-tease condition and where each mixed-intent yield is read).
+
+Router state is derived from Decision rows (ADR-0034), and the Pending tease fold ends a tease at the first later sent row (`full_ai_test.pending_tease_of`: the newest `sent` row must be the tease) or, live, at any newer outbound that is not one of its bubbles (`full_ai_live._folds`). Measured on the test stack (commit 0e49c2010, 4 sessions): a question after a priced card was sold to (new card, wrong facts), because the Pending tease sells on his next Turn whatever he writes. We decided that Route row `offer_details` sits below the five Protected rows and above haggle, sell (which holds the Pending tease) and every other row, routes chat, and that its Turn is transparent: the Test chat Pending tease fold skips an `offer_details` row, and the live newest-outbound check accepts that row's bubbles only when the row recorded it held that tease (`reply_json.held_tease`, so a tease a human already ended is never revived), and the Turn runs no sell step, sends no Pick, asks no get-to-know question, leaves the Asked count, the scene and the Open Offer as they were. So his next ordinary Turn routes exactly as if the question had not been asked. The row reads a Jev answer (`asks_offer_details`), as ADR-0032 requires; its mixed-intent precedence also comes from Jev answers: a yes to the offer (`says_yes_to_offer`) and, where draft questions are asked, a discount ask (`counter_offer`) win as their own rows, while an ask for a different item, or a discount ask on a side without draft questions, is carried by the new question's own "no" wording. The held-tease skip in the folds is the named state exception. Going back means every fold, replay and the live check agreeing again on what a sent row does to the tease.
+
+ASSUMPTION: the tease's 900 s clock keeps running from the tease row and is not restarted by the question ("left exactly as they were", plan ticket C); overturned if the owner wants a question to extend the tease window.
+
+## Considered Options
+
+- **Let the answer end the tease, as any sent row does today.** Rejected: the plan's acceptance needs "the tease stays pending, next turn sells as before".
+- **A stored "offer just discussed" or tease-hold flag.** Rejected: out of the plan's scope, and ADR-0034 keeps Router state a fold with no state table.
+- **Keep the Pending tease above the question** (today's order). Rejected: it is the measured failure.

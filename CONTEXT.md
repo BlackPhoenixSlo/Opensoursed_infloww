@@ -462,6 +462,14 @@ _Avoid_: action (the FM off-script gate's per-reason action, ADR-0026), intent, 
 The pure first-match map from Router question answers and the Pending tease to a Route (`full_ai_decide.decide_turn`), holding no rule beyond them (ADR-0032).
 _Avoid_: decide table (`_fm_relevance`'s, ADR-0026), decision table, router rules
 
+**Route row**:
+One first-match line of the Route table, named for what it reads (`haggle`, `offer_moment`, `offer_details`); several rows lead to one Route, and the Decision records the row that matched (`Decision.row`).
+_Avoid_: rule, branch, case, Route (the row's outcome, not the row)
+
+**Protected row**:
+One of the five Route rows that every other row and the Pending tease sit below: promo, says_under_18, complains_now, asks_if_ai and stop.
+_Avoid_: safety row, priority row, hard stop
+
 **Evaluation point**:
 A moment the Router decides afresh and asks Jev again: inbound dispatch, each bubble's Last-look and a Wake's resume. No answer carries over between them (ADR-0032).
 _Avoid_: checkpoint, tick, re-check
@@ -509,6 +517,10 @@ ASSUMPTION: the price-0 Free item is kept out of "Offer", though the ledger tick
 An Offer whose send outcome is unknown (its send marker reads UNCONFIRMED). It counts as sent and blocks the next Offer to that Fan until settled.
 _Avoid_: Pending offer, failed send, open offer
 
+**Open Offer**:
+An Offer with no Offer outcome, not re-offered by a haggle and whose locked media he does not own (`full_ai_test.open_offer_of`); live also needs it at most 24 h old and confirmed on OF (`full_ai_owned.open_offer_live`).
+_Avoid_: Pending offer (the Jev field), Unconfirmed offer, outstanding offer, live offer
+
 **Offer outcome**:
 Whether he bought or declined an Offer (`outcome` bought | declined, `outcome_at`), set once on its Decision row and never flipped, with `join_src` saying how it was known: `test` for the owner's fake Buy / Decline in the Test chat; Phase 05 adds the live sources. A bought Offer's locked media become Owned media.
 _Avoid_: settled flag, is_paid (the message's), purchase (the transaction)
@@ -547,6 +559,10 @@ _Avoid_: upsell, push, cold offer
 In test Mode, what turns him on, kept as a short comma list in the session fold's `fetishes` from his own lines (a wider extract than wcfi's) and given to the Router's `asks_subject` on every Turn, so a generic ask ("send me pics") is filled by what he is into; Jev's Choice decides, no code maps likes to media (ADR-0032).
 _Avoid_: kinks, preferences, interests (his hobbies), fetish profile
 
+**Asked count**:
+Full AI Chat's per-Fan `asked` fold: for each get-to-know fact, how many of her sent replies actually asked for it or led to it, in pick and list modes alike; a reply that asks nothing counts nothing.
+_Avoid_: asked counter, asked marks (`asked_marks`, list mode's "k" / "k:2" view of it), questions_asked (wcfi's set)
+
 **Nearest piece**:
 In test Mode, the Offer she sells when nothing in the vault matches his ask: the closest Pick (same subject, then same format, then anything), whose caption never passes it off as what he asked for.
 _Avoid_: substitute, fallback, no_match (the Refusal it replaces)
@@ -574,6 +590,37 @@ _Avoid_: intensity post-check, intensity cap
 **Claim audit**:
 The check that a sell or Free item bubble's exact final text claims only what its Pick holds (count, kind, and subject words by a strict lexicon). A failure regenerates once, then sends a fallback caption built only from the Pick's counts and kinds.
 _Avoid_: caption check, pack_claim (the old fastt check), word filter (`_wordfilter`)
+
+### Full AI Chat offer details
+
+**Offer-details question**:
+His factual question about an Offer already sent: what is in it, photo or video, how many, how long, how much it was, which one, same as before. The Router question `asks_offer_details` (test and live Mode; Shadow's request unchanged) asks Jev whether his Turn is one, and Route row `offer_details` answers it on the chat Route without touching offer or Router state (ADR-0037).
+_Avoid_: factual question, offer question, product question, haggle (a discount ask), content ask (`wants_content`)
+
+**Offer resolver**:
+The pure, read-only lookup that names the one Offer an Offer-details question is about, among the Fan's Offers of the same Creator (Test chat: same session and side), or none, which makes her ask which one (ADR-0038). Its steps, first match wins: Quote-reply, a unique Quoted price and/or media type match, the newest Open Offer, none.
+_Avoid_: resolver on its own (the Sell executor is not one), offer lookup, matcher, Pick (what the Sell executor chooses to send)
+
+**Quote-reply**:
+A Fan message sent as OnlyFans's reply to one earlier message (inbound `replyToMessage.id`), naming that Offer when it matches an Offer's `offer_message_id`; in the Test chat, a line the owner marks as a reply to an earlier bubble.
+_Avoid_: reply on its own (any answer), quote, thread reply
+
+**Quoted price**:
+The price an Offer went out at, its Decision row's `offer_price_cents`: the only price an Offer-details answer states.
+_Avoid_: price on its own, current price, catalogue price, list price (the row's `offer_list_cents`)
+
+**Folder price**:
+An Agency's price on a vault folder today (`vault_folder_prices`), the input the Sell executor and Price Jev price a new Pick from; it may change after an Offer went out and never stands in for that Offer's Quoted price.
+Not the Twin folder-price override (twin-infloww_crm d1c1097, `full_ai_sell.folder_price` / `tease_price`: a saved folder price becomes the offer and list price and Jev is not asked), which is absent from private main and belongs to the separate pricing spec.
+_Avoid_: catalogue price, vault price, Quoted price
+
+**Offer facts**:
+What an Offer-details answer may state about the resolved Offer, read from its Decision row and the vault: media type, locked count, free previews listed apart, duration, vault description and Quoted price.
+_Avoid_: offer details (his question), caption (all a chat Writer saw of an earlier card before), metadata
+
+**Offer answer check**:
+The local check that an `offer_details` reply's counts, media type, duration and dollar amounts match the Offer facts, a free preview never counted as a paid item; one rewrite, then a short plain fallback built from the Offer facts, never another item and never no reply.
+_Avoid_: Claim audit (sell and Free item bubbles against their Pick), fact check, Heat check
 
 ### Full AI Chat ledger and rollout
 

@@ -9,7 +9,7 @@ Shared setup (seeded Agencies, owner clients, `_guarded`, `_post`, the Writer fa
                                      reply_json + response fan_info, the next row's fold carries it,
                                      a newer stated value replaces it (no `fans` row: `_guarded`)
    case_info_pick_in_writer_system   Jev's `next_question` pick is the chat Writer's ask line;
-                                     `none` asks nothing; a sent ask counts in `asked`; a pick he
+                                     `none` asks nothing; a sent ask her ASKED: names counts; a pick he
                                      answers in the same Turn is not asked or counted; nothing
                                      missing: no Choice, know enough; a sext Turn: Nouls only,
                                      no ask, nothing counted
@@ -43,7 +43,7 @@ from automations.full_ai_config import DEFAULTS, turn_bound_s
 #                                     reply_json + response fan_info, the next row's fold carries it,
 #                                     a newer stated value replaces it (no `fans` row: `_guarded`)
 #   case_info_pick_in_writer_system   Jev's `next_question` pick is the chat Writer's ask line;
-#                                     `none` asks nothing; a sent ask counts in `asked`; a pick he
+#                                     `none` asks nothing; a sent ask her ASKED: names counts; a pick he
 #                                     answers in the same Turn is not asked or counted; nothing
 #                                     missing: no Choice, know enough; a sext Turn: Nouls only,
 #                                     no ask, nothing counted
@@ -125,11 +125,12 @@ def case_info_pick_in_writer_system():
 
 def _pick_in_writer_system():
     job = "- You DON'T know what he does for work. Ask what he does for a living."
-    got, fw, _ = _info_post(_body("p-info-pick"), FakeInfoJev(({}, "occupation")))
+    got, fw, _ = _info_post(_body("p-info-pick"), FakeInfoJev(({}, "occupation")),
+                            {NANO: OK_LINE + "\nASKED: occupation"})
     assert got["status"] == "sent", got
-    assert full_ai_writers.ASK_HEAD + job in _system(fw), _system(fw)
+    assert full_ai_writers.ASK_HEAD + "[occupation] " + job in _system(fw), _system(fw)
     (row,) = _rows(A, "p-info-pick")
-    assert _reply(row)["asked"] == {"occupation": 1}, _reply(row)
+    assert _reply(row)["asked"] == {"occupation": 1}, _reply(row)   # her ASKED: line (NEW-168)
     # `none`: no ask line, nothing counted.
     got, fw, _ = _info_post(_body("p-info-none"), FakeInfoJev(({}, "none")))
     assert full_ai_writers.ASK_HEAD not in _system(fw) and job not in _system(fw), _system(fw)
@@ -180,7 +181,8 @@ def _options_and_asked():
     pair = "p-info-asked"
     for n, (stated, script) in enumerate(((
             {"real_name": 0.95}, {DEEPSEEK: _extract_says(real_name="Sam")}), ({}, None)), start=1):
-        got, _, _ = _info_post(_body(pair, n, f"line {n}"), FakeInfoJev((stated, "his_age")), script)
+        got, _, _ = _info_post(_body(pair, n, f"line {n}"), FakeInfoJev((stated, "his_age")),
+                               {NANO: OK_LINE + "\nASKED: his_age", **(script or {})})
         assert got["status"] == "sent", got
     assert _reply(_rows(A, pair)[-1])["asked"] == {"his_age": 2}, _reply(_rows(A, pair)[-1])
     info = FakeInfoJev()
@@ -198,14 +200,15 @@ def _options_and_asked():
 
 def case_info_lead_in():
     """`lead_in` (default on, test Mode): Jev's pick reaches the Writer as LEAD_HEAD + its
-    LEAD_LINES line (counted in `asked`), SELF_GIVE for SELF_BAN, no "Ask what"; the Choice never
+    LEAD_LINES line (counted in `asked` once her ASKED: names it), SELF_GIVE for SELF_BAN, no "Ask what"; the Choice never
     offers fetishes and carries the lead wording (`her_last_line` in the state, the lead digest); a
     pick of fetishes fails the Choice (no ask, `asked` unchanged); every other fact known with
     fetishes empty is know enough with no Choice."""
-    got, fw, _ = _info_post(_body("p-lead-pick"), FakeInfoJev(({}, "occupation")))
+    got, fw, _ = _info_post(_body("p-lead-pick"), FakeInfoJev(({}, "occupation")),
+                            {NANO: OK_LINE + "\nASKED: occupation"})
     sys_ = _system(fw)
     assert got["status"] == "sent", got
-    assert full_ai_writers.LEAD_HEAD + full_ai_writers.LEAD_LINES["job"] in sys_, sys_
+    assert full_ai_writers.LEAD_HEAD + "[occupation] " + full_ai_writers.LEAD_LINES["job"] in sys_, sys_
     assert full_ai_writers.ASK_HEAD not in sys_ and "Ask what" not in sys_, sys_
     assert full_ai_writers.SELF_GIVE in sys_ and full_ai_writers.SELF_BAN not in sys_, sys_
     (row,) = _rows(A, "p-lead-pick")

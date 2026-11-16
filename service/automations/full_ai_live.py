@@ -56,6 +56,7 @@ from automations import (
     full_ai_ppv, full_ai_settle, full_ai_test, full_ai_turn,
 )
 from automations import _router_jev as router
+from automations import full_ai_offer_details
 from automations.full_ai_scene import saved_scene, scene_words
 from automations._send_failure import quarantine_if_undeliverable, skip_unreachable_fan
 from automations._typing_hold import (
@@ -242,21 +243,21 @@ async def load(account_id: str, fan_id: int, client) -> full_ai_turn.TurnFacts |
         config=side, side="checkpoint", config_rev=cfg["rev"], owned=k["owned"], spent=k["spent"],
         tips=k["tips"], sent=k["sent"], tease=k["tease"], offer_piece=k["offer_piece"], scene=k["scene"],
         purchases=full_ai_test.purchases_of(rows) if side.get("chat_tease") else [], photo=photo,
-        dared=dared, dare_due=due)
+        dared=dared, dare_due=due,
+        offer_ask=full_ai_offer_details.live_ask(rows, anchor.created_at, k["tease"], turn))
 
 
 def _folds(rows, sold: full_ai_owned.Sold, now: datetime, newest_out: tuple | None) -> dict:
     """05's map over his live rows (oldest first) and `sold` at `now` (his Anchor): Full AI's own
     open Offer (`open_offer_live`: <= 24 h, priced only once on OF) as the Pending offer and
     `offer_piece`; the Pending tease (`pending_tease_of`, and her newest non-welcome outbound
-    `newest_out` is one of its bubbles: a human or another Lane wrote since -> none); spend / tips /
+    `newest_out` is one of its bubbles, `tease_bubble_ids`: a human or another Lane wrote since -> none); spend / tips /
     last purchase from `purchases_live` (any Lane); Owned / sent across Lanes; the saved scene.
     Pure."""
     open_offer = full_ai_owned.open_offer_live(rows, now)
     offer = full_ai_test.offer_line(open_offer)
     tease = full_ai_test.pending_tease_of(rows, now)
-    if tease is not None and (newest_out is None or newest_out[1] not in {
-            p.get("message_id") for p in full_ai_test._loads(tease.reply_json).get("parts") or []}):
+    if tease is not None and (newest_out is None or newest_out[1] not in full_ai_test.tease_bubble_ids(rows, tease)):
         tease = None
     pending = (" ".join(p["text"] for p in full_ai_test._loads(tease.reply_json).get("parts") or [] if p.get("text"))
                if tease is not None else router.pending_offer(offer))   # as `pending_offer_text`

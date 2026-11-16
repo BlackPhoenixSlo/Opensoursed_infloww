@@ -53,7 +53,8 @@ from pathlib import Path
 from sqlalchemy import text
 
 from _full_ai_fixtures import QUIET, QUIET_TEST, FakeJev, FakeWriterHTTP, _fake_jev, _shape_drop
-from automations import _info_jev, _router_jev, full_ai_chat, full_ai_sell, full_ai_test, full_ai_turn, full_ai_writers
+from automations import _info_jev, _router_jev, full_ai_chat, full_ai_offer_turn, full_ai_sell, full_ai_test, full_ai_turn
+from automations import full_ai_writers
 from automations._outbound import finalize_draft
 from automations._style_flags import STYLE_AUTOMATIONS, nonnative_flag_key, spacing_flag_key, typo_flag_key
 from automations.full_ai_config import DEFAULTS, turn_bound_s
@@ -340,7 +341,8 @@ def case_cross_account():
 
 # ── No-send ───────────────────────────────────────────────────────────
 
-_TEST_MODULES = (full_ai_test, full_ai_writers, full_ai_turn, _info_jev, full_ai_sell, _router_jev, full_ai_chat)
+_TEST_MODULES = (full_ai_test, full_ai_writers, full_ai_turn, full_ai_offer_turn, _info_jev, full_ai_sell, _router_jev,
+                 full_ai_chat)
 _BANNED_MODULES = {"of_client", "automation_executor", "fan_lease", "dm_rate", "of_sends", "of_write"}
 _BANNED_NAMES = {"_make_client", "send_message", "acquire_fan_lease", "start_fan_cooldown"}
 

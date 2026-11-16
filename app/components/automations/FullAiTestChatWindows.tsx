@@ -15,12 +15,14 @@
  * His photo: the paperclip next to the composer attaches one JPG / PNG / GIF / WebP (up to 20 MB, the server's limit; the
  * server shrinks it as a downloaded frame is); his bubble shows the thumbnail and, once recorded, what that side read
  * (`photoCaption`: the description, or `[sent a photo or video]` with its `describe_fan_photos` off).
+ * Reply mark (offer-details B): each of her answered bubbles has a Reply action (`replyTo` its Turn); the composer then
+ * shows "Replying to turn n" with a clear button, and Send carries the mark to both sides.
  * ASSUMPTION: named FullAiTestChatWindows, not the spec's FullAiTestChat.tsx: on a case-insensitive disk (macOS) the
  * import path `@/components/automations/FullAiTestChat` resolves to the reducer `fullAiTestChat.ts` (TS1149, observed),
  * because `.ts` is tried before `.tsx` (rung 1 for the clash, rung 5 for the name). Overturned by a reducer rename.
  */
 
-import { Paperclip, X } from "lucide-react";
+import { CornerUpLeft, Paperclip, X } from "lucide-react";
 import { useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { configLine, writersLine, type ConfigLimits, type FullAiConfig } from "@/components/automations/fullAiConfig";
@@ -62,11 +64,12 @@ const TITLE: Record<UiSide, string> = { L: "Checkpoint", R: "Draft" };
 const SUB: Record<UiSide, string> = { L: "saved config", R: "your draft" };
 
 type OnSettle = (rowId: number, outcome: Outcome) => void;
+type OnReply = (n: number) => void;
 
 /** `chat` = the page's `useFullAiTestChat` (the settings column shares its state); `accountId` = the Creator whose
  *  vault mirror serves the PPV thumbnails. */
 export function FullAiTestChat({ chat, accountId }: { chat: FullAiTestChatApi; accountId: string }) {
-  const { state, edit, attach, detach, send, retry, toggleSkip, newChat, settle } = chat;
+  const { state, edit, attach, detach, replyTo, clearReply, send, retry, toggleSkip, newChat, settle } = chat;
   const blocked = sendBlock(state);
   const fileRef = useRef<HTMLInputElement>(null);
   // A file the browser could not read or the limits refuse: one message, cleared by the next pick.
@@ -103,7 +106,8 @@ export function FullAiTestChat({ chat, accountId }: { chat: FullAiTestChatApi; a
         {shown.map((ui) => (
           <Window key={ui} ui={ui} side={state.sides[ui]} cfg={ui === "L" ? state.checkpoint : state.draft}
             limits={chat.config.limits} accountId={accountId}
-            describing={state.describing} onRetry={() => retry(ui)} onSettle={(rowId, outcome) => settle(ui, rowId, outcome)} />
+            describing={state.describing} onRetry={() => retry(ui)} onSettle={(rowId, outcome) => settle(ui, rowId, outcome)}
+            onReply={replyTo} />
         ))}
       </div>
       {state.photo && (
@@ -111,6 +115,13 @@ export function FullAiTestChat({ chat, accountId }: { chat: FullAiTestChatApi; a
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={state.photo} alt="Attached photo" className="h-14 w-14 rounded-md object-cover" />
           <IfButton icon={X} aria-label="Remove photo" onClick={detach}>Remove</IfButton>
+        </div>
+      )}
+      {state.replyTo !== null && (
+        <div data-testid="reply-chip" className="flex items-center gap-2 text-xs text-muted">
+          <CornerUpLeft className="h-3.5 w-3.5" aria-hidden />
+          <span>Replying to turn {state.replyTo}</span>
+          <IfButton icon={X} aria-label="Clear reply" onClick={clearReply}>Clear</IfButton>
         </div>
       )}
       <div className="flex items-end gap-2">
@@ -127,9 +138,9 @@ export function FullAiTestChat({ chat, accountId }: { chat: FullAiTestChatApi; a
   );
 }
 
-function Window({ ui, side, cfg, limits, accountId, describing, onRetry, onSettle }: {
+function Window({ ui, side, cfg, limits, accountId, describing, onRetry, onSettle, onReply }: {
   ui: UiSide; side: SideState; cfg: FullAiConfig | null; limits: ConfigLimits | null; accountId: string; describing: Describing | null;
-  onRetry: () => void; onSettle: OnSettle;
+  onRetry: () => void; onSettle: OnSettle; onReply: OnReply;
 }) {
   // The newest reply stays hidden until its wait is over.
   const hidden = side.revealAt !== null;
@@ -148,7 +159,7 @@ function Window({ ui, side, cfg, limits, accountId, describing, onRetry, onSettl
         <div data-testid="facts" className="text-xs text-fg-dim">{factsLine(last?.result.fan_info)}</div>
       </div>
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-3">
-        {shownTurns.map((t) => <Exchange key={t.n} turn={t} accountId={accountId} onSettle={onSettle} />)}
+        {shownTurns.map((t) => <Exchange key={t.n} turn={t} accountId={accountId} onSettle={onSettle} onReply={onReply} />)}
         {waiting && <><His text={waiting.text} photo={waiting.photo} /><Dots /></>}
         {describing && <><His text={describing.text} image={describing.image} />
           <p role="status" className="text-xs text-muted">Reading his photo…</p></>}
@@ -165,11 +176,13 @@ function Window({ ui, side, cfg, limits, accountId, describing, onRetry, onSettl
   );
 }
 
-function Exchange({ turn, accountId, onSettle }: { turn: Turn; accountId: string; onSettle: OnSettle }) {
+function Exchange({ turn, accountId, onSettle, onReply }: {
+  turn: Turn; accountId: string; onSettle: OnSettle; onReply: OnReply;
+}) {
   return (
     <>
       <His text={turn.text} photo={turn.photo} />
-      <CreatorReply turn={turn} accountId={accountId} onSettle={onSettle} />
+      <CreatorReply turn={turn} accountId={accountId} onSettle={onSettle} onReply={onReply} />
     </>
   );
 }
@@ -195,7 +208,9 @@ function His({ text, photo, image }: { text: string; photo?: FanPhoto | null; im
   );
 }
 
-function CreatorReply({ turn, accountId, onSettle }: { turn: Turn; accountId: string; onSettle: OnSettle }) {
+function CreatorReply({ turn, accountId, onSettle, onReply }: {
+  turn: Turn; accountId: string; onSettle: OnSettle; onReply: OnReply;
+}) {
   const result = turn.result;
   const none = noReplyText(result);
   return (
@@ -211,6 +226,9 @@ function CreatorReply({ turn, accountId, onSettle }: { turn: Turn; accountId: st
       )}
       {writersFailed(result) && result.attempts.length > 0 && (
         <p className={cn(MP.ours.FullAiTestChatWindows.meta, "text-right text-err")}>{outcomesLine(result.attempts)}</p>
+      )}
+      {!none && (
+        <IfButton icon={CornerUpLeft} aria-label={`Reply to turn ${turn.n}`} onClick={() => onReply(turn.n)}>Reply</IfButton>
       )}
       <p data-testid="reply-line" className={cn(MP.ours.FullAiTestChatWindows.meta, "text-right text-muted")}>{replyLine(result)}</p>
     </div>

@@ -87,7 +87,7 @@ async def load_cat_sticker_config(account_id: str) -> StickerConfig:
         _num(CAT_STICKER_GAP_MIN_KEY, DEFAULT_GAP_MIN, 1.0, 7 * 24 * 60))
 
 
-from ._markers import bare_star_span, protocol_marker_re
+from ._markers import STICKER_KEYWORD, bare_star_span, protocol_marker_re
 
 log = logging.getLogger("of-relay.automation.cat_stickers")
 
@@ -149,7 +149,7 @@ _last_pick: dict[tuple[str, int], tuple[str, str]] = {}
 # makes anchorless matching safe here: the same audit turned up fan-facing lines
 # like "you design stickers that make people obey" (he designs stickers for a
 # living), and no colon means untouched. See `_markers` for the rest.
-_MARKER_RE = protocol_marker_re(r"STICKERS?[ \t]*:")
+_MARKER_RE = protocol_marker_re(STICKER_KEYWORD)
 
 # ── prose about the sticker ──
 #

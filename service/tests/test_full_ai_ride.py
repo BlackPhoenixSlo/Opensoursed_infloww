@@ -23,6 +23,8 @@ photos) is retired into `chat_tease` (owner 2026-11-14 "combine the doubles").
                               passes, Spacing and `teases_sent` count it
   case_api_ride_bad_claim     a reply naming a video / a wrong price twice: her text alone, no PPV,
                               `offer_dropped` "claim", the fallback caption never sent
+  case_api_ride_asks_nothing  NEW-168: a ride prompt prints no ask ids / ASKED_EXCEPTION; a
+                              volunteered marker stripped, nothing counted or recorded
   case_api_flag_off           chat_tease off: ESCALATION_TEST pitched, a 3-photo fill, no tease Jev
   case_api_hot_moment         chat_tease on, hot offer_moment: pitched (SELL_STEP_TEST), no ride
   case_api_scene_offer_unchanged  flag on, sext scene: row scene_offer sells as before (no ride)
@@ -43,14 +45,15 @@ from __future__ import annotations
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
 
 from _full_ai_sell_helpers import (  # noqa: E402
-    A, CONFIG, NANO, OPENROUTER, OWNER_A, PRICED, FakePriceJev, _body, _post, _ppvs, _price, _put_draft, _reply, _rows, _system, _vault,
+    A, CONFIG, NANO, OPENROUTER, OWNER_A, PRICED, TURN, FakePriceJev, _body, _guarded, _picks, _post, _ppvs, _price,
+    _put_draft, _reply, _rows, _system, _vault,
 )
 import contextlib  # noqa: E402
 import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
-from _full_ai_fixtures import QUIET_SCENE, QUIET_TEST  # noqa: E402
+from _full_ai_fixtures import QUIET_SCENE, QUIET_TEST, FakeInfoJev, FakeJev, FakeWriterHTTP, _fake_jev  # noqa: E402
 import assistant_full_ai  # noqa: E402
 import vault_ai_brief  # noqa: E402
 import vault_jev_rules  # noqa: E402
@@ -390,6 +393,25 @@ def case_api_ride_bad_claim():
     assert row.offer_item_ref is None and row.offer_price_cents is None, row.offer_item_ref
     shipped = " ".join(p.get("text") or "" for p in got["parts"])
     assert fs.fallback_caption(pick, "offer") not in shipped and "to unlock" not in shipped, shipped
+
+
+def case_api_ride_asks_nothing():
+    """NEW-168 on a ride: only a chat Turn asks (`_info_stage`'s Choice, `ask_list`), so a ride's
+    prompt prints no `[id]` and no ASKED_EXCEPTION, a volunteered marker is stripped and counts
+    nothing, and no `asked_marker` is recorded (asks only on route chat)."""
+    pair, bad = "r-ask-ride", "ok:omg stop it\nhere's a hot video for u, $99\nASKED: home_city"
+    fw = FakeWriterHTTP({NANO: [bad, bad], OPENROUTER: "ok:hii"})
+    with _draft(), _vault(SOFT), _price(FakeTeaseJev("$10")), _guarded(), _picks(), fw.on(), \
+            _fake_jev(FakeJev(MOMENT), FakeInfoJev(({}, "home_city"))):
+        r = OWNER_A.post(TURN, json=_body(pair, "u look so good today"))
+        row = _rows(pair)[0]
+    got, reply = r.json(), _reply(row)
+    assert r.status_code == 200 and reply["ride"] is True and len(fw.requests) == 2, (r.text, reply)
+    for i in (0, 1):
+        assert "[home_city]" not in _system(fw, i) and wr.ASKED_EXCEPTION not in _system(fw, i), i
+    assert got["status"] == "sent" and got["parts"] and reply["asked"] == {}, (got, reply)
+    assert "asked_marker" not in reply, reply
+    assert "ASKED" not in json.dumps(got["parts"]), got["parts"]
 
 
 def case_api_flag_off():

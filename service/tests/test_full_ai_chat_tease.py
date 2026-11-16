@@ -72,8 +72,10 @@ MAIN_INFO_VERSION = "66b043f3a87e"
 # Spacing and He likes keys. True re-pinned 2026-11-14: `scene_offer` false-side lost "he just
 # said no to buying or cannot pay" (a decline sells now, owner "we never stop selling").
 # Re-pinned 2026-11-15: `asks_if_ai` reads `fan_new_messages` only in test + live (NEW-158).
-PRE_REQUEST_SHA = {False: "60dc28c9ce4f9c0177bb47ebd98eefb418121d3d4f47b7f86ec1743399284890",
-                   True: "a72e58d985022c50e490d46f535ebbdc6dc9f9da034eb747e61d4f72a66a9947"}
+# Re-pinned 2026-11-16: test + live ask `asks_offer_details` (NEW-165); without it the 11-15 pins hold.
+# Re-pinned 2026-11-17: `asks_offer_details` took its probed wording (NEW-165); nothing else moved.
+PRE_REQUEST_SHA = {False: "a10064d5a88e2fd636a03d86ea5702a6ddcef47795451588940595bcbc1f9088",
+                   True: "c414bc89f0ea43453ec1a7c9d7994b6ef2bf511b47e962bd58b49feeaf331205"}
 SETTLE = "/admin/full-ai/test/settle"
 CHATTY = "ok:haha stop it, what are u watching tonight"
 VAULT = {101: "$10", 102: "$10", 103: "$10", 104: "$10", 202: "$50"}

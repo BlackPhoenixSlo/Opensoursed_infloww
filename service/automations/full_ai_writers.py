@@ -1,6 +1,7 @@
 """automations/full_ai_writers.py — Full AI Chat's Writers: per-Route prompt assembly and the Writer call.
 
   messages_for(route, row, heat, facts, pick, *, persona, hot, plain, scene, gif_ok, broke)  pure: the Route's chat messages
+  prompt(...same) -> Prompt                                 pure: those + the ask's [id]s (NEW-168)
   scene_flag / is_hot / scene_turn / scene_of / gif_offered   pure: the sext scene's switches (`sext_scene`)
   gif_rolled                                                pure: the per-Turn `gif_pct` roll (seeded)
   spacing_flag                                              pure: Spacing's switch (`sell_spacing`, test Mode)
@@ -53,11 +54,11 @@ import re
 import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NamedTuple
 
 import llm_client
 from automations import _language, _voice, cat_stickers, full_ai_config
-from automations._info_jev import askable as info_askable, question_key, question_line
+from automations._info_jev import AskedMarker, askable as info_askable, asked_marker, question_key, question_line
 from automations._nonnative import NONNATIVE_REGISTER
 from automations._persona import persona_register_age
 from automations._prompt_rules import (
@@ -66,7 +67,8 @@ from automations._prompt_rules import (
 from automations._router_jev import line_text
 from automations.full_ai_config import style_layers
 from automations.full_ai_mode import full
-from automations.full_ai_sell import MOVING_KINDS, Pick, Refusal, Teased, _buckets, _money
+from automations.full_ai_offer_details import OfferFacts
+from automations.full_ai_sell import MOVING_KINDS, Pick, Refusal, Teased, _buckets, _media_phrase, _money
 from automations.names import resolve_fan_name
 from automations.welcome_chatter_for_info import (
     _ASK_PRIORITY, _BREATHER_VARIANTS, _HISTORY_TAIL, _REPLY_TEMPERATURE, _STYLE_VARIANTS,
@@ -148,6 +150,11 @@ REPLY_NOW = "Reply to his last message now, in the STYLE FOR THIS MESSAGE above.
 # OLD-AIC-18's sticker exception, verbatim (ai_chatter.py, `STICKER_EXCEPTION`), after the contract
 # when a sticker block is in the prompt.
 STICKER_EXCEPTION = " A final STICKER: <tag> line is ALSO allowed (stripped — he only sees the gif)."
+# NEW-168 (spec offer-details E), after the contract when the goal holds an ask / lead block: the
+# fact her reply went for, by the `[id]` printed before its line (`_asks`, `_info_jev.asked_marker`).
+ASKED_EXCEPTION = (" End with one more line, ASKED: <id> — the [id] of the one fact above that "
+                   "your message asks or leads him to — or ASKED: none if it doesn't (stripped — he "
+                   "never sees it).")
 
 # NEW-111 (ticket 34): the sell-off line, in OLD-AIC-17's `{offers_line}` slot on rows sell_off /
 # tease_off (spec 03a ASSUMPTION wording, D59; pending the owner's OK).
@@ -427,6 +434,30 @@ FREE_TERMS = "FREE — just send it when the moment fits"
 # PPV whose caption the separate call writes (`full_ai_caption`): no item, price or `>>OFFER`.
 CAPTION_APART = ("- A piece goes to him right after this message, with its own caption — lead into "
                  "it warmly. Don't describe it and name no price.\n")
+# NEW-166, DRAFT (spec offer-details C): row offer_details' goal under GOAL_HEAD, over the facts
+# block (NEW-167) in the sell slot. An answer only: no ask, lead, dare, sticker or Pick.
+OFFER_GOAL = ("- He is asking about something you already offered or sent him. Answer exactly what "
+              "he asked FIRST, using only THE OFFER HE MEANS below — what's in it, photo or video, "
+              "how many, how long, what it cost. Never add a count, length, price or detail that "
+              "isn't there.\n"
+              "- If the description there doesn't say what he asked, tell him you can't confirm "
+              "that.\n"
+              "- If no offer is named below, ask him which one he means and say nothing about any "
+              "piece.\n"
+              "- An answer, not a sale: don't pitch anything new and don't ask him about himself.\n")
+# NEW-167, DRAFT (spec offer-details C): the resolved Offer's facts (`offer_facts_block`).
+OFFER_HEAD = "THE OFFER HE MEANS (the only facts you may state about it):"
+OFFER_NONE = "- none: nothing he said points to one offer, so you don't know which one he means."
+OFFER_TYPE = "- what it is: {what}"
+OFFER_LOCKED = "- {n} locked (paid)"
+OFFER_PREVIEWS = "- {n} free preview{s} ({what}), not paid"
+OFFER_LENGTHS = "- length: {lengths}"
+OFFER_SHOWS = "- what it shows: {shows}"
+OFFER_PRICE = "- price it went out at: {px}"
+OFFER_UNPRICED = "no price named yet"
+OFFER_FREE = "free"
+OFFER_UNKNOWN = "not on record"
+OFFER_SAME = "- same pieces as the 1st offer, sent {day}: {same}"
 
 # The Fan fields the prompt reads (`_good_examples`, `resolve_fan_name`, the facts block). A test
 # Fan has no `fans` row: these come from the session's `fan_info` fold, the rest read None.
@@ -443,6 +474,9 @@ class WriteResult:
     writer: str | None                   # the MODELS id that answered
     attempts: list[dict[str, Any]] = field(default_factory=list)   # [{writer, outcome, ms}]
     floor_reason: str | None = None
+    asked_ids: tuple[str, ...] = ()      # the prompt's printed ids (`Prompt`); () = no ask
+    asked: str | None = None             # the one her `ASKED:` line named, when printed (NEW-168)
+    asked_marker: str | None = None      # that line's value as written; None = no marker
 
 
 def _fan(fan_info: dict) -> SimpleNamespace:
@@ -482,44 +516,57 @@ def lead_examples(f: SimpleNamespace, durable: bool) -> str:
     return (riffs.rstrip("\n") + " / " if riffs else "- GOOD: ") + " / ".join(leads) + "\n"
 
 
-def _need_block(facts, fan_just_asked: bool, rng: random.Random, lead: bool = False) -> str:
+class Need(NamedTuple):
+    text: str                           # the goal slot's block
+    asked_ids: tuple[str, ...] = ()     # the ids printed on its ask / lead lines (NEW-168)
+
+
+def _asks(head: str, lines: list[tuple[str, str]]) -> Need:
+    """The ask / lead block, each line after its `[id]` (NEW-168): the id `asked` counts."""
+    return Need(head + "\n".join(f"[{k}] {x}" for k, x in lines), tuple(k for k, _ in lines))
+
+
+def _need_block(facts, fan_just_asked: bool, rng: random.Random, lead: bool = False) -> Need:
     """OLD-AIC-10's tiers in their order: nothing missing -> know enough; the info Jev's pick
     (`facts.next_question`) -> the ask head + wcfi's line for it; he asked -> answer; else a
     breather. With `info_questions: "list"` on chat (`facts.ask_list`) wcfi's own tiers: nothing
     left to ask -> know enough; its ask call -> the ask head + every still-need line; he asked ->
     answer; else a breather. `lead` (`lead_flag`): LEAD_HEAD + LEAD_LINES in their place, and
-    fetishes is never asked nor waited for (`_info_jev.askable`)."""
+    fetishes is never asked nor waited for (`_info_jev.askable`). An ask's lines carry their ids
+    (pick: the info field; list: wcfi's key), returned as `asked_ids`."""
     head = LEAD_HEAD if lead else ASK_HEAD
     if (al := getattr(facts, "ask_list", None)) is not None:
-        lines = ([x for k in al.keys if (x := lead_line(k, facts.fan_info))] if lead else al.lines)
+        lines = ([(k, x) for k in al.keys if (x := lead_line(k, facts.fan_info))] if lead
+                 else list(zip(al.keys, al.lines)))
         if not lines:
-            return KNOW_ENOUGH
+            return Need(KNOW_ENOUGH)
         if al.ask:
-            return head + "\n".join(lines)
-        return FAN_ASKED if fan_just_asked else rng.choice(_BREATHER_VARIANTS)
+            return _asks(head, lines)
+        return Need(FAN_ASKED if fan_just_asked else rng.choice(_BREATHER_VARIANTS))
     left = info_askable(facts.config, facts.fan_info, lead)
+    nq = facts.next_question
     if not left:
-        return KNOW_ENOUGH
+        return Need(KNOW_ENOUGH)
     if lead:                                    # Jev's pick of a NEVER_LED field: no ask this Turn
-        if facts.next_question in left:
-            return head + lead_line(question_key(facts.next_question, facts.fan_info), facts.fan_info)
-    elif facts.next_question:                   # a `missing` field (`full_ai_turn._info`): wcfi has its line
-        return head + question_line(facts.next_question, facts.fan_info)
-    if fan_just_asked:
-        return FAN_ASKED
-    return rng.choice(_BREATHER_VARIANTS)
+        if nq in left:
+            return _asks(head, [(nq, lead_line(question_key(nq, facts.fan_info), facts.fan_info))])
+    elif nq:                                    # a `missing` field (`full_ai_turn._info`): wcfi has its line
+        return _asks(head, [(nq, question_line(nq, facts.fan_info))])
+    return Need(FAN_ASKED if fan_just_asked else rng.choice(_BREATHER_VARIANTS))
 
 
 def _chat_system(persona: str, need_block: str, call_him: str, style: str, good: str, *,
                  style_on: bool, nonnative_on: bool, painful_on: bool, offers: str,
                  sticker_block: str, sell_block: str = "", marker: bool = False,
-                 v: _voice.VoiceBlocks = _voice.HER, scene: bool = False, lead: bool = False) -> str:
+                 v: _voice.VoiceBlocks = _voice.HER, scene: bool = False, lead: bool = False,
+                 asked: bool = False) -> str:
     """OLD-AIC-18 (ai_chatter.py:6546-6633) with no day log, clock, language directive, customs or
     life tip (none exists for a test Fan); `offers` fills its `{offers_line}` slot, `sticker_block`
     its `{stickers}` slot (plus the sticker exception), `sell_block` its `{sell_section}` (03b) and
     `marker` picks the contract with the `>>OFFER` exception. `scene` (a scene Turn with config
     `sext_scene`): SCENE_SELF for SELF_BAN, SCENE_NARRATION for NO_NARRATION_RULE, no EXPLICIT_EARLY.
-    `lead` (`lead_flag`, non-scene): SELF_GIVE for SELF_BAN."""
+    `lead` (`lead_flag`, non-scene): SELF_GIVE for SELF_BAN. `asked` (an ask / lead block in
+    `need_block`): ASKED_EXCEPTION last."""
     humanizer = f"\n\n{v.humanizer}" if style_on else v.emoji_vocab
     nonnative = f"\n\n{NONNATIVE_REGISTER}" if nonnative_on else ""
     stickers = f"\n\n{sticker_block}" if sticker_block else ""
@@ -540,6 +587,7 @@ def _chat_system(persona: str, need_block: str, call_him: str, style: str, good:
         + (f"\n\n{sell_block.strip()}\n\n" if sell_block else "\n\n")
         + (CONTRACT_OFFER if marker else CONTRACT)
         + (STICKER_EXCEPTION if sticker_block else "")
+        + (ASKED_EXCEPTION if asked else "")
     )
 
 
@@ -641,26 +689,26 @@ def his_photo(rows) -> str | None:
     return "unseen" if any(getattr(m, "media_count", 0) for m in turn) else None
 
 
-def _dare_beat(route: str, need: str, photo: str | None, dared: bool, due: bool = False) -> str:
+def _dare_beat(route: str, need: Need, photo: str | None, dared: bool, due: bool = False) -> Need:
     """The bot check in two steps (NEW-159, NEW-160) and his picture on it (NEW-156). ai_dare: the
     joke alone (`need`, step 1); a read picture gets DARE_RATE in its place; while her dare stands
     (`dared`, `TurnFacts.dared`) she never dares twice: the joke alone, with DARE_BLIND when his
     picture could not be read; asked again on the Turn her dare is `due` (`TurnFacts.dare_due`):
     the joke, DARE_JOIN and the dare in one reply. chat / sext: a read picture while her dare
     stands or is due gets DARE_RATE under the goal; else, `due`, DARE_NEXT is the goal (step 2).
-    Anything else: `need` as it was."""
+    Anything else: `need` as it was. The ask ids stay only while the goal does (NEW-168)."""
     if route == "ai_dare":
         if photo == "seen":
-            return DARE_RATE
+            return Need(DARE_RATE)
         if dared:
-            return BRUSH_OFF + (f"\n{DARE_BLIND}" if photo else "")
+            return Need(BRUSH_OFF + (f"\n{DARE_BLIND}" if photo else ""))
         if due:
-            return BRUSH_OFF + DARE_JOIN + DARE
+            return Need(BRUSH_OFF + DARE_JOIN + DARE)
     elif route in ("chat", "sext"):
         if (dared or due) and photo == "seen":
-            return need.rstrip("\n") + "\n" + DARE_RATE
+            return Need(need.text.rstrip("\n") + "\n" + DARE_RATE, need.asked_ids)
         if due and not photo:
-            return DARE_NEXT
+            return Need(DARE_NEXT)
     return need
 
 
@@ -668,6 +716,37 @@ def _carries_item(route: str, pick: Pick | Refusal | None) -> bool:
     """A tease with a Pick, or make_right with a Free item (a Pick at price 0; a priced Pick there
     is ignored, as on every non-selling Route)."""
     return isinstance(pick, Pick) and (route == "tease" or (route == "make_right" and pick.price_cents == 0))
+
+
+def _clock(secs: int) -> str:
+    """A clip length as `m:ss`."""
+    return f"{secs // 60}:{secs % 60:02d}"
+
+
+def offer_facts_block(of: OfferFacts | None) -> str:
+    """NEW-167: row offer_details' sell slot, the resolved Offer's facts in plain lines (type, locked
+    count, free previews apart, clip lengths, descriptions, the price it went out at, and the
+    same-as-the-1st line when it is not the 1st); `of` None: no Offer named. Earlier Offers' prices
+    and counts are never listed. Pure.
+    ASSUMPTION: the sent day is the UTC date (rung 5: rows store UTC). Overturned if the Writer
+    should see the Creator's local day."""
+    if of is None:
+        return f"{OFFER_HEAD}\n{OFFER_NONE}"
+    lines = [OFFER_TYPE.format(what=OFFER_UNKNOWN if "media" in of.missing else _media_phrase(of.locked_kinds)),
+             OFFER_LOCKED.format(n=of.locked)]
+    if of.previews:
+        lines.append(OFFER_PREVIEWS.format(n=of.previews, s="s" * (of.previews > 1),
+                                           what=_media_phrase(of.preview_kinds)))
+    if of.seconds:
+        lines.append(OFFER_LENGTHS.format(lengths=", ".join(_clock(s) for s in of.seconds)))
+    lines.append(OFFER_SHOWS.format(shows=" / ".join(of.descriptions) or OFFER_UNKNOWN))
+    px = (OFFER_UNPRICED if of.quoted_cents is None else OFFER_FREE if of.quoted_cents == 0
+          else _money(of.quoted_cents))
+    lines.append(OFFER_PRICE.format(px=px))
+    if of.same_as_first is not None:
+        at, same = of.same_as_first
+        lines.append(OFFER_SAME.format(day=f"{at:%a %b} {at.day}", same="yes" if same else "no"))
+    return "\n".join([OFFER_HEAD, *lines])
 
 
 def item_line(pick: Pick, terms: str | None) -> str:
@@ -682,7 +761,7 @@ def item_line(pick: Pick, terms: str | None) -> str:
     facts = pick.facts or {}
     items = facts.get("items") or []
     secs = sum(int(i.get("seconds") or 0) for i in items) if pick.format == "video" else 0
-    dur = f" {secs // 60}:{secs % 60:02d}" if secs else ""
+    dur = f" {_clock(secs)}" if secs else ""
     label = f"{len(pick.media)} {pick.format}s" if len(pick.media) > 1 else "untitled"
     line = ITEM_HEAD if terms is None else ITEM_LINE
     return line.format(iid=pick.ref, kind=pick.format, dur=dur, label=label,
@@ -815,9 +894,10 @@ def gif_rolled(facts) -> bool:
 
 def gif_offered(decision, facts) -> bool:
     """The sticker block goes in the prompt: `config.gifs`, only when Jev's `gif_fits` fired (a GIF
-    suits this reply; owner 2026-11-15) and never on a scene Turn. Then `gif_rolled`: `gif_pct` is
-    the share of those fitting Turns, not of all Turns."""
-    if not facts.config.get("gifs"):
+    suits this reply; owner 2026-11-15) and never on a scene Turn or an Offer-details answer (a lone
+    gif would drop the answer). Then `gif_rolled`: `gif_pct` is the share of those fitting Turns,
+    not of all Turns."""
+    if not facts.config.get("gifs") or decision.row == "offer_details":
         return False
     if "gif_fits" not in decision.fired or scene_turn(decision, facts):
         return False
@@ -862,9 +942,22 @@ def _sell_off_test(facts) -> bool:
     return full(getattr(facts, "mode", None)) and not facts.config.get("sell_on")
 
 
+class Prompt(NamedTuple):
+    messages: list[dict]
+    asked_ids: tuple[str, ...]          # the ids an `ASKED:` line may name (NEW-168); () = no ask
+
+
 def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | None, *,
                  persona: str = PERSONA_FALLBACK, hot: bool = False, plain: bool = False,
                  scene: str | None = None, gif_ok: bool | None = None, broke: bool = False) -> list[dict]:
+    """`prompt`'s messages."""
+    return prompt(route, row, heat, facts, pick, persona=persona, hot=hot, plain=plain, scene=scene,
+                  gif_ok=gif_ok, broke=broke).messages
+
+
+def prompt(route: str, row: str, heat: int, facts, pick: Pick | Refusal | None, *,
+           persona: str = PERSONA_FALLBACK, hot: bool = False, plain: bool = False,
+           scene: str | None = None, gif_ok: bool | None = None, broke: bool = False) -> Prompt:
     """The Route's Writer messages; [] for no_send (no Writer call). Pure; the style and breather
     draws are seeded per Turn (`facts.anchor_key`), so a replay builds the same prompt. `pick` is
     the sell step's result (03b): on sell_now a Pick makes the content-ask sell prompt (its item's
@@ -893,10 +986,16 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
     A ride Pick (`is_ride`, a Chat tease, config `chat_tease`) on sell_now, not `plain`: the chat
     prompt of this Turn (no item line, price block, marker or spend line) with RIDE_NOTE under its
     goal. A Refusal on a Chat tease Turn (`tease_turn`) is the plain chat prompt (no need-line).
-    `broke` (`declines_buying` fired, any Mode): BROKE_JOKE under the goal; never on make_right or ai_dare."""
+    `broke` (`declines_buying` fired, any Mode): BROKE_JOKE under the goal; never on make_right or ai_dare.
+    Row `offer_details` (spec offer-details C): OFFER_GOAL under GOAL_HEAD and `offer_facts_block`
+    (`facts.offer_facts`) in the sell slot; no offers line, dare beat, item, spend line or ask
+    few-shot (`_good_examples` with every key asked); the sticker block only by `gif_ok`.
+    An ask / lead block in the goal (`_need_block`, not swapped out by the dare beat) adds
+    ASKED_EXCEPTION to the contract and its ids are `asked_ids` (NEW-168)."""
     if route == "no_send":
-        return []
+        return Prompt([], ())
     rows = facts.cut_rows
+    asked_ids: tuple[str, ...] = ()
     rng = random.Random(f"full_ai:{facts.anchor_key}")
     flags = style_flags(facts.config)
     style_extra = ((STYLE_3LINE,) * 2 + (STYLE_BRIEF,) * 2) if flags["style_on"] else ()
@@ -913,6 +1012,7 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
     ride = route == "sell_now" and is_ride(pick) and not plain
     selling = route == "sell_now" and isinstance(pick, Pick) and not ride
     apart = plain and (selling or (route == "make_right" and _carries_item(route, pick)))
+    details = row == "offer_details"
     if apart:
         if route == "make_right":
             name = _his_first_name(f, _voice.HER)
@@ -927,15 +1027,19 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
         need = sell_beat(row, hot, scene, test)
         sell_block = sell_section(pick, was_cents_of(row, pick, facts.offer_piece), nearest_line(facts, pick), test)
         offers = INTRO_BY_ID
+    elif details:                       # NEW-166 over NEW-167: no ask, lead, dare or NO_SELL_OFFERS
+        need, sell_block, offers = GOAL_HEAD + OFFER_GOAL, offer_facts_block(facts.offer_facts), ""
     else:
         item = pick if _carries_item(route, pick) else None
         if scene:
             need = _scene_head(scene) + (f"\n{SEXT_HEAT.format(heat=heat)}" if route == "sext" else "")
         else:
-            need = _beat(route, heat, f, item, test) or _need_block(facts, "?" in " ".join(fan_run), rng, lead)
+            beat = _beat(route, heat, f, item, test)
+            ask = Need(beat) if beat else _need_block(facts, "?" in " ".join(fan_run), rng, lead)
             if not item:
-                need = _dare_beat(route, need, his_photo(rows), bool(getattr(facts, "dared", False)),
-                                  bool(getattr(facts, "dare_due", False)))
+                ask = _dare_beat(route, ask, his_photo(rows), bool(getattr(facts, "dared", False)),
+                                 bool(getattr(facts, "dare_due", False)))
+            need, asked_ids = ask
         if ride:
             need = f"{need}\n{RIDE_NOTE}"
         # A Chat tease Refusal is a plain chat reply: he asked for nothing, so no need-line.
@@ -955,23 +1059,25 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
     durable = _filled(f.real_name) or _filled(f.custom_nickname)
     name = resolve_fan_name(f)
     call_him = CALL_HIM.format(name=name.split("/")[0][:40]) if durable and name else ""
-    good = lead_examples(f, durable) if lead else _good_examples(f, set(), durable)
+    good = (_good_examples(f, set(_ALL_ASKED), durable) if details    # riffs only, no asks
+            else lead_examples(f, durable) if lead else _good_examples(f, set(), durable))
     system = _chat_system(persona, need, call_him, style, good, lead=lead,
                           style_on=flags["style_on"], nonnative_on=flags["nonnative_on"],
                           painful_on=flags["painful_on"], v=_voice.HER, offers=offers,
                           sell_block=sell_block, marker=selling, scene=scene is not None,
+                          asked=bool(asked_ids),
                           # GIFs on: the pack offered when `gif_rolled` (`gif_pct`), her lane (`gif_ok`).
                           sticker_block=cat_stickers.prompt_block("allow", _voice.VOICE_HER)
                           + (GIF_NOW if facts.config.get("gif_pct") is not None else "")
                           if ((facts.config.get("gifs") and not scene and gif_rolled(facts))
                               if gif_ok is None else gif_ok)
                           else "")
-    # No spend line beside a Pick (sold, teased or free): its amounts would fail the price check
-    # (rwl fa3 S3).
-    bare = apart or selling or ride or _carries_item(route, pick)
+    # No spend line beside a Pick (sold, teased or free) or an Offer-details answer: its amounts
+    # would fail the price check (rwl fa3 S3).
+    bare = apart or selling or ride or details or _carries_item(route, pick)
     spent, tips = ([], []) if bare else (facts.spent, getattr(facts, "tips", []))   # test fakes lack it
-    return [{"role": "system", "content": system},
-            {"role": "user", "content": _chat_user(f, rows, spent, tips)}]
+    return Prompt([{"role": "system", "content": system},
+                   {"role": "user", "content": _chat_user(f, rows, spent, tips)}], asked_ids)
 
 
 # The code floor (research 11 › §6): a reply holding prompt or protocol text, junk script or no
@@ -1151,7 +1257,9 @@ def reject(text: str, lang: str, gifs: bool, offer_ref: int | None = None, *,
     item (no offer expected, `offer_ref` None, and no tease / Free item, `item` False); otherwise
     it has no words left and the next Writer is tried. Shared by the chat Writer and the caption
     (`full_ai_caption.write`), each on its text after `strip_labels` + `strip_quotes`; the
-    `copied` checks need the call's messages and run beside it in each `write`."""
+    `copied` checks need the call's messages and run beside it in each `write`. An `ASKED:` line
+    is no exception here: the chat `write` strips it before this floor, a caption carrying one
+    is rejected."""
     body, tag = cat_stickers.parse_marker(text)
     if not body:
         return None if gifs and tag and offer_ref is None and not item else "no_letters"
@@ -1227,7 +1335,9 @@ async def write(decision, facts, *, deadline: float, writers: list[str] | None =
     rewrite passes the Writer that answered, ticket 45). `plain`: the chat bubbles beside a separate
     caption (`messages_for`), so no `>>OFFER` line is expected (any rejects `offer_ref`). On a scene
     Turn (`scene_of`) the Writer's Heat and stage are the saved scene's (never colder). A ride Pick
-    (`is_ride`): the chat prompt with RIDE_NOTE, so no `>>OFFER` line is expected either."""
+    (`is_ride`): the chat prompt with RIDE_NOTE, so no `>>OFFER` line is expected either. Every
+    `ASKED:` marker and printed `[id]` goes too (NEW-168, every rewrite included): `asked` is the
+    id it named when the prompt printed it (`asked_ids`), `asked_marker` its raw value."""
     cfg = facts.config
     pick = facts.pick
     selling = decision.route == "sell_now" and isinstance(pick, Pick)
@@ -1237,24 +1347,35 @@ async def write(decision, facts, *, deadline: float, writers: list[str] | None =
     now = scene_of(decision, facts)
     gif_ok = gif_offered(decision, facts)
     persona = await _load_persona(facts.account_id)
-    msgs = messages_for(decision.route, decision.row, now["heat"] if now else decision.heat, facts,
-                        pick, persona=persona,
-                        hot=is_hot(decision.fired, facts), plain=plain,
-                        scene=now["stage"] if now else None, gif_ok=gif_ok,
-                        broke="declines_buying" in decision.fired)
+    msgs, asked_ids = prompt(decision.route, decision.row, now["heat"] if now else decision.heat,
+                             facts, pick, persona=persona,
+                             hot=is_hot(decision.fired, facts), plain=plain,
+                             scene=now["stage"] if now else None, gif_ok=gif_ok,
+                             broke="declines_buying" in decision.fired)
     lang = await _language.load_account_language(facts.account_id) if cfg["floor_on"] else ""
-    prompt = prompt_pieces(msgs[0]["content"], persona) if msgs else []
+    ids = frozenset(asked_ids)
+    pieces = prompt_pieces(msgs[0]["content"], persona) if msgs else []
     own = own_lines(facts, pick)
+    marks: dict[str, AskedMarker] = {}  # her text -> its `ASKED:` marker (`asked_marker`)
 
     async def try_once(writer: str, timeout: float) -> tuple[str, str | None]:
         r = await llm_client.chat(model=writer, messages=msgs, purpose=PURPOSE,
                                   account_id=facts.account_id, temperature=_REPLY_TEMPERATURE,
                                   timeout_s=timeout, max_attempts=1)
-        text = strip_quotes(strip_labels((r.content or "").strip()))
+        # A reply wrapped whole (marker line inside the quotes) is unwrapped first; then her
+        # `ASKED:` line goes, so the label / quote strips and the floor read what he would; its
+        # value rides `marks` to `res` (NEW-168).
+        mark = asked_marker(strip_quotes(strip_labels((r.content or "").strip())), ids)
+        text = strip_quotes(strip_labels(mark.text))
+        marks[text] = mark
         return text, (reject(text, lang, gif_ok, offer_ref, item=item)
-                      or copied(text, prompt, own)) if text and cfg["floor_on"] else None
+                      or copied(text, pieces, own)) if text and cfg["floor_on"] else None
 
     res = await walk(cfg, writers or cfg["writers"], deadline, try_once)
+    res.asked_ids = asked_ids
     if res.text is not None:
+        mark = marks.get(res.text)
         res.text = strip_quotes(strip_labels(strip_offer(res.text)))
+        if mark is not None:
+            res.asked, res.asked_marker = mark.key, mark.raw
     return res

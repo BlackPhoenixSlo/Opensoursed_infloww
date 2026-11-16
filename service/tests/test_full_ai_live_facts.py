@@ -29,7 +29,7 @@ from datetime import datetime, timedelta  # noqa: E402
 from sqlalchemy import update  # noqa: E402
 
 from _full_ai_live_helpers import (  # noqa: E402
-    DEEPSEEK, NANO, QUIET, FakeInfoJev, dm_turn, extract_says, fan_row, get_fan, her_reply,
+    DEEPSEEK, LINE, NANO, QUIET, FakeInfoJev, dm_turn, extract_says, fan_row, get_fan, her_reply,
     live_rows, reply, seed_live,
 )
 from automations import _info_jev, full_ai_live, full_ai_test  # noqa: E402
@@ -116,7 +116,8 @@ async def case_asked_not_repeated():
     aid, fan = "fa_facts_asked", 604
     await seed_live(aid, NO_LEAD)
     await fan_row(aid, fan)
-    res, *_ = await dm_turn(aid, fan, 6041, "hey", info=FakeInfoJev(({}, "occupation")))
+    res, *_ = await dm_turn(aid, fan, 6041, "hey", info=FakeInfoJev(({}, "occupation")),
+                            writers={NANO: LINE + "\nASKED: occupation"})   # her marker (NEW-168)
     (r1,) = await live_rows(aid, fan)
     assert reply(r1)["asked"] == {"occupation": 1}, reply(r1)
     await her_reply(aid, fan, 6042)

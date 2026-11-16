@@ -2,8 +2,8 @@
 """test_full_ai_lead_in — Full AI lead-in asks (config `lead_in`, test Mode), pure, plain assert.
 
   case_flag_off_snapshot      flag off (and Shadow with it on): 18 chat prompts byte-identical to
-                              origin/main's builder
-  case_lead_lines_table       Jev's pick -> LEAD_HEAD + its LEAD_LINES line ({city} / {country}
+                              origin/main's builder, NEW-168's ask ids + ASKED: line taken out
+  case_lead_lines_table       Jev's pick -> LEAD_HEAD + `[pick]` + its LEAD_LINES line ({city} / {country}
                               filled), no wcfi ask line, SELF_GIVE for SELF_BAN
   case_fetishes_never_led     a fetishes pick asks nothing; every other fact known -> know enough
   case_lead_examples_table    the "- GOOD:" line: <=2 wcfi riffs then <=2 leads; empty fallback
@@ -85,10 +85,28 @@ def _old_twins(prompts):
     return json.loads(s)
 
 
+def _nqs() -> list:
+    """The pick behind each `_snapshot` prompt, in its order (None: no pick, sext, make_right)."""
+    return [nq for fi in _FANS for nq in (None, ij.missing(DEFAULTS, fi)[0]) for _ in range(2)] + [None] * 2
+
+
+def _old_asks(prompts, nqs):
+    """NEW-168 prints the pick's `[nq]` before its ask line and ends the contract on
+    ASKED_EXCEPTION, only on a prompt holding an ask head; taken out, the prompts are the pinned
+    builder's."""
+    out = []
+    for p, nq in zip(prompts, nqs, strict=True):
+        sys_ = p[0]["content"]
+        assert (wr.ASKED_EXCEPTION in sys_) == (wr.ASK_HEAD in sys_ or wr.LEAD_HEAD in sys_), (nq, sys_)
+        s = json.dumps(p).replace(json.dumps(wr.ASKED_EXCEPTION)[1:-1], "")
+        out.append(json.loads(s.replace(f"[{nq}] ", "") if nq else s))
+    return out
+
+
 def case_flag_off_snapshot():
     # Selling off in test Mode puts SELL_OFF_LINE in NO_SELL_OFFERS' place (sell_nearest PR); put
     # back, the snapshot is byte-identical to the pinned one.
-    snap = json.loads(json.dumps(_old_twins(_snapshot(lead_in=False))).replace(
+    snap = json.loads(json.dumps(_old_asks(_old_twins(_snapshot(lead_in=False)), _nqs())).replace(
         json.dumps(wr.SELL_OFF_LINE)[1:-1], json.dumps(wr.NO_SELL_OFFERS)[1:-1]))
     assert _sha(snap) == FLAG_OFF_SHA
     # Shadow never leads, flag on or off.
@@ -98,7 +116,7 @@ def case_flag_off_snapshot():
             for key in ("test:s:1", "test:s:7"):
                 shadow.append(wr.messages_for("chat", "otherwise", 2,
                                               _turn(fan_info=fi, nq=nq, key=key, mode="shadow"), None))
-    assert shadow == snap[:16]                     # Shadow keeps NO_SELL_OFFERS, byte-identical
+    assert _old_asks(shadow, _nqs()[:16]) == snap[:16]          # Shadow keeps NO_SELL_OFFERS, byte-identical
     assert _snapshot(lead_in=True) != _snapshot(lead_in=False)
 
 
@@ -117,7 +135,7 @@ def case_lead_lines_table():
     for fi, nq, key, line in table:
         assert ij.question_key(nq, fi) == key, (nq, fi)
         s = _sys(fan_info=fi, nq=nq)
-        assert wr.LEAD_HEAD + line in s, (nq, s)
+        assert wr.LEAD_HEAD + f"[{nq}] " + line in s, (nq, s)
         assert wr.ASK_HEAD not in s and "You DON'T know" not in s and ij.question_line(nq, fi) not in s, nq
         assert wr.SELF_GIVE in s and wr.SELF_BAN not in s, nq
     # No pick: no lead head, SELF_GIVE still there.

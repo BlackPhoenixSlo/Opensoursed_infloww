@@ -9,6 +9,8 @@ table. The rows, in order (D42-D44, Opus a-c, R9, 03b ticket 47):
 
   promo -> no_send · says_under_18 -> no_send · complains_now -> make_right ·
   asks_if_ai -> ai_dare · stop -> chat (no sell, no hook) ·
+  offer_details (`asks_offer_details`, gate `offer_details`) -> chat, unless acceptance or a
+  discount ask below can run ·
   haggle: counter_offer (DRAFT) with an open Offer or a Pending tease -> sell_now ·
   sell: wants_content, says_yes_to_offer with a Pending offer or Pending
   tease, or a Pending tease -> sell_now ·
@@ -49,6 +51,14 @@ Chat tease (`chat_tease`: test Mode and config `chat_tease`, owner 2026-11-14): 
 offer_moment, scene_offer and any sext Turn win and it only ever replaces a chat row; the sell
 flag drops it and the drop names nothing (as offer_moment). Without the flag the id is ignored,
 not recorded: it is never asked then (`_router_jev._questions(..., tease)`).
+
+Offer details (`offer_details`: test / live Mode, spec phase-01-full-ai-offer-details A): row
+`offer_details` -> chat on Jev's `asks_offer_details`, after the five rows above and before haggle,
+sell (the Pending tease included, ADR-0037), tease_price and the rest. It yields only to a row that
+can run: acceptance (says_yes_to_offer with a Pending offer or tease) or an explicit discount ask
+(counter_offer under `draft_on` with an open Offer or Pending tease), both with selling on. A
+different item or a draft-off discount ask is kept out by the Noul's own "no" wording. Off (Shadow,
+and every Mode until the Writer branch lands) the id is ignored, never the row.
 
 `arm_of(account_id, fan_id)` is the Fan's Arm, a pure salted hash (ADR-0035):
 every Decision row carries it with `SALT_VER`; Shadow writes no Enrolment.
@@ -91,6 +101,7 @@ class Facts:
     draft_on: bool = False      # DRAFT ids count: test Mode and config draft_questions
     scene: bool = False         # sext scene ids count: test Mode and config sext_scene
     chat_tease: bool = False    # `chat_tease` counts: test Mode and config chat_tease
+    offer_details: bool = False  # `asks_offer_details` counts: test / live Mode (`full_ai_turn._route`)
 
 
 @dataclass(frozen=True)
@@ -120,9 +131,15 @@ def decide_turn(facts: Facts) -> Decision:
     for q, route in _FIRST:
         if q in f:
             return Decision(route, heat, q, f)
-    # The Pending tease is a named D32 exception (R9): state, not a Jev answer.
-    sell = "wants_content" in f or ("says_yes_to_offer" in f and facts.pending_offer) or facts.pending_tease
+    accept = "says_yes_to_offer" in f and (facts.pending_offer or facts.pending_tease)
     haggle = "counter_offer" in f and (facts.open_offer or facts.pending_tease)
+    # Offer details (ADR-0037): above the Pending tease; yields only to acceptance or a discount ask
+    # that can run (selling on).
+    yields = facts.sell_on and (accept or (facts.draft_on and haggle))
+    if facts.offer_details and "asks_offer_details" in f and not yields:
+        return Decision("chat", heat, "offer_details", f)
+    # The Pending tease is a named D32 exception (R9): state, not a Jev answer.
+    sell = "wants_content" in f or accept or facts.pending_tease
     scene_on = facts.scene and "scene_on" in f
     scene_offer = facts.scene and "scene_offer" in f and ("sexual_now" in f or scene_on)
     sext_row = "sexual_now" if "sexual_now" in f or not scene_on else "scene_on"

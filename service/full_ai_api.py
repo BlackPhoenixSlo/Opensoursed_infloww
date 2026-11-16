@@ -322,11 +322,15 @@ class TestTurn(_TestSide):
     n: int = Field(ge=1)
     text: str = Field("", max_length=2000)
     photo: TestPhotoRead | None = None
+    # The owner's Quote-reply mark: an earlier Turn's number (both sides share Turn numbers).
+    reply_to_n: int | None = Field(None, ge=1)
 
     @model_validator(mode="after")
     def _said_something(self):
         if not self.text and self.photo is None:
             raise ValueError("text or photo is required")
+        if self.reply_to_n is not None and self.reply_to_n >= self.n:
+            raise ValueError("reply_to_n must be an earlier Turn")
         return self
 
 
@@ -361,7 +365,7 @@ async def full_ai_test_turn(body: TestTurn):
     try:
         facts = await full_ai_turn.load_turn_facts(
             body.account_id, body.pair, body.text, "test", side=body.side,
-            photo=body.photo.model_dump() if body.photo else None)
+            photo=body.photo.model_dump() if body.photo else None, reply_to_n=body.reply_to_n)
         full_ai_test.expect_n(facts, body.n)
         res = await full_ai_turn.run_turn(facts)
     except full_ai_test.Conflict as e:

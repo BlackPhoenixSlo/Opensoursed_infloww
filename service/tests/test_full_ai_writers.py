@@ -844,8 +844,8 @@ def case_write_strips_then_floors_and_checks_copies():
                       _msg_row("in", "hey you", 2)]
     decision = SimpleNamespace(route="chat", row="otherwise", heat=2, fired=set())
     saved = _swap([(wr, "_load_persona", _persona), (wr._language, "load_account_language", _lang),
-                   (wr, "messages_for", lambda *a, **k: [{"role": "system", "content": system},
-                                                         {"role": "user", "content": "FAN: hey you"}])])
+                   (wr, "prompt", lambda *a, **k: wr.Prompt([{"role": "system", "content": system},
+                                                             {"role": "user", "content": "FAN: hey you"}], ()))])
     try:
         for first, reason in [
             ("tease this piece from its description only, make him want it", "echo"),

@@ -377,7 +377,7 @@ def case_dared_only_when_a_reply_carried_the_dare():
 
     def r(i, route, status="sent", photo=None):
         reply = {"fan_photo": photo} if photo else {}
-        return SimpleNamespace(route=route, status=status, created_at=T0 + timedelta(minutes=i),
+        return SimpleNamespace(route=route, route_row=route, status=status, created_at=T0 + timedelta(minutes=i),
                                reply_json=json.dumps(reply))
     joke = r(0, "ai_dare")
     for rows, want in (([joke, r(1, "chat")], True), ([joke, r(1, "sext")], True),

@@ -158,6 +158,8 @@ scheduler moved out of transaction_ingest); no route row changes; diff = the sha
 Golden refresh (2026-11-15, fetch-diet review rwl2 F2/F3): the same description: the selection floor counts any
 poll start, gains go through app_open_warm's one per-exit gate (`note_read`); no route row changes; diff = the sha
 (measured: HEAD's accounts_admin_api.py with every other change of this fix == the prior golden).
+Golden refresh (2026-11-17, Full AI offer details): Test Chat's turn body gains optional `reply_to_n`
+(full_ai_api.TestTurn, the reply mark); no route row changes; diff = the sha.
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """

@@ -136,6 +136,8 @@ export function useFullAiTestChat(accountId: string) {
   const edit = useCallback((text: string) => dispatch({ type: "edit", text }), []);
   const attach = useCallback((image: string) => dispatch({ type: "attach", image }), []);
   const detach = useCallback(() => dispatch({ type: "detach" }), []);
+  const replyTo = useCallback((n: number) => dispatch({ type: "replyTo", n }), []);
+  const clearReply = useCallback(() => dispatch({ type: "clearReply" }), []);
   const send = useCallback(() => dispatch({ type: "send" }), []);
   const retry = useCallback((side: UiSide) => dispatch({ type: "retry", side }), []);
   const toggleSkip = useCallback(() => dispatch({ type: "toggleSkip" }), []);
@@ -143,7 +145,7 @@ export function useFullAiTestChat(accountId: string) {
   // React flushes a click's dispatch before the next click, so a double click sees the pending settle and posts once.
   const settle = (ui: UiSide, rowId: number, outcome: Outcome) => startSettle(state, accountId, ui, rowId, outcome, dispatch);
   const config = useFullAiConfig(accountId, state, dispatch);
-  return { state, config, edit, attach, detach, send, retry, toggleSkip, newChat, settle };
+  return { state, config, edit, attach, detach, replyTo, clearReply, send, retry, toggleSkip, newChat, settle };
 }
 
 export type FullAiTestChatApi = ReturnType<typeof useFullAiTestChat>;

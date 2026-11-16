@@ -252,6 +252,21 @@ TEST_NOULS: dict[str, dict[str, Any]] = {
         "He names a lower amount, asks for a discount or a deal, or says he would buy it for less",
         "He accepts the price, says no without bargaining, only asks what it costs, or does not "
         "mention the price"),
+    # Offer details (spec phase-01-full-ai-offer-details A): asked on every test + live Turn (not
+    # DRAFT, SCENE or TEASE); read by the Route table only with `Facts.offer_details`. Reads his new
+    # messages only (NEW-158's lesson). "The only thing he wants" + its "no" keep a mixed line (a
+    # different item, a deal, a yes), a pre-offer price ask and a bare "ok" out. docs/prompts
+    # NEW-165; probed 2026-11-17 (the F replay's stored states, see TEST_THRESHOLDS).
+    "asks_offer_details": _q(
+        "In `fan_new_messages`, is a factual question about content she already offered or sent "
+        "him the only thing the fan wants: what is in it, whether it is a photo or a video, how "
+        "many, how long, how much it was, which one, or whether it is the same as before?",
+        "He only asks what is in something she sent or offered, its type, count, length or price, "
+        "which one she means, or whether it matches an earlier one, even when he is short or annoyed",
+        "He asks for something new, different, more or else, even when he also asks about the one "
+        "already offered; asks the price of something she has not offered yet; asks for a lower "
+        "price or a deal; says yes, buys or says no; only reacts with a short word such as ok, nice "
+        "or lol; or chats, flirts or sexts without asking about something already offered"),
     "offer_moment": _q(
         "Would this be a good moment for her to offer him some of her content to buy, even "
         "though he did not ask for it?",
@@ -308,9 +323,13 @@ DRAFT = frozenset({"gif_fits", "counter_offer", "offer_moment"})
 # Ask cut-off (03d, owner 2026-11-14): `wants_content` at 0.65 in test Mode; `fired` reads it in
 # place of Shadow's 0.7 there only, so Shadow's stays.
 # ASSUMPTION: `chat_tease` at 0.7 is unprobed (same rung). Overturned by a measured threshold.
+# `asks_offer_details` at 0.6: measured 2026-11-17 on the offer-details F replay's stored states
+# plus hand-written lines (59 states, one Creator): factual questions 0.73-0.97 (one vague
+# "what do i get for that" 0.50), every other line <= 0.50 (mixed lines 0.08-0.22), bar "huh? i
+# asked you a question" 0.76-0.84, which repeats the question and should be answered. Small sample.
 TEST_THRESHOLDS: dict[str, float] = {"counter_offer": 0.7, "offer_moment": 0.7,
                                      "scene_on": 0.7, "scene_offer": 0.7, "wants_content": 0.65,
-                                     "chat_tease": 0.7}
+                                     "chat_tease": 0.7, "asks_offer_details": 0.6}
 # The sext scene's questions (in `TEST_NOULS` / `TEST_CHOICES`): asked in test and live Mode (`full`) with
 # config `sext_scene` (`_questions(mode, scene)`); off, the request is the pre-scene one. They
 # read two state keys only `full_ai_test.fetch` adds with the flag (`SCENE_STATE_KEYS`).

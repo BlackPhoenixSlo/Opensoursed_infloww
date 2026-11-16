@@ -30,12 +30,14 @@ NO = "no piece yet"
 KEYS = ("his_lines_since_last_piece", "pieces_this_sitting", "unasked_pieces_this_sitting")
 # Captured on 9718d06e3 (its `_router_jev.py`, before any 03d edit) with `_flag_off_request`.
 # Re-pinned 2026-11-15: `asks_if_ai` reads `fan_new_messages` only in test + live (NEW-158).
+# Re-pinned 2026-11-16: test + live ask `asks_offer_details` (NEW-165); without it the 11-15 pins hold.
+# Re-pinned 2026-11-17: `asks_offer_details` took its probed wording (NEW-165); nothing else moved.
 FLAG_OFF_TEST_REQUEST_SHA = {
-    False: "83307ec2488f2da9c6bfb0087e7f27737cc992109bdfd9695b180ea1ced4e533",
+    False: "98eb96d747afa7a1995d5ca95a67ac2c4b06b3b9a8f3b344e5d1baf59fb7a111",
     # 9718d06e3's pin was 30a0de07…; the no-Spacing `scene_offer` wording (NEW-133 update, off-path
     # wording PR) re-pinned it, then again 2026-11-14 (its false side lost "he just said no to buying
     # or cannot pay": a decline sells now). Shadow's request is not in it (QUESTION_VERSION, golden).
-    True: "4671bb5bc20c408af3cc9201b3a311e252b232e32ba7134632b6754de75ce4bb",
+    True: "2af18278a1dce34c3c5f149b0b234c9a5fd853b9cc40585cab02e9e2d3336048",
 }
 PRE_03D_TEST_VERSION = "d6d23cee85f2"     # `question_version("test")` on 9718d06e3
 

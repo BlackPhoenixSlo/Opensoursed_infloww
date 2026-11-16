@@ -141,3 +141,24 @@ def giphy_dm_id(frame: dict) -> str | None:
     return gid or None
 
 
+def _as_id(v) -> int | None:
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and v.strip().isdigit():
+        return int(v.strip())
+    return None
+
+
+def reply_to_id(frame: dict) -> int | None:
+    """The OF message id this message frame quote-replies to: `replyToMessage.id` (the embedded
+    original, see above), else `replyToMessageId` (`app/lib/relayTypes.ts`); None when neither
+    is set or the frame is not a dict."""
+    if not isinstance(frame, dict):
+        return None
+    quoted = frame.get("replyToMessage")
+    got = _as_id(quoted.get("id")) if isinstance(quoted, dict) else None
+    return got if got is not None else _as_id(frame.get("replyToMessageId"))
+
+

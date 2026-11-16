@@ -28,9 +28,12 @@ NEW-115; not probed yet.
     now as hobbies (`ask(wide=)`, `extract(wide=)`); `info_version(lead, likes, wide)` records it.
   - `info_questions: "list"` (DRAFT; default "pick" is the Choice above): no Choice; the Writer
     gets wcfi's whole still-need list. `still_needed(config, fan_info, asked)`,
-    `ask_list(config, fan_info, asked, history, rng)` -> `AskList` (wcfi's ask/breather call) and
-    `mark_asked(asked, al)` port wcfi's rules; that mode's `asked` holds wcfi's keys (name, age,
-    location, ...) as counts, `asked_marks` reads them as wcfi's "k" / "k:2" set.
+    `ask_list(config, fan_info, asked, history, rng)` -> `AskList` (wcfi's ask/breather call) port
+    wcfi's rules; that mode's `asked` holds wcfi's keys (name, age, location, ...) as counts,
+    `asked_marks` reads them as wcfi's "k" / "k:2" set.
+  - `asked_marker(text, offered)` (NEW-168): her reply without its `ASKED: <id>` markers and
+    printed `[id]` echoes (`_markers.strip_asked`), and the id she named when it is one the prompt
+    printed; `full_ai_turn` counts only that (pick and list).
 
 The key is `_router_jev`'s (`tenant_keys.typesafe_key_for`). `_client` is the tests' fake seam.
 """
@@ -43,11 +46,11 @@ from typing import Any, NamedTuple
 
 import llm_client
 from automations import _jev
+from automations._markers import strip_asked
 from automations._router_jev import GateError, line_text
 from automations._textutil import nonempty
 from automations.welcome_chatter_for_info import (
-    _EXTRACT_FIELDS, _extract_messages, _load_persona, _primary_ask_target, _questions_still_needed,
-    _recent_ask_pattern,
+    _EXTRACT_FIELDS, _extract_messages, _load_persona, _questions_still_needed, _recent_ask_pattern,
 )
 
 MODEL = "jev-1.14.0"
@@ -374,8 +377,22 @@ def ask_list(config: dict, fan_info: dict, asked: dict, history: list[tuple[str,
     return AskList(keys, lines, ask)
 
 
-def mark_asked(asked: dict, al: AskList) -> dict:
-    """The fold after a list-mode ask went out: wcfi marks one key, `_primary_ask_target`
-    (the highest-priority presented key, not the reordered front). Pure."""
-    target = _primary_ask_target(al.presented)
-    return {**asked, target: int(asked.get(target, 0)) + 1} if target else asked
+# ── NEW-168: which fact her sent reply asked or led to ─────────────────────────────────────────
+# The Writer's `ASKED: <id>` line (`full_ai_writers.ASKED_EXCEPTION`); its shape, and what is told
+# from prose, is `_markers.strip_asked`'s. Here only the id is resolved.
+
+
+class AskedMarker(NamedTuple):
+    text: str                       # every marker and printed `[id]` gone
+    key: str | None                 # the last marker's id when it is one `offered`, else None
+    raw: str | None                 # the last marker's first value word as written (`reply_json.asked_marker`)
+
+
+def asked_marker(text: str, offered: frozenset[str]) -> AskedMarker:
+    """`text` with every `ASKED:` marker and every printed `[id]` (`offered`) stripped, and the last
+    marker's id when the prompt printed it. Pure.
+    ASSUMPTION: the last marker wins (the contract puts it last). Overturned if the rerun shows
+    Writers writing a stray marker after the one that names the fact."""
+    out, values = strip_asked(text, offered)
+    raw = values[-1] if values else None
+    return AskedMarker(out, raw.lower() if raw and raw.lower() in offered else None, raw)

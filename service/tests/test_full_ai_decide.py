@@ -91,7 +91,8 @@ THRESHOLDS = {"promo": .7, "says_under_18": .7, "complains_now": .5, "asks_if_ai
 # The DRAFT test-Mode Nouls' thresholds (ticket 47 phase B; ASSUMPTION: unprobed .7).
 TEST_THRESHOLDS = {"counter_offer": .7, "offer_moment": .7, "scene_on": .7, "scene_offer": .7,
                    "wants_content": .65,   # 03d Ask cut-off: test Mode only, Shadow keeps .7
-                   "chat_tease": .7}       # Chat tease (config `chat_tease`), unprobed
+                   "chat_tease": .7,        # Chat tease (config `chat_tease`), unprobed
+                   "asks_offer_details": .6}   # Offer details (NEW-165), probed 2026-11-17
 # `question_version("test")` before ticket 47 phase B put `TEST_THRESHOLDS` in it.
 PRE_47B_TEST_VERSION = "4e30e9162a1e"
 # `question_version("test")` before the sext scene (origin/main c847cb09f).
@@ -483,7 +484,7 @@ SUBJECTS = ("feet", "butt", "tits", "pussy", "nude", "lingerie", "bikini", "show
             "masturbation", "blowjob", "sex", "anything")
 FORMATS = ("photo", "video", "any")
 assert SUBJECTS == get_args(full_ai_sell.Subject) and FORMATS == get_args(full_ai_sell.Format)
-TEST_IDS = {"asks_subject", "asks_format", "counter_offer", "offer_moment"}
+TEST_IDS = {"asks_subject", "asks_format", "counter_offer", "offer_moment", "asks_offer_details"}
 
 
 def case_test_mode_questions():
@@ -495,7 +496,7 @@ def case_test_mode_questions():
     assert set(test) == {*IDS, "intensity"} | TEST_IDS, sorted(test)
     kinds = {q: type(v).__name__ for q, v in test.items() if q in TEST_IDS}
     assert kinds == {"asks_subject": "Choice", "asks_format": "Choice",
-                     "counter_offer": "Noul", "offer_moment": "Noul"}, kinds
+                     "counter_offer": "Noul", "offer_moment": "Noul", "asks_offer_details": "Noul"}, kinds
     assert tuple(test["asks_subject"].criteria) == SUBJECTS, tuple(test["asks_subject"].criteria)
     assert tuple(test["asks_format"].criteria) == FORMATS, tuple(test["asks_format"].criteria)
     assert all(test[q].model_dump() == v.model_dump() for q, v in rj._questions().items()

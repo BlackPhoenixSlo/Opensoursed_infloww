@@ -30,6 +30,8 @@ import re
 # Markdown/roleplay dressing the model wraps a marker in: *sticker: flirty*,
 # **STICKER: shy**, [sticker: sleepy].
 _WRAP = r"[*_~`\"'()\[\]{}]*"
+# The keyword boundary `protocol_marker_re` documents: no letter before, or a camelCase seam.
+_BOUND = r"(?:(?<![A-Za-z])|(?-i:(?<=[a-z])(?=[A-Z])))"
 
 
 def protocol_marker_re(keyword: str) -> re.Pattern[str]:
@@ -64,8 +66,62 @@ def protocol_marker_re(keyword: str) -> re.Pattern[str]:
     IGNORECASE the wrapper shapes still want.
     """
     return re.compile(
-        rf"{_WRAP}(?:(?<![A-Za-z])|(?-i:(?<=[a-z])(?=[A-Z])))(?:{keyword})([^\n]*)",
+        rf"{_WRAP}{_BOUND}(?:{keyword})([^\n]*)",
         re.IGNORECASE | re.MULTILINE)
+
+
+# The cat pack's keyword (`cat_stickers._MARKER_RE`): the COLON is its discriminator.
+STICKER_KEYWORD = r"STICKERS?[ \t]*:"
+_STICKER_RE = protocol_marker_re(STICKER_KEYWORD)
+
+# ── the Asked marker (Full AI NEW-168) ──
+#
+# `ASKED: <id>` names the get-to-know fact her reply asked or led to. Unlike STICKER it is a
+# word prose uses ("since u asked: im 24"), so the shape alone decides. Contract-shaped (caps
+# `ASKED` anywhere, or `asked` in any case opening its own line, then a separator): a marker,
+# and like every protocol marker it runs to end of line whatever follows (residue) — up to a
+# STICKER marker after it on the line, which its own pass still needs. Anything else is a
+# marker only when its value is a printed id or `none` ending the line: mid-line `asked` in
+# any case with a separator; or caps / line-opening `asked` with no separator.
+_ASK_SEP = r"[ \t]*[:=\-–—]"
+_EOL = r"(?![\w])[^\w\n]*$"
+_VALUE = re.compile(rf"[ \t]*{_WRAP}[ \t]*(\w*)")
+
+
+def _asked_re(ids: frozenset[str]) -> re.Pattern[str]:
+    known = "|".join(re.escape(k) for k in sorted({"none", *ids}, key=len, reverse=True))
+    caps = protocol_marker_re(rf"(?-i:ASKED){_WRAP}{_ASK_SEP}").pattern
+    opens = rf"^[ \t]*{_WRAP}asked{_WRAP}{_ASK_SEP}([^\n]*)"
+    sep = rf"{_WRAP}{_BOUND}asked{_WRAP}{_ASK_SEP}[ \t]*{_WRAP}[ \t]*({known}){_EOL}"
+    bare = (rf"(?:^[ \t]*{_WRAP}asked|{_WRAP}{_BOUND}(?-i:ASKED)){_WRAP}[ \t]+{_WRAP}[ \t]*"
+            rf"({known}){_EOL}")
+    return re.compile(rf"[ \t]*(?:{caps}|{opens}|{sep}|{bare})", re.IGNORECASE | re.MULTILINE)
+
+
+def strip_asked(text: str, ids: frozenset[str]) -> tuple[str, list[str]]:
+    """`text` without every Asked marker and every printed `[id]` echo (`ids`), and each
+    marker's value as written in order: its first word ("" for none). Only a marker's line
+    changes; `text` comes back as it was when there is nothing to strip. Pure."""
+    values: list[str] = []
+
+    def cut(m: re.Match[str]) -> str:
+        tail = m.group(1) if m.group(1) is not None else m.group(2)
+        if tail is None:                                # a printed id / none ending the line
+            values.append(m.group(3) if m.group(3) is not None else m.group(4))
+            return ""
+        values.append(_VALUE.match(tail).group(1))
+        s = _STICKER_RE.search(tail)                    # its own pass reads it later
+        if s:
+            return tail[len(tail[:s.start()].rstrip()):]
+        return ""
+
+    out, n = _asked_re(ids).subn(cut, text or "")
+    if ids:
+        echo = "|".join(re.escape(k) for k in ids)
+        out, e = re.subn(rf"^[ \t]*\[(?:{echo})\][ \t]*|[ \t]*\[(?:{echo})\]", "", out,
+                         flags=re.IGNORECASE | re.MULTILINE)
+        n += e
+    return (out.strip(), values) if n else (text, [])
 
 
 # A `*...*` span PLUS whatever separates it from the next word: group 1 is the

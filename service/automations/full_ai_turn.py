@@ -11,6 +11,8 @@
 `reply_json.info_error` and the reply is still written); the Route's Writer
 (`full_ai_writers.write`); the shared reply chain `finalize_draft` -> `shape_parts` ->
 `apply_typo_throttle` (docs/prompts/post-processing.md); then the Mode's sender and its record.
+`reply_json.asked` counts the fact her text's `ASKED:` line named (NEW-168) once every part landed;
+asks only on route chat, which no rewrite check touches.
 On sell_now and tease (only reachable with the side's `sell_on`) the Sell executor runs after the
 info stage and before the Writer, inside the same Turn deadline (03b, `_sell`; out of time is
 inventory_unknown): a Pick reaches the Writer and lands on the row (`full_ai_test.send`: on
@@ -29,6 +31,10 @@ chain (`reply_json.caption_fallback`).
 On a Route sext Turn with `floor_on` the Heat check (`_heat_check`, spec 06) scores her final text
 (`_heat_jev`, one Score) against the Heat the Writer got and rewrites it once when over
 (`reply_json.heat_check`); no Mode check, never a dropped reply.
+On row `offer_details` (spec offer-details D) the Offer answer check (`full_ai_offer_turn.offer_check`) runs on her
+final text instead: one rewrite, then `full_ai_offer_details.offer_fallback` through the chain, also
+when the Writer walk or the chain left no text; `reply_json.offer_details` records the resolved
+Offer and the outcome.
 `hold_with_typing` and the DM rate are the Mode's transport's to call, and test calls neither.
 A `STICKER: <tag>` line is always stripped from the Writer's text before the chain
 (`cat_stickers.parse_marker`); with `config.gifs` on, its tag becomes a `{gif, tag}` part after her
@@ -66,6 +72,8 @@ from automations._style_flags import load_strip_emojis
 from automations._typos import apply_typo_throttle
 from automations._wordfilter import load_banned_words
 from automations.full_ai_sell import Pick, Refusal, Teased
+from automations.full_ai_offer_details import OfferAsk, OfferFacts, diagnostics
+from automations.full_ai_offer_turn import offer_check, offer_resolved
 from automations.full_ai_decide import SALT_VER, Decision, Facts, arm_of, decide_turn
 from automations.full_ai_scene import scene_next, scene_words
 from automations.full_ai_writers import (
@@ -130,6 +138,12 @@ class TurnFacts:
     # Chat tease (config `chat_tease`, test Mode): his settled Offers in words (`full_ai_test.purchases_of`),
     # read by the tease price Jev; [] without the flag.
     purchases: list = field(default_factory=list)
+    # The Offer ask (`full_ai_offer_details.OfferAsk`, spec offer-details B): what the Offer
+    # resolver reads; built by both loaders, read by `run_turn` on row `offer_details`.
+    offer_ask: OfferAsk = field(default_factory=OfferAsk)
+    # Row `offer_details` (spec C): the resolved Offer's facts the Writer answers from, set by
+    # `run_turn` (`full_ai_offer_turn.offer_resolved`); None when no Offer resolved.
+    offer_facts: OfferFacts | None = None
 
 
 @dataclass
@@ -158,13 +172,15 @@ async def stored_config(account_id: str) -> dict:
     return merged(json.loads(raw) if raw else {})
 
 
-async def load_turn_facts(account, fan, anchor, mode, *, session=None, side=None, photo=None) -> TurnFacts:
+async def load_turn_facts(account, fan, anchor, mode, *, session=None, side=None, photo=None,
+                          reply_to_n=None) -> TurnFacts:
     """The Turn's facts. Test: `fan` is the pair, `anchor` his line, `side` the config side;
-    read off the session's own rows (`full_ai_test.fetch`) with that side of the stored config.
+    read off the session's own rows (`full_ai_test.fetch`) with that side of the stored config;
+    `reply_to_n` the owner's Quote-reply mark (the Offer ask's `quote_row_id`).
     The Test chat's loader only (live loads with `full_ai_live.load`)."""
     if mode == "test":
         cfg = await stored_config(account)
-        facts = await full_ai_test.fetch(account, fan, side, anchor, cfg[side], photo)
+        facts = await full_ai_test.fetch(account, fan, side, anchor, cfg[side], photo, reply_to_n=reply_to_n)
         facts.config_rev = cfg["rev"]
         return facts
     raise NotImplementedError(f"load_turn_facts: Test chat only, not {mode!r}")
@@ -228,17 +244,20 @@ async def _route(facts: TurnFacts, deadline: float) -> tuple[Decision, dict, str
                           sell_on=bool(cfg["sell_on"]), sext_on=bool(cfg["sext_on"]),
                           open_offer=facts.offer_piece is not None,
                           draft_on=full(facts.mode) and bool(cfg["draft_questions"]),
-                          scene=scene_flag(facts), chat_tease=tease_flag(facts)))
+                          scene=scene_flag(facts), chat_tease=tease_flag(facts),
+                          offer_details=full(facts.mode)))
     jev_json = {"answers": answers, "intensity": score, "fired": sorted(fired), "state": facts.state,
                 "choices": choices}   # 03b: test Mode's Choices, read by `_sell` only
     return d, jev_json, model, ms, error
 
 
-async def _info(facts: TurnFacts, route: str, deadline: float, jev_json: dict) -> str | None:
+async def _info(facts: TurnFacts, route: str, deadline: float, jev_json: dict, *,
+                ask: bool = True) -> str | None:
     """`_info_stage`, then with `info_questions: "list"` on chat `facts.ask_list` over the fold it
-    left (Jev failed or out of time included: the list needs no Jev), recorded on `jev_json.info`."""
-    err = await _info_stage(facts, route, deadline, jev_json)
-    if route == "chat" and facts.config["info_questions"] == "list":
+    left (Jev failed or out of time included: the list needs no Jev), recorded on `jev_json.info`.
+    `ask=False` (row `offer_details`): what he stated is still extracted, nothing is asked."""
+    err = await _info_stage(facts, route, deadline, jev_json, ask=ask)
+    if ask and route == "chat" and facts.config["info_questions"] == "list":
         history = [(m.direction, router.line_text(m)) for m in facts.cut_rows[-_HISTORY_TAIL:]]
         al = _info_jev.ask_list(facts.config, facts.fan_info, facts.asked, history,
                                 random.Random(f"full_ai:ask:{facts.anchor_key}"))
@@ -248,7 +267,8 @@ async def _info(facts: TurnFacts, route: str, deadline: float, jev_json: dict) -
     return err
 
 
-async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: dict) -> str | None:
+async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: dict, *,
+                      ask: bool = True) -> str | None:
     """The info stage on a speaking Turn: Jev's `stated_*` (and, on chat, the `next_question`
     Choice: only the chat Writer asks) within the time left, then the fired fields' extract within
     `min(writer_timeout_s, time left)`. Sets `facts.fan_info` (a new dict, newer values win) and
@@ -264,7 +284,7 @@ async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: d
     left = deadline - time.monotonic()
     if left <= 0:
         return "deadline"
-    choice_on = route == "chat" and facts.config["info_questions"] == "pick"
+    choice_on = ask and route == "chat" and facts.config["info_questions"] == "pick"
     offered = _info_jev.askable(facts.config, facts.fan_info, lead) if choice_on else []
     st = _info_jev.state(facts.state, facts.asked, offered)
     try:
@@ -845,12 +865,18 @@ async def run_turn(facts: TurnFacts, io: TurnIO | None = None) -> TurnResult:
         "info_error": None}
     if facts.photo is not None:
         reply["fan_photo"] = facts.photo
+    if facts.offer_ask.reply_to_n is not None:
+        reply["reply_to_n"] = facts.offer_ask.reply_to_n     # the Test chat's Quote-reply mark
+    details = d.row == "offer_details"      # an answer only: tease, scene, Offer and Asked held
+    if details and facts.tease is not None:
+        reply["held_tease"] = facts.tease.row_id   # live `_folds` keeps the tease past its bubbles
     if scene_flag(facts):
         # The saved scene (owner-ordered save state, ADR-0032 named exception): Jev's `scene_stage`
-        # (None on its default or a tie) folded over the newest row's; None ends it.
+        # (None on its default or a tie) folded over the newest row's; None ends it. An Offer-details
+        # answer leaves it as it stood.
         on = scene_turn(d, facts)
-        facts.scene_now = scene_next(facts.scene, on, router.choice_or_none(jev_json["choices"], "scene_stage"),
-                                     d.heat)
+        facts.scene_now = facts.scene if details else scene_next(
+            facts.scene, on, router.choice_or_none(jev_json["choices"], "scene_stage"), d.heat)
         reply["scene"] = facts.scene_now
     row: dict[str, Any] = {
         "account_id": facts.account_id, "fan_id": facts.fan_id, "mode": facts.mode,
@@ -864,8 +890,12 @@ async def run_turn(facts: TurnFacts, io: TurnIO | None = None) -> TurnResult:
     if d.route == "no_send":
         row["status"] = "no_send"
     else:
-        reply["info_error"] = await _info(facts, d.route, deadline, jev_json)
+        # An Offer-details answer extracts what he stated but asks nothing (no Choice, no list).
+        reply["info_error"] = await _info(facts, d.route, deadline, jev_json, ask=not details)
         reply["fan_info"] = facts.fan_info
+        if details:
+            got, facts.offer_facts = await offer_resolved(facts, deadline)
+            reply["offer_details"] = diagnostics(got, facts.offer_facts)
         if _sells(d.route, facts):
             # The sell step gets the Turn's time left (03b: min(own, remaining), no own bound).
             # ASSUMPTION: a cut dupe read's `asyncio.to_thread` clustering finishes in the background
@@ -883,6 +913,8 @@ async def run_turn(facts: TurnFacts, io: TurnIO | None = None) -> TurnResult:
         caption_typos = dict(reply["typo_state"])
         res = await _capped(write(d, facts, deadline=deadline, plain=caption is not None), deadline)
         reply["attempts"], reply["floor_reason"] = res.attempts, res.floor_reason
+        if res.asked_ids:                   # an ask Turn: her marker as written (NEW-168)
+            reply["asked_marker"] = res.asked_marker
         gif = None
         if res.text is not None:
             text, gif = _gif_part(res.text, facts, gif_offered(d, facts))
@@ -901,6 +933,10 @@ async def run_turn(facts: TurnFacts, io: TurnIO | None = None) -> TurnResult:
             parts = await _claim_audit(d, facts, reply, res.writer, parts, pick, deadline)
             if reply.get("offer_dropped"):          # a ride failed twice / fallback dropped: no PPV
                 pick = None
+        if details:         # the Offer answer check, never another row's (no Pick here)
+            parts = await offer_check(
+                facts, reply, res.writer, parts, deadline, chain=_chain,
+                rewrite=lambda w: _capped(write(d, facts, deadline=deadline, writers=[w]), deadline))
         if parts and d.route == "sext" and facts.config["floor_on"]:   # Heat check (spec 06), no Mode check
             parts = await _heat_check(d, facts, reply, res.writer, parts, deadline)
         if parts or (gif and not text):            # a dropped draft fails, gif or not
@@ -912,11 +948,9 @@ async def run_turn(facts: TurnFacts, io: TurnIO | None = None) -> TurnResult:
                 desc = (str(pick.facts.get("description") or "") or None
                         if pick is not None and scene_flag(facts) else None)
                 await io.send(row, parts, pick, over=over, desc=desc, gif=gif)
-            if facts.next_question and parts:       # the ask went out in her text (not a lone gif)
-                reply["asked"] = {**facts.asked,
-                                  facts.next_question: facts.asked.get(facts.next_question, 0) + 1}
-            elif facts.ask_list is not None and parts:
-                reply["asked"] = _info_jev.mark_asked(facts.asked, facts.ask_list)
+            landed = bool(parts) and row["status"] == "sent" and "cut" not in reply   # cut: none
+            if (k := res.asked) is not None and landed:     # NEW-168: the fact her text named
+                reply["asked"] = {**facts.asked, k: facts.asked.get(k, 0) + 1}
     reply["turn_ms"] = int((time.perf_counter() - t0) * 1000)
     row_id = await io.record(row)
     return TurnResult(row_id, d, reply["parts"], writer, reply["attempts"], reply["wait_s"],

@@ -797,3 +797,45 @@ describe("audienceSaved: who live answers moves on every side, nothing else", ()
     expect([canEdit(s), canSave(s), canRollback(s)]).toEqual([want, want, want]);
   });
 });
+
+describe("reply mark: replyTo / clearReply (offer-details B)", () => {
+  /** Two Turns answered and shown on both sides. */
+  const two = () => run(initTestChat("p1"), { type: "toggleSkip" },
+    ...say("one"), result("L", 1), result("R", 1), ...say("two"), result("L", 2), result("R", 2));
+
+  it.each<[string, TestChatAction[], number | null]>([
+    ["fresh chat", [], null],
+    ["replyTo an earlier Turn", [{ type: "replyTo", n: 1 }], 1],
+    ["replyTo the newest answered Turn", [{ type: "replyTo", n: 2 }], 2],
+    ["replyTo the Turn being written (not earlier) is ignored", [{ type: "replyTo", n: 3 }], null],
+    ["replyTo 0 is ignored", [{ type: "replyTo", n: 0 }], null],
+    ["replyTo then another", [{ type: "replyTo", n: 1 }, { type: "replyTo", n: 2 }], 2],
+    ["clearReply", [{ type: "replyTo", n: 1 }, { type: "clearReply" }], null],
+    ["newChat clears it", [{ type: "replyTo", n: 1 }, { type: "newChat", pair: "p2" }], null],
+    ["a send clears it", [{ type: "replyTo", n: 1 }, ...say("this one?")], null],
+  ])("%s → %s", (_n, actions, want) => {
+    expect(run(two(), ...actions).replyTo).toBe(want);
+  });
+
+  it("the send's Turn body on both sides carries reply_to_n; the next send's does not", () => {
+    const s = run(two(), { type: "replyTo", n: 1 }, ...say("this one?"));
+    expect(buildTurnPayload(s, "L")).toEqual({ pair: "p1", side: "checkpoint", n: 3, text: "this one?", reply_to_n: 1 });
+    expect(buildTurnPayload(s, "R")).toEqual({ pair: "p1", side: "draft", n: 3, text: "this one?", reply_to_n: 1 });
+    const next = run(s, result("L", 3), result("R", 3), ...say("ok"));
+    expect(buildTurnPayload(next, "L")).toEqual({ pair: "p1", side: "checkpoint", n: 4, text: "ok" });
+  });
+
+  it("a retry keeps the mark", () => {
+    const s = run(two(), { type: "replyTo", n: 2 }, ...say("this?"),
+      { type: "turnFailed", pair: "p1", side: "R", n: 3, error: "relay 503" }, { type: "retry", side: "R" });
+    expect(buildTurnPayload(s, "R")?.reply_to_n).toBe(2);
+  });
+
+  it("with a photo: the mark rides the photo request to both Turns, and comes back if it fails", () => {
+    const PHOTO: FanPhoto = { desc: "d", thumb: "data:image/jpeg;base64,B", outcome: "described", model: null, ms: 1 };
+    const out = run(two(), { type: "replyTo", n: 1 }, { type: "attach", image: "data:image/png;base64,A" }, { type: "send" });
+    expect(out.replyTo).toBeNull();
+    expect(buildTurnPayload(run(out, { type: "photoDescribed", pair: "p1", photo: PHOTO }), "L")?.reply_to_n).toBe(1);
+    expect(run(out, { type: "photoFailed", pair: "p1", error: "x" }).replyTo).toBe(1);
+  });
+});
