@@ -20,9 +20,11 @@ import re
 import llm_client
 import vault_ai_brief
 from automations import _language
+from automations.full_ai_mode import full
 from automations.full_ai_sell import Pick
 from automations.full_ai_writers import (
-    FREE_TERMS, WriteResult, _fan, floor, nearest_line, priced_block, walk,
+    FREE_TERMS, WriteResult, _fan, copied, nearest_line, own_lines, priced_block, prompt_pieces,
+    reject, strip_labels, strip_quotes, walk,
 )
 from automations.names import resolve_fan_name
 
@@ -76,7 +78,40 @@ _KINK_MAX = 160
 # OLD-AIC-12's free terms (`FREE_TERMS`), no new sentence.
 FREE_PRICE_BLOCK = "THE PRICE\n" + FREE_TERMS
 
+# NEW-164 (test / live Mode; owner-forwarded M3 2026-11-16): the facts above name the hero's kind
+# only, so a 1-photo card read "i just filmed it for u"; the whole set's kinds and counts under them.
+SET_FACTS = "THE SET HE GETS: {locked}, locked{previews}. Name only these kinds and counts."
+_KIND_WORD = {"photo": "photo", "video": "video", "gif": "gif", "audio": "voice note"}
+
 _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)     # old `describe_media._JSON_OBJ_RE`
+
+
+def _counted(media: list[dict]) -> str:
+    """"3 photos" / "1 video 0:30" / "2 photos + 1 video 1:10": kinds in first-seen order, a moving
+    kind with its summed length when known."""
+    order: dict[str, list[int]] = {}
+    for m in media:
+        order.setdefault(str(m.get("kind") or "photo"), []).append(int(m.get("seconds") or 0))
+    out = []
+    for kind, secs in order.items():
+        word = _KIND_WORD.get(kind, kind)
+        total = sum(secs) if kind in ("video", "gif") else 0
+        out.append(f"{len(secs)} {word}{'s' * (len(secs) > 1)}"
+                   + (f" {total // 60}:{total % 60:02d}" if total else ""))
+    return " + ".join(out)
+
+
+def set_facts(pick: Pick) -> str:
+    """SET_FACTS over the Pick's true set: its locked items (`facts["media"]`'s first
+    `len(pick.media)`, else `facts["kinds"]`) and, apart, its free previews. Pure."""
+    media = (pick.facts or {}).get("media")
+    if not media:
+        media = [{"kind": k} for k, n in (pick.facts or {}).get("kinds", {}).items() for _ in range(n)]
+        shown = []
+    else:
+        media, shown = media[:len(pick.media)], media[len(pick.media):]
+    previews = f", plus {_counted(shown)} he sees without unlocking" if shown else ""
+    return SET_FACTS.format(locked=_counted(media), previews=previews)
 
 
 def style_for(account_id: str, fan_id: int, media_id: int) -> str:
@@ -124,14 +159,18 @@ def body_suffix(lines: list[str], price: str) -> str:
 
 def messages(facts, pick: Pick, was_cents: int | None) -> list[dict] | None:
     """The caption call's messages; None when no locked item is described (`pick.facts["hero"]`,
-    old `_copy_call`'s `no_description` stop, before any spend). A nearest piece on a
-    `sell_nearest` "note" side (`full_ai_writers.nearest_line`): NEAREST_NOTE under the media facts."""
+    old `_copy_call`'s `no_description` stop, before any spend). Test / live Mode: `set_facts` (the
+    whole set's kinds and counts, the hero's facts naming its kind only) under the media facts.
+    A Pick not what he asked for (`full_ai_writers.nearest_line`, test / live unless "plain"):
+    NEAREST_NOTE under them. Shadow: neither."""
     hero = (pick.facts or {}).get("hero")
     if not hero:
         return None
     fields = hero["fields"]
     user = vault_ai_brief.copy_brief(fields, description=str(fields.get("description") or ""),
                                      duration_seconds=hero.get("seconds"), kind=hero.get("kind") or "")
+    if full(getattr(facts, "mode", None)):
+        user = f"{user}\n\n{set_facts(pick)}"
     if note := nearest_line(facts, pick):
         user = f"{user}\n\n{note}"
     return [{"role": "system", "content": system(style_for(facts.account_id, facts.fan_id, hero["media_id"]))},
@@ -154,18 +193,25 @@ async def write(facts, msgs: list[dict], *, deadline: float,
                 writers: list[str] | None = None) -> WriteResult:
     """`full_ai_writers.walk` for the caption: the side's `writers` in order (tries, per-Writer
     timeouts and the deadline as there), the next only after a failure, a
-    reply with no caption (`empty`) or a code-floor reject (`floor_on`, no marker allowed).
+    reply with no caption (`empty`) or a code-floor reject (`floor_on`, no marker allowed): the
+    chat Writer's strips and floor (`strip_labels`, `strip_quotes`, `reject`, no gif-only reply),
+    then `copied` against every message of this call (`echo`; no persona in it, the vault
+    description is in it) and her last outbound lines of the thread (`repeat`; none on a re-offer
+    of the same piece, `full_ai_writers.reoffers`).
     ASSUMPTION: no `response_format` (not every Writer provider takes it); a reply without the JSON
     caption is `empty`, as the old lane kept its canned line. Overturned if the chain's providers
     all accept json_object."""
     cfg = facts.config
     lang = await _language.load_account_language(facts.account_id) if cfg["floor_on"] else ""
+    prompt = [p for m in msgs for p in prompt_pieces(str(m.get("content") or ""))]
+    own = own_lines(facts, getattr(facts, "pick", None))
 
     async def try_once(writer: str, timeout: float) -> tuple[str, str | None]:
         r = await llm_client.chat(model=writer, messages=msgs, purpose=PURPOSE,
                                   account_id=facts.account_id, temperature=TEMPERATURE,
                                   timeout_s=timeout, max_attempts=1)
-        text = parse(r.content or "")
-        return text, floor(text, lang) if text and cfg["floor_on"] else None
+        text = strip_quotes(strip_labels(parse(r.content or "")))
+        return text, (reject(text, lang, False) or copied(text, prompt, own)) \
+            if text and cfg["floor_on"] else None
 
     return await walk(cfg, writers or cfg["writers"], deadline, try_once)

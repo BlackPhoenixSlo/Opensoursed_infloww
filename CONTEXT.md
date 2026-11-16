@@ -407,7 +407,7 @@ Which one Lane, or none, may reply to a Fan at an Evaluation point, decided by t
 _Avoid_: owner on its own (the Agency's, as in **Owner session**), ownership on its own (`ownership.py`'s bought media), engine_active
 
 **Human yield**:
-The Lane ownership rule that no Lane replies to a Fan for a while after a human's 1:1 outbound (`manual_yield_minutes`, code default 60 s; D49's 1 h is set per Creator at the flip); an outbound of unknown sender counts as human. OF-app yield feeds it from one live one-Fan read per Turn, at Full AI Chat's pre-look.
+The Lane ownership rule that no Lane replies to a Fan for a while after a human's 1:1 outbound (`manual_yield_minutes`, code default 60 s; D49's 1 h is set per Creator at the flip); an outbound of unknown sender counts as human. OF-app yield feeds it from a live one-Fan read at Full AI Chat's pre-look, again just before a Turn's first bubble and before its paid card.
 _Avoid_: takeover, human window, pause
 
 **Top spend limit**:

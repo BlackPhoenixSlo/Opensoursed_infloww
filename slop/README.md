@@ -237,6 +237,7 @@ entry whose sha is > 200 commits behind HEAD or not an ancestor of HEAD (fresh e
 `slop/run <name> <knobs>`, its verdict that run's exit code (0 OK, 1 FAIL, 3 INFRA, 2 refused = INFRA
 with its printed reason, 1 without invariants.json = INFRA; invariants.json only names the failed checks); a FAIL in `all` or `volume`
 re-runs once (green = `FLAKY`, INFRA stays INFRA); a `--map` run red only on budgets is `RED (coverage)` (counted as ok).
+8 h limit (owner 2026-11-16, `WALL_S`): nothing (no re-run either) starts in the last 30 min, and at 8 h the running scenario is stopped; those rows are `SKIP` with a `not run` / `stopped` / `no re-run` note, summary.json and map.json are still written (the night's map entries apply), and the next night runs what was left.
 The machine gate owns admission: the nightly parent never holds it (`slop/run` starts it as `venv/bin/python
 -m slop.lib.nightly`, untouched by the venv hook; an inherited `SLOP_GATE*` is dropped with `slop: nightly:
 ignoring inherited SLOP_GATED`); each child `slop/run` takes its own gate slot (queues when none is free), env without `SLOP_GATE*`, with

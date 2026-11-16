@@ -518,3 +518,26 @@ def test_prev_rotated_volume_rows(tmp_path, monkeypatch):
     c = nt.changes([R("volume", "v1", "FAIL"), R("volume", "v2", "OK")], rows)
     assert c["newly_red"] == []  # v1 was already red on its last night
     assert nt._prev(tmp_path / "20261110T0000Z-nightly-ab", False, ["volume", "all", "map"]) == (None, None)
+
+
+def test_wall_cuts_unstarted_and_stopped_runs(tmp_path, monkeypatch):
+    """8 h limit (owner 2026-11-16): nothing starts in the last LAST_START_S; a run the wall stopped is
+    SKIP (stopped), not INFRA; the digest names the cut rows."""
+    night = nt.Night(tmp_path, tee=False)
+    assert night.may_start()
+    night.t0 -= nt.WALL_S - nt.LAST_START_S + 1
+    assert not night.may_start()
+    r = night.run("map", "x")
+    assert (r["verdict"], r["cut"], r["folder"]) == ("SKIP", nt.CUT_NOT_RUN, None)
+    night.t0 = __import__("time").time()
+    monkeypatch.setattr(night, "stream", lambda *a, **k: (setattr(night, "walled", True), (3, None, "", False, ""))[1])
+    r = night.run("all", "y")
+    assert (r["verdict"], r["cut"], r["infra"]) == ("SKIP", nt.CUT_STOPPED, None)
+    rows = [nt.cut_row("map", "x"), r, {**R("all", "z", "FAIL"), "cut": nt.CUT_NO_RERUN}]
+    vs = [x["verdict"] for x in rows]
+    s = {"headline": nt.headline("S", vs), "sha": "a", "smoke": False, "started": "", "ended": "",
+         "load_start": 0.0, "load_end": 0.0, "cores": 1, "rows": rows,
+         "phases": {"all": {"wall_s": 1}, "map": {"wall_s": 1}}, "changes": {"first": True}, "prev": None}
+    md = nt.digest(s)
+    assert "8 h limit: 2 scenarios not run or stopped" in md
+    assert nt.CUT_NO_RERUN in md and nt.exit_code(vs) == 1

@@ -52,6 +52,9 @@ GATE_PY = gate.GATE
 CHILD_LOCK_WAIT_S = "7200"  # a child queues this long for the gate before its INFRA (exit 75)
 GATE_INFRA = 75  # gate.py: gave up (lock/load) or its thread guard tripped; an `INFRA: <reason>` line
 INSTALL_DEADLINE_S = int(CHILD_LOCK_WAIT_S) + INSTALL_TIMEOUT_S  # the gated install: slot wait + the install
+WALL_S = 8 * 3600  # owner 2026-11-16: the night ends within 8 h; at it the running child is stopped
+LAST_START_S = 30 * 60  # no scenario (or re-run) starts this close to WALL_S (the longest takes ~27 min)
+CUT_NOT_RUN, CUT_STOPPED, CUT_NO_RERUN = "not run: 8 h limit", "stopped at the 8 h limit", "no re-run: 8 h limit"
 
 
 # ---- pure ----
@@ -145,6 +148,11 @@ def merge_rerun(first: dict, again: dict) -> dict:
             "gate_wait_s": phases.add(first.get("gate_wait_s"), again.get("gate_wait_s")),
             "run_phases": phases.merge(first.get("run_phases"), again.get("run_phases")),
             "untimed": first["untimed"] + again["untimed"]}
+
+
+def cut_row(phase: str, name: str, why: str = CUT_NOT_RUN) -> dict:
+    """The row of a scenario the 8 h limit left out (SKIP: no verdict; the next night runs it)."""
+    return {**row_of(phase, name, None, 0, 0), "verdict": "SKIP", "untimed": [], "cut": why}
 
 
 def all_skipped(verdicts: list[str]) -> bool:
@@ -247,6 +255,8 @@ def _cell(r: dict) -> str:
         bits.append("; ".join(x[:90] for x in f[:3]) + (f" (+{len(f) - 3} more)" if len(f) > 3 else ""))
     if r.get("infra"):
         bits.append(f"infra: {r['infra'][:200]}")
+    if r.get("cut"):
+        bits.append(r["cut"])
     return " · ".join(bits).replace("|", "/")
 
 
@@ -282,6 +292,9 @@ def digest(s: dict) -> str:
            f"exit {exit_code(v, bool(s.get('infra')))} (0 OK/FLAKY, 1 FAIL, 3 INFRA or all SKIP); counts ok/flaky/fail/infra/skip"]
     if s.get("deps"):
         out.append(f"app deps: {s['deps']}")
+    cut = [r for r in s["rows"] if r.get("cut") in (CUT_NOT_RUN, CUT_STOPPED)]
+    if cut:
+        out.append(f"8 h limit: {len(cut)} scenarios not run or stopped (the next night runs them)")
     waits = [(r["gate_wait_s"], r["scenario"]) for r in s["rows"] if r.get("gate_wait_s")]
     if waits:
         out.append(f"gate wait: {sum(w for w, _ in waits):.0f}s total, max {max(waits)[0]:.0f}s ({max(waits)[1]})")
@@ -369,6 +382,7 @@ def app_deps_stale() -> str | None:
 class Night:
     def __init__(self, out: Path, tee: bool):
         self.out, self.log, self.proc = out, open(out / "run.log", "a") if tee else None, None
+        self.t0, self.walled = time.time(), False  # walled: WALL_S hit, the child stopped (start_wall)
         # pid_lstart: a poller's `LC_ALL=C ps -o lstart= -p <pid>` must print this, else the pid is dead or reused
         self.status = {"pid": os.getpid(), "pid_lstart": procs.lstart(os.getpid()) or "", "phase": None, "scenario": None, "done": 0, "total": 0,
                        "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "updated": None}
@@ -411,12 +425,33 @@ class Night:
         self.proc = None
         return code, folder, " | ".join(last)[:400], fired.is_set(), gate_line
 
+    def may_start(self) -> bool:
+        """A scenario may start: the wall not hit and more than LAST_START_S left of WALL_S."""
+        return not self.walled and time.time() - self.t0 < WALL_S - LAST_START_S
+
+    def start_wall(self) -> threading.Timer:
+        """At WALL_S since start: walled, the running child stopped (its row SKIP, CUT_STOPPED)."""
+        def hit():
+            self.walled = True
+            self.say("slop: nightly 8 h limit reached: stopping the running scenario, starting no more")
+            self.stop_child()
+        t = threading.Timer(max(0.0, self.t0 + WALL_S - time.time()), hit)
+        t.daemon = True
+        t.start()
+        return t
+
     def run(self, phase: str, name: str) -> dict:
-        """One `slop/run <name> <knobs>`; its folder from report.FOLDER_LINE."""
+        """One `slop/run <name> <knobs>`; its folder from report.FOLDER_LINE. Not started past the wall
+        (cut_row); stopped by it: SKIP with CUT_STOPPED (a killed child proves nothing either way)."""
+        if not self.may_start():
+            self.say(f"slop: nightly {phase} SKIP {name} ({CUT_NOT_RUN})")
+            return cut_row(phase, name)
         t0 = time.time()
         knobs = effective_knobs(phase, name)
         code, folder, tail, _, gate_line = self.stream([str(RUN), name, *knobs], SLOP.parent, env=child_env(os.environ))
         r = row_of(phase, name, folder, time.time() - t0, code, tail, gate_line)
+        if self.walled and code:
+            r.update(verdict="SKIP", failed=[], infra=None, cut=CUT_STOPPED)
         r["knobs"] = knobs
         self.say(f"slop: nightly {phase} {r['verdict']} {name} ({r['seconds']:.0f}s) {r['folder']}")
         return r
@@ -532,6 +567,7 @@ def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str, all_na
     s = {"stamp": stamp, "sha": sha, "smoke": args.smoke, "phase_names": list(plan), "cores": cores,
          "load_start": os.getloadavg()[0], "started": time.strftime("%Y-%m-%d %H:%M %Z"), "phases": {}, "rows": []}
     night.mark(phase="app deps", total=sum(map(len, plan.values())))
+    night.start_wall()
     stale = app_deps_stale()
     deps_err = night.install_app_deps(stale) if stale else None
     s["deps"] = deps_err or (f"installed ({stale})" if stale else "up to date")
@@ -550,7 +586,9 @@ def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str, all_na
                 rows.append(night.run(phase, name))
                 night.mark(done=night.status["done"] + 1)
             for i, r in enumerate(rows):
-                if r["verdict"] == "FAIL":
+                if r["verdict"] == "FAIL" and not night.may_start():
+                    rows[i] = {**r, "cut": CUT_NO_RERUN}
+                elif r["verdict"] == "FAIL":
                     night.mark(phase=f"{phase} rerun", scenario=r["scenario"])
                     rows[i] = merge_rerun(r, night.run(phase, r["scenario"]))
         s["rows"] += rows

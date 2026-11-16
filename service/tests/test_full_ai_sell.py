@@ -63,6 +63,7 @@ from __future__ import annotations
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
 
 import inspect  # noqa: E402
+from dataclasses import replace  # noqa: E402
 import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from unittest.mock import patch  # noqa: E402
@@ -750,9 +751,111 @@ def case_claim_ok_table():
         ("my feet for u", PUSSY2, False, "no describe text names feet"),
         ("me naked for u", _cpick({"photo": 2}, price=10000, subject="pussy", description=LEAD), False,
          "no locked item is nude"),
+        # F3a (M3 2026-11-16): a clip word needs a clip like a video noun
+        ("i just filmed it for u", _cpick(SET4), False, "filmed over photos"),
+        ("i just filmed it for u", _cpick(CLIP), True, "filmed over a clip"),
+        ("recorded this for u", _cpick({"photo": 1}), False, "recorded over one photo"),
+        ("press play babe", _cpick(SET4), False, "press play over photos"),
+        ("hit play babe", _cpick(CLIP), True, "hit play over a clip"),
+        ("watch me in this one", _cpick(SET4), True, "watch is no clip word"),
+        ("took this shot for u", _cpick(SET4), True, "shot is no clip word"),
+        ("was watching a movie, then took these for u", _cpick(SET4), True, "movie: an everyday word (item 6)"),
+        ("my fav film is on rn lol", _cpick(SET4), True, "bare film too"),
     ]
     for text, pick, want, why in rows:
         assert fs.claim_ok(text, pick) is want, (why, text)
+
+
+def _tagged(kinds, asked_format, asked_subject="anything", subject="anything", price=3400):
+    p = _cpick(kinds, price=price, subject=subject)
+    return replace(p, facts={**p.facts, "asked": {"subject": asked_subject, "format": asked_format},
+                             "nearest": "format"})
+
+
+PICS3_ASKED_VID = _tagged({"photo": 3}, "video")
+VID_ASKED_PICS = _tagged(CLIP, "photo")
+FEET_ASKED_TOY = _tagged(SET4, "photo", asked_subject="toy", subject="anything")
+
+
+def case_claim_ok_tagged_table():
+    """F1d: a tagged Pick excuses the ASKED format's noun / subject word after a negation cue."""
+    rows = [
+        ("no vid of that babe but ive got 3 pics", PICS3_ASKED_VID, True, "negated asked noun"),
+        ("heres the video", PICS3_ASKED_VID, False, "a plain video claim"),
+        ("not gonna lie this video is hot", PICS3_ASKED_VID, False, "the cue is 4 words back"),
+        ("dont have a vid rn, 3 pics tho", PICS3_ASKED_VID, True, "dont without apostrophe"),
+        ("i don't have a vid rn, 3 pics tho", PICS3_ASKED_VID, True, "don't with apostrophe"),
+        ("i don’t have a vid rn", PICS3_ASKED_VID, True, "curly apostrophe"),
+        ("instead of a vid, 3 pics", PICS3_ASKED_VID, True, "instead"),
+        ("no vid, 4 pics", PICS3_ASKED_VID, False, "the count check is unchanged"),
+        ("no vid, but this pic is better", VID_ASKED_PICS, False, "a pic over a clip, its cue too far back"),
+        ("no pics rn but this vid", VID_ASKED_PICS, True, "negated pics over a clip asked photo"),
+        ("no toy one rn, 4 pics of me", FEET_ASKED_TOY, True, "negated asked subject word"),
+        ("my toy in all 4 pics", FEET_ASKED_TOY, False, "the asked subject claimed"),
+        ("no ass pics rn", FEET_ASKED_TOY, False, "only the ASKED subject is excused"),
+        # item 6 (2026-11-16): on an asked video, a clip word is excused after a cue like its nouns
+        ("no filming rn, 3 pics", PICS3_ASKED_VID, True, "negated clip word, asked video"),
+        ("i havent filmed that one yet but these 3 pics", PICS3_ASKED_VID, True, "havent filmed"),
+        ("i just filmed it for u", PICS3_ASKED_VID, False, "filmed over photos, no cue"),
+        ("no filming rn, this vid tho", VID_ASKED_PICS, True, "a clip is a clip"),
+        ("never recorded one, 4 pics", FEET_ASKED_TOY, False, "asked photo: clip words never excused"),
+    ]
+    for text, pick, want, why in rows:
+        assert fs.claim_ok(text, pick) is want, (why, text)
+    # an untagged Pick reads exactly as before: the negation never excuses
+    for text in ("no vid of that babe but ive got 3 pics", "dont have a vid, 3 pics"):
+        assert fs.claim_ok(text, _cpick({"photo": 3}, price=3400)) is False, text
+
+
+def case_discloses_table():
+    """F1e: a tagged Pick's text needs a negation cue and, format differing, a real-format noun."""
+    rows = [
+        ("heres ur video babe", _cpick(CLIP), True, "untagged: always"),
+        ("", _cpick(SET4), True, "untagged: empty too"),
+        ("no vid of that babe but ive got 3 pics", PICS3_ASKED_VID, True, "cue + real noun"),
+        ("3 pics for u babe", PICS3_ASKED_VID, False, "no cue"),
+        ("no vid rn babe, $34", PICS3_ASKED_VID, False, "cue but no real-format noun"),
+        ("dont have that one, this vid tho", VID_ASKED_PICS, True, "a clip asked photo"),
+        ("dont have that one babe", VID_ASKED_PICS, False, "a clip asked photo needs a video noun"),
+        ("not the toy one babe but u'll love it", FEET_ASKED_TOY, True, "same format: the cue alone"),
+        ("u'll love it", FEET_ASKED_TOY, False, "same format, no cue"),
+        # item 7 (2026-11-16): a cue within 4 words before an asked word, or a disclosure phrase
+        ("can't wait for u to see these 3 pics 😈", PICS3_ASKED_VID, False, "a cue near nothing asked"),
+        ("can't wait for u to see these 😈", FEET_ASKED_TOY, False, "same, same format"),
+        ("no panties in these", FEET_VID_ASKED, False, "the cue negates no asked word"),
+        ("no feet vid rn babe but ive got 3 pics", FEET_VID_ASKED, True, "cue before the asked words"),
+        ("its a photo set this time, not what u asked for", FEET_VID_ASKED, True, "not what"),
+        ("only got pics of that babe", FEET_VID_ASKED, True, "only got"),
+        ("closest i have is this pic set", FEET_VID_ASKED, True, "closest"),
+        ("not what u asked for babe", FEET_VID_ASKED, False, "phrase but no real noun"),
+        ("cant wait for u to see this vid style set, 3 pics", PICS3_ASKED_VID, False, "cue 6 words back"),
+        ("no video of that, these pics instead", PICS3_ASKED_VID, True, "both"),
+    ]
+    for text, pick, want, why in rows:
+        assert fs.discloses(text, pick) is want, (why, text)
+    for pick in (PICS3_ASKED_VID, FEET_VID_ASKED, VID_ASKED_PICS, FEET_ASKED_TOY):
+        cap = fs.fallback_caption(pick, "offer")
+        assert fs.discloses(cap, pick) and fs.claim_ok(cap, pick), cap
+
+
+FEET_VID_ASKED = _tagged({"photo": 3}, "video", asked_subject="feet", subject="anything")
+
+
+def case_real_formats_table():
+    """Item 4 (2026-11-16): `real_formats` reads the Pick's per-item kinds, not its first kind;
+    `discloses` wants a noun of any real kind; audio is neither photo nor video."""
+    for kinds, want in [({"photo": 3}, {"photo"}), ({"video": 1}, {"video"}), ({"gif": 1}, {"video"}),
+                        ({"photo": 2, "video": 1}, {"photo", "video"}), ({"audio": 1}, set()),
+                        ({"audio": 1, "photo": 1}, {"photo"})]:
+        assert fs.real_formats(_cpick(kinds)) == want, (kinds, fs.real_formats(_cpick(kinds)))
+    mixed = _tagged({"photo": 2, "video": 1}, "photo")
+    assert fs.discloses("no pics like that babe, this one has a vid", mixed)        # a real kind noun
+    assert fs.discloses("no pics like that babe, 2 pics and a vid", mixed)
+    audio = _tagged({"audio": 1}, "video")
+    assert fs.discloses("no vid of that babe, but u can hear me", audio)            # no noun demanded
+    assert not fs.discloses("u can hear me babe", audio)
+    cap = fs.fallback_caption(audio, "offer")
+    assert "voice note" in cap and fs.discloses(cap, audio) and fs.claim_ok(cap, audio), cap
 
 
 def case_price_ok_table():
@@ -803,6 +906,14 @@ def case_fallback_caption_table():
         assert fs.claim_ok(got, pick), ("the fallback passes the claim audit", got)
         assert fs.price_ok(got, pick.price_cents if kind == "offer" else None), ("and the price check", got)
         assert ("$" in got) is (kind == "offer"), ("only an offer names money", got)
+        assert fs.discloses(got, pick), ("an untagged Pick needs no disclosure", got)
+    # F1f: a tagged Pick's fallback leads with a plain disclosure from its real kinds
+    for pick, want in ((PICS3_ASKED_VID, "not what u asked for babe, this one's 3 pics, $34 to unlock"),
+                       (VID_ASKED_PICS, "not what u asked for babe, this one's 1 vid, $34 to unlock"),
+                       (FEET_ASKED_TOY, "not what u asked for babe, this one's 4 pics, $34 to unlock")):
+        got = fs.fallback_caption(pick, "offer")
+        assert got == want, got
+        assert fs.claim_ok(got, pick) and fs.price_ok(got, pick.price_cents) and fs.discloses(got, pick), got
 
 
 

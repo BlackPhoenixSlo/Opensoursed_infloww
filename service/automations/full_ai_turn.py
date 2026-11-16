@@ -293,10 +293,11 @@ async def _info_stage(facts: TurnFacts, route: str, deadline: float, jev_json: d
     return None
 
 
-async def _chain(raw: str, facts: TurnFacts, reply: dict, *, single: bool = False) -> list[str]:
+async def _chain(raw: str, facts: TurnFacts, reply: dict, *, single: bool = False,
+                 typos: bool = True) -> list[str]:
     """The shared reply chain over the Writer's text; [] when it drops the draft
     (`reply["dropped_reason"]` says why). `single`: the separate caption, one bubble, never split
-    (`force_single`)."""
+    (`force_single`). `typos` False: no typo pass (the disclosing fallback caption)."""
     aid, fid = facts.account_id, facts.fan_id
     # The side's `strip_emojis` (every Mode), else the one account-wide style read.
     strip_emoji_on = bool(facts.config.get("strip_emojis")) or await load_strip_emojis(aid)
@@ -325,7 +326,7 @@ async def _chain(raw: str, facts: TurnFacts, reply: dict, *, single: bool = Fals
         reply["dropped_reason"] = shaped.dropped_reason
         return []
     parts = shaped.parts
-    if flags["typo_on"]:
+    if flags["typo_on"] and typos:
         protect = name_protect + (list(NONNATIVE_OUTPUTS) if flags["nonnative_on"] else [])
         # A PPV rides the last bubble: on a Turn with a Pick the cap is the shaped count, so the
         # slip still rides but no `*fix` bubble is added after her last real text (rwl fa3 S1).
@@ -356,6 +357,40 @@ def _haggled(p: Pick, piece: Teased, same: bool, his: list[str]) -> Pick:
     quote = full_ai_sell.clamp_quote(base, full_ai_sell.quoted_cents("\n".join(his)))
     list_cents = base if same else p.list_cents
     return replace(p, price_cents=min(list_cents, quote), list_cents=list_cents)
+
+
+def _told_format(got: Pick | Refusal, choices: dict[str, dict[str, float]] | None, reply: dict,
+                 free: bool, mode: str | None) -> Pick | Refusal:
+    """A final Pick none of whose locked items is of this Turn's `asks_format` (photo / video;
+    `full_ai_sell.real_formats`, so a photo + video set asked as a video is no miss) is tagged as
+    not what he asked for (client rule 2026-11-16, M1): `facts["asked"]` = {subject: this Turn's
+    `asks_subject`, format: the asked one}, `facts["nearest"]` "format", recorded on
+    `reply["nearest"]` as the nearest path does. Test / live Mode only (Shadow unchanged). Never on
+    a Refusal, a ride, a Free item, or a Pick already tagged. Pure apart from `reply`."""
+    if (not full(mode) or not isinstance(got, Pick) or free or is_ride(got) or not got.price_cents
+            or "asked" in got.facts):
+        return got
+    fmt = router.choice_of(choices, "asks_format")
+    if fmt not in ("photo", "video") or fmt in full_ai_sell.real_formats(got):
+        return got
+    subject = router.choice_of(choices, "asks_subject")
+    reply["nearest"] = {"asked_subject": subject, "asked_format": fmt, "step": "format"}
+    return replace(got, facts={**got.facts, "asked": {"subject": subject, "format": fmt}, "nearest": "format"})
+
+
+def _yes_to_open(d: Decision, facts: TurnFacts, choices: dict[str, dict[str, float]] | None) -> bool:
+    """A yes to the open card that names nothing else (M2 2026-11-16): test / live Mode, row sell,
+    an open Offer (`facts.offer_piece`), says_yes_to_offer fired, and this Turn's ask names no other
+    piece: `asks_subject` "anything" or the card's subject, `asks_format` "any" or the card's
+    (photo / video, a moving kind being video). wants_content does not matter (the Router counts
+    "send it" / "how do i unlock it" as an ask). "yes send me a feet video" over a photo card names
+    another piece: today's path. Pure."""
+    piece = facts.offer_piece
+    if not (full(facts.mode) and d.row == "sell" and piece and "says_yes_to_offer" in d.fired):
+        return False
+    subject, fmt = router.choice_of(choices, "asks_subject"), router.choice_of(choices, "asks_format")
+    card = "video" if str(piece.format).lower() in full_ai_sell.MOVING_KINDS else "photo"
+    return subject in ("anything", piece.subject) and fmt in ("any", card)
 
 
 async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, float]],
@@ -412,7 +447,14 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
     Refusal("no_match"), a plain chat reply (`messages_for` adds no need-line on a tease Turn).
     The Offer price Jev (`_price`) runs here, last, on a fresh priced sell_now Pick only.
     `deadline`: the Turn's; both price Jevs stop `_PRICE_MARGIN_S` before it. A ride whose text fails the Claim audit twice
-    sends only its bubbles claiming no media and no price, without the photos (`_claim_audit`)."""
+    sends only its bubbles claiming no media and no price, without the photos (`_claim_audit`).
+    Not what he asked for (client rule 2026-11-16): a final priced Pick on any path (haggle, tease
+    piece, fresh), never a ride or a Free item, test / live only, holding no item of this Turn's
+    photo / video `asks_format` is tagged `facts["asked"]` / `facts["nearest"]` "format" and recorded on
+    `reply["nearest"]` (`_told_format`), so the Writer tells him and the Claim audit checks it.
+    A yes to the open card naming nothing else (`_yes_to_open`, test / live Mode): Refusal("offer_open")
+    before any vault load, `reply["offer_open"]` = that Offer's row id; the Writer points him at the
+    locked card and nothing new is sent."""
     reply = {} if reply is None else reply
     aid = facts.account_id
     jev_by = (time.monotonic() + _price_jev.TIMEOUT_S if deadline is None else deadline) - _PRICE_MARGIN_S
@@ -431,6 +473,11 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
                                router.choice_of(choices, "asks_format"), heat)
     free = d.route == "make_right"
     fresh = not (haggle or teased or free)     # a new piece: no haggle, tease piece or Free item
+    if fresh and _yes_to_open(d, facts, choices):
+        # A yes to the open card: point him at it, never a different piece (M2 2026-11-16).
+        facts.pick = Refusal("offer_open")
+        reply["offer_open"] = facts.offer_piece.row_id
+        return
     owned = facts.owned | facts.sent if free else facts.owned
     if fresh and facts.offer_piece and d.route == "sell_now" and not tease_turn(d, facts):   # a yes never re-sends it
         owned = owned | set(facts.offer_piece.locked) | set(facts.offer_piece.previews)
@@ -491,6 +538,7 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
                                     "step": got.facts["nearest"]}
         if haggle and isinstance(got, Pick):
             got = _haggled(got, teased, same is not None, facts.state["fan_new_messages"])
+        got = _told_format(got, choices, reply, free, facts.mode)
         facts.pick = got
     except Exception:  # noqa: BLE001 — fail closed: chat, never a half-built offer
         log.exception("full_ai sell step failed account=%s", aid)
@@ -556,12 +604,13 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
     one rewrite by the Writer that answered (same messages, `write` with `min(its own, remaining)`)
     through the same chain, its attempts appended with `rewrite: true`; a second failure, or less
     than one `writer_timeout_s` left before the Turn deadline -> `fallback_caption` through the chain
-    as one bubble (dropped by it -> [] and `reply["offer_dropped"]` "shape" | "leak": no PPV); on a
+    as one bubble (no typo pass on a Pick not what he asked for: its disclosure ships intact; dropped by it -> [] and `reply["offer_dropped"]` "shape" | "leak": no PPV); on a
     ride Pick (`is_ride`, a Chat tease) instead her first text's bubbles that claim no media and no
     price, as a plain chat reply with no PPV (`reply["offer_dropped"]` = "claim": the caller sends no
     Pick; `fallback_caption` would name the photos and the price). Sets
-    `reply["caption_fallback"]` and `reply["claim_fail"]` (one `{check: claim|price, text}` per
-    failed check of the first text and the rewrite; [] on a first pass). A caption not sent leaves no trace on the row: `leak` /
+    `reply["caption_fallback"]` and `reply["claim_fail"]` (one `{check: claim|price|disclose, text}` per
+    failed check of the first text and the rewrite; [] on a first pass; `disclose` =
+    `full_ai_sell.discloses`: a Pick not what he asked for must say so). A caption not sent leaves no trace on the row: `leak` /
     `dropped_reason` stay as the first chain set them, and `typo_state` is the state the shipped
     text's chain left; but when nothing ships `dropped_reason` says why: the fallback's chain
     reason (`leak` on a leak), or `claim` on a ride with no bubble left.
@@ -576,7 +625,8 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
     def ok(ps: list[str]) -> bool:
         text = "\n".join(ps)
         fails = [c for c, good in (("claim", full_ai_sell.claim_ok(text, pick)),
-                                   ("price", full_ai_sell.price_ok(text, price))) if not good]
+                                   ("price", full_ai_sell.price_ok(text, price)),
+                                   ("disclose", full_ai_sell.discloses(text, pick))) if not good]
         reply["claim_fail"] = reply["claim_fail"] + [{"check": c, "text": text} for c in fails]
         return not fails
 
@@ -604,7 +654,9 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
         return kept
     # The fallback caption runs the shared chain too (one bubble); dropped -> no text, no PPV.
     scratch = {"leak": [], "dropped_reason": None, "typo_state": dict(facts.typo_state)}
-    line = await _chain(full_ai_sell.fallback_caption(pick, kind), facts, scratch, single=True)
+    # A Pick not what he asked for: no typo pass, a slip in "not" / "pics" would void the disclosure.
+    line = await _chain(full_ai_sell.fallback_caption(pick, kind), facts, scratch, single=True,
+                        typos="asked" not in pick.facts)
     if not line or scratch["leak"]:
         reply["offer_dropped"] = "leak" if scratch["leak"] else "shape"
         reply["dropped_reason"] = "leak" if scratch["leak"] else scratch["dropped_reason"]
@@ -681,7 +733,7 @@ def _ppv_turn(d: Decision, facts: TurnFacts) -> bool:
 async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadline: float) -> str | None:
     """`caption_writer` "caption": the separate caption call (`full_ai_caption`), keeping one
     `writer_timeout_s` of the Turn for the chat Writer, through the shared chain as one bubble
-    (`_chain(single=True)`), then the Claim audit's checks (claim_ok + price_ok). Fail -> one rewrite
+    (`_chain(single=True)`), then the Claim audit's checks (claim_ok + price_ok + discloses). Fail -> one rewrite
     by the Writer that answered (same messages) when two `writer_timeout_s` are left; still failing
     -> None, and the Turn runs today's path (the chat Writer's caption). Sets `reply["caption"]` =
     {writer: caption | chat, model, outcome, ms, attempts} and, on a pass, `reply["typo_state"]`
@@ -705,7 +757,8 @@ async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadl
         scratch = {"leak": [], "dropped_reason": None, "typo_state": dict(facts.typo_state)}
         parts = await _chain(text, facts, scratch, single=True)
         line = parts[0] if len(parts) == 1 and not scratch["leak"] else None
-        if line is not None and not (full_ai_sell.claim_ok(line, pick) and full_ai_sell.price_ok(line, price)):
+        if line is not None and not (full_ai_sell.claim_ok(line, pick) and full_ai_sell.price_ok(line, price)
+                                     and full_ai_sell.discloses(line, pick)):
             line = None
         return line, scratch
 
@@ -743,7 +796,8 @@ def _with_caption(reply: dict, parts: list[str], caption: str, pick: Pick, typo_
     Overturned if the owner prefers today's path then."""
     reply["caption_fallback"] = False
     joined = "\n".join([*parts, caption])
-    if full_ai_sell.claim_ok(joined, pick) and full_ai_sell.price_ok(joined, pick.price_cents or None):
+    if (full_ai_sell.claim_ok(joined, pick) and full_ai_sell.price_ok(joined, pick.price_cents or None)
+            and full_ai_sell.discloses(joined, pick)):
         return [*parts, caption]
     reply["caption"]["outcome"] = "alone"
     reply["typo_state"] = typo_state

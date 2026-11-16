@@ -11,8 +11,10 @@ Jev and Writers faked at their clients. Temp DB, no paid call, no real OF call.
                                   the Pick's media; offer_message_id; vault_sends. Feed the buy ->
                                   Turn 2: row bought (notice), pending_offer none, last_purchase set,
                                   the media not picked again, spend line in the Writer prompt
-  case_no_buy_pending_then_yes    Turn 2 a minute later: the Pending offer names the PPV; a yes never
-                                  re-sends the same piece
+  case_no_buy_pending_then_yes    Turn 2 a minute later: the Pending offer names the PPV; "ok yes send
+                                  it" (yes + wants_content, nothing else named) sends no new piece
+                                  (Refusal offer_open, OFFER_OPEN need-line), the open Offer untouched
+  case_yes_and_wants_content_sells_another  a yes naming another subject still sells another piece
   case_pending_expires_late_buy_settles  24 h + 1 min: no Pending offer; a late buy still settles
   case_haggle_unsends_old         the lower copy goes out, the old PPV is unsent, the old row stays
                                   unsettled and no longer open
@@ -45,7 +47,7 @@ import transaction_ingest as ti  # noqa: E402
 from _full_ai_fixtures import QUIET  # noqa: E402
 from _full_ai_live_helpers import NANO, dm_turn, live_rows, reply, seed_live  # noqa: E402
 from _of_fixtures import VaultOF  # noqa: E402
-from automations import full_ai_live, full_ai_owned, full_ai_test  # noqa: E402
+from automations import full_ai_live, full_ai_owned, full_ai_test, full_ai_writers  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, AiDecision, AutomationRule, Message, VaultSend  # noqa: E402
 
@@ -193,11 +195,38 @@ def case_no_buy_pending_then_yes():
         _res, of, _j, _fw, r1 = _sell1(fan, 95201)
         locked = set(json.loads(r1.offer_media_json)["locked"])
         R(_age_fan(fan, 1))
-        _res, of2, jev2, _fw2, r2 = _turn(fan, 95202, "ok yes send it", {"says_yes_to_offer": .9})
+        _res, of2, jev2, _fw2, r2 = _turn(fan, 95202, "ok yes send it",
+                                          {"says_yes_to_offer": .9, "wants_content": .9})
     st = jev2.calls[0]["state"]
     assert st["pending_offer"].startswith(f"locked ${r1.offer_price_cents // 100} message"), st["pending_offer"]
-    (ppv2,) = _ppv_sends(of2)                                  # a yes sells: another piece
+    # a yes naming nothing else points at the open card: no new piece, the open Offer untouched
+    # (M2 2026-11-16; wants_content no longer matters, review item 2)
+    assert r2.route == "sell_now" and _ppv_sends(of2) == [], (r2.route, of2.sent)
+    rj = reply(r2)
+    assert rj["refusal"] == "offer_open" and rj["offer_open"] == r1.id, rj
+    line = full_ai_writers.offer_open_line(full_ai_writers.Teased("anything", "photo", tuple(locked), (), 0))
+    assert "(a photo: call it nothing else)" in line or "pieces: name no kind)" in line, line
+    assert json.dumps(line)[1:-1] in _writer_prompt(_fw2), _writer_prompt(_fw2)
+    assert of2.unsent == [] and r2.offer_message_id is None, (of2.unsent, r2.offer_message_id)
+    rows = R(live_rows(A, fan))
+    assert rows[0].outcome is None and full_ai_owned.open_offer_live(rows, datetime.utcnow()).id == r1.id
+
+
+def case_yes_and_wants_content_sells_another():
+    """A yes that names another subject (asks_subject feet over the open "anything" card) still sells
+    another piece, as before (review item 2)."""
+    _live_on()
+    fan = 9521
+    with _vault({101: "$10", 202: "$50"}):
+        _res, of, _j, _fw, r1 = _sell1(fan, 952101)
+        locked = set(json.loads(r1.offer_media_json)["locked"])
+        R(_age_fan(fan, 1))
+        _res, of2, _jev2, _fw2, r2 = _turn(fan, 952102, "yes and send me ur feet too",
+                                           {"says_yes_to_offer": .9, "wants_content": .9},
+                                           choices={"asks_subject": {"feet": .9}})
+    (ppv2,) = _ppv_sends(of2)                                  # a yes + an ask sells: another piece
     assert r2.route == "sell_now" and not locked & set(ppv2["media_files"]), (r2.route, of2.sent, locked)
+    assert "offer_open" not in reply(r2), reply(r2)
 
 
 def case_pending_expires_late_buy_settles():

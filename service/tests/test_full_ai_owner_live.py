@@ -12,9 +12,16 @@ OF faked (`OwnerOF` behind `ax._make_client`), Jev + Writers faked, the other La
                               during bubble 1's hold: 0 bubbles, stood_down; between bubble 1 and 2: 1 sent
   case_rule_off               rule off during the hold: off_rule, no bubble; his next DM -> Get to know fans
   case_human_row              an employee row during bubble 2's hold: cut human, no send after it, the
-                              human's pause outlives the 10 s cooldown; 1 OF-app read for the Turn
+                              human's pause outlives the 10 s cooldown; 2 OF-app reads (pre-look, bubble 1)
   case_human_of_app           an unknown creator item in the pre-look's read: skipped human_yield:human_of_app,
                               0 Router calls, 0 rows, pause ~60 s after the item, exactly 1 get_messages
+  case_app_before_bubble_1    an OF-app item after the pre-look, before bubble 1: 0 sent, `no_send`,
+                              stood_down human_yield:human_of_app, yield started
+  case_app_before_ppv         an OF-app item after bubble 1: text bubbles go (no read before them), the
+                              card does not, cut human_of_app, Offer NULL + offer_dropped, yield started
+  case_app_reads_clear        no outside item: text+card 3 reads (pre, bubble 1, card), card alone 2, all
+                              sent; our own sent bubbles in the read never stand down (also with their
+                              `messages` rows missing); a raising read sends as today
   case_welcome_handoff        his DM, a welcome after it, the hook's job + the handoff job: one reply; the
                               sweep's pre-look (client None) makes 0 get_messages
   case_job_start_skips        off-list / top spend / hard skip / advancing walk: skipped, 0 Router, 0 rows;
@@ -48,8 +55,9 @@ from _full_ai_fixtures import KIND, QUIET, _seed  # noqa: E402
 from _full_ai_live_fixtures import LiveOF, clear_pause, live_rows, paused, payload, seed_live, world  # noqa: E402
 from _full_ai_live_helpers import reply as _reply  # noqa: E402
 from automation_executor import run_once  # noqa: E402
-from automations import autoreply, full_ai_live, welcome_turn  # noqa: E402
+from automations import autoreply, full_ai_live, full_ai_test, welcome_turn  # noqa: E402
 from automations import full_ai_owner_io as io  # noqa: E402
+from automations.full_ai_sell import Pick  # noqa: E402
 from automations._skiplist import MANUAL_RESTRICT_REASON  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
@@ -59,6 +67,9 @@ from db.models import (  # noqa: E402
 LIST = 778
 OFF = "FULL_AI_CHAT_OFF"
 _mid = iter(range(8_100_000, 10**9))
+OFFER_COLS = ("offer_price_cents", "offer_list_cents", "offer_media_json", "offer_item_ref")
+PICK = Pick(ref=711, media=(711, 712), previews=(701,), price_cents=1500, list_cents=1500,
+            subject="any", format="photo", lane="paid", facts={})
 STYLE = {k: False for k in ("autoreply", "typos_autoreply", "nonnative_autoreply", "nonnative_spacing_autoreply")}
 
 
@@ -310,7 +321,7 @@ async def case_human_row():
     (row,) = await live_rows(aid)
     assert (row.status, of.calls) == ("sent", 1), row.status
     assert _reply(row)["cut"] == {"check": "human_yield", "reason": "human", "index": 1}
-    assert of.reads == 1, of.reads                       # the OF-app read: the pre-look only
+    assert of.reads == 2, of.reads                       # the OF-app read: the pre-look + bubble 1 only
     until = await paused(aid, fan)
     assert until is not None and until > datetime.utcnow() + timedelta(seconds=30), until
 
@@ -328,6 +339,126 @@ async def case_human_of_app():
     assert (w.jev.calls, of.calls, of.reads, await live_rows(aid)) == ([], 0, 1, []), (of.reads,)
     until = await paused(aid, fan)
     assert until is not None and abs((until - (at + timedelta(seconds=60))).total_seconds()) <= 5, (until, at)
+
+
+class AppOF(LiveOF):
+    """LiveOF whose chat read lists `chat` plus every DM it took (ours, newest first, as OF lists them);
+    `broken`: every read raises."""
+
+    def __init__(self, broken: bool = False, **kw):
+        super().__init__(**kw)
+        self.broken, self.mine = broken, []
+
+    def send_message(self, chat_id, text, **kw) -> dict:
+        res = super().send_message(chat_id, text, **kw)
+        self.mine.insert(0, {"id": res["id"], "createdAt": res["createdAt"], "text": text, "fromUser": {"id": 999}})
+        return res
+
+    def get_messages(self, chat_id, **kw) -> dict:
+        self.reads += 1
+        if self.broken:
+            raise RuntimeError("OF read failed")
+        return {"list": [*self.chat, *self.mine], "hasMore": False}
+
+
+def _app_item() -> dict:
+    """A creator item typed in the OF app just now (an id none of our rows has)."""
+    return {"id": 7_900_000_000_000 + next(_mid), "createdAt": datetime.utcnow().isoformat() + "+00:00",
+            "text": "typed in the app", "fromUser": {"id": 1}}
+
+
+def _three(parts: list[str]) -> list[str]:
+    return [parts[0], "one sec babe", parts[-1]]
+
+
+@contextlib.contextmanager
+def _sent_as(shape=_three, pick: Pick | None = PICK):
+    """Every live Turn's bubbles are `shape(parts)`; `pick`: `PICK` rides the last one (the card)."""
+    real = full_ai_test.send
+
+    def send(row, parts, p=None, **kw):
+        return real(row, shape(parts), p or pick, **kw)
+    with _patched(full_ai_live.full_ai_test, "send", send):
+        yield
+
+
+async def _yielded(aid: str, fan: int) -> None:
+    until = await paused(aid, fan)
+    assert until is not None and until > datetime.utcnow() + timedelta(seconds=30), until
+
+
+async def case_app_before_bubble_1():
+    # Measured 2026-11-16: an outside reply landed while the Writer ran, after the pre-look's read.
+    aid, fan = "fa_ol_app0", 942
+    rid = await _creator(aid, listed=False)
+    mid = await _fan(aid, fan)
+    of = AppOF()
+
+    async def human():
+        of.chat.append(_app_item())
+    with _on_hold(1, human):
+        res, w = await _job(aid, fan, mid, rid, of)
+    (row,) = await live_rows(aid)
+    assert (row.status, of.calls, of.reads) == ("no_send", 0, 2), (row.status, of.calls, of.reads)
+    assert _reply(row)["stood_down"] == {"check": "human_yield", "reason": "human_of_app", "index": 0}
+    await _yielded(aid, fan)
+
+
+async def case_app_before_ppv():
+    aid, fan = "fa_ol_app1", 943
+    rid = await _creator(aid, listed=False)
+    mid = await _fan(aid, fan)
+    of = AppOF(after=lambda n, _t: of.chat.append(_app_item()) if n == 1 else None)
+    with _sent_as():                           # text, text, card
+        res, w = await _job(aid, fan, mid, rid, of)
+    (row,) = await live_rows(aid)
+    reply = _reply(row)
+    assert len(reply["parts"]) == 3 and "ppv" in reply["parts"][2], reply["parts"]
+    assert [("message_id" in p) for p in reply["parts"]] == [True, True, False], reply["parts"]
+    # Bubble 2 (text) reads the DB only: the item is seen first at the card's look.
+    assert (row.status, of.calls, of.reads) == ("sent", 2, 3), (row.status, of.calls, of.reads)
+    assert not any("price" in s for s in of.sent), of.sent
+    assert reply["cut"] == {"check": "human_yield", "reason": "human_of_app", "index": 2}, reply.get("cut")
+    assert reply["offer_dropped"] == "stood_down" and all(getattr(row, c) is None for c in OFFER_COLS)
+    await _yielded(aid, fan)
+
+
+async def case_app_reads_clear():
+    async def turn(aid, fan, of, pick):
+        rid = await _creator(aid, listed=False)
+        mid = await _fan(aid, fan)
+        with pick:
+            await _job(aid, fan, mid, rid, of)
+        (row,) = await live_rows(aid)
+        reply = _reply(row)
+        assert row.status == "sent" and "cut" not in reply and of.calls == len(reply["parts"]), (row.status, reply)
+        return row, reply
+    # Text, text, card: pre-look, bubble 1, the card. Our sent bubbles are in every read after bubble 1.
+    of = AppOF()
+    row, reply = await turn("fa_ol_app2", 944, of, _sent_as())
+    assert (len(reply["parts"]), of.reads, row.offer_price_cents) == (3, 3, 1500), (reply["parts"], of.reads)
+    assert reply["parts"][-1]["message_id"] and "price" in of.sent[-1], of.sent
+    # The card alone: pre-look + the card.
+    of = AppOF()
+    row, reply = await turn("fa_ol_app3", 945, of, _sent_as(lambda p: p[-1:]))
+    assert (len(reply["parts"]), of.reads) == (1, 2), (reply["parts"], of.reads)
+    # Three text bubbles: pre-look + bubble 1.
+    of = AppOF()
+    row, reply = await turn("fa_ol_app4", 946, of, _sent_as(pick=None))
+    assert (len(reply["parts"]), of.reads) == (3, 2), (reply["parts"], of.reads)
+    # Bubble 1's `messages` row missing (a best-effort write failed): the card's read lists it, still ours.
+    async def no_row(**_kw):
+        return None
+    of = AppOF()
+    with _patched(full_ai_live, "write_outbound_attribution", no_row):
+        row, reply = await turn("fa_ol_app5", 947, of, _sent_as(lambda p: [p[0], p[-1]]))
+    async with get_session() as s:
+        assert await s.get(Message, ("fa_ol_app5", 947, reply["parts"][0]["message_id"])) is None
+    assert (len(reply["parts"]), of.reads) == (2, 3) and reply["parts"][-1]["message_id"], of.reads
+    # Every read raises: no Stop, all of it sends as today.
+    of = AppOF(broken=True)
+    row, reply = await turn("fa_ol_app6", 948, of, _sent_as())
+    assert of.reads == 3 and reply["parts"][-1]["message_id"], of.reads
 
 
 async def case_welcome_handoff():

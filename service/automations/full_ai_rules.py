@@ -75,7 +75,7 @@ _DOC = {
     "DARE_JOIN": "NEW-113", "BRUSH_OFF": "NEW-159", "DARE_NEXT": "NEW-160", "SEXT_HEAT": "NEW-114", "TEASE_GOAL": "NEW-123", "CAPTION_APART": "NEW-126",
     "FREE_PRICE_BLOCK": "NEW-127", "caption": "NEW-128", "SEXT_SCENE": "NEW-129", "SCENE_STAGE": "NEW-130",
     "SCENE_SELL": "NEW-131", "SCENE_NARRATION": "NEW-132", "SCENE_SELF": "NEW-132", "LEAD_HEAD": "NEW-135",
-    "LEAD_LINES": "NEW-136", "LEAD_EXAMPLES": "NEW-137", "SELF_GIVE": "NEW-138", "NEAREST_NOTE": "NEW-140",
+    "LEAD_LINES": "NEW-136", "LEAD_EXAMPLES": "NEW-137", "SELF_GIVE": "NEW-138", "NEAREST_NOTE": "NEW-161", "OFFER_OPEN": "NEW-162", "MANIFEST_TEST": "NEW-163",
     "SELL_OFF_SCENE": "NEW-141", "fallback_caption": "NEW-122", "LIKES_EXTRACT": "NEW-144",
     "SEXT_HOT_TEST": "NEW-145", "SELL_STEP_TEST": "NEW-146", "ESCALATION_TEST": "NEW-147", "RIDE_NOTE": "NEW-148",
     "chat_tease": "NEW-149", "implied:wants_content": "NEW-150",
@@ -554,7 +554,9 @@ _FLAGGED = (("LEAD_HEAD", "lead_in"), ("LEAD_LINES", "lead_in"), ("LEAD_EXAMPLES
             ("SCENE_STAGE", "sext_scene"), ("SCENE_SELL", "sext_scene"), ("SCENE_NARRATION", "sext_scene"),
             ("SCENE_SELF", "sext_scene"), ("SELL_OFF_SCENE", "sext_scene"), ("RIDE_NOTE", "chat_tease"))
 # Test Mode's twins of the old hot wording (off a scene Turn; no config key: Shadow keeps the old ones).
-_TEST_TWINS = ("SEXT_HOT_TEST", "SELL_STEP_TEST", "ESCALATION_TEST")
+_TEST_TWINS = ("SEXT_HOT_TEST", "SELL_STEP_TEST", "ESCALATION_TEST", "MANIFEST_TEST")
+# Test / live wording with no config key and no Shadow twin (a sell step Shadow never runs).
+_FULL_ONLY = ("OFFER_OPEN",)
 
 
 def _text(v: Any) -> str:
@@ -609,6 +611,7 @@ def _writers_node(mode: str) -> dict:
     if full(mode):
         blocks += [_const(n, flag=k) for n, k in _FLAGGED]
         blocks += [_const(n, route=f"test Mode, replaces {n.removesuffix('_TEST')}") for n in _TEST_TWINS]
+        blocks += [_const(n, route="sell_now (test and live)") for n in _FULL_ONLY]
     else:
         blocks.insert(0, _note("Shadow", _SHADOW_NOTE, f"{_FT}:run_turn"))
     return _node("writers", "Writers", "write",
@@ -630,6 +633,7 @@ def _chain(mode: str) -> dict:
               _list("Claim audit (a Turn with a PPV)",
                     ["claim_ok: her text claims only what the piece holds",
                      "price_ok: any price she names is the Offer's",
+                     "discloses: a piece not what he asked for is told as such (test and live)",
                      "one rewrite on the Writer that answered, else the fallback caption"], f"{_FT}:_claim_audit",
                     doc=_DOC["fallback_caption"]),
               _note("Docs", "Stages, order and gaps: docs/prompts/post-processing.md.", f"{_FT}:_chain")]
@@ -656,7 +660,7 @@ _SHADOW_JEV_KEYS = ("answers", "intensity", "fired", "state", f"photo (with {pho
 _REPLY_KEYS = ("parts", "attempts", "floor_reason", "dropped_reason", "leak", "side", "config_rev", "wait_s",
                "turn_ms", "fan_info", "asked", "typo_state", "info_error", "fan_photo", "scene", "refusal",
                "level", "nearest", "price", "caption", "caption_fallback", "claim_fail", "offer_dropped",
-               "chat_tease", "ride", "heat_check", "asked_count")
+               "chat_tease", "ride", "heat_check", "asked_count", "offer_open")
 
 
 def _send(mode: str) -> dict:

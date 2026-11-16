@@ -190,7 +190,7 @@ FLAG_OFF_PROMPTS_SHA = "00570ca587295d9a7222dad2e8fe1be44a375476e9317e7e90aea279
 
 
 def _old_twins(prompts):
-    """Test Mode composes SEXT_HOT_TEST / SELL_STEP_TEST / ESCALATION_TEST where Shadow composes
+    """Test Mode composes SEXT_HOT_TEST / SELL_STEP_TEST / ESCALATION_TEST / MANIFEST_TEST where Shadow composes
     the old three (off-path wording PR); put back, the prompts are the pinned builder's."""
     s = json.dumps(prompts)
     fmt = {"close": wr.CLOSE_BY_ID, "example": wr._voice.HER.sell_caption_example}
@@ -198,6 +198,7 @@ def _old_twins(prompts):
                      (wr.SELL_STEP_TEST.format(**fmt), wr.SELL_STEP.format(**fmt)),
                      (wr.ESCALATION_TEST.format(close=wr.CLOSE_BY_ID), wr.ESCALATION.format(close=wr.CLOSE_BY_ID))):
         s = s.replace(json.dumps(new)[1:-1], json.dumps(old)[1:-1])
+    s = s.replace("these are real, already made", "these are real, already filmed")   # MANIFEST_TEST (NEW-163)
     return json.loads(s)
 
 

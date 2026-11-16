@@ -13,6 +13,8 @@
   floor(text, lang, offer_ref=None) -> str | None          pure: the code floor's reject reason
   strip_offer(text) -> str                                 pure: every whole `>>OFFER <ref>` line out
   strip_labels(text) -> str                                pure: the thread's `YOU:` / `FAN:` labels out
+  strip_quotes(text) -> str                                pure: one pair of quotes wrapping the reply out
+  copied(text, prompt, own) -> str | None                  pure: `echo` / `repeat` (copied runs of words)
   spend_line(spent, tips=()) -> str | None                pure: OLD-AIC-22, his purchases + tips as a fact (03b, 05)
 
 The chat Route is the old ai_chatter reply prompt, verbatim (docs/prompts/README.md, "full_ai_writers
@@ -64,7 +66,7 @@ from automations._prompt_rules import (
 from automations._router_jev import line_text
 from automations.full_ai_config import style_layers
 from automations.full_ai_mode import full
-from automations.full_ai_sell import Pick, Refusal, Teased, _money
+from automations.full_ai_sell import MOVING_KINDS, Pick, Refusal, Teased, _buckets, _money
 from automations.names import resolve_fan_name
 from automations.welcome_chatter_for_info import (
     _ASK_PRIORITY, _BREATHER_VARIANTS, _HISTORY_TAIL, _REPLY_TEMPERATURE, _STYLE_VARIANTS,
@@ -157,16 +159,16 @@ SELL_OFF_SCENE = ("you can't send pictures or videos in this chat right now — 
                   "sending one, that you took one, or that he'll see one. If he asks to see "
                   "you, tell him in one hot line that the real thing is on your page, then stay "
                   "in the scene with words.")
-# NEW-140, DRAFT (config `sell_nearest` "note", test Mode): after the item line of a Pick that is
-# the nearest piece to his ask, not the ask itself (`full_ai_sell.pick(nearest=True)`).
-# Owner 2026-11-14: "ALWAYS SELL if asked then play out story": she never says she lacks it.
-# `{got}` (its real format) added after the first proof: asked a video, got a photo, the Writer
-# called it "a lil video" and the Claim audit dropped the caption.
-NEAREST_NOTE = ("- He asked for {asked}. This piece is {got}, and it is your answer to that: call "
-                "it {got}, never tell him you don't have what he asked for, and never say or hint "
-                "that this piece shows it. "
-                "Say what it really shows, then play his ask out from there in words: what "
-                "you're doing in it, and what you'd do for him next.")
+# NEW-161 (supersedes NEW-140; test / live Mode): after the item line of a Pick that is not what
+# he asked for (`facts["asked"]`: the nearest piece, or another format than his ask). Owner-forwarded
+# client rule 2026-11-16: "if we don't have it, still offer or send an alternative, but make sure
+# he knows it's different" (replaces 2026-11-14's "she never says she lacks it"). {asked} and {got}
+# never share a sentence: the honest line ("its 3 photos, not a feet video") must not echo the note.
+NEAREST_NOTE = ("- He asked for {asked}, and that one isn't here to send. This piece is {got}. "
+                "Tell him plainly, in your own words, that it isn't what he asked for and what it "
+                "is instead. Say what it really shows, from its description. Never say or hint that "
+                "it shows what he asked for, and never call it anything but {got}. Then make him "
+                "want this one.")
 
 
 def asked_words(asked: dict) -> str:
@@ -179,16 +181,19 @@ def asked_words(asked: dict) -> str:
 
 
 def got_words(pick) -> str:
-    """The piece's real format for NEAREST_NOTE: "a photo", "a video", "3 photos"."""
-    n = len(pick.media)
-    return f"a {pick.format}" if n == 1 else f"{n} {pick.format}s"
+    """The piece's real kinds for NEAREST_NOTE, from its locked items (`facts["kinds"]`, moving kinds
+    as video, audio as a voice note): "a photo", "3 photos", "2 photos and a video"."""
+    kinds = (pick.facts or {}).get("kinds") or {pick.format: len(pick.media)}
+    counts = zip(_buckets(kinds), ("photo", "video", "voice note"))
+    return " and ".join(f"a {w}" if n == 1 else f"{n} {w}s" for n, w in counts if n)
 
 
 def nearest_line(facts, pick) -> str | None:
-    """NEAREST_NOTE for a Pick carrying `facts["asked"]` on a `sell_nearest` "note" side in test
-    or live Mode; None otherwise ("plain", an exact match, Shadow)."""
+    """NEAREST_NOTE for a Pick carrying `facts["asked"]` in test or live Mode, unless the side's
+    `sell_nearest` is "plain" (an "off" side's format-tagged Pick, `full_ai_turn._told_format`, gets
+    it too: client rule 2026-11-16); None otherwise ("plain", an exact match, Shadow)."""
     asked = (getattr(pick, "facts", None) or {}).get("asked")
-    if not asked or not full(getattr(facts, "mode", None)) or facts.config.get("sell_nearest") != "note":
+    if not asked or not full(getattr(facts, "mode", None)) or facts.config.get("sell_nearest") == "plain":
         return None
     return NEAREST_NOTE.format(asked=asked_words(asked), got=got_words(pick))
 
@@ -295,6 +300,9 @@ MANIFEST = ("CONTENT YOU CAN ACTUALLY SEND HIM (these are real, already filmed �
             "actually pitching it.\n"
             "- The list above is COMPLETE and CURRENT: anything not on it is gone — never re-offer, "
             "re-price, or invent sets, lengths, counts, or prices. " + FILMING_MORE)
+# NEW-163 (test / live Mode; Shadow keeps MANIFEST): "already filmed" -> "already made", which fits a
+# photo set too (owner-forwarded M3 2026-11-16: "i just filmed it for u" over a 1-photo card).
+MANIFEST_TEST = MANIFEST.replace("these are real, already filmed", "these are real, already made")
 # OLD-CORE-33 plain form (_ppv_caption.py:253-254), `px` as `_money` renders it.
 PRICE_BLOCK = ("THE PRICE\nIt unlocks at {px}. You may name it or not, but if you name a price it "
                "must be exactly {px}.")
@@ -387,7 +395,27 @@ SCENE_NARRATION = ("- No *asterisk actions* and no story about yourself in third
                    "nothing.\n")
 SCENE_SELF = "Use what you've learned about him; "
 # Refusal -> need-line in the sell slot (spec 03b › Contracts, ticket 10 r3); inventory_unknown: none.
+# NEW-162 (owner-forwarded M2 2026-11-16: a pure "yes" to an open card got a different piece):
+# Refusal("offer_open"), test / live only (`full_ai_turn._sell`).
+# `{piece}`: what the card holds as far as its row says (`offer_open_line`).
+OFFER_OPEN = ("He just said yes to the piece you already sent him{piece} — it is still sitting locked "
+              "right here in this chat. Tell him it's right there and to unlock it. If he says he "
+              "already unlocked it, believe him: don't tell him to unlock it, ask how he liked it. "
+              "Send nothing new, pitch nothing else, and name no price.")
 _NEED_LINES = {"no_match": FILMING_MORE, "all_owned": FILMING_MORE, "no_priced_items": FILMING_MORE}
+
+
+def offer_open_line(piece: Teased | None) -> str:
+    """OFFER_OPEN over the open card (`facts.offer_piece`, no vault load): one locked item -> its
+    kind (" (a photo: call it nothing else)"; a moving kind is a video, audio a voice note); more ->
+    the count only (" (3 pieces: name no kind)"): the row's `format` is the first item's kind, so
+    the others' kinds are unknown; none -> no clause."""
+    n = len(piece.locked) if piece else 0
+    if n == 1:
+        kind = str(piece.format).lower()
+        what = "a video" if kind in MOVING_KINDS else "a voice note" if kind == "audio" else "a photo"
+        return OFFER_OPEN.format(piece=f" ({what}: call it nothing else)")
+    return OFFER_OPEN.format(piece=f" ({n} pieces: name no kind)" if n else "")
 
 # 03b tease (ticket 46). NEW-123, DRAFT (pending the owner's OK): the tease goal line over the
 # Pick's OLD-AIC-12 item line without terms (no price, no `>>OFFER`; his next reply sells it).
@@ -661,16 +689,18 @@ def item_line(pick: Pick, terms: str | None) -> str:
                        description=str(facts.get("description") or "").strip(), terms=terms)
 
 
-def sell_section(pick: Pick, was_cents: int | None, note: str | None = None) -> str:
+def sell_section(pick: Pick, was_cents: int | None, note: str | None = None, test: bool = False) -> str:
     """The sell_now `{sell_section}`: the OLD-AIC-12 block with the one item line, then
     OLD-CORE-33's price block at the Pick's price: its `was_cents` form when `was_cents` (the price
     he already saw this piece at, `was_cents_of`) is over the price, as the old code used it only
-    when `was > price`; else the plain form. `note` (`nearest_line`) goes right under the item line."""
+    when `was > price`; else the plain form. `note` (`nearest_line`) goes right under the item line.
+    `test` (test / live Mode): MANIFEST_TEST takes MANIFEST's place; Shadow keeps MANIFEST."""
     # `_money` without its `$`: a folder price with cents (2499) reads "$24.99", as the price block.
     line = item_line(pick, TERMS.format(dollars=_money(pick.price_cents)[1:]))
     if note:
         line = f"{line}\n{note}"
-    return MANIFEST.format(no_customs=NO_CUSTOMS, items=line) + "\n\n" + priced_block(pick.price_cents, was_cents)
+    block = MANIFEST_TEST if test else MANIFEST
+    return block.format(no_customs=NO_CUSTOMS, items=line) + "\n\n" + priced_block(pick.price_cents, was_cents)
 
 
 def priced_block(price_cents: int, was_cents: int | None) -> str:
@@ -855,7 +885,11 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
     draw differs from flag-off), the chat goal leads (`_need_block`), the few-shot is
     `lead_examples` and SELF_GIVE takes SELF_BAN's place.
     Test Mode (`facts.mode`) off a scene Turn: SEXT_HOT_TEST / SELL_STEP_TEST / ESCALATION_TEST
-    take SEXT_HOT / SELL_STEP / ESCALATION's places; Shadow keeps the old three.
+    take SEXT_HOT / SELL_STEP / ESCALATION's places; Shadow keeps the old three. Test / live Mode,
+    any sell Turn: MANIFEST_TEST takes MANIFEST's place, and a Pick carrying `facts["asked"]` gets
+    `nearest_line` under its item line (client rule 2026-11-16). A sell Refusal("offer_open") (a pure
+    yes to the open card, test / live only) gets OFFER_OPEN in the sell slot, no card or marker, and
+    the offers line as any other Refusal (NO_SELL_OFFERS: "never name a price or pitch a piece").
     A ride Pick (`is_ride`, a Chat tease, config `chat_tease`) on sell_now, not `plain`: the chat
     prompt of this Turn (no item line, price block, marker or spend line) with RIDE_NOTE under its
     goal. A Refusal on a Chat tease Turn (`tease_turn`) is the plain chat prompt (no need-line).
@@ -891,7 +925,7 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
         sell_block, offers, selling = "", NO_SELL_OFFERS, False
     elif selling:
         need = sell_beat(row, hot, scene, test)
-        sell_block = sell_section(pick, was_cents_of(row, pick, facts.offer_piece), nearest_line(facts, pick))
+        sell_block = sell_section(pick, was_cents_of(row, pick, facts.offer_piece), nearest_line(facts, pick), test)
         offers = INTRO_BY_ID
     else:
         item = pick if _carries_item(route, pick) else None
@@ -907,7 +941,8 @@ def messages_for(route: str, row: str, heat: int, facts, pick: Pick | Refusal | 
         # A Chat tease Refusal is a plain chat reply: he asked for nothing, so no need-line.
         refused = (route in ("sell_now", "tease") and isinstance(pick, Refusal)
                    and not _tease_row(route, row, hot, facts))
-        sell_block = _NEED_LINES.get(pick.reason, "") if refused else ""
+        sell_block = ((offer_open_line(getattr(facts, "offer_piece", None)) if pick.reason == "offer_open"
+                       else _NEED_LINES.get(pick.reason, "")) if refused else "")
         # ASSUMPTION (ticket 46): a tease / Free item leaves the offers slot empty — OLD-AIC-17's
         # "never … pitch a piece yourself" fights its goal, and `_INTRO_BY_ID` points at a manifest
         # these prompts don't carry.
@@ -965,11 +1000,68 @@ def strip_labels(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", _YOU_LABEL.sub("", _FAN_LINE.sub("", text))).strip()
 
 
+# A whole reply in one pair of quotes (measured 2026-11-16: `"cumming in my pink dress rn, …"`).
+_QUOTE_CLOSE = {'"': '"”', "“": '”"', "'": "'’", "‘": "’'"}
+_QUOTE_KIND = {'"': '"“”', "“": '"“”', "'": "'‘’", "‘": "'‘’"}
+
+
+def strip_quotes(text: str) -> str:
+    """The Writer's text without one pair of quotes (straight or curly, single or double) wrapping
+    all of it; inner quotes stay. Not when the first inner quote of that kind closes a span
+    (`"hi" and "bye"` is two quoted bits); a quote between two letters is an apostrophe. Pure."""
+    t = text.strip()
+    if len(t) < 2 or t[-1] not in _QUOTE_CLOSE.get(t[0], ""):
+        return text
+    inner = t[1:-1]
+    for i, ch in enumerate(inner):
+        if ch not in _QUOTE_KIND[t[0]] or 0 < i < len(inner) - 1 and inner[i - 1].isalpha() \
+                and inner[i + 1].isalpha():
+            continue
+        if i and not inner[i - 1].isspace():
+            return text                     # it closes a span: not one wrapped reply
+        break
+    return inner.strip()
+
+
+# `<ALL RULES FOLLOWED>`-style tags and `{name}` placeholders (measured 2026-11-16); `<3`, `>:)`,
+# `>.<` open no tag.
+_TAG = re.compile(r"<[/A-Za-z][^<>\n]*>")
+_PLACEHOLDER = re.compile(r"\{[A-Za-z_][^{}\n]*\}")
+# A speaker / meta label opening a line (measured: `a verified creator: sure`, `response:`): up to 3
+# words, the last a meta word, then `:` and a space or the line end. Natural texting labels pass
+# (`side note:`, `honest answer:`, `me:`, `good girl:`): no note / answer / girl / fan and no pronoun
+# labels (never measured as a leak). Persona names are unknown, so `Amelia: hey` passes.
+_META_WORDS = ("response|reply|output|assistant|creator|model|system|character|persona|bot|ai|user|"
+               "caption|message")
+_LABEL = re.compile(
+    r"^[ \t\"'“‘*_]*(?:[a-z'’]+[ \t]+){0,2}(?:" + _META_WORDS + r")[ \t]*:(?=[ \t]|$)", re.M | re.I)
+# A preamble line ("here's your reply in the format you specified:"): a word then a final `:`. Two
+# letters, so the `c:` / `D:` emoticons pass.
+_COLON_TAIL = re.compile(r"[^\W\d_]{2}[ \t]*:[ \t]*$", re.M)
+# Model refusals / AI self-identification only (measured: "I'm a large language model, I am not able
+# to …"); her joking about AI ("u think im an ai assistant or something", "no guidelines here") or
+# saying no to a fan ("i cant create customs") passes. The self-identification opens a sentence.
+_AI_SELF = re.compile(
+    r"\bas an ai\b"
+    r"|(?:^|[.!?,;][ \t]*)[ \t\"'“‘*_]*(?:i['’]m|i am|im)[ \t]+(?:just[ \t]+)?an?[ \t]+"
+    r"(?:ai|large language model|language model|ai language model|ai assistant|ai model)\b"
+    r"|\b(?:cannot|can['’]?t|can not|am not able to|am unable to|(?:i['’]?m|i am) (?:not able|unable) to"
+    r"|won['’]?t)[ \t]+(?:create|generate|produce|provide|write)\b(?:\W+\w+){0,4}?\W+"
+    r"(?:content|material|response|explicit|sexual)"
+    r"|\b(?:fulfil{1,2}|comply with|assist with)[ \t]+(?:this|that|your)[ \t]+request"
+    r"|sexuali[sz]es?[ \t]+(?:a[ \t]+)?minors?|content polic"
+    r"|\b(?:my|content|community|usage|safety)[ \t]+guidelines", re.I | re.M)
+
+
 def floor(text: str, lang: str, offer_ref: int | None = None) -> str | None:
     """The code floor's reject reason, None when the reply passes. Pure. A whole `>>OFFER <ref>`
     line naming the Pick's `offer_ref` is stripped before the checks; one naming another ref
     (or any, with no Pick) rejects `offer_ref`; any other `>>` is stray (`chevron`). A missing
-    marker is fine.
+    marker is fine. Then, in order: a `[...]` block, a `<tag>` or a `{placeholder}` (`bracket`),
+    `framework:`, a stray `>>` (`chevron`), CJK on an English account (`cjk`), no letters
+    (`no_letters`), a model refusal / AI self-reference (`ai_self`), a line opening on a meta or
+    speaker label (`label`), a line ending on a letter + `:` (`colon_tail`, a preamble). Runs on
+    the text after `strip_labels` / `strip_quotes` (`write`).
 
     ASSUMPTION: the marker line is accepted anywhere in the reply, not only last (a `STICKER:`
     line may follow it, as OLD-AIC-18 allows both); the old parser stripped every marker. Overturned
@@ -977,7 +1069,7 @@ def floor(text: str, lang: str, offer_ref: int | None = None) -> str | None:
     if any(m.group(1) != str(offer_ref) for m in _OFFER_LINE.finditer(text)):
         return "offer_ref"
     text = strip_offer(text)
-    if _BRACKET.search(text):
+    if _BRACKET.search(text) or _TAG.search(text) or _PLACEHOLDER.search(text):
         return "bracket"
     if "framework:" in text.lower():
         return "framework"
@@ -987,7 +1079,68 @@ def floor(text: str, lang: str, offer_ref: int | None = None) -> str | None:
         return "cjk"
     if not any(ch.isalpha() for ch in text):
         return "no_letters"
+    if _AI_SELF.search(text):
+        return "ai_self"
+    if _LABEL.search(text):
+        return "label"
+    if _COLON_TAIL.search(text):
+        return "colon_tail"
     return None
+
+
+# Copied text (measured 2026-11-16): a prompt line or the vault description pasted (`echo`), or a
+# near-copy of her own earlier line, e.g. a caption written for another clip (`repeat`).
+ECHO_RUN, REPEAT_RUN, OWN_LINES = 7, 8, 10
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+", re.sub(r"['’]", "", text.lower()))
+
+
+def _shares_run(text: str, sources: list[str], n: int) -> bool:
+    w = _words(text)
+    grams = {tuple(w[i:i + n]) for i in range(len(w) - n + 1)}
+    return bool(grams) and any(tuple(sw[i:i + n]) in grams
+                               for sw in map(_words, sources) for i in range(len(sw) - n + 1))
+
+
+def copied(text: str, prompt: list[str], own: list[str]) -> str | None:
+    """`echo` when `text` holds ECHO_RUN words in a row of one `prompt` piece, `repeat` when it holds
+    REPEAT_RUN of one of `own` (her earlier lines); None otherwise. Words lowercased, punctuation
+    dropped; runs never span two pieces. Pure."""
+    if _shares_run(text, prompt, ECHO_RUN):
+        return "echo"
+    return "repeat" if _shares_run(text, own, REPEAT_RUN) else None
+
+
+# wcfi's few-shot line (`_good_examples`): asks in her voice, meant to be reused as written
+# (measured 2026-11-16: "so what do u do for work?" is 7 words).
+_GOOD_LINE = re.compile(r"^- GOOD:.*$", re.M)
+
+
+def reoffers(facts, pick) -> bool:
+    """`pick` re-offers a piece already in the thread: its locked media are the open Offer's
+    (`facts.offer_piece`, a haggle) or the Pending tease's (`facts.tease`). Pure."""
+    if not isinstance(pick, Pick):
+        return False
+    return any(p is not None and set(pick.media) == set(p.locked)
+               for p in (getattr(facts, "offer_piece", None), getattr(facts, "tease", None)))
+
+
+def prompt_pieces(content: str, persona: str = "") -> list[str]:
+    """A prompt as `copied` reads it: without `persona` and the `- GOOD:` few-shot line (her own
+    voice, fine to reuse), so no run spans the gap either. Pure."""
+    parts = content.split(persona) if persona else [content]
+    return [q for p in parts for q in _GOOD_LINE.split(p) if q.strip()]
+
+
+def own_lines(facts, pick=None) -> list[str]:
+    """Her last OWN_LINES outbound lines of the thread (`facts.cut_rows`, direction not "in"); none
+    when `pick` re-offers a piece of the thread (`reoffers`: her caption for it is fair to reuse)."""
+    if reoffers(facts, pick):
+        return []
+    rows = [m for m in getattr(facts, "cut_rows", None) or [] if m.direction != "in"]
+    return [t for t in (line_text(m) for m in rows[-OWN_LINES:]) if t]
 
 
 def reject(text: str, lang: str, gifs: bool, offer_ref: int | None = None, *,
@@ -996,7 +1149,9 @@ def reject(text: str, lang: str, gifs: bool, offer_ref: int | None = None, *,
     before the chain anyway), so `[STICKER: kiss]` is not a `bracket` reject. A reply that is
     only a marker passes with GIFs on and a known tag (the gif is the reply) when it carries no
     item (no offer expected, `offer_ref` None, and no tease / Free item, `item` False); otherwise
-    it has no words left and the next Writer is tried."""
+    it has no words left and the next Writer is tried. Shared by the chat Writer and the caption
+    (`full_ai_caption.write`), each on its text after `strip_labels` + `strip_quotes`; the
+    `copied` checks need the call's messages and run beside it in each `write`."""
     body, tag = cat_stickers.parse_marker(text)
     if not body:
         return None if gifs and tag and offer_ref is None and not item else "no_letters"
@@ -1062,8 +1217,11 @@ async def write(decision, facts, *, deadline: float, writers: list[str] | None =
     `writers` through `walk` (tries, per-Writer timeouts, `deadline` = the Turn's `time.monotonic()`
     instant set by `run_turn`). A Writer is tried again after a `retryable` failure (`writer_retries`);
     the next Writer runs once it is out of tries or fails otherwise: an `llm_client` error
-    (`_outcome`), a try past its timeout, an empty reply, or a code-floor reject (`floor_on`).
-    `floor_reason` is the first floor reject's reason. `facts.pick` (03b's sell
+    (`_outcome`), a try past its timeout, an empty reply, or a code-floor reject (`floor_on`):
+    `reject` on the text after `strip_labels` + `strip_quotes` (both run floor on or off), then
+    `copied` against the system prompt minus her persona (`echo`) and her last OWN_LINES outbound
+    lines (`repeat`; none when the Pick re-offers the open Offer's / Pending tease's piece,
+    `reoffers`). `floor_reason` is the first floor reject's reason. `facts.pick` (03b's sell
     step) reaches `messages_for`, and the answering text has its `>>OFFER` line stripped
     (`strip_offer`, floor on or off). `writers` replaces the side's list (the Claim audit's one
     rewrite passes the Writer that answered, ticket 45). `plain`: the chat bubbles beside a separate
@@ -1078,21 +1236,25 @@ async def write(decision, facts, *, deadline: float, writers: list[str] | None =
     item = _carries_item(decision.route, pick) or selling and (plain or ride)   # no sticker-only reply (S2)
     now = scene_of(decision, facts)
     gif_ok = gif_offered(decision, facts)
+    persona = await _load_persona(facts.account_id)
     msgs = messages_for(decision.route, decision.row, now["heat"] if now else decision.heat, facts,
-                        pick, persona=await _load_persona(facts.account_id),
+                        pick, persona=persona,
                         hot=is_hot(decision.fired, facts), plain=plain,
                         scene=now["stage"] if now else None, gif_ok=gif_ok,
                         broke="declines_buying" in decision.fired)
     lang = await _language.load_account_language(facts.account_id) if cfg["floor_on"] else ""
+    prompt = prompt_pieces(msgs[0]["content"], persona) if msgs else []
+    own = own_lines(facts, pick)
 
     async def try_once(writer: str, timeout: float) -> tuple[str, str | None]:
         r = await llm_client.chat(model=writer, messages=msgs, purpose=PURPOSE,
                                   account_id=facts.account_id, temperature=_REPLY_TEMPERATURE,
                                   timeout_s=timeout, max_attempts=1)
-        text = (r.content or "").strip()
-        return text, reject(text, lang, gif_ok, offer_ref, item=item) if text and cfg["floor_on"] else None
+        text = strip_quotes(strip_labels((r.content or "").strip()))
+        return text, (reject(text, lang, gif_ok, offer_ref, item=item)
+                      or copied(text, prompt, own)) if text and cfg["floor_on"] else None
 
     res = await walk(cfg, writers or cfg["writers"], deadline, try_once)
     if res.text is not None:
-        res.text = strip_labels(strip_offer(res.text))
+        res.text = strip_quotes(strip_labels(strip_offer(res.text)))
     return res

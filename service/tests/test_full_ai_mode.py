@@ -85,7 +85,8 @@ def case_flags_live_equals_test():
     for v in KEYS["sell_nearest"]:
         got = {m: fw.nearest_line(_f(m, sell_nearest=v), pick) for m in ("live", "test", "shadow")}
         assert got["live"] == got["test"] and got["shadow"] is None, (v, got)
-        assert (got["live"] is not None) is (v == "note"), (v, got)
+        # client rule 2026-11-16: a tagged Pick gets the note unless the side says "plain"
+        assert (got["live"] is not None) is (v != "plain"), (v, got)
     # Each named gate really is on for both full Modes with its key on.
     on = {**DEFAULTS, "sext_scene": True, "lead_in": True, "sell_nearest": "plain", "sell_spacing": True,
           "he_likes": True, "chat_tease": True, "ask_implied": True, "info_wide": True, "sell_count": True}

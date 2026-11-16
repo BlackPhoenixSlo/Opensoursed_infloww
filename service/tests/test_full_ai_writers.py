@@ -346,7 +346,7 @@ def case_route_constants_are_their_catalog_text():
         assert c in old, c
     new = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")
     for c in (wr.BRUSH_OFF, wr.DARE_NEXT, wr.SELL_OFF_LINE, wr.DARE_JOIN.strip(), wr.SEXT_HEAT, wr.MAKE_RIGHT_HEAD,
-              wr.MAKE_RIGHT_TAIL, *wr.APOLOGY_FRAMES):
+              wr.MAKE_RIGHT_TAIL, *wr.APOLOGY_FRAMES, wr.NEAREST_NOTE, wr.OFFER_OPEN):
         assert c in new, c
 
 
@@ -512,6 +512,20 @@ def _sell_system(pick, *, row="sell", offer_piece=None):
     return wr.messages_for("sell_now", row, 3, t, pick)[0]["content"]
 
 
+def case_manifest_test_twin():
+    """F3b (M3 2026-11-16): test / live sell prompts carry MANIFEST_TEST ("already made"); Shadow keeps
+    MANIFEST ("already filmed") byte for byte."""
+    assert "already filmed" in wr.MANIFEST and "already filmed" not in wr.MANIFEST_TEST
+    assert wr.MANIFEST_TEST == wr.MANIFEST.replace("already filmed", "already made")
+    for mode, want, other in (("test", wr.MANIFEST_TEST, wr.MANIFEST), ("live", wr.MANIFEST_TEST, wr.MANIFEST),
+                              ("shadow", wr.MANIFEST, wr.MANIFEST_TEST)):
+        t = _turn("send me pics")
+        t.mode = mode
+        sys_ = wr.messages_for("sell_now", "sell", 3, t, _PICK)[0]["content"]
+        head = want.split("{", 1)[0]
+        assert head in sys_ and other.split("{", 1)[0] not in sys_, mode
+
+
 def case_sell_now_with_a_pick_is_the_content_ask_sell_prompt():
     sys_ = _sell_system(_PICK)
     line = "- [id 4242] video 1:35 — untitled: her in a red bikini by the pool — $50 to unlock"
@@ -591,7 +605,8 @@ def case_broke_joke_rides_any_goal():
 
 def case_sell_now_refusal_is_chat_with_its_need_line():
     for reason, line in (("no_match", wr.FILMING_MORE), ("all_owned", wr.FILMING_MORE),
-                         ("no_priced_items", wr.FILMING_MORE), ("inventory_unknown", None)):
+                         ("no_priced_items", wr.FILMING_MORE), ("inventory_unknown", None),
+                         ("offer_open", wr.offer_open_line(None))):     # a yes to the open card (M2 2026-11-16)
         sys_ = _sell_system(Refusal(reason))
         assert wr.NO_SELL_OFFERS in sys_ and wr.INTRO_BY_ID not in sys_, reason
         assert "CONTENT YOU CAN ACTUALLY SEND HIM" not in sys_ and ">>OFFER" not in sys_, reason
@@ -599,6 +614,17 @@ def case_sell_now_refusal_is_chat_with_its_need_line():
             assert sys_.endswith(f"{line}\n\n{wr.CONTRACT}"), (reason, sys_[-300:])
         else:
             assert wr.FILMING_MORE not in sys_ and sys_.endswith(wr.CONTRACT), reason
+    # offer_open: the need-line names the open card's kind / count (its row, no vault load).
+    for piece, clause in ((Teased("feet", "photo", (4,), (), 5000, 1), " (a photo: call it nothing else)"),
+                          (Teased("feet", "video", (4,), (), 5000, 1), " (a video: call it nothing else)"),
+                          (Teased("feet", "gif", (4,), (), 5000, 1), " (a video: call it nothing else)"),
+                          (Teased("feet", "audio", (4,), (), 5000, 1), " (a voice note: call it nothing else)"),
+                          (Teased("feet", "photo", (4, 5, 6), (), 5000, 1), " (3 pieces: name no kind)")):
+        line = wr.OFFER_OPEN.format(piece=clause)
+        assert wr.offer_open_line(piece) == line, (piece, wr.offer_open_line(piece))
+        sys_ = _sell_system(Refusal("offer_open"), offer_piece=piece)
+        assert sys_.endswith(f"{line}\n\n{wr.CONTRACT}"), sys_[-300:]
+        assert "already unlocked it, believe him" in line and "name no price" in line, line
     # A Pick handed to any other Route is ignored: the 03a prompt, byte for byte.
     for route, row in (("chat", "otherwise"), ("sext", "sexual_now"), ("make_right", "complains_now")):
         t = _turn()
@@ -636,6 +662,265 @@ def case_floor_offer_ref_table():
         assert strip_labels(raw) == want, (raw, strip_labels(raw))
     assert strip_offer("its yours babe\n>>OFFER 4242") == "its yours babe"
     assert strip_offer("its yours\n\n>>OFFER 4242\n\nSTICKER: wink") == "its yours\n\nSTICKER: wink"
+
+
+# ── Leaked meta text (2026-11-16): tags, labels, preambles, refusals, quotes, copies ──
+
+def case_floor_leak_table():
+    """`floor`: the measured leak shapes reject with their reason; natural texting passes."""
+    from automations.full_ai_writers import floor
+    for text, want in [
+        # bracket: `<tag>` and `{placeholder}`; emoticons open no tag
+        ("<ALL RULES FOLLOWED>", "bracket"),
+        ("hey babe </reply>", "bracket"),
+        ("hey {name} miss u", "bracket"),
+        ("ur into {fetishes} right", "bracket"),
+        ("love u <3", None), ("hehe >:)", None), ("ugh >.<", None), ("u <3 me > him", None),
+        # label: a meta / speaker label opening a line
+        ("a verified creator: sure", "label"),
+        ("response:", "label"),
+        ("Reply: hey", "label"),
+        ("Assistant: hi", "label"),
+        ("hey\nme: i want u", None),                    # pronoun labels: natural texting
+        ("she: miss u", None),
+        # natural texting labels pass (meta vocabulary trimmed 2026-11-16)
+        ("side note: im not wearing anything under this", None),
+        ("honest answer: yes", None),
+        ("me: dying rn", None),
+        ("also me: texting u anyway", None),
+        ("good girl: thats me", None),
+        ("ur fav girl: me", None),
+        ("Amelia: hey babe", None),                     # persona names are unknown
+        ("i want this: you on your knees", None),
+        ("tell me: are u hard", None),
+        ("ok so: what u doing", None),
+        ("be honest: do u miss me", None),
+        ("9:30 works", None), ("hehe :)", None), ("love u :p", None), ("me:)", None),
+        # colon_tail: a preamble line
+        ("got it! here's your reply in the format you specified:\nhey babe", "colon_tail"),
+        ("here u go:", "colon_tail"),
+        ("see u at 9:", None), ("omg c:", None), ("cant wait D:", None),
+        # ai_self: refusals / AI self-reference
+        ("I'm a large language model, I am not able to create content that sexualizes minors.", "ai_self"),
+        ("I cannot create content that sexualizes a minor.", "ai_self"),
+        ("as an AI i cant do that", "ai_self"),
+        ("im just an ai assistant", "ai_self"),
+        ("i can't generate that kind of content", "ai_self"),
+        ("i'm unable to fulfill this request", "ai_self"),
+        ("I won't write explicit material", "ai_self"),
+        ("i'm not able to produce sexual content", "ai_self"),
+        ("I am an AI language model.", "ai_self"),
+        ("sorry. i'm just an AI model", "ai_self"),
+        ("that goes against community guidelines", "ai_self"),
+        ("that breaks my guidelines", "ai_self"),
+        ("against content policy sorry", "ai_self"),
+        ("i can't help it babe", None), ("i can't help myself", None), ("i can't wait", None),
+        ("i won't tell if u dont", None), ("lol u think im an ai?", None), ("u think im a bot", None),
+        # her joking / saying no as a girl texting (narrowed 2026-11-16): never a refusal shape
+        ("i cant create customs babe", None),
+        ("lol im not some ai model", None),
+        ("do i sound like a language model to u 😂", None),
+        ("no guidelines here babe just fun", None),
+        ("i can't produce that much cum lol", None),
+        ("u think im an ai assistant or something", None),
+        ("i can't generate that babe", None),
+    ]:
+        assert floor(text, "en") == want, (text, floor(text, "en"), want)
+
+
+def case_strip_quotes_table():
+    """`strip_quotes`: one pair wrapping the whole reply goes; inner quotes and two quoted bits stay."""
+    from automations.full_ai_writers import strip_quotes
+    for raw, want in [
+        ('"cumming in my pink dress rn, wish u could see "', "cumming in my pink dress rn, wish u could see"),
+        ("“miss u already”", "miss u already"),
+        ("'i'm so wet rn'", "i'm so wet rn"),
+        ("‘come here’", "come here"),
+        ('"he said "hi" lol"', 'he said "hi" lol'),
+        ('"line one\nline two"', "line one\nline two"),
+        ('"hi" and "bye"', '"hi" and "bye"'),
+        ('i said "hi"', 'i said "hi"'),
+        ("no quotes here", "no quotes here"),
+        ('"', '"'),
+    ]:
+        assert strip_quotes(raw) == want, (raw, strip_quotes(raw), want)
+
+
+def case_copied_table():
+    """`copied`: 7 words in a row of one prompt piece -> echo; 8 of one of her lines -> repeat;
+    `prompt_pieces` drops her persona and the `- GOOD:` few-shot line, and no run spans a gap."""
+    from automations.full_ai_writers import copied, prompt_pieces
+    tease = "tease this piece from its description only, make him want it, name no price and don't send it yet:"
+    persona = "You are Mia, 22, a bubbly girl from Ohio who loves late night drives and pizza."
+    system = (f"{persona}\n\nRULES\n{tease}\n- [id 1] photo — a girl holding an american flag fan\n"
+              '- GOOD: "so what do u do for work?" / "where u textin me from"\nbe short.')
+    prompt = prompt_pieces(system, persona)
+    assert not any(persona in p or "GOOD" in p for p in prompt), prompt
+    own = ["omg ur gonna love this clip of me in my red dress by the pool 😘", "hii"]
+    for text, want in [
+        ("tease this piece from its description only, make him want it", "echo"),
+        ("coming ur way, a girl holding an american flag fan", "echo"),
+        ("a girl holding an american flag", None),                         # 6 words
+        ("i'm a bubbly girl from ohio who loves late night drives", None),  # her persona
+        ("so what do u do for work?", None),                               # the few-shot line
+        ("ur gonna love this clip of me in my red dress, its yours", "repeat"),
+        ("ur gonna love this clip of me", None),                           # 7 words of her line
+        ("hey babe what u up to", None),
+    ]:
+        assert copied(text, prompt, own) == want, (text, copied(text, prompt, own), want)
+    # Without the persona split her own bio echoes; without the GOOD drop the few-shot does.
+    assert copied("bubbly girl from ohio who loves late night drives", [system], []) == "echo"
+    assert copied("so what do u do for work?", [system], []) == "echo"
+    # No run across two pieces.
+    assert copied("one two three four five six seven", ["one two three four", "five six seven"], []) is None
+
+
+def case_nearest_note_honest_lines_pass_copied():
+    """NEAREST_NOTE (item 1a, 2026-11-16): {asked} and {got} sit in different sentences, so the
+    honest line the note asks for never echoes it."""
+    from automations.full_ai_writers import copied, prompt_pieces
+    for asked, got, line in [
+        ("a feet video", "3 photos", "this one is 3 photos, not a feet video babe"),
+        ("a feet video", "3 photos", "no feet video rn babe, its 3 photos instead"),
+        ("a shower video", "a photo", "its a photo not a shower video, still hot tho"),
+        ("a lingerie photo", "a video", "not a lingerie photo babe, this one is a video"),
+        ("a boobs video", "2 photos and a video", "u asked for a boobs video but this is 2 photos and a video"),
+        ("a feet photo", "a voice note", "he asked for a feet photo, this piece is a voice note"),
+        ("a feet video", "3 photos", "u asked for a feet video, this piece is 3 photos instead babe"),
+    ]:
+        note = wr.NEAREST_NOTE.format(asked=asked, got=got)
+        assert copied(line, prompt_pieces(note), []) is None, (line, note)
+
+
+def case_reoffers_table():
+    """`reoffers` / `own_lines` (item 8): a Pick re-offering the open Offer's or Pending tease's
+    piece reads no own lines (`repeat` skipped, `echo` kept)."""
+    pick = Pick(ref=4, media=(4, 5), previews=(), price_cents=3000, list_cents=3000, subject="feet",
+                format="photo", lane="$30", facts={})
+    rows = [_msg_row("out", "my feet all oiled up for u", 1), _msg_row("in", "how much", 2)]
+    for offer, tease, want in [
+        (Teased("feet", "photo", (5, 4), (), 3000, 1), None, True),     # haggle over the open card
+        (None, Teased("feet", "photo", (4, 5), (), 3000), True),        # Pending tease re-sold
+        (Teased("feet", "photo", (4,), (), 3000, 1), None, False),       # a different set
+        (None, None, False),
+    ]:
+        facts = SimpleNamespace(offer_piece=offer, tease=tease, cut_rows=rows)
+        assert wr.reoffers(facts, pick) is want, (offer, tease)
+        assert wr.own_lines(facts, pick) == ([] if want else ["my feet all oiled up for u"]), (offer, tease)
+    assert not wr.reoffers(SimpleNamespace(offer_piece=Teased("f", "photo", (4,), (), 1, 1)), Refusal("x"))
+
+
+def _swap(pairs):
+    saved = [(obj, name, getattr(obj, name)) for obj, name, _ in pairs]
+    for obj, name, val in pairs:
+        setattr(obj, name, val)
+    return saved
+
+
+def _scripted(replies):
+    """`llm_client.chat` answering each Writer from `replies` (writer -> raw content)."""
+    async def chat(*, model, **_):
+        return SimpleNamespace(content=replies[model])
+    return chat
+
+
+def case_write_strips_then_floors_and_checks_copies():
+    """`write`: labels and wrapping quotes go before the floor (both floor on or off); `echo` reads
+    the system prompt minus her persona, `repeat` her own last lines; each reject is
+    `floor:<reason>` and the next Writer answers."""
+    import asyncio
+    import time
+    persona = "You are Mia, a bubbly girl from Ohio who loves late night drives and pizza."
+    system = f"{persona}\n\ntease this piece from its description only, make him want it, name no price"
+
+    async def _persona(_):
+        return persona
+
+    async def _lang(_):
+        return "en"
+    facts = _turn()
+    facts.pick = None
+    facts.cut_rows = [_msg_row("out", "omg ur gonna love this clip of me in my red dress by the pool", 1),
+                      _msg_row("in", "hey you", 2)]
+    decision = SimpleNamespace(route="chat", row="otherwise", heat=2, fired=set())
+    saved = _swap([(wr, "_load_persona", _persona), (wr._language, "load_account_language", _lang),
+                   (wr, "messages_for", lambda *a, **k: [{"role": "system", "content": system},
+                                                         {"role": "user", "content": "FAN: hey you"}])])
+    try:
+        for first, reason in [
+            ("tease this piece from its description only, make him want it", "echo"),
+            ("ur gonna love this clip of me in my red dress, its yours", "repeat"),
+            ("<ALL RULES FOLLOWED>", "bracket"),
+            ("response: hey", "label"),
+            ("I cannot create content that sexualizes a minor.", "ai_self"),
+            ("got it! here's your reply in the format you specified:\nhey", "colon_tail"),
+        ]:
+            saved += _swap([(llm_client, "chat", _scripted({"a": first, "b": "YOU: \"a bubbly girl from ohio who loves late night drives\""}))])
+            res = asyncio.run(wr.write(decision, facts, deadline=time.monotonic() + 30, writers=["a", "b"]))
+            assert [x["outcome"] for x in res.attempts] == [f"floor:{reason}", "ok"], (first, res.attempts)
+            assert res.floor_reason == reason and res.writer == "b", res
+            assert res.text == "a bubbly girl from ohio who loves late night drives", res.text
+        # A Pick re-offering the open card's piece: her earlier caption for it is fair (no repeat).
+        facts.pick = Pick(ref=4, media=(4,), previews=(), price_cents=3000, list_cents=3000,
+                          subject="anything", format="video", lane="$30", facts={})
+        facts.offer_piece = Teased("anything", "video", (4,), (), 3000, 1)
+        line = "ur gonna love this clip of me in my red dress, its yours"
+        saved += _swap([(llm_client, "chat", _scripted({"a": line}))])
+        res = asyncio.run(wr.write(decision, facts, deadline=time.monotonic() + 30, writers=["a"]))
+        assert [x["outcome"] for x in res.attempts] == ["ok"] and res.text == line, res
+        saved += _swap([(llm_client, "chat", _scripted({"a": "tease this piece from its description only, make him want it", "b": "hii"}))])
+        res = asyncio.run(wr.write(decision, facts, deadline=time.monotonic() + 30, writers=["a", "b"]))
+        assert [x["outcome"] for x in res.attempts] == ["floor:echo", "ok"], res.attempts   # echo kept
+        facts.pick, facts.offer_piece = None, None
+        # floor off: no reject, the strips still run.
+        facts.config = {**facts.config, "floor_on": False}
+        saved += _swap([(llm_client, "chat", _scripted({"a": "“response: hey”"}))])
+        res = asyncio.run(wr.write(decision, facts, deadline=time.monotonic() + 30, writers=["a"]))
+        assert [x["outcome"] for x in res.attempts] == ["ok"] and res.text == "response: hey", res
+    finally:
+        for obj, name, val in reversed(saved):
+            setattr(obj, name, val)
+
+
+def case_caption_write_runs_the_chat_floor():
+    """`full_ai_caption.write`: the chat Writer's strips + `reject`, then `echo` against its own
+    messages and `repeat` against her last lines."""
+    import asyncio
+    import json
+    import time
+    from automations import full_ai_caption as fc
+
+    async def _lang(_):
+        return "en"
+    msgs = [{"role": "system", "content": "Match the register of these (adapt to the facts, never copy them)"},
+            {"role": "user", "content": "description: a girl holding an american flag fan on a porch"}]
+    facts = _turn()
+    facts.cut_rows = [_msg_row("out", "couldnt keep my red lace set on for long, come see babe", 1)]
+    saved = _swap([(wr._language, "load_account_language", _lang)])
+    try:
+        for first, reason in [
+            ("“a verified creator: sure”", "label"),
+            ("{name} come see", "bracket"),
+            ("a girl holding an american flag fan on a porch", "echo"),
+            ("couldnt keep my red lace set on for long, its yours", "repeat"),
+        ]:
+            cap = lambda t: json.dumps({"caption": t})  # noqa: E731
+            saved += _swap([(llm_client, "chat", _scripted({"a": cap(first), "b": cap('"waving my flag just for u"')}))])
+            res = asyncio.run(fc.write(facts, msgs, deadline=time.monotonic() + 30, writers=["a", "b"]))
+            assert [x["outcome"] for x in res.attempts] == [f"floor:{reason}", "ok"], (first, res.attempts)
+            assert res.text == "waving my flag just for u", res.text
+        # The Pick re-offers the Pending tease's piece: no repeat, echo kept.
+        facts.pick = Pick(ref=9, media=(9,), previews=(), price_cents=3000, list_cents=3000,
+                          subject="anything", format="photo", lane="$30", facts={})
+        facts.tease = Teased("anything", "photo", (9,), (), 3000)
+        for first, outcomes in [("couldnt keep my red lace set on for long, its yours", ["ok"]),
+                                ("a girl holding an american flag fan on a porch", ["floor:echo", "ok"])]:
+            saved += _swap([(llm_client, "chat", _scripted({"a": cap(first), "b": cap("waving my flag just for u")}))])
+            res = asyncio.run(fc.write(facts, msgs, deadline=time.monotonic() + 30, writers=["a", "b"]))
+            assert [x["outcome"] for x in res.attempts] == outcomes, (first, res.attempts)
+    finally:
+        for obj, name, val in reversed(saved):
+            setattr(obj, name, val)
 
 
 # ── tease and make_right with a Free item (03b, ticket 46), pure ─────────────

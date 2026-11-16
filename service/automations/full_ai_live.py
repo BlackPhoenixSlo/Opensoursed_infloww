@@ -381,9 +381,15 @@ def overtaken(look: Look) -> str | None:
 
 
 async def _owner(look: Look) -> full_ai_owner.OwnerFacts:
-    """04b's facts (`full_ai_owner_io.load`), once per look; the OF-app read only at the job's pre-look."""
+    """04b's facts (`full_ai_owner_io.load`), once per look. The OF-app read (a client needed, so never
+    the sweep's): the job's pre-look, the look before the Turn's first bubble out, and the look before
+    its `ppv` bubble (a human may answer while the Writer runs: measured 2026-11-16); every other
+    bubble's look reads the DB only. This Turn's sent bubbles (`message_id` on its parts) count as ours."""
+    read = look.client is not None and (look.sent == 0 or "ppv" in (look.bubble or {}))
+    ours = {int(p["message_id"]) for p in ((look.row or {}).get("reply_json") or {}).get("parts") or ()
+            if isinstance(p, dict) and p.get("message_id")}
     return await full_ai_owner_io.load(look.account_id, look.fan_id, look.anchor[0], client=look.client,
-                                       live_read=look.index == -1 and look.client is not None)
+                                       live_read=read, ours=ours)
 
 
 def _owned_by(look: Look, mine) -> str | None:
@@ -559,6 +565,11 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
             look = Look(aid, fan, at, client, row, part, i, landed)
             if (why := await _look(look)) is not None:
                 dm_rate.release(aid)
+                if why == ("human_yield", "human_of_app"):   # as `_run`'s pre-look: the next Turns rest too
+                    try:
+                        await full_ai_owner_io.start_human_yield(aid, fan, look.facts["off_switch"].human_at)
+                    except Exception:  # noqa: BLE001 — the row still records the stop
+                        log.warning("full_ai_live human yield failed account=%s fan=%s", aid, fan, exc_info=True)
                 stop = (*why, i)
                 break
             if row.get("id") is None and not ax.begin_send():

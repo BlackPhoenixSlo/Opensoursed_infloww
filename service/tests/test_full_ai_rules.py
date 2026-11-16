@@ -216,7 +216,7 @@ def case_shadow_holds_no_test_only_wording():
     test_only += [ij.NEXT_QUESTION_LEAD["instructions"], ij.LIKES_EXTRACT, pj.PRICE["instructions"],
                   pj.TEASE_PRICE["instructions"], pj.TEASE_PRICE["free"], fw.LEAD_HEAD, fw.SELF_GIVE,
                   fw.SEXT_SCENE, fw.SCENE_NARRATION, *fw.LEAD_LINES.values(), *fw.SCENE_STAGE.values()]
-    test_only += [fw.SEXT_HOT_TEST, fw.RIDE_NOTE]
+    test_only += [fw.SEXT_HOT_TEST, fw.RIDE_NOTE, fw.OFFER_OPEN, "these are real, already made"]
     test_only += [s.split("{", 1)[0] for s in (fw.NEAREST_NOTE, fw.SCENE_SELL, fw.SELL_OFF_SCENE,
                                                 fw.SELL_STEP_TEST, fw.ESCALATION_TEST)]
     leaks = [s[:60] for s in test_only if s.strip() and s.strip() in text]

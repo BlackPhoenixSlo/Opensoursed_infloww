@@ -217,7 +217,8 @@ async def case_next_turn_clean():
     assert full_ai_owned.open_offer_live(await live_rows(aid, fan), datetime.utcnow()) is None
     await clear_pause(aid, fan)
     await dm(aid, fan, mid + 1, "ok what now", ago_s=0)
-    with world() as w2:
+    # A new line: the first Turn's, sent again, is her own line repeated (floor `repeat`).
+    with world(line="ok:mm nothing much babe, just lying in bed thinking about u") as w2:
         res = await full_ai_live.run(aid, payload(fan, mid + 1, await full_ai_live.live_rule(aid)), run_id=0)
     assert res.get("row_status") == "sent", res
     state = w2.jev.calls[0]["state"]

@@ -12,6 +12,9 @@ session cookies), a one-clip vault, and fakes at the two network edges only (Jev
   case_claim_fail_then_fallback  "5 videos" for a one-clip Pick: one rewrite (same Writer, same
                                  messages), still wrong -> the fallback caption carries the PPV,
                                  caption_fallback true, attempts show the rewrite
+  case_disclose_fail_then_fallback / case_disclose_pass  a Pick not what he asked for (asks photo,
+                                 vault one clip): silent text twice -> the disclosing fallback; a
+                                 negated "no pics rn ... this vid" passes first time
   case_claim_fail_rewrite_ok     a wrong first caption, a true rewrite: the rewrite's text ships
   case_wrong_price_then_fallback a price that is not the PPV's -> same as the claim failure
   case_deadline_no_rewrite       the first caption leaves less than one writer_timeout_s of the
@@ -215,6 +218,39 @@ def case_wrong_price_then_fallback():
     assert _reply(_rows(A, pair)[0])["caption_fallback"] is True
     fails = _reply(_rows(A, pair)[0])["claim_fail"]
     assert [f["check"] for f in fails] == ["price", "price"] and all("$40" in f["text"] for f in fails), fails
+
+
+def _photo_ask():
+    """His ask is photos (`asks_format` photo); the vault holds the one clip: a Pick not what he asked for."""
+    return FakeJev(({**QUIET, "wants_content": 0.9}, 1.0, {"asks_format": "photo"}))
+
+
+def case_disclose_fail_then_fallback():
+    """Client rule 2026-11-16: her text over a Pick not what he asked for must say so ("disclose");
+    twice silent -> the disclosing fallback caption, which skips the typo pass (review item 10:
+    a slip in "not" / "vid" would void the disclosure) even with typos on every reply."""
+    pair = "p-claim-disclose"
+    with _one_clip_sell():
+        _put_draft({**DEFAULTS, "sell_on": True, "typo_pct": 100})
+        r, _fw = _post(["ok:my new vid just for u, $10 to unlock", "ok:a hot vid for u, $10"], pair,
+                       fake_j=_photo_ask())
+    got = r.json()
+    (text,) = _texts(got["parts"])
+    assert text == "not what u asked for babe, this one's 1 vid, $10 to unlock", got["parts"]
+    _ppv_on_last(got["parts"])
+    reply = _reply(_rows(A, pair)[0])
+    assert reply["nearest"]["asked_format"] == "photo" and reply["caption_fallback"] is True, reply
+    assert [f["check"] for f in reply["claim_fail"]] == ["disclose", "disclose"], reply["claim_fail"]
+
+
+def case_disclose_pass():
+    pair = "p-claim-disclose-ok"
+    with _one_clip_sell():
+        r, fw = _post(["ok:no pics rn babe but this vid tho, $10 to unlock"], pair, fake_j=_photo_ask())
+    got = r.json()
+    assert len(fw.requests) == 1 and "no pics rn" in " ".join(_texts(got["parts"])), got["parts"]
+    _ppv_on_last(got["parts"])
+    assert _reply(_rows(A, pair)[0])["claim_fail"] == []
 
 
 class _SlowWriter(FakeWriterHTTP):

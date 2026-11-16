@@ -333,11 +333,15 @@ async def vault_sends(aid: str, fan: int, message_id: int) -> list[VaultSend]:
 # ── Shared Turn checks ────────────────────────────────────────────────
 
 def check_of_calls(m: Misses, of: SessionOF, fan: int, parts: list[dict]) -> None:
-    """The OF call list in order: one get_messages (the OF-app read, at the pre-look), then one
-    send per bubble as `expect_send`, then one mark_chat_read."""
+    """The OF call list in order: one get_messages (the OF-app read) at the pre-look and again just
+    before the first bubble and before a `ppv` bubble, one send per bubble as `expect_send`, then
+    one mark_chat_read."""
     reads = of.read_calls()
-    m.need(reads == [("get_messages", fan)] and of.calls[:1] == reads, 81,
-           f"want exactly one get_messages (OF-app read) at the pre-look, before any send; "
+    shape = [c[0] for c in of.calls if c[0] in ("get_messages", "send")]
+    want_shape = ["get_messages"] + [k for i, p in enumerate(parts)
+                                     for k in ((["get_messages"] if i == 0 or "ppv" in p else []) + ["send"])]
+    m.need(set(reads) == {("get_messages", fan)} and shape == want_shape, 81,
+           f"want get_messages (OF-app read) at the pre-look, before bubble 1 and before a ppv bubble only; "
            f"OF calls {_short(of.calls)}")
     want = [expect_send(fan, p) for p in parts]
     got = of.sends()

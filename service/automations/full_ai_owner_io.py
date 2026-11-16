@@ -184,10 +184,11 @@ async def _walk_advancing(account_id: str, fan_id: int, s) -> bool:
 
 
 async def _human(account_id: str, fan_id: int, anchor_at: datetime, client,
-                 live_read: bool) -> tuple[str | None, datetime | None]:
+                 live_read: bool, ours=frozenset()) -> tuple[str | None, datetime | None]:
     """Row 5: ("human", None) for a human's 1:1 row since the anchor (DB, every call; its cooldown is
     already set by `write_outbound_attribution`); else, with `live_read` and a client, one OF read:
-    ("human_of_app", its send time). A failed read = no Stop."""
+    ("human_of_app", its send time). `ours`: OF ids known ours besides the `messages` rows (the Turn's
+    sent bubbles, should a best-effort attribution write have failed). A failed read = no Stop."""
     if await _human_outbound.manual_outbound_since(account_id, fan_id, since=anchor_at):
         return "human", None
     if not live_read or client is None:
@@ -203,7 +204,7 @@ async def _human(account_id: str, fan_id: int, anchor_at: datetime, client,
                 known = set((await s.execute(select(Message.message_id).where(
                     Message.account_id == str(account_id), Message.fan_id == int(fan_id),
                     Message.message_id.in_(ids)))).scalars())
-        at = of_app_human(items, fan_id=int(fan_id), anchor_at=anchor_at, known_ids=known)
+        at = of_app_human(items, fan_id=int(fan_id), anchor_at=anchor_at, known_ids=known | set(ours))
     except Exception:
         log.warning("full_ai_owner OF-app read failed account=%s fan=%s", account_id, fan_id, exc_info=True)
         return None, None
@@ -229,9 +230,10 @@ async def start_human_yield(account_id: str, fan_id: int, sent_at: datetime) -> 
 
 
 async def load(account_id: str, fan_id: int, anchor_at: datetime, *, client=None,
-               live_read: bool = False) -> OwnerFacts:
+               live_read: bool = False, ours: frozenset[int] | set[int] = frozenset()) -> OwnerFacts:
     """Every fact `who_owns` reads for this Fan now. `anchor_at`: his Turn's anchor (the human
-    rows look after it); `client` / `live_read`: the OF-app read (ticket 79)."""
+    rows look after it); `client` / `live_read`: the OF-app read (ticket 79); `ours`: OF ids of
+    the Turn's own sent bubbles, never a human's."""
     async with get_session() as s:
         off = await _off(account_id, s)
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
@@ -241,7 +243,7 @@ async def load(account_id: str, fan_id: int, anchor_at: datetime, *, client=None
     listed = int(fan_id) in await _listed(account_id, {int(fan_id)}, cfg, client)
     # The OF-app read only when nothing above it already stops the Turn (an off switch = 0 OF reads).
     human, human_at = await _human(account_id, int(fan_id), anchor_at, client,
-                                   live_read and off is None and listed)
+                                   live_read and off is None and listed, ours)
     audience_ok, _why = await audience_allows_fan(account_id, fan_id, kind=AUDIENCE_KIND)
     return OwnerFacts(
         off=off, listed=listed, hard_skip=hard, audience_ok=bool(audience_ok), human=human, human_at=human_at,
