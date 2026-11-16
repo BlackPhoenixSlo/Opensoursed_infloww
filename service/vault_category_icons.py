@@ -1,4 +1,7 @@
-"""Private artwork shared by an agency's Vault Pro categories."""
+"""Private artwork shared by an agency's Vault Pro categories.
+
+Part of a Creator's `vault_settings.standard_folders` switch (off by default): off, the read answers
+`enabled: false` with no icons and the writes 404."""
 from __future__ import annotations
 
 import base64
@@ -12,6 +15,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert
 from starlette.concurrency import run_in_threadpool
 
+import vault_settings
 from agency_context import AgencyContext, agency_context
 from chatters import allowed_folder_ids_for_chatter
 from db.engine import get_session
@@ -31,6 +35,8 @@ async def _context(account_id: str, *, edit: bool = False) -> AgencyContext:
     ctx = await agency_context(account_id=account_id)
     if (edit and not ctx.is_owner) or await allowed_folder_ids_for_chatter(account_id) is not None:
         raise HTTPException(403, "Category icons are outside your folder permissions")
+    if edit and not await vault_settings.on(account_id, "standard_folders"):
+        raise HTTPException(404, "Standard folders are off for this Creator")
     return ctx
 
 
@@ -61,12 +67,14 @@ def square_thumbnail(data: bytes, x: float, y: float) -> str:
 async def list_icons(response: Response, account_id: str = Query(..., min_length=1)) -> dict:
     ctx = await _context(account_id)
     response.headers["Cache-Control"] = "private, no-store"
+    if not await vault_settings.on(account_id, "standard_folders"):
+        return {"enabled": False, "can_edit": False, "icons": {}}
     async with get_session() as session:
         rows = (await session.execute(select(UserSetting.tab, UserSetting.config_json).where(
             UserSetting.user_id == ctx.agency_user_id,
             UserSetting.tab.in_([PREFIX + category for category in CATEGORIES]),
         ))).all()
-    return {"can_edit": ctx.is_owner, "icons": {
+    return {"enabled": True, "can_edit": ctx.is_owner, "icons": {
         key.removeprefix(PREFIX): json.loads(value)["webp"] for key, value in rows
     }}
 

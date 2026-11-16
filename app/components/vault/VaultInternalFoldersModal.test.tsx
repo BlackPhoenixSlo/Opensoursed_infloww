@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   hasMore: false,
   mirrorOpts: [] as { internalFolderId?: number | null; enabled?: boolean }[],
   confirm: true,
+  icons: undefined as { enabled: boolean; can_edit: boolean; icons: Record<string, string> } | undefined,
 }));
 
 vi.mock("@/hooks/useInternalFolders", () => ({
@@ -33,6 +34,10 @@ vi.mock("@/hooks/useVaultCache", () => ({
     return { items: opts.enabled ? api.items : [], hasMore: api.hasMore, isLoading: false, isFetching: false,
       isFetchingNextPage: false, error: null, loadMore: () => {}, refetch: () => {} };
   },
+}));
+vi.mock("@/hooks/useVaultCategoryIcons", async (orig) => ({
+  ...(await orig<typeof import("@/hooks/useVaultCategoryIcons")>()),
+  useVaultCategoryIcons: () => ({ data: api.icons }),
 }));
 vi.mock("@/hooks/useFolderPrices", () => ({
   useFolderPrices: () => ({ data: { "vf:2": 2500 } }),
@@ -80,9 +85,23 @@ const tick = (...ids: number[]) => {
 };
 const bar = () => within(screen.getByTestId("if-selection-bar"));
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); api.list = []; api.items = []; api.hasMore = false; api.mirrorOpts = []; api.confirm = true; });
+afterEach(() => { cleanup(); vi.clearAllMocks(); api.list = []; api.items = []; api.hasMore = false; api.mirrorOpts = []; api.confirm = true; api.icons = undefined; });
 
 describe("VaultInternalFoldersModal", () => {
+  it("category thumbnails follow the Creator's standard folders switch: off keeps the name and plain icon", () => {
+    const cat = { id: 7, name: "Pricing / 👣 Feet Photos", kind: "own", items: 1, photos: 1, videos: 0, of_list_id: null };
+    api.list = [cat];
+    api.icons = { enabled: false, can_edit: false, icons: {} };
+    const off = renderWithProviders(<VaultInternalFoldersModal accountId="acc-1" onClose={() => {}} />);
+    expect(within(screen.getByTestId("if-folder-7")).getByText("Pricing / 👣 Feet Photos")).toBeInTheDocument();
+    expect(screen.getByTestId("if-folder-7").querySelector("img")).toBeNull();
+    off.unmount();
+    api.icons = { enabled: true, can_edit: true, icons: { feet: "AAAA" } };
+    renderWithProviders(<VaultInternalFoldersModal accountId="acc-1" onClose={() => {}} />);
+    expect(within(screen.getByTestId("if-folder-7")).getByText("Pricing / Feet Photos")).toBeInTheDocument();
+    expect(screen.getByTestId("if-folder-7").querySelector("img")).not.toBeNull();
+  });
+
   it("lists the folders in sections with counts, price and the OF mark; no grid is read until one opens", () => {
     api.list = LIST;
     renderWithProviders(<VaultInternalFoldersModal accountId="acc-1" onClose={() => {}} />);

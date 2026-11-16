@@ -89,10 +89,10 @@ function PriceMark({ cents }: { cents: number }) {
 }
 
 /** One folder in the list: name (two lines at most; the AI ones are long), counts, price, the OF mark. */
-function FolderRow({ folder, price, artwork, open, onOpen }: {
-  folder: InternalFolder; price: number | undefined; artwork?: string; open: boolean; onOpen: () => void;
+function FolderRow({ folder, price, artwork, icons, open, onOpen }: {
+  folder: InternalFolder; price: number | undefined; artwork?: string; icons: boolean; open: boolean; onOpen: () => void;
 }) {
-  const category = folderIconCategory(folder.name);
+  const category = icons ? folderIconCategory(folder.name) : undefined;
   const Icon = category === "customs" ? FolderPen : KIND_ICON[folder.kind];
   return (
     <button
@@ -225,7 +225,9 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
   const list = useMemo(() => foldersQ.data?.list ?? [], [foldersQ.data]);
   const prices = useFolderPrices(accountId).data ?? {};
   const [sfw] = useSfw();
-  const icons = useVaultCategoryIcons(accountId, !sfw).data;
+  const iconsData = useVaultCategoryIcons(accountId, !sfw).data;
+  // category thumbnails belong to the Creator's "standard folders" switch: off, the relay answers enabled false
+  const icons = !sfw && iconsData?.enabled ? iconsData : undefined;
   const [editingIcon, setEditingIcon] = useState<{ category: string; name: string }>();
   const categoryArtwork = (name: string) => {
     const key = folderIconCategory(name);
@@ -445,7 +447,7 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
                     </h3>
                     <div className="space-y-0.5">
                       {s.folders.map((f) => (
-                        <FolderRow key={f.id} folder={f} price={prices[`vf:${f.id}`]} artwork={categoryArtwork(f.name)} open={f.id === openId} onOpen={() => open(f.id)} />
+                        <FolderRow key={f.id} folder={f} price={prices[`vf:${f.id}`]} artwork={categoryArtwork(f.name)} icons={!!icons} open={f.id === openId} onOpen={() => open(f.id)} />
                       ))}
                     </div>
                   </section>

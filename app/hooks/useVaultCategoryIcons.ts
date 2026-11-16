@@ -45,7 +45,7 @@ export const categoryIconsKey = (accountId: string) => ["vault-category-icons", 
 export function useVaultCategoryIcons(accountId: string, enabled: boolean) {
   return useQuery({
     queryKey: categoryIconsKey(accountId),
-    queryFn: ({ signal }) => relay.get<{ can_edit: boolean; icons: Record<string, string> }>(
+    queryFn: ({ signal }) => relay.get<{ enabled: boolean; can_edit: boolean; icons: Record<string, string> }>(
       categoryIconsPath(accountId), { accountId }, signal,
     ),
     enabled,

@@ -359,8 +359,10 @@ async def case_supervisor_wakes_on_event():
     try:
         await asyncio.sleep(0.05)   # let the supervisor create its wake Event
         ax.wake_supervisor()
-        # Poll for the drain to complete; must happen WELL under the 30s tick.
-        for _ in range(100):        # up to ~5s budget
+        # Poll for the drain to complete; must happen under the 30s tick. 20 s, not
+        # 5: the drain first runs every earlier case's account rules (~12 runs,
+        # 2.8 s alone, 5-7 s with 8+ scripts in parallel, measured 11-16).
+        for _ in range(400):        # up to ~20s budget
             if ran["ok"]:
                 break
             await asyncio.sleep(0.05)
