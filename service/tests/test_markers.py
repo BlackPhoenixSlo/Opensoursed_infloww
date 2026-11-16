@@ -13,7 +13,7 @@ import _harness  # noqa: F401  — MUST be first (binds the temp DB)
 _harness.bootstrap()
 
 from automations import cat_stickers as cs  # noqa: E402
-from automations._markers import protocol_marker_re, strip_narration  # noqa: E402
+from automations._markers import protocol_marker_re, strip_asides, strip_narration  # noqa: E402
 
 
 def case_shared_shape():
@@ -142,7 +142,22 @@ def case_narration_does_not_eat_emphasis():
     assert strip_narration(plain) == plain
 
 
+def case_bracket_aside_never_reaches_the_fan():
+    """Live 2026-11-16 (Twin): the model answered its own prompt in brackets
+    under a real line. Everything in `(...)` goes; emoticons are not brackets."""
+    assert strip_asides(
+        "hey sweetie\n(Can't have a longer response here as per your instructions "
+        "so I'll keep it to one line with no emoji as requested.)") == "hey sweetie"
+    assert strip_asides("hey sweetie (keeping it short as requested) u up?") == "hey sweetie u up?"
+    assert strip_asides("(Note: one line, no emoji.)") == ""
+    assert strip_asides("(a) hi\n(b) there") == "hi\nthere"
+    for keep in ("miss u :( come back :)", "(: hey u :)", "aww :( ok (;", "hi\nthere",
+                 "u got me blushing over here n i barely woke up", "lol =) ok :-)"):
+        assert strip_asides(keep) == keep, keep
+
+
 _harness.run(
+    case_bracket_aside_never_reaches_the_fan,
     case_shared_shape,
     case_sticker_marker_survives_the_shared_refactor,
     case_glued_marker_still_triggers,

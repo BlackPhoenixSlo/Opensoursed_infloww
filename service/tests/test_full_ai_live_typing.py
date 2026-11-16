@@ -57,7 +57,7 @@ def _holds(indicator: bool = True):
     """Record every `hold_with_typing` (seconds, typing_indicator); wpm fixed, account indicator given."""
     got = []
 
-    async def hold(_aid, _fan, seconds, *, typing_indicator=False):
+    async def hold(_aid, _fan, seconds, *, typing_indicator=False, cut=None):
         got.append((seconds, typing_indicator))
 
     async def wpm(_aid):

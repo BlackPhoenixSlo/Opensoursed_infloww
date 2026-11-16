@@ -447,8 +447,9 @@ def _reply_why(raw) -> dict:
 async def _full_ai(account_id: str, fan, rows, fa_rules) -> ev.FullAi:
     """Full AI Chat's LOCAL facts for him. Reuses full_ai_owner_io's local reads
     and `full_ai_owner.who_owns`; never its Fans list read (`_listed` opens an
-    OnlyFans client) nor `_human` (it can scan the account's broadcasts, and a
-    human answer after his message already shows as her turn in the thread)."""
+    OnlyFans client — `cached_listed` only peeks at its in-process cache) nor
+    `_human` (it can scan the account's broadcasts, and a human answer after his
+    message already shows as her turn in the thread)."""
     from audience_include import audience_allows_fan
     from automations import full_ai_config, full_ai_live, full_ai_owner
     from automations import full_ai_owner_io as io
@@ -508,10 +509,15 @@ async def _full_ai(account_id: str, fan, rows, fa_rules) -> ev.FullAi:
     fans_ok = full_ai_config._fans_error(fans) is None
     top = io._top_spend_cents(cfg)
     spend = int(fan.lifetime_spend_cents or 0)
-    # Fans list membership is an OnlyFans read: a SET list is assumed passed
-    # here (the Fans line says it is unknown); a malformed one lists nobody.
+    # Fans list membership is an OnlyFans read: only its in-process cache is
+    # read here (no OF call). A FRESH verdict is what Full AI acts on now and
+    # feeds the check; else a SET list is assumed passed (the Fans line says
+    # what is known); a malformed one lists nobody.
+    fans_read = io.cached_listed(account_id, fan_id, cfg) if fans_ok else None
+    listed = (fans_read.listed if fans_read is not None and fans_read.fresh
+              and fans_read.listed is not None else fans_ok)
     stop = full_ai_owner.who_owns(full_ai_owner.OwnerFacts(
-        off=off, listed=fans_ok, hard_skip=hard, audience_ok=bool(audience_ok),
+        off=off, listed=listed, hard_skip=hard, audience_ok=bool(audience_ok),
         human=None, human_at=None, walk_advancing=walk, spend_cents=spend,
         top_spend_cents=top))
     open_due = None
@@ -537,7 +543,7 @@ async def _full_ai(account_id: str, fan, rows, fa_rules) -> ev.FullAi:
             created_at=d.created_at, anchor_at=d.anchor_created_at, route=d.route,
             status=d.status, reply=_reply_why(d.reply_json), jev_error=d.jev_error)
             for d in decisions],
-        open_at=open_at, open_due=open_due, open_decided=decided)
+        open_at=open_at, open_due=open_due, open_decided=decided, fans_read=fans_read)
 
 
 class _Dm(NamedTuple):

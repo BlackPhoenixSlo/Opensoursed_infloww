@@ -44,7 +44,7 @@ from db.models import Fan
 
 from . import _voice
 from ._common import guard_offplatform, strip_emojis
-from ._markers import strip_narration
+from ._markers import strip_asides, strip_narration
 from ._persona import verify_self_consistency
 
 log = logging.getLogger("of-relay.automation.outbound")
@@ -142,7 +142,7 @@ def _guard(text: str, *, account_id: str, fan_id: int, purpose: str,
     output, and a rewrite is exactly as likely to arrive wearing `*giggles*` as
     the original draft was. One line in the shared floor covers both drafts;
     stripping at the top would have covered only the first."""
-    text = strip_narration(text)
+    text = strip_asides(strip_narration(text))
     text, leak = guard_offplatform(text, random.Random(f"{fan_id}:{text}"), v)
     if leak:
         log.info("%s off-platform leak guarded account=%s fan=%s reasons=%s",

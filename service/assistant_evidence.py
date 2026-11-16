@@ -31,11 +31,14 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from db.models import (
     Blacklist, Fan, FollowupState, MassRun, SkipList, WelcomeSent, parse_ts,
 )
+
+if TYPE_CHECKING:
+    from automations.full_ai_owner_io import FansRead
 
 CAP_CHARS = 4000
 TIMELINE_SCAN = 40           # message rows read, newest first
@@ -204,8 +207,9 @@ class FullAi(NamedTuple):
     """Full AI Chat for this account and fan, as LOCAL rows show it.
 
     `stop` is `full_ai_owner.who_owns` over the facts readable here — never a
-    copy of its order. Fans list MEMBERSHIP is an OnlyFans read, so a set list
-    is assumed passed for that call and the Fans line says it is unknown."""
+    copy of its order. Fans list MEMBERSHIP is an OnlyFans read: only a FRESH
+    cached read (`fans_read`, full_ai_owner_io.FansRead) goes into that call;
+    otherwise a set list is assumed passed and the Fans line says what is known."""
 
     off: str | None              # full_ai_owner.OFF_REASONS, None = Live
     mode: str | None             # the rule's trigger_json mode
@@ -223,6 +227,8 @@ class FullAi(NamedTuple):
     open_at: datetime | None     # his unanswered message (the sweep's Turn end)
     open_due: datetime | None    # its due time by Reply speed (full_ai_live.due)
     open_decided: bool           # a live decision row exists on it
+    # Fans list membership off the relay's cached OnlyFans read; None = unknown.
+    fans_read: "FansRead | None" = None
 
 
 # Presentation of full_ai_test._SPEEDS, not a second copy of the draw.
@@ -233,8 +239,8 @@ FULL_AI_STOP = {
     "off_global": "the global switch FULL_AI_CHAT_OFF is on",
     "off_rule": "its rule is switched off",
     "off_mode": "its rule is not in Live mode",
-    "not_listed": "the Fans list's stored config is malformed, so nobody is "
-                  "listed",
+    "not_listed": "he is NOT on its Fans list (a fresh OnlyFans read; Fans "
+                  "list line)",
     "hard_skip": "hard skip — blacklist, a hard skip_list reason / "
                  "unreachable, or a muted creator (rows above)",
     "audience": "outside the account's audience limits",
@@ -244,6 +250,8 @@ FULL_AI_STOP = {
     "top_spend": "his lifetime spend reached the top spend limit (left to "
                  "humans)",
 }
+# not_listed off a malformed stored list.
+_STOP_MALFORMED = "the Fans list's stored config is malformed, so nobody is listed"
 
 
 # ── Formatting primitives ─────────────────────────────────────────────
@@ -742,7 +750,7 @@ def _full_ai_state(fa: FullAi) -> list[str]:
                    f"Reply speed it {when}; the sweep queues a due message "
                    "unless he is paused / leased or the check below stops him.")
     out.append("- Full AI's own check on local rows: "
-               + (FULL_AI_STOP.get(fa.stop, fa.stop) + " — it will not answer him"
+               + (_stop_words(fa) + " — it will not answer him"
                   if fa.stop else "nothing stops him")
                + f". Lifetime {usd(fa.spend_cents)} vs top spend "
                + (usd(fa.top_spend_cents) if fa.top_spend_cents else "off") + "."
@@ -750,16 +758,42 @@ def _full_ai_state(fa: FullAi) -> list[str]:
     return out
 
 
+def _stop_words(fa: FullAi) -> str:
+    """The stop's phrase; not_listed says which of its two causes it is."""
+    if fa.stop == "not_listed" and not fa.fans_ok:
+        return _STOP_MALFORMED
+    return FULL_AI_STOP.get(fa.stop, fa.stop)
+
+
+def _ago(seconds: float) -> str:
+    return "<1m" if seconds < 60 else humanize(int(seconds // 60))
+
+
 def _fans_line(fa: FullAi) -> str:
-    """The Fans list's setting. Membership is an OnlyFans read: never guessed."""
+    """The Fans list's setting, and his membership as far as the relay's cached
+    OnlyFans read knows it: a stale read is never stated as fact."""
     if not fa.fans_ok:
         return "- Full AI Fans list: stored config is malformed — nobody is listed."
     inc, exc = fa.fans.get("include") or [], fa.fans.get("exclude") or []
     if not inc and not exc:
         return "- Full AI Fans list: every fan (nothing included or excluded)."
-    return (f"- Full AI Fans list: {len(inc)} include list(s), {len(exc)} exclude "
-            "list(s). Whether he is on them is NOT known here — read on "
-            "OnlyFans at reply time; a failed read = not listed.")
+    head = (f"- Full AI Fans list: {len(inc)} include list(s), {len(exc)} exclude "
+            "list(s).")
+    r = fa.fans_read
+    if r is not None and r.failed_age_s is not None:
+        return (f"{head} The last OnlyFans read of the list FAILED "
+                f"{_ago(r.failed_age_s)} ago — Full AI treated him as not listed "
+                "then; its next read may succeed.")
+    if r is None or r.listed is None or r.age_s is None:
+        return (f"{head} Whether he is on them is NOT known here — read on "
+                "OnlyFans at reply time; a failed read = not listed.")
+    if r.fresh:
+        return (f"{head} OnlyFans read {_ago(r.age_s)} ago: "
+                + ("he IS on it." if r.listed else
+                   "he is NOT on it — Full AI will not answer him."))
+    return (f"{head} Last OnlyFans read {_ago(r.age_s)} ago said he was "
+            + ("" if r.listed else "NOT ")
+            + "on it; a fresh read at his next Turn may differ.")
 
 
 def _money_lines(ev: Evidence) -> list[str]:
@@ -899,7 +933,7 @@ def current_lines(ev: Evidence) -> Current:
     if ev.full_ai is not None:
         fa = ev.full_ai
         essential += _full_ai_state(fa)
-        # A SET list can be the whole answer (membership is unknown here), so
+        # A SET list can be the whole answer (he may not be on it), so
         # while Live it must outlive the knobs; "every fan" stops nobody.
         every = fa.fans_ok and not (fa.fans.get("include") or fa.fans.get("exclude"))
         (core if every or fa.off is not None else essential).append(_fans_line(fa))

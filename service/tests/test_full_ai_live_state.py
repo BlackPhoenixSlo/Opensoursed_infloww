@@ -22,6 +22,12 @@ FakeOF call count, the row's `status` and the outbound `messages` rows of kind f
   case_no_id_first_bubble            OF answers no id: `failed`, quarantine probed once
   case_offer_column_survives_record  `outcome` / `jev_ms` set between reserve and record survive;
                                      row["id"] is the reserved row's id
+  case_drain_waits_for_a_reserved_turn   SIGTERM in bubble 2's hold: the hold ends, drain() waits
+                                     (1 waited, 0 left), every bubble sent, the holds after it 0 s, `sent`
+  case_draining_before_the_reserve   run_once while draining: no OF call, no row, rate turn given back;
+                                     job `done` + the same payload re-queued at +20 s (tries kept); it sends after
+  case_drain_slot_released_on_raise_and_cancel   a raise after the reserve / a cancel after bubble 1:
+                                     the drain slot is gone, a later drain() waits for nothing
 
 Run: ./venv/bin/python service/tests/test_full_ai_live_state.py  (exit 0 = pass)
 """
@@ -47,7 +53,7 @@ import automation_executor as ax  # noqa: E402
 import run_slot  # noqa: E402
 from automations import full_ai_live  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import AiDecision, SkipList  # noqa: E402
+from db.models import AiDecision, ScheduledJob, SkipList  # noqa: E402
 
 os.environ.setdefault("NANOGPT_API_KEY", "test-nanogpt-house-key")
 os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-house-key")
@@ -289,6 +295,105 @@ async def case_offer_column_survives_record():
         (row.status, row.outcome, w.of.calls, n)
     assert row.jev_ms == 4242 != rowdict["jev_ms"], (row.jev_ms, rowdict["jev_ms"])   # a row-dict column too
     assert rowdict["id"] == got == row.id == res["row_id"], (rowdict.get("id"), got, row.id)
+
+
+async def case_drain_waits_for_a_reserved_turn():
+    aid, fan, mid = "fa_st_drain", 612, 9001
+    rid = await seed_live(aid, {"typing_sign": True})
+    await dm(aid, fan, mid)
+    holds, in_hold = [], asyncio.Event()
+    real_hold, real_wpm = full_ai_live.hold_with_typing, full_ai_live.load_typing_wpm
+
+    async def hold(_aid, _fan, seconds, **kw):
+        holds.append(seconds)
+        if len(holds) == 1:                 # bubble 1 goes straight out
+            return
+        if len(holds) == 2:                 # bubble 1 is on OF; SIGTERM lands in bubble 2's real hold
+            in_hold.set()
+        await real_hold(_aid, _fan, seconds, **kw)
+
+    async def wpm(_aid):
+        return 1                            # every text bubble would "type" for up to a minute
+    full_ai_live.hold_with_typing, full_ai_live.load_typing_wpm = hold, wpm
+    try:
+        with world() as w:
+            task = asyncio.create_task(full_ai_live.run(aid, payload(fan, mid, rid), run_id=0))
+            await asyncio.wait_for(in_hold.wait(), 10)
+            assert w.of.calls == 1 and task in ax._sends_open, w.of.calls
+            out = await ax.drain(timeout_s=10)       # the running hold ends at the drain
+            res = await task
+    finally:
+        full_ai_live.hold_with_typing, full_ai_live.load_typing_wpm = real_hold, real_wpm
+        ax._draining = False
+    assert (out["waited"], out["left"]) == (1, 0) and out["s"] < 5, out
+    row = await _one(aid)
+    n = _n(row)
+    assert n >= 3 and all("message_id" in p for p in json.loads(row.reply_json)["parts"]), row.reply_json
+    assert (res["row_status"], row.status, w.of.calls, len(await out_rows(aid, fan))) == ("sent", "sent", n, n)
+    assert holds[0] > 0 and holds[1] > 5 and holds[2:] == [0] * (n - 2), holds
+    assert task not in ax._sends_open and await leases(aid) == []
+
+
+async def case_draining_before_the_reserve():
+    aid, fan, mid = "fa_st_drain0", 613, 9101
+    rid = await seed_live(aid)
+    await dm(aid, fan, mid)
+    pl = {**payload(fan, mid, rid), "tries": 1}
+    job_id = await ax.enqueue_job(aid, KIND, payload=pl, run_at=datetime.utcnow() - timedelta(seconds=1))
+    ax._draining = True
+    try:
+        with world() as w:
+            res = await ax.run_once(aid, KIND)
+    finally:
+        ax._draining = False
+    assert (res["status"], res["skipped"], res["job_id"]) == ("ok", "draining", job_id), res
+    assert (w.of.calls, w.turns, w.released) == (0, 1, 1), (w.of.calls, w.turns, w.released)
+    assert await live_rows(aid) == [] and await out_rows(aid, fan) == [] and await leases(aid) == []
+    async with get_session() as s:
+        old, new = (await s.execute(select(ScheduledJob).where(
+            ScheduledJob.account_id == aid, ScheduledJob.kind == KIND).order_by(ScheduledJob.id))).scalars()
+    now = datetime.utcnow()
+    assert (old.id, old.status, new.status, new.attempts or 0) == (job_id, "done", "pending", 0), (old.status, new.status)
+    assert json.loads(new.payload_json) == pl, new.payload_json      # `tries` untouched
+    assert now + timedelta(seconds=15) < new.run_at <= now + timedelta(seconds=21), new.run_at
+    async with get_session() as s:                                   # after the restart, once due
+        await s.execute(update(ScheduledJob).where(ScheduledJob.id == new.id)
+                        .values(run_at=now - timedelta(seconds=1)))
+    with world() as w:
+        res = await ax.run_once(aid, KIND)
+    row = await _one(aid)
+    assert (res["status"], res["row_status"], row.status, w.of.calls) == ("ok", "sent", "sent", _n(row)), res
+
+
+async def case_drain_slot_released_on_raise_and_cancel():
+    me = asyncio.current_task()
+    aid, fan, mid = "fa_st_drain_err", 614, 9201
+    rid = await seed_live(aid)
+    await dm(aid, fan, mid)
+    held, real = [], full_ai_live._reserve
+
+    async def reserve_then_fail(row, anchor):
+        await real(row, anchor)
+        held.append(me in ax._sends_open)
+        raise RuntimeError("db gone")
+    full_ai_live._reserve = reserve_then_fail
+    try:
+        res, w = await _run(aid, fan, mid, rid)
+    finally:
+        full_ai_live._reserve = real
+    assert isinstance(res, RuntimeError) and (held, w.of.calls) == ([True], 0), (res, held)
+    assert me not in ax._sends_open
+    aid, fan, mid = "fa_st_drain_cxl", 615, 9301
+    rid = await seed_live(aid)
+    await dm(aid, fan, mid)
+    res, w = await _run(aid, fan, mid, rid, of=LiveOF(after=_kill_at(1, asyncio.CancelledError())))
+    assert isinstance(res, asyncio.CancelledError) and w.of.calls == 1, res
+    assert me not in ax._sends_open
+    try:
+        out = await ax.drain(timeout_s=5)
+    finally:
+        ax._draining = False
+    assert (out["waited"], out["left"]) == (0, 0) and out["s"] < 1, out
 
 
 _harness.run()

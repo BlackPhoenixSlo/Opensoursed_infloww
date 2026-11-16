@@ -155,3 +155,20 @@ def strip_narration(raw: str) -> str:
         lambda m: "" if (" " in m.group(1)
                          or m.group(1).lower() in _EMOTE_WORDS)
         else m.group(1) + m.group(2), text).strip()
+
+
+# A `(...)` aside plus the space before it. Live 2026-11-16 (Twin): a fan got
+# `hey sweetie\n(Can't have a longer response here as per your instructions so
+# I'll keep it to one line with no emoji as requested.)` — the model answering
+# its prompt inside the reply. Owner: drop everything in brackets. Newline-bounded
+# and un-nested like the star span. The two guards keep emoticons whole: `:(` /
+# `(:` open no span and `:)` closes none, so `:( miss u :)` is left alone.
+_ASIDE_RE = re.compile(r"[ \t]*(?<![:;=8xX])\((?![:;=])[^()\n]*(?<![:;=^-])\)")
+
+
+def strip_asides(raw: str) -> str:
+    """Model prose with every `(...)` aside removed; "" when the aside WAS the
+    message (an empty draft is dropped, not sent). A line left empty goes too,
+    because every line downstream becomes its own bubble."""
+    text = _ASIDE_RE.sub("", raw or "")
+    return "\n".join(ln.strip() for ln in text.split("\n") if ln.strip())

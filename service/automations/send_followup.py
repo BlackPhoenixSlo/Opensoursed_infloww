@@ -67,6 +67,7 @@ import dm_rate
 import llm_client                  # call .chat at runtime so tests can patch it
 import of_write                    # _may_have_sent, read at call time
 import run_slot
+from ._markers import strip_asides
 from ._model_wait import freed_chat
 from . import rhythm  # tz_hours_for — THE clock (fixed offset first, zone as fallback)
 from . import _voice  # whose voice this account writes in (NULL → 'her')
@@ -633,7 +634,7 @@ async def preview_compose(
         fan_id=int(fan_id) if fan_id is not None else 0,
         temperature=_TEMPERATURE,
     )
-    text = apply_word_restriction((getattr(res, "content", "") or "").strip())
+    text = apply_word_restriction(strip_asides(getattr(res, "content", "") or ""))
     if strip_emoji_on:
         text = strip_emojis(text)
     return {"text": text, "image": _slot_image_id(cfg, hour),
@@ -789,7 +790,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             account_id, fid, exc_info=True)
                 continue
 
-            text = apply_word_restriction((getattr(res, "content", "") or "").strip())
+            text = apply_word_restriction(strip_asides(getattr(res, "content", "") or ""))
             if strip_emoji_on:
                 text = strip_emojis(text)
             if not text:

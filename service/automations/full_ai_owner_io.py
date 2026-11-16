@@ -5,6 +5,8 @@
   claimed_ids(account_id, fan_ids, *, client=None) -> set[int]
         the Fans Full AI claims, for the other Lanes' candidate seams (batch)
   _listed(...)  the Fans list through Auto-reply's `_folder_members` (both lists empty = no OF call)
+  cached_listed(account_id, fan_id, cfg) -> FansRead
+        the same verdict off that read's in-process cache only (never an OF call), for the help bot
   stand_down(account_id, fan_ids, *, lane) -> (claimed, stats)
         one call at another reply Lane's candidate seam: the Fans to drop and the run's stats
   start_human_yield(account_id, fan_id, sent_at)
@@ -22,6 +24,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import select
 
@@ -110,6 +113,46 @@ async def _listed(account_id: str, fan_ids: set[int], cfg: dict, client=None) ->
         log.warning("full_ai_owner fans list read failed account=%s", account_id, exc_info=True)
     return {f for f in fan_ids
             if in_fans(fans, None if on_inc is None else f in on_inc, None if on_exc is None else f in on_exc)}
+
+
+class FansRead(NamedTuple):
+    """`cached_listed`'s answer: the Fans list verdict off the last OnlyFans reads in this process."""
+    listed: bool | None          # in_fans' verdict; None = a needed list has no read cached (unknown)
+    age_s: float | None          # the OLDEST good read it rests on; None = no read needed / none
+    failed_age_s: float | None   # the newest read of a needed list FAILED this long ago (never fresh:
+                                 # nothing is cached on a failure, so the next Turn reads again)
+    fresh: bool                  # every read it rests on is inside the cache window: what Full AI acts on now
+
+
+def cached_listed(account_id: str, fan_id: int, cfg: dict) -> FansRead:
+    """`_listed` for one Fan from Auto-reply's folder cache ONLY (`autoreply.peek_folder`): no client, no
+    OF call, ever. A failed newest read = not listed THEN, as `_listed` treated it; same `in_fans`."""
+    from automations import autoreply   # lazy: autoreply imports this module inside its run
+    fans = cfg.get("fans")
+    if full_ai_config._fans_error(fans) is not None:
+        return FansRead(False, None, None, True)
+    ttl = autoreply._FOLDER_TTL_S
+    on: list[bool | None] = []   # per list (include, exclude); None = failed read / empty list (ignored)
+    ages: list[float] = []
+    failed: list[float] = []
+    unknown = False
+    for ids in (fans["include"], fans["exclude"]):
+        p = autoreply.peek_folder(account_id, ids) if ids else None
+        if p is not None and p.failed_age_s is not None:
+            failed.append(p.failed_age_s)
+        elif p is not None and p.members is None:
+            unknown = True
+        elif p is not None:
+            ages.append(p.read_age_s)
+            on.append(int(fan_id) in p.members)
+            continue
+        on.append(None)
+    age = max(ages) if ages else None
+    if failed:
+        return FansRead(in_fans(fans, on[0], on[1]), age, min(failed), False)
+    if unknown:
+        return FansRead(None, None, None, False)
+    return FansRead(in_fans(fans, on[0], on[1]), age, None, age is None or age < ttl)
 
 
 async def _hard_skip(account_id: str, fan_id: int, fan, s) -> bool:

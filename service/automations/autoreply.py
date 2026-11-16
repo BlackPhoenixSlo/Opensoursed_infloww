@@ -54,6 +54,7 @@ import logging
 import random
 import time
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -175,6 +176,30 @@ def _step_in_minutes(cfg: dict, fan_id: int, inbound_at: datetime) -> int:
 # folder each tick; a fan added to / removed from a folder is seen within TTL.
 _FOLDER_TTL_S = 300
 _folder_cache: dict[tuple[str, tuple[int, ...]], tuple[float, frozenset]] = {}
+# When the newest read of a key failed (monotonic); a later good read drops it.
+_folder_failed: dict[tuple[str, tuple[int, ...]], float] = {}
+
+
+def _folder_key(account_id: str, list_ids) -> tuple[str, tuple[int, ...]]:
+    """The cache key for (account, folders): list order and repeats do not matter."""
+    return (str(account_id), tuple(sorted({int(x) for x in list_ids})))
+
+
+class FolderPeek(NamedTuple):
+    read_age_s: float | None     # the last good read's age; None = none cached
+    members: frozenset | None    # what it read
+    failed_age_s: float | None   # the newest read FAILED this long ago; None = it did not
+
+
+def peek_folder(account_id: str, list_ids) -> FolderPeek:
+    """What `_folder_members` last saw for these folders, with NO crawl and no client:
+    a read for anyone (the help bot) who must not touch OnlyFans."""
+    key, now = _folder_key(account_id, list_ids), time.monotonic()
+    hit, failed = _folder_cache.get(key), _folder_failed.get(key)
+    if hit is not None and failed is not None and (failed <= hit[0] or now - hit[0] < _FOLDER_TTL_S):
+        failed = None   # `_folder_members` serves that hit: the failure (an overlapping crawl's) is moot
+    return FolderPeek(None if hit is None else now - hit[0], None if hit is None else hit[1],
+                      None if failed is None else now - failed)
 
 
 def _folder_ids(cfg: dict) -> tuple[int, ...]:
@@ -193,7 +218,7 @@ async def _folder_members(account_id: str, client, list_ids: tuple[int, ...]) ->
     read at all (the caller then replies to nobody this tick — never widens to
     every fan on a failed read). A crawl that hits the paging backstop keeps
     what it read: a short allow-list only ever narrows who gets a reply."""
-    key = (str(account_id), list_ids)
+    key = _folder_key(account_id, list_ids)
     hit = _folder_cache.get(key)
     if hit is not None and time.monotonic() - hit[0] < _FOLDER_TTL_S:
         return hit[1]
@@ -205,6 +230,7 @@ async def _folder_members(account_id: str, client, list_ids: tuple[int, ...]) ->
         except Exception as e:
             log.warning("autoreply folder read failed account=%s list=%s: %s",
                         account_id, lid, (str(e).splitlines() or [type(e).__name__])[0][:120])
+            _folder_failed[key] = time.monotonic()
             return None
         if truncated:
             log.warning("autoreply folder %s on account=%s hit the paging backstop "
@@ -212,6 +238,7 @@ async def _folder_members(account_id: str, client, list_ids: tuple[int, ...]) ->
         members |= ids
     out = frozenset(members)
     _folder_cache[key] = (time.monotonic(), out)
+    _folder_failed.pop(key, None)
     return out
 
 

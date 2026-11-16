@@ -2769,6 +2769,93 @@ async def case_every_full_ai_stop_reason_is_worded():
     assert set(assistant_evidence.FULL_AI_STOP) == set(full_ai_owner.REASONS)
 
 
+async def _fa_cached_pack(aid, fan_id, *, lists, members=(), age_s=None,
+                          failed_age_s=None, checkpoint=None) -> str:
+    """The pack with Auto-reply's folder cache seeded for `lists`: a good read
+    `age_s` old holding `members`, a failure `failed_age_s` old. Any OF client
+    build or folder crawl fails the test (the pack path is local only)."""
+    import time
+    import automation_executor as ax
+    from automations import autoreply
+    await _seed_full_ai(aid, fan_id, checkpoint=checkpoint)
+    key, now = autoreply._folder_key(aid, lists), time.monotonic()
+    if age_s is not None:
+        autoreply._folder_cache[key] = (now - age_s, frozenset(members))
+    if failed_age_s is not None:
+        autoreply._folder_failed[key] = now - failed_age_s
+
+    def no_client(*_a, **_k):
+        raise AssertionError("the fan pack built an OnlyFans client")
+
+    async def no_crawl(*_a, **_k):
+        raise AssertionError("the fan pack crawled an OnlyFans list")
+
+    real = ax._make_client, autoreply._folder_members
+    ax._make_client, autoreply._folder_members = no_client, no_crawl
+    try:
+        return await _fa_pack(aid, fan_id)
+    finally:
+        ax._make_client, autoreply._folder_members = real
+
+
+_FA_LIST = _FA_CHECKPOINT["fans"]["include"]
+
+
+async def case_full_ai_fresh_cached_read_on_the_list():
+    fan_id = 1187168095
+    out = await _fa_cached_pack("acc_fa_fresh_on", fan_id, lists=_FA_LIST,
+                                members={fan_id}, age_s=185)
+    assert ("1 include list(s), 0 exclude list(s). OnlyFans read 3m ago: he IS "
+            "on it.") in out, out
+    assert "nothing stops him" in out and "NOT known here" not in out, out
+
+
+async def case_full_ai_fresh_cached_read_off_the_list_is_the_stop():
+    out = await _fa_cached_pack("acc_fa_fresh_off", 1187168096, lists=_FA_LIST,
+                                members={1}, age_s=185)
+    assert ("OnlyFans read 3m ago: he is NOT on it — Full AI will not answer "
+            "him.") in out, out
+    assert (f"own check on local rows: {assistant_evidence.FULL_AI_STOP['not_listed']}"
+            " — it will not answer him") in out, out
+
+
+async def case_full_ai_fresh_exclude_read_wins():
+    fan_id = 1187168097
+    out = await _fa_cached_pack(
+        "acc_fa_fresh_exc", fan_id, lists=[42], members={fan_id}, age_s=60,
+        checkpoint={**_FA_CHECKPOINT, "fans": {"include": [], "exclude": [42]}})
+    assert "0 include list(s), 1 exclude list(s). OnlyFans read 1m ago: he is NOT on it" \
+        in out, out
+    assert assistant_evidence.FULL_AI_STOP["not_listed"] in out, out
+
+
+async def case_full_ai_stale_cached_read_is_never_a_stop():
+    fan_id = 1187168098
+    out = await _fa_cached_pack("acc_fa_stale", fan_id, lists=_FA_LIST,
+                                members={1}, age_s=2 * 3600 + 5)
+    assert ("Last OnlyFans read 2h ago said he was NOT on it; a fresh read at his "
+            "next Turn may differ.") in out, out
+    assert "nothing stops him" in out, out
+
+
+async def case_full_ai_failed_newest_read_says_so():
+    fan_id = 1187168099
+    out = await _fa_cached_pack("acc_fa_failed", fan_id, lists=_FA_LIST,
+                                members={fan_id}, age_s=2 * 3600, failed_age_s=125)
+    assert ("The last OnlyFans read of the list FAILED 2m ago — Full AI treated him "
+            "as not listed then; its next read may succeed.") in out, out
+    # nothing is cached on a failure: the next Turn reads again, so it is no stop
+    assert "nothing stops him" in out and "it will not answer him" not in out, out
+    assert "he IS on it" not in out and "said he was" not in out, out
+
+
+async def case_full_ai_nothing_cached_keeps_unknown():
+    out = await _fa_cached_pack("acc_fa_nocache", 1187168100, lists=_FA_LIST)
+    assert "1 include list(s), 0 exclude list(s). Whether he is on them is NOT known here" \
+        in out, out
+    assert "nothing stops him" in out, out
+
+
 def _fa(**kw) -> assistant_evidence.FullAi:
     base = dict(off=None, mode="live", every_s=300, speed="0-15-60", by_webhook=True,
                 fans={"include": [], "exclude": []}, fans_ok=True, spend_cents=0,
@@ -2790,8 +2877,12 @@ def _fa_job(status, run_at, **kw):
         anchor_at=t - timedelta(hours=1), tries=0, last_error=None), **kw})
 
 
+_SET = {"include": [1], "exclude": []}
+
+
 async def case_full_ai_lines_read_each_state():
     """Pure: one FullAi per state, the words that must (and must not) appear."""
+    from automations.full_ai_owner_io import FansRead
     now = datetime.utcnow()
     table = [
         ("off global", _fa(off="off_global"), ["OFF on every creator"], ["Full AI Chat: LIVE"]),
@@ -2832,6 +2923,28 @@ async def case_full_ai_lines_read_each_state():
         ("lists set", _fa(fans={"include": [1, 2], "exclude": [3]}),
          ["2 include list(s), 1 exclude list(s)", "NOT known here"], []),
         ("malformed", _fa(fans={}, fans_ok=False), ["nobody is listed"], []),
+        ("malformed stop", _fa(fans={}, fans_ok=False, stop="not_listed"),
+         ["check on local rows: the Fans list's stored config is malformed"],
+         [assistant_evidence.FULL_AI_STOP["not_listed"]]),
+        ("read fresh on", _fa(fans=_SET, fans_read=FansRead(True, 30, None, True)),
+         ["OnlyFans read <1m ago: he IS on it."], ["NOT known", "NOT on it"]),
+        ("read fresh off", _fa(fans=_SET, stop="not_listed",
+                               fans_read=FansRead(False, 240, None, True)),
+         ["OnlyFans read 4m ago: he is NOT on it — Full AI will not answer him.",
+          assistant_evidence.FULL_AI_STOP["not_listed"]], ["NOT known"]),
+        ("read stale on", _fa(fans=_SET, fans_read=FansRead(True, 3 * 3600, None, False)),
+         ["Last OnlyFans read 3h ago said he was on it; a fresh read"],
+         ["he IS on it", "NOT on it"]),
+        ("read failed", _fa(fans=_SET, fans_read=FansRead(False, None, 90, False)),
+         ["list FAILED 1m ago — Full AI treated him as not listed then; its next "
+          "read may succeed.", "nothing stops him"],
+         [assistant_evidence.FULL_AI_STOP["not_listed"], "he is NOT on it"]),
+        ("read failed long ago", _fa(fans=_SET,
+                                     fans_read=FansRead(False, 5 * 3600, 2 * 3600, False)),
+         ["list FAILED 2h ago — Full AI treated him as not listed then",
+          "nothing stops him"], ["said he was", "NOT known"]),
+        ("read unknown", _fa(fans=_SET, fans_read=FansRead(None, None, None, False)),
+         ["NOT known here"], []),
         ("never ran", _fa(), ["it has never run a Turn for him"], []),
     ]
     fan = Fan(account_id="acc_pure", fan_id=123456789, lifetime_spend_cents=0)
@@ -2946,5 +3059,11 @@ _harness.run(
     case_no_full_ai_rule_adds_no_full_ai_line,
     case_a_failing_full_ai_read_degrades_to_one_line,
     case_every_full_ai_stop_reason_is_worded,
+    case_full_ai_fresh_cached_read_on_the_list,
+    case_full_ai_fresh_cached_read_off_the_list_is_the_stop,
+    case_full_ai_fresh_exclude_read_wins,
+    case_full_ai_stale_cached_read_is_never_a_stop,
+    case_full_ai_failed_newest_read_says_so,
+    case_full_ai_nothing_cached_keeps_unknown,
     case_full_ai_lines_read_each_state,
 )

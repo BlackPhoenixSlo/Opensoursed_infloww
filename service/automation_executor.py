@@ -348,6 +348,11 @@ def stop_claiming() -> None:
     _draining = True
 
 
+def draining() -> bool:
+    """True from SIGTERM on (`stop_claiming`): a sender ends its waits early."""
+    return _draining
+
+
 def end_send(task=None) -> None:
     """The current task's send is settled: `drain()` stops waiting for it."""
     fut = _sends_open.pop(task or asyncio.current_task(), None)

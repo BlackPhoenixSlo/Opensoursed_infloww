@@ -11,6 +11,10 @@
                               makes no further OF call; while off: no OF call at all
   case_config_change_bites    a new `fans` in the stored config changes claimed_ids on the next call; an OF
                               membership change shows after the cache window, no restart
+  case_cached_listed_never_reads_of  the help bot's peek: unknown / everyone / malformed / fresh / stale /
+                              failed / exclude wins / list-id order; zero client builds, zero crawls
+  case_folder_read_failure_is_stamped_then_cleared  a failed folder read stamps the failure (not listed);
+                              a later good read clears it
 
 Run: ./venv/bin/python service/tests/test_full_ai_fans.py  (exit 0 = pass)
 """
@@ -187,6 +191,74 @@ async def case_config_change_bites():
         assert await io.claimed_ids(aid, [1, 2]) == {1}              # cached (set earlier in this run)
         _age_cache(aid)
         assert await io.claimed_ids(aid, [1, 2]) == {1, 2}           # after the window
+
+
+def _cached(aid: str, fan_id: int, fans: dict) -> io.FansRead:
+    """`cached_listed` with every OF client build and folder crawl failing the test."""
+    real = ax._make_client, autoreply._folder_members
+
+    def no_client(*_a, **_k):
+        raise AssertionError("cached_listed built an OF client")
+
+    async def no_crawl(*_a, **_k):
+        raise AssertionError("cached_listed crawled an OF list")
+    ax._make_client, autoreply._folder_members = no_client, no_crawl
+    try:
+        return io.cached_listed(aid, fan_id, {"fans": fans})
+    finally:
+        ax._make_client, autoreply._folder_members = real
+
+
+def case_cached_listed_never_reads_of():
+    import time
+    aid, ttl = "acc-fans-cached", autoreply._FOLDER_TTL_S
+    inc, exc, both = ({"include": [11, 10], "exclude": []}, {"include": [], "exclude": [12]},
+                      {"include": [10, 11], "exclude": [12]})
+    key = autoreply._folder_key
+    autoreply._folder_cache.pop(key(aid, [10, 11]), None)
+    r = _cached(aid, 1, inc)
+    assert r == io.FansRead(None, None, None, False), r                    # nothing cached: unknown
+    assert _cached(aid, 1, {"include": [], "exclude": []}).listed is True  # no list: everyone
+    assert _cached(aid, 1, {"include": "x"}).listed is False              # malformed: nobody
+    now = time.monotonic()
+    autoreply._folder_cache[key(aid, (11, 10))] = (now - 60, frozenset({1, 3}))   # order-free key
+    autoreply._folder_cache[key(aid, [12])] = (now - 30, frozenset({3}))
+    r = _cached(aid, 1, inc)
+    assert r.listed is True and r.fresh and r.failed_age_s is None and 60 <= r.age_s < 70, r
+    assert _cached(aid, 2, inc).listed is False
+    assert _cached(aid, 3, exc).listed is False and _cached(aid, 1, exc).listed is True
+    r = _cached(aid, 3, both)                                              # exclude wins
+    assert r.listed is False and r.fresh and r.age_s >= 60, r              # the OLDEST read's age
+    autoreply._folder_cache[key(aid, [12])] = (now - ttl - 5, frozenset({3}))
+    r = _cached(aid, 1, both)
+    assert r.listed is True and not r.fresh and r.age_s >= ttl, r          # one stale key = stale
+    autoreply._folder_failed[key(aid, [12])] = now - 20
+    r = _cached(aid, 1, both)                    # failed newest read = not listed then; never fresh
+    assert r.listed is False and not r.fresh and 20 <= r.failed_age_s < 30, r
+    autoreply._folder_cache[key(aid, [12])] = (now - 30, frozenset({3}))
+    r = _cached(aid, 1, both)                    # a hit `_folder_members` still serves: the failure is moot
+    assert r.listed is True and r.fresh and r.failed_age_s is None, r
+    autoreply._folder_cache[key(aid, [12])] = (now - ttl - 5, frozenset({3}))
+    autoreply._folder_failed[key(aid, [12])] = now - ttl - 9
+    r = _cached(aid, 1, both)                    # a failure the good read overtook is none
+    assert r.listed is True and not r.fresh and r.failed_age_s is None, r
+    autoreply._folder_failed.pop(key(aid, [12]), None)
+
+
+async def case_folder_read_failure_is_stamped_then_cleared():
+    aid = await _account({"include": [951, 950], "exclude": []})
+    k = autoreply._folder_key(aid, [950, 951])
+    fake = ListOF({950: [1], 951: [2]}, fail=True)
+    with _client(fake), _live():
+        assert await io.claimed_ids(aid, [1, 2]) == set()
+        assert k in autoreply._folder_failed and k not in autoreply._folder_cache
+        r = _cached(aid, 1, {"include": [951, 950], "exclude": []})
+        assert r.listed is False and r.failed_age_s is not None and not r.fresh, r
+        fake.fail = False
+        assert await io.claimed_ids(aid, [1, 2]) == {1, 2}                # no cache: re-read
+        assert k not in autoreply._folder_failed and k in autoreply._folder_cache
+        r = _cached(aid, 2, {"include": [950, 951], "exclude": []})
+        assert r.listed is True and r.failed_age_s is None and r.fresh, r
 
 
 if __name__ == "__main__":

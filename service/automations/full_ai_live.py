@@ -22,7 +22,10 @@ the Turn down. Each bubble goes out through its kind's `BUBBLE_SENDERS` entry.
                                      -> cooldown 10 s + release; busy -> the same payload at +20 s,
                                      3 runs at most (ticket 67); his one-Fan scrape still queued
                                      (`_scrape_pending`) -> the same payload at +20 s, no try spent
-                                     (bounded by SCRAPE_WAIT_S); no anchor (the interval job) -> sweep
+                                     (bounded by SCRAPE_WAIT_S); no anchor (the interval job) -> sweep;
+                                     the reserve takes a shutdown-drain slot (`ax.begin_send`, held to
+                                     the end: holds go 0 s while draining, a running one ends); refused (the relay
+                                     drains) -> nothing sent, no row, the same payload at +20 s
   sweep(account_id)                  missed DMs: due Turn ends with no row / job / cooldown and a clear
                                      pre-look (no OF read) -> enqueue, 20 per pass
   catchup_queue(account, fans, ...)  full_ai_catchup's waiting Fans: the sweep's checks over just them
@@ -312,6 +315,10 @@ class _Run:
     landed: int = 0                       # bubbles on OF (the job's finally rests the Fan when > 0)
 
 
+class _Draining(Exception):
+    """The relay drains (`ax.begin_send` False) before the reserve: nothing sent, no row."""
+
+
 def _values(row: dict, anchor: Message, status: str) -> dict:
     """The row dict (not yet reserved: no `id`) as `ai_decisions` columns."""
     return {**row, "status": status,
@@ -537,8 +544,11 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
                 stop = ("sender", f"{_kind(part)}_unbuilt", i)
                 break
             try:
-                secs = typing_delay_seconds(part["text"], wpm) if wpm is not None and "gif" not in part else 0
-                await hold_with_typing(aid, fan, secs, typing_indicator=frame)
+                # The relay drains (SIGTERM): no type-time hold left and a running one ends, so the
+                # Turn ends inside RELAY_DRAIN_S.
+                secs = (typing_delay_seconds(part["text"], wpm)
+                        if wpm is not None and "gif" not in part and not ax.draining() else 0)
+                await hold_with_typing(aid, fan, secs, typing_indicator=frame, cut=ax.draining)
                 await dm_rate.turn(aid, release_budget_s=INLINE_MAX_S)
             except run_slot.SlotLost as e:     # before the reserve: the retry reruns the whole Turn
                 if not landed:
@@ -551,6 +561,9 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
                 dm_rate.release(aid)
                 stop = (*why, i)
                 break
+            if row.get("id") is None and not ax.begin_send():
+                dm_rate.release(aid)           # the relay drains: nothing sent, no row; `_run` re-queues
+                raise _Draining
             if row.get("id") is None and await _reserve(row, anchor) is None:
                 dm_rate.release(aid)           # another run owns this Turn
                 state.taken = True
@@ -840,12 +853,19 @@ async def _run(account_id: str, payload: dict) -> dict:
             raise state.lost
         return {"row_id": res.row_id, "route": res.decision.route, "row_status": res.status,
                 "sent": sum("message_id" in p for p in res.parts)}
+    except _Draining:                      # the same payload after the restart, `tries` untouched
+        log.info("full_ai_live_draining account=%s fan=%s: re-queued", aid, fan)
+        await _queue(aid, payload, datetime.utcnow() + timedelta(seconds=BUSY_RETRY_S))
+        return {"skipped": "draining"}
     except run_slot.SlotLost:              # the executor's retry path, not a failure: no failed log
         raise
     except Exception:
         log.warning("full_ai_live_failed account=%s fan=%s", aid, fan, exc_info=True)
         raise
     finally:
-        if state.landed:                   # a bubble is on OF, however the run ended
-            await _cooldown(aid, fan)
-        await ax.release_fan_lease(aid, fan, holder=KIND)
+        try:
+            if state.landed:               # a bubble is on OF, however the run ended
+                await _cooldown(aid, fan)
+            await ax.release_fan_lease(aid, fan, holder=KIND)
+        finally:
+            ax.end_send()                  # recorded and rested: drain() stops waiting (no-op if never claimed)

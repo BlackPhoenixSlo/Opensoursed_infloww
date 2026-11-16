@@ -101,11 +101,14 @@ async def hold_with_typing(account_id: str, fan_id: int, seconds: float,
                            *, typing_indicator: bool = False,
                            quiet_s: float = 0.0,
                            think_at_s: float = 0.0,
-                           think_for_s: float = 0.0) -> None:
+                           think_for_s: float = 0.0,
+                           cut=None) -> None:
     """Wait `seconds` before sending a bubble, and decide what the fan sees while
     we do.
 
-    ⚠️ INVARIANT: the time slept is ALWAYS `seconds`; the call can take longer
+    ⚠️ INVARIANT: the time slept is ALWAYS `seconds` (the one exception: a
+    caller's `cut()` turning true ends the sleep within `_CUT_POLL_S`, for a
+    relay that is shutting down); the call can take longer
     by the wait to get the run's slot back after it (below). Those waits are
     bounded per RUN (all of them together within `rhythm.INLINE_MAX_S`), so a
     reply's holds plus its waits stay inside the 900 s fan lease. The three
@@ -147,8 +150,30 @@ async def hold_with_typing(account_id: str, fan_id: int, seconds: float,
     async with run_slot.released(total, budget_s=INLINE_MAX_S):
         if total <= 0:
             return
-        await _hold_phases(account_id, fan_id, total, typing_indicator=typing_indicator,
-                           quiet_s=quiet_s, think_at_s=think_at_s, think_for_s=think_for_s)
+        phases = _hold_phases(account_id, fan_id, total, typing_indicator=typing_indicator,
+                              quiet_s=quiet_s, think_at_s=think_at_s, think_for_s=think_for_s)
+        if cut is None:
+            await phases
+        else:
+            await _until(phases, cut)
+
+
+_CUT_POLL_S = 0.5
+
+
+async def _until(phases, cut) -> None:
+    """Run the hold's sleeps (a task of their own: the slot handling stays with
+    the caller) and end them once `cut()` is true."""
+    task = asyncio.ensure_future(phases)
+    try:
+        while not task.done() and not cut():
+            await asyncio.wait({task}, timeout=_CUT_POLL_S)
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    if not task.cancelled():
+        task.result()
 
 
 async def _hold_phases(account_id: str, fan_id: int, total: float, *, typing_indicator: bool,
