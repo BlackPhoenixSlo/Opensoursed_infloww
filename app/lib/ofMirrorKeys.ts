@@ -19,6 +19,15 @@ export function afterChatWrite(qc: QueryClient, accountId: string | null) {
   return Promise.all([qc.invalidateQueries({ queryKey: mirrorKey(accountId) }), qc.invalidateQueries({ queryKey: ["chats"] })]);
 }
 
+/** List edits refresh Collections, chat pickers and audience pickers for this account. */
+export function afterListWrite(qc: QueryClient, accountId: string | null) {
+  return Promise.all([
+    afterChatWrite(qc, accountId),
+    qc.invalidateQueries({ queryKey: ["chat-folders", accountId ?? ""] }),
+    qc.invalidateQueries({ queryKey: ["fan-lists", accountId ?? ""] }),
+  ]);
+}
+
 /** After a profile write: the model's users/me and every settings read. */
 export function afterProfileWrite(qc: QueryClient, accountId: string | null) {
   return Promise.all([qc.invalidateQueries({ queryKey: ["of-me", accountId] }), qc.invalidateQueries({ queryKey: ["of-settings"] })]);

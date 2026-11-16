@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { afterChatWrite, afterProfileWrite, MIRROR, mirrorKey, mirrorUnder } from "./ofMirrorKeys";
+import { afterChatWrite, afterListWrite, afterProfileWrite, MIRROR, mirrorKey, mirrorUnder } from "./ofMirrorKeys";
 import { mirrorQuery } from "./ofMirrorData";
 
 /** Every key a model's page could have cached, for models A and B, and one nobody's write touches. */
@@ -17,7 +17,11 @@ const KEYS: Record<string, unknown[]> = {
   "of-me B": ["of-me", "B"],
   "of-settings sub": ["of-settings", "subscription", "promotions", "A", "x"],
   "of-settings settings": ["of-settings", "settings", "A"],
-  unrelated: ["chat-folders", "A"],
+  "folders A": ["chat-folders", "A", "all", "all-pages"],
+  "folders B": ["chat-folders", "B", "all", "all-pages"],
+  "fan lists A": ["fan-lists", "A"],
+  "fan lists B": ["fan-lists", "B"],
+  unrelated: ["vault-media", "A"],
 };
 
 const seeded = () => {
@@ -30,6 +34,7 @@ const flipped = (qc: QueryClient) => Object.keys(KEYS).filter((n) => qc.getQuery
 describe("ofMirrorKeys: which cached reads each refresh marks stale", () => {
   it.each<[string, (qc: QueryClient) => Promise<unknown>, string[]]>([
     ["afterChatWrite", (qc) => afterChatWrite(qc, "A"), ["mirror A path", "mirror A pages", "mirror A vault", "chats", "chats A list"]],
+    ["afterListWrite", (qc) => afterListWrite(qc, "A"), ["mirror A path", "mirror A pages", "mirror A vault", "chats", "chats A list", "folders A", "fan lists A"]],
     ["afterProfileWrite", (qc) => afterProfileWrite(qc, "A"), ["of-me A", "of-settings sub", "of-settings settings"]],
     ["mirrorKey(acc)", (qc) => qc.invalidateQueries({ queryKey: mirrorKey("A") }), ["mirror A path", "mirror A pages", "mirror A vault"]],
     ["mirrorKey(acc, path)", (qc) => qc.invalidateQueries({ queryKey: mirrorKey("A", "/api/of/v2/posts") }), ["mirror A pages"]],

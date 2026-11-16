@@ -24,6 +24,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { MP } from "@/lib/messagesPro";
 import { relay } from "@/lib/relay";
+import { afterListWrite } from "@/lib/ofMirrorKeys";
 import { sameUserId, type FanId } from "@/lib/fanId";
 import { fmtCents } from "@/lib/format";
 import { discountShown } from "@/lib/fanDiscount";
@@ -171,8 +172,7 @@ function ToggleListsSubmenu({
       setOverride((prev) => new Map(prev).set(idStr, !currentlyIn));
       // Membership changed → refresh the folder chips/counts + roster so the
       // VIP/list view reflects it immediately.
-      qc.invalidateQueries({ queryKey: ["chat-folders", accountId] });
-      qc.invalidateQueries({ queryKey: ["chats"] });
+      void afterListWrite(qc, accountId);
     } catch (e) {
       onFlash(false, (e as Error).message || "Couldn't update that list");
     } finally {

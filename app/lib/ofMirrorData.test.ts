@@ -12,7 +12,7 @@ import { capture, load, shown, texts, atFixtureNow, PLACEHOLDER, fan, CHATS, msg
 
 describe("the shared mirror query", () => {
   it("one key per model and path; off without a model, a path or the caller's page", () => {
-    expect(mirrorQuery("1", "/api/of/v2/lists?limit=50", true)).toMatchObject({ queryKey: ["of-mirror-data", "1", "/api/of/v2/lists?limit=50"], enabled: true });
+    expect(mirrorQuery("1", "/api/of/v2/lists?limit=50", true)).toMatchObject({ queryKey: ["of-mirror-data", "1", "/api/of/v2/lists?limit=50", "all-pages"], enabled: true });
     expect(mirrorQuery(null, "/x", true).enabled).toBe(false);
     expect(mirrorQuery("1", null, true).enabled).toBe(false);
     expect(mirrorQuery("1", "/x", false).enabled).toBe(false);

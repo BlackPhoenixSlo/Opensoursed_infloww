@@ -15,6 +15,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { OF_CHAT_FOLDERS, readAllListPages, type ListPage } from "@/lib/ofListPages";
 
 export interface ChatFolder {
   id: number | string;
@@ -37,11 +38,6 @@ export interface ChatFolder {
   users?: Array<{ id: number }>;
 }
 
-interface FoldersResp {
-  list?: ChatFolder[];
-  hasMore?: boolean;
-}
-
 // ONE query key for the folder list, two views of it.
 //
 // The pinned chips (ChatList) and the full picker (AvatarMenu) both mount on the inbox and both want the same upstream
@@ -54,13 +50,10 @@ interface FoldersResp {
 // memoisation). The picker passes none at all — no-`select` already returns
 // the rows untouched, so an identity fn would be pure indirection.
 //
-// The trailing "all" is vestigial now that there is only one key, but it is
-// kept deliberately: it was already the picker's key, so existing browsers
-// re-hydrate their persisted folder list instead of starting cold. All three
-// invalidators (`ChatSurface`, `AvatarMenu`, `usePinChatFolder`) match on
-// the ["chat-folders", accountId] PREFIX, so they still reach it.
+// Version the complete result so persisted first-page-only caches cannot hide lists.
+// Invalidators match the ["chat-folders", accountId] prefix and reach every page.
 const FOLDERS_KEY = (accountId: string | null) =>
-  ["chat-folders", accountId ?? "", "all"] as const;
+  ["chat-folders", accountId ?? "", "all", "all-pages"] as const;
 
 const selectPinned = (rows: ChatFolder[]): ChatFolder[] =>
   rows.filter((f) => f.isPinnedToChat);
@@ -74,13 +67,12 @@ function useFolders(
     enabled: !!accountId,
     staleTime: 60_000, // #12/#25: was 3 days — refresh folder/VIP membership actively
     select,
-    queryFn: async (): Promise<ChatFolder[]> => {
+    queryFn: async ({ signal }): Promise<ChatFolder[]> => {
       if (!accountId) return [];
-      const r = await relay.get<FoldersResp>(
-        `/api/of/v2/chats/folders?limit=50`,
-        { accountId },
+      const list = await readAllListPages(
+        (path) => relay.get<ListPage<ChatFolder>>(path, { accountId }, signal),
+        OF_CHAT_FOLDERS,
       );
-      const list = r.list ?? [];
       // Pinned-first, then alpha. Matches /ui/ ordering.
       return list.slice().sort((a, b) => {
         const ap = a.isPinnedToChat ? 1 : 0;
