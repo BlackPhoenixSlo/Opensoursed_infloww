@@ -35,7 +35,7 @@ import { relay } from "@/lib/relay";
 import { mirrorQuery, rowsOf } from "@/lib/ofMirrorData";
 import { USER_LISTS, usersListPath } from "@/lib/ofMirrorDataQueries";
 import { LIST_TABS, usersLabel } from "@/lib/ofMirrorDataLists";
-import { afterChatWrite } from "@/lib/ofMirrorKeys";
+import { afterChatWrite, afterListWrite } from "@/lib/ofMirrorKeys";
 import { message, note, NOT_YET, SELECT_MODEL } from "@/lib/ofMirrorWrites";
 import { floatLabel } from "@/lib/ofMirrorSettings";
 import { canRename, chatToolWrites, fanTools, field, type FanState, type FanToolsContext, type ToolsMe } from "@/lib/ofMirrorChatTools";
@@ -576,11 +576,11 @@ export function useOfCollections(frameRef: RefObject<HTMLIFrameElement | null>, 
     // A write changes the lists and their users: every mirror query of this model is fetched again.
     // A list's users are also Messages' folder tabs (GET /chats?list_id=): Messages Pro's chat lists are fetched again too.
     const refresh = <T,>(p: Promise<T>) =>
-      p.then((out) => (void afterChatWrite(qc, accountId), out));
+      p.then((out) => (void afterListWrite(qc, accountId), out));
     const handlers: CollectionsHandlers | null = accountId
       ? {
           createList: (name) => refresh(relay.post("/api/of/v2/lists", { name }, ctx)),
-          createLabel: (name) => refresh(relay.post("/api/of/v2/labels", { name }, ctx)),
+          createLabel: (name) => relay.post("/api/of/v2/labels", { name }, ctx).then((out) => (void afterChatWrite(qc, accountId), out)),
           renameList: (id, name) => refresh(relay.patch(`/api/of/v2/lists/${encodeURIComponent(id)}`, { name }, ctx)),
           addUsers: (id, names) =>
             refresh(

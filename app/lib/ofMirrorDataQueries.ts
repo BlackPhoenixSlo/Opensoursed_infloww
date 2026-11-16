@@ -11,9 +11,10 @@ import { nextMarker, nextOffset, uniqueRows } from "@/lib/ofMirrorPaging";
 import type { ThreadMessage } from "@/lib/ofMirrorThread";
 import { sameId, type MorePages } from "@/lib/ofMirrorDom";
 import type { MirrorNotification } from "@/lib/ofMirrorFeedsNotifications";
+import { OF_USER_LISTS, readAllListPages, type ListPage, type ListRow } from "@/lib/ofListPages";
 
 /** The Relay paths more than one mirror module reads: one spelling each, so their queries share one cache entry. */
-export const USER_LISTS = "/api/of/v2/lists?limit=50";
+export const USER_LISTS = OF_USER_LISTS;
 /** Home's story strip: the creators the Creator follows with stories. */
 export const STORIES_FEED = "/api/of/v2/stories";
 /** Home's story strip: the live and scheduled streams (OF's streams/feed). */
@@ -23,11 +24,15 @@ export const chatPath = (chat: string) => `/api/of/v2/chats/${encodeURIComponent
 /** The vault media the page's view (`?list ?type ?field ?sort ?q`) asks for: the Vault page's and the vault dialogs' tiles. */
 export const vaultMediaOf = (params: { get(key: string): string | null }) => vaultMediaPath(viewOf(params));
 
-/** The one mirror query for `path` (key `["of-mirror-data", accountId, path]`), fetched with the model's X-Account-Id. */
+/** The account-scoped mirror read. User lists always walk every page, including in Collections' write controls. */
 export function mirrorQuery<T = unknown>(accountId: string | null, path: string | null, enabled: boolean) {
+  const allLists = path === USER_LISTS;
   return {
-    queryKey: ["of-mirror-data", accountId, path],
-    queryFn: () => relay.get<T>(path!, { accountId }),
+    // Do not reuse a persisted first-page-only result from an older app.
+    queryKey: ["of-mirror-data", accountId, path, ...(allLists ? ["all-pages"] : [])],
+    queryFn: async (context?: { signal?: AbortSignal }): Promise<T> => allLists
+      ? { list: await readAllListPages((p) => relay.get<ListPage<ListRow>>(p, { accountId }, context?.signal), USER_LISTS), hasMore: false } as T
+      : relay.get<T>(path!, { accountId }),
     enabled: !!accountId && !!path && enabled,
     staleTime: 60_000,
     retry: false,
