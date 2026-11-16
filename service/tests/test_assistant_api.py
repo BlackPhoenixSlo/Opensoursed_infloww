@@ -2846,6 +2846,19 @@ async def case_full_ai_lines_read_each_state():
         for w in absent:
             assert w not in out, (name, w, out)
 
+    # Over the cap the knobs are shed; a SET Fans list (he may simply not be on
+    # it) must survive them — measured 2026-11-16 on a live pack, it did not.
+    def padded(n):
+        return assistant_evidence.render(assistant_evidence.Evidence(
+            account_id="acc_pure", label="Rae", fan=fan, skip=None, banned=None,
+            welcomed=None, drip=None, memberships=[], rows=[], paid_ids=set(),
+            runs={}, money=[], missing=[f"kind_{i:03d}_padding" for i in range(n)],
+            is_payer=False, muted_creator=False, audiences=[],
+            audiences_other=False, full_ai=_fa(fans={"include": [1], "exclude": []})))
+    long = next(o for o in map(padded, range(400))
+                if "muted-creator hard skip" not in o)      # the knobs were shed
+    assert "NOT known here" in long, long
+
 
 _harness.run(
     case_happy_path_returns_the_model_answer,

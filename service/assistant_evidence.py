@@ -702,8 +702,8 @@ def _full_ai_rows(fa: FullAi) -> list[str]:
     if not fa.jobs:
         out.append("- Full AI queue: no job for him in the last 48h.")
     if fa.decisions:
-        out.append("- Full AI decisions (live; one row per Turn it ran — a "
-                   "stand-down before its Router leaves none), newest first: "
+        out.append("- Full AI decisions (live, newest first; a stand-down "
+                   "before its Router leaves no row): "
                    + "; ".join(
                        f"{at(d.created_at)} for his message of "
                        + (f"{d.anchor_at:%Y-%m-%d %H:%M:%S}" if d.anchor_at else "?")
@@ -758,8 +758,8 @@ def _fans_line(fa: FullAi) -> str:
     if not inc and not exc:
         return "- Full AI Fans list: every fan (nothing included or excluded)."
     return (f"- Full AI Fans list: {len(inc)} include list(s), {len(exc)} exclude "
-            "list(s). Whether he is on them is NOT known here — Full AI reads "
-            "them on OnlyFans at reply time, and a failed read = not listed.")
+            "list(s). Whether he is on them is NOT known here — read on "
+            "OnlyFans at reply time; a failed read = not listed.")
 
 
 def _money_lines(ev: Evidence) -> list[str]:
@@ -897,8 +897,12 @@ def current_lines(ev: Evidence) -> Current:
             + (f", expires {at(ev.fan.subscription_expires_at)}"
                if ev.fan.subscription_expires_at else "") + "."]
     if ev.full_ai is not None:
-        essential += _full_ai_state(ev.full_ai)
-        core.append(_fans_line(ev.full_ai))
+        fa = ev.full_ai
+        essential += _full_ai_state(fa)
+        # A SET list can be the whole answer (membership is unknown here), so
+        # while Live it must outlive the knobs; "every fan" stops nobody.
+        every = fa.fans_ok and not (fa.fans.get("include") or fa.fans.get("exclude"))
+        (core if every or fa.off is not None else essential).append(_fans_line(fa))
 
     return Current(
         head=["", "CURRENT-STATE — supports a ranked hypothesis, never proof "
