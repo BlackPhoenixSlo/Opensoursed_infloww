@@ -47,6 +47,10 @@ import {
 import VaultFolderRail, { FolderCounts } from "@/components/vault/VaultFolderRail";
 import VaultMediaToolbar, { type MediaSort, type TypeCounts } from "@/components/vault/VaultMediaToolbar";
 import VaultTagChips from "@/components/vault/VaultTagChips";
+import VaultSettingsSwitches from "@/components/vault/VaultSettingsSwitches";
+import VaultStandardFolders from "@/components/vault/VaultStandardFolders";
+import { useStandardFolders, standardFoldersKey, type StandardFolder } from "@/hooks/useStandardFolders";
+import { useVaultSettings } from "@/hooks/useVaultSettings";
 import VaultTile from "@/components/vault/VaultTile";
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import {
@@ -103,7 +107,17 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // narrowed one selects a DIFFERENT album. Media ids below stay number[].
   // Kept per model while the page lives (`VaultBrowseMemory`): switching model and back finds it as it was.
   const [browse, dispatchBrowse] = useVaultBrowse(accountId);
-  const { type, folderId: ofFolderId, query, tags, selectMode, selected } = browse;
+  const { type, folderId: ofFolderId, standardFolderId, query, tags, selectMode, selected } = browse;
+  // The Creator's "Standard folders" switch (off by default): off, no category is created, listed or shown.
+  const standardOn = access === "all" && !!useVaultSettings(accountId, access === "all").data?.standard_folders;
+  const standard = useStandardFolders(accountId, standardOn);
+  const standardFolder = standard.data?.list.find((f) => f.id === standardFolderId);
+  const selectStandard = (folder: StandardFolder | null) => dispatchBrowse(folder
+    ? { type: "standardFolder", id: folder.id, kind: folder.kind } : { type: "folder", id: null });
+  const standardRail = (mobile = false) => standardOn && <VaultStandardFolders
+    accountId={accountId} folders={standard.data?.list ?? []} selectedId={standardFolderId}
+    pending={standard.data?.pending ?? 0} syncing={standard.syncing}
+    error={standard.isError || standard.syncError} onSelect={selectStandard} onRefresh={standard.refresh} mobile={mobile} />;
   const selectedIds = useMemo(() => new Set(selected.keys()), [selected]);
   const [sort, setSort] = useState<MediaSort>("newest");
   const [searchRaw, setSearchRaw] = useState(query);
@@ -152,7 +166,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const describeSweep = useVaultSweep({
     kind: "describe-all",
     accountId,
-    liveKeys: [mirrorItemsKey(accountId)],
+    liveKeys: [mirrorItemsKey(accountId), standardFoldersKey(accountId)],
     settleKeys: [
       ["vault-describe-plan", accountId],
       ["vault-flags-review"],
@@ -182,11 +196,11 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const scopeArgs = (f: { id: FanId; name: string } | null) => (f
     ? { ...who, mode: "folder" as const, label: `folder ${f.name}`, folder: { id: f.id, name: f.name }, source: wholeSource }
     : { ...who, mode: "vault" as const, label: "whole vault", folder: null, source: wholeSource });
-  const useLocal = source === "mirror";
+  const useLocal = standardFolderId != null || source === "mirror";
   // On a search over the mirror, harvest OF's own results in the BACKGROUND and merge them in; while that runs the
   // grid says "Searching OnlyFans…" rather than "No data". Not on the live path: that listing IS OF's search, and the
   // harvest only tags media the mirror already holds.
-  const searchingOf = useOfSearch(accountId, query, useLocal);
+  const searchingOf = useOfSearch(accountId, query, useLocal && standardFolderId == null);
   const isCollecting = !!summary.data?.running;
   const run = summary.data?.last_run;
   // The plan's counts come from the DB, so they stand in when the relay's
@@ -253,7 +267,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // The open rail folder, resolved from `folders` (null under All media, or while the folders still load).
   const selectedFolder = ofFolderId == null ? null : folders.find((f) => f.id === ofFolderId) ?? null;
   // The full download's scope (Extras drawer): the open folder, else the whole vault; a folder not resolved yet: off (null).
-  const fullScope = ofFolderId != null && !selectedFolder ? null : scopeArgs(selectedFolder);
+  const fullScope = standardFolderId != null || (ofFolderId != null && !selectedFolder) ? null : scopeArgs(selectedFolder);
 
   // Everything is served from the mirror once collected (instant, incl. OF
   // folders + reorder): `vaultBrowseSource`, a partial mirror too. Before the
@@ -275,7 +289,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
     accountId, type, listId: ofFolderId, sort, query, enabled: summaryReady && !useLocal,
   });
   const mirror = useMirrorItems({
-    accountId, type, query, sort, ofFolderId, tags, enabled: useLocal,
+    accountId, type, query, sort, ofFolderId, internalFolderId: standardFolderId, tags, enabled: useLocal,
   });
   const src = useLocal ? mirror : live;
   // Show the spinner while we're still deciding (summary pending) OR the chosen
@@ -314,7 +328,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [accountId, ofFolderId, type, query, tags, sort, items.length, pageFetching]);
+  }, [accountId, ofFolderId, standardFolderId, type, query, tags, sort, items.length, pageFetching]);
 
   // Belt-and-braces: a plain scroll listener on the pane. The observer covers
   // the normal case, but it is one silent failure (root not yet mounted, a
@@ -330,7 +344,10 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // OF's whole-vault counts (the folder list's `all`): the "All media" row's.
   const allCounts = lists.data?.all ?? null;
   // #58: the chosen folder's (or, under All media, the whole vault's) per-type counts switch its empty types off.
-  const shownCounts = ofFolderId == null ? allCounts : selectedFolder;
+  const shownCounts = standardFolderId != null
+    ? { photosCount: standardFolder?.kind === "photo" ? standardFolder.items : 0,
+        videosCount: standardFolder?.kind === "video" ? standardFolder.items : 0, gifsCount: 0, audiosCount: 0 }
+    : ofFolderId == null ? allCounts : selectedFolder;
   const typeCounts: TypeCounts = shownCounts
     ? {
         photo: shownCounts.photosCount,
@@ -349,6 +366,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
    *  thing that never refetched. */
   function refreshAll() {
     invalidateVaultGrid(qc, accountId);
+    void qc.invalidateQueries({ queryKey: standardFoldersKey(accountId) });
   }
 
   // Refresh (↻): fresh from OnlyFans (folders, the open folder's media), not just a re-read of the relay's cache.
@@ -411,10 +429,11 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           flagsReviewOpen={open === "flagsReview"}
           onOpen={setOpen}
           foldersAllowed={access === "all"}
+          settings={access === "all" && <VaultSettingsSwitches accountId={accountId} />}
           download={{
             // While a run is busy, a folder-sink press queues (`dl.queueing`).
             label: `${dl.queueing ? "Add" : "Download"} full ${fullScope?.mode === "vault" ? "vault" : "folder"}${dl.queueing ? " to queue" : ""}`,
-            reason: fullScope ? dlGate(fullScope.mode).reason : FOLDER_LOADING,
+            reason: fullScope ? dlGate(fullScope.mode).reason : standardFolderId != null ? "Select media to download from this category" : FOLDER_LOADING,
             // Closes the drawer so the download card (or Chrome's picker hint) is in view.
             onStart: () => {
               if (!fullScope) return;
@@ -430,6 +449,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           page; below, a fixed 70vh. */}
       <div className={VAULT_PANES_CLASS}>
         <VaultFolderRail
+          standardRows={standardRail()} standardMobile={standardRail(true)} standardSelected={standardFolderId != null}
           folders={folders}
           allCounts={allCounts}
           loading={lists.isLoading}
@@ -457,8 +477,8 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
             onType={(value) => dispatchBrowse({ type: "mediaType", value })}
             typeCounts={typeCounts}
             loadedCount={items.length}
-            onRefresh={() => ofRefresh.mutate(ofFolderId)}
-            refreshing={ofRefresh.isPending}
+            onRefresh={() => { if (standardOn) standard.refresh(); if (standardFolderId == null) ofRefresh.mutate(ofFolderId); }}
+            refreshing={ofRefresh.isPending || standard.syncing}
             refreshNote={ofRefresh.note}
             onSelectAll={() => dispatchBrowse({ type: "selectAll", media: items })}
             selectMode={selectMode}
@@ -467,7 +487,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           {/* Ours: the tag chips and "Save as folder" (`VaultTagChips`), on the mirror only. */}
           <VaultTagChips
             accountId={accountId}
-            enabled={useLocal}
+            enabled={useLocal && standardFolderId == null}
             type={type}
             query={query}
             ofFolderId={ofFolderId}
@@ -582,7 +602,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
                 }).then((ok) => { if (ok) dispatchBrowse({ type: "clearSelection" }); });
               }}
               // The open folder not resolved yet: off, never a guessed scope (as the Extras drawer's full download, #29).
-              downloadOff={!fullScope ? FOLDER_LOADING : dlGate("selection", selected.size).reason}
+              downloadOff={!fullScope && !standardFolder ? FOLDER_LOADING : dlGate("selection", selected.size).reason}
               downloadQueues={dl.queueing}
             />
           )}

@@ -1198,6 +1198,7 @@ _NOT_ACTION_DELETES: dict[str, str] = {
     "/admin/funnels/{funnel_id}/media/{account_id}": "a funnel's media pick",
     "/admin/s4s/blocks/{profile_id}": "unblocks an S4S profile, undoing a block",
     "/admin/s4s/profiles/{account_id}/posts/{post_id}": "an S4S profile's relay-side post entry",
+    "/admin/vault-ai/category-icons/{category}": "resets a standard vault category thumbnail to its default",
     "/admin/smart-lists/{list_id}": "a whole Smart list, a saved fan filter: the fans and chats stay",
     "/api/of/v2/lists/{list_id}": "a whole OF fan list (collection): the fans and chats stay; Infloww has no such action",
     "/api/of/v2/lists/{list_id}/users/{user_id}": "takes a fan out of a list",

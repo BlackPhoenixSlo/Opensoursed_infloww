@@ -353,6 +353,8 @@ def _haggled(p: Pick, piece: Teased, same: bool, his: list[str]) -> Pick:
     `fan_new_messages`) clamped against the haggled row's list (`piece.list_cents`, never an earlier
     quote). The same piece records that list; a re-pick (capped at that list by `_sell`) keeps its
     own and costs at most it. Pure."""
+    if (saved := full_ai_sell.folder_price(p)) is not None:
+        return replace(p, price_cents=saved, list_cents=saved)
     base = min(piece.list_cents, p.list_cents) if same else piece.list_cents   # never above today's list
     quote = full_ai_sell.clamp_quote(base, full_ai_sell.quoted_cents("\n".join(his)))
     list_cents = base if same else p.list_cents
@@ -530,9 +532,8 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
                                     ride_max=2 if tease_cents is None else full_ai_sell.tease_photos(tease_cents))
             if is_ride(got):
                 reply["ride"] = True
-            if tease_cents is not None and isinstance(got, Pick):     # the tease price Jev's price
-                got = replace(got, price_cents=tease_cents, list_cents=tease_cents or got.list_cents,
-                              facts={**got.facts, "vault_list_cents": got.list_cents})
+            if tease_cents is not None and isinstance(got, Pick):
+                got = full_ai_sell.tease_price(got, tease_cents)
             if isinstance(got, Pick) and "asked" in got.facts:
                 reply["nearest"] = {"asked_subject": ask.subject, "asked_format": ask.format,
                                     "step": got.facts["nearest"]}
@@ -580,6 +581,10 @@ async def _price(facts: TurnFacts, reply: dict, deadline: float, heat: int, he_a
     bought_before}. Price signals (03d): `he_asked` is the caller's (row sell: wants_content fired,
     or says_yes_to_offer with a Pending offer); he bought before once any Offer was bought."""
     p = facts.pick
+    if (saved := full_ai_sell.folder_price(p)) is not None:
+        facts.pick = replace(p, price_cents=saved, list_cents=saved)
+        reply["price"] = {"source": "folder", "list_cents": saved, "jev_cents": None}
+        return
     heat = facts.scene_now["heat"] if facts.scene_now else heat
     st = _price_jev.state(facts.state, heat, scene_words(facts.scene_now),
                           facts.state.get("purchases") or [], p,

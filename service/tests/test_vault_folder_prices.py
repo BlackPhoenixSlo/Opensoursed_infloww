@@ -150,4 +150,30 @@ def case_parse_tables():
         assert vfp.parse_cents(raw) == want, (raw, vfp.parse_cents(raw))
 
 
+def case_standard_categories_owner_scoped_and_prices_stable():
+    base = "/admin/vault-ai/standard-folders"
+    client = C["owner"]
+    off = client.post(base + "/sync", json={"account_id": AID})   # switch off (default): nothing created
+    assert off.status_code == 200 and off.json() == {"list": [], "pending": 0}, off.text
+    assert client.put("/admin/vault-ai/settings", json={"account_id": AID, "standard_folders": True}).status_code == 200
+    first = client.post(base + "/sync", json={"account_id": AID})
+    assert first.status_code == 200, first.text
+    folders = first.json()["list"]
+    assert len(folders) == 66
+    bikini = next(f for f in folders if f["kind"] == "photo" and f["slug"] == "bikini")
+    review = next(f for f in folders if f["slug"] == "uncategorised")
+    ref = f"vf:{bikini['id']}"
+    assert _set(ref, 3500).status_code == 200
+    assert _set(f"vf:{review['id']}", 3500).status_code == 400
+    again = client.post(base + "/sync", json={"account_id": AID})
+    assert again.status_code == 200 and again.json()["list"] == folders
+    assert {r["ref"]: r["price_cents"] for r in _list().json()["list"]}[ref] == 3500
+    for role in ("owner2", "chatter"):
+        assert C[role].post(base + "/sync", json={"account_id": AID}).status_code == 403
+        assert C[role].get(base, params={"account_id": AID}).status_code == 403
+    root = f"/admin/vault-ai/internal-folders/{bikini['id']}"
+    assert client.post(root + "/rename", json={"account_id": AID, "name": "Changed"}).status_code == 400
+    assert client.delete(root, params={"account_id": AID}).status_code == 400
+
+
 _harness.run()

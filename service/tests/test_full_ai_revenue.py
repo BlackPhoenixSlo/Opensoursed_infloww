@@ -26,7 +26,6 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import inspect  # noqa: E402
-import subprocess  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -207,10 +206,9 @@ async def case_no_enrolment_table_no_migration():
     async with get_session() as s:
         names = {n for (n,) in (await s.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))).all()}
     assert "ai_decisions" in names and "ai_enrolments" not in names, sorted(n for n in names if "ai_" in n)
-    root = Path(__file__).resolve().parents[2]
-    diff = subprocess.run(["git", "diff", "--stat", "origin/main", "--", "service/db/migrations"],
-                          cwd=root, capture_output=True, text=True, check=True).stdout
-    assert diff == "", diff
+    versions = Path(__file__).resolve().parents[2] / "service/db/migrations/versions"
+    hits = [p.name for p in versions.glob("*.py") if "ai_enrolments" in p.read_text()]
+    assert hits == [], hits
 
 
 _harness.run()

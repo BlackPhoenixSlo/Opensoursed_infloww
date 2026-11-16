@@ -33,6 +33,7 @@ export interface BrowseState {
   type: MediaType;
   /** The OF folder (list id); null = All media. FanId: a Fansly album id is a snowflake past 2^53. */
   folderId: FanId | null;
+  standardFolderId: number | null;
   /** The settled search (the debounced box). */
   query: string;
   /** The picked tag chips (lower-case, in pick order); the grid shows items carrying all of them. */
@@ -44,6 +45,7 @@ export interface BrowseState {
 
 export type BrowseAction =
   | { type: "folder"; id: FanId | null }
+  | { type: "standardFolder"; id: number; kind: "photo" | "video" }
   | { type: "mediaType"; value: MediaType }
   | { type: "query"; value: string }
   /** A tag chip tapped: picked if it was not, else dropped. */
@@ -60,6 +62,7 @@ const NONE: ReadonlyMap<number, VaultMedia> = new Map();
 export const initialBrowseState: BrowseState = {
   type: "all",
   folderId: null,
+  standardFolderId: null,
   query: "",
   tags: [],
   selectMode: false,
@@ -74,7 +77,11 @@ function view(state: BrowseState, patch: Partial<BrowseState>): BrowseState {
 export function vaultBrowseReducer(state: BrowseState, action: BrowseAction): BrowseState {
   switch (action.type) {
     case "folder":
-      return action.id === state.folderId ? state : view(state, { folderId: action.id });
+      return action.id === state.folderId && state.standardFolderId === null ? state
+        : view(state, { folderId: action.id, standardFolderId: null });
+    case "standardFolder":
+      return action.id === state.standardFolderId ? state
+        : view(state, { folderId: null, standardFolderId: action.id, type: action.kind, tags: [] });
     case "mediaType":
       return action.value === state.type ? state : { ...state, type: action.value };
     case "query":

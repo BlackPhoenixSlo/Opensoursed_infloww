@@ -15,6 +15,9 @@ type Tile = VaultMedia & { _ai?: Record<string, unknown> };
 const h = vi.hoisted(() => {
   const BEACH = { id: 29271410, name: "Beach", type: "custom", hasMedia: true };
   return {
+    standardList: [] as { id: number; kind: "photo" | "video"; slug: string; name: string; items: number; priceable: boolean }[],
+    mirrorOptions: vi.fn(),
+    liveOptions: vi.fn(),
     BEACH,
     FOLDERS: [BEACH],
     ALL: [
@@ -63,6 +66,19 @@ vi.mock("@/lib/relay", async (orig) => {
   const mod = await orig<typeof import("@/lib/relay")>();
   return { ...mod, relay: { ...mod.relay, patch: h.patch, post: vi.fn(), get: h.get } };
 });
+vi.mock("@/hooks/useStandardFolders", () => ({
+  standardFoldersKey: (id: string) => ["vault-standard-folders", id],
+  useStandardFolders: () => ({ data: { list: h.standardList, pending: 0 }, refresh: () => {}, syncing: false }),
+}));
+// The Creator's switches, both on here (the standard-category cases below need them); off is the default.
+vi.mock("@/hooks/useVaultSettings", () => ({
+  useVaultSettings: () => ({ data: { folder_price_final: true, standard_folders: true } }),
+}));
+vi.mock("@/components/vault/VaultSettingsSwitches", () => ({ default: () => null }));
+vi.mock("@/components/vault/VaultStandardFolders", () => ({
+  default: ({ folders, onSelect }: { folders: { id: number; name: string }[]; onSelect: (folder: unknown) => void }) =>
+    <div>{folders.map((f) => <button key={f.id} onClick={() => onSelect(f)}>standard:{f.name}</button>)}</div>,
+}));
 vi.mock("@/hooks/useVaultMedia", async (orig) => {
   const mod = await orig<typeof import("@/hooks/useVaultMedia")>();
   const lists = { data: { list: h.FOLDERS }, isLoading: false, isError: false, refetch: () => {} };
@@ -70,10 +86,10 @@ vi.mock("@/hooks/useVaultMedia", async (orig) => {
     ...mod,
     useVaultLists: () => lists,
     useChatterFolderAccess: () => h.access,
-    useVaultMedia: (o: { listId: unknown; type: string }) => ({
+    useVaultMedia: (o: { listId: unknown; type: string; enabled?: boolean }) => { h.liveOptions(o); return ({
       items: (o.listId == null ? h.ALL : h.IN_BEACH).filter((m) => o.type === "all" || m.type === o.type),
       hasMore: false, isLoading: false, isFetchingNextPage: false, error: null, loadMore: () => {},
-    }),
+    }); },
   };
 });
 vi.mock("@/hooks/useVaultCache", async (orig) => {
@@ -84,9 +100,9 @@ vi.mock("@/hooks/useVaultCache", async (orig) => {
     useVaultCacheSummary: () => h.summary,
     useDescribePlan: () => plan,
     useOfFoldersMirror: () => ({ data: undefined }),
-    useMirrorItems: () => ({
+    useMirrorItems: (o: unknown) => { h.mirrorOptions(o); return ({
       items: h.mirrorItems, hasMore: false, isLoading: false, isFetchingNextPage: false, error: null, loadMore: () => {},
-    }),
+    }); },
     describeMedia: h.describeMedia,
     addToOfFolder: h.addToOfFolder,
     useOfSearch: (_a: string, q: string, on: boolean) => on && !!q && h.searchingOf,
@@ -97,8 +113,9 @@ vi.mock("@/hooks/useVaultSweep", async (orig) => {
   return { ...mod, useVaultSweep: () => ({ busy: false, progress: null, start: () => {} }) };
 });
 vi.mock("@/components/vault/VaultFolderRail", () => ({
-  default: ({ folders, onSelect }: { folders: VaultList[]; onSelect: (id: unknown) => void }) => (
+  default: ({ folders, onSelect, standardRows }: { folders: VaultList[]; onSelect: (id: unknown) => void; standardRows?: React.ReactNode }) => (
     <nav>
+      {standardRows}
       <button type="button" onClick={() => onSelect(null)}>rail:All media</button>
       {/* A folder the rail shows before the panel's folder list has it (the list still loading). */}
       <button type="button" onClick={() => onSelect(4242)}>rail:not loaded</button>
@@ -140,6 +157,9 @@ beforeAll(() => {
     unknown as typeof window.matchMedia;
 });
 beforeEach(() => {
+  h.standardList = [];
+  h.mirrorOptions.mockClear();
+  h.liveOptions.mockClear();
   h.summary.data = { count: 0 };
   h.searchingOf = false;
   h.mirrorItems = [];
@@ -544,4 +564,17 @@ describe("the item popup", () => {
     fireEvent.keyDown(add, { key: "Enter" });
     expect(screen.getByRole("button", { name: "Save & lock" })).toBeDisabled();
   });
+});
+
+
+it("a standard category scopes the mirror and disables the live whole-vault fallback", () => {
+  h.standardList = [{ id: 501, kind: "photo", slug: "beach", name: "Photos Beach", items: 1, priceable: true }];
+  renderPanel();
+  click("standard:Photos Beach");
+  expect(h.mirrorOptions).toHaveBeenLastCalledWith(expect.objectContaining({
+    internalFolderId: 501, ofFolderId: null, type: "photo", enabled: true,
+  }));
+  expect(h.liveOptions).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
+  click("rail:All media");
+  expect(h.mirrorOptions).toHaveBeenLastCalledWith(expect.objectContaining({ internalFolderId: null }));
 });

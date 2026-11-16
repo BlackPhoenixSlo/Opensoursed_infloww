@@ -322,6 +322,9 @@ async def _write_item(account_id: str, media_id: int, **vals: Any) -> None:
             .values(**vals)
         )
         await s.commit()
+    if vals.get("describe_status") == "described":
+        from vault_standard_folders import after_analysis
+        await after_analysis(account_id, media_id)
 
 
 # ── Flags: the Jev pass (photos and clips) ──────────────────────────
@@ -450,6 +453,8 @@ async def _copy_describe(account_id: str, src_id: int, dst_id: int) -> dict[str,
         for k, v in vals.items():
             setattr(dst, k, v)
         await s.commit()
+    from vault_standard_folders import after_analysis
+    await after_analysis(account_id, dst_id)
     return {"media_id": dst_id, "ok": True, "status": "copied",
             "copied_from": src_id, "cost_millicents": 0}
 

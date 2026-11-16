@@ -84,6 +84,7 @@ export default function VaultExtrasTools({
   flagsReviewOpen,
   onOpen,
   foldersAllowed = true,
+  settings,
   download,
 }: {
   accountId: string;
@@ -114,6 +115,8 @@ export default function VaultExtrasTools({
   onOpen: (m: ExtrasModal) => void;
   /** false for a restricted chatter: our own folders are not theirs to see (`allowed_folder_ids_for_chatter`). */
   foldersAllowed?: boolean;
+  /** The Creator's vault switches (`VaultSettingsSwitches`), last in the drawer. */
+  settings?: ReactNode;
   /** "Download full vault" (All media) / "Download full folder" (a rail folder open); `reason` non-empty: off, said
    *  as its title (`downloadGate`, the folder still loading). `onStart` starts the page's one download. */
   download: { label: string; reason: string; onStart: () => void };
@@ -354,6 +357,7 @@ export default function VaultExtrasTools({
           </div>
         </div>
       )}
+      {settings}
     </ExtrasDrawer>
   );
 }

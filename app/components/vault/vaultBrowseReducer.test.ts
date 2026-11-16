@@ -150,3 +150,15 @@ describe("tag chips: toggle, AND, a new view", () => {
     expect(browseFor(map, "B").tags).toEqual(["lace"]);
   });
 });
+
+
+describe("standard categories keep the internal and OF folder scopes separate", () => {
+  it("selects a photo category and clears previous selection and tags", () => {
+    const s = vaultBrowseReducer({ ...initialBrowseState, folderId: 42, tags: ["feet"] },
+      { type: "standardFolder", id: 42, kind: "photo" });
+    expect(s).toMatchObject({ folderId: null, standardFolderId: 42, type: "photo", tags: [] });
+    expect(s.selected.size).toBe(0);
+    expect(vaultBrowseReducer(s, { type: "folder", id: null })).toMatchObject({ standardFolderId: null, folderId: null });
+    expect(vaultBrowseReducer(s, { type: "folder", id: 42 })).toMatchObject({ standardFolderId: null, folderId: 42 });
+  });
+});

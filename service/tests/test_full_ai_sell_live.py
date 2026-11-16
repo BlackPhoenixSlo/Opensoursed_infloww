@@ -432,4 +432,38 @@ def case_fast_poll_live_only():
     assert made == [] and rows and all(r.mode == "shadow" and r.offer_item_ref is None for r in rows), rows
 
 
+def case_saved_folder_price_reaches_send_message():
+    from db.models import VaultFolder, VaultFolderItem, VaultFolderPrice
+    from vault_standard_rules import key
+    import vault_folder_prices
+    import vault_settings
+    _live_on()
+    R(vault_settings.put(A, folder_price_final=True))
+    fan = 981
+    with _vault({98101: "$10"}):
+        async def seed():
+            async with get_session() as session:
+                folder = VaultFolder(account_id=A, name="Photos / Selfie", created_by=key("photo", "selfie"))
+                session.add(folder)
+                await session.flush()
+                session.add(VaultFolderItem(account_id=A, folder_id=folder.id, media_id=98101))
+                return folder.id
+        fid = R(seed())
+        try:
+            saved = OWNER_A.post("/admin/vault-ai/folder-prices", json={"account_id": A, "ref": f"vf:{fid}", "price_cents": 3500})
+            assert saved.status_code == 200, saved.text
+            _res, client, _j, _w, row = _sell1(fan, 981001)
+            (sent,) = _ppv_sends(client)
+            assert sent["price"] == 35 and row.offer_price_cents == 3500, (sent, row.offer_price_cents)
+            assert 98101 in sent["media_files"]
+        finally:
+            async def clean():
+                async with get_session() as session:
+                    await session.execute(delete(VaultFolderItem).where(VaultFolderItem.account_id == A, VaultFolderItem.folder_id == fid))
+                    await session.execute(delete(VaultFolder).where(VaultFolder.id == fid))
+                    await session.execute(delete(VaultFolderPrice).where(VaultFolderPrice.account_id == A, VaultFolderPrice.folder_ref == f"vf:{fid}"))
+            R(clean())
+            R(vault_settings.put(A, folder_price_final=False))
+
+
 _harness.run()

@@ -1035,6 +1035,19 @@ class VaultFolderPrice(Base):
     updated_at: Mapped[datetime] = _ts_now()
 
 
+class VaultAccountSetting(Base):
+    """One Creator's vault switches (`vault_settings`): a saved folder price is final, and the
+    standard category folders. No row = both off. Migration 0124_vault_account_settings."""
+    __tablename__ = "vault_account_settings"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    folder_price_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    standard_folders: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = _ts_now()
+
+
 class VaultOfQueryLog(Base):
     """Which OF vault-search queries we've already harvested (so we don't re-hit
     OF every keystroke). TTL'd; on a fresh hit the terms already live in each

@@ -19,7 +19,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, Folder, FolderPlus, Images, Pencil, Sparkles, Tag, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Folder, FolderPen, FolderPlus, Images, Pencil, Sparkles, Tag, Trash2, X } from "lucide-react";
 
 import { VaultVideoPreview } from "@/components/chat/VaultPicker";
 import { ifConfirm } from "@/components/ui/ifConfirm";
@@ -28,6 +28,7 @@ import { IfButton, IfModal } from "@/components/ui/infloww";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { formatPrice } from "@/components/vault/folderPriceForm";
 import { FolderPriceModal } from "@/components/vault/VaultFolderRail";
+import VaultCategoryIconDialog from "@/components/vault/VaultCategoryIconDialog";
 import VaultItemModal from "@/components/vault/VaultItemModal";
 import VaultTile from "@/components/vault/VaultTile";
 import { type Tile } from "@/components/vault/vaultManageActions";
@@ -35,6 +36,8 @@ import { setFolderPrice, useFolderPrices } from "@/hooks/useFolderPrices";
 import {
   internalFolders, invalidateInternalFolders, useInternalFolders, type InternalFolder,
 } from "@/hooks/useInternalFolders";
+import { useSfw } from "@/hooks/useBlurMode";
+import { folderIconCategory, folderNameWithoutEmoji, useVaultCategoryIcons } from "@/hooks/useVaultCategoryIcons";
 import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
 import { mirrorItemsKey, useMirrorItems } from "@/hooks/useVaultCache";
 import { BRAND_NAME } from "@/lib/brand";
@@ -86,10 +89,11 @@ function PriceMark({ cents }: { cents: number }) {
 }
 
 /** One folder in the list: name (two lines at most; the AI ones are long), counts, price, the OF mark. */
-function FolderRow({ folder, price, open, onOpen }: {
-  folder: InternalFolder; price: number | undefined; open: boolean; onOpen: () => void;
+function FolderRow({ folder, price, artwork, open, onOpen }: {
+  folder: InternalFolder; price: number | undefined; artwork?: string; open: boolean; onOpen: () => void;
 }) {
-  const Icon = KIND_ICON[folder.kind];
+  const category = folderIconCategory(folder.name);
+  const Icon = category === "customs" ? FolderPen : KIND_ICON[folder.kind];
   return (
     <button
       type="button"
@@ -101,10 +105,15 @@ function FolderRow({ folder, price, open, onOpen }: {
         open ? "bg-accent/10" : "hover:bg-bg-elev-1",
       )}
     >
-      <Icon size={16} aria-hidden className={cn("mt-0.5 shrink-0", open ? "text-accent" : "text-fg-dim")} />
+      {artwork ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={"data:image/webp;base64," + artwork} alt="" className="mt-0.5 size-7 shrink-0 rounded-md object-cover" />
+      ) : (
+        <Icon size={16} aria-hidden className={cn("mt-0.5 shrink-0", open ? "text-accent" : "text-fg-dim")} />
+      )}
       <span className="min-w-0 flex-1">
         <span className={cn("block text-sm font-medium leading-snug line-clamp-2 break-words", open && "text-accent")}>
-          {folder.name}
+          {category ? folderNameWithoutEmoji(folder.name) : folder.name}
         </span>
         <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-fg-dim">
           <span>{countsText(folder)}</span>
@@ -215,6 +224,13 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
   const foldersQ = useInternalFolders(accountId);
   const list = useMemo(() => foldersQ.data?.list ?? [], [foldersQ.data]);
   const prices = useFolderPrices(accountId).data ?? {};
+  const [sfw] = useSfw();
+  const icons = useVaultCategoryIcons(accountId, !sfw).data;
+  const [editingIcon, setEditingIcon] = useState<{ category: string; name: string }>();
+  const categoryArtwork = (name: string) => {
+    const key = folderIconCategory(name);
+    return !sfw && key ? icons?.icons[key] : undefined;
+  };
   const folder = typeof openId === "number" ? list.find((f) => f.id === openId) ?? null : null;
   const total = useMemo(
     () => list.reduce((n, f) => n + f.items, 0),
@@ -429,7 +445,7 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
                     </h3>
                     <div className="space-y-0.5">
                       {s.folders.map((f) => (
-                        <FolderRow key={f.id} folder={f} price={prices[`vf:${f.id}`]} open={f.id === openId} onOpen={() => open(f.id)} />
+                        <FolderRow key={f.id} folder={f} price={prices[`vf:${f.id}`]} artwork={categoryArtwork(f.name)} open={f.id === openId} onOpen={() => open(f.id)} />
                       ))}
                     </div>
                   </section>
@@ -495,6 +511,15 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
                         <button type="button" disabled={!!busy} className={BAR_BTN}
                           onClick={() => dispatch({ type: "dialog", dialog: { kind: "rename", folderId: folder.id } })}>
                           <Pencil size={13} aria-hidden className="inline -mt-0.5 mr-1" />Rename
+                        </button>
+                      )}
+                      {!sfw && icons?.can_edit && folderIconCategory(folder.name) && (
+                        <button type="button" disabled={!!busy} className={BAR_BTN} onClick={() => {
+                          const category = folderIconCategory(folder.name);
+                          if (category) setEditingIcon({ category, name: folderNameWithoutEmoji(folder.name) });
+                        }}>
+                          <Images size={13} aria-hidden className="inline -mt-0.5 mr-1" />
+                          {categoryArtwork(folder.name) ? "Change icon" : "Upload icon"}
                         </button>
                       )}
                       <button type="button" disabled={!!busy} className={BAR_BTN}
@@ -668,6 +693,16 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
         </div>
       </div>
 
+      {editingIcon && !sfw && (
+        <VaultCategoryIconDialog
+          accountId={accountId} category={editingIcon.category} name={editingIcon.name}
+          hasIcon={!!icons?.icons[editingIcon.category]} onClose={() => setEditingIcon(undefined)}
+          onSaved={() => {
+            void qc.invalidateQueries({ queryKey: ["vault-category-icons"] });
+            setEditingIcon(undefined);
+          }}
+        />
+      )}
       {dialog?.kind === "create" && (
         <NameDialog folder={null} list={list} busy={!!busy} error={refusal} onSave={create} onCancel={() => dispatch({ type: "dialog", dialog: null })} />
       )}

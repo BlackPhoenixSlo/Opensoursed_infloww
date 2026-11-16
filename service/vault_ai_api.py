@@ -52,7 +52,9 @@ import vault_stills
 import vault_harvest_terms  # which words the OF-search harvest asks
 import vault_tags  # the grid's tag chips: tag_match / facets SQL
 import vault_folder_prices  # the agency's per-folder prices (Full AI sell)
+import vault_settings  # the per-Creator switches: folder price is final, standard folders
 import vault_internal_folders  # the Inflowwww folders editor (list + edits of our own folders)
+from vault_category_icons import router as category_icons_router
 # NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
 # here — `vault_frames` owns "which url in a payload is the picture" now, and this
 # module reaches them through it.
@@ -1025,6 +1027,35 @@ async def list_of_folders_from_mirror(account_id: str = Query(...)) -> dict[str,
 # list route keeps its place in the registration order.
 router.include_router(vault_internal_folders.router)
 
+router.include_router(category_icons_router)
+
+
+# ── Per-Creator vault switches (`vault_settings`; both off by default) ──────
+
+
+@router.get("/admin/vault-ai/settings")
+async def get_vault_settings(account_id: str = Query(...)) -> dict[str, Any]:
+    """`{"folder_price_final": bool, "standard_folders": bool}`. Owner scope (403 for a folder-limited chatter)."""
+    if not account_id:
+        raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+    assert_account_owned(account_id)
+    await assert_owner_scope(account_id)
+    return {"account_id": account_id, **await vault_settings.load(account_id)}
+
+
+@router.put("/admin/vault-ai/settings")
+async def put_vault_settings(payload: dict = Body(...)) -> dict[str, Any]:
+    """Set one or both switches (JSON booleans); a key left out keeps its value. Owner scope."""
+    account_id = str(payload.get("account_id") or "")
+    if not account_id:
+        raise HTTPException(status_code=400, detail={"error": "account_id_required"})
+    assert_account_owned(account_id)
+    await assert_owner_scope(account_id)
+    changes = {k: payload[k] for k in vault_settings.KEYS if k in payload}
+    if not changes or not all(isinstance(v, bool) for v in changes.values()):
+        raise HTTPException(status_code=400, detail={"error": "bad_setting", "keys": list(vault_settings.KEYS)})
+    return {"account_id": account_id, **await vault_settings.put(account_id, **changes)}
+
 
 # ── Folder prices (Full AI sell; our DB only, zero OF writes) ───────
 
@@ -1062,11 +1093,15 @@ async def set_folder_price(payload: dict = Body(...)) -> dict[str, Any]:
             "error": "bad_price", "min": vault_folder_prices.MIN_CENTS, "max": vault_folder_prices.MAX_CENTS})
     if ref.startswith("vf:"):
         async with get_session() as s:
-            live = (await s.execute(select(VaultFolder.id).where(
+            live = (await s.execute(select(VaultFolder.id, VaultFolder.created_by).where(
                 VaultFolder.account_id == account_id, VaultFolder.id == int(ref[3:]),
                 VaultFolder.deleted_at.is_(None)))).first()
         if live is None:
             raise HTTPException(status_code=404, detail="not_found")
+        from vault_standard_rules import parse_key, REVIEW
+        standard = parse_key(live[1])
+        if cents is not None and standard and standard[1] == REVIEW:
+            raise HTTPException(status_code=400, detail={"error": "review_category_not_priceable"})
     await vault_folder_prices.put(account_id, ref, cents)
     return {"account_id": account_id, "ref": ref, "price_cents": cents}
 
@@ -1567,6 +1602,8 @@ async def edit_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
         await s.refresh(item)
         locked_out = sorted(_locked_fields(item))
         view = _item_edit_view(item, locked_out)
+    from vault_standard_folders import after_analysis
+    await after_analysis(account_id, media_id)
     return {"item": view, "locked": locked_out}
 
 

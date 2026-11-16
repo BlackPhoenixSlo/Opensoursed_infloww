@@ -34,6 +34,8 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import vault_standard_folders
+from vault_standard_rules import parse_key
 import vault_folder_prices
 import vault_pack_picker
 import vault_scripts
@@ -138,6 +140,9 @@ async def _folder(s, account_id: str, folder_id: int) -> VaultFolder:
 
 
 def _rung_fixed(folder: VaultFolder) -> None:
+    if parse_key(folder.created_by):
+        raise HTTPException(status_code=400, detail={"error": "standard_category_fixed",
+            "message": "Standard categories keep their names. Edit their media or add a custom folder."})
     if vault_pack_picker.pack_rung_category(folder.name) is not None:
         raise HTTPException(status_code=400, detail={
             "error": "pack_rung_fixed",
@@ -204,6 +209,8 @@ async def _take_out(account_id: str, folder_id: int, name: str, media_ids: list[
         inside = sorted(await _members(s, account_id, folder_id, media_ids))
         cat = vault_pack_picker.pack_rung_category(name)
         if inside and cat is None:
+            folder = await _folder(s, account_id, folder_id)
+            await vault_standard_folders.remember(s, account_id, folder, inside, False)
             await s.execute(delete(VaultFolderItem).where(
                 VaultFolderItem.account_id == account_id, VaultFolderItem.folder_id == folder_id,
                 VaultFolderItem.media_id.in_(inside)))
@@ -326,6 +333,7 @@ async def add_to_internal_folder(folder_id: int, payload: dict = Body(...)) -> d
         target_name, source_name = target.name, source.name if source else None
         cat = vault_pack_picker.pack_rung_category(target_name)
         if cat is None:
+            await vault_standard_folders.remember(s, account_id, target, media_ids, True)
             for m in media_ids:
                 await s.execute(sqlite_insert(VaultFolderItem)
                                 .values(account_id=account_id, folder_id=folder_id, media_id=m)
@@ -339,6 +347,8 @@ async def add_to_internal_folder(folder_id: int, payload: dict = Body(...)) -> d
     # A move between two rungs of one category is already done: filing is exclusive there.
     if source_name is not None and not (cat is not None and vault_pack_picker.pack_rung_category(source_name) is cat):
         await _take_out(account_id, source_id, source_name, media_ids)
+    if parse_key(target.created_by) or (source is not None and parse_key(source.created_by)):
+        await vault_standard_folders.sync(account_id, media_ids)
     added = len(media_ids) - len(already)
     adopted = await _mark_edited(account_id, *([folder_id] if added else []), *([source_id] if in_source else []))
     return {"account_id": account_id, "folder_id": folder_id, "added": added,
@@ -351,8 +361,11 @@ async def remove_from_internal_folder(folder_id: int, payload: dict = Body(...))
     account_id = await _owner(payload)
     media_ids = _media_ids(payload)
     async with get_session() as s:
-        name = (await _folder(s, account_id, folder_id)).name
+        folder = await _folder(s, account_id, folder_id)
+        name, standard = folder.name, parse_key(folder.created_by)
     removed = await _take_out(account_id, folder_id, name, media_ids)
+    if standard:
+        await vault_standard_folders.sync(account_id, media_ids)
     adopted = await _mark_edited(account_id, folder_id) if removed else []
     return {"account_id": account_id, "folder_id": folder_id, "removed": removed, "adopted": adopted}
 
@@ -389,3 +402,16 @@ async def reorder_internal_folder(folder_id: int, payload: dict = Body(...)) -> 
         await s.commit()
     return {"account_id": account_id, "folder_id": folder_id, "items": len(placed),
             "adopted": [folder_id] if adopted else []}
+
+
+@router.get("/admin/vault-ai/standard-folders")
+async def list_standard_folders(account_id: str = Query(...)) -> dict:
+    account_id = await _owner(account_id)
+    return await vault_standard_folders.listing(account_id)
+
+
+@router.post("/admin/vault-ai/standard-folders/sync")
+async def sync_standard_folders(payload: dict = Body(...)) -> dict:
+    account_id = await _owner(payload)
+    await vault_standard_folders.sync(account_id)
+    return await vault_standard_folders.listing(account_id)

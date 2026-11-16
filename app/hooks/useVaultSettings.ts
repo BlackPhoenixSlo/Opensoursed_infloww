@@ -1,0 +1,33 @@
+"use client";
+
+/**
+ * useVaultSettings — a Creator's two vault switches (GET / PUT /admin/vault-ai/settings), both off by default:
+ * `folder_price_final` (Full AI Chat sells folder-priced media at exactly the saved price) and `standard_folders`
+ * (the fixed category list, with its Needs Review folder). Owner scope: a folder-limited chatter's read 403s, so
+ * `data` stays undefined and both read as off.
+ */
+
+import { useQuery, type QueryClient } from "@tanstack/react-query";
+
+import { relay } from "@/lib/relay";
+
+export interface VaultSettings { folder_price_final: boolean; standard_folders: boolean }
+export const vaultSettingsKey = (accountId: string) => ["vault-settings", accountId] as const;
+
+export function useVaultSettings(accountId: string, enabled = true) {
+  return useQuery<VaultSettings>({
+    queryKey: vaultSettingsKey(accountId),
+    queryFn: () => relay.get<VaultSettings>(
+      `/admin/vault-ai/settings?account_id=${encodeURIComponent(accountId)}`, { accountId }),
+    enabled,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export async function setVaultSetting(qc: QueryClient, accountId: string, patch: Partial<VaultSettings>): Promise<void> {
+  const saved = await relay.put<VaultSettings>(`/admin/vault-ai/settings`, { account_id: accountId, ...patch }, { accountId });
+  qc.setQueryData(vaultSettingsKey(accountId), {
+    folder_price_final: saved.folder_price_final, standard_folders: saved.standard_folders,
+  });
+}

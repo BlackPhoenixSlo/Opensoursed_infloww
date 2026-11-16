@@ -30,6 +30,7 @@ import {
 import { createOfFolder, deleteOfFolder, renameOfFolder, sortOfFolders } from "@/hooks/useVaultCache";
 import { setFolderPrice, useFolderPrices } from "@/hooks/useFolderPrices";
 import { vaultListsKey } from "@/hooks/useVaultMedia";
+import { useVaultSettings } from "@/hooks/useVaultSettings";
 import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 import { type FanId } from "@/lib/fanId";
 import { type VaultList, type VaultListsResp, type VaultTypeCounts } from "@/lib/relay";
@@ -177,6 +178,8 @@ export function FolderPriceModal({ name, priceRef: ref, current, onSave, onCance
   onCancel: () => void;
 }) {
   const accountId = useVaultAccountId();
+  // The Creator's "Folder price is final" switch (off by default) decides which promise the modal makes.
+  const priceFinal = !!useVaultSettings(accountId).data?.folder_price_final;
   const [form, dispatch] = useReducer(folderPriceReducer, current, initForm);
   async function write(body: ReturnType<typeof buildPayload>) {
     dispatch({ type: "saving" });
@@ -205,9 +208,18 @@ export function FolderPriceModal({ name, priceRef: ref, current, onSave, onCance
         </>
       }
     >
-      <p className="text-sm text-fg-dim">
-        Full AI Chat sells the items in <span className="font-medium text-fg">{name}</span> at this price.
-      </p>
+      {priceFinal ? (
+        <>
+          <p className="text-sm text-fg-dim">
+            Paid sends from <span className="font-medium text-fg">{name}</span> use this saved price. AI pricing and haggling cannot change it.
+          </p>
+          <p className="text-xs text-fg-dim">If an item matches several priced folders, the highest price applies. Video bundles add their clip prices, up to $200.</p>
+        </>
+      ) : (
+        <p className="text-sm text-fg-dim">
+          Full AI Chat sells the items in <span className="font-medium text-fg">{name}</span> at this price.
+        </p>
+      )}
       <label className="block space-y-2">
         <span className="block text-sm font-medium">Price (USD, $10 to $200)</span>
         <input
@@ -281,7 +293,7 @@ function FolderDeleteModal({ folder, onDelete, onCancel }: {
 export default function VaultFolderRail({
   folders, allCounts = null, loading, error, onRetry, selectedId, onSelect, onChanged, onDownloadFolder,
   downloadFolderGate,
-  downloadQueues = false,
+  downloadQueues = false, standardRows, standardMobile, standardSelected = false,
 }: {
   /** The folders to list, in OF's order. */
   folders: VaultList[];
@@ -302,6 +314,9 @@ export default function VaultFolderRail({
   downloadFolderGate: DlGate;
   /** A download runs: the item joins the queue ("Add folder to queue"). */
   downloadQueues?: boolean;
+  standardRows?: ReactNode;
+  standardMobile?: ReactNode;
+  standardSelected?: boolean;
 }) {
   const accountId = useVaultAccountId();
   const qc = useQueryClient();
@@ -410,7 +425,7 @@ export default function VaultFolderRail({
             onChange={(e) => onSelect(e.target.value === "" ? null : folders.find((f) => String(f.id) === e.target.value)?.id ?? null)}
             className="flex-1 min-w-0 text-base"
           >
-            <option value="">All media{allCounts ? ` · ${countsText(allCounts)}` : ""}</option>
+            <option value="">{standardSelected ? "Original vault folders" : "All media"}{!standardSelected && allCounts ? ` · ${countsText(allCounts)}` : ""}</option>
             {folders.map((f) => (
               <option key={f.id} value={String(f.id)}>
                 {f.name}{priceOf(f) != null ? ` · ${formatPrice(priceOf(f)!)}` : ""} · {countsText(f)}
@@ -431,6 +446,7 @@ export default function VaultFolderRail({
             <Plus size={16} aria-hidden />
           </button>
         </div>
+        <div className="md:hidden">{standardMobile}</div>
         {error && (
           <p className="md:hidden flex items-center gap-2 px-3 pb-2 text-xs text-err">
             Couldn&apos;t load the folders.
@@ -579,7 +595,7 @@ export default function VaultFolderRail({
           <button
             type="button"
             onClick={() => onSelect(null)}
-            className={cn(railRowClass(selectedId === null), "text-left")}
+            className={cn(railRowClass(selectedId === null && !standardSelected), "text-left")}
           >
             <div className={RAIL_ROW_INNER}>
               <div className="text-sm font-medium">All media</div>
@@ -589,6 +605,7 @@ export default function VaultFolderRail({
               {allCounts && <FolderCounts f={allCounts} />}
             </div>
           </button>
+          {standardRows}
           {loading ? (
             <div className="space-y-2 px-3 py-3" aria-busy="true">
               {Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-8 w-full" />)}

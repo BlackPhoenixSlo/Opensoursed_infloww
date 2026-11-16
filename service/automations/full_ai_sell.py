@@ -26,6 +26,13 @@ after the list: a haggle may go down to 67 % of it (`clamp_quote`); the price Je
 which gets it as `list_price`) and a chat-tease ride's price Jev replace it, under or over: Jev
 decides the price (owner 11-15), the folder price is its input, not a floor. The Pick carries
 the folder price as `facts["folder_cents"]` (absent when no locked item is priced).
+Per-Creator switch `vault_settings.folder_price_final` (off by default; everything above is off):
+on, `load_rows` marks each row `folder_final` and a paid Pick containing folder-priced media locks
+its final bundle price in `facts["folder_price_cents"]`: AI pricing, tease pricing and haggling
+cannot change it. Photo packs keep the highest item price; video bundles keep the existing sum
+(capped at $200). Explicit free-item flows remain free.
+Per-Creator switch `vault_settings.standard_folders` (off by default): on, media in the standard
+Needs Review folder (`vault_standard_rules.REVIEW`) is left out of the pool.
 ASSUMPTION: an item in several priced folders lists at the HIGHEST of their prices. Overturned if
 the owner wants the lowest or a folder order.
 ASSUMPTION: a Jev "review" item (and a disputed free-tier one, `_unpriced_dispute`) stays not for
@@ -63,6 +70,7 @@ import vault_dupes
 import vault_folder_prices
 import vault_pack_picker
 import vault_scripts
+import vault_settings
 import vault_topic_folders as vtf
 from db.engine import get_session
 from db.models import VaultFolder, VaultFolderItem, VaultItem
@@ -212,15 +220,21 @@ async def load_rows(account_id: str) -> tuple[list[dict[str, Any]], list[list[in
                 select(VaultItem.media_id, VaultItem.of_folder_ids)
                 .where(VaultItem.account_id == account_id, VaultItem.removed_at.is_(None)))).all())
             members = (await s.execute(
-                select(VaultFolderItem.media_id, VaultFolder.id, VaultFolder.name)
+                select(VaultFolderItem.media_id, VaultFolder.id, VaultFolder.name, VaultFolder.created_by)
                 .join(VaultFolder, VaultFolder.id == VaultFolderItem.folder_id)
                 .where(VaultFolderItem.account_id == account_id, VaultFolder.account_id == account_id,
                        VaultFolder.deleted_at.is_(None)))).all()
+        opts = await vault_settings.load(account_id)
         refs: dict[int, set[str]] = {}
         packs: dict[int, set[str]] = {}
         for mid, raw in of_raw.items():
             refs.setdefault(int(mid), set()).update(_of_refs(raw))
-        for mid, fid, name in members:
+        from vault_standard_rules import parse_key, REVIEW
+        needs_review: set[int] = set()
+        for mid, fid, name, creator in members:
+            standard = parse_key(creator)
+            if opts["standard_folders"] and standard and standard[1] == REVIEW:
+                needs_review.add(int(mid))
             refs.setdefault(int(mid), set()).add(f"vf:{fid}")
             if (cat := vault_pack_picker.pack_rung_category(name)) is not None:
                 packs.setdefault(int(mid), set()).add(cat.name)
@@ -232,10 +246,13 @@ async def load_rows(account_id: str) -> tuple[list[dict[str, Any]], list[list[in
         return Refusal("inventory_unknown")
     prints = await vault_scripts._fingerprints(account_id)
     out = []
+    final = {"folder_final": True} if opts["folder_price_final"] else {}   # off: rows as before
     for r in rows:
+        if r["media_id"] in needs_review:
+            continue
         rr = refs.get(r["media_id"], set())
         out.append({**r, "refs": rr, "packs": packs.get(r["media_id"], set()),
-                    "folder_cents": vault_folder_prices.highest(rr, prices)})
+                    "folder_cents": vault_folder_prices.highest(rr, prices), **final})
     return out, groups, prints
 
 
@@ -364,7 +381,9 @@ def _facts(locked: list[dict[str, Any]], previews: list[dict[str, Any]] = ()) ->
                       for r in [*locked, *previews]],
             # the agency's folder price (highest over the locked items), only when one is priced:
             # steps that reprice the Pick later can read it; an unpriced Pick's facts are unchanged
-            **({"folder_cents": max(folder)} if folder else {})}
+            **({"folder_cents": max(folder)} if folder else {}),
+            # `vault_settings.folder_price_final` on (rows marked by `load_rows`): absent when off
+            **({"folder_final": True} if folder and any(r.get("folder_final") for r in locked) else {})}
 
 
 def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: Ask, *,
@@ -375,10 +394,28 @@ def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: As
     move it. Overturned if the owner wants a bundle discount or the top clip's price."""
     top = max(r["list_cents"] for r in locked)
     cents = min(MAX_CENTS, sum(r["list_cents"] for r in locked)) if price == "sum" else top
+    facts = _facts(locked, previews)
+    if not free and facts.get("folder_final"):
+        facts["folder_price_cents"] = cents
     return Pick(ref=locked[0]["media_id"], media=tuple(r["media_id"] for r in locked),
                 previews=tuple(r["media_id"] for r in previews), price_cents=0 if free else cents,
                 list_cents=cents, subject=subject or ask.subject, format=locked[0]["kind"], lane=_lane(top),
-                facts=_facts(locked, previews))
+                facts=facts)
+
+
+def folder_price(pick: Pick) -> int | None:
+    """The operator-approved paid offer price, including the existing bundle rule."""
+    return vault_folder_prices.parse_cents((pick.facts or {}).get("folder_price_cents"))
+
+
+def tease_price(pick: Pick, cents: int) -> Pick:
+    """Apply an AI tease quote, except to media whose agency folder price is final."""
+    if (pick.facts or {}).get("folder_final"):
+        saved = folder_price(pick) or pick.list_cents
+        return replace(pick, price_cents=saved, list_cents=saved,
+                       facts={**pick.facts, "folder_price_cents": saved})
+    return replace(pick, price_cents=cents, list_cents=cents or pick.list_cents,
+                   facts={**pick.facts, "vault_list_cents": pick.list_cents})
 
 
 def _nearest(pool: list[dict[str, Any]], ask: Ask) -> tuple[list[dict[str, Any]], str, str] | None:
