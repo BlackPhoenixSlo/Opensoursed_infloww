@@ -104,16 +104,40 @@ function stable(v: unknown): unknown {
 }
 export const sameConfig = (a: unknown, b: unknown) => JSON.stringify(stable(a)) === JSON.stringify(stable(b));
 
-/** One row of the JSON modal's "All settings" table: default and the side's value as compact JSON, `changed` when they
- *  differ (key order ignored), `where` the page control or "JSON". A key the side lacks reads as its default (the
- *  server fills it). */
-export interface SettingRow { key: string; def: string; value: string; changed: boolean; allowed: string; about: string; where: string }
-export function settingRows(reference: SettingRef[], side: FullAiConfig | null): SettingRow[] {
+/** One row of the JSON modal's "All settings" table: default, the Live settings' (checkpoint's) and the draft's value as
+ *  compact JSON, `changed` when the draft's differs from the Live one (key order ignored), `where` the page control or
+ *  "JSON". A key a side lacks reads as its default (the server fills it). */
+export interface SettingRow {
+  key: string; def: string; live: string; value: string; changed: boolean; allowed: string; about: string; where: string;
+}
+export function settingRows(reference: SettingRef[], live: FullAiConfig | null, draft: FullAiConfig | null): SettingRow[] {
   return reference.map((r) => {
-    const v = side && side[r.key] !== undefined ? side[r.key] : r.default;
-    return { key: r.key, def: JSON.stringify(r.default), value: JSON.stringify(v), changed: !sameConfig(v, r.default),
-      allowed: r.allowed, about: r.about, where: r.page ?? "JSON" };
+    const of = (side: FullAiConfig | null) => (side && side[r.key] !== undefined ? side[r.key] : r.default);
+    const l = of(live), v = of(draft);
+    return { key: r.key, def: JSON.stringify(r.default), live: JSON.stringify(l), value: JSON.stringify(v),
+      changed: !sameConfig(v, l), allowed: r.allowed, about: r.about, where: r.page ?? "JSON" };
   });
+}
+
+/** The top-level keys whose value differs between the Live settings (checkpoint) and the draft (key order inside a
+ *  value ignored): `order`'s keys first (the GET's `reference` order), then any other key of either side. Empty =
+ *  the draft is what fans get. */
+export function draftDiff(checkpoint: FullAiConfig, draft: FullAiConfig, order: string[] = []): string[] {
+  const keys = [...new Set([...order, ...Object.keys(checkpoint), ...Object.keys(draft)])];
+  return keys.filter((k) => !sameConfig(checkpoint[k], draft[k]));
+}
+
+/** The settings column's status line under Make draft live: null while either side is not read yet. */
+export function draftDiffLine(checkpoint: FullAiConfig | null, draft: FullAiConfig | null, order: string[] = []):
+  { text: string; differs: boolean } | null {
+  if (!checkpoint || !draft) return null;
+  const keys = draftDiff(checkpoint, draft, order);
+  if (keys.length === 0) return { text: "Draft = Live settings. Fans get exactly what you see below.", differs: false };
+  const shown = keys.slice(0, 6).join(", ") + (keys.length > 6 ? `, +${keys.length - 6} more` : "");
+  return {
+    text: `Draft differs from the Live settings in ${keys.length}: ${shown}. Fans keep the Live ones until you tap Make draft live.`,
+    differs: true,
+  };
 }
 
 /** A reply speed's label (the speeds come from `limits.reply_speeds`); one without an entry shows as itself. */

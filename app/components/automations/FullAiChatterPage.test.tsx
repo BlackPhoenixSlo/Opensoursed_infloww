@@ -1,5 +1,5 @@
 /**
- * Full AI Chat: the settings column (Save / Roll back / JSON on top, thirteen controls), the row above the Test chat (the persona block, Content), "Who Full AI answers when Live" (Fans + Top spend limit over PUT /admin/full-ai/config/audience), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the Mode control (Off / Live over GET / PUT /admin/full-ai/mode; Live behind a confirm),
+ * Full AI Chat: the settings column (Make draft live / Roll back / JSON on top, thirteen controls), the row above the Test chat (the persona block, Content), "Who Full AI answers when Live" (Fans + Top spend limit over PUT /admin/full-ai/config/audience), the Test chat (two windows, one composer; POST /admin/full-ai/test/turn per side), the Mode control (Off / Live over GET / PUT /admin/full-ai/mode; Live behind a confirm),
  * and today's Decision rows (GET /admin/full-ai/today): counts in Route order, then the newest rows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -327,7 +327,7 @@ const mountChat = (
   });
   renderWithProviders(<FullAiChatterPage />, client);
 };
-const win = (name: "Checkpoint" | "Draft") => within(screen.getByRole("region", { name }));
+const win = (name: "Live settings" | "Draft") => within(screen.getByRole("region", { name }));
 const composer = () => screen.getByRole("textbox", { name: "Fan message" }) as HTMLTextAreaElement;
 const sendBtn = () => screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
 const say = async (text: string) => {
@@ -344,7 +344,7 @@ describe("Full AI Chat page › Test chat", () => {
 
   it("one composer sends his line to both windows as two requests, checkpoint and draft, Turn 1 then 2", async () => {
     mountChat({ checkpoint: () => answer(), draft: () => answer({ parts: [{ text: "hi there" }] }) });
-    await screen.findByRole("region", { name: "Checkpoint" });
+    await screen.findByRole("region", { name: "Live settings" });
     skipWait();
     await say("hey");
     await waitFor(() => expect(turnCalls().length).toBe(2));
@@ -354,9 +354,9 @@ describe("Full AI Chat page › Test chat", () => {
       { account_id: "acc-a", side: "draft", n: 1, text: "hey" },
     ]);
     expect(bodies[0].pair).toBe(bodies[1].pair);
-    expect(await win("Checkpoint").findByText("hey babe")).toBeTruthy();
+    expect(await win("Live settings").findByText("hey babe")).toBeTruthy();
     expect(await win("Draft").findByText("hi there")).toBeTruthy();
-    expect(win("Checkpoint").getByText("hey")).toBeTruthy();
+    expect(win("Live settings").getByText("hey")).toBeTruthy();
     await waitFor(() => expect(sendBtn().disabled).toBe(true)); // the composer is empty again
     await say("you?");
     await waitFor(() => expect(turnCalls().length).toBe(4));
@@ -369,7 +369,7 @@ describe("Full AI Chat page › Test chat", () => {
     await screen.findByRole("region", { name: "Draft" });
     skipWait();
     await say("hey");
-    expect(await win("Checkpoint").findByText("hey babe")).toBeTruthy();
+    expect(await win("Live settings").findByText("hey babe")).toBeTruthy();
     expect(win("Draft").getByRole("status", { name: "typing" })).toBeTruthy();
     fireEvent.change(composer(), { target: { value: "more" } });
     expect(sendBtn().disabled).toBe(true);
@@ -380,22 +380,22 @@ describe("Full AI Chat page › Test chat", () => {
 
   it("holds a reply back for its wait_s without skip-wait (typing dots, Send disabled)", async () => {
     mountChat({ checkpoint: () => answer({ wait_s: 90 }), draft: () => answer({ wait_s: 90 }) });
-    await screen.findByRole("region", { name: "Checkpoint" });
+    await screen.findByRole("region", { name: "Live settings" });
     await say("hey");
     await waitFor(() => expect(turnCalls().length).toBe(2));
-    await waitFor(() => expect(win("Checkpoint").getByRole("status", { name: "typing" })).toBeTruthy());
-    expect(win("Checkpoint").queryByText("hey babe")).toBeNull();
+    await waitFor(() => expect(win("Live settings").getByRole("status", { name: "typing" })).toBeTruthy());
+    expect(win("Live settings").queryByText("hey babe")).toBeNull();
     fireEvent.change(composer(), { target: { value: "more" } });
     expect(sendBtn().disabled).toBe(true);
     skipWait();
-    expect(await win("Checkpoint").findByText("hey babe")).toBeTruthy();
+    expect(await win("Live settings").findByText("hey babe")).toBeTruthy();
   });
 
   it("reveals a reply when its wait is over, without skip-wait", async () => {
     mountChat({ checkpoint: () => answer({ wait_s: 0.05 }), draft: () => answer({ wait_s: 0.05 }) });
-    await screen.findByRole("region", { name: "Checkpoint" });
+    await screen.findByRole("region", { name: "Live settings" });
     await say("hey");
-    expect(await win("Checkpoint").findByText("hey babe")).toBeTruthy();
+    expect(await win("Live settings").findByText("hey babe")).toBeTruthy();
     expect(await win("Draft").findByText("hey babe")).toBeTruthy();
     await waitFor(() => expect(win("Draft").queryByRole("status", { name: "typing" })).toBeNull());
   });
@@ -407,10 +407,10 @@ describe("Full AI Chat page › Test chat", () => {
         attempts: [{ writer: "euryale-v2.3", outcome: "http_503", ms: 120 },
           { writer: "hermes-4-405b", outcome: "ok", ms: 2100 }] }),
     });
-    await screen.findByRole("region", { name: "Checkpoint" });
+    await screen.findByRole("region", { name: "Live settings" });
     skipWait();
     await say("hey");
-    expect((await win("Checkpoint").findByTestId("reply-line")).textContent)
+    expect((await win("Live settings").findByTestId("reply-line")).textContent)
       .toBe("Route chat · Heat 2 · Row otherwise · Writer euryale-v2.3 · 0 fell before");
     expect((await win("Draft").findByTestId("reply-line")).textContent)
       .toBe("Route sext · Heat 3 · Row sexual_now · Writer hermes-4-405b · 1 fell before (euryale-v2.3 http_503)");
@@ -425,11 +425,11 @@ describe("Full AI Chat page › Test chat", () => {
       draft: (b) => answer({ status: "no_send", route: "no_send", route_row: b.n === 1 ? "promo" : "says_under_18",
         parts: [], writer: null, attempts: [] }),
     });
-    await screen.findByRole("region", { name: "Checkpoint" });
+    await screen.findByRole("region", { name: "Live settings" });
     skipWait();
     await say("check my page");
-    expect(await win("Checkpoint").findByText("no reply: all writers failed")).toBeTruthy();
-    expect(win("Checkpoint").getByText(
+    expect(await win("Live settings").findByText("no reply: all writers failed")).toBeTruthy();
+    expect(win("Live settings").getByText(
       "euryale-v2.3 http_503 · hermes-4-405b timeout · glm-5.3-flash no_key · deepseek-v4-flash empty")).toBeTruthy();
     expect(await win("Draft").findByText("no reply (promo)")).toBeTruthy();
     await waitFor(() => expect(sendBtn().disabled).toBe(true));
@@ -442,11 +442,11 @@ describe("Full AI Chat page › Test chat", () => {
       checkpoint: () => answer({ fan_info: { real_name: "Mike", his_age: "31", home_city: "Austin", fetishes: "" } }),
       draft: () => answer(),
     });
-    await screen.findByRole("region", { name: "Checkpoint" });
-    expect(win("Checkpoint").getByTestId("facts").textContent).toBe("No facts yet");
+    await screen.findByRole("region", { name: "Live settings" });
+    expect(win("Live settings").getByTestId("facts").textContent).toBe("No facts yet");
     skipWait();
     await say("im mike, 31, from austin");
-    await waitFor(() => expect(win("Checkpoint").getByTestId("facts").textContent)
+    await waitFor(() => expect(win("Live settings").getByTestId("facts").textContent)
       .toBe("name Mike · age 31 · city Austin"));
     expect(win("Draft").getByTestId("facts").textContent).toBe("No facts yet");
   });
@@ -454,10 +454,10 @@ describe("Full AI Chat page › Test chat", () => {
   it("renders a GIF part through the Giphy render", async () => {
     mountChat({ checkpoint: () => answer({ parts: [{ text: "lol" }, { gif: "abc123", tag: "cat_wink" }] }),
       draft: () => answer() });
-    await screen.findByRole("region", { name: "Checkpoint" });
+    await screen.findByRole("region", { name: "Live settings" });
     skipWait();
     await say("hey");
-    const img = await win("Checkpoint").findByRole("img", { name: "GIF cat_wink" });
+    const img = await win("Live settings").findByRole("img", { name: "GIF cat_wink" });
     expect(img.getAttribute("src")).toContain("abc123");
   });
 
@@ -487,12 +487,12 @@ describe("Full AI Chat page › Test chat", () => {
 
   it("New chat starts a fresh pair with empty windows", async () => {
     mountChat({ checkpoint: () => answer(), draft: () => answer() });
-    await screen.findByRole("region", { name: "Checkpoint" });
+    await screen.findByRole("region", { name: "Live settings" });
     skipWait();
     await say("hey");
-    expect(await win("Checkpoint").findByText("hey babe")).toBeTruthy();
+    expect(await win("Live settings").findByText("hey babe")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "New chat" }));
-    expect(win("Checkpoint").queryByText("hey babe")).toBeNull();
+    expect(win("Live settings").queryByText("hey babe")).toBeNull();
     await say("again");
     await waitFor(() => expect(turnCalls().length).toBe(4));
     const pairs = turnCalls().map((c) => (c[1] as Body).pair);
@@ -509,23 +509,23 @@ describe("Full AI Chat page › Test chat", () => {
     });
     afterEach(() => { window.matchMedia = real; });
 
-    it("shows the windows as Checkpoint / Draft tabs, one at a time", async () => {
+    it("shows the windows as Live settings / Draft tabs, one at a time", async () => {
       mountChat({ checkpoint: () => answer(), draft: () => answer({ parts: [{ text: "draft says hi" }] }) });
       const tabs = within(await screen.findByRole("tablist", { name: "Test chat windows" }));
-      expect(tabs.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Checkpoint", "Draft"]);
-      expect(screen.getByRole("region", { name: "Checkpoint" })).toBeTruthy();
+      expect(tabs.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Live settings", "Draft"]);
+      expect(screen.getByRole("region", { name: "Live settings" })).toBeTruthy();
       expect(screen.queryByRole("region", { name: "Draft" })).toBeNull();
       skipWait();
       await say("hey");
       fireEvent.click(tabs.getByRole("tab", { name: "Draft" }));
       expect(await win("Draft").findByText("draft says hi")).toBeTruthy();
-      expect(screen.queryByRole("region", { name: "Checkpoint" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Live settings" })).toBeNull();
     });
 
     it("desktop shows both windows and no tabs", async () => {
       window.matchMedia = real;
       mountChat({});
-      expect(await screen.findByRole("region", { name: "Checkpoint" })).toBeTruthy();
+      expect(await screen.findByRole("region", { name: "Live settings" })).toBeTruthy();
       expect(screen.getByRole("region", { name: "Draft" })).toBeTruthy();
       expect(screen.queryByRole("tablist")).toBeNull();
     });
@@ -618,8 +618,8 @@ describe("Full AI Chat page › Settings", () => {
     expect(before(h2("Who Full AI answers when Live"), h2("Content"))).toBe(true);
     expect(h2("Who Full AI answers when Live").closest("section")!.contains(screen.getByRole("region", { name: "Who Full AI answers when Live" }))).toBe(true);
     expect(before(h2("Content"), h2("Test chat"))).toBe(true);
-    expect(before(btn("Save"), modeGroup())).toBe(true);
-    expect(before(btn("Save"), screen.getByRole("list", { name: "Settings" }))).toBe(true);
+    expect(before(btn("Make draft live"), modeGroup())).toBe(true);
+    expect(before(btn("Make draft live"), screen.getByRole("list", { name: "Settings" }))).toBe(true);
     expect((audience().getByRole("spinbutton", { name: "Top spend limit" }) as HTMLInputElement).value).toBe("");
     expect(audience().getByText("Every Fan")).toBeTruthy();
     expect(settings().queryByText("Fans")).toBeNull();
@@ -661,7 +661,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(keysOff.queryByText(/Read his photos is on/)).toBeNull();
   });
 
-  it("a control stores the draft at once; Send waits ('Storing draft…') until it is stored", async () => {
+  it("a control stores the draft at once; Send waits ('Saving draft…') until it is stored", async () => {
     let store: (v: unknown) => void = () => {};
     mountSettings(configBody(), { put: () => new Promise((r) => { store = r; }) });
     await loadedConfig();
@@ -671,10 +671,10 @@ describe("Full AI Chat page › Settings", () => {
     expect(putCalls().length).toBe(1);
     expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true }, rev: 3 });
     expect(sendBtn().disabled).toBe(true);
-    expect(screen.getAllByText("Storing draft…").length).toBe(2);   // the settings column's status and Send's block
+    expect(screen.getAllByText("Saving draft…").length).toBe(2);   // the settings column's status and Send's block
     await act(async () => { store(configBody({ draft: { ...CONFIG, gifs: true }, rev: 4 })); });
     await waitFor(() => expect(sendBtn().disabled).toBe(false));
-    expect(screen.queryByText("Storing draft…")).toBeNull();
+    expect(screen.queryByText("Saving draft…")).toBeNull();
     expect(settings().getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("true");
     await act(async () => { fireEvent.click(within(settings().getByRole("radiogroup", { name: "Reply speed" })).getByRole("radio", { name: "0-15-60 min" })); });
     await waitFor(() => expect(putCalls().length).toBe(2));
@@ -765,7 +765,7 @@ describe("Full AI Chat page › Settings", () => {
     await act(async () => { fireEvent.change(box(), { target: { value: "0" } }); fireEvent.blur(box()); });
     expect(audiencePuts()[1][1]).toEqual({ account_id: "acc-a", top_spend_cents: 0 });
     expect(putCalls().length).toBe(0);
-    expect(btn("Save").disabled).toBe(true);   // the bot config's draft is untouched
+    expect(btn("Make draft live").disabled).toBe(true);   // the bot config's draft is untouched
   });
 
   it("Top spend limit: a refused write shows beside the box and snaps back", async () => {
@@ -802,7 +802,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(putCalls().length).toBe(0);
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(audience().getByText("1 included · 1 excluded")).toBeTruthy());
-    expect(btn("Save").disabled).toBe(true);   // nothing for the bot config's Save to store
+    expect(btn("Make draft live").disabled).toBe(true);   // nothing for the bot config's Make draft live to copy
     expect(relayGet.mock.calls.some((c) => String(c[0]).startsWith("/api/of/v2/lists") && c[1]?.accountId === "acc-a")).toBe(true);
   });
 
@@ -855,7 +855,7 @@ describe("Full AI Chat page › Settings", () => {
       draft: { ...CONFIG, writers: ["euryale-v2.3", "hermes-4-405b", "deepseek-v4-flash"] }, rev: 3 });
     await waitFor(() => expect(box("deepseek-v4-flash").checked).toBe(true));
     expect(win("Draft").getByText("Writers euryale-v2.3 → hermes-4-405b → deepseek-v4-flash")).toBeTruthy();
-    expect(win("Checkpoint").getByText("Writers euryale-v2.3")).toBeTruthy();
+    expect(win("Live settings").getByText("Writers euryale-v2.3")).toBeTruthy();
     await act(async () => { fireEvent.click(box("euryale-v2.3")); });
     expect(putCalls()[1][1]).toEqual({ account_id: "acc-a",
       draft: { ...CONFIG, writers: ["hermes-4-405b", "deepseek-v4-flash"] }, rev: 4 });
@@ -879,10 +879,10 @@ describe("Full AI Chat page › Settings", () => {
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Human style" })); });
     expect(await screen.findByText("Human style: must be on or off")).toBeTruthy();
     expect(sendBtn().disabled).toBe(true);
-    expect(screen.getByText("Draft not stored — fix it or Reload")).toBeTruthy();
+    expect(screen.getByText("Draft not saved: fix it or Reload")).toBeTruthy();
   });
 
-  it("Save makes the draft the checkpoint, then Roll back swaps back; each disabled with nothing to do", async () => {
+  it("Make draft live makes the draft the checkpoint, then Roll back swaps back; each disabled with nothing to do; the status line follows", async () => {
     const draft = { ...CONFIG, gifs: true };
     mountSettings(configBody({ draft }), {
       post: (path, b) => path === "/admin/full-ai/config/save"
@@ -891,14 +891,17 @@ describe("Full AI Chat page › Settings", () => {
     });
     await loadedConfig();
     expect(btn("Roll back").disabled).toBe(true);
-    await waitFor(() => expect(btn("Save").disabled).toBe(false));
-    await act(async () => { fireEvent.click(btn("Save")); });
+    await waitFor(() => expect(btn("Make draft live").disabled).toBe(false));
+    expect(screen.getByText(
+      "Draft differs from the Live settings in 1: gifs. Fans keep the Live ones until you tap Make draft live.")).toBeTruthy();
+    await act(async () => { fireEvent.click(btn("Make draft live")); });
     expect(postsTo("/admin/full-ai/config/save").map((c) => c[1])).toEqual([{ account_id: "acc-a", rev: 3 }]);
     await waitFor(() => expect(btn("Roll back").disabled).toBe(false));
-    expect(btn("Save").disabled).toBe(true);
+    expect(btn("Make draft live").disabled).toBe(true);
+    expect(screen.getByText("Draft = Live settings. Fans get exactly what you see below.")).toBeTruthy();
     await act(async () => { fireEvent.click(btn("Roll back")); });
     expect(postsTo("/admin/full-ai/config/rollback").map((c) => c[1])).toEqual([{ account_id: "acc-a", rev: 4 }]);
-    await waitFor(() => expect(btn("Save").disabled).toBe(false)); // the draft differs from the restored checkpoint again
+    await waitFor(() => expect(btn("Make draft live").disabled).toBe(false)); // the draft differs from the restored checkpoint again
     await act(async () => { fireEvent.click(btn("Roll back")); });
     expect(postsTo("/admin/full-ai/config/rollback").map((c) => c[1])).toEqual([{ account_id: "acc-a", rev: 4 }, { account_id: "acc-a", rev: 5 }]);
   });
@@ -908,10 +911,10 @@ describe("Full AI Chat page › Settings", () => {
       post: () => { throw new RelayError(409, { detail: "Someone saved this config meanwhile. Reload.", rev: 9 }); },
     });
     await loadedConfig();
-    await waitFor(() => expect(btn("Save").disabled).toBe(false));
-    await act(async () => { fireEvent.click(btn("Save")); });
+    await waitFor(() => expect(btn("Make draft live").disabled).toBe(false));
+    await act(async () => { fireEvent.click(btn("Make draft live")); });
     expect(await screen.findByText("Someone saved this config meanwhile. Reload.")).toBeTruthy();
-    expect(btn("Save").disabled).toBe(true);
+    expect(btn("Make draft live").disabled).toBe(true);
     expect(settings().getByRole("switch", { name: "GIFs" }).hasAttribute("disabled")).toBe(true);
     const reads = () => relayGet.mock.calls.filter((c) => String(c[0]).startsWith("/admin/full-ai/config")).length;
     const before = reads();
@@ -920,52 +923,52 @@ describe("Full AI Chat page › Settings", () => {
     await waitFor(() => expect(screen.queryByText("Someone saved this config meanwhile. Reload.")).toBeNull());
   });
 
-  it("a Save refused with a 409 without rev shows the server's words beside Save, not the reload line", async () => {
+  it("a Make draft live refused with a 409 without rev shows the server's words beside it, not the reload line", async () => {
     const refused = "Not allowed now.";
     mountSettings(configBody({ draft: { ...CONFIG, gifs: true } }), {
       post: () => { throw new RelayError(409, { detail: refused }, refused); },
     });
     await loadedConfig();
-    await waitFor(() => expect(btn("Save").disabled).toBe(false));
-    await act(async () => { fireEvent.click(btn("Save")); });
+    await waitFor(() => expect(btn("Make draft live").disabled).toBe(false));
+    await act(async () => { fireEvent.click(btn("Make draft live")); });
     expect(await screen.findByText(refused)).toBeTruthy();
     expect(screen.queryByText(STALE_TEXT)).toBeNull();
     expect(settings().getByRole("switch", { name: "GIFs" }).hasAttribute("disabled")).toBe(false);
   });
 
-  it("JSON shows the checkpoint (old) next to the draft (new); storing the checkpoint PUTs it and adopts the answer", async () => {
+  it("JSON shows the Live settings (checkpoint) next to the Draft; saving the Live side PUTs the checkpoint and adopts the answer", async () => {
     const old = { ...CONFIG, gifs: true };
     mountSettings(configBody(), { put: (b) => configBody({ checkpoint: b.checkpoint, previous: CONFIG, rev: 4 }) });
     await loadedConfig();
-    fireEvent.click(btn("JSON (old + new)"));
-    const ck = await screen.findByRole("textbox", { name: "Checkpoint · old (saved) JSON" }) as HTMLTextAreaElement;
+    fireEvent.click(btn("JSON (Live + Draft)"));
+    const ck = await screen.findByRole("textbox", { name: "Live settings · what fans get JSON" }) as HTMLTextAreaElement;
     expect(JSON.parse(ck.value)).toEqual(CONFIG);
     fireEvent.change(ck, { target: { value: "{bad" } });
-    expect((within(screen.getByRole("dialog")).getByRole("button", { name: "Store checkpoint" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(screen.getByRole("dialog")).getByRole("button", { name: "Save Live settings" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(ck, { target: { value: JSON.stringify(old) } });
-    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store checkpoint" })); });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save Live settings" })); });
     const ckPuts = relayPut.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/config/checkpoint");
     expect(ckPuts.map((c) => c[1])).toEqual([{ account_id: "acc-a", checkpoint: old, rev: 3 }]);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(win("Checkpoint").getByText("Reply 0-2 min · Human style on · GIFs on · Caption chat")).toBeTruthy();
+    expect(win("Live settings").getByText("Reply 0-2 min · Human style on · GIFs on · Caption chat")).toBeTruthy();
     await waitFor(() => expect(btn("Roll back").disabled).toBe(false));
   });
 
-  it("JSON shows the All settings table: one row per reference key, Changed on a draft value off its default", async () => {
+  it("JSON shows the All settings table: one row per reference key, Live and Draft columns, Changed on a draft value off the Live one", async () => {
     mountSettings(configBody({ draft: { ...CONFIG, gifs: true } }));
     await loadedConfig();
-    fireEvent.click(btn("JSON (old + new)"));
+    fireEvent.click(btn("JSON (Live + Draft)"));
     const table = await within(screen.getByRole("dialog")).findByRole("table", { name: "All settings" });
     expect(within(screen.getByRole("dialog")).getByText("All settings", { selector: "h3" })).toBeTruthy();
     expect(within(table).getAllByRole("columnheader").map((c) => c.textContent))
-      .toEqual(["Setting", "Default", "Draft", "Allowed", "What it does", "Where"]);
+      .toEqual(["Setting", "Default", "Live", "Draft", "Allowed", "What it does", "Where"]);
     const rows = within(table).getAllByRole("row").slice(1);
     expect(rows.map((r) => within(r).getAllByRole("cell")[0].textContent)).toEqual(REFERENCE.map((r) => r.key));
     const row = (key: string) => rows[REFERENCE.findIndex((r) => r.key === key)];
     expect(within(row("gifs")).getAllByRole("cell").map((c) => c.textContent))
-      .toEqual(["gifs", "false", "trueChanged", "true | false", "Sticker GIFs in her replies.", "GIFs"]);
+      .toEqual(["gifs", "false", "false", "trueChanged", "true | false", "Sticker GIFs in her replies.", "GIFs"]);
     expect(within(row("reply_speed")).queryByText("Changed")).toBeNull();
-    expect(within(row("sext_on")).getAllByRole("cell").map((c) => c.textContent)[5]).toBe("JSON");
+    expect(within(row("sext_on")).getAllByRole("cell").map((c) => c.textContent)[6]).toBe("JSON");
     expect(within(table).getAllByText("Changed").length).toBe(1);
   });
 
@@ -979,15 +982,15 @@ describe("Full AI Chat page › Settings", () => {
       },
     });
     await loadedConfig();
-    fireEvent.click(btn("JSON (old + new)"));
-    const box = await screen.findByRole("textbox", { name: "Draft · new JSON" }) as HTMLTextAreaElement;
+    fireEvent.click(btn("JSON (Live + Draft)"));
+    const box = await screen.findByRole("textbox", { name: "Draft · Test chat only JSON" }) as HTMLTextAreaElement;
     expect(JSON.parse(box.value)).toEqual(CONFIG);
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, writer_timeout_s: 1 }) } });
-    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store draft" })); });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save draft" })); });
     expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, writer_timeout_s: 1 }, rev: 3 });
     expect(await within(screen.getByRole("dialog")).findByText(/writer_timeout_s: must be a number of seconds from 5 to 60/)).toBeTruthy();
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, writer_timeout_s: 30 }) } });
-    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store draft" })); });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save draft" })); });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(putCalls()[1][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, writer_timeout_s: 30 }, rev: 3 });
   });
@@ -1000,28 +1003,28 @@ describe("Full AI Chat page › Settings", () => {
     await act(async () => { fireEvent.click(btn("Reload")); });
     await loadedConfig();
     expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
-    fireEvent.click(btn("JSON (old + new)"));
-    const box = await screen.findByRole("textbox", { name: "Draft · new JSON" });
+    fireEvent.click(btn("JSON (Live + Draft)"));
+    const box = await screen.findByRole("textbox", { name: "Draft · Test chat only JSON" });
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, writer_timeout_s: 1 }) } });
-    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store draft" })); });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save draft" })); });
     await within(screen.getByRole("dialog")).findByText(/writer_timeout_s: must be a number/);
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
     fireEvent.change(composer(), { target: { value: "hey" } });
     expect(sendBtn().disabled).toBe(true);
     await act(async () => { fireEvent.click(btn("Reload")); });
     await waitFor(() => expect(sendBtn().disabled).toBe(false));
-    expect(screen.queryByText("Draft not stored — fix it or Reload")).toBeNull();
-    fireEvent.click(btn("JSON (old + new)"));
-    expect(JSON.parse((await screen.findByRole("textbox", { name: "Draft · new JSON" }) as HTMLTextAreaElement).value)).toEqual(CONFIG);
+    expect(screen.queryByText("Draft not saved: fix it or Reload")).toBeNull();
+    fireEvent.click(btn("JSON (Live + Draft)"));
+    expect(JSON.parse((await screen.findByRole("textbox", { name: "Draft · Test chat only JSON" }) as HTMLTextAreaElement).value)).toEqual(CONFIG);
   });
 
-  it("the persona block (Model info) sits here with 'not part of the checkpoint' next to its Save", async () => {
+  it("the persona block (Model info) sits here with 'not part of the Live settings / Draft' next to its Save", async () => {
     mountSettings();
     expect(await screen.findByRole("textbox", { name: "Model info" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Make persona from the Creator's images" })).toBeTruthy();
     const save = btn("Save model info");
     expect(within(save.parentElement as HTMLElement)
-      .getByText("Saves for every live chat on this Creator now (not part of the checkpoint)")).toBeTruthy();
+      .getByText("Saves for every live chat on this Creator now (not part of the Live settings / Draft)")).toBeTruthy();
   });
 });
 
@@ -1048,11 +1051,11 @@ describe("Full AI Chat page › applied draft", () => {
     await apply();
     await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60 min" }).getAttribute("aria-checked")).toBe("true"));
     expect(win("Draft").getByText("Reply 0-15-60 min · Human style on · GIFs off · Caption chat")).toBeTruthy();
-    expect(win("Checkpoint").getByText("Reply 0-2 min · Human style on · GIFs off · Caption chat")).toBeTruthy();
+    expect(win("Live settings").getByText("Reply 0-2 min · Human style on · GIFs off · Caption chat")).toBeTruthy();
     expect(bar()).toBeNull();
     fireEvent.change(composer(), { target: { value: "hey" } });
     expect(sendBtn().disabled).toBe(false);
-    expect(btn("Save").disabled).toBe(false);
+    expect(btn("Make draft live").disabled).toBe(false);
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "GIFs" })); });
     expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...slower, gifs: true }, rev: 4 });
   });
@@ -1067,7 +1070,7 @@ describe("Full AI Chat page › applied draft", () => {
     expect(settings().getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("true");
     expect(speed().getByRole("radio", { name: "0-2 min" }).getAttribute("aria-checked")).toBe("true");
     fireEvent.change(composer(), { target: { value: "hey" } });
-    expect([sendBtn().disabled, btn("Save").disabled]).toEqual([true, true]);
+    expect([sendBtn().disabled, btn("Make draft live").disabled]).toEqual([true, true]);
     expect([settings().getByRole("switch", { name: "Sell" }).hasAttribute("disabled"), btn("Choose").disabled]).toEqual([true, true]);
     expect(screen.getByText("Keep mine or Take theirs first")).toBeTruthy();
     await act(async () => { fireEvent.click(btn("Take theirs")); });
@@ -1099,18 +1102,18 @@ describe("Full AI Chat page › applied draft", () => {
     expect(settings().getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("true");
   });
 
-  it("JSON open while an Apply lands: both Store buttons go off and the alert says to copy the text first (rwl-c R2-3)", async () => {
+  it("JSON open while an Apply lands: both Save buttons go off and the alert says to copy the text first (rwl-c R2-3)", async () => {
     // rwl-c F1: the boxes were read at rev 3; storing them would overwrite the Apply's draft (the server 409s on rev 3).
     const apply = mountApplied();
     await loadedConfig();
-    fireEvent.click(btn("JSON (old + new)"));
-    const box = await screen.findByRole("textbox", { name: "Draft · new JSON" }) as HTMLTextAreaElement;
+    fireEvent.click(btn("JSON (Live + Draft)"));
+    const box = await screen.findByRole("textbox", { name: "Draft · Test chat only JSON" }) as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, gifs: true }) } });
     await apply();
     await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60 min" }).getAttribute("aria-checked")).toBe("true"));
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByRole("alert").textContent).toMatch(/changed elsewhere since you opened this.*Copy your text before Cancel/);
-    for (const name of ["Store draft", "Store checkpoint"]) {
+    for (const name of ["Save draft", "Save Live settings"]) {
       const b = dialog.getByRole("button", { name }) as HTMLButtonElement;
       expect(b.disabled).toBe(true);
       await act(async () => { fireEvent.click(b); });
@@ -1123,14 +1126,14 @@ describe("Full AI Chat page › applied draft", () => {
   it("JSON open while an Apply lands: untouched boxes still close on Escape; reopened they show the newer draft", async () => {
     const apply = mountApplied();
     await loadedConfig();
-    fireEvent.click(btn("JSON (old + new)"));
-    await screen.findByRole("textbox", { name: "Draft · new JSON" });
+    fireEvent.click(btn("JSON (Live + Draft)"));
+    await screen.findByRole("textbox", { name: "Draft · Test chat only JSON" });
     await apply();
     await waitFor(() => expect(speed().getByRole("radio", { name: "0-15-60 min" }).getAttribute("aria-checked")).toBe("true"));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    fireEvent.click(btn("JSON (old + new)"));
-    const box = await screen.findByRole("textbox", { name: "Draft · new JSON" }) as HTMLTextAreaElement;
+    fireEvent.click(btn("JSON (Live + Draft)"));
+    const box = await screen.findByRole("textbox", { name: "Draft · Test chat only JSON" }) as HTMLTextAreaElement;
     expect(JSON.parse(box.value)).toEqual(slower);
     expect(within(screen.getByRole("dialog")).queryByText(/changed elsewhere since you opened this/)).toBeNull();
   });
@@ -1143,10 +1146,10 @@ describe("Full AI Chat page › applied draft", () => {
       },
     });
     await loadedConfig();
-    fireEvent.click(btn("JSON (old + new)"));
-    const ck = await screen.findByRole("textbox", { name: "Checkpoint · old (saved) JSON" });
+    fireEvent.click(btn("JSON (Live + Draft)"));
+    const ck = await screen.findByRole("textbox", { name: "Live settings · what fans get JSON" });
     fireEvent.change(ck, { target: { value: JSON.stringify({ ...CONFIG, gifs: true }) } });
-    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Store checkpoint" })); });
+    await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save Live settings" })); });
     const ckPuts = relayPut.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/config/checkpoint");
     expect(ckPuts.map((c) => c[1].rev)).toEqual([3]);
     expect(await within(screen.getByRole("dialog")).findByText("Someone saved this config meanwhile. Reload.")).toBeTruthy();
@@ -1313,21 +1316,21 @@ describe("Full AI Chat page › PPV bubble", () => {
       if (String(path) !== "/admin/full-ai/test/settle") return inner(path, b);
       try { return Promise.resolve(settle(b)); } catch (e) { return Promise.reject(e); }
     });
-    await screen.findByRole("region", { name: "Checkpoint" });
+    await screen.findByRole("region", { name: "Live settings" });
     skipWait();
     await say("send me pics");
-    await win("Checkpoint").findByTestId("ppv");
+    await win("Live settings").findByTestId("ppv");
   };
 
   it("shows the Pick's mirror thumbnails and the price; Buy / Decline only on the priced unsettled bubble", async () => {
     await mountPpv();
-    const cp = within(win("Checkpoint").getByTestId("ppv"));
-    expect([...win("Checkpoint").getByTestId("ppv").querySelectorAll("img")].map((i) => i.getAttribute("src"))).toEqual([21, 22, 23].map(
+    const cp = within(win("Live settings").getByTestId("ppv"));
+    expect([...win("Live settings").getByTestId("ppv").querySelectorAll("img")].map((i) => i.getAttribute("src"))).toEqual([21, 22, 23].map(
       (id) => `/admin/vault-ai/thumb?account_id=acc-a&media_id=${id}`));
     expect(cp.getByText("$15")).toBeTruthy();
     expect(cp.getByTestId("ppv-media").textContent).toBe("2 videos · 1:12");     // the locked clips, not the preview
-    expect(win("Checkpoint").getByRole("button", { name: "Buy" })).toBeTruthy();
-    expect(win("Checkpoint").getByRole("button", { name: "Decline" })).toBeTruthy();
+    expect(win("Live settings").getByRole("button", { name: "Buy" })).toBeTruthy();
+    expect(win("Live settings").getByRole("button", { name: "Decline" })).toBeTruthy();
     const draft = await win("Draft").findByTestId("ppv");
     expect(within(draft).getByText("Free")).toBeTruthy();
     expect(within(draft).queryByTestId("ppv-media")).toBeNull();                // no `items`: no line
@@ -1337,22 +1340,22 @@ describe("Full AI Chat page › PPV bubble", () => {
 
   it("Buy settles that row (checkpoint side, with account_id) and the bubble reads '$15 · paid'", async () => {
     await mountPpv();
-    await act(async () => { fireEvent.click(win("Checkpoint").getByRole("button", { name: "Buy" })); });
+    await act(async () => { fireEvent.click(win("Live settings").getByRole("button", { name: "Buy" })); });
     expect(settleCalls().length).toBe(1);
     const body = settleCalls()[0][1] as Record<string, unknown>;
     expect(body).toEqual({ account_id: "acc-a", pair: (turnCalls()[0][1] as Body).pair, side: "checkpoint", row_id: 31, outcome: "bought" });
-    await waitFor(() => expect(win("Checkpoint").getByTestId("ppv").textContent).toContain("$15 · paid"));
-    expect(win("Checkpoint").queryByRole("button", { name: "Buy" })).toBeNull();
+    await waitFor(() => expect(win("Live settings").getByTestId("ppv").textContent).toContain("$15 · paid"));
+    expect(win("Live settings").queryByRole("button", { name: "Buy" })).toBeNull();
   });
 
   it("Decline reads '$15 · not paid'; a 409 lands the stored outcome; a failed settle restores the buttons", async () => {
     await mountPpv(() => { throw new RelayError(409, { detail: "already_settled", outcome: "declined" }); });
-    await act(async () => { fireEvent.click(win("Checkpoint").getByRole("button", { name: "Buy" })); });
-    await waitFor(() => expect(win("Checkpoint").getByTestId("ppv").textContent).toContain("$15 · not paid"));
+    await act(async () => { fireEvent.click(win("Live settings").getByRole("button", { name: "Buy" })); });
+    await waitFor(() => expect(win("Live settings").getByTestId("ppv").textContent).toContain("$15 · not paid"));
     cleanup();
     await mountPpv(() => { throw new RelayError(503, {}, "relay 503"); });
-    await act(async () => { fireEvent.click(win("Checkpoint").getByRole("button", { name: "Decline" })); });
-    expect(await win("Checkpoint").findByText("relay 503")).toBeTruthy();
-    expect((win("Checkpoint").getByRole("button", { name: "Buy" }) as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => { fireEvent.click(win("Live settings").getByRole("button", { name: "Decline" })); });
+    expect(await win("Live settings").findByText("relay 503")).toBeTruthy();
+    expect((win("Live settings").getByRole("button", { name: "Buy" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

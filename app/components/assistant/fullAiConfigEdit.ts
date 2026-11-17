@@ -2,7 +2,7 @@
  * Do-mode's `full_ai_config` (docs/spec/phase-03c-full-ai-one-click-setup.md, D63): "reply slower" → a proposed change
  * of the Creator's Full AI draft. The server proposes (service/assistant_full_ai.py: the fresh stored draft, the patch,
  * 03a's `validate`); Apply is the page's own rev-checked `PUT /admin/full-ai/config/draft`, one request. The checkpoint
- * is never touched — Save on the page makes the draft live. This file is the pure half the card and the runner read
+ * is never touched — Make draft live on the page sends the draft to fans. This file is the pure half the card and the runner read
  * (fullAiConfigEdit.test.ts).
  */
 
@@ -63,7 +63,7 @@ export function applyBody(slots: FullAiConfigSlots, accountId: string) {
   return { account_id: accountId, draft: slots.after, rev: slots.rev };
 }
 
-export const APPLIED_LINE = "Draft updated. Save on the page makes it the checkpoint.";
+export const APPLIED_LINE = "Draft updated. Make draft live on the page sends it to fans.";
 export const STALE_LINE = "The draft changed since you saw it. Ask again.";
 
 /** The PUT's answers that end a config run (any other error fails it). */

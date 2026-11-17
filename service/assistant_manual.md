@@ -895,17 +895,17 @@ itself: chat, sexting and selling PPVs from the vault. Jev (the TypeSafe router)
 decides what each reply does; a Writer model writes it.
 
 **Where:** **Full AI Chat** (`/full-ai-chatter`), owner only: every change (a
-setting, Save, the Mode, Fans, Model info here, even a Test chat line) is
+setting, Make draft live, the Mode, Fans, Model info here, even a Test chat line) is
 refused to an employee. Pick the creator at the top. Top to bottom: the settings
 column, Model info, Who Full AI answers when Live, Content, Test chat, Today,
 Revenue, Newest.
 
-**Mode — Off / Live** (settings column; Save and Roll back never move it):
-- **Live** asks "Go Live?" → **Go Live**. It then replies, on the checkpoint, to
-  the fans the Fans list allows, and catches up chats already waiting
-  (`catchup_minutes`). Greyed out, the reason in red, while a checkpoint Writer
-  has no key for its provider (add it in Settings → AI keys, or untick it under
-  Writers and Save), there is no TypeSafe key, or the key check failed (Reload).
+**Mode — Off / Live** (settings column; Make draft live and Roll back never move it):
+- **Live** asks "Go Live?" → **Go Live**. It then replies, with the Live
+  settings, to the fans the Fans list allows, and catches up chats already
+  waiting (`catchup_minutes`). Greyed out, the reason in red, while a Writer in
+  the Live settings has no key for its provider (add it in Settings → AI keys,
+  or untick it under Writers and Make draft live), there is no TypeSafe key, or the key check failed (Reload).
   An empty Fans list does not block it.
 - **Off** sends nothing and drops replies already queued.
 - **Shadow (records only)** shows only on an old rule: records what the AI would
@@ -921,14 +921,16 @@ A queued reply waits for its due time; with Reply speed `0-15-60` that can be
 up to an hour after his message, and that is not a failure. A paused or busy fan
 is retried twice 20 s apart, then left to the sweep.
 
-**Draft and checkpoint:** Live runs the **checkpoint**. Every control stores at
-once into the **draft**, which changes nothing live until **Save** (draft →
-checkpoint, old one kept). **Roll back** swaps the checkpoint with the previous
-one; press again to undo. The draft stays either way. **JSON (old + new)** shows
-both as raw JSON side by side, each with its own **Store checkpoint** / **Store
-draft** (Roll back undoes a stored checkpoint too). Below them, **All settings**
-lists every key: default, draft value ("Changed" if not the default), allowed
-values, what it does, where it is set. A draft changed elsewhere (a help
+**Draft and Live settings:** fans get the **Live settings**. Every switch
+stores at once into the **Draft**, which only the Test chat uses; nothing
+changes for fans until **Make draft live** (Draft → Live settings, the old ones
+kept). The line under the buttons says whether the Draft differs from the Live
+settings and in which keys. **Roll back** brings the previous Live settings
+back; press again to undo. The Draft stays either way. **JSON (Live + Draft)**
+shows both as raw JSON side by side, each with its own **Save Live settings** /
+**Save draft** (Roll back undoes a saved Live side too). Below them, **All
+settings** lists every key: default, Live value, Draft value ("Changed" if it
+differs from the Live one), allowed values, what it does, where it is set. A draft changed elsewhere (a help
 assistant apply) during your edit raises **Keep mine** / **Take theirs**.
 **Reload** re-reads the stored config after an error.
 
@@ -1033,11 +1035,12 @@ is an old alias still accepted; it wins over `style`.
 (Auto-reply reads it too), up to 1000 characters. **Make persona from the
 Creator's images** fills the box from her described photos (a paid call).
 **Save model info** saves straight to the account, live in every chat at once;
-it is not in the draft or checkpoint, so Save and Roll back don't touch it.
+it is not in the Draft or Live settings, so Make draft live and Roll back don't
+touch it.
 
 **Who Full AI answers when Live** — Live only; its own write, applied at once
-to draft and checkpoint alike; Save, Roll back and the JSON boxes never change
-it:
+to Draft and Live settings alike; Make draft live, Roll back and the JSON boxes
+never change it:
 - **Fans** (`fans`) → **Choose**: each OnlyFans fan list Include / Exclude /
   Neither, then the dialog's Save. Nothing included (the default, **Fans &
   Following**) = every fan; an excluded list wins over an include. While Live,
@@ -1057,8 +1060,8 @@ it:
 - **Prepare content**: harvest, describe, AI folders, feet pack, skipping what is
   done, with each step's progress. Sends nothing to OnlyFans.
 
-**Test chat:** type as a fan; each line goes to two windows, **Checkpoint** and
-**Draft**, to compare before Save. Nothing is sent on OnlyFans, but the AI calls
+**Test chat:** type as a fan; each line goes to two windows, **Live settings**
+(what fans get) and **Draft**, to compare before Make draft live. Nothing is sent on OnlyFans, but the AI calls
 are paid. The paperclip attaches a photo (JPG, PNG, GIF or WebP, up to 20 MB); a
 PPV shows **Buy** / **Decline** to fake his answer; **Skip wait** skips her
 reply delay; **Retry** re-runs a failed turn; **New chat** starts over. Under
@@ -1080,10 +1083,10 @@ comparison group: buy rates, not proof of extra revenue.
 
 **Help assistant:** with the Creator picked, ask it ("reply slower", "turn GIFs
 off", "use Euryale then Hermes"): it shows a card with each change, before and
-after; **Apply to draft** stores it in the draft only, and Save on Full AI Chat
-makes it live. If the draft changed since the card, Apply answers "The draft
+after; **Apply to draft** stores it in the Draft only, and Make draft live on Full AI
+Chat sends it to fans. If the draft changed since the card, Apply answers "The draft
 changed since you saw it. Ask again." It can change every setting above except
-Fans and Top spend limit. It cannot Save, Roll back, store the checkpoint,
+Fans and Top spend limit. It cannot Make draft live, Roll back, save the Live settings JSON,
 switch Off / Live or edit Model info. Owner only.
 
 ## kind: send_welcome — Welcome new subscribers

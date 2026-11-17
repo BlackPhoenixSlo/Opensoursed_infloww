@@ -526,7 +526,7 @@ def case_audience_keys_carried_table():
     assert {k: c["checkpoint"][k] for k in aud} == aud and c["checkpoint"]["sell_on"] is True, c
     # A body only changing an audience key is unchanged, not a new checkpoint.
     assert _raises(Invalid, put_checkpoint, c, {**c["checkpoint"], **other}, 5).errors == [
-        "checkpoint: unchanged, nothing to store"]
+        "Live settings: no change, nothing to save"]
     rb = rollback(c, 5)
     assert all({k: rb[side][k] for k in aud} == aud for side in ("checkpoint", "previous", "draft")), rb
     # Set later, then roll back: the new value holds on every side.
@@ -598,7 +598,7 @@ def case_transitions_and_stale_rev():
     s2 = save(s1, 1)
     assert s2 == {"checkpoint": formal, "previous": DEFAULTS, "draft": formal, "rev": 2}, s2
     assert _raises(StaleRev, save, s1, 0).rev == 1
-    assert _raises(Invalid, save, s2, 2).errors == ["draft: same as the checkpoint, nothing to save"]
+    assert _raises(Invalid, save, s2, 2).errors == ["Draft is the same as the Live settings: nothing to make live"]
     s3 = rollback(s2, 2)
     assert s3 == {"checkpoint": DEFAULTS, "previous": formal, "draft": formal, "rev": 3}, s3
     s4 = rollback(s3, 3)
@@ -612,7 +612,7 @@ def case_transitions_and_stale_rev():
     assert rollback(c1, 2)["checkpoint"] == DEFAULTS
     assert _raises(StaleRev, put_checkpoint, s1, DEFAULTS, 0).rev == 1
     assert _raises(Invalid, put_checkpoint, s1, {"writers": []}, 1).errors == ["writers: needs 1 to 6 Writers"]
-    assert _raises(Invalid, put_checkpoint, s1, DEFAULTS, 1).errors == ["checkpoint: unchanged, nothing to store"]
+    assert _raises(Invalid, put_checkpoint, s1, DEFAULTS, 1).errors == ["Live settings: no change, nothing to save"]
     # Pure: the inputs are untouched.
     before = copy.deepcopy(s2)
     save(put_draft(s2, DEFAULTS, 2), 3)
@@ -692,7 +692,7 @@ def case_config_api_round_trip():
     assert OWNER_A.post(f"{CONFIG}/save", json={"account_id": A, "rev": 1}).status_code == 409
     nothing = OWNER_A.post(f"{CONFIG}/save", json={"account_id": A, "rev": 2})
     assert nothing.status_code == 422 and nothing.json() == {
-        "errors": ["draft: same as the checkpoint, nothing to save"]}, nothing.text
+        "errors": ["Draft is the same as the Live settings: nothing to make live"]}, nothing.text
     back = OWNER_A.post(f"{CONFIG}/rollback", json={"account_id": A, "rev": 2})
     assert back.status_code == 200, back.text
     assert (back.json()["checkpoint"], back.json()["previous"], back.json()["rev"]) == (

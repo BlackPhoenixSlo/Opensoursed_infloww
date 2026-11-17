@@ -3,7 +3,7 @@
 /**
  * Full AI Chat (ours; owner only, a top-level sidebar link, same /full-ai-chatter address). The header's "AI rules"
  * opens the Full AI Turn diagram (`AiRulesDiagram`, also at /ai-rules) in a near full-screen popup. A settings column
- * (`FullAiSettings`: Save / Roll back / JSON over the draft config on top, then Mode, LLM keys, reply speed, Human
+ * (`FullAiSettings`: Make draft live / Roll back / JSON over the draft config on top, then Mode, LLM keys, reply speed, Human
  * style, GIFs, Sell); beside it (under it on a phone: the column comes first) one row with the persona editor
  * (`ModelInfoBlock`, saved straight to the account, not into the checkpoint) and, beside that, "Who Full AI answers
  * when Live" (`FullAiAudience`: Fans, Top spend limit; its own write) over "Content" (Content folders, which
@@ -44,7 +44,7 @@ import { deniedPage } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
 const TITLE = "Full AI Chat";
-const PERSONA_NOTE = "Saves for every live chat on this Creator now (not part of the checkpoint)";
+const PERSONA_NOTE = "Saves for every live chat on this Creator now (not part of the Live settings / Draft)";
 
 const CELL = cn(IF_TABLE.td, "whitespace-nowrap py-2");
 const HEAD = cn(IF_TABLE.th, IF_TABLE.thDivider);
@@ -109,7 +109,7 @@ function FullAiChatter({ accountId, creators }: { accountId: string; creators: C
           </div>
           <FormBlock title="Test chat">
             <p className="text-[12px] text-muted">
-              Type as a fan. Checkpoint answers with the saved config, Draft with your draft. Nothing is sent on OnlyFans.
+              Type as a fan. Left answers with the Live settings (what fans get), right with your Draft. Nothing is sent on OnlyFans.
             </p>
             <FullAiTestChat chat={chat} accountId={accountId} />
           </FormBlock>

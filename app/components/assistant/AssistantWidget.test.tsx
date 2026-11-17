@@ -775,7 +775,7 @@ describe("AssistantWidget: Do it for me", () => {
 
     await userEvent.click(within(plan).getByRole("button", { name: "Apply to draft" }));
     const res = await screen.findByTestId("do-config-result");
-    expect(within(res).getByText("Draft updated. Save on the page makes it the checkpoint.")).toBeTruthy();
+    expect(within(res).getByText("Draft updated. Make draft live on the page sends it to fans.")).toBeTruthy();
     expect(relayPut.mock.calls).toEqual([[
       "/admin/full-ai/config/draft", { account_id: "1001", draft: CONFIG.after, rev: 4 }, { accountId: "1001", employeeId: 7 },
     ]]);

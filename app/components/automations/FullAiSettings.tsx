@@ -1,9 +1,10 @@
 "use client";
 
 /**
- * Full AI Chat's settings column (spec phase-03a, 03b). On top Save / Roll back / JSON with their errors (owner
- * 2026-11-15: seen without scrolling). Then, apart from the bot config: the Mode control (Off / Live,
- * `FullAiModeControl`; Save / Roll back / JSON never move it). "Who Full AI answers when Live" (`FullAiAudience` in
+ * Full AI Chat's settings column (spec phase-03a, 03b). On top Make draft live / Roll back / JSON with their errors
+ * (owner 2026-11-15: seen without scrolling) and a status line saying whether the Draft (what the switches edit, only
+ * the Test chat uses it) differs from the Live settings (the checkpoint, what fans get; `draftDiffLine`). Then, apart
+ * from the bot config: the Mode control (Off / Live, `FullAiModeControl`; Make draft live / Roll back / JSON never move it). "Who Full AI answers when Live" (`FullAiAudience` in
  * `FullAiFans.tsx`: Fans and Top spend limit, their own write) sits on the page, above the Test chat.
  * Then the bot config, controls in a list named "Settings" (numbered as before; 1, 17 and 18 moved up):
  *   2. LLM keys: whether each provider the Writers run on (draft and checkpoint; the config GET's `writer_providers`)
@@ -19,12 +20,13 @@
  *   14. PPV caption (`caption_writer`: Last bubble / Own call). 15. Content folders and 16. Prepare content
  *   (`FullAiSellSettings.tsx`, ticket 49) sit on the page, above the Test chat. The Questions / PPV caption options are the server's (`limits`).
  * Controls 3-15 edit the draft config and store it at once (`useFullAiConfig.edit`); the Test chat's Send waits meanwhile.
- * Above them: Save (draft → checkpoint), Roll back (swap checkpoint and previous), JSON (checkpoint and draft side by
- * side, each editable and stored on its own, validated by the server; under them the read-only "All settings" table off the
- * GET's `reference`: every key's default, the draft's value, what it accepts and does), then right under them the field
+ * Above them: Make draft live (draft → checkpoint), Roll back (swap checkpoint and previous), JSON (Live + Draft: checkpoint
+ * and draft side by side, each editable and saved on its own, validated by the server; under them the read-only "All
+ * settings" table off the GET's `reference`: every key's default, the Live and the draft's value, what it accepts and
+ * does), then right under them the field
  * errors (a 409 without `rev` shows its words), and on a stale rev a reload message. Reload shows with either: it reads the stored config again, the way back from a refused edit or a failed read.
  * A draft stored elsewhere (the assistant's Apply) while an edit is unsaved raises the Keep mine / Take theirs bar on
- * top (ticket 57); controls, Save and Send wait until one is picked.
+ * top (ticket 57); controls, Make draft live and Send wait until one is picked.
  * State lives in the Test chat reducer (`fullAiTestChat.ts`); this file renders and calls the hook.
  */
 
@@ -34,7 +36,7 @@ import { useReducer, useState } from "react";
 import { ROW, SwitchRow } from "@/components/automations/automationPage";
 import { FullAiModeControl } from "@/components/automations/FullAiModeControl";
 import {
-  captionLabel, chatSwitch, humanStyle, humanStylePatch, infoQuestionsLabel, layersOff, sellSwitches, speedLabel,
+  captionLabel, chatSwitch, draftDiffLine, humanStyle, humanStylePatch, infoQuestionsLabel, layersOff, sellSwitches, speedLabel,
   styleLayers, gifPct, gifPctPatch, sellSwitchPatch, settingRows, toggleWriterPatch,
   typoPct, typoPctPatch, typosPatch, writerPatch, type ChatSwitchKey, type FullAiConfig, type SettingRow,
 } from "@/components/automations/fullAiConfig";
@@ -59,18 +61,20 @@ export function FullAiSettings({ state, cfg, accountId }: {
   const draft = state.draft;
   const editable = canEdit(state);
   const off = !editable;
+  const diff = draftDiffLine(state.checkpoint, draft, cfg.reference.map((r) => r.key));
 
   return (
     <div className="space-y-3">
       {state.conflict && <ConflictBar cfg={cfg} canKeep={keepMineSave(state) !== null} />}
       {/* On top, so it is seen without scrolling the list (owner 2026-11-15). */}
       <div className="flex flex-wrap items-center gap-2">
-        <IfButton variant="primary" disabled={!canSave(state)} onClick={cfg.save}>Save</IfButton>
+        <IfButton variant="primary" disabled={!canSave(state)} onClick={cfg.save}>Make draft live</IfButton>
         <IfButton disabled={!canRollback(state)} onClick={cfg.rollback}>Roll back</IfButton>
-        <IfButton disabled={off} onClick={() => setJsonOpen(true)}>JSON (old + new)</IfButton>
-        {state.savingDraft && <span role="status" className="text-[12px] text-muted">Storing draft…</span>}
+        <IfButton disabled={off} onClick={() => setJsonOpen(true)}>JSON (Live + Draft)</IfButton>
+        {state.savingDraft && <span role="status" className="text-[12px] text-muted">Saving draft…</span>}
       </div>
-      {/* Right under Save: a refused Save / Roll back / edit shows where it was tapped. */}
+      {diff && <p role="status" className={cn("text-[12px]", diff.differs ? "text-warn" : "text-muted")}>{diff.text}</p>}
+      {/* Right under Make draft live: a refused Make draft live / Roll back / edit shows where it was tapped. */}
       {state.stale && <p role="alert" className="text-[12px] text-warn">{STALE_TEXT}</p>}
       {state.errors.length > 0 && !jsonOpen && (
         <ul aria-label="Config errors" className="space-y-1 text-[12px] text-err">
@@ -84,10 +88,11 @@ export function FullAiSettings({ state, cfg, accountId }: {
         </div>
       )}
       <p className="text-[12px] text-muted">
-        Save makes the draft the checkpoint. Roll back swaps back; tap it again to undo.
+        The switches below change the Draft: only the Test chat uses it. Make draft live copies it to the Live settings, the
+        ones fans get. Roll back brings the previous Live settings back; tap it again to undo.
       </p>
 
-      {/* Live or not: apart from the bot config below (its Save / Roll back never move it). */}
+      {/* Live or not: apart from the bot config below (its Make draft live / Roll back never move it). */}
       <p className="text-[14px] text-fg">
         Live: replies to the fans on its Fans list on OnlyFans. Off: sends nothing.
       </p>
@@ -275,7 +280,7 @@ function ConflictBar({ cfg, canKeep }: { cfg: FullAiConfigApi; canKeep: boolean 
         <IfButton variant="primary" disabled={!canKeep} onClick={cfg.keepMine}>Keep mine</IfButton>
         <IfButton onClick={cfg.takeTheirs}>Take theirs</IfButton>
       </div>
-      <p className="text-xs text-muted">Keep mine stores your edit over it; Take theirs drops your edit. Send and Save wait until you pick.</p>
+      <p className="text-xs text-muted">Keep mine stores your edit over it; Take theirs drops your edit. Send and Make draft live wait until you pick.</p>
     </div>
   );
 }
@@ -311,11 +316,11 @@ function KeysRow({ state, cfg }: { state: TestChatState; cfg: FullAiConfigApi })
   );
 }
 
-const JSON_TITLE: Record<JsonSide, string> = { checkpoint: "Checkpoint · old (saved)", draft: "Draft · new" };
-const JSON_SAVE: Record<JsonSide, string> = { checkpoint: "Store checkpoint", draft: "Store draft" };
+const JSON_TITLE: Record<JsonSide, string> = { checkpoint: "Live settings · what fans get", draft: "Draft · Test chat only" };
+const JSON_SAVE: Record<JsonSide, string> = { checkpoint: "Save Live settings", draft: "Save draft" };
 
-/** Both sides as raw JSON next to each other (a `RawJsonEditor` + `RawJsonActions` each): Checkpoint (old) and Draft
- *  (new), each editable and stored on its own.
+/** Both sides as raw JSON next to each other (a `RawJsonEditor` + `RawJsonActions` each): the Live settings
+ *  (checkpoint) and the Draft, each editable and saved on its own.
  *  Bad JSON never leaves its box; the server checks the keys and answers field errors. Storing the checkpoint keeps
  *  the old one as `previous` (Roll back undoes it). Both store on the rev the boxes were read at (`jsonEditInit`):
  *  one the page adopts meanwhile turns both Store buttons off (`jsonMoved`), one it has not read yet answers 409 and
@@ -342,7 +347,7 @@ function ConfigJson({ state, cfg, onClose }: { state: TestChatState; cfg: FullAi
   return (
     <IfModal width={1200} size="editor" title="Full AI config JSON" onClose={onClose} keyboard={!busy && !typed}
       footer={<IfButton onClick={onClose}>Cancel</IfButton>}>
-      <IfHelp className="-mt-3 mb-3">Old (checkpoint) left, new (draft) right: what the Test chat split-tests. Unknown keys are refused. fans and top_spend_cents are set above (Who Full AI answers); edits of them here are ignored.</IfHelp>
+      <IfHelp className="-mt-3 mb-3">Left: the Live settings, what fans get. Right: the Draft, used only by the Test chat. Each box saves on its own. Unknown keys are refused. fans and top_spend_cents are set above (Who Full AI answers); edits of them here are ignored.</IfHelp>
       {moved && !state.stale && (
         <p role="alert" className="-mt-1 mb-3 text-[12px] text-warn">
           The config changed elsewhere since you opened this (an assistant Apply), so these boxes can&apos;t be stored. Copy
@@ -360,24 +365,24 @@ function ConfigJson({ state, cfg, onClose }: { state: TestChatState; cfg: FullAi
               <div className="flex flex-wrap items-center gap-2">
                 <RawJsonActions onReformat={() => { if (v) setText(side, prettyJson(v)); }} reformatDisabled={!v}
                   onSave={() => void store(side)} saveDisabled={!v || busy || moved || !canEdit(state)} busy={busy}
-                  saveLabel={JSON_SAVE[side]} busyLabel="Storing…" />
+                  saveLabel={JSON_SAVE[side]} busyLabel="Saving…" />
               </div>
             </section>
           );
         })}
       </div>
       {serverError && <div className="mt-3 whitespace-pre-wrap text-[12px] text-err">{serverError}</div>}
-      <AllSettings rows={settingRows(cfg.reference, state.draft)} />
+      <AllSettings rows={settingRows(cfg.reference, state.checkpoint, state.draft)} />
     </IfModal>
   );
 }
 
-const SETTING_COLS = ["Setting", "Default", "Draft", "Allowed", "What it does", "Where"] as const;
+const SETTING_COLS = ["Setting", "Default", "Live", "Draft", "Allowed", "What it does", "Where"] as const;
 const CELL = cn(IF_TABLE.td, "px-3 py-2 align-top text-[12px]");
 const CODE = cn(CELL, "break-all font-mono");
 
-/** Read-only: every key the JSON takes (the GET's `reference`), its default, the draft's value ("Changed" when it
- *  differs), what it accepts and does, and the page control that edits it. Scrolls sideways in its own box. */
+/** Read-only: every key the JSON takes (the GET's `reference`), its default, the Live settings' (checkpoint's) and the
+ *  draft's value ("Changed" when the draft's differs from the Live one), what it accepts and does, and the page control that edits it. Scrolls sideways in its own box. */
 function AllSettings({ rows }: { rows: SettingRow[] }) {
   if (rows.length === 0) return null;
   return (
@@ -385,10 +390,10 @@ function AllSettings({ rows }: { rows: SettingRow[] }) {
       <h3 className="text-[14px] font-semibold text-fg">All settings</h3>
       <IfHelp>
         Every key the JSON takes: its default, the values it accepts and what it does. &quot;Changed&quot; marks a draft value
-        that differs from the default.
+        that differs from the Live one.
       </IfHelp>
       <div className="max-w-full overflow-x-auto rounded-lg border border-border">
-        <table aria-label="All settings" className={cn(IF_TABLE.table, "min-w-[960px]")}>
+        <table aria-label="All settings" className={cn(IF_TABLE.table, "min-w-[1120px]")}>
           <thead>
             <tr>
               {SETTING_COLS.map((c) => (
@@ -401,6 +406,7 @@ function AllSettings({ rows }: { rows: SettingRow[] }) {
               <tr key={r.key} className={IF_TABLE.row}>
                 <td className={cn(CELL, "whitespace-nowrap font-mono")}>{r.key}</td>
                 <td className={cn(CODE, "w-[160px] text-muted")}>{r.def}</td>
+                <td className={cn(CODE, "w-[160px]")}>{r.live}</td>
                 <td className={cn(CODE, "w-[180px]")}>
                   {r.value}
                   {r.changed && <Badge color="warn" className="ml-1.5 font-sans">Changed</Badge>}

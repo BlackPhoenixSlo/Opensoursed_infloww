@@ -182,18 +182,18 @@ const ready = () => run(initTestChat("p1"), loaded(), typed("hey"));
 describe("config: draft edits gate Send", () => {
   it("editDraft sets dirty; canSend is false until draftSaved", () => {
     const s = run(ready(), edit());
-    expect([s.dirty, s.draft, canSend(s), sendBlock(s)]).toEqual([true, gifsOn, false, "Draft not stored — fix it or Reload"]);
+    expect([s.dirty, s.draft, canSend(s), sendBlock(s)]).toEqual([true, gifsOn, false, "Draft not saved: fix it or Reload"]);
     const saved = run(s, { type: "saveDraft" }, stored());
     expect([saved.dirty, saved.savingDraft, saved.rev, canSend(saved), sendBlock(saved)]).toEqual([false, false, 4, true, null]);
   });
   it("canSend is false while savingDraft", () => {
     const s = run(ready(), edit(), { type: "saveDraft" });
-    expect([s.savingDraft, canSend(s), sendBlock(s)]).toEqual([true, false, "Storing draft…"]);
+    expect([s.savingDraft, canSend(s), sendBlock(s)]).toEqual([true, false, "Saving draft…"]);
   });
   it("configFailed keeps dirty and sets errors", () => {
     const s = run(ready(), edit(), { type: "saveDraft" }, { type: "configFailed", errors: ["gifs: must be true or false"] });
     expect([s.dirty, s.savingDraft, s.errors, canSend(s)]).toEqual([true, false, ["gifs: must be true or false"], false]);
-    expect(sendBlock(s)).toBe("Draft not stored — fix it or Reload");
+    expect(sendBlock(s)).toBe("Draft not saved: fix it or Reload");
   });
   it("draftSaved takes the stored draft and its rev", () => {
     const s = run(ready(), edit(), { type: "saveDraft" }, stored({ ...gifsOn, floor_on: true }, 9));
@@ -632,9 +632,9 @@ describe("his photo (attach → described once → both sides' Turns)", () => {
   });
 
   it.each<[string, TestChatAction[], string]>([
-    ["an edit unstored", [edit()], "Draft not stored — fix it or Reload"],
-    ["a draft PUT out", [edit(), { type: "saveDraft" }], "Storing draft…"],
-    ["a refused edit", [edit(), { type: "saveDraft" }, { type: "configFailed", errors: ["gifs: bad"] }], "Draft not stored — fix it or Reload"],
+    ["an edit unstored", [edit()], "Draft not saved: fix it or Reload"],
+    ["a draft PUT out", [edit(), { type: "saveDraft" }], "Saving draft…"],
+    ["a refused edit", [edit(), { type: "saveDraft" }, { type: "configFailed", errors: ["gifs: bad"] }], "Draft not saved: fix it or Reload"],
     ["a Keep mine / Take theirs pending", [edit(), external()], "Keep mine or Take theirs first"],
   ])("photoDescribed while Send is blocked (%s) starts no Turn: his line and image go back with why (rwl-c R2-1)",
     (_n, mid, why) => {

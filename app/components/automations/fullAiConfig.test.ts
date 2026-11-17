@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   configLine, gifPct, gifPctPatch, humanStyle, humanStylePatch, layersOff, styleLayers, toggleWriterPatch, typoPct,
   typoPctPatch, typosPatch, writerPatch, writersLine, type HumanStyle, type StyleLayers, type FullAiConfig,
-  sellSwitches, sellSwitchPatch, type SellSwitchKey, settingRows, type SettingRef, chatSwitch, type ChatSwitchKey,
+  sellSwitches, sellSwitchPatch, type SellSwitchKey, settingRows, type SettingRef, draftDiff, draftDiffLine, chatSwitch, type ChatSwitchKey,
   topSpendDollars, topSpendPatch, infoQuestionsLabel, captionLabel,
 } from "./fullAiConfig";
 
@@ -266,26 +266,65 @@ describe("settingRows: the JSON modal's All settings table", () => {
     { key: "writers", default: ["a", "b"], allowed: "1-6 ids", about: "Chain.", page: "Writers" },
     { key: "sext_on", default: true, allowed: "true | false", about: "Sexting.", page: null },
   ];
-  const at = (side: FullAiConfig | null, key: string) => settingRows(REF, side).find((r) => r.key === key)!;
-  it.each<[string, FullAiConfig | null, string, string, boolean]>([
-    ["bool at default", { gifs: false }, "gifs", "false", false],
-    ["bool changed", { gifs: true }, "gifs", "true", true],
-    ["object, other key order = same", { style: { typos: true, texting: true } }, "style", '{"typos":true,"texting":true}', false],
-    ["object, one layer off", { style: { texting: true, typos: false } }, "style", '{"texting":true,"typos":false}', true],
-    ["null default kept", { typo_pct: null }, "typo_pct", "null", false],
-    ["null default set", { typo_pct: 30 }, "typo_pct", "30", true],
-    ["list reordered = changed", { writers: ["b", "a"] }, "writers", '["b","a"]', true],
-    ["key missing reads as default", {}, "sext_on", "true", false],
-    ["no draft reads as default", null, "writers", '["a","b"]', false],
-  ])("%s", (_n, side, key, value, changed) => {
-    const r = at(side, key);
-    expect([r.value, r.changed]).toEqual([value, changed]);
+  const at = (live: FullAiConfig | null, draft: FullAiConfig | null, key: string) =>
+    settingRows(REF, live, draft).find((r) => r.key === key)!;
+  // [name, Live (checkpoint), draft, key, Live cell, Draft cell, changed (draft ≠ Live)]
+  it.each<[string, FullAiConfig | null, FullAiConfig | null, string, string, string, boolean]>([
+    ["bool same both sides, at default", { gifs: false }, { gifs: false }, "gifs", "false", "false", false],
+    ["bool, draft differs from Live", { gifs: false }, { gifs: true }, "gifs", "false", "true", true],
+    ["draft off default but = Live: not changed", { gifs: true }, { gifs: true }, "gifs", "true", "true", false],
+    ["object, other key order = same", { style: { texting: true, typos: true } }, { style: { typos: true, texting: true } },
+      "style", '{"texting":true,"typos":true}', '{"typos":true,"texting":true}', false],
+    ["object, one layer off in draft", {}, { style: { texting: true, typos: false } },
+      "style", '{"texting":true,"typos":true}', '{"texting":true,"typos":false}', true],
+    ["null kept", { typo_pct: null }, { typo_pct: null }, "typo_pct", "null", "null", false],
+    ["null Live, draft set", { typo_pct: null }, { typo_pct: 30 }, "typo_pct", "null", "30", true],
+    ["list reordered = changed", { writers: ["a", "b"] }, { writers: ["b", "a"] }, "writers", '["a","b"]', '["b","a"]', true],
+    ["key missing both reads as default", {}, {}, "sext_on", "true", "true", false],
+    ["key missing in draft vs Live off", { sext_on: false }, {}, "sext_on", "false", "true", true],
+    ["nothing read yet reads as default", null, null, "writers", '["a","b"]', '["a","b"]', false],
+  ])("%s", (_n, live, draft, key, liveCell, value, changed) => {
+    const r = at(live, draft, key);
+    expect([r.live, r.value, r.changed]).toEqual([liveCell, value, changed]);
   });
   it("keeps the reference order, compact default JSON, allowed / about, and where = page control or JSON", () => {
-    const rows = settingRows(REF, { gifs: true });
+    const rows = settingRows(REF, { gifs: true }, { gifs: true });
     expect(rows.map((r) => r.key)).toEqual(REF.map((r) => r.key));
     expect(rows.map((r) => r.where)).toEqual(["GIFs", "Human style / Typos", "Typos %", "Writers", "JSON"]);
     expect(rows[1]).toMatchObject({ def: '{"texting":true,"typos":true}', allowed: "{texting, typos}", about: "Layers." });
-    expect(settingRows([], { gifs: true })).toEqual([]);
+    expect(settingRows([], { gifs: true }, { gifs: true })).toEqual([]);
+  });
+});
+
+describe("draftDiff / draftDiffLine: the status line under Make draft live", () => {
+  const ORDER = ["reply_speed", "gifs", "style", "writers"];
+  it.each<[string, FullAiConfig, FullAiConfig, string[]]>([
+    ["same", { gifs: true, writers: ["a"] }, { writers: ["a"], gifs: true }, []],
+    ["nested key order ignored", { style: { texting: true, typos: false } }, { style: { typos: false, texting: true } }, []],
+    ["one key", { gifs: false }, { gifs: true }, ["gifs"]],
+    ["reference order, not side order", { writers: ["a"], gifs: false }, { writers: ["b"], gifs: true }, ["gifs", "writers"]],
+    ["key only in one side, after the reference keys", { gifs: true }, { gifs: true, zzz: 1, reply_speed: "x" }, ["reply_speed", "zzz"]],
+    ["list order counts", { writers: ["a", "b"] }, { writers: ["b", "a"] }, ["writers"]],
+  ])("%s", (_n, live, draft, keys) => {
+    expect(draftDiff(live, draft, ORDER)).toEqual(keys);
+  });
+
+  const many = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i + 1}`, i]));
+  it.each<[string, FullAiConfig | null, FullAiConfig | null, ReturnType<typeof draftDiffLine>]>([
+    ["no checkpoint yet", null, { gifs: true }, null],
+    ["no draft yet", { gifs: true }, null, null],
+    ["equal", { gifs: true }, { gifs: true },
+      { text: "Draft = Live settings. Fans get exactly what you see below.", differs: false }],
+    ["two keys", { gifs: false, writers: ["a"] }, { gifs: true, writers: ["b"] },
+      { text: "Draft differs from the Live settings in 2: gifs, writers. Fans keep the Live ones until you tap Make draft live.",
+        differs: true }],
+    ["six keys: no +more", {}, many(6),
+      { text: "Draft differs from the Live settings in 6: k1, k2, k3, k4, k5, k6. Fans keep the Live ones until you tap Make draft live.",
+        differs: true }],
+    ["nine keys: first six, +3 more", {}, many(9),
+      { text: "Draft differs from the Live settings in 9: k1, k2, k3, k4, k5, k6, +3 more. Fans keep the Live ones until you tap Make draft live.",
+        differs: true }],
+  ])("%s", (_n, live, draft, line) => {
+    expect(draftDiffLine(live, draft, ORDER)).toEqual(line);
   });
 });

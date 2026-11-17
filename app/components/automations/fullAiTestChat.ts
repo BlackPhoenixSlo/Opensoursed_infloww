@@ -235,8 +235,8 @@ export function initTestChat(pair: string, skipWait = false): TestChatState {
  *  stores at once, so an unstored edit is one in flight or one the server refused. */
 export function sendBlock(state: TestChatState): string | null {
   if (state.conflict) return "Keep mine or Take theirs first";
-  if (state.savingDraft) return "Storing draft…";
-  return state.dirty ? "Draft not stored — fix it or Reload" : null;
+  if (state.savingDraft) return "Saving draft…";
+  return state.dirty ? "Draft not saved: fix it or Reload" : null;
 }
 
 /** Send is allowed with a Fan line typed or an image attached, no photo request out, neither side owing a request or

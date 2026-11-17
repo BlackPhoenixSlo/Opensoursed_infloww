@@ -1,12 +1,12 @@
 "use client";
 
 /**
- * Full AI Chat's Test chat: two windows, Checkpoint (left, the saved config) and Draft (right), and one composer that
+ * Full AI Chat's Test chat: two windows, Live settings (left, the checkpoint: what fans get) and Draft (right), and one composer that
  * sends his Fan line to both. Each window keeps its own thread, shows typing dots while its reply is pending or
  * waiting out `wait_s`, then her bubbles and the line under them (Route, Heat, row, the Writer and how many fell).
- * On a phone held upright the windows are Checkpoint / Draft tabs. State: `fullAiTestChat.ts` (pure reducer) through
+ * On a phone held upright the windows are Live settings / Draft tabs. State: `fullAiTestChat.ts` (pure reducer) through
  * `useFullAiTestChat` (requests, timers), held by the page; this file only renders and dispatches. Send waits with
- * "Storing draft…" or "Draft not stored — fix it or Reload" (`sendBlock`). Each window header names its side's config
+ * "Saving draft…" or "Draft not saved: fix it or Reload" (`sendBlock`). Each window header names its side's config
  * (`configLine`) and Writer chain (`writersLine`): the checkpoint's, or the draft as shown, so an applied draft shows there
  * at once (ticket 57).
  * A reply with an Offer (ticket 49) shows its PPV bubble on the text part carrying `ppv`: from the Offer, the Pick's
@@ -60,8 +60,8 @@ function readPhoto(file: File): Promise<string> {
     r.readAsDataURL(file);
   });
 }
-const TITLE: Record<UiSide, string> = { L: "Checkpoint", R: "Draft" };
-const SUB: Record<UiSide, string> = { L: "saved config", R: "your draft" };
+const TITLE: Record<UiSide, string> = { L: "Live settings", R: "Draft" };
+const SUB: Record<UiSide, string> = { L: "what fans get", R: "test only" };
 
 type OnSettle = (rowId: number, outcome: Outcome) => void;
 type OnReply = (n: number) => void;

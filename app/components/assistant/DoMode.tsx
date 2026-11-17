@@ -207,7 +207,7 @@ function ExportThread({ run, draft, slots, on, request }: {
 }
 
 /** The fixed note under a full_ai_config card: the assistant only edits the draft. */
-export const CONFIG_NOTE = "Only the draft changes. Save on the Full AI Chat page makes it live.";
+export const CONFIG_NOTE = "Only the Draft changes. Make draft live on the Full AI Chat page sends it to fans.";
 
 /** The full_ai_config card: the Creator, each changed setting before → after. */
 function ConfigCard({ draft, slots, children }: { draft: DoDraft; slots: FullAiConfigSlots; children?: ReactNode }) {

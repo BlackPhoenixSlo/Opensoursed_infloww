@@ -539,7 +539,7 @@ def save(stored: dict | None, rev: int) -> dict[str, Any]:
         raise Invalid(errs)
     if cur["draft"] == cur["checkpoint"]:
         # A no-op save would overwrite `previous` with the checkpoint itself.
-        raise Invalid(["draft: same as the checkpoint, nothing to save"])
+        raise Invalid(["Draft is the same as the Live settings: nothing to make live"])
     return {"checkpoint": cur["draft"], "previous": cur["checkpoint"],
             "draft": copy.deepcopy(cur["draft"]), "rev": rev + 1}
 
@@ -553,7 +553,7 @@ def put_checkpoint(stored: dict | None, cfg: Any, rev: int) -> dict[str, Any]:
         raise Invalid(errs)
     new = _audience_of(side(_no_audience(cfg)), cur["checkpoint"])
     if new == cur["checkpoint"]:
-        raise Invalid(["checkpoint: unchanged, nothing to store"])
+        raise Invalid(["Live settings: no change, nothing to save"])
     return {**cur, "checkpoint": new, "previous": cur["checkpoint"], "rev": rev + 1}
 
 

@@ -2,8 +2,8 @@
 
 /**
  * Full AI Chat's "Who Full AI answers when Live" (owner 2026-11-15), its own block above the Test chat, apart from the bot
- * config's Settings / Save / Roll back: who live answers has nothing to do with how the AI behaves, so the Test chat's
- * draft vs checkpoint never splits it, and Save / Roll back never move it. Both controls write `PUT config/audience`
+ * config's Settings / Make draft live / Roll back: who live answers has nothing to do with how the AI behaves, so the Test chat's
+ * draft vs checkpoint never splits it, and Make draft live / Roll back never move it. Both controls write `PUT config/audience`
  * (`useFullAiConfig.putAudience`): applied at once on every side, Live or not, not held by the settings' draft wait.
  *   Fans: which Fans live answers, by the Creator's OnlyFans fan lists (the custom lists of `/api/of/v2/lists`,
  *   `useFanLists`; the live owner check reads the same OF list ids, `full_ai_owner_io._listed`). A dialog sets each list
