@@ -975,6 +975,52 @@ def case_caption_write_runs_the_chat_floor():
             setattr(obj, name, val)
 
 
+def case_caption_write_reads_the_shown_thread():
+    """Test / live: the chat lines `full_ai_caption.chat_block` puts in the caption prompt are out of
+    the `echo` pieces (his quoted ask passes) and her lines in them are `repeat`, past OWN_LINES
+    too; a re-offer may reuse them; CHAT_RULE itself still echoes."""
+    import asyncio
+    import json
+    import time
+    from automations import full_ai_caption as fc
+
+    async def _lang(_):
+        return "en"
+    old = "couldnt keep my red lace set on for long, come see babe"
+    ask = "can you send me something with the red lace on tonight please"
+    rows = [_msg_row("out", old, 1)] + [_msg_row("out", f"line number {i} for you", i) for i in range(2, 13)]
+    facts = _turn()
+    facts.mode, facts.fan_id, facts.cut_rows = "test", 7, rows + [_msg_row("in", ask, 13)]
+    hero = {"media_id": 9, "kind": "photo", "seconds": None, "fields": {"description": "red lace on the bed"}}
+    facts.pick = Pick(ref=9, media=(9,), previews=(), price_cents=3000, list_cents=3000, subject="anything",
+                      format="photo", lane="$30", facts={"kinds": {"photo": 1}, "hero": hero})
+    msgs = fc.messages(facts, facts.pick, None)
+    assert f"YOU: {old}" in msgs[1]["content"] and f"FAN: {ask}" in msgs[1]["content"], msgs[1]["content"]
+    assert len(wr.own_lines(facts, facts.pick)) == wr.OWN_LINES       # her first line is past OWN_LINES
+    cap = lambda t: json.dumps({"caption": t})  # noqa: E731
+    saved = _swap([(wr._language, "load_account_language", _lang)])
+    try:
+        def run(first):
+            saved.extend(_swap([(llm_client, "chat", _scripted({"a": cap(first), "b": cap("all yours babe")}))]))
+            res = asyncio.run(fc.write(facts, msgs, deadline=time.monotonic() + 30, writers=["a", "b"]))
+            return [x["outcome"] for x in res.attempts]
+        quoted = f"u said {ask}, so here it is"
+        rule = "it is not a list of things the media contains babe"
+        assert run(quoted) == ["ok"]
+        assert run(old.replace("come see babe", "its yours")) == ["floor:repeat", "ok"]
+        assert run(rule) == ["floor:echo", "ok"]
+        facts.tease = Teased("anything", "photo", (9,), (), 3000)          # a re-offer: her line is fair
+        assert run(old.replace("come see babe", "its yours")) == ["ok"]
+        assert run(rule) == ["floor:echo", "ok"]
+        facts.tease, facts.mode = None, "shadow"                            # Shadow: no thread, as before
+        msgs = fc.messages(facts, facts.pick, None)
+        assert fc.CHAT_HEAD not in msgs[1]["content"]
+        assert run(old.replace("come see babe", "its yours")) == ["ok"]   # past OWN_LINES, never shown
+    finally:
+        for obj, name, val in reversed(saved):
+            setattr(obj, name, val)
+
+
 # ── tease and make_right with a Free item (03b, ticket 46), pure ─────────────
 
 _FREE = Pick(ref=77, media=(77, 78), previews=(), price_cents=0, list_cents=1000,

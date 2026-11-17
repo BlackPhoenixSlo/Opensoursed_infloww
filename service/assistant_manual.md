@@ -968,7 +968,9 @@ in the Test chat; everything else runs there too.
 - **Sell** (`sell_on`, off): offers PPVs from the Content folders; off = never
   sells.
 - **PPV caption** (`caption_writer`, `chat`): Last bubble (`chat`) or Own call
-  (`caption`, a separate call).
+  (`caption`, a separate call that reads the recent chat; a set unlike what he
+  asked for gets one longer caption saying so, what it shows, the locked count
+  and the price; that caption is then the only message).
 
 **Sell settings** — shown under Sell while it is on; all on by default, all †.
 Chat tease and Unasked offers need Sell on.

@@ -89,7 +89,8 @@ _DOC = {
     "new only:asks_if_ai": "NEW-158", "STATED_WIDE": "NEW-151",
     "HOBBIES_EXTRACT": "NEW-152", "TEASE_PRICE": "NEW-153", "BROKE_JOKE": "NEW-154", "describe": "NEW-73",
     "REPLY_LEVEL": "NEW-155", "OFFER_GOAL": "NEW-166", "offer_facts_block": "NEW-167",
-    "ASKED_EXCEPTION": "NEW-168", "offer_fallback": "NEW-169",
+    "ASKED_EXCEPTION": "NEW-168", "offer_fallback": "NEW-169", "CHAT_RULE": "NEW-170", "DIFFERS_RULE": "NEW-171",
+    "PREVIEW_COUNT": "NEW-172", "NAME_PRICE": "NEW-174",
 }
 
 _RJ, _IJ, _PJ = ("service/automations/_router_jev.py", "service/automations/_info_jev.py",
@@ -718,6 +719,16 @@ def _writers_node(mode: str) -> dict:
         blocks += [_const(n, route=f"test Mode, replaces {n.removesuffix('_TEST')}") for n in _TEST_TWINS]
         blocks += [_const(n, route="sell_now (test and live)") for n in _FULL_ONLY]
         blocks += _offer_details_blocks()
+        blocks += [_prompt("Caption chat (test and live)", f"{caption.CHAT_HEAD}\n<last {caption.CHAT_TAIL} "
+                           f"rows: FAN: / YOU:>\n\n{caption.CHAT_RULE}", f"{_FC}:chat_block", doc=_DOC["CHAT_RULE"]),
+                   _prompt("Caption system · not what he asked for (test and live)",
+                           caption.system("detail", caption.differs_rule(True)), f"{_FC}:DIFFERS_RULE",
+                           doc=_DOC["DIFFERS_RULE"]),
+                   _prompt("Caption locked count with previews (test and live)",
+                           caption.PREVIEW_COUNT.format(free=", never as free").strip(), f"{_FC}:PREVIEW_COUNT",
+                           doc=_DOC["PREVIEW_COUNT"]),
+                   _prompt("Caption name the price, not what he asked for (test and live)",
+                           caption.NAME_PRICE.strip(), f"{_FC}:NAME_PRICE", doc=_DOC["NAME_PRICE"])]
     else:
         blocks.insert(0, _note("Shadow", _SHADOW_NOTE, f"{_FT}:run_turn"))
     return _node("writers", "Writers", "write",

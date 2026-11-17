@@ -841,6 +841,14 @@ def case_claim_ok_tagged_table():
         ("not just a video babe, 3 pics, $34 to unlock", PICS3_ASKED_VID, False, "not just affirms"),
         ("not only a vid, 3 pics", PICS3_ASKED_VID, False, "not only affirms"),
         ("its not a vid, just 3 pics", PICS3_ASKED_VID, True, "a real denial still excused"),
+        # 2026-11-17 replay: the cue negates the whole asked phrase, past of / my / ur / your only
+        ("i don't have a feet video babe, but here's 3 pics", FEET_VID_ASKED, True, "feet video, cue 4 back"),
+        ("3 pics instead of the feet video", FEET_VID_ASKED, True, "instead of the feet video"),
+        ("no video of my feet babe, 3 pics tho", FEET_VID_ASKED, True, "video of my feet"),
+        ("no worries, heres your feet video", FEET_VID_ASKED, False, "no cue in reach of the phrase"),
+        ("not now, heres a video of my feet", FEET_VID_ASKED, False, "the phrase starts past the cue"),
+        ("not just a feet video, 3 pics", FEET_VID_ASKED, False, "not just: the phrase is affirmed"),
+        ("no feet rn babe, heres the video", FEET_VID_ASKED, False, "a later video is no continuation"),
     ]
     for text, pick, want, why in rows:
         assert fs.claim_ok(text, pick) is want, (why, text)

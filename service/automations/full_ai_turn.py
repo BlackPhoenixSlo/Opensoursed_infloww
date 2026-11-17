@@ -77,7 +77,7 @@ from automations.full_ai_offer_turn import offer_check, offer_resolved
 from automations.full_ai_decide import SALT_VER, Decision, Facts, arm_of, decide_turn
 from automations.full_ai_scene import scene_next, scene_words
 from automations.full_ai_writers import (
-    PURPOSE, WriteResult, _outcome, bundle_of, count_flag, gif_offered, lead_flag, nearest_flag, scene_flag, scene_of, scene_turn, style_flags, typo_rate, was_cents_of, write,
+    PURPOSE, WriteResult, _outcome, bundle_of, count_flag, gif_offered, lead_flag, nearest_flag, nearest_line, scene_flag, scene_of, scene_turn, style_flags, typo_rate, was_cents_of, write,
 )
 from automations.full_ai_writers import (
     implied_flag, is_ride, likes_flag, spacing_flag, tease_flag, tease_turn, wide_flag,
@@ -757,9 +757,14 @@ async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadl
     (`_chain(single=True)`), then the Claim audit's checks (claim_ok + price_ok + discloses). Fail -> one rewrite
     by the Writer that answered (same messages) when two `writer_timeout_s` are left; still failing
     -> None, and the Turn runs today's path (the chat Writer's caption). Sets `reply["caption"]` =
-    {writer: caption | chat, model, outcome, ms, attempts} and, on a pass, `reply["typo_state"]`
+    {writer: caption | chat, model, outcome, ms, attempts, rejected?} (`rejected`: one {checks, text}
+    per refused text, "chain" when the chain dropped / split / guarded it; no typo pass on a Pick not
+    what he asked for, as the fallback caption) and, on a pass, `reply["typo_state"]`
     to the state the caption's chain left (the chat bubbles' chain then starts from it).
-    Outcomes: ok | rewrite_ok | no_description | no_writer | failed | late.
+    Outcomes: ok | rewrite_ok | no_description | no_writer | failed | late; `run_turn` sets "alone"
+    when it ships without chat bubbles. A passed caption on a Pick not what he asked for
+    (`nearest_line`) is the only message: the chat Writer is not called (its lead-in said yes to his
+    ask over a caption saying no); a failed one leaves today's path (NEAREST_NOTE in the sell block).
     ASSUMPTION: "no Writer answered" goes straight to today's path (no rewrite: nothing to redo).
     Overturned if the owner wants a second walk."""
     t0, budget = time.perf_counter(), float(facts.config["writer_timeout_s"])
@@ -776,11 +781,13 @@ async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadl
 
     async def shaped(text: str) -> tuple[str | None, dict]:
         scratch = {"leak": [], "dropped_reason": None, "typo_state": dict(facts.typo_state)}
-        parts = await _chain(text, facts, scratch, single=True)
+        # A Pick not what he asked for: no typo pass ("phtoo" / "fete" voided its disclosure).
+        parts = await _chain(text, facts, scratch, single=True, typos="asked" not in pick.facts)
         line = parts[0] if len(parts) == 1 and not scratch["leak"] else None
-        if line is not None and full_ai_sell.caption_fails(line, pick, price):
-            line = None
-        return line, scratch
+        fails = ["chain"] if line is None else full_ai_sell.caption_fails(line, pick, price)
+        if fails:
+            cap["rejected"] = cap.get("rejected", []) + [{"checks": fails, "text": (line or text)[:400]}]
+        return (None if fails else line), scratch
 
     msgs = full_ai_caption.messages(facts, pick, was)
     if msgs is None:
@@ -812,6 +819,7 @@ def _with_caption(reply: dict, parts: list[str], caption: str, pick: Pick, typo_
     text must pass the Claim audit's checks too; when it doesn't the chat bubbles are dropped and
     the caption ships alone (`reply["caption"]["outcome"]` "alone", `typo_state` back to the
     caption's chain left, `typo_state`). Sets `reply["caption_fallback"]` False (the audit's flag: no fallback caption).
+    Never reached on a Pick not what he asked for: there the caption is the only message (`_caption`).
     ASSUMPTION: a failed chat bubble drops itself, not the passed caption (no third LLM call).
     Overturned if the owner prefers today's path then."""
     reply["caption_fallback"] = False
@@ -905,7 +913,11 @@ async def run_turn(facts: TurnFacts, io: TurnIO | None = None) -> TurnResult:
         pick = facts.pick if isinstance(facts.pick, Pick) else None
         caption = await _caption(d, facts, reply, pick, deadline) if _ppv_turn(d, facts) else None
         caption_typos = dict(reply["typo_state"])
-        res = await _capped(write(d, facts, deadline=deadline, plain=caption is not None), deadline)
+        # A Pick not what he asked for: its passed caption says so and ships alone, no chat Writer
+        # call (owner 2026-11-17: a lead-in "u got it babe" over "not the feet vid you asked for").
+        alone = caption is not None and nearest_line(facts, pick) is not None
+        res = (WriteResult(None, reply["caption"]["model"]) if alone
+               else await _capped(write(d, facts, deadline=deadline, plain=caption is not None), deadline))
         reply["attempts"], reply["floor_reason"] = res.attempts, res.floor_reason
         if res.asked_ids:                   # an ask Turn: her marker as written (NEW-168)
             reply["asked_marker"] = res.asked_marker
@@ -920,7 +932,7 @@ async def run_turn(facts: TurnFacts, io: TurnIO | None = None) -> TurnResult:
             reply["offer_dropped"] = "shape"        # the reply chain dropped her text, or a lone gif
         elif pick is not None and parts and caption is not None:
             parts = _with_caption(reply, parts, caption, pick, caption_typos)
-        elif pick is not None and caption is not None and res.text is None:   # no chat Writer: the caption alone
+        elif pick is not None and caption is not None and res.text is None:   # no chat Writer / differs: alone
             reply["caption_fallback"], reply["caption"]["outcome"], reply["typo_state"] = False, "alone", caption_typos
             parts = [caption]
         elif pick is not None and parts:            # her text must claim only what the PPV holds

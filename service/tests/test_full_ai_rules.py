@@ -58,6 +58,7 @@ from automations import _router_jev as rj  # noqa: E402
 from automations import full_ai_config, full_ai_decide  # noqa: E402
 from automations import full_ai_offer_details as fo  # noqa: E402
 from automations import full_ai_rules as fr  # noqa: E402
+from automations import full_ai_caption as fc  # noqa: E402
 from automations import full_ai_writers as fw  # noqa: E402
 from automations.full_ai_mode import full  # noqa: E402
 
@@ -229,7 +230,9 @@ def case_shadow_holds_no_test_only_wording():
     test_only += [ij.NEXT_QUESTION_LEAD["instructions"], ij.LIKES_EXTRACT, pj.PRICE["instructions"],
                   pj.TEASE_PRICE["instructions"], pj.TEASE_PRICE["free"], fw.LEAD_HEAD, fw.SELF_GIVE,
                   fw.SEXT_SCENE, fw.SCENE_NARRATION, *fw.LEAD_LINES.values(), *fw.SCENE_STAGE.values()]
-    test_only += [fw.SEXT_HOT_TEST, fw.RIDE_NOTE, fw.OFFER_OPEN, "these are real, already made"]
+    test_only += [fw.SEXT_HOT_TEST, fw.RIDE_NOTE, fw.OFFER_OPEN, "these are real, already made", fc.CHAT_RULE]
+    test_only += [fc.DIFFERS_RULE.split("{tone} ", 1)[1].split("{", 1)[0], fc.PREVIEW_COUNT.split("{", 1)[0],
+                  fc.NAME_PRICE]
     test_only += [s.split("{", 1)[0] for s in (fw.NEAREST_NOTE, fw.SCENE_SELL, fw.SELL_OFF_SCENE,
                                                 fw.SELL_STEP_TEST, fw.ESCALATION_TEST)]
     leaks = [s[:60] for s in test_only if s.strip() and s.strip() in text]

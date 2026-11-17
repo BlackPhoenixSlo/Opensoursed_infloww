@@ -19,6 +19,9 @@ sells the nearest piece, the Writer says so ("note"), and selling off never prom
                                    a PPV goes out (Offer columns set), reply_json.nearest, the price
                                    Jev ran, NEAREST_NOTE in the Writer prompt; "plain" no note;
                                    "off" the Refusal row as before
+  case_differs_caption_alone_via_api  caption mode, a Pick not what he asked for: the passed caption
+                                   ships alone (outcome "alone"), no chat Writer call, no typo pass;
+                                   a failed one: today's path with NEAREST_NOTE, `rejected` recorded
   case_asked_words_table           NEAREST_NOTE's {asked}
   case_writer_note                 "note" -> NEAREST_NOTE right under the item line (chat mode) /
                                    in the caption call's prompt ("caption"), the bubbles before it
@@ -35,7 +38,7 @@ from __future__ import annotations
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
 
 from _full_ai_sell_helpers import (  # noqa: E402
-    OFFER_COLS, PRICED, _body, _post, _put_draft, _reply, _rows, _system, _vault,
+    NANO, OFFER_COLS, PRICED, _body, _post, _put_draft, _reply, _rows, _system, _vault,
 )
 import asyncio  # noqa: E402
 import contextlib  # noqa: E402
@@ -413,6 +416,33 @@ def case_turn_nearest_via_api():
     assert all(getattr(row, c) is None for c in OFFER_COLS), {c: getattr(row, c) for c in OFFER_COLS}
 
 
+def case_differs_caption_alone_via_api():
+    # caption_writer "caption", a Pick not what he asked for: the passed caption is the only message,
+    # no chat Writer call; typo_pct 100: no typo pass on it (a slip would void its disclosure).
+    line = "no blowjob pic babe, but a photo of me just for u"
+    jev = ({**QUIET, "wants_content": .9}, 1.0, BJ_PHOTO)
+    with _draft(caption_writer="caption", typo_pct=100), _vault(PRICED):
+        r, fw, (pick,) = _post(_body("nr-alone", ASK_TEXT), {NANO: ["ok:" + json.dumps({"caption": line}),
+                                                                   "ok:u got it babe"]}, jev=jev)
+    got = r.json()
+    (row,) = _rows("nr-alone")
+    assert isinstance(pick, Pick) and "asked" in pick.facts and row.status == "sent", (pick, got)
+    assert len(fw.requests) == 1, fw.requests                                  # the caption call only
+    assert [p["text"] for p in got["parts"] if "text" in p] == [line] and "ppv" in got["parts"][-1], got["parts"]
+    cap = got["caption"]
+    assert (cap["writer"], cap["outcome"]) == ("caption", "alone") and "rejected" not in cap, cap
+    assert got["attempts"] == [] and row.writer_model == cap["model"], (got["attempts"], row.writer_model)
+    # A failed caption keeps today's path: the chat Writer with NEAREST_NOTE under its item line.
+    bad = "ok:" + json.dumps({"caption": "heres ur blowjob pic"})
+    with _draft(caption_writer="caption", typo_pct=0), _vault(PRICED):    # no slip in the chat text
+        r, fw, (pick,) = _post(_body("nr-alone-fail", ASK_TEXT),
+                               {NANO: [bad, bad, "ok:dont have that one babe, but this pic tho"]}, jev=jev)
+    got = r.json()
+    assert len(fw.requests) == 3 and got["caption"]["outcome"] == "failed", got["caption"]
+    assert got["caption"]["rejected"][0] == {"checks": ["claim", "disclose"], "text": "heres ur blowjob pic"}
+    assert wr.NEAREST_NOTE.format(asked="a blowjob photo", got=wr.got_words(pick)) in _system(fw, 2)
+
+
 # ── The Writer ────────────────────────────────────────────────────────
 
 def case_asked_words_table():
@@ -457,7 +487,7 @@ def case_writer_note():
     assert NOTE not in json.dumps(apart) and "You don't have that exact one" not in apart[0]["content"]
     cap = full_ai_caption.messages(_turn(caption_writer="caption"), NEAR, None)
     assert NOTE in cap[1]["content"] and NOTE not in cap[0]["content"], cap
-    assert cap[1]["content"].index(NOTE) < cap[1]["content"].index("THE PRICE"), cap[1]["content"]
+    assert cap[1]["content"].index(NOTE) < cap[1]["content"].index("\n\nTHE PRICE\n"), cap[1]["content"]
     # absent: plain, an exact match, Shadow.
     for why, facts, pick in (("plain", _turn(sell_nearest="plain"), NEAR), ("exact", _turn(), EXACT),
                              ("shadow", _turn("shadow"), NEAR)):

@@ -611,6 +611,13 @@ def spend_line(spent, tips=()) -> str | None:
     return "he's spent: " + " and ".join(parts) + " — talk like you remember it, never like he's never paid."
 
 
+def thread_lines(rows: list, tail: int = _HISTORY_TAIL) -> str:
+    """OLD-AIC-21's conversation lines: the last `tail` rows, oldest first, "FAN: …" (his) / "YOU: …"
+    (hers) over `line_text`, a row with no text dropped (`_chat_user`, `full_ai_caption`). Pure."""
+    lines = [(m.direction, line_text(m)) for m in rows[-tail:]]
+    return "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in lines if b)
+
+
 def _chat_user(f: SimpleNamespace, rows: list, spent: list, tips=()) -> str:
     """OLD-AIC-21 (ai_chatter.py:6095-6162, :6187-6190, :6635-6645): facts (with OLD-AIC-22's
     spend line when he has bought), his kink, the last `_HISTORY_TAIL` lines, the quote tail."""
@@ -627,10 +634,8 @@ def _chat_user(f: SimpleNamespace, rows: list, spent: list, tips=()) -> str:
     facts_block = "\n".join(f"- {x}" for x in facts) if facts else NOTHING_ON_FILE
     personal_block = ("\n" + HIS_KINK.format(fetishes=str(f.fetishes).strip()[:160])
                       if _filled(f.fetishes) else "")
-    lines = [(m.direction, line_text(m)) for m in rows[-_HISTORY_TAIL:]]
-    convo = "\n".join(f"{'FAN' if d == 'in' else 'YOU'}: {b}" for d, b in lines if b)
     return (f"What you know about him:\n{facts_block}{personal_block}\n\n"
-            f"Recent conversation (oldest→newest):\n{convo}\n\n"
+            f"Recent conversation (oldest→newest):\n{thread_lines(rows)}\n\n"
             + REPLY_NOW)
 
 

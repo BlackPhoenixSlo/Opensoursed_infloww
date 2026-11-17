@@ -751,6 +751,20 @@ def _negated(words: list[str], i: int, window: int) -> bool:
     return any(w in _NEG_CUES and words[j + 1] not in _AFFIRMS for j, w in enumerate(words[lo:i], lo))
 
 
+# Words that join an asked phrase ("no video of my feet"): an excused asked word excuses the next
+# one after only these (`_continues`).
+_LINKS = frozenset({"of", "my", "ur", "your"})
+
+
+def _continues(words: list[str], i: int, excused: set[int]) -> bool:
+    """`words[i]` continues an excused asked phrase: the word before it, past `_LINKS` words, is
+    excused ("dont have a feet video", "no video of my feet": the cue negates the whole phrase)."""
+    j = i - 1
+    while j >= 0 and words[j] in _LINKS:
+        j -= 1
+    return j in excused
+
+
 def _asked_mask(asked: dict) -> frozenset[str]:
     """His ask's words: the asked format's kind nouns (a video ask: clip words too) and the asked
     subject's words."""
@@ -788,8 +802,10 @@ def claim_ok(text: str, pick: Pick) -> bool:
     A Pick carrying `facts["asked"]` (not what he asked for, client rule 2026-11-16): a kind noun
     of the ASKED format (a video ask: a clip word too) or a subject word of the ASKED subject is
     excused when a negation cue (`_NEG_CUES`) is among the 3 words before it ("no vid of that babe
-    but ive got 3 pics", "i havent filmed that one"); the count check and everything else are
-    unchanged. An untagged Pick reads as before."""
+    but ive got 3 pics", "i havent filmed that one"), and so is an asked word right after an excused
+    one, past "of" / "my" / "ur" / "your" only (`_continues`: "dont have a feet video", "no video of
+    my feet"; owner 2026-11-17 replay); the count check and everything else are unchanged. An
+    untagged Pick reads as before."""
     low = text.lower()
     pics, vids, _auds = _buckets(pick.facts["kinds"])
     # what the bubble shows: the locked items plus the free previews beside them
@@ -799,7 +815,9 @@ def claim_ok(text: str, pick: Pick) -> bool:
     excused: set[int] = set()
     if asked:
         mask = _asked_mask(asked)
-        excused = {i for i, w in enumerate(said) if w in mask and _negated(said, i, _EXCUSE_WINDOW)}
+        for i, w in enumerate(said):
+            if w in mask and (_negated(said, i, _EXCUSE_WINDOW) or _continues(said, i, excused)):
+                excused.add(i)
     for i, w in enumerate(said):
         have = seen_vids if w in _VID_NOUNS or w in _CLIP_WORDS else seen_pics if w in _PIC_NOUNS else None
         if i not in excused and have is not None and (have == 0 or (w.endswith("s") and have == 1)):

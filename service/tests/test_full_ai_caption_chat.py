@@ -13,6 +13,7 @@ per Turn: the caption call first, then the chat Writer.
   case_caption_asked_marker_stripped rwl3 A2: an ASKED line in the caption is stripped, never sent
   case_caption_price_fail_fallback   a wrong price twice: rewrite (same messages), then today's
                                      path (the chat Writer's sell prompt and caption)
+                                     (`caption.rejected`: each refused text + its checks)
   case_caption_rewrite_ok            a wrong first caption, a true rewrite: the rewrite ships
   case_chat_bubble_fails_alone       a chat bubble claiming a vid on a photo: the caption ships alone
   case_free_item_caption             make_right Free item: FREE price block, apology frames + DRAFT line
@@ -20,6 +21,14 @@ per Turn: the caption call first, then the chat Writer.
   case_prompt_is_old_wording         the assembled system + user equal the old 1:1 wording (literals)
   case_no_description_and_shadow     no described media -> None; shadow / tease / priced make_right
                                      never take the caption path
+  case_chat_block_test_live_only     test / live: the last CHAT_TAIL rows (FAN / YOU, his newest last)
+                                     under CHAT_RULE; Shadow and an empty thread: the old prompt
+  case_differs_rule                  a Pick not what he asked for: DIFFERS_RULE in the style's place
+                                     (price only when priced), the note, set facts, price block;
+                                     an exact Pick keeps its seeded style; its shape passes
+                                     caption_fails at the right price only; NAME_PRICE under the
+                                     price block when priced, never on a Free / exact Pick
+  case_preview_count                 previews: the locked count rule, "never as free" only when priced
 
 Run: ./venv/bin/python service/tests/test_full_ai_caption_chat.py  (exit 0 = pass)
 """
@@ -37,7 +46,7 @@ from types import SimpleNamespace  # noqa: E402
 
 from _full_ai_fixtures import FakeJev, FakeWriterHTTP, _fake_jev  # noqa: E402
 import vault_ai_brief  # noqa: E402
-from automations import full_ai_caption as fc, full_ai_test, full_ai_turn, full_ai_writers as w  # noqa: E402
+from automations import full_ai_caption as fc, full_ai_sell, full_ai_test, full_ai_turn, full_ai_writers as w  # noqa: E402
 from automations.full_ai_config import DEFAULTS  # noqa: E402
 from automations.full_ai_decide import Decision  # noqa: E402
 from automations.full_ai_sell import Pick  # noqa: E402
@@ -175,6 +184,8 @@ def case_caption_price_fail_fallback():
     assert _outcomes(cap["attempts"]) == [(EURYALE, "ok", False), (EURYALE, "ok", True)], cap
     assert _texts(got["parts"]) == [chat] and _ppvs(got["parts"]) == [0], got["parts"]
     assert "$40" not in json.dumps(got["parts"]) and _reply(_rows(pair)[0])["caption_fallback"] is False
+    assert cap["rejected"] == [{"checks": ["price"], "text": "its $40 babe"},
+                               {"checks": ["price"], "text": "only $40 for u"}], cap
 
 
 def case_caption_rewrite_ok():
@@ -311,6 +322,85 @@ def case_no_description_and_shadow():
     assert not on("sell_now", mode="shadow") and not on("tease") and not on("make_right")
     assert not on("sell_now", config=DEFAULTS) and not on("sell_now", pick=None)
     assert full_ai_test.MODE == "test"
+
+
+def _row(d: str, body: str) -> SimpleNamespace:
+    return SimpleNamespace(direction=d, body=body, media_count=0, raw_json=None)
+
+
+def _tfacts(mode: str, rows: list, **cfg) -> SimpleNamespace:
+    return SimpleNamespace(account_id=A, fan_id=42, fan_info={}, mode=mode, cut_rows=rows,
+                           config={**DEFAULTS, "caption_writer": "caption", **cfg})
+
+
+def case_chat_block_test_live_only():
+    rows = [_row("out" if i % 2 else "in", f"line {i}") for i in range(20)] + [_row("in", "show me ur feet")]
+    pick = _pick(1000)
+    old = fc.messages(_facts(), pick, None)
+    for mode in ("test", "live"):
+        user = fc.messages(_tfacts(mode, rows), pick, None)[1]["content"]
+        shown = rows[-fc.CHAT_TAIL:]
+        lines = "\n".join(f"{'FAN' if r.direction == 'in' else 'YOU'}: {r.body}" for r in shown)
+        assert f"\n\n{fc.CHAT_HEAD}\n{lines}\n\n{fc.CHAT_RULE}\n\n{fc.set_facts(pick)}" in user, user
+        assert lines.endswith("FAN: show me ur feet") and "line 5\n" not in user, lines
+        assert user.index(fc.CHAT_HEAD) < user.index("THE SET HE GETS") < user.index("\n\nTHE PRICE\n"), user
+        # No-differs: the old prompt plus the chat block and set facts only; the seeded style kept.
+        assert user.replace(f"\n\n{fc.CHAT_HEAD}\n{lines}\n\n{fc.CHAT_RULE}", "").replace(
+            f"\n\n{fc.set_facts(pick)}", "") == old[1]["content"], user
+        assert fc.messages(_tfacts(mode, rows), pick, None)[0] == old[0]
+        assert fc.CHAT_HEAD not in fc.messages(_tfacts(mode, []), pick, None)[1]["content"]
+    assert fc.messages(_tfacts("shadow", rows), pick, None) == old            # Shadow: byte-identical
+
+
+NEAR_FACTS = {"kinds": {"photo": 3}, "items": [], "description": "topless on the bed", "asked": {"subject": "feet", "format": "video"},
+              "media": [{"id": i, "kind": "photo", "seconds": None} for i in (7, 8, 9, 10)]}
+
+
+def case_differs_rule():
+    rows = [_row("out", "hii"), _row("in", "send me a feet video")]
+    base = _pick(4500)
+    near = Pick(**{**base.__dict__, "media": (7, 8, 9), "previews": (10,), "facts": {**base.facts, **NEAR_FACTS}})
+    msgs = fc.messages(_tfacts("live", rows), near, None)
+    priced = fc.differs_rule(True)
+    assert msgs[0]["content"] == fc.HEAD + priced + _OLD_TAIL, msgs[0]["content"]
+    assert "<= 220 chars" in priced and "how many he unlocks in plain words (\"1 photo\", \"2 videos\") and the price from THE PRICE" in priced, priced
+    assert not any(fc.STYLE_RULES[st].format(tone=fc.TONE) in msgs[0]["content"] for st in fc.STYLES)
+    user = msgs[1]["content"]
+    note = w.NEAREST_NOTE.format(asked="a feet video", got="3 photos")
+    for part in (note, "THE SET HE GETS: 3 photos, locked, plus 1 photo he sees without unlocking.",
+                 "FAN: send me a feet video", w.PRICE_BLOCK.format(px="$45") + fc.NAME_PRICE):
+        assert part in user, (part, user)
+    assert user.index("THE SET HE GETS") < user.index(note) < user.index("\n\nTHE PRICE\n"), user
+    # The shape it asks for passes the Claim audit at the right price (locked or shown count), not a wrong one.
+    good = "not what u asked for babe, no feet vid, but 3 pics of me topless on the bed, plus one u can see, $45"
+    assert full_ai_sell.caption_fails(good, near, 4500) == []
+    assert full_ai_sell.caption_fails(good.replace("$45", "$40"), near, 4500) == ["price"]
+    free = Pick(**{**near.__dict__, "price_cents": 0})
+    fs = fc.messages(_tfacts("live", rows), free, None)
+    assert fs[0]["content"] == fc.HEAD + fc.differs_rule(False) + _OLD_TAIL, fs[0]["content"]
+    assert "price" not in fc.differs_rule(False) and "how many he gets in plain words (\"1 photo\", \"2 videos\");" in fc.differs_rule(False)
+    assert fs[1]["content"].endswith("\n\n" + fc.FREE_PRICE_BLOCK), fs[1]["content"]
+    exact = fc.messages(_tfacts("live", rows), base, None)[1]["content"]
+    assert exact.endswith("\n\n" + w.PRICE_BLOCK.format(px="$45")) and fc.NAME_PRICE not in exact, exact
+    # "plain" and Shadow: no note, no differs rule.
+    for f in (_tfacts("live", rows, sell_nearest="plain"), _tfacts("shadow", rows)):
+        m = fc.messages(f, near, None)
+        assert note not in m[1]["content"] and "<= 220" not in m[0]["content"], m
+        assert fc.NAME_PRICE not in m[1]["content"], m
+
+
+def case_preview_count():
+    base = _pick(4500)
+    with_prev = Pick(**{**base.__dict__, "media": (7, 8, 9), "previews": (10,),
+                        "facts": {**base.facts, "kinds": {"photo": 3}, "media": NEAR_FACTS["media"]}})
+    got = fc.set_facts(with_prev)
+    assert got == ("THE SET HE GETS: 3 photos, locked, plus 1 photo he sees without unlocking. Name only these "
+                   "kinds and counts." + fc.PREVIEW_COUNT.format(free=", never as free")), got
+    assert "A count you give is the locked count" in got and "never add the ones he already sees" in got
+    assert fc.set_facts(Pick(**{**with_prev.__dict__, "price_cents": 0})).endswith('you can already see").')
+    none = Pick(**{**base.__dict__, "media": (7, 8), "facts": {**base.facts, "kinds": {"photo": 2},
+                                                               "media": NEAR_FACTS["media"][:2]}})
+    assert fc.set_facts(none) == "THE SET HE GETS: 2 photos, locked. Name only these kinds and counts."
 
 
 if __name__ == "__main__":
