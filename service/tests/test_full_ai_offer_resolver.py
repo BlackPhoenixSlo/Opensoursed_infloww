@@ -9,6 +9,9 @@ Open Offers list helper.
                                     cue narrows it; no price match: one open -> it, two open -> none
   case_media_*                      the one holding the kind (newest open on a tie); an older bought
                                     video wins "the video"; no video -> the open one; previews ignored
+  case_open_offer_wins_unless_referenced      rwl3 A5: an Offer open, "is it a video?" / "is this
+                                    $20?" stay on it; "the video", "the one i bought" name the older
+  case_price_tie_prefers_open_row   2 price matches, one open, no reference -> the open row
   case_no_cue_newest_open_and_no_candidates   newest open; nothing open / no rows -> none
   case_pending_tease_is_open_candidate        open, price NULL ("no price named yet")
   case_lookback_bounds              11th newest and 8-day-old rows out; a 30 h one named by price in
@@ -17,6 +20,7 @@ Open Offers list helper.
   case_open_offers_list_matches_single_fold   open_offers_of's last == open_offer_of, every row set
   case_live_open_ids                <= 24 h, priced only with an OF message id
   case_reply_to_id                  replyToMessage.id, replyToMessageId, neither, non-dict
+  case_offer_facts_captions         her ppv bubble text, a tease's text bubbles (rwl3 N3)
   case_check_*                      ticket 04 (D): `offer_answer_ok` tables (counts beside previews,
                                     media nouns, durations, dollars incl. spelled, "free", none)
   case_fallback_*                   `offer_fallback`: the fact clause, a tease, a Free item, a clip,
@@ -35,7 +39,7 @@ from datetime import datetime, timedelta  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 from automations.full_ai_offer_details import (  # noqa: E402
-    OfferFacts, build_ask, live_open_ids, offer_answer_ok, offer_fallback, resolve_offer,
+    OfferFacts, build_ask, live_open_ids, offer_answer_ok, offer_facts, offer_fallback, resolve_offer,
 )
 from automations import full_ai_writers as wr  # noqa: E402
 from automations.full_ai_test import open_offer_of, open_offers_of  # noqa: E402
@@ -111,6 +115,39 @@ def case_media_tie_between_open():
 def case_media_older_bought_video():
     rows = [_row(1, price=2000, kinds=("video",), ago_h=30, outcome="bought"), _row(2, price=3000, ago_h=1)]
     assert _resolve(rows, "the video", open_ids={2}) == (1, "media")
+
+
+def case_open_offer_wins_unless_referenced():
+    """rwl3 A5: with an Offer open, a kind or price he merely asks about is no reference; only a
+    definite one ("the video", "the $20 one") or a past-Offer word ("bought", "before") names an
+    older row. Nothing open: the cue alone still names it."""
+    rows = [_row(1, price=2000, kinds=("video",), ago_h=30, outcome="bought"), _row(2, price=5000, ago_h=1)]
+    for text, want in (("is it a video?", (2, "open_offer")), ("is this $20?", (2, "open_offer")),
+                       ("is it $20 babe", (2, "open_offer")), ("a video or pics?", (2, "open_offer")),
+                       ("the video", (1, "media")), ("the $20 one", (1, "price")),
+                       ("is it like the vid i bought?", (1, "media")),
+                       ("is it a video like before", (1, "media"))):
+        assert _resolve(rows, text, open_ids={2}) == want, (text, _resolve(rows, text, open_ids={2}), want)
+    assert _resolve(rows, "is it a video?") == (1, "media"), "nothing open: the cue names it"
+    assert _resolve(rows, "is this $20?") == (1, "price")
+    # rwl3 round 2: "that" before a bare price is the question, not a reference.
+    priced = [_row(1, price=2000, ago_h=30, outcome="bought"), _row(2, price=5000, ago_h=1)]
+    for text, want in (("is that $20?", (2, "open_offer")), ("that $20 right?", (2, "open_offer")),
+                       ("is that 20 bucks", (2, "open_offer")), ("the $20 one", (1, "price")),
+                       ("that 20 dollar one", (1, "price")), ("the $20 vid i bought", (1, "price")),
+                       ("how long is the one i paid $20 for?", (1, "price")),
+                       ("the one for $20", (1, "price")), ("i spent $20 on it", (1, "price"))):
+        assert _resolve(priced, text, open_ids={2}) == want, (text, _resolve(priced, text, open_ids={2}), want)
+
+
+def case_price_tie_prefers_open_row():
+    """rwl3 round 2: 2 price matches, one of them open, no reference -> the open row; a reference
+    ("the $20 one") or both open -> none."""
+    rows = [_row(1, price=2000, ago_h=30, outcome="bought"), _row(2, price=2000, ago_h=1)]
+    for text in ("is it $20?", "is that $20?", "$20 right?"):
+        assert _resolve(rows, text, open_ids={2}) == (2, "price"), (text, _resolve(rows, text, open_ids={2}))
+    assert _resolve(rows, "the $20 one", open_ids={2}) == (None, "none")
+    assert _resolve(rows, "is it $20?", open_ids={1, 2}) == (None, "none")
 
 
 def case_media_no_match_falls_to_open():
@@ -205,6 +242,16 @@ def case_reply_to_id():
     assert reply_to_id("x") is None
 
 
+def case_offer_facts_captions():
+    """rwl3 N3: `captions` is the row's `ppv` bubble text; a tease (no `ppv` bubble) all its text bubbles."""
+    row = _row(1)
+    row.reply_json = json.dumps({"parts": [{"text": "hey u"}, {"text": "for u babe", "ppv": {"ref": 1}}, {"gif": "x"}]})
+    assert offer_facts(row, {}, []).captions == ("for u babe",)
+    tease = _row(2, tease=True)
+    tease.reply_json = json.dumps({"parts": [{"text": "wanna see?"}, {"text": "its spicy"}]})
+    assert offer_facts(tease, {}, []).captions == ("wanna see?", "its spicy")
+
+
 # ── Offer answer check + fallback (ticket 04, D) ──────────────────────
 
 # 3 locked photos + 1 free preview photo at a $25 Quoted price.
@@ -249,6 +296,10 @@ def case_check_media_nouns():
         ("its a video babe", PHOTOS, ("media",)),
         ("its a pic", CLIP, ("media",)),
         ("1 video and 1 free pic", replace(CLIP, preview_kinds={"photo": 1}, previews=1), ()),
+        ("i filmed it for u babe", PHOTOS, ("media",)),        # rwl3 A4: a clip word claims a clip
+        ("just hit play babe", PHOTOS, ("media",)),
+        ("i filmed it for u babe", CLIP, ()),
+        ("i filmed it for u babe", None, ("none",)),
     ])
 
 
@@ -282,6 +333,9 @@ def case_check_dollars_and_free():
         ("$25", TEASE, ("dollars",)),
         ("its free babe", FREE, ()),
         ("$25", FREE, ("dollars",)),
+        ("it was zero dollars babe", PHOTOS, ("dollars",)),     # rwl3 A3: zero is an amount
+        ("0 bucks for u", PHOTOS, ("dollars",)),
+        ("and dollars of fun", PHOTOS, ()),                     # no number word: no amount
     ])
 
 

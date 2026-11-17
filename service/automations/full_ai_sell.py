@@ -29,10 +29,12 @@ the folder price as `facts["folder_cents"]` (absent when no locked item is price
 Per-Creator switch `vault_settings.folder_price_final` (off by default; everything above is off):
 on, `load_rows` marks each row `folder_final` and a paid Pick containing folder-priced media locks
 its final bundle price in `facts["folder_price_cents"]`: AI pricing, tease pricing and haggling
-cannot change it. Photo packs keep the highest item price; video bundles keep the existing sum
-(capped at $200). Explicit free-item flows remain free.
+cannot change it (`_sell` clamps once, `hold_folder_price`; `_price` skips the price Jev). Photo
+packs keep the highest item price; video bundles keep the existing sum (capped at $200).
+Explicit free-item flows remain free.
 Per-Creator switch `vault_settings.standard_folders` (off by default): on, media in the standard
-Needs Review folder (`vault_standard_rules.REVIEW`) is left out of the pool.
+Needs Review folder (`vault_standard_rules.REVIEW`) is left out of the pool; off, every standard
+folder (`created_by` `vault_standard:…`) is ignored: no ref, no pack, no folder price.
 ASSUMPTION: an item in several priced folders lists at the HIGHEST of their prices. Overturned if
 the owner wants the lowest or a folder order.
 ASSUMPTION: a Jev "review" item (and a disputed free-tier one, `_unpriced_dispute`) stays not for
@@ -232,8 +234,10 @@ async def load_rows(account_id: str) -> tuple[list[dict[str, Any]], list[list[in
         from vault_standard_rules import parse_key, REVIEW
         needs_review: set[int] = set()
         for mid, fid, name, creator in members:
-            standard = parse_key(creator)
-            if opts["standard_folders"] and standard and standard[1] == REVIEW:
+            standard = parse_key(str(creator or ""))
+            if standard and not opts["standard_folders"]:
+                continue   # rwl3 A1: switch off = standard folders do not exist (no ref, pack, price)
+            if standard and standard[1] == REVIEW:
                 needs_review.add(int(mid))
             refs.setdefault(int(mid), set()).add(f"vf:{fid}")
             if (cat := vault_pack_picker.pack_rung_category(name)) is not None:
@@ -408,12 +412,16 @@ def folder_price(pick: Pick) -> int | None:
     return vault_folder_prices.parse_cents((pick.facts or {}).get("folder_price_cents"))
 
 
+def hold_folder_price(got: Pick | Refusal) -> Pick | Refusal:
+    """The one folder-price-final clamp (rwl3 A9): a Pick carrying `folder_price_cents` sells at it,
+    whatever a tease quote or haggle made of it; anything else unchanged. `_sell` calls it last."""
+    if isinstance(got, Pick) and (saved := folder_price(got)) is not None:
+        return replace(got, price_cents=saved, list_cents=saved)
+    return got
+
+
 def tease_price(pick: Pick, cents: int) -> Pick:
-    """Apply an AI tease quote, except to media whose agency folder price is final."""
-    if (pick.facts or {}).get("folder_final"):
-        saved = folder_price(pick) or pick.list_cents
-        return replace(pick, price_cents=saved, list_cents=saved,
-                       facts={**pick.facts, "folder_price_cents": saved})
+    """Apply an AI tease quote (a final folder price is restored after, `hold_folder_price`)."""
     return replace(pick, price_cents=cents, list_cents=cents or pick.list_cents,
                    facts={**pick.facts, "vault_list_cents": pick.list_cents})
 
@@ -602,6 +610,13 @@ def _buckets(kinds: dict[str, int]) -> tuple[int, int, int]:
     return sum(kinds.values()) - vids - auds, vids, auds
 
 
+def kind_of(fmt: str) -> str:
+    """One item's kind by `_buckets`' rule: "video" (a moving kind), "audio" (a voice note), else
+    "photo". The open card's need-line and a yes to it read it alike (rwl3 A7)."""
+    k = str(fmt).lower()
+    return "video" if k in MOVING_KINDS else "audio" if k in AUDIO_KINDS else "photo"
+
+
 def _media_phrase(kinds: dict[str, int]) -> str:
     """`"6 pics + 1 vid"`, old `pack_claim._media_phrase`'s wording."""
     pics, vids, auds = _buckets(kinds)
@@ -700,6 +715,11 @@ def _words(text: str) -> list[str]:
 # "movie" / "film" (everyday words: "watching a movie").
 _CLIP_WORDS = frozenset({"filmed", "filming", "recorded", "recording", "footage"})
 _PLAY = re.compile(r"\b(?:press|hit)\s+play\b")
+
+
+def claims_clip(text: str) -> bool:
+    """A clip word (`_CLIP_WORDS`) or "press/hit play": the text claims a clip as "video" does."""
+    return bool(_CLIP_WORDS & set(_words(text))) or bool(_PLAY.search(text.lower()))
 # A negation cue (F1, client rule 2026-11-16): "n't" forms are folded to "nt" first (`_NT`).
 _NT = re.compile(r"n['’]t\b")
 _NEG_CUES = frozenset({"not", "no", "without", "instead", "rather", "never", "nt", "dont", "doesnt",
@@ -720,9 +740,15 @@ _DISCLOSE = re.compile(r"\b(?:not what|not exactly|not quite|instead|rather than
                        r"|only have|dont have (?:that|it|one|any)|havent got)\b")
 
 
+# A word after a cue that turns it into an affirmation: "not just a video" says there is one (rwl3 A6).
+_AFFIRMS = frozenset({"just", "only"})
+
+
 def _negated(words: list[str], i: int, window: int) -> bool:
-    """A negation cue (`_NEG_CUES`) among the `window` words before `words[i]`."""
-    return bool(_NEG_CUES & set(words[max(0, i - window):i]))
+    """A negation cue (`_NEG_CUES`) among the `window` words before `words[i]`, not followed by
+    "just" / "only" ("not just a video" affirms the video)."""
+    lo = max(0, i - window)
+    return any(w in _NEG_CUES and words[j + 1] not in _AFFIRMS for j, w in enumerate(words[lo:i], lo))
 
 
 def _asked_mask(asked: dict) -> frozenset[str]:
@@ -827,6 +853,13 @@ def discloses(text: str, pick: Pick) -> bool:
         nouns = (_VID_NOUNS if "video" in real else frozenset()) | (_PIC_NOUNS if "photo" in real else frozenset())
         return bool(set(words) & nouns)
     return True
+
+
+def caption_fails(text: str, pick: Pick, price_cents: int | None) -> list[str]:
+    """The Claim audit's checks on `text` (`claim_ok`, `price_ok` at `price_cents`, `discloses`):
+    the names of those it fails ("claim", "price", "disclose"); [] passes. Pure."""
+    return [c for c, good in (("claim", claim_ok(text, pick)), ("price", price_ok(text, price_cents)),
+                              ("disclose", discloses(text, pick))) if not good]
 
 
 def _amount_re(signs: str, words: str) -> re.Pattern:

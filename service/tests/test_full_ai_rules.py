@@ -23,6 +23,14 @@
                                                 heat_check; not on the Shadow page
   case_cutoff_is_what_fired_applies             rwl-a N8: test Mode shows the TEST_THRESHOLDS value, not min
                                                 with Shadow's; both pages show declines_buying's .95
+  case_every_decider_row_on_the_page            every row decide_turn can return (enumerated over Facts' flags
+                                                and fired pairs) is a table row; Shadow: its own Facts
+  case_every_vault_switch_on_the_page           every vault_settings key in the test page's vault table; none
+                                                in Shadow
+  case_offer_details_shown                      resolver steps (Step), look-back constants, OfferFacts fields,
+                                                the branch prompt (OFFER_GOAL, no NO_SELL_OFFERS), check RULES,
+                                                diagnostics keys, the switch notes, the live read
+  case_shadow_holds_no_offer_details_wording    none of the above in Shadow
 
 Run: ./venv/bin/python service/tests/test_full_ai_rules.py  (exit 0 = pass)
 """
@@ -32,18 +40,23 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 
 _harness.bootstrap()
 
+import itertools  # noqa: E402
+from dataclasses import fields  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
+from typing import get_args  # noqa: E402
 
 from fastapi import HTTPException  # noqa: E402
 
 import auth  # noqa: E402
 import full_ai_api  # noqa: E402
 import permissions  # noqa: E402
+import vault_settings  # noqa: E402
 from automations import _heat_jev as hj  # noqa: E402
 from automations import _info_jev as ij  # noqa: E402
 from automations import _price_jev as pj  # noqa: E402
 from automations import _router_jev as rj  # noqa: E402
 from automations import full_ai_config, full_ai_decide  # noqa: E402
+from automations import full_ai_offer_details as fo  # noqa: E402
 from automations import full_ai_rules as fr  # noqa: E402
 from automations import full_ai_writers as fw  # noqa: E402
 from automations.full_ai_mode import full  # noqa: E402
@@ -286,6 +299,86 @@ def case_cutoff_is_what_fired_applies():
         blocks = _node(fr.rules(mode), "router_jev")["blocks"]
         db = next(b for b in blocks if b.get("qid") == "declines_buying")
         assert "cut-off: 0.95" in db["items"], (mode, db["items"])
+
+
+def _decider_rows(qids, **fixed) -> set[str]:
+    """Every row `decide_turn` returns over all of Facts' bool flags not `fixed` and every fired set of at
+    most two of `qids`."""
+    bools = [f.name for f in fields(full_ai_decide.Facts) if f.type in ("bool", bool) and f.name not in fixed]
+    fired = [()] + [(q,) for q in qids] + list(itertools.combinations(qids, 2))
+    rows = set()
+    for vals in itertools.product((False, True), repeat=len(bools)):
+        kw = {**dict(zip(bools, vals)), **fixed}
+        for f in fired:
+            rows.add(full_ai_decide.decide_turn(full_ai_decide.Facts(fired=frozenset(f), intensity=1.0, **kw)).row)
+    return rows
+
+
+def _table_rows(mode: str) -> set[str]:
+    (b,) = [b for b in _node(fr.rules(mode), "route_table")["blocks"] if b["label"] == "Rows in walk order"]
+    return {r[1] for r in b["rows"][1:]}
+
+
+def case_every_decider_row_on_the_page():
+    every = sorted({q for n in dir(rj) if isinstance(getattr(rj, n), dict) for q, s in getattr(rj, n).items()
+                    if isinstance(s, dict) and "instructions" in s})
+    want = _decider_rows(every)
+    assert "offer_details" in want and want <= _table_rows("test"), want - _table_rows("test")
+    # Shadow (full_ai_chat): Shadow's questions, no Pending tease, every other flag at Facts' default.
+    shadow = {f.name: f.default for f in fields(full_ai_decide.Facts)
+              if f.type in ("bool", bool) and f.name not in ("pending_offer", "jev_ok")} | {"pending_tease": False}
+    got = _decider_rows(sorted(rj.QUESTIONS), **shadow)
+    assert got <= _table_rows("shadow"), got - _table_rows("shadow")
+    assert "offer_details" not in _table_rows("shadow")
+
+
+def case_every_vault_switch_on_the_page():
+    (b,) = [b for b in _node(fr.rules("test"), "switches")["blocks"] if b["label"].startswith("Vault switches")]
+    assert [r[0] for r in b["rows"][1:]] == list(vault_settings.KEYS), b["rows"]
+    assert all(r[1] == "off" and r[2] for r in b["rows"][1:]), b["rows"]  # undescribed key = fail, not a 500
+    shadow = "\n".join(_strings(fr.rules("shadow")))
+    assert not [k for k in vault_settings.KEYS if k in shadow]
+
+
+def case_offer_details_shown():
+    p = fr.rules("test")
+    w = _node(p, "writers")["blocks"]
+    (res,) = [b for b in w if b["label"].startswith("Row offer_details: Offer resolver")]
+    assert [r[0] for r in res["rows"][1:]] == list(get_args(fo.Step)), res["rows"]
+    (reads,) = [b for b in w if b["label"] == "Row offer_details: what the resolver reads"]
+    assert f"newest {fo.LOOKBACK_N} Offer rows sent within {fo.LOOKBACK_S // 86400} days" in reads["items"][0]
+    (facts,) = [b for b in w if b["label"].startswith("Row offer_details: Offer facts")]
+    assert facts["items"] == [f.name for f in fields(fo.OfferFacts)]
+    branch = [b for b in w if "(row offer_details" in b["label"]]
+    assert len(branch) == 2, [b["label"] for b in branch]
+    for b in branch:
+        assert fw.OFFER_GOAL in b["text"] and fw.OFFER_HEAD in b["text"], b["label"]
+        assert fw.NO_SELL_OFFERS not in b["text"] and fw.ASKED_EXCEPTION.strip() not in b["text"], b["label"]
+    assert fw.OFFER_NONE in branch[1]["text"]
+    (check,) = [b for b in _node(p, "reply_chain")["blocks"] if b["label"].startswith("Offer answer check")]
+    assert [i.split(":", 1)[0] for i in check["items"][:len(fo.RULES)]] == list(fo.RULES), check["items"]
+    assert any("zero dollars" in i for i in check["items"]) and any("filmed" in i for i in check["items"])
+    assert {"offer_details", "asked_marker", "held_tease"} <= set(fr._REPLY_KEYS)
+    send = {b["label"]: b for b in _node(p, "send_record")["blocks"]}
+    diag = next(b for k, b in send.items() if k.startswith("reply_json.offer_details keys"))
+    assert diag["items"] == list(fo.diagnostics(fo.NONE, None)), diag["items"]
+    assert "Live read before sending (live only)" in send
+    store = [b["label"] for b in _node(p, "store")["blocks"]]
+    assert "What moves an asked count (NEW-168)" in store, store
+    sell = "\n".join(_strings(_node(p, "sell")))
+    assert "hold_folder_price" in sell and "folder_price_final" in sell and "standard_folders" in sell
+    assert fr._review_label() in sell and "Needs Review" in fr._review_label()
+    assert "folder_price_final" in "\n".join(_strings(_node(p, "price_jev")))
+
+
+def case_shadow_holds_no_offer_details_wording():
+    text = "\n".join(_strings(fr.rules("shadow")))
+    new = [fw.OFFER_GOAL, fw.OFFER_HEAD, "offer_details", "asks_offer_details", "hold_folder_price",
+           "folder_price_final", "standard_folders", "ASKED: <id>", "Live read", "held_tease", "asked_marker",
+           *fr._RESOLVER_WHEN.values(), *fr._VAULT_SWITCHES.values()]
+    new += [v.split("{", 1)[0] for v in fr._CHECK_RULES.values()]
+    leaks = [s[:60] for s in new if s.strip() in text]
+    assert leaks == [], leaks
 
 
 _harness.run()

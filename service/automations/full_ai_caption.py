@@ -20,6 +20,7 @@ import re
 import llm_client
 import vault_ai_brief
 from automations import _language
+from automations._markers import strip_asked
 from automations.full_ai_mode import full
 from automations.full_ai_sell import Pick
 from automations.full_ai_writers import (
@@ -193,8 +194,9 @@ async def write(facts, msgs: list[dict], *, deadline: float,
                 writers: list[str] | None = None) -> WriteResult:
     """`full_ai_writers.walk` for the caption: the side's `writers` in order (tries, per-Writer
     timeouts and the deadline as there), the next only after a failure, a
-    reply with no caption (`empty`) or a code-floor reject (`floor_on`, no marker allowed): the
-    chat Writer's strips and floor (`strip_labels`, `strip_quotes`, `reject`, no gif-only reply),
+    reply with no caption (`empty`) or a code-floor reject (`floor_on`): its `ASKED:` lines stripped
+    (`_markers.strip_asked`, as the chat Writer strips them), then the chat Writer's strips and
+    floor (`strip_labels`, `strip_quotes`, `reject`, no gif-only reply),
     then `copied` against every message of this call (`echo`; no persona in it, the vault
     description is in it) and her last outbound lines of the thread (`repeat`; none on a re-offer
     of the same piece, `full_ai_writers.reoffers`).
@@ -210,7 +212,8 @@ async def write(facts, msgs: list[dict], *, deadline: float,
         r = await llm_client.chat(model=writer, messages=msgs, purpose=PURPOSE,
                                   account_id=facts.account_id, temperature=TEMPERATURE,
                                   timeout_s=timeout, max_attempts=1)
-        text = strip_quotes(strip_labels(parse(r.content or "")))
+        # An `ASKED:` line is stripped as the chat `write` strips it (rwl3 A2): never sent.
+        text = strip_quotes(strip_labels(strip_asked(parse(r.content or ""), frozenset())[0]))
         return text, (reject(text, lang, False) or copied(text, prompt, own)) \
             if text and cfg["floor_on"] else None
 

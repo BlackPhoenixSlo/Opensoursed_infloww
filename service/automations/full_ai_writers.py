@@ -52,6 +52,7 @@ import asyncio
 import random
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, NamedTuple
@@ -68,7 +69,7 @@ from automations._router_jev import line_text
 from automations.full_ai_config import style_layers
 from automations.full_ai_mode import full
 from automations.full_ai_offer_details import OfferFacts
-from automations.full_ai_sell import MOVING_KINDS, Pick, Refusal, Teased, _buckets, _media_phrase, _money
+from automations.full_ai_sell import Pick, Refusal, Teased, _buckets, _media_phrase, _money, kind_of
 from automations.names import resolve_fan_name
 from automations.welcome_chatter_for_info import (
     _ASK_PRIORITY, _BREATHER_VARIANTS, _HISTORY_TAIL, _REPLY_TEMPERATURE, _STYLE_VARIANTS,
@@ -419,8 +420,7 @@ def offer_open_line(piece: Teased | None) -> str:
     the others' kinds are unknown; none -> no clause."""
     n = len(piece.locked) if piece else 0
     if n == 1:
-        kind = str(piece.format).lower()
-        what = "a video" if kind in MOVING_KINDS else "a voice note" if kind == "audio" else "a photo"
+        what = {"video": "a video", "audio": "a voice note"}.get(kind_of(piece.format), "a photo")
         return OFFER_OPEN.format(piece=f" ({what}: call it nothing else)")
     return OFFER_OPEN.format(piece=f" ({n} pieces: name no kind)" if n else "")
 
@@ -1233,20 +1233,28 @@ def reoffers(facts, pick) -> bool:
                for p in (getattr(facts, "offer_piece", None), getattr(facts, "tease", None)))
 
 
-def prompt_pieces(content: str, persona: str = "") -> list[str]:
-    """A prompt as `copied` reads it: without `persona` and the `- GOOD:` few-shot line (her own
-    voice, fine to reuse), so no run spans the gap either. Pure."""
+def prompt_pieces(content: str, persona: str = "", drop: Sequence[str] = ()) -> list[str]:
+    """A prompt as `copied` reads it: without `persona`, the `- GOOD:` few-shot line (her own
+    voice, fine to reuse) and each of `drop` (facts she is meant to restate), so no run spans the
+    gap either. Pure."""
     parts = content.split(persona) if persona else [content]
-    return [q for p in parts for q in _GOOD_LINE.split(p) if q.strip()]
+    parts = [q for p in parts for q in _GOOD_LINE.split(p)]
+    for d in filter(None, drop):
+        parts = [q for p in parts for q in p.split(d)]
+    return [q for q in parts if q.strip()]
 
 
 def own_lines(facts, pick=None) -> list[str]:
     """Her last OWN_LINES outbound lines of the thread (`facts.cut_rows`, direction not "in"); none
-    when `pick` re-offers a piece of the thread (`reoffers`: her caption for it is fair to reuse)."""
+    when `pick` re-offers a piece of the thread (`reoffers`: her caption for it is fair to reuse).
+    On row offer_details with an Offer resolved (`facts.offer_facts`) its caption is left out: she
+    answers about a piece she already captioned (rwl3 A8, N3)."""
     if reoffers(facts, pick):
         return []
+    of = getattr(facts, "offer_facts", None)
+    caps = {" ".join(c.split()).lower() for c in (of.captions if of is not None else ())}
     rows = [m for m in getattr(facts, "cut_rows", None) or [] if m.direction != "in"]
-    return [t for t in (line_text(m) for m in rows[-OWN_LINES:]) if t]
+    return [t for t in (line_text(m) for m in rows[-OWN_LINES:]) if t and " ".join(t.split()).lower() not in caps]
 
 
 def reject(text: str, lang: str, gifs: bool, offer_ref: int | None = None, *,
@@ -1258,8 +1266,7 @@ def reject(text: str, lang: str, gifs: bool, offer_ref: int | None = None, *,
     it has no words left and the next Writer is tried. Shared by the chat Writer and the caption
     (`full_ai_caption.write`), each on its text after `strip_labels` + `strip_quotes`; the
     `copied` checks need the call's messages and run beside it in each `write`. An `ASKED:` line
-    is no exception here: the chat `write` strips it before this floor, a caption carrying one
-    is rejected."""
+    never reaches this floor: the chat `write` and the caption's both strip it first."""
     body, tag = cat_stickers.parse_marker(text)
     if not body:
         return None if gifs and tag and offer_ref is None and not item else "no_letters"
@@ -1329,7 +1336,8 @@ async def write(decision, facts, *, deadline: float, writers: list[str] | None =
     `reject` on the text after `strip_labels` + `strip_quotes` (both run floor on or off), then
     `copied` against the system prompt minus her persona (`echo`) and her last OWN_LINES outbound
     lines (`repeat`; none when the Pick re-offers the open Offer's / Pending tease's piece,
-    `reoffers`). `floor_reason` is the first floor reject's reason. `facts.pick` (03b's sell
+    `reoffers`, or on row offer_details, where the OFFER facts lines are no `echo` either).
+    `floor_reason` is the first floor reject's reason. `facts.pick` (03b's sell
     step) reaches `messages_for`, and the answering text has its `>>OFFER` line stripped
     (`strip_offer`, floor on or off). `writers` replaces the side's list (the Claim audit's one
     rewrite passes the Writer that answered, ticket 45). `plain`: the chat bubbles beside a separate
@@ -1354,7 +1362,10 @@ async def write(decision, facts, *, deadline: float, writers: list[str] | None =
                              broke="declines_buying" in decision.fired)
     lang = await _language.load_account_language(facts.account_id) if cfg["floor_on"] else ""
     ids = frozenset(asked_ids)
-    pieces = prompt_pieces(msgs[0]["content"], persona) if msgs else []
+    # Row offer_details: the OFFER facts lines are hers to restate (rwl3 A8); its head still echoes.
+    facts_lines = (offer_facts_block(getattr(facts, "offer_facts", None)).split("\n")[1:]
+                   if decision.row == "offer_details" else [])
+    pieces = prompt_pieces(msgs[0]["content"], persona, facts_lines) if msgs else []
     own = own_lines(facts, pick)
     marks: dict[str, AskedMarker] = {}  # her text -> its `ASKED:` marker (`asked_marker`)
 

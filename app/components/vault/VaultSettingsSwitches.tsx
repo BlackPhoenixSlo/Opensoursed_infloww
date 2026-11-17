@@ -3,9 +3,7 @@
 /** Ours: the Creator's two vault switches (`useVaultSettings`), both off by default. In the Extras drawer, for
  *  whoever may edit the folders (not a folder-limited chatter). Each is one server boolean, saved on the tap. */
 
-import { useState } from "react";
-
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { IfSwitch } from "@/components/ui/infloww";
 import { setVaultSetting, useVaultSettings, type VaultSettings } from "@/hooks/useVaultSettings";
@@ -26,21 +24,13 @@ const ROWS: { key: keyof VaultSettings; label: string; help: string }[] = [
 export default function VaultSettingsSwitches({ accountId }: { accountId: string }) {
   const qc = useQueryClient();
   const settings = useVaultSettings(accountId);
-  const [saving, setSaving] = useState<keyof VaultSettings | null>(null);
-  const [failed, setFailed] = useState(false);
+  const save = useMutation({
+    mutationFn: ({ key, value }: { key: keyof VaultSettings; value: boolean }) =>
+      setVaultSetting(qc, accountId, { [key]: value }),
+  });
   if (!settings.data) return null;
   const data = settings.data;
-  async function toggle(key: keyof VaultSettings, value: boolean) {
-    setSaving(key);
-    setFailed(false);
-    try {
-      await setVaultSetting(qc, accountId, { [key]: value });
-    } catch {
-      setFailed(true);
-    } finally {
-      setSaving(null);
-    }
-  }
+  const saving = save.isPending ? save.variables.key : null;
   return (
     <section data-testid="vault-settings-switches" className="space-y-3 border-t border-border pt-3">
       {ROWS.map((row) => (
@@ -49,13 +39,13 @@ export default function VaultSettingsSwitches({ accountId }: { accountId: string
             checked={data[row.key]}
             loading={saving === row.key}
             disabled={saving !== null}
-            onChange={(value) => void toggle(row.key, value)}
+            onChange={(value) => save.mutate({ key: row.key, value })}
             label={row.label}
           />
           <p className="text-xs text-fg-dim">{row.help}</p>
         </div>
       ))}
-      {failed && <p role="alert" className="text-xs text-err">Couldn&apos;t save. Try again.</p>}
+      {save.isError && <p role="alert" className="text-xs text-err">Couldn&apos;t save. Try again.</p>}
     </section>
   );
 }

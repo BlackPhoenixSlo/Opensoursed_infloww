@@ -70,10 +70,16 @@ vi.mock("@/hooks/useStandardFolders", () => ({
   standardFoldersKey: (id: string) => ["vault-standard-folders", id],
   useStandardFolders: () => ({ data: { list: h.standardList, pending: 0 }, refresh: () => {}, syncing: false }),
 }));
-// The Creator's switches, both on here (the standard-category cases below need them); off is the default.
-vi.mock("@/hooks/useVaultSettings", () => ({
-  useVaultSettings: () => ({ data: { folder_price_final: true, standard_folders: true } }),
-}));
+// The Creator's switches, both on here (the standard-category cases below need them); off is the default. The real
+// hook still runs (fetch off) so a conditional call breaks hook order here as it does in the app.
+vi.mock("@/hooks/useVaultSettings", async (orig) => {
+  const mod = await orig<typeof import("@/hooks/useVaultSettings")>();
+  return {
+    ...mod,
+    useVaultSettings: (id: string) =>
+      ({ ...mod.useVaultSettings(id, false), data: { folder_price_final: true, standard_folders: true } }),
+  };
+});
 vi.mock("@/components/vault/VaultSettingsSwitches", () => ({ default: () => null }));
 vi.mock("@/components/vault/VaultStandardFolders", () => ({
   default: ({ folders, onSelect }: { folders: { id: number; name: string }[]; onSelect: (folder: unknown) => void }) =>
@@ -577,4 +583,15 @@ it("a standard category scopes the mirror and disables the live whole-vault fall
   expect(h.liveOptions).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
   click("rail:All media");
   expect(h.mirrorOptions).toHaveBeenLastCalledWith(expect.objectContaining({ internalFolderId: null }));
+});
+
+it("an unrestricted chatter's access loading → all keeps the hook order and shows the standard categories", () => {
+  // Bug: `access === "all" && useVaultSettings(…)` skipped the hook while access loaded → "Rendered more hooks".
+  h.standardList = [{ id: 501, kind: "photo", slug: "beach", name: "Photos Beach", items: 1, priceable: true }];
+  h.access = { isLoading: true, isError: false };
+  const { rerender } = renderPanel();
+  expect(screen.queryByRole("button", { name: "standard:Photos Beach" })).toBeNull();
+  h.access = { isLoading: false, isError: false };
+  rerender(<VaultDownloadProvider><VaultManagePanel /></VaultDownloadProvider>);
+  expect(screen.getByRole("button", { name: "standard:Photos Beach" })).toBeInTheDocument();
 });

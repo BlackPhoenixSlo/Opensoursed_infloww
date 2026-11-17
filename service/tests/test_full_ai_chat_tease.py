@@ -15,6 +15,8 @@ is a hobby), all test Mode only.
   case_tease_price_pure      `tease_options`, `tease_state`, the Choice's options, `TEASE_PRICE_VERSION`;
                              `PRICE_VERSION` unmoved
   case_pick_one_photo        `pick(ride=True, ride_max=n)`: n photos (1, 5); ride_max 2 unchanged
+  case_folder_final_one_clamp_in_sell  rwl3 A9: a final folder price survives a tease quote
+                             and a haggle through `_sell`'s one clamp; not final, the haggle moves it
   case_ride_soft_only        rwl-a F4: `_sell`'s ride draws only soft-lane photos (<= $10); a free
                              tease only ones past the free guard; none left -> Refusal("no_match")
   case_router_request        flags off: the request is the one before them, byte for byte (pinned on
@@ -353,6 +355,41 @@ async def _ride(rows, cents):
     finally:
         fs.load_rows, fs.shoots_for, full_ai_turn._tease_price, full_ai_turn.tease_turn = saved
     return facts.pick if isinstance(facts.pick, (Pick, Refusal)) else None
+
+
+async def case_folder_final_one_clamp_in_sell():
+    """rwl3 A9: `_sell` clamps a final folder price once, after the tease quote and the haggle."""
+    from automations import full_ai_turn
+    final = {"folder_final": True}
+    for cents in (300, 0):          # a tease quote (paid or free) never moves a final $10
+        got = await _ride([{**_row(7), "folder_cents": 1000, **final}], cents)
+        assert isinstance(got, Pick) and (got.price_cents, got.list_cents) == (1000, 1000), (cents, got)
+    rows = [{**_row(8), "folder_cents": 3000, **final}]
+
+    async def load(_aid):
+        return rows, [], {}
+    piece = SimpleNamespace(subject="anything", format="photo", locked=(8,), previews=(), list_cents=3000,
+                            row_id=1)
+    facts = SimpleNamespace(account_id="a", fan_id=1, anchor_key="k", mode="test", scene_now=None, tease=None,
+                            offer_piece=piece, owned=set(), sent=set(),
+                            state={"fan_new_messages": ["how about $20?"]},
+                            config={**DEFAULTS, "folders": {"include": [], "exclude": []}, "sell_bundle": False,
+                                    "sell_nearest": "off"}, pick=None)
+    saved = fs.load_rows, full_ai_turn.tease_turn
+    fs.load_rows, full_ai_turn.tease_turn = load, (lambda d, f: False)
+    try:
+        await full_ai_turn._sell(facts, Decision("sell_now", 2, "haggle", frozenset()), {}, {}, None)
+    finally:
+        fs.load_rows, full_ai_turn.tease_turn = saved
+    assert isinstance(facts.pick, Pick) and (facts.pick.price_cents, facts.pick.list_cents) == (3000, 3000), \
+        facts.pick
+    rows[0] = {**rows[0], "folder_final": False}
+    fs.load_rows, full_ai_turn.tease_turn = load, (lambda d, f: False)
+    try:
+        await full_ai_turn._sell(facts, Decision("sell_now", 2, "haggle", frozenset()), {}, {}, None)
+    finally:
+        fs.load_rows, full_ai_turn.tease_turn = saved
+    assert facts.pick.price_cents == fs.clamp_quote(3000, 2000) < 3000, ("not final: the haggle moves it", facts.pick)
 
 
 async def case_ride_soft_only():

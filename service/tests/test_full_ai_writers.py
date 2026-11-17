@@ -882,6 +882,58 @@ def case_write_strips_then_floors_and_checks_copies():
             setattr(obj, name, val)
 
 
+def case_offer_details_copied_floor():
+    """rwl3 A8: on row offer_details the OFFER facts lines are hers to restate (no `echo` on them,
+    its head still echoes) and the resolved Offer's caption (`OfferFacts.captions`) is no `repeat`
+    (she answers from it, as on a re-offer); her other lines still are (rwl3 N3)."""
+    import asyncio
+    import time
+    from datetime import datetime
+    from automations.full_ai_offer_details import OfferFacts
+    persona = "You are Mia, a bubbly girl from Ohio who loves late night drives and pizza."
+    of = OfferFacts(locked_kinds={"video": 1}, locked=1, preview_kinds={}, previews=0, seconds=(83,),
+                    descriptions=("her in a red dress by the pool at sunset",), quoted_cents=3000,
+                    sent_at=datetime(2026, 11, 16), bought=False, same_as_first=None, missing=frozenset(),
+                    captions=("omg ur gonna love this clip of me in my red dress by the pool",))
+    system = f"{persona}\n\n{wr.GOAL_HEAD}{wr.OFFER_GOAL}\n{wr.offer_facts_block(of)}\n\n{wr.CONTRACT}"
+
+    async def _persona(_):
+        return persona
+
+    async def _lang(_):
+        return "en"
+    facts = _turn()
+    facts.pick, facts.offer_facts = None, of
+    facts.cut_rows = [_msg_row("out", "i was thinking about u all morning on my way to the gym", 1),
+                      _msg_row("out", "omg ur gonna love this clip of me in my red dress by the pool", 2),
+                      _msg_row("in", "whats in it", 3)]
+    decision = SimpleNamespace(route="chat", row="offer_details", heat=2, fired=set())
+    saved = _swap([(wr, "_load_persona", _persona), (wr._language, "load_account_language", _lang),
+                   (wr, "prompt", lambda *a, **k: wr.Prompt([{"role": "system", "content": system},
+                                                             {"role": "user", "content": "FAN: whats in it"}], ()))])
+    try:
+        for first, outcomes in [
+            ("its 1 vid, me in a red dress by the pool at sunset babe", ["ok"]),
+            ("ur gonna love this clip of me in my red dress, its 1 vid", ["ok"]),
+            ("the offer he means the only facts you may state", ["floor:echo", "ok"]),
+            ("i was thinking about u all morning on my way, its 1 vid", ["floor:repeat", "ok"]),
+        ]:
+            saved += _swap([(llm_client, "chat", _scripted({"a": first, "b": "hii"}))])
+            res = asyncio.run(wr.write(decision, facts, deadline=time.monotonic() + 30, writers=["a", "b"]))
+            assert [x["outcome"] for x in res.attempts] == outcomes, (first, res.attempts)
+        # Any other row: the facts are echo and her line a repeat, as before.
+        facts.offer_facts = None
+        decision.row = "otherwise"
+        for first, reason in [("its 1 vid, me in a red dress by the pool at sunset babe", "echo"),
+                              ("ur gonna love this clip of me in my red dress, its 1 vid", "repeat")]:
+            saved += _swap([(llm_client, "chat", _scripted({"a": first, "b": "hii"}))])
+            res = asyncio.run(wr.write(decision, facts, deadline=time.monotonic() + 30, writers=["a", "b"]))
+            assert [x["outcome"] for x in res.attempts] == [f"floor:{reason}", "ok"], (first, res.attempts)
+    finally:
+        for obj, name, val in reversed(saved):
+            setattr(obj, name, val)
+
+
 def case_caption_write_runs_the_chat_floor():
     """`full_ai_caption.write`: the chat Writer's strips + `reject`, then `echo` against its own
     messages and `repeat` against her last lines."""
@@ -1107,6 +1159,23 @@ def case_style_flags_one_switch_per_layer():
     typo_off = {**DEFAULTS["style"], "typos": False}
     for route in _ROUTES:
         assert _system(route, style=typo_off) == _system(route), route
+
+
+
+def case_open_card_kind_one_word():
+    """rwl3 A7: the open card's kind reads one way for the need-line and for a yes to it: a voice
+    note is no photo, so "yes send the pic" over one is no yes to the card."""
+    from automations import full_ai_turn
+    from automations.full_ai_decide import Decision
+    d = Decision("sell_now", 2, "sell", frozenset({"says_yes_to_offer"}))
+    for fmt, word, yes_photo, yes_video in (("photo", "a photo", True, False), ("video", "a video", False, True),
+                                            ("gif", "a video", False, True), ("audio", "a voice note", False, False)):
+        piece = Teased("anything", fmt, (4,), (), 5000, 1)
+        assert f"({word}: call it nothing else)" in wr.offer_open_line(piece), (fmt, wr.offer_open_line(piece))
+        facts = SimpleNamespace(mode="test", offer_piece=piece)
+        for asked, want in (("photo", yes_photo), ("video", yes_video), ("any", True)):
+            got = full_ai_turn._yes_to_open(d, facts, {"asks_format": {asked: 1.0}})
+            assert got is want, (fmt, asked, got)
 
 
 _harness.run()

@@ -138,8 +138,8 @@ async def case_manual_correction_survives_describe_and_review():
         try:
             await folders.remember(s, "standard-a", beach, [2], True)
             raise AssertionError("video accepted into photo category")
-        except Exception as e:
-            assert getattr(e, "status_code", None) == 400
+        except folders.CategoryMediaType as e:
+            assert e.kind == "photo"
 
 
 async def case_removed_media_and_account_isolation():
@@ -185,10 +185,12 @@ async def case_saved_price_beats_ai_and_haggling():
              "folder_final": True}]   # `load_rows` marks rows when `vault_settings.folder_price_final` is on
     chosen = sell._offer(rows, [], sell.Ask("anything", "photo", 1), free=False)
     assert sell.folder_price(chosen) == 3500
-    assert sell.tease_price(chosen, 1000).price_cents == 3500
+    hold = sell.hold_folder_price   # the one clamp `_sell` runs last (rwl3 A9)
+    assert hold(sell.tease_price(chosen, 1000)).price_cents == 3500
+    assert hold(sell.tease_price(chosen, 0)).price_cents == 3500
     free = sell._offer(rows, [], sell.Ask("anything", "photo", 1), free=True)
-    assert sell.tease_price(free, 0).price_cents == 3500
-    haggled = turn._haggled(chosen, None, True, ["how about $10?"])
+    assert hold(free).price_cents == 0, "an explicit Free item stays free"
+    haggled = hold(turn._haggled(chosen, SimpleNamespace(list_cents=3500), True, ["how about $10?"]))
     assert haggled.price_cents == 3500
     facts = SimpleNamespace(pick=chosen)
     reply = {}

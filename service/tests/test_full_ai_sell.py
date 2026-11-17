@@ -41,6 +41,8 @@
                                $25 / $70; haggle floor from a custom list
   case_load_rows_folder_cents  vf: + of: prices -> highest per row; deleted
                                folder / other account ignored; error -> refusal
+  case_load_rows_standard_off_ignored  (rwl3 A1) standard switch off: a
+                               standard folder gives no ref / pack / price
   case_claim_ok_table          counts, kinds, plurals, subject words vs the
                                Pick (ticket 45); a price or a time is no count
   case_price_ok_table          any price named = the PPV price; None / 0 (a
@@ -73,6 +75,8 @@ import vault_dupes  # noqa: E402
 import vault_folder_prices  # noqa: E402
 import vault_jev_rules  # noqa: E402
 import vault_scripts  # noqa: E402
+import vault_settings  # noqa: E402
+from vault_standard_rules import key  # noqa: E402
 import vault_topic_folders  # noqa: E402
 from automations import full_ai_sell as fs  # noqa: E402
 from db.engine import get_session  # noqa: E402
@@ -680,6 +684,40 @@ async def case_load_rows_folder_cents():
         assert await fs.load_rows(aid) == fs.Refusal("inventory_unknown"), "prices unreadable: fail closed"
 
 
+async def case_load_rows_standard_off_ignored():
+    """rwl3 A1: with `standard_folders` off a leftover standard folder gives no ref, pack or price,
+    so its saved price never becomes a (final) Pick price; on, it reads as any folder."""
+    aid = "sell-load-standard"
+    ids = await _seed_vault(aid, [(601, None, False), (602, None, False)], [("plain", False, [602])])
+    async with get_session() as s:
+        std = VaultFolder(account_id=aid, name="feet-nude", created_by=key("photo", "selfie"))
+        s.add(std)
+        await s.flush()
+        s.add(VaultFolderItem(account_id=aid, folder_id=std.id, media_id=601))
+        odd = VaultFolder(account_id=aid, name="odd", created_by="vault_standard:bogus")
+        s.add(odd)
+        await s.flush()
+        s.add(VaultFolderItem(account_id=aid, folder_id=odd.id, media_id=602))
+        await s.commit()
+        sid, oid = std.id, odd.id
+    await vault_folder_prices.put(aid, f"vf:{sid}", 7000)
+    await vault_settings.put(aid, folder_price_final=True)
+    with patch.object(vault_dupes, "find_duplicates", _clusters):
+        rows, _g, _p = await fs.load_rows(aid)
+    by_id = {r["media_id"]: r for r in rows}
+    assert by_id[601]["refs"] == set() and by_id[601]["packs"] == set(), by_id[601]
+    assert by_id[601]["folder_cents"] is None, "off: a standard folder's price is not read"
+    assert by_id[602]["refs"] == {f"vf:{ids['plain']}", f"vf:{oid}"}, \
+        "other folders unchanged; a prefix that is no standard key (parse_key None) is a plain folder (rwl3 N1)"
+    pooled = {r["media_id"]: r["list_cents"] for r in fs.pool(rows, [], set(), ALL, TITS)}
+    assert pooled[601] == 1000, "off: the Jev lane price, not the standard folder's $70"
+    await vault_settings.put(aid, standard_folders=True)
+    with patch.object(vault_dupes, "find_duplicates", _clusters):
+        rows, _g, _p = await fs.load_rows(aid)
+    on = {r["media_id"]: r for r in rows}[601]
+    assert on["refs"] == {f"vf:{sid}"} and on["folder_cents"] == 7000, on
+
+
 # ── Claim audit + fallback caption (ticket 45) ───────────────────────
 
 CLIP, SET4, MIX = {"video": 1}, {"photo": 4}, {"photo": 2, "video": 1}
@@ -799,12 +837,28 @@ def case_claim_ok_tagged_table():
         ("i just filmed it for u", PICS3_ASKED_VID, False, "filmed over photos, no cue"),
         ("no filming rn, this vid tho", VID_ASKED_PICS, True, "a clip is a clip"),
         ("never recorded one, 4 pics", FEET_ASKED_TOY, False, "asked photo: clip words never excused"),
+        # rwl3 A6: "not just" / "not only" affirms the noun, it denies nothing
+        ("not just a video babe, 3 pics, $34 to unlock", PICS3_ASKED_VID, False, "not just affirms"),
+        ("not only a vid, 3 pics", PICS3_ASKED_VID, False, "not only affirms"),
+        ("its not a vid, just 3 pics", PICS3_ASKED_VID, True, "a real denial still excused"),
     ]
     for text, pick, want, why in rows:
         assert fs.claim_ok(text, pick) is want, (why, text)
     # an untagged Pick reads exactly as before: the negation never excuses
     for text in ("no vid of that babe but ive got 3 pics", "dont have a vid, 3 pics"):
         assert fs.claim_ok(text, _cpick({"photo": 3}, price=3400)) is False, text
+
+
+def case_caption_fails_names_each_check():
+    """rwl3 A10: `caption_fails` = the three Claim audit checks by name, [] when all pass."""
+    for text, pick, price, want in [
+        ("3 pics for u babe, $34", _cpick({"photo": 3}, price=3400), 3400, []),
+        ("heres the video, $34", _cpick({"photo": 3}, price=3400), 3400, ["claim"]),
+        ("3 pics for $40", _cpick({"photo": 3}, price=3400), 3400, ["price"]),
+        ("3 pics for u babe", PICS3_ASKED_VID, 3400, ["disclose"]),
+        ("heres the video, $40", PICS3_ASKED_VID, 3400, ["claim", "price", "disclose"]),
+    ]:
+        assert fs.caption_fails(text, pick, price) == want, (text, fs.caption_fails(text, pick, price))
 
 
 def case_discloses_table():
@@ -830,6 +884,7 @@ def case_discloses_table():
         ("not what u asked for babe", FEET_VID_ASKED, False, "phrase but no real noun"),
         ("cant wait for u to see this vid style set, 3 pics", PICS3_ASKED_VID, False, "cue 6 words back"),
         ("no video of that, these pics instead", PICS3_ASKED_VID, True, "both"),
+        ("not just a vid babe, 3 pics", PICS3_ASKED_VID, False, "rwl3 A6: not just discloses nothing"),
     ]
     for text, pick, want, why in rows:
         assert fs.discloses(text, pick) is want, (why, text)

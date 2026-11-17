@@ -11,10 +11,11 @@ from __future__ import annotations
 import json
 import logging
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select
 
 import vault_settings
 from db.engine import get_session
+from db.of_writer import immediate_session
 from db.models import Account, VaultFolder, VaultFolderItem, VaultItem
 from vault_ai_effective import overrides
 from vault_standard_rules import PREFIX, REVIEW, categories, classify, key, parse_key
@@ -23,14 +24,12 @@ log = logging.getLogger(__name__)
 BATCH = 250
 
 
-async def _lock(s, account_id: str) -> None:
-    # No unique name constraint exists on legacy folders. Serialize creation
-    # across workers before reading, not just with an in-process asyncio lock.
-    if s.bind.dialect.name == "sqlite":
-        await s.execute(text("BEGIN IMMEDIATE"))
-    account = await s.scalar(select(Account.id).where(Account.id == account_id).with_for_update())
-    if account is None:
-        raise ValueError("account_not_found")
+class CategoryMediaType(ValueError):
+    """Filing media of the other kind into a standard category (a photo into Videos / …)."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__("category_media_type")
+        self.kind = kind
 
 
 async def _ensure(s, account_id: str) -> dict[str, VaultFolder]:
@@ -81,15 +80,17 @@ manual correction. Refreshes never call vision, OF, or any selling endpoint.
         return 0
     after, count = -1, 0
     while True:
-        async with get_session() as s:
-            await _lock(s, account_id)
+        # No unique name constraint exists on legacy folders: BEGIN IMMEDIATE before the first read serializes
+        # creation across workers, not just within one process.
+        async with immediate_session() as s:
+            if await s.scalar(select(Account.id).where(Account.id == account_id)) is None:
+                raise ValueError("account_not_found")
             folders = await _ensure(s, account_id)
             q = select(VaultItem).where(VaultItem.account_id == account_id, VaultItem.media_id > after)
             if media_ids is not None:
                 q = q.where(VaultItem.media_id.in_(media_ids))
             items = list((await s.scalars(q.order_by(VaultItem.media_id).limit(BATCH))).all())
             await _place(s, account_id, folders, items)
-            await s.commit()
         count += len(items)
         if len(items) < BATCH:
             return count
@@ -133,15 +134,15 @@ async def listing(account_id: str) -> dict:
 
 
 async def remember(s, account_id: str, folder: VaultFolder, ids: list[int], included: bool) -> None:
-    """Persist explicit operator filing decisions through later descriptions."""
+    """Persist explicit operator filing decisions through later descriptions. Raises `CategoryMediaType` (nothing
+    written) when an included item is not of the category's kind."""
     parsed = parse_key(folder.created_by)
     if parsed is None:
         return
-    from fastapi import HTTPException
     items = list((await s.scalars(select(VaultItem).where(
         VaultItem.account_id == account_id, VaultItem.media_id.in_(ids)).with_for_update())).all())
     if included and any(item.kind != parsed[0] for item in items):
-        raise HTTPException(status_code=400, detail={"error": "category_media_type", "kind": parsed[0]})
+        raise CategoryMediaType(parsed[0])
     for item in items:
         ov = dict(overrides(item))
         choices = dict(ov.get("_standard_folders") or {})

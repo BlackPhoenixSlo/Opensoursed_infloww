@@ -26,6 +26,7 @@ Writes nothing. `run_turn` resolves on row `offer_details` (spec C) and checks h
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,7 +38,7 @@ import vault_ai_brief
 from automations.full_ai_owned import OFFER_OPEN_S
 from automations.full_ai_sell import (
     _AMOUNT, _KIND_NOUNS, _NOT_A_COUNT, _NUMBER_WORDS, _PIC_NOUNS, _TOKEN, _VID_NOUNS, MOVING_KINDS, _buckets,
-    _count_word, _media_phrase, _money, _words, quoted_cents,
+    _count_word, _media_phrase, _money, _words, claims_clip, quoted_cents,
 )
 from automations.full_ai_test import _loads, _media, _n, _offers, open_offers_of
 from db.engine import get_session
@@ -164,8 +165,50 @@ def _holds(r, cue: str) -> bool:
     return bool(vids if cue == "video" else pics)
 
 
+# A word that points his question at an earlier Offer ("the one i bought", "like before").
+_PAST_WORDS = frozenset({"bought", "before", "earlier", "yesterday", "old", "older", "other", "previous",
+                         "ago", "unlocked", "already", "paid", "spent"})
+_DEFINITE = frozenset({"the", "that", "those"})
+_NOT_DEFINITE = frozenset({"a", "an", "it", "its", "is", "this", "these"})
+
+
+def _names_one(toks: list[str], i: int) -> bool:
+    """The price at `toks[i]` names a row: "one" or a media noun follows it, past currency words
+    ("the $20 one", "that 20 dollar vid"); a bare price ("is that $20?") is the question."""
+    j = i + 1
+    while j < len(toks) and toks[j] in _CURRENCY:
+        j += 1
+    return j < len(toks) and (toks[j] in ("one", "ones") or toks[j] in _KIND_NOUNS)
+
+
+def _refers(text: str) -> bool:
+    """His text names an Offer rather than asking what the open one is (rwl3 A5): a past-Offer word
+    (`_PAST_WORDS`, incl. "paid" / "spent"), "the one" with a price after it, or "the" / "that" / "those" within the 3 words before a media noun or a price
+    that names one (`_names_one`), with no "a" / "it" / "is" / "this" between ("the video", "the $20
+    one"; not "is it a video?", "is this $20?", "is that $20?"). Pure."""
+    toks = re.findall(r"[a-z]+|\d+(?:\.\d+)?", text.lower())
+    if _PAST_WORDS & set(toks):
+        return True
+    if any(a == "the" and b in ("one", "ones") and any(t[0].isdigit() for t in toks[i + 2:])
+           for i, (a, b) in enumerate(zip(toks, toks[1:]))):
+        return True  # "the one ... $20" (rwl3 final check)
+    for i, tok in enumerate(toks):
+        if not ((tok[0].isdigit() and _names_one(toks, i)) or tok in _KIND_NOUNS):
+            continue
+        for back in reversed(toks[max(0, i - 3):i]):
+            if back in _DEFINITE:
+                return True
+            if back in _NOT_DEFINITE:
+                break
+    return False
+
+
 def resolve_offer(ask: OfferAsk) -> Resolved:
-    """The Offer his question names, first match wins. Pure."""
+    """The Offer his question names, first match wins. Pure.
+    rwl3 A5: with an Offer open, a price / media match on a row that is not open counts only when
+    his text refers to it (`_refers`); else the newest open Offer (step open_offer). A kind or price
+    he merely asks about ("is it a video?") is the question, not a reference. A price tie with
+    exactly one open row among the matches is that row unless he refers to an older one."""
     cands = ask.candidates
     for r in cands:
         if ask.quote_message_id is not None and getattr(r, "offer_message_id", None) == ask.quote_message_id:
@@ -173,13 +216,24 @@ def resolve_offer(ask: OfferAsk) -> Resolved:
         if ask.quote_row_id is not None and r.id == ask.quote_row_id:
             return Resolved(r, "quote_reply")
     opened = [r for r in cands if r.id in ask.open_ids]
+    got = _by_cue(ask, cands, opened)
+    if got.row is not None and got.row.id not in ask.open_ids and opened and not _refers(ask.text):
+        return Resolved(opened[-1], "open_offer")
+    return got
+
+
+def _by_cue(ask: OfferAsk, cands: list, opened: list) -> Resolved:
+    """Steps price, media, open_offer, none of `resolve_offer`."""
     cue = media_cue(ask.text)
     p = quoted_cents(ask.text)
     if p is not None:
         hit = [r for r in cands if r.offer_price_cents == p]
         if len(hit) > 1:
-            hit = [r for r in hit if cue and _holds(r, cue)]
-            return Resolved(hit[0], "price") if len(hit) == 1 else NONE
+            narrowed = [r for r in hit if cue and _holds(r, cue)]
+            if len(narrowed) == 1:
+                return Resolved(narrowed[0], "price")
+            open_hit = [r for r in hit if r.id in ask.open_ids]
+            return Resolved(open_hit[0], "price") if len(open_hit) == 1 and not _refers(ask.text) else NONE
         if hit:
             return Resolved(hit[0], "price")
         if len(opened) >= 2:
@@ -201,7 +255,8 @@ class OfferFacts:
     locked clip's length; `descriptions`: the locked items' vault descriptions (else the scene row's
     `offer_item_ref.desc`); `quoted_cents`: `offer_price_cents` (None: a tease, no price named yet; 0:
     free); `same_as_first`: (the 1st Offer's sent time, same locked media) when this is not the 1st;
-    `missing`: a subset of {"description", "media"}."""
+    `missing`: a subset of {"description", "media"}; `captions`: her text that carried this Offer
+    (the row's `ppv` bubble, else its text bubbles: a tease), fair to reuse (rwl3 N3)."""
     locked_kinds: dict[str, int]
     locked: int
     preview_kinds: dict[str, int]
@@ -213,6 +268,7 @@ class OfferFacts:
     bought: bool
     same_as_first: tuple[datetime, bool] | None
     missing: frozenset[str]
+    captions: tuple[str, ...] = ()
 
 
 def offer_facts(row, vault: dict[int, dict], earlier: Sequence) -> OfferFacts:
@@ -236,9 +292,11 @@ def offer_facts(row, vault: dict[int, dict], earlier: Sequence) -> OfferFacts:
         missing.add("media")
     first = earlier[0] if earlier else None
     same = (first.created_at, _media(first, "locked") == set(locked)) if first is not None else None
+    texts = [p for p in _loads(getattr(row, "reply_json", None)).get("parts") or [] if p.get("text")]
+    caps = tuple(str(p["text"]) for p in ([p for p in texts if p.get("ppv")] or texts))
     return OfferFacts(locked_kinds, len(locked), _kinds(previews, items, vault), len(previews),
                       tuple(seconds), descs, row.offer_price_cents, row.created_at,
-                      row.outcome == "bought", same, frozenset(missing))
+                      row.outcome == "bought", same, frozenset(missing), caps)
 
 
 async def load_offer_vault(account_id: str, media_ids: Iterable[int]) -> dict[int, dict]:
@@ -271,7 +329,7 @@ _MINS = frozenset({"min", "mins", "minute", "minutes"})
 SECS_SLACK = 5      # a seconds claim may be this far off a locked clip's length
 # A spelled dollar amount ("twenty five bucks"): number words before a currency word.
 _CURRENCY = frozenset({"dollar", "dollars", "buck", "bucks", "usd"})
-_SPELLED = {**{w: n for w, n in _NUMBER_WORDS.items() if w not in ("a", "an")},
+_SPELLED = {**{w: n for w, n in _NUMBER_WORDS.items() if w not in ("a", "an")}, "zero": 0,
             **dict(zip(("thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"),
                        range(13, 20))),
             **dict(zip(("twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"),
@@ -298,7 +356,8 @@ def _kind(noun: str) -> str:
 
 
 def _spelled_cents(words: list[str]) -> int | None:
-    """The amount the number words ending `words` spell ("twenty five", "a hundred"), in cents."""
+    """The amount the number words ending `words` spell ("twenty five", "a hundred", "zero": 0), in
+    cents; None when they spell nothing."""
     j = len(words)
     while j and (words[j - 1] in _SPELLED or words[j - 1] in ("hundred", "and")
                  or (words[j - 1] in ("a", "an") and j < len(words) and words[j] == "hundred")):
@@ -306,7 +365,7 @@ def _spelled_cents(words: list[str]) -> int | None:
     spelled, total = words[j:], 0
     for w in spelled:
         total = max(total, 1) * 100 if w == "hundred" else total + _SPELLED.get(w, int(w in ("a", "an")))
-    return total * 100 if total else None
+    return total * 100 if total or "zero" in spelled else None
 
 
 def _after_noun(words: list[str]) -> bool:
@@ -341,8 +400,8 @@ def _said(text: str) -> _Said:
             counts.append((n, _kind(toks[i + 2]), nxt in _PREVIEW_WORDS or _after_noun(toks[i + 3:i + 6])))
     cents = {round(float(a or b) * 100) for a, b in _AMOUNT.findall(text)}
     cents |= {c for i, w in enumerate(toks) if w in _CURRENCY and (c := _spelled_cents(toks[:i])) is not None}
-    return _Said(frozenset(_kind(w) for w in toks if w in _KIND_NOUNS), tuple(counts), tuple(lengths),
-                 frozenset(cents), tuple(frees))
+    kinds = {_kind(w) for w in toks if w in _KIND_NOUNS} | ({"video"} if claims_clip(text) else set())
+    return _Said(frozenset(kinds), tuple(counts), tuple(lengths), frozenset(cents), tuple(frees))
 
 
 def _length_ok(n: int, unit: str, seconds: tuple[int, ...]) -> bool:
@@ -356,15 +415,16 @@ def _length_ok(n: int, unit: str, seconds: tuple[int, ...]) -> bool:
 def offer_answer_ok(text: str, of: OfferFacts | None) -> tuple[Rule, ...]:
     """The Offer answer check: the rules (`RULES` order) her text fails against the resolved
     Offer's facts; () passes. Pure.
-      media     a video word needs a locked or preview clip, a photo word a photo
+      media     a video word needs a locked or preview clip, a photo word a photo; a clip word
+                ("filmed", "press play": `full_ai_sell.claims_clip`) reads as a video word
       count     a number before a media noun ("3 pics", "1 paid pic") equals that kind's locked
                 count; the preview count only with "free" / "preview" between them or within two
                 words after the noun, stopping at the next count or media noun ("1 free pic", "1 pic
                 as a preview"; "1 pic + 1 free preview" is 1 paid pic); "2nd" is no count
       duration  "N sec" within `SECS_SLACK` of a locked clip; "N min" only over a clip >= 60 s, its
                 floor or ceil
-      dollars   every amount ($25, 25 bucks, "twenty five bucks") equals the Quoted price; none on
-                a tease (NULL) or a Free item (0)
+      dollars   every amount ($25, 25 bucks, "twenty five bucks", "zero dollars") equals the Quoted
+                price; none on a tease (NULL) or a Free item (0)
       free      "free" on a priced Offer or a tease only right before a media noun or "preview",
                 with free previews to name
       none      no Offer resolved, or its media missing: no count, length, media word or amount;

@@ -10,6 +10,7 @@ per Turn: the caption call first, then the chat Writer.
   case_caption_writes_the_ppv_line   the caption call's line ships as the last bubble with the PPV;
                                      the chat prompt has no item line, price or OFFER
   case_caption_one_bubble_girl       style on: a caption with commas / a line break stays one bubble
+  case_caption_asked_marker_stripped rwl3 A2: an ASKED line in the caption is stripped, never sent
   case_caption_price_fail_fallback   a wrong price twice: rewrite (same messages), then today's
                                      path (the chat Writer's sell prompt and caption)
   case_caption_rewrite_ok            a wrong first caption, a true rewrite: the rewrite ships
@@ -150,6 +151,15 @@ def case_caption_one_bubble_girl():
     last = got["parts"][-1]
     assert "ppv" in last and "jeans" in last["text"] and "mirror" in last["text"] and "\n" not in last["text"], got
     assert _ppvs(got["parts"]) == [len(got["parts"]) - 1], got["parts"]
+
+
+def case_caption_asked_marker_stripped():
+    """rwl3 A2: an `ASKED:` line in the caption never reaches the fan; the rest ships."""
+    pair = "c-asked"
+    with _draft(caption_writer="caption", text_style="formal"), _vault(PRICED):
+        got, fw = _turn(_body(pair), [_cap(GOOD + "\nASKED: home_city"), f"ok:{LEAD}"], ASK)
+    assert got["status"] == "sent" and "asked" not in json.dumps(got["parts"]).lower(), got["parts"]
+    assert _texts(got["parts"]) == [LEAD, GOOD], got["parts"]
 
 
 def case_caption_price_fail_fallback():

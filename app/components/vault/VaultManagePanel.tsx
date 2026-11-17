@@ -109,7 +109,9 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const [browse, dispatchBrowse] = useVaultBrowse(accountId);
   const { type, folderId: ofFolderId, standardFolderId, query, tags, selectMode, selected } = browse;
   // The Creator's "Standard folders" switch (off by default): off, no category is created, listed or shown.
-  const standardOn = access === "all" && !!useVaultSettings(accountId, access === "all").data?.standard_folders;
+  // Always called (rules of hooks): `access` goes unknown → all while the chatter's access loads; `enabled` gates it.
+  const settings = useVaultSettings(accountId, access === "all");
+  const standardOn = access === "all" && !!settings.data?.standard_folders;
   const standard = useStandardFolders(accountId, standardOn);
   const standardFolder = standard.data?.list.find((f) => f.id === standardFolderId);
   const selectStandard = (folder: StandardFolder | null) => dispatchBrowse(folder

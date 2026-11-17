@@ -372,9 +372,7 @@ def _haggled(p: Pick, piece: Teased, same: bool, his: list[str]) -> Pick:
     """The haggle's re-offer (ticket 47): his one amount (`quoted_cents` over `his`, the Turn's
     `fan_new_messages`) clamped against the haggled row's list (`piece.list_cents`, never an earlier
     quote). The same piece records that list; a re-pick (capped at that list by `_sell`) keeps its
-    own and costs at most it. Pure."""
-    if (saved := full_ai_sell.folder_price(p)) is not None:
-        return replace(p, price_cents=saved, list_cents=saved)
+    own and costs at most it. A final folder price wins after (`hold_folder_price` in `_sell`). Pure."""
     base = min(piece.list_cents, p.list_cents) if same else piece.list_cents   # never above today's list
     quote = full_ai_sell.clamp_quote(base, full_ai_sell.quoted_cents("\n".join(his)))
     list_cents = base if same else p.list_cents
@@ -404,14 +402,14 @@ def _yes_to_open(d: Decision, facts: TurnFacts, choices: dict[str, dict[str, flo
     """A yes to the open card that names nothing else (M2 2026-11-16): test / live Mode, row sell,
     an open Offer (`facts.offer_piece`), says_yes_to_offer fired, and this Turn's ask names no other
     piece: `asks_subject` "anything" or the card's subject, `asks_format` "any" or the card's
-    (photo / video, a moving kind being video). wants_content does not matter (the Router counts
-    "send it" / "how do i unlock it" as an ask). "yes send me a feet video" over a photo card names
-    another piece: today's path. Pure."""
+    (`full_ai_sell.kind_of`: photo / video, a moving kind being video, a voice note neither).
+    wants_content does not matter (the Router counts "send it" / "how do i unlock it" as an ask).
+    "yes send me a feet video" over a photo card names another piece: today's path. Pure."""
     piece = facts.offer_piece
     if not (full(facts.mode) and d.row == "sell" and piece and "says_yes_to_offer" in d.fired):
         return False
     subject, fmt = router.choice_of(choices, "asks_subject"), router.choice_of(choices, "asks_format")
-    card = "video" if str(piece.format).lower() in full_ai_sell.MOVING_KINDS else "photo"
+    card = full_ai_sell.kind_of(piece.format)          # a voice note is neither photo nor video
     return subject in ("anything", piece.subject) and fmt in ("any", card)
 
 
@@ -559,6 +557,7 @@ async def _sell(facts: TurnFacts, d: Decision, choices: dict[str, dict[str, floa
                                     "step": got.facts["nearest"]}
         if haggle and isinstance(got, Pick):
             got = _haggled(got, teased, same is not None, facts.state["fan_new_messages"])
+        got = full_ai_sell.hold_folder_price(got)   # the one folder-price-final clamp (rwl3 A9)
         got = _told_format(got, choices, reply, free, facts.mode)
         facts.pick = got
     except Exception:  # noqa: BLE001 — fail closed: chat, never a half-built offer
@@ -601,8 +600,7 @@ async def _price(facts: TurnFacts, reply: dict, deadline: float, heat: int, he_a
     bought_before}. Price signals (03d): `he_asked` is the caller's (row sell: wants_content fired,
     or says_yes_to_offer with a Pending offer); he bought before once any Offer was bought."""
     p = facts.pick
-    if (saved := full_ai_sell.folder_price(p)) is not None:
-        facts.pick = replace(p, price_cents=saved, list_cents=saved)
+    if (saved := full_ai_sell.folder_price(p)) is not None:   # final: `_sell` already clamped it
         reply["price"] = {"source": "folder", "list_cents": saved, "jev_cents": None}
         return
     heat = facts.scene_now["heat"] if facts.scene_now else heat
@@ -649,9 +647,7 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
 
     def ok(ps: list[str]) -> bool:
         text = "\n".join(ps)
-        fails = [c for c, good in (("claim", full_ai_sell.claim_ok(text, pick)),
-                                   ("price", full_ai_sell.price_ok(text, price)),
-                                   ("disclose", full_ai_sell.discloses(text, pick))) if not good]
+        fails = full_ai_sell.caption_fails(text, pick, price)
         reply["claim_fail"] = reply["claim_fail"] + [{"check": c, "text": text} for c in fails]
         return not fails
 
@@ -782,8 +778,7 @@ async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadl
         scratch = {"leak": [], "dropped_reason": None, "typo_state": dict(facts.typo_state)}
         parts = await _chain(text, facts, scratch, single=True)
         line = parts[0] if len(parts) == 1 and not scratch["leak"] else None
-        if line is not None and not (full_ai_sell.claim_ok(line, pick) and full_ai_sell.price_ok(line, price)
-                                     and full_ai_sell.discloses(line, pick)):
+        if line is not None and full_ai_sell.caption_fails(line, pick, price):
             line = None
         return line, scratch
 
@@ -821,8 +816,7 @@ def _with_caption(reply: dict, parts: list[str], caption: str, pick: Pick, typo_
     Overturned if the owner prefers today's path then."""
     reply["caption_fallback"] = False
     joined = "\n".join([*parts, caption])
-    if (full_ai_sell.claim_ok(joined, pick) and full_ai_sell.price_ok(joined, pick.price_cents or None)
-            and full_ai_sell.discloses(joined, pick)):
+    if not full_ai_sell.caption_fails(joined, pick, pick.price_cents or None):
         return [*parts, caption]
     reply["caption"]["outcome"] = "alone"
     reply["typo_state"] = typo_state

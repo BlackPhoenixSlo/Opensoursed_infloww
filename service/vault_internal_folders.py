@@ -23,6 +23,8 @@ Three rules:
     the free rung only for a known-safe body, exclusive within the category. Rungs keep their name and
     cannot be deleted (the picker finds them by name); a rung's name is reserved for the picker.
   * Owner scope: a folder-limited chatter's list is empty and every write is 403.
+  * Standard categories (`vault_standard:*`) exist only while the Creator's `standard_folders` switch is on:
+    off, they are left out of the list and every route here answers 404 folder_not_found for them.
 """
 from __future__ import annotations
 
@@ -34,6 +36,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import vault_settings
 import vault_standard_folders
 from vault_standard_rules import parse_key
 import vault_folder_prices
@@ -134,7 +137,8 @@ async def _owner(payload_or_id: dict | str) -> str:
 
 async def _folder(s, account_id: str, folder_id: int) -> VaultFolder:
     folder = await s.get(VaultFolder, folder_id)
-    if folder is None or folder.account_id != account_id or folder.deleted_at is not None:
+    if (folder is None or folder.account_id != account_id or folder.deleted_at is not None
+            or (parse_key(folder.created_by) and not await vault_settings.on(account_id, "standard_folders"))):
         raise HTTPException(status_code=404, detail={"error": "folder_not_found"})
     return folder
 
@@ -239,6 +243,7 @@ async def list_internal_folders(account_id: str = Query(...)) -> dict[str, Any]:
     """The live internal folders, name-sorted: `items` (unremoved members; Full AI Chat's Content folders
     picker, `vf:<id>`), of those `photos` / `videos`, `of_list_id` (set: mirrored to that OF list) and
     `kind` (`folder_kind`). A restricted chatter's allowed list names OF lists, so it sees none."""
+    # Standard categories only while the `standard_folders` switch is on (module docstring).
     assert_account_owned(account_id)
     if await allowed_folder_ids_for_chatter(account_id) is not None:
         return {"list": []}
@@ -257,9 +262,10 @@ async def list_internal_folders(account_id: str = Query(...)) -> dict[str, Any]:
             .outerjoin(items, items.c.folder_id == VaultFolder.id)
             .where(VaultFolder.account_id == account_id, VaultFolder.deleted_at.is_(None))
             .order_by(func.lower(VaultFolder.name), VaultFolder.id))).all()
+    standard = await vault_settings.on(account_id, "standard_folders")
     return {"list": [{"id": i, "name": n, "items": int(c), "photos": int(p), "videos": int(v),
                       "of_list_id": of, "kind": folder_kind(n, by)}
-                     for i, n, c, p, v, of, by in rows]}
+                     for i, n, c, p, v, of, by in rows if standard or not parse_key(by)]}
 
 
 @router.post(_BASE)
@@ -333,7 +339,10 @@ async def add_to_internal_folder(folder_id: int, payload: dict = Body(...)) -> d
         target_name, source_name = target.name, source.name if source else None
         cat = vault_pack_picker.pack_rung_category(target_name)
         if cat is None:
-            await vault_standard_folders.remember(s, account_id, target, media_ids, True)
+            try:
+                await vault_standard_folders.remember(s, account_id, target, media_ids, True)
+            except vault_standard_folders.CategoryMediaType as e:
+                raise HTTPException(status_code=400, detail={"error": "category_media_type", "kind": e.kind}) from None
             for m in media_ids:
                 await s.execute(sqlite_insert(VaultFolderItem)
                                 .values(account_id=account_id, folder_id=folder_id, media_id=m)

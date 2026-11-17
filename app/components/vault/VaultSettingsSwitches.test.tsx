@@ -42,6 +42,16 @@ describe("VaultSettingsSwitches", () => {
     expect(standard).toHaveAttribute("aria-checked", "false");
   });
 
+  it("a failed save says so and leaves the switch as it was", async () => {
+    h.get.mockResolvedValue({ account_id: "1000001", ...OFF });
+    h.put.mockRejectedValue(new Error("500"));
+    renderWithProviders(<VaultSettingsSwitches accountId="1000001" />);
+    const price = await screen.findByRole("switch", { name: "Folder price is final" });
+    fireEvent.click(price);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save. Try again.");
+    expect(price).toHaveAttribute("aria-checked", "false");
+  });
+
   it("renders nothing when the read is refused (a folder-limited chatter)", async () => {
     h.get.mockRejectedValue(new Error("403"));
     const { container } = renderWithProviders(<VaultSettingsSwitches accountId="1000001" />);

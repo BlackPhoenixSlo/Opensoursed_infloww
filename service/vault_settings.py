@@ -5,7 +5,9 @@ Jev, no tease price, no haggle on folder-priced media). Off: Jev decides the pri
 price is only its input (owner 2026-11-15).
 `standard_folders`: the fixed category list (`vault_standard_rules`) is created, filled from saved
 analysis and shown in the vault; media in its Needs Review folder is not for sale. Off: no standard
-folder is created, placed or read.
+folder is created or placed, none is listed (vault, Full AI Content folders picker) or editable
+(`vault_internal_folders` 404s it), and Needs Review keeps nothing from sale. Folders and memberships
+made while on are kept for the next turn-on.
 
 No row = both off. Routes: `vault_ai_api` GET / PUT /admin/vault-ai/settings (owner scope).
 """

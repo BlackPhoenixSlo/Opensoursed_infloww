@@ -36,6 +36,7 @@ from typing import Any, NamedTuple
 from sqlalchemy import func, or_, select
 
 import assistant_evidence as ev
+import assistant_evidence_full_ai as fa_ev
 from auth import _actor_account_ids
 from db.engine import get_session
 from db.models import (
@@ -434,17 +435,17 @@ def _rule_trigger(fa_rules) -> dict:
 
 
 def _reply_why(raw) -> dict:
-    """reply_json cut to `ev.FULL_AI_REPLY_KEYS`: it also holds her bubbles and
+    """reply_json cut to `fa_ev.FULL_AI_REPLY_KEYS`: it also holds her bubbles and
     his `fan_info`, and no written word goes in the pack."""
     v = _payload(raw)
-    out = {k: v[k] for k in ev.FULL_AI_REPLY_KEYS if k in v}
+    out = {k: v[k] for k in fa_ev.FULL_AI_REPLY_KEYS if k in v}
     if isinstance(out.get("attempts"), list):
         out["attempts"] = [{"writer": a.get("writer"), "outcome": a.get("outcome")}
                            for a in out["attempts"] if isinstance(a, dict)]
     return out
 
 
-async def _full_ai(account_id: str, fan, rows, fa_rules) -> ev.FullAi:
+async def _full_ai(account_id: str, fan, rows, fa_rules) -> fa_ev.FullAi:
     """Full AI Chat's LOCAL facts for him. Reuses full_ai_owner_io's local reads
     and `full_ai_owner.who_owns`; never its Fans list read (`_listed` opens an
     OnlyFans client — `cached_listed` only peeks at its in-process cache) nor
@@ -526,20 +527,20 @@ async def _full_ai(account_id: str, fan, rows, fa_rules) -> ev.FullAi:
             open_due = full_ai_live.due(cfg, _Dm(open_at, int(open_id)))
         except (KeyError, TypeError, ValueError):
             open_due = None
-    return ev.FullAi(
+    return fa_ev.FullAi(
         off=off, mode=trigger.get("mode"), every_s=trigger.get("every_seconds", "?"),
         speed=str(cfg.get("reply_speed")), by_webhook=bool(cfg.get("reply_by_webhook")),
         fans=fans if fans_ok else {}, fans_ok=fans_ok, spend_cents=spend,
         top_spend_cents=top, stop=stop.reason if stop else None,
         audience_why=None if audience_ok else audience_why,
-        jobs=[ev.FullAiJob(
+        jobs=[fa_ev.FullAiJob(
             id=j.id, status=j.status, run_at=j.run_at, created_at=j.created_at,
             anchor_at=anchor_at.get(_payload(j.payload_json).get("anchor")),
             tries=int(_payload(j.payload_json).get("tries") or 0),
             last_error=j.last_error,
             decided=j.id in answered)
             for j in jobs],
-        decisions=[ev.FullAiDecision(
+        decisions=[fa_ev.FullAiDecision(
             created_at=d.created_at, anchor_at=d.anchor_created_at, route=d.route,
             status=d.status, reply=_reply_why(d.reply_json), jev_error=d.jev_error)
             for d in decisions],

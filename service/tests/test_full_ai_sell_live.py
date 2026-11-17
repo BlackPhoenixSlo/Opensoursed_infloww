@@ -438,7 +438,7 @@ def case_saved_folder_price_reaches_send_message():
     import vault_folder_prices
     import vault_settings
     _live_on()
-    R(vault_settings.put(A, folder_price_final=True))
+    R(vault_settings.put(A, folder_price_final=True, standard_folders=True))   # A1: off ignores standard folders
     fan = 981
     with _vault({98101: "$10"}):
         async def seed():
@@ -463,7 +463,7 @@ def case_saved_folder_price_reaches_send_message():
                     await session.execute(delete(VaultFolder).where(VaultFolder.id == fid))
                     await session.execute(delete(VaultFolderPrice).where(VaultFolderPrice.account_id == A, VaultFolderPrice.folder_ref == f"vf:{fid}"))
             R(clean())
-            R(vault_settings.put(A, folder_price_final=False))
+            R(vault_settings.put(A, folder_price_final=False, standard_folders=False))
 
 
 _harness.run()

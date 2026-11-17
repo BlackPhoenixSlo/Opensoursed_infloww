@@ -59,6 +59,7 @@ from automations import _common  # noqa: E402
 from automations import _model_pick  # noqa: E402
 from automations._common import DEFAULT_MODEL, MODEL_PURPOSES  # noqa: E402
 import assistant_evidence  # noqa: E402
+import assistant_evidence_full_ai  # noqa: E402
 import assistant_state  # noqa: E402
 import assistant_fan_pack  # noqa: E402
 import automation_rules_api  # noqa: E402
@@ -2725,7 +2726,7 @@ async def case_full_ai_over_top_spend_names_the_stop():
     aid, fan_id = "acc_fa_topspend", 1187168091
     await _seed_full_ai(aid, fan_id, spend=150000)
     out = await _fa_pack(aid, fan_id)
-    assert assistant_evidence.FULL_AI_STOP["top_spend"] in out, out
+    assert assistant_evidence_full_ai.FULL_AI_STOP["top_spend"] in out, out
     assert "Lifetime $1,500.00 vs top spend $1,000.00" in out, out
 
 
@@ -2766,7 +2767,12 @@ async def case_a_failing_full_ai_read_degrades_to_one_line():
 
 async def case_every_full_ai_stop_reason_is_worded():
     from automations import full_ai_owner
-    assert set(assistant_evidence.FULL_AI_STOP) == set(full_ai_owner.REASONS)
+    assert set(assistant_evidence_full_ai.FULL_AI_STOP) == set(full_ai_owner.REASONS)
+
+
+async def case_every_reply_speed_is_worded():
+    from automations import full_ai_config
+    assert set(assistant_evidence_full_ai._SPEED_WORDS) == set(full_ai_config.REPLY_SPEEDS)
 
 
 async def _fa_cached_pack(aid, fan_id, *, lists, members=(), age_s=None,
@@ -2815,7 +2821,7 @@ async def case_full_ai_fresh_cached_read_off_the_list_is_the_stop():
                                 members={1}, age_s=185)
     assert ("OnlyFans read 3m ago: he is NOT on it — Full AI will not answer "
             "him.") in out, out
-    assert (f"own check on local rows: {assistant_evidence.FULL_AI_STOP['not_listed']}"
+    assert (f"own check on local rows: {assistant_evidence_full_ai.FULL_AI_STOP['not_listed']}"
             " — it will not answer him") in out, out
 
 
@@ -2826,7 +2832,7 @@ async def case_full_ai_fresh_exclude_read_wins():
         checkpoint={**_FA_CHECKPOINT, "fans": {"include": [], "exclude": [42]}})
     assert "0 include list(s), 1 exclude list(s). OnlyFans read 1m ago: he is NOT on it" \
         in out, out
-    assert assistant_evidence.FULL_AI_STOP["not_listed"] in out, out
+    assert assistant_evidence_full_ai.FULL_AI_STOP["not_listed"] in out, out
 
 
 async def case_full_ai_stale_cached_read_is_never_a_stop():
@@ -2856,23 +2862,23 @@ async def case_full_ai_nothing_cached_keeps_unknown():
     assert "nothing stops him" in out, out
 
 
-def _fa(**kw) -> assistant_evidence.FullAi:
+def _fa(**kw) -> assistant_evidence_full_ai.FullAi:
     base = dict(off=None, mode="live", every_s=300, speed="0-15-60", by_webhook=True,
                 fans={"include": [], "exclude": []}, fans_ok=True, spend_cents=0,
                 top_spend_cents=100000, stop=None, audience_why=None, jobs=[],
                 decisions=[], open_at=None, open_due=None, open_decided=False)
-    return assistant_evidence.FullAi(**{**base, **kw})
+    return assistant_evidence_full_ai.FullAi(**{**base, **kw})
 
 
 def _fa_dec(route="chat", status="sent", reply=None, jev_error=None):
     t = datetime.utcnow() - timedelta(minutes=30)
-    return assistant_evidence.FullAiDecision(t, t - timedelta(minutes=1), route, status,
+    return assistant_evidence_full_ai.FullAiDecision(t, t - timedelta(minutes=1), route, status,
                                              reply or {}, jev_error)
 
 
 def _fa_job(status, run_at, **kw):
     t = datetime.utcnow()
-    return assistant_evidence.FullAiJob(**{**dict(
+    return assistant_evidence_full_ai.FullAiJob(**{**dict(
         id=7, status=status, run_at=run_at, created_at=t - timedelta(hours=1),
         anchor_at=t - timedelta(hours=1), tries=0, last_error=None), **kw})
 
@@ -2912,7 +2918,7 @@ async def case_full_ai_lines_read_each_state():
                                          tries=1)]),
          ["QUEUED", "busy retry 1"], []),
         ("top spend", _fa(stop="top_spend", spend_cents=150000),
-         [assistant_evidence.FULL_AI_STOP["top_spend"], "vs top spend $1,000.00"], []),
+         [assistant_evidence_full_ai.FULL_AI_STOP["top_spend"], "vs top spend $1,000.00"], []),
         ("no limit", _fa(top_spend_cents=0), ["vs top spend off"], []),
         ("unanswered", _fa(open_at=now - timedelta(minutes=40),
                            open_due=now - timedelta(minutes=10)),
@@ -2925,20 +2931,20 @@ async def case_full_ai_lines_read_each_state():
         ("malformed", _fa(fans={}, fans_ok=False), ["nobody is listed"], []),
         ("malformed stop", _fa(fans={}, fans_ok=False, stop="not_listed"),
          ["check on local rows: the Fans list's stored config is malformed"],
-         [assistant_evidence.FULL_AI_STOP["not_listed"]]),
+         [assistant_evidence_full_ai.FULL_AI_STOP["not_listed"]]),
         ("read fresh on", _fa(fans=_SET, fans_read=FansRead(True, 30, None, True)),
          ["OnlyFans read <1m ago: he IS on it."], ["NOT known", "NOT on it"]),
         ("read fresh off", _fa(fans=_SET, stop="not_listed",
                                fans_read=FansRead(False, 240, None, True)),
          ["OnlyFans read 4m ago: he is NOT on it — Full AI will not answer him.",
-          assistant_evidence.FULL_AI_STOP["not_listed"]], ["NOT known"]),
+          assistant_evidence_full_ai.FULL_AI_STOP["not_listed"]], ["NOT known"]),
         ("read stale on", _fa(fans=_SET, fans_read=FansRead(True, 3 * 3600, None, False)),
          ["Last OnlyFans read 3h ago said he was on it; a fresh read"],
          ["he IS on it", "NOT on it"]),
         ("read failed", _fa(fans=_SET, fans_read=FansRead(False, None, 90, False)),
          ["list FAILED 1m ago — Full AI treated him as not listed then; its next "
           "read may succeed.", "nothing stops him"],
-         [assistant_evidence.FULL_AI_STOP["not_listed"], "he is NOT on it"]),
+         [assistant_evidence_full_ai.FULL_AI_STOP["not_listed"], "he is NOT on it"]),
         ("read failed long ago", _fa(fans=_SET,
                                      fans_read=FansRead(False, 5 * 3600, 2 * 3600, False)),
          ["list FAILED 2h ago — Full AI treated him as not listed then",
@@ -3059,6 +3065,7 @@ _harness.run(
     case_no_full_ai_rule_adds_no_full_ai_line,
     case_a_failing_full_ai_read_degrades_to_one_line,
     case_every_full_ai_stop_reason_is_worded,
+    case_every_reply_speed_is_worded,
     case_full_ai_fresh_cached_read_on_the_list,
     case_full_ai_fresh_cached_read_off_the_list_is_the_stop,
     case_full_ai_fresh_exclude_read_wins,

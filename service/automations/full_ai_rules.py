@@ -7,7 +7,9 @@ Every prompt, Jev question, threshold, table and key below is read off the live 
 page cannot drift from what a Turn sends. Hand-written: the step titles and 1-2 sentence
 summaries, the Sell executor's short rules (numbers from its constants), the edge labels, the
 prompt-catalog ids (docs/prompts/README.md), the route probes' "when" text, the fold table,
-the floor reasons and the jev_json / reply_json key lists (dict literals inside run_turn).
+the floor reasons and the jev_json / reply_json key lists (dict literals inside run_turn), the
+Offer resolver's step "when" text, the Offer answer check's rule text and the vault switches'
+text (keys and steps read off `full_ai_offer_details` and `vault_settings`).
 
 A block: {label, kind: prompt|table|list|note, text | rows | items, source, doc?, flag?, qid?}.
 A prompt block may also carry `items` (a question's criteria and cut-off); a table's first row
@@ -20,10 +22,14 @@ steps carry a note, and no test-only wording appears anywhere in it; it reads no
 """
 from __future__ import annotations
 
+from dataclasses import fields
+from datetime import datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_args
 
 import inbound_describe
+import vault_settings
+import vault_standard_rules
 
 from automations import _heat_jev as heat
 from automations import _info_jev as info
@@ -33,6 +39,7 @@ from automations import _router_jev as router
 from automations import full_ai_caption as caption
 from automations import full_ai_config as config
 from automations import full_ai_decide as decide
+from automations import full_ai_offer_details as offer
 from automations import full_ai_photo as photo
 from automations import full_ai_scene as scene
 from automations import full_ai_sell as sell
@@ -81,7 +88,8 @@ _DOC = {
     "chat_tease": "NEW-149", "implied:wants_content": "NEW-150",
     "new only:asks_if_ai": "NEW-158", "STATED_WIDE": "NEW-151",
     "HOBBIES_EXTRACT": "NEW-152", "TEASE_PRICE": "NEW-153", "BROKE_JOKE": "NEW-154", "describe": "NEW-73",
-    "REPLY_LEVEL": "NEW-155",
+    "REPLY_LEVEL": "NEW-155", "OFFER_GOAL": "NEW-166", "offer_facts_block": "NEW-167",
+    "ASKED_EXCEPTION": "NEW-168", "offer_fallback": "NEW-169",
 }
 
 _RJ, _IJ, _PJ = ("service/automations/_router_jev.py", "service/automations/_info_jev.py",
@@ -91,6 +99,7 @@ _FW, _FS, _FT = ("service/automations/full_ai_writers.py", "service/automations/
 _FC, _CFG, _WC = ("service/automations/full_ai_caption.py", "service/automations/full_ai_config.py",
                   "service/automations/welcome_chatter_for_info.py")
 _TEST = "service/automations/full_ai_test.py"
+_FO, _FOT = "service/automations/full_ai_offer_details.py", "service/automations/full_ai_offer_turn.py"
 _SHADOW_NOTE = ("Shadow records the Decision row (status planned) and stops here: this step runs "
                 "in test and live Modes only.")
 
@@ -267,7 +276,16 @@ def _probes(mode: str) -> list[tuple[str, dict]]:
     on = {"draft_on": True, "scene": True, "chat_tease": True} if test else {}
     p: list[tuple[str, dict]] = [("Jev failed (any error)", {"jev_ok": False})]
     p += [(f"{q} fired", {"fired": {q}}) for q, _ in decide._FIRST]
-    if full(mode):
+    if full(mode):   # Offer details (`Facts.offer_details`: test and live): above the Pending tease
+        od = {"fired": {"asks_offer_details"}, "offer_details": True, **on}
+        yes = {**od, "fired": {"asks_offer_details", "says_yes_to_offer"}, "pending_offer": True}
+        p += [("asks_offer_details fired: a question about an Offer already sent", od),
+              ("asks_offer_details after a tease: wins over the Pending tease", {**od, "pending_tease": True}),
+              ("asks_offer_details + says_yes_to_offer with a Pending offer: acceptance wins", yes),
+              ("asks_offer_details + counter_offer on an open Offer (draft_questions): the discount ask wins",
+               {**od, "fired": {"asks_offer_details", "counter_offer"}, "open_offer": True}),
+              ("asks_offer_details + acceptance with sell_on off: the question is answered",
+               {**yes, "sell_on": False})]
         p.append(("counter_offer fired on an open Offer (DRAFT, draft_questions)",
                   {"fired": {"counter_offer"}, "open_offer": True, **on}))
     p += [("wants_content fired", {"fired": {"wants_content"}}),
@@ -303,7 +321,9 @@ def route_rows(mode: str) -> list[list[str]]:
 
 def _route_table(mode: str) -> dict:
     heat = [["intensity Score", "Heat"]] + [[s, decide.heat_of(s)] for s in (0, 0.5, 1.5, 2.5, 3.5)]
-    flags_note = ("an off switch drops its row to chat" if full(mode)
+    flags_note = ("an off switch drops its row to chat. An Offer-details question (row offer_details) "
+                  "answers in chat above the Pending tease; only an acceptance or a discount ask that "
+                  "can run wins over it" if full(mode)
                   else "Shadow runs with every route flag on and no Pending tease")
     return _node("route_table", "Route table", "decide",
                  f"The first matching row picks the Route; {flags_note}. Heat is his intensity level plus "
@@ -386,6 +406,10 @@ def _fan_info(mode: str) -> dict:
                          + [[f"version ({k})", v] for k, v in info_versions(mode).items()], f"{_IJ}:info_version"))
     if mode == "shadow":
         blocks.insert(0, _note("Shadow", _SHADOW_NOTE, f"{_FT}:_info"))
+    else:
+        blocks.append(_note("Row offer_details: nothing asked", "An Offer-details answer still extracts what he "
+                            "stated, but asks nothing: no next_question, no ask list, no ASKED: line, and the "
+                            "asked counts stay as they were.", f"{_FT}:run_turn"))
     return _node("get_fan_info", "Get fan info", "info",
                  "On every speaking Turn Jev says which facts he just stated (the extract then reads "
                  "them) and, on chat, which ONE thing she asks next.",
@@ -421,8 +445,18 @@ def _store(mode: str) -> dict:
         _list("asked keys (count per topic, X then X:2)", list(wcfi._ASK_PRIORITY), f"{_WC}:_ASK_PRIORITY"),
     ]
     if full(mode):
-        blocks.append(_list("Scene stages (reply_json.scene)", list(scene.STAGES),
-                            "service/automations/full_ai_scene.py:STAGES", flag="sext_scene"))
+        blocks += [_list("Scene stages (reply_json.scene)", list(scene.STAGES),
+                         "service/automations/full_ai_scene.py:STAGES", flag="sext_scene"),
+                   _note("What moves an asked count (NEW-168)", "Only her ASKED: line: an ask / lead reply ends "
+                         "with ASKED: <id> (stripped before the chain, kept as reply_json.asked_marker); that id "
+                         "counts +1 only when it was one she was offered and every part landed (a cut live send "
+                         "counts nothing). ASKED: none, a missing or unknown id counts nothing.",
+                         f"{_FT}:run_turn", doc=_DOC["ASKED_EXCEPTION"]),
+                   _note("Row offer_details holds the folds", "An Offer-details row is no Offer (no PPV), "
+                         "leaves scene, asked, the open Offer and the Pending tease as they stood "
+                         "(pending_tease_of skips it; live keeps the tease past its bubbles by "
+                         "reply_json.held_tease); open_offers_of is every open Offer, the resolver's open set.",
+                         f"{_TEST}:pending_tease_of")]
     else:
         blocks.insert(0, _note("Shadow", "Shadow stores only the Decision row: no fan_info, asked or scene "
                                "fold yet (test Mode).", "service/automations/full_ai_chat.py"))
@@ -436,6 +470,11 @@ def _store(mode: str) -> dict:
 
 def _money(c: int) -> str:
     return price._dollars(c)
+
+
+def _review_label() -> str:
+    """The standard Needs Review folder's name (`vault_standard_rules.REVIEW`)."""
+    return dict(vault_standard_rules.categories("photo"))[vault_standard_rules.REVIEW]
 
 
 def _sell_node(mode: str) -> dict:
@@ -474,7 +513,17 @@ def _sell_node(mode: str) -> dict:
                          "reply as a ride (photos only); the text does not mention them. The tease price Jev "
                          "failing sends no tease that Turn (plain chat); a text failing the Claim audit twice "
                          "goes out without the photos. Recorded as reply.chat_tease and reply.ride.",
-                         f"{_FT}:_sell", flag="chat_tease")]
+                         f"{_FT}:_sell", flag="chat_tease"),
+                   _note("Folder price is final (vault switch folder_price_final)", "On: a paid Pick holding "
+                         "folder-priced media sells at its folder price (a photo set: the highest item price; a "
+                         f"video bundle: the sum, up to {_money(sell.MAX_CENTS)}). _sell clamps once, last "
+                         "(hold_folder_price), so no haggle, tease quote or price Jev changes it; a free item stays "
+                         "free. Off: the folder price is only the list price above.", f"{_FS}:hold_folder_price"),
+                   _note("Standard folders (vault switch standard_folders)", "On: media in the standard "
+                         f"\"{_review_label()}\" folder is left out of the pool (not for sale). Off: every standard "
+                         "folder is ignored: no folder ref, no pack, no folder price from it.", f"{_FS}:load_rows"),
+                   _note("Row offer_details: no sell step", "An Offer-details answer runs no Sell executor and "
+                         "sends no Pick: the Offer resolver (Writers) names the Offer he means.", f"{_FT}:_sells")]
     else:
         blocks.insert(0, _note("Shadow", _SHADOW_NOTE, f"{_FT}:_sell"))
     return _node("sell", "Sell executor", "sell",
@@ -505,7 +554,11 @@ def _price_node(mode: str) -> dict:
                    _list("Tease price state keys", list(price.TEASE_PRICE_STATE_KEYS),
                          f"{_PJ}:TEASE_PRICE_STATE_KEYS", flag="chat_tease"),
                    _table("Tease price version", [["tease_price_version"], [price.TEASE_PRICE_VERSION]],
-                          f"{_PJ}:TEASE_PRICE_VERSION", flag="chat_tease")]
+                          f"{_PJ}:TEASE_PRICE_VERSION", flag="chat_tease"),
+                   _note("Folder price is final (vault switch folder_price_final)", "On, a Pick holding "
+                         "folder-priced media: the price Jev is not asked (reply.price source \"folder\"), and a "
+                         "Chat tease's price is replaced by the folder price after the pick (hold_folder_price).",
+                         f"{_FT}:_price")]
     return _node("price_jev", "Price Jev", "sell",
                  "On a fresh priced sell_now in a scene Jev picks the Offer price from the ladder; it "
                  f"replaces the list price (above or below it), clamped to {_money(sell.MIN_CENTS)}–"
@@ -516,9 +569,18 @@ def _price_node(mode: str) -> dict:
 
 # ── 8. Writers ─────────────────────────────────────────────────────────────
 
-def _facts(mode: str) -> SimpleNamespace:
+def _facts(mode: str, offer_facts: offer.OfferFacts | None = None) -> SimpleNamespace:
     return SimpleNamespace(cut_rows=[], anchor_key="ai-rules", config=dict(config.DEFAULTS), fan_info={},
-                           offer_piece=None, spent=[], mode=mode, next_question=None, ask_list=None)
+                           offer_piece=None, spent=[], mode=mode, next_question=None, ask_list=None,
+                           offer_facts=offer_facts)
+
+
+def offer_placeholder() -> offer.OfferFacts:
+    """A placeholder resolved Offer: 3 locked photos + 1 free preview at $25, not the 1st Offer."""
+    at = datetime(2026, 1, 1)
+    return offer.OfferFacts(locked_kinds={"photo": 3}, locked=3, preview_kinds={"photo": 1}, previews=1,
+                            seconds=(), descriptions=("<what the pieces show>",), quoted_cents=2500, sent_at=at,
+                            bought=False, same_as_first=(at, False), missing=frozenset())
 
 
 def _pick() -> sell.Pick:
@@ -537,6 +599,11 @@ def rendered(mode: str) -> list[tuple[str, str, list[dict]]]:
     if full(mode):
         out.append(("sext (scene, building)", "sexual_now",
                     writers.messages_for("sext", "sexual_now", 2, f, None, scene="building")))
+        d = SimpleNamespace(row="offer_details", fired=frozenset({"asks_offer_details"}))
+        out += [(f"chat (Offer details, {k})", "offer_details",
+                 writers.messages_for("chat", "offer_details", 2, _facts(mode, of), None,
+                                      gif_ok=writers.gif_offered(d, _facts(mode, of))))
+                for k, of in (("Offer named", offer_placeholder()), ("no Offer named", None))]
     return out
 
 
@@ -557,6 +624,43 @@ _FLAGGED = (("LEAD_HEAD", "lead_in"), ("LEAD_LINES", "lead_in"), ("LEAD_EXAMPLES
 _TEST_TWINS = ("SEXT_HOT_TEST", "SELL_STEP_TEST", "ESCALATION_TEST", "MANIFEST_TEST")
 # Test / live wording with no config key and no Shadow twin (a sell step Shadow never runs).
 _FULL_ONLY = ("OFFER_OPEN",)
+# The Offer resolver's steps (`full_ai_offer_details.Step`), in order, first match wins.
+_RESOLVER_WHEN = {
+    "quote_reply": "he quote-replied to an Offer's card (live: its OF message; Test chat: the marked Turn)",
+    "price": "he names one dollar amount and exactly one Offer went out at it (a tie: narrowed by photo / "
+             "video, else the one open one); a price no Offer carries with 2+ open: none",
+    "media": "he names photo or video (not both) and exactly one Offer holds that kind (several: the newest "
+             "open one, else none)",
+    "open_offer": "no cue above: the newest open Offer",
+    "none": "nothing points to one Offer: she asks which one he means",
+}
+
+
+def _offer_details_blocks() -> list[dict]:
+    """Row offer_details (test and live): the Offer resolver, the facts the Writer gets, what the branch
+    drops."""
+    when = [["step", "when"]] + [[s, _RESOLVER_WHEN[s]] for s in get_args(offer.Step)]
+    return [
+        _table("Row offer_details: Offer resolver (first match wins)", when, f"{_FO}:resolve_offer"),
+        _list("Row offer_details: what the resolver reads", [
+            f"look-back: the newest {offer.LOOKBACK_N} Offer rows sent within {offer.LOOKBACK_S // 86400} days of "
+            "his Turn, same Creator and Fan (test: the same session and side); live drops a priced row OF never "
+            "confirmed; a standing Pending tease joins them",
+            f"open: the open-offer rule selling uses (at most {offer.OFFER_OPEN_S // 3600} h old), plus the Pending "
+            "tease",
+            "an open Offer wins over an older match unless he refers to the older one (rwl3 A5): a past-Offer word "
+            f"({', '.join(sorted(offer._PAST_WORDS))}), or {' / '.join(sorted(offer._DEFINITE))} right before a "
+            "media noun, or before a price followed by \"one\" or a media noun (\"the $20 one\"); \"is it a "
+            "video?\" and \"is that $20?\" ask about the open one",
+            "the price stated is the row's Quoted price (offer_price_cents), never today's folder price",
+        ], f"{_FO}:build_ask"),
+        _list("Row offer_details: Offer facts the Writer gets (OfferFacts)", [f.name for f in fields(offer.OfferFacts)],
+              f"{_FO}:OfferFacts", doc=_DOC["offer_facts_block"]),
+        _note("Row offer_details: what the branch drops", "OFFER_GOAL goes under the goal head and the Offer facts "
+              "block in the sell slot. Dropped on this row only: the offers line (\"" + writers.NO_SELL_OFFERS.strip()
+              + "\"), the ask / lead and its ASKED: line, the dare beat, the item line, the spend line and stickers. "
+              "Persona, style and the Writer order are unchanged.", f"{_FW}:prompt", doc=_DOC["OFFER_GOAL"]),
+    ]
 
 
 def _text(v: Any) -> str:
@@ -585,7 +689,8 @@ def _writers_node(mode: str) -> dict:
     ]
     shown = rendered(mode)
     for label, row, msgs in shown:
-        doc = _DOC["sell_now"] if label == "sell_now" else _DOC["chat"]
+        doc = (_DOC["sell_now"] if label == "sell_now" else _DOC["OFFER_GOAL"] if row == "offer_details"
+               else _DOC["chat"])
         blocks.append(_prompt(f"{label} — system (row {row}, placeholder Fan)", msgs[0]["content"],
                               f"{_FW}:messages_for", doc=doc))
     blocks.append(_prompt("User message (placeholder Fan)", shown[0][2][1]["content"],
@@ -612,6 +717,7 @@ def _writers_node(mode: str) -> dict:
         blocks += [_const(n, flag=k) for n, k in _FLAGGED]
         blocks += [_const(n, route=f"test Mode, replaces {n.removesuffix('_TEST')}") for n in _TEST_TWINS]
         blocks += [_const(n, route="sell_now (test and live)") for n in _FULL_ONLY]
+        blocks += _offer_details_blocks()
     else:
         blocks.insert(0, _note("Shadow", _SHADOW_NOTE, f"{_FT}:run_turn"))
     return _node("writers", "Writers", "write",
@@ -622,6 +728,38 @@ def _writers_node(mode: str) -> dict:
 
 
 # ── 9. Reply chain ─────────────────────────────────────────────────────────
+
+# `full_ai_offer_details.offer_answer_ok`'s rules, by name (`RULES`).
+_CHECK_RULES = {
+    "media": "a video word needs a locked or preview clip, a photo word a photo; a clip word ({clip}, "
+             "\"press / hit play\") counts as a video claim (rwl3 A4)",
+    "count": "a number before a media noun (\"3 pics\", \"1 paid pic\") equals that kind's locked count; the "
+             "preview count only beside \"free\" / \"preview\"; locked + previews fails",
+    "duration": "\"N sec\" within {slack} s of a locked clip; \"N min\" only over a clip of a minute or more",
+    "dollars": "every amount ($25, \"twenty five bucks\") equals the Quoted price; zero is an amount too "
+               "(\"$0\", \"zero dollars\": rwl3 A3), so none on a tease or a Free item",
+    "free": "\"free\" on a priced Offer or a tease only right before a media noun or \"preview\", with free "
+            "previews to name",
+    "none": "no Offer resolved, or its media missing: no count, length, media word or amount (the Quoted "
+            "price still allowed)",
+}
+
+
+def _offer_check() -> dict:
+    """Row offer_details' answer check (test and live), its rules and the fallback over the placeholder."""
+    rules = [f"{r}: " + _CHECK_RULES[r].format(clip=", ".join(sorted(sell._CLIP_WORDS)), slack=offer.SECS_SLACK)
+             for r in offer.RULES]
+    return _list("Offer answer check (row offer_details, instead of the Claim audit)", [
+        *rules,
+        "fail: one rewrite by the Writer that answered, through the same chain; it ships only on a pass",
+        "else, or no text at all: the plain fallback through the chain, e.g. \""
+        + offer.offer_fallback(offer_placeholder()) + f"\"; no Offer named: \"{offer.offer_fallback(None)}\"; "
+        f"nothing to state: \"{offer.NO_FACTS}\"",
+        "the fallback dropped for a banned word or a leak: nothing goes out (check dropped)",
+        "recorded as reply_json.offer_details: check ok | rewrite | fallback | dropped, failed = the first "
+        "text's rule names",
+    ], f"{_FOT}:offer_check", doc=_DOC["offer_fallback"])
+
 
 def _chain(mode: str) -> dict:
     steps = ["finalize_draft — leak guard, emoji strip (strip_emojis, else the account's setting; "
@@ -647,6 +785,7 @@ def _chain(mode: str) -> dict:
                "(same Writer, same messages), sent only if not over; else, or a failed check, the "
                "first text is sent", f"version: {heat.HEAT_VERSION}"],
             doc=_DOC["REPLY_LEVEL"], flag="floor_on"))
+        blocks.insert(-1, _offer_check())
     return _node("reply_chain", "Reply chain", "write",
                  "Every model reply goes through the one shared chain before it reaches him; a reply "
                  "with a PPV is then audited against the piece.", blocks, ("style", "typo_pct", "floor_on", "strip_emojis"),
@@ -660,7 +799,8 @@ _SHADOW_JEV_KEYS = ("answers", "intensity", "fired", "state", f"photo (with {pho
 _REPLY_KEYS = ("parts", "attempts", "floor_reason", "dropped_reason", "leak", "side", "config_rev", "wait_s",
                "turn_ms", "fan_info", "asked", "typo_state", "info_error", "fan_photo", "scene", "refusal",
                "level", "nearest", "price", "caption", "caption_fallback", "claim_fail", "offer_dropped",
-               "chat_tease", "ride", "heat_check", "asked_count", "offer_open")
+               "chat_tease", "ride", "heat_check", "asked_count", "offer_open", "asked_marker", "offer_details",
+               "held_tease", "reply_to_n")
 
 
 def _send(mode: str) -> dict:
@@ -669,6 +809,13 @@ def _send(mode: str) -> dict:
     if full(mode):
         blocks += [_list("jev_json keys", list(_JEV_KEYS), f"{_FT}:_route"),
                    _list("reply_json keys", list(_REPLY_KEYS), f"{_FT}:run_turn"),
+                   _list("reply_json.offer_details keys (row offer_details; never in parts)",
+                         list(offer.diagnostics(offer.NONE, None)), f"{_FO}:diagnostics"),
+                   _note("Live read before sending (live only)", "Before the Turn's first bubble and before its "
+                         "paid card (the ppv bubble), the Last look's owner check reads the OF app, not only the "
+                         "DB: a human reply found there cuts the Turn (human_yield); it asks no Jev and re-routes "
+                         "nothing. An Offer-details answer has no paid card, so one read. Test sends nothing, so "
+                         "it never reads.", "service/automations/full_ai_live.py:_owner"),
                    _note("Send", "Test sends nothing to OnlyFans: full_ai_test.send writes the parts, the "
                          "PPV and the offer_* columns; record inserts the row.", f"{_TEST}:send")]
     else:
@@ -696,7 +843,26 @@ def _switches(mode: str) -> dict:
             "summary": "Every key of a side's config with its default and where it counts; Shadow reads "
                        "only " + ", ".join(SHADOW_READS) + ".",
             "flags": [_flag(k) for k in keys],
-            "blocks": [_table("DEFAULTS", rows, f"{_CFG}:DEFAULTS")]}
+            "blocks": [_table("DEFAULTS", rows, f"{_CFG}:DEFAULTS"), *_vault_switches(mode)]}
+
+
+# `vault_settings.KEYS`: per-Creator vault switches (not a side's config), each off until turned on.
+_VAULT_SWITCHES = {
+    "folder_price_final": "a saved folder price is the final price of a paid offer: no price Jev, no tease "
+                          "price, no haggle on folder-priced media (Sell executor, Price Jev)",
+    "standard_folders": "the standard category folders exist and media in their Needs Review folder is not for "
+                        "sale; off, every standard folder is ignored (no folder ref, pack or price)",
+}
+
+
+def _vault_switches(mode: str) -> list[dict]:
+    """The vault switches table (test and live: Shadow sells nothing)."""
+    if not full(mode):
+        return []
+    rows = [["key", "default", "what it does"]]
+    rows += [[k, "on" if vault_settings.OFF.get(k) else "off", _VAULT_SWITCHES.get(k, "")] for k in vault_settings.KEYS]
+    return [_table("Vault switches (per Creator, vault settings; test + live)", rows,
+                   "service/vault_settings.py:KEYS")]
 
 
 # ── assembly ───────────────────────────────────────────────────────────────

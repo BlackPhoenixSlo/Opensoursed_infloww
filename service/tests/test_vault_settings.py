@@ -5,7 +5,8 @@
   case_default_off_and_routes     no row = both off; PUT sets one, keeps the other; bad bodies 400
   case_scope                      another owner's account and a folder-limited chatter -> 403
   case_standard_off_is_inert      off: sync creates no folder, listing is empty, a describe places nothing,
-                                  and a leftover Needs Review folder does not take media out of the sale pool
+                                  a leftover Needs Review folder does not take media out of the sale pool,
+                                  and is neither listed in the internal folders nor editable (404)
   case_price_final_off_is_before  off: rows carry no mark, a Pick has no locked price, the tease price and a
                                   haggle move it (the 11-15 rule: Jev decides the price)
   case_price_final_on_marks_rows  on: `load_rows` marks every row; off again: the mark is gone
@@ -122,6 +123,23 @@ async def case_standard_off_is_inert():
     rows, _, _ = await sell.load_rows(AID)
     assert {r["media_id"] for r in rows} == {1}, "on: Needs Review blocks the sale"
     await vault_settings.put(AID, standard_folders=False)
+    # Off: the leftover category is neither listed (vault, Full AI picker) nor editable.
+    base = "/admin/vault-ai/internal-folders"
+    listed = C["owner"].get(base, params={"account_id": AID}).json()["list"]
+    assert rid not in {f["id"] for f in listed}, listed
+    assert C["owner"].post(f"{base}/{rid}/add", json={"account_id": AID, "media_ids": [1]}).status_code == 404
+    assert C["owner"].delete(f"{base}/{rid}", params={"account_id": AID}).status_code == 404
+    await vault_settings.put(AID, standard_folders=True)
+    listed = C["owner"].get(base, params={"account_id": AID}).json()["list"]
+    assert rid in {f["id"] for f in listed}, "on: listed again"
+    async with get_session() as s:
+        s.add(VaultItem(account_id=AID, media_id=9, kind="video", created_at=datetime.utcnow()))
+    r = C["owner"].post(f"{base}/{rid}/add", json={"account_id": AID, "media_ids": [9]})
+    assert r.status_code == 400 and r.json()["detail"] == {"error": "category_media_type", "kind": "photo"}, r.text
+    async with get_session() as s:
+        assert await s.get(VaultFolderItem, (AID, rid, 9)) is None, "refused: nothing filed"
+        await s.delete(await s.get(VaultItem, (AID, 9)))
+    await vault_settings.put(AID, standard_folders=False)
     async with get_session() as s:
         await s.delete(await s.get(VaultFolderItem, (AID, rid, 2)))
         await s.delete(await s.get(VaultFolder, rid))
@@ -158,11 +176,13 @@ async def case_price_final_on_marks_rows():
     assert all(r["folder_final"] is True for r in rows)
     priced = [{**r, "list_cents": 3500, "fields": {}} for r in rows if r["media_id"] == 1]
     p = sell._offer(priced, [], sell.Ask("anything", "photo", 1), free=False)
-    assert sell.folder_price(p) == 3500 and sell.tease_price(p, 1000).price_cents == 3500
-    assert turn._haggled(p, SimpleNamespace(list_cents=3500), True, ["how about $25?"]).price_cents == 3500
+    hold = sell.hold_folder_price   # the one clamp `_sell` runs last (rwl3 A9)
+    assert sell.folder_price(p) == 3500 and hold(sell.tease_price(p, 1000)).price_cents == 3500
+    assert hold(turn._haggled(p, SimpleNamespace(list_cents=3500), True, ["how about $25?"])).price_cents == 3500
     unpriced = [{**r, "list_cents": 5000, "fields": {}} for r in rows if r["media_id"] == 2]
     u = sell._offer(unpriced, [], sell.Ask("anything", "photo", 1), free=False)
-    assert sell.folder_price(u) is None and sell.tease_price(u, 1000).price_cents == 1000, "no folder price: Jev still prices"
+    assert sell.folder_price(u) is None and hold(sell.tease_price(u, 1000)).price_cents == 1000, \
+        "no folder price: Jev still prices"
     await vault_settings.put(AID, folder_price_final=False)
     rows, _, _ = await sell.load_rows(AID)
     assert all("folder_final" not in r for r in rows)
