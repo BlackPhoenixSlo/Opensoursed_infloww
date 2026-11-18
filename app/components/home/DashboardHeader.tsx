@@ -54,7 +54,8 @@
  * either, and the Relay's account clamp and Data scope bound what it shows.
  * With `include_series=true` it adds one point per day of the period, cut in
  * the report time zone, or the browser's (`tz`) when none is saved, so the
- * chart's days are the period tabs' days. The points sum the same credited
+ * chart's days are the period tabs' days; a day after today in that zone (This week, This month) keeps its axis
+ * slot but draws no line, marker or tooltip. The points sum the same credited
  * sales as the rows, Unattributed included, and their "From Messages" / "From
  * Tips" count the kinds the Messages and Tips tiles count. An answer without
  * a series is an error, never an empty chart. The earnings basis select does
@@ -69,7 +70,7 @@ import { dayIn, referralsGap, referralsTotal, useReferrals, type ReferralsQuery 
 import type { EmployeeSalesResp } from "@/hooks/useStats";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { usePrincipalId } from "@/hooks/useEmployeeKey";
-import { periodWindow, type Period } from "@/lib/dateRange";
+import { periodWindow, todayISO, type Period } from "@/lib/dateRange";
 // A header figure is `fmtCents` (whole dollars, "$1,005,875"): the house choice, deliberately unlike the bundle's
 // `getHomePageMoneyFormat` (index.9f50f370.js @11227188), which prints two decimals at every size.
 import { fmtCents, isLoss } from "@/lib/format";
@@ -280,8 +281,8 @@ function EmptyAxes() {
   );
 }
 
-/** Daily sales with loading and retry states. */
-function EmployeeSales({ sales, ready }: { sales: UseQueryResult<EmployeeSalesResp>; ready: boolean }) {
+/** Daily sales with loading and retry states. `tz`: the zone the series' days were cut in, whose today ends the line. */
+function EmployeeSales({ sales, ready, tz }: { sales: UseQueryResult<EmployeeSalesResp>; ready: boolean; tz: string }) {
   if (!ready || sales.isPending) {
     return (
       <div role="status" aria-label={`Loading ${label("employeeSales")}`} className="h-[350px] flex items-center justify-center">
@@ -302,7 +303,7 @@ function EmployeeSales({ sales, ready }: { sales: UseQueryResult<EmployeeSalesRe
   }
   const points = sales.data.series;
   if (points.length === 0) return <EmptyAxes />;
-  return <EmployeeSalesChart points={points} />;
+  return <EmployeeSalesChart points={points} today={todayISO(tz)} />;
 }
 
 /** The selected period, its `[from, to]` in the report time zone, and whether the Applied settings have answered. */
@@ -388,7 +389,7 @@ export function EmployeeSalesCard() {
         </h2>
         <Info k="employeeSalesTip" />
       </div>
-      <EmployeeSales sales={sales} ready={ready} />
+      <EmployeeSales sales={sales} ready={ready} tz={tz} />
     </IfCard>
   );
 }
@@ -448,8 +449,9 @@ export default function DashboardHeader() {
           <span className="ml-1"><Info k="timeZoneTip" /></span>
         </div>
         <span data-control="basis" className="flex items-center gap-2">
+          {/* The capture's 140px (#21) clips "Gross earnings" in our font; 160px fits both labels. */}
           <IfSelect size="lg" aria-label="Earnings" value={basis} options={BASIS_OPTIONS} onChange={setBasis}
-            className="w-[140px]" />
+            className="w-[160px]" />
           <InfoTip text={BASIS_TIP} className="text-fg-dim" />
         </span>
       </div>

@@ -22,7 +22,7 @@
  * POST …/invites/{token}/resend) and the action "Delete" (revokes it; DELETE …/invites/{token}).
  *
  * Table (fixed layout, on Infloww's antd table): Employee (name and @username), Assigned Creators (click: Edit; "+
- * Assign" when none), Role (click: Set role), Status, Group (from xl up), This month (recorded earnings, then worked
+ * Assign" when none), Role (click: Set role), Status, Group (from 2xl up), This month (recorded earnings, then worked
  * of scheduled shifts, from the Shift schedule's Timesheet in the Agency's time zone), Actions "Edit  More". A
  * deactivated row's cells are grey, not links. More opens in a portal: Reset password, Access limits, Deactivate /
  * Activate, Delete (off: an Employee is deactivated, never deleted, so their audit history is kept). Over ten rows a
@@ -42,7 +42,7 @@
  * ASSUMPTION: Reset password sets the new password directly, where Infloww mails reset instructions (no email on
  * file here). Rung 5. Overturned when Employees carry an email address.
  *
- * ASSUMPTION: earnings and both shift counts share one "This month" column, so the list fits 1440px with the tree.
+ * ASSUMPTION: earnings and both shift counts share one "This month" column, so the list fits 1280px with the tree.
  * Rung 6: Infloww's list has no shift columns at all. Overturned if the owner wants them apart again.
  *
  * ASSUMPTION: By role's "No role" also matches an assignment naming a role id no role has, which the Role column
@@ -138,12 +138,14 @@ function invitePasses(i: PendingInvite, f: Filters, roles: PermissionRole[]): bo
 const FILTER = "h-8 min-w-0 bg-bg border border-border rounded-md px-2 text-sm focus:outline-none focus:border-accent";
 /** A labelled filter: 14px T2 label with its colon, 8px to the field. */
 const FILTER_LABEL = "flex items-center gap-2 text-[14px] text-fg-dim whitespace-nowrap";
-const TH = cn(IF_TABLE.th, IF_TABLE.thDivider);
+/** 12px cell padding (Infloww: 16px) so the list fits beside the tree at 1280px. */
+const TH = cn(IF_TABLE.th, IF_TABLE.thDivider, "px-3");
+const TD = cn(IF_TABLE.td, "px-3");
 /** Infloww's link colour in the table (Assigned Creators, Role) and the warn / ok status colours (sampled). */
 const LINK = "text-[#2d74ff] hover:opacity-80";
 const GREY = "text-muted";
-/** The Group column, from xl up. */
-const XL_CELL = "hidden xl:table-cell";
+/** The Group column, from 2xl up (below, the list would not fit beside the tree). */
+const XL_CELL = "hidden 2xl:table-cell";
 
 /** The Assigned Creators cell's text: every Creator, none (""), or the granted Creators' names. */
 function assignedCreators(ids: string[] | null | undefined, creators: AccountMeta[]): string {
@@ -366,7 +368,7 @@ export default function EmployeesTab() {
                 aria-label={`Select ${e.display_name}`} />
             )}
         </td>
-        <td className={IF_TABLE.td}>
+        <td className={TD}>
           <div className="flex items-center gap-2.5 min-w-0">
             <span aria-hidden className="h-7 w-7 shrink-0 rounded-full grid place-items-center text-[11px] font-semibold text-black/80"
               style={{ background: e.color || "#888888" }}>
@@ -380,19 +382,19 @@ export default function EmployeesTab() {
             </div>
           </div>
         </td>
-        <td className={IF_TABLE.td}>
+        <td className={TD}>
           <LinkCell text={own ? "All Creators" : assignedCreators(e.account_ids, creators)} editable={editable}
             onClick={() => open({ kind: "edit", e })} title="Edit" />
         </td>
-        <td className={IF_TABLE.td}>
+        <td className={TD}>
           <LinkCell text={roleLabel(roleOf(e))} editable={editable} onClick={() => open({ kind: "role", e })}
             title="Set role" />
         </td>
-        <td className={IF_TABLE.td}>
+        <td className={TD}>
           {e.is_active ? <span className="text-[#2ad4ac]">Activated</span> : <span className={GREY}>Deactivated</span>}
         </td>
-        <td className={cn(IF_TABLE.td, XL_CELL, "truncate")}>{own ? "—" : groupName(e.group_id)}</td>
-        <td className={cn(IF_TABLE.td, "tabular-nums")}>
+        <td className={cn(TD, XL_CELL, "truncate")}>{own ? "—" : groupName(e.group_id)}</td>
+        <td className={cn(TD, "tabular-nums")}>
           {own ? "—" : (
             <>
               <div className="truncate">{month.earnings}</div>
@@ -400,7 +402,7 @@ export default function EmployeesTab() {
             </>
           )}
         </td>
-        <td className={cn(IF_TABLE.td, "whitespace-nowrap")}>
+        <td className={cn(TD, "whitespace-nowrap")}>
           {own ? <span className={GREY}>Owner</span> : (
             <span className="inline-flex items-center gap-4">
               <button type="button" onClick={() => open({ kind: "edit", e })} className="text-[14px] text-muted hover:text-accent">
@@ -433,17 +435,17 @@ export default function EmployeesTab() {
     return (
       <tr key={i.token} data-invite={name} className={cn(IF_TABLE.row, "hover:bg-bg-elev-1/60")}>
         <td className="px-4" />
-        <td className={IF_TABLE.td}>
+        <td className={TD}>
           <div className="truncate" title={name}>{name}</div>
           <div className="truncate text-[12px] text-muted">
             Invited · link expires {new Date(i.expires_at).toLocaleDateString()}
           </div>
         </td>
-        <td className={cn(IF_TABLE.td, "text-[#2d74ff]")}>
+        <td className={cn(TD, "text-[#2d74ff]")}>
           <span className="line-clamp-2">{assignedCreators(i.account_ids, creators) || "—"}</span>
         </td>
-        <td className={cn(IF_TABLE.td, "text-[#2d74ff] truncate")}>{role}</td>
-        <td className={IF_TABLE.td}>
+        <td className={cn(TD, "text-[#2d74ff] truncate")}>{role}</td>
+        <td className={TD}>
           <span className="inline-flex flex-wrap items-center gap-x-2">
             <span className="text-[#F2994A]">Inactive</span>
             <button type="button" className="text-[#1677ff] hover:opacity-80 disabled:opacity-50"
@@ -452,9 +454,9 @@ export default function EmployeesTab() {
             </button>
           </span>
         </td>
-        <td className={cn(IF_TABLE.td, XL_CELL, "truncate")}>{groupName(i.group_id)}</td>
-        <td className={IF_TABLE.td}>—</td>
-        <td className={IF_TABLE.td}>
+        <td className={cn(TD, XL_CELL, "truncate")}>{groupName(i.group_id)}</td>
+        <td className={TD}>—</td>
+        <td className={TD}>
           <button type="button" className="text-[#e05757] hover:opacity-80 disabled:opacity-50"
             disabled={revokeM.isPending} onClick={() => revokeM.mutate(i.token)}>
             Delete
@@ -527,16 +529,16 @@ export default function EmployeesTab() {
         <EmployeeLimitModal error={activateM.error} onClose={() => activateM.reset()} />
 
         <div className="mt-4 overflow-x-auto">
-          <table className={cn(IF_TABLE.table, "table-fixed min-w-[860px]")}>
+          <table className={cn(IF_TABLE.table, "table-fixed min-w-[720px]")}>
             <colgroup>
               <col className="w-12" />
               <col />
-              <col className="w-[17%]" />
-              <col className="w-[11%]" />
-              <col className="w-[12%]" />
-              <col className="hidden w-[10%] xl:table-column" />
-              <col className="w-[11%]" />
-              <col className="w-[116px]" />
+              <col className="w-[20%]" />
+              <col className="w-[88px]" />
+              <col className="w-[100px]" />
+              <col className="hidden w-[10%] 2xl:table-column" />
+              <col className="w-[100px]" />
+              <col className="w-[100px]" />
             </colgroup>
             <thead>
               <tr>

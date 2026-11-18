@@ -81,6 +81,15 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     for (const name of ["Run now", "Edit", "Delete"]) expect(within(rows[0]).getByRole("button", { name })).toBeTruthy();
   });
 
+  it("lets the Name cell give way from sm up so Schedule and Next run clear the fixed Actions", async () => {
+    renderWithProviders(<ReadyMadePanel only="auto_posts" />);
+    const table = await screen.findByRole("table");
+    expect(table).toHaveClass("min-w-[640px]");
+    const name = await within(table).findByText("Morning feed");
+    expect(name).toHaveAttribute("title", "Morning feed");
+    expect(name.closest("td")).toHaveClass("sm:w-full", "sm:max-w-0");
+  });
+
   it("opens previous runs from the Name cell's chevron", async () => {
     renderWithProviders(<ReadyMadePanel only="auto_posts" />);
     const chevron = await screen.findByRole("button", { name: "Previous runs of Morning feed" });

@@ -41,11 +41,12 @@ import { InfoTip } from "@/components/ui/InfoTip";
 
 const DASH = "--";
 
-/** The header row, in Infloww's order; `tip` draws the (i) with Infloww's text. */
+/** The header row, in Infloww's order; `tip` draws the (i) with Infloww's text. Message is 420px, not Infloww's 500:
+ *  at 1280px the table shows 856px beside the pinned Actions, so Sent time (to 850px) is whole, not cut "Sent t". */
 export const COLUMNS: Array<{ title: string; tip?: string; width: number }> = [
   { title: "Sender", width: 120 },
   { title: "Creator", width: 180 },
-  { title: "Message", tip: "The top message is sent by the fan and the bottom message is sent by the sender.", width: 500 },
+  { title: "Message", tip: "The top message is sent by the fan and the bottom message is sent by the sender.", width: 420 },
   { title: "Sent time", width: 130 },
   { title: "Reply time", tip: "Tracks how long it takes for an employee to reply to a fan. If the previous message isn’t from a fan, there’s no reply time.", width: 110 },
   { title: "Price", tip: "How much the content costs to unlock. Will be left empty if content is free.", width: 100 },

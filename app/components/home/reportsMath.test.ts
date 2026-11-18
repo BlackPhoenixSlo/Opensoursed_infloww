@@ -108,6 +108,13 @@ describe("cellCsv", () => {
   ] as const)("%s", (_name, key, ctx, want) => {
     expect(cellCsv(col(key), m, ctx)).toEqual(want);
   });
+  it("Message counts paid customs with the PPVs, as the Earnings summary's Messages tile (it left them out)", () => {
+    const c = { ...m, revenue_by_kind: { tip: 1999, subscription: 1000, ppv: 500, custom: 15_000 },
+      net_revenue_by_kind: { tip: 1599, subscription: 800, ppv: 400, custom: 12_000 } } as unknown as PerModelRow;
+    expect([cellCsv(col("message"), c, gross), cellCsv(col("message"), c, netCtx)]).toEqual([155, 124]);
+    // (15,000 + 500 + 1,999) / 1,000 subs
+    expect(cellCsv(col("engagementEarningsRatio"), c, gross)).toEqual(1749.9);
+  });
   it("leaves quoting to the writer: a name with commas and quotes stays verbatim", () => {
     expect(creatorRows([col("totalEarnings")], [m], gross)).toEqual([
       ["Creator", "Total earnings"],

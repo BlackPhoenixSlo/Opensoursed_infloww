@@ -295,6 +295,8 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
     expect(tab("This week")).toHaveAttribute("aria-checked", "true");
     expect(basis()).toBeEnabled();
     expect(basis()).toHaveTextContent("Net earnings");
+    // Wide enough for "Gross earnings" unclipped (the capture's 140px ellipsised it in our font).
+    expect(basis().parentElement).toHaveClass("w-[160px]");
     expect(lastWindow()).toEqual(["2026-10-11T10:00:00.000Z", "2026-10-18T09:59:59.999Z"]);
     expect(revenueReads()[0].url.searchParams.get("include_net")).toBe("true");
     await shows(TOTAL_NET);
@@ -886,16 +888,26 @@ describe("Employee sales reads the per-employee figures for the selected window 
   const card = () => tile("employeeSales");
   const ranking = () => Array.from(card().querySelectorAll('[data-testid="sales-point"]'), (p) => p.getAttribute("aria-label")?.split("\n")[0]);
   const ranked = (want: string[]) => waitFor(() => expect(ranking()).toEqual(want));
-  const WANT = ["Oct 13", "Oct 14", "Oct 15"];
+  // Oct 15 is tomorrow in Honolulu (the clock is Oct 14, 02:00 there): it keeps its axis slot but has no point.
+  const WANT = ["Oct 13", "Oct 14"];
 
   it("draws a daily curved earnings line with markers and the sales breakdown", async () => {
     await mountHome();
     await ranked(WANT);
     expect(within(card()).getByRole("img", { name: "Earnings" })).toHaveAttribute("d", expect.stringContaining("C"));
-    expect(card().querySelectorAll("[data-chart] circle")).toHaveLength(3);
+    expect(card().querySelectorAll("[data-chart] circle")).toHaveLength(2);
     fireEvent.mouseEnter(card().querySelectorAll('[data-testid="sales-point"]')[1]);
     expect(within(card()).getByRole("tooltip")).toHaveTextContent("Growth: -70.24%");
     expect(within(card()).getByRole("tooltip")).toHaveTextContent("From Tips: $12.50");
+  });
+
+  it("keeps a day after today on the axis but draws no line, marker or tooltip for it (This month, This week)", async () => {
+    await mountHome();
+    await ranked(WANT);
+    const axis = Array.from(card().querySelectorAll("[data-chart] svg > text"), (t) => t.textContent);
+    expect(axis).toEqual(["Oct 13", "Oct 14", "Oct 15"]);
+    // The line ends at today's point: one curve segment (Oct 13 → Oct 14), none down to tomorrow's zero.
+    expect(within(card()).getByRole("img", { name: "Earnings" }).getAttribute("d")?.match(/C/g)).toHaveLength(1);
   });
 
   it("reads the period's from/to with no account_id, and a tab click reads the new period", async () => {

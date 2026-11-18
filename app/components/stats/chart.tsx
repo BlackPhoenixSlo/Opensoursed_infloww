@@ -84,6 +84,12 @@ export const fmtUsd = fmtCents;
 export const fmtDollars = (cents: number) => fmtCents(cents); // a loss "-$12", never "$-12" or "$-0"
 export const axisDollars = fmtDollars;
 
+/** An x label centred on its tick, or right-aligned to the chart's edge when centring would run past it (a line
+ *  chart's last tick sits 8px off the edge: "Nov 16" drew as "Nov"). Width estimated at 8px a character (14px text). */
+export function xLabelPos(label: string, x: number, W: number): { x: number; textAnchor: "middle" | "end" } {
+  return x + label.length * 4 > W ? { x: W, textAnchor: "end" } : { x, textAnchor: "middle" };
+}
+
 /** #79, #80: horizontal 1px grid lines and 14px tick text, x tick lines 4px long with the labels 8px under them, no
  *  axis lines (our border and dim tokens, ADR-0001 colours). `fmt` writes a y tick (whole dollars of cents by
  *  default). */
@@ -111,7 +117,7 @@ export function ChartAxes({ W, H, max, labels, xAt, labelGap = 4 + 8, fmt = axis
       {labels.map((l, i) => (i % stride !== 0 ? null : (
         <g key={i}>
           <line x1={xAt(i)} y1={f.B} x2={xAt(i)} y2={f.B + 4} strokeWidth={1} style={{ stroke: "var(--color-border)" }} />
-          <text x={xAt(i)} y={f.B + labelGap + 11} textAnchor="middle">{l}</text>
+          <text {...xLabelPos(l, xAt(i), W)} y={f.B + labelGap + 11}>{l}</text>
         </g>
       )))}
     </g>

@@ -141,12 +141,20 @@ const netSubsOf = (m: PerModelRow) => {
   const n = m.net_revenue_by_kind;
   return n ? (n.subscription ?? 0) + (n.rebill ?? 0) : null;
 };
+/** Message earnings: PPVs and paid customs (sold in chat: Messages, as `bucketOf` and the Earnings summary's
+ *  Messages tile count them; the per-model read files customs under their own `custom` bucket). Creator statistics'
+ *  Message column and card. */
+export const msgOf = (m: PerModelRow) => (m.revenue_by_kind?.ppv ?? 0) + (m.revenue_by_kind?.custom ?? 0);
+export const netMsgOf = (m: PerModelRow) => {
+  const n = m.net_revenue_by_kind;
+  return n ? (n.ppv ?? 0) + (n.custom ?? 0) : null;
+};
 /** Messages and tips, the numerator of #117 and #133 (the bundle's column descriptions, index.9f50f370.js near
  *  @13245838). The per-model read files stream tips and PPVs under tips and messages. */
-const engagedOf = (m: PerModelRow) => (m.revenue_by_kind?.ppv ?? 0) + (m.revenue_by_kind?.tip ?? 0);
+const engagedOf = (m: PerModelRow) => msgOf(m) + (m.revenue_by_kind?.tip ?? 0);
 const netEngagedOf = (m: PerModelRow) => {
-  const n = m.net_revenue_by_kind;
-  return n ? (n.ppv ?? 0) + (n.tip ?? 0) : null;
+  const n = netMsgOf(m);
+  return n == null ? null : n + (m.net_revenue_by_kind?.tip ?? 0);
 };
 /** #112 to #146: every column after "Creator" (#111, always shown), in the capture's order, then ours (the capture's
  *  Streams left out: stream sales have no channel here). The ones without `v` need OF
@@ -157,7 +165,7 @@ export const STAT_COLS: readonly StatCol[] = [
   { key: "subscriptionsEarnings", title: "Subscription earnings", width: 240, show: false, fmt: "usd", v: kindOf("subscription"), netV: netKindOf("subscription") },
   { key: "recurringSubscriptionEarnings", title: "Recurring subscription earnings", width: 305, show: false, fmt: "usd", v: kindOf("rebill"), netV: netKindOf("rebill") },
   { key: "tips", title: "Tips", width: 112, show: true, fmt: "usd", v: kindOf("tip"), netV: netKindOf("tip") },
-  { key: "message", title: "Message", width: 145, show: true, fmt: "usd", v: kindOf("ppv"), netV: netKindOf("ppv") },
+  { key: "message", title: "Message", width: 145, show: true, fmt: "usd", v: msgOf, netV: netMsgOf },
   { key: "engagementEarningsRatio", title: "Engagement earnings ratio", width: 280, show: true, fmt: "pct", v: (m) => (subsOf(m) > 0 ? (100 * engagedOf(m)) / subsOf(m) : null) },
   { key: "posts", title: "Posts", width: 120, show: false, fmt: "usd", v: kindOf("post"), netV: netKindOf("post") },
   { key: "totalEarnings", title: "Total earnings", width: 240, show: true, fmt: "usd", v: (m) => m.total_revenue_cents, netV: (m) => m.total_net_revenue_cents },

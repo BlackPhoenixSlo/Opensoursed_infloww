@@ -290,6 +290,13 @@ describe("ManageEmployees", () => {
     expect(screen.getByText("3 active · 4 total")).toBeInTheDocument();
   });
 
+  it("fits beside the tree at 1280px: Group only from 2xl, a 720px floor before it scrolls", async () => {
+    await loaded();
+    const table = screen.getByRole("table");
+    expect(table).toHaveClass("min-w-[720px]");
+    expect(within(table).getByRole("columnheader", { name: "Group" })).toHaveClass("hidden", "2xl:table-cell");
+  });
+
   it("shows the owner's row with nothing to edit, each login's username, and never the retired names", async () => {
     await loaded();
     const owner = within(rowOf(OWNER));

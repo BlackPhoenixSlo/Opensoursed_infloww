@@ -15,7 +15,8 @@
  * the legacy antd table (`IF_TABLE`).
  *
  * Not built, as nothing records them: Hours on Messages Pro and the three per-Messages-Pro-hour rates. Response time
- * is one figure over all replies, not split by scheduled or clocked hours. Clocked hours and the per-clocked-hour rates count every Clock event in the range, and are left out
+ * is one figure over all replies, not split by scheduled or clocked hours. Total number of scheduled hours is the
+ * Timesheet's (`GET /admin/shifts/timesheet`, the Clocked hours card's read, owner and Master only): "-" for a chatter. Clocked hours and the per-clocked-hour rates count every Clock event in the range, and are left out
  * for a chatter (null on the wire), as the Timesheet is.
  */
 
@@ -28,7 +29,8 @@ import { employeeExport } from "@/components/stats/employeeExport";
 import { EmptyState, IF_TABLE } from "@/components/ui/infloww";
 import { type ChattingStatsRow, useChattingStats } from "@/hooks/useStats";
 import { fmtCents, fmtInt, fmtPrice, fmtReplyTime, growthOf } from "@/lib/format";
-import { calcMinutes } from "@/lib/shifts";
+import { useOptionalUser } from "@/contexts/UserContext";
+import { calcMinutes, useTimesheet, type TimesheetRow } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
 import { InfoTip } from "@/components/ui/InfoTip";
 
@@ -122,11 +124,18 @@ const pctOf = (num: number, den: number) => (den > 0 ? `${((num / den) * 100).to
 /** Infloww's five cards over the table, from the rows on screen (no read of their own). Total sales sums every
  *  Employee's Sales (pending sales included, as the Sales Settings rules count them); Unlock rate is the pooled
  *  ratio, PPVs unlocked over direct PPVs sent; the response time (all replies) is each Employee's average weighted
- *  by its replies. The two scheduled-hours cards are Not wired: no shift-scheduled split is stored. */
-export function chattingKpis(rows: ChattingStatsRow[]): { label: string; tip: string; value: string; wired: boolean }[] {
+ *  by its replies. Total number of scheduled hours sums the Timesheet's `scheduled_minutes` (null: no Timesheet read,
+ *  Not wired); with `chatterOnly`, only the Employees in `rows`. The scheduled-hours response time is Not wired: the
+ *  reply read has no shift filter. */
+export function chattingKpis(
+  rows: ChattingStatsRow[], sheet: TimesheetRow[] | null = null, chatterOnly = false,
+): { label: string; tip: string; value: string; wired: boolean }[] {
   const sum = (f: (r: ChattingStatsRow) => number) => rows.reduce((s, r) => s + f(r), 0);
   const timed = rows.filter((r) => r.avg_reply_seconds != null && r.replies > 0);
   const replies = timed.reduce((s, r) => s + r.replies, 0);
+  const ids = new Set(rows.map((r) => r.employee_id));
+  const scheduled = sheet?.filter((t) => !chatterOnly || (t.employee_id != null && ids.has(t.employee_id)))
+    .reduce((s, t) => s + t.scheduled_minutes, 0);
   return [
     { label: "Total sales", tip: "Total sales generated, according to your sales settings",
       value: fmtCents(sum((r) => r.sales_cents)), wired: true },
@@ -139,8 +148,10 @@ export function chattingKpis(rows: ChattingStatsRow[]): { label: string; tip: st
       tip: "Average time taken by employees to reply to a fan, from the fan's first unanswered message, over every reply, clocked in or not",
       value: replies > 0 ? fmtReplyTime(timed.reduce((s, r) => s + r.avg_reply_seconds! * r.replies, 0) / replies) : "-",
       wired: true },
-    { label: "Total number of scheduled hours", tip: "Hours of the shifts scheduled in the time frame", value: "-",
-      wired: false },
+    { label: "Total number of scheduled hours", tip: "Hours of the shifts scheduled in the time frame",
+      // Decimal hours ("3,425.9h"), so the 28px figure keeps to one line in the card.
+      value: scheduled == null ? "-" : `${(scheduled / 60).toLocaleString("en-US", { maximumFractionDigits: 1 })}h`,
+      wired: scheduled != null },
   ];
 }
 
@@ -189,6 +200,9 @@ export default function ChattingStatsTable({
   // One more read for the window before, keyed by Employee for the change under each figure.
   const pq = useChattingStats(priorFrom, priorTo, chatterOnly, priorFrom != null && priorTo != null);
   const before = useMemo(() => new Map((pq.data?.employees ?? []).map((r) => [r.employee_id, r])), [pq.data]);
+  // Scheduled hours: the Clocked hours card's Timesheet read (one query, same key); owner and Master only.
+  const ranged = !!from && !!to;
+  const sheet = useTimesheet(new Date(from ?? 0), new Date(to ?? 0), "employee", !!useOptionalUser()?.user && ranged);
   const [sortKey, setSortKey] = useState<Key>("sales_cents");
   const [desc, setDesc] = useState(true);
 
@@ -238,7 +252,7 @@ export default function ChattingStatsTable({
       ) : (
         <>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
-            {chattingKpis(rows).map((k) => <KpiCard key={k.label} {...k} />)}
+            {chattingKpis(rows, sheet.data?.rows ?? null, chatterOnly).map((k) => <KpiCard key={k.label} {...k} />)}
           </div>
           {rows.length === 0 ? (
             <EmptyState size="sm" text="No chatting in this window." />

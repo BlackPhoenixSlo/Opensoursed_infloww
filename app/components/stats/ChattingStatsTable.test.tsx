@@ -11,8 +11,14 @@ import { jsonRes, renderWithProviders } from "@/test-utils";
 
 // The Export pop-up reads the role's denied actions; nothing is denied here.
 vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => ({ data: undefined }) }));
+// The scheduled-hours card reads the Timesheet for a user session only (owner / Master); none by default.
+let owner = false;
+vi.mock("@/contexts/UserContext", () => ({
+  useOptionalUser: () => (owner ? { user: { user_id: "owner-1", username: "owner" } } : { user: null }),
+}));
 
-import ChattingStatsTable from "@/components/stats/ChattingStatsTable";
+import ChattingStatsTable, { chattingKpis } from "@/components/stats/ChattingStatsTable";
+import type { TimesheetRow } from "@/lib/shifts";
 import { type ChattingStatsRow } from "@/hooks/useStats";
 import { fmtReplyTime } from "@/lib/format";
 
@@ -44,10 +50,17 @@ let fetchMock: ReturnType<typeof vi.fn>;
 let employees: ChattingStatsRow[];
 let priorEmployees: ChattingStatsRow[];
 
+const SHEET = (employee_id: number, scheduled_minutes: number): TimesheetRow => ({
+  key: String(employee_id), display_name: `E${employee_id}`, scheduled_shifts: 1, shifts_worked: 1, scheduled_minutes,
+  worked_minutes: 0, recorded_earnings_cents: 0, open_now: false, employee_id, group_name: null,
+});
+
 beforeEach(() => {
   employees = [IDLE, ROW];
   priorEmployees = [];
+  owner = false;
   fetchMock = vi.fn(async (url: string) => {
+    if (String(url).split("?")[0] === "/admin/shifts/timesheet") return jsonRes({ rows: [SHEET(1, 21_090), SHEET(9, 30)] });
     if (String(url).split("?")[0] === "/admin/stats/chatting-stats") {
       const prior = new URL(String(url), "http://relay.test").searchParams.get("from") === PRIOR_FROM;
       return jsonRes({ employees: prior ? priorEmployees : employees, attribution_fallback: null });
@@ -231,6 +244,31 @@ describe("ChattingStatsTable", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Show employees with chatter role only" }));
     expect(onChatterOnly).toHaveBeenCalledWith(true);
     expect(screen.queryByRole("button", { name: "Export" })).toBeNull();
+  });
+
+  it("Total number of scheduled hours sums the Timesheet's scheduled minutes for an owner (it read \"-\")", async () => {
+    owner = true;
+    renderWithProviders(<ChattingStatsTable from={FROM} to={TO} />);
+    const card = () => screen.getByRole("group", { name: "Total number of scheduled hours" });
+    await waitFor(() => expect(within(card()).getByText("352h")).toBeInTheDocument());
+    expect(card()).not.toHaveAttribute("title");
+    const sheet = fetchMock.mock.calls.map(([u]) => new URL(String(u), "http://relay.test"))
+      .find((u) => u.pathname === "/admin/shifts/timesheet")!;
+    expect(sheet.searchParams.get("group")).toBe("employee");
+    // The scheduled-hours response time stays Not wired.
+    expect(screen.getByRole("group", { name: "Average response time (based on scheduled hours)" }))
+      .toHaveAttribute("title", "not wired");
+  });
+
+  it.each([
+    [null, false, "-", false],
+    [[] as TimesheetRow[], false, "0h", true],
+    [[SHEET(1, 90), SHEET(9, 60)], false, "2.5h", true],
+    [[SHEET(1, 90), SHEET(9, 60)], true, "1.5h", true], // chatter-only: Employee 9 is not among the rows
+    [[SHEET(1, 205_551)], false, "3,425.9h", true],
+  ])("scheduled hours from %j (chatterOnly %s) -> %s", (sheet, chatterOnly, value, wired) => {
+    const k = chattingKpis([ROW], sheet, chatterOnly).find((c) => c.label === "Total number of scheduled hours")!;
+    expect([k.value, k.wired]).toEqual([value, wired]);
   });
 
   it("formats response times", () => {

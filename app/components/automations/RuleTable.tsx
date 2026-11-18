@@ -118,9 +118,11 @@ export function RuleTable({
     <tr><td colSpan={RULE_COLUMNS.length} className={cn("py-10 text-center text-[14px]", cls)}>{children}</td></tr>
   );
   return (
-    // A phone row fits the screen (no sideways scroll), so the "⋯" menu may hang below the table.
+    // A phone row fits the screen (no sideways scroll), so the "⋯" menu may hang below the table. From sm up the
+    // Name cell takes what the other columns leave (`sm:max-w-0`, its text truncates), so Schedule and Next run stay
+    // clear of the fixed Actions beside a Creator column at 1280px; under 640px it scrolls sideways.
     <div className="overflow-x-auto max-sm:overflow-visible">
-      <table className={cn(IF_TABLE.table, "min-w-[760px] max-sm:min-w-0")}>
+      <table className={cn(IF_TABLE.table, "min-w-[640px] max-sm:min-w-0")}>
         <thead>
           <tr>
             {RULE_COLUMNS.map((c) => (
@@ -157,13 +159,13 @@ export function RuleTable({
             return (
               <Fragment key={r.id}>
                 <tr className={cn(IF_TABLE.row, expanded && "border-b-0")}>
-                  <td className={cn(IF_TABLE.td, "max-sm:pr-0")}>
+                  <td className={cn(IF_TABLE.td, "sm:w-full sm:max-w-0 max-sm:pr-0")}>
                     <div className="flex min-w-0 items-center gap-2">
                       <button type="button" aria-expanded={expanded} aria-label={`Previous runs of ${r.name}`}
                         onClick={() => flip(r.id)} className="grid h-5 w-5 shrink-0 place-items-center text-muted hover:text-fg">
                         <ChevronRight className={cn("h-4 w-4 transition-transform", expanded && "rotate-90")} aria-hidden />
                       </button>
-                      <span className="truncate">{r.name}</span>
+                      <span className="truncate" title={r.name}>{r.name}</span>
                       {r.has_pending_job && <Badge color="warn">queued</Badge>}
                     </div>
                     {/* one rule = one post / message: its read-out, so the list shows every rule's content */}

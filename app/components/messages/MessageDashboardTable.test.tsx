@@ -14,7 +14,7 @@ vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: () => t
 
 import { renderWithProviders } from "@/test-utils";
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
-import MessageDashboardTable, { replyTime } from "./MessageDashboardTable";
+import MessageDashboardTable, { COLUMNS, replyTime } from "./MessageDashboardTable";
 
 const BASE: PaidMessageRow = {
   account_id: "100000001",
@@ -148,5 +148,12 @@ describe("MessageDashboardTable", () => {
     expect(live.isConnected).toBe(true);
     fire([{ isIntersecting: true, target: live } as unknown as IntersectionObserverEntry], {} as IntersectionObserver);
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("column widths", () => {
+  it("Sent time ends inside the 856px a 1280px window shows beside the pinned Actions (it read \"Sent t\")", () => {
+    const upTo = COLUMNS.slice(0, COLUMNS.findIndex((c) => c.title === "Sent time") + 1);
+    expect(upTo.reduce((n, c) => n + c.width, 0)).toBeLessThanOrEqual(856);
   });
 });

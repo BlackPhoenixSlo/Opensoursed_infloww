@@ -25,7 +25,7 @@ import {
   type Bucket, type Chan, type ColCtx, type GrowthSums, type Point, type StatCol, type TotalGrowth, type View, CHANNEL_TEXT, CHANNELS, CHARGEBACKS_COLOR,
   LEDGER_ROWS,
   SUMMARY_TEXT,
-  TREND_TEXT, isWait, viewOf,
+  TREND_TEXT, isWait, msgOf, netMsgOf, viewOf,
 } from "./reportsMath";
 
 /** The summary's sum tiles in grid order, each channel's icon and colour from the Dashboard's one map (#5), Total on
@@ -80,8 +80,7 @@ export default function CreatorOverview({
   const statsView = viewOf([perModel], visibleCreators.length > 0);
   // With net on, OnlyFans' net per bucket; an older relay has none, so the card is Not wired then.
   const netByKind = visibleCreators.every((m) => m.net_revenue_by_kind);
-  const messageEarnings = visibleCreators.reduce(
-    (a, m) => a + ((net ? m.net_revenue_by_kind?.ppv : m.revenue_by_kind?.ppv) ?? 0), 0);
+  const messageEarnings = visibleCreators.reduce((a, m) => a + ((net ? netMsgOf(m) : msgOf(m)) ?? 0), 0);
   const totalEarningsAcrossCreators =
     visibleCreators.reduce((a, m) => a + (net ? m.total_net_revenue_cents : m.total_revenue_cents), 0);
   const refundedGross = visibleCreators.reduce((a, m) => a + (m.refunded_cents ?? 0), 0);
