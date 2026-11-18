@@ -1,0 +1,12 @@
+{
+  "version": "0.2.5",
+  "hostedUrl": "https://app.inflowwww.com",
+  "guideUrl": "https://app.inflowwww.com/download",
+  "builds": [
+    { "os": "macOS", "arch": "Apple Silicon", "ext": ".dmg", "size": "120 MB", "id": "1RE6X2lX-1RHcOm5k6LTuEYIVDqjNg4Kh" },
+    { "os": "macOS", "arch": "Intel", "ext": ".dmg", "size": "122 MB", "id": "1oD3Pe4UZIBeNbS55957LBiATmoEz5ERi" },
+    { "os": "Windows", "arch": "10 / 11, 64-bit", "ext": ".exe", "size": "104 MB", "id": "113qvRMhgiyCNQSi0F-xgRtQ8v3pWRmvE" },
+    { "os": "Linux", "arch": "x64", "ext": ".AppImage", "size": "128 MB", "id": "1v0nUjY9PtiYR1vFAE3owcHcjyHVDo5Zn" },
+    { "os": "Linux", "arch": "ARM64", "ext": ".AppImage", "size": "127 MB", "id": "18JQ5GSarpyDMwWfW382UX2S4Rv5kfCwK" }
+  ]
+}

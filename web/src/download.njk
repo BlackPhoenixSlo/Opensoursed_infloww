@@ -1,15 +1,33 @@
 ---
 layout: page.njk
 title: "Download Inflowwww"
-description: "The download is a URL: Inflowwww runs in a browser from your server, on phones too, plus a desktop shell you build."
+description: "Download the Inflowwww desktop app for Mac, Windows and Linux, or use it in a browser on any computer or phone."
 ---
 {#- Follows infloww.com/download: one section per surface, then theirs for comparison. -#}
+{#- Same Drive builds as the app's /download (app/public/download.html DRIVE_IDS); ids live in _data/desktop.json.
+    drive.usercontent.google.com with confirm=t streams files over 100 MB (uc?export=download returns the scan page). -#}
+<p><strong>Get the desktop app</strong> (v{{ desktop.version }}) for Mac, Windows and Linux. It's the same Inflowwww
+  as in the browser, in a window that keeps the live connection open in the background and shows unread counts on
+  the dock or taskbar.</p>
+<div class="not-prose my-6 grid gap-3 sm:grid-cols-2">
+  {%- for b in desktop.builds %}
+  <a class="card flex items-center justify-between gap-4 no-underline hover:border-black/40"
+     href="https://drive.usercontent.google.com/download?id={{ b.id }}&amp;export=download&amp;confirm=t">
+    <span>
+      <span class="block font-semibold text-ink">{{ b.os }}</span>
+      <span class="block text-sm text-muted">{{ b.arch }}</span>
+    </span>
+    <span class="btn-primary shrink-0">&#8595; {{ b.ext }} <span class="font-normal opacity-80">{{ b.size }}</span></span>
+  </a>
+  {%- endfor %}
+</div>
 <p>
-  <strong>There is no app to download.</strong> Someone installs Inflowwww on a server once; then everyone opens it in
-  a browser, on a computer or a phone.
+  On first launch it asks for a Server URL: <code>{{ desktop.hostedUrl }}</code> if you use our hosted app, or your
+  own server's URL if you host it yourself. Builds are unsigned, so macOS and Windows warn the first time;
+  <a href="{{ desktop.guideUrl }}">the install guide</a> shows the two clicks (or one Terminal line) that get past it.
+  Not sure which Mac you have? Apple menu &gt; About This Mac: <em>Chip</em> means Apple Silicon, <em>Processor</em> means Intel.
 </p>
-<p><strong>Setup and updates mean typing a few commands on a server. After that, everyone on the team works in a browser.</strong></p>
-<p>{% include "tos.njk" %}</p>
+<p>No install needed to try it: the browser and phone work just as well, see below. {% include "tos.njk" %}</p>
 
 <h2>Web: your server's URL</h2>
 <p>
@@ -34,9 +52,9 @@ description: "The download is a URL: Inflowwww runs in a browser from your serve
 </p>
 {% shot "messages-pro-thread-phone.webp", "A fan chat in Messages Pro on a phone: a photo, a paid PPV and a tip, from a demo agency" %}
 
-<h2>Desktop: build the Electron shell</h2>
+<h2>Desktop: build it yourself</h2>
 <p>
-  Most teams can skip this: the web app in a browser is the same product. The desktop app lives in
+  Only if you'd rather not use the downloads above. The desktop app lives in
   <code>desktop/</code>. It asks for your server URL on first launch and loads the web UI from there, so everyone signs
   in as they would in the browser. The desktop app's own capture button does not work against this relay today, and
   it does not capture Fansly sessions; use the Chrome extension.
@@ -53,12 +71,6 @@ npm run dist:win   # Windows .exe installer (builds on macOS too)</code></pre>
   non-technical team. On Windows, SmartScreen asks you to confirm (More info &gt; Run anyway). Details are in <a href="{{ site.repo }}/blob/main/desktop/README.md">desktop/README.md</a>.
 </p>
 {% shot "messages-pro.webp", "Inflowwww desktop window showing the Messages Pro inbox of a demo agency, with a paid PPV and a tip in the open thread" %}
-
-<h2>Where are the binaries?</h2>
-<p>
-  We don't host any. There is no download server and no installer on this site: you build the app from source you can
-  read, and git clone downloads it. The checkout page is a git clone.
-</p>
 
 <h2>Theirs, for comparison</h2>
 <p>
