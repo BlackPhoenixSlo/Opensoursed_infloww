@@ -80,17 +80,23 @@ describe("NotificationBell (top bar)", () => {
     expect(screen.getByRole("link", { name: "See all" })).toHaveAttribute("href", "/notifications");
   });
 
-  it("a Creator not armed yet (its read gated off) shows Loading, never \"No notifications.\"", async () => {
+  it("a Creator not armed yet: nothing read while closed; opening reads it once, a reopen serves the cache", async () => {
     resetReadGate();
     relayGet.mockResolvedValue({ list: [] });
+    const user = userEvent.setup();
     renderWithProviders(<NotificationBell />);
-    await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
-
-    expect(await screen.findByText("Loading…")).toBeInTheDocument();
-    expect(screen.queryByText("No notifications.")).toBeNull();
     expect(relayGet).not.toHaveBeenCalled();
-    act(() => { armRead("acc-1"); });
+    const bell = screen.getByRole("button", { name: "Notifications" });
+
+    await user.click(bell);
     expect(await screen.findByText("No notifications.")).toBeInTheDocument();
+    const reads = () => relayGet.mock.calls.filter(([p]) => String(p).startsWith("/api/of/v2/users/notifications")).length;
+    expect(reads()).toBe(1);
+
+    await user.click(bell);
+    await user.click(bell);
+    expect(await screen.findByText("No notifications.")).toBeInTheDocument();
+    expect(reads()).toBe(1);
   });
 
   it("badges arrivals while closed, and each open clears it and sends the cleared event once", async () => {

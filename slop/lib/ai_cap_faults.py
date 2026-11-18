@@ -4,8 +4,8 @@ merges `register(Fault)` into FAULTS. The check names live here and the scenario
 from __future__ import annotations
 
 C_REFUSED = "before the raise, every Creator's Copilot suggest is refused 429 at the $1 cap and never reaches DeepSeek"
-C_UI = ("Settings > AI keys shows the stored limit as $1.00 and today's DeepSeek spend, and each Save of a new limit "
-        "reads Saved")
+C_UI = ("Settings > AI keys shows the stored limit as $1.00 and today's \"Chats and other AI\" spend, and each Save of "
+        "a new limit reads Saved")
 C_DB = "each UI save lands as cents: 5.00 -> 500 (desktop), then 7.50 -> 750 (phone), in account_ai_config"
 C_ADMIT = ("after the raise to $5, the same Copilot suggest (over the old cap, under the new) is admitted: 200, "
            "3 suggestions, exactly one DeepSeek call")

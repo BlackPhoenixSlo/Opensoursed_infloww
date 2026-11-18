@@ -10,7 +10,7 @@
  * bell (`HeaderBell`: OnlyFans notifications, plus for the owner the agency
  * notification centre as the panel's "Agency" tab), the Clock button
  * (`ClockButton`, while the caller may clock; Infloww's `HeaderSignButton`)
- * and the avatar menu (theme; "Log out"). Infloww's Referrals and
+ * and the avatar menu (theme; "Download desktop app" on the web; "Log out"). Infloww's Referrals and
  * Leaderboard are left out: we have neither. No model filter: a page that
  * shows one creator picks it in the page (OF Manager's column, Messages Pro's
  * Creator tabs, the Growth and Settings pickers).
@@ -33,6 +33,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { useTheme } from "@/hooks/useTheme";
+import { useInDesktopApp } from "@/hooks/useInDesktopApp";
 import { useSfw } from "@/hooks/useBlurMode";
 import { NotificationBell } from "@/components/NotificationBell";
 import { AgencyFeed, AgencyKindSwitches, useAgencyUnread } from "@/components/AgencyNotifications";
@@ -207,12 +208,13 @@ export function TimeZoneLabel() {
   );
 }
 
-/** The avatar and its menu (theme; log out). Clocking is the top bar's
+/** The avatar and its menu (theme; desktop app download on the web; log out). Clocking is the top bar's
  *  `ClockButton`, as Infloww's. */
 export function AvatarMenu() {
   const { user, logout } = useUser();
   const { chatter, logout: chatterLogout } = useChatter();
   const { theme, toggle } = useTheme();
+  const inApp = useInDesktopApp();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -253,6 +255,13 @@ export function AvatarMenu() {
           <button type="button" className={item} onClick={toggle}>
             {theme === "dark" ? "Light mode" : "Dark mode"}
           </button>
+          {/* A plain <a>: /download is a static file in public/, outside the router. Left out inside the app. */}
+          {!inApp && (
+            <a href="/download" className={item} title={`Get the ${BRAND_NAME} desktop app for Mac, Windows and Linux`}>
+              <span aria-hidden="true">&#8595;</span>
+              Download desktop app
+            </a>
+          )}
           {(user || chatter) && (
             <button
               type="button"

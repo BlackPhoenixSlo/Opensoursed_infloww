@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   armedVersion, armRead, FALLBACK_MAX_MS, FALLBACK_QUIET_MS, fallbackDeadline, gainedOf, gateOptions, isArmed, onArmed,
-  readGate, REFRESH_OLDER_MS, resetReadGate, wantsRefresh,
+  onScreenGate, readGate, REFRESH_OLDER_MS, resetReadGate, wantsRefresh,
 } from "./ofReadGate";
 import { APP_OPEN_WARM_FALLBACK_MS, type TabLease } from "./viewLease";
 
@@ -16,6 +16,16 @@ describe("readGate", () => {
     [false, false, "off"],
   ] as const)("leased=%s armed=%s → %s", (leased, armed, want) => {
     expect(readGate({ leased, armed })).toBe(want);
+  });
+});
+
+describe("onScreenGate", () => {
+  it.each([
+    ["off", "once"],
+    ["once", "once"],
+    ["live", "live"],
+  ] as const)("%s → %s", (gate, want) => {
+    expect(onScreenGate(gate)).toBe(want);
   });
 });
 

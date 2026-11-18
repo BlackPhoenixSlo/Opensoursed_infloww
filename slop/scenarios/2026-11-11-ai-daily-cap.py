@@ -4,12 +4,12 @@ aiSpendCap.ts; service/account_config_{api,rules}.py; llm_client.spend_today). T
 but under the new one must go through, and no other Creator's limit moves.
 
 World: `agency_inbox`. SQL seed per Creator: an account_ai_config row at the default 100 cents ($1/day) and today's
-(UTC) `grok_daily_cost` row for provider deepseek at 10_000 millicents (= the $1 cap, the row llm_client itself
-writes). The agency's DeepSeek key is set through the real PUT /admin/my-llm-keys. The AI call is Copilot's
+(UTC) `grok_daily_cost` row for provider "chat" at 10_000 millicents (= the $1 cap; since #785 llm_client reserves
+every non-describe call, Copilot included, on budget_key(purpose) = "chat", not on the provider's row). The agency's DeepSeek key is set through the real PUT /admin/my-llm-keys. The AI call is Copilot's
 POST /admin/copilot/{account}/{fan}/suggest (deepseek-v4-flash, one reservation of ~25 millicents).
 
 Flow: every Creator's suggest -> 429 (at the cap). Desktop 1440x900: /settings/ai-keys, the card shows $1.00 and
-today's DeepSeek spend; type 5.00 (`ai-cap-trigger`), Save limit -> Saved (`ai-cap-settled`). The card's Creator is
+today's "Chats and other AI" spend; type 5.00 (`ai-cap-trigger`), Save limit -> Saved (`ai-cap-settled`). The card's Creator is
 the one its GET /admin/account-config asked for (scope, else the first). Suggest for that Creator -> 200; the others
 stay 429. Phone 390x844 (touch): same page, 7.50 -> Saved (`ai-cap-trigger-phone`, `ai-cap-settled-phone`).
 Concurrent reads: ctx.users owners GET /admin/account-config (now also sums today's spend) at once.
@@ -41,7 +41,9 @@ DESKTOP = (1440, 900)
 PHONE = (390, 844)
 WAIT_MS = 120_000          # first visit of /settings compiles it in next dev
 CAP_CENTS = 100            # the column default, $1/day
-SPENT_MC = CAP_CENTS * 100  # millicents: today's DeepSeek spend = the cap
+SPENT_MC = CAP_CENTS * 100  # millicents: today's shared chat-budget spend = the cap
+BUDGET = "chat"            # llm_client.budget_key("copilot"): the row the cap reads and writes
+BUDGET_LABEL = "Chats and other AI"  # aiSpendCap.providerName("chat")
 DESKTOP_RAW, DESKTOP_CENTS = "5.00", 500
 PHONE_RAW, PHONE_CENTS = "7.50", 750
 READS_P95_MS = 1_500       # guess: a settings read with one extra grouped select, ctx.users at once
@@ -128,7 +130,7 @@ async def run(ctx) -> None:
             con.execute("UPDATE account_ai_config SET daily_cost_cap_cents=? WHERE account_id=?", (CAP_CENTS, aid))
             con.execute("INSERT OR REPLACE INTO grok_daily_cost (day, account_id, provider, cost_cents, call_count, "
                         "is_capped, updated_at) VALUES (?,?,?,?,?,?,?)",
-                        (day, aid, "deepseek", SPENT_MC, 400, 0, ts(now.replace(tzinfo=None))))
+                        (day, aid, BUDGET, SPENT_MC, 400, 0, ts(now.replace(tzinfo=None))))
     con.close()
     r = await ctx.owner.put("/admin/my-llm-keys", json={"deepseek": "slop-fake-deepseek"})
     ctx.metric("agency_deepseek_key", {"status": r.status_code, "day_utc": day})
@@ -174,7 +176,7 @@ async def run(ctx) -> None:
         db2 = _caps(w).get(target)
         d, p = passes
         ctx.check(C_UI, all(x["saved"] and x.get("shown") for x in passes) and d["shown"] == "1.00"
-                  and "DeepSeek $1.00" in (d.get("spend") or "") and target in p["asked"],
+                  and f"{BUDGET_LABEL} $1.00" in (d.get("spend") or "") and target in p["asked"],
                   **{x["tag"]: {k: x.get(k) for k in ("shown", "spend", "saved", "errors", "asked")} for x in passes})
         lay = p.get("layout") or {}
         vw = lay.get("vw") or PHONE[0]

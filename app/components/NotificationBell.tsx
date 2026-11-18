@@ -64,7 +64,7 @@ import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
 import { useOfNotifCount } from "@/hooks/useOfNotifCount";
 import { useOfReadGate } from "@/hooks/useOfReadGate";
-import { gateOptions } from "@/lib/ofReadGate";
+import { gateOptions, onScreenGate } from "@/lib/ofReadGate";
 import { MoneyRailRestoreButton } from "@/components/MoneyRail";
 import { relay } from "@/lib/relay";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
@@ -162,8 +162,9 @@ export interface NotificationFeedRead {
  * toaster's invalidation share; a later page appends its offset.
  *
  * `gated` (the bell): no Dead-session Creator, and an unleased Creator's reads
- * follow the rail's gate (lib/ofReadGate.ts): off until armed, then served
- * until its next `creator_warmed`.
+ * follow the rail's gate as on-screen reads (lib/ofReadGate.ts `onScreenGate`):
+ * read once when the list opens, armed or not, then served until its next
+ * `creator_warmed`.
  */
 export function useNotificationFeed(
   type: string | null,
@@ -190,7 +191,7 @@ export function useNotificationFeed(
       enabled,
       staleTime: 30_000,
       refetchOnWindowFocus: false,
-      ...(gated ? gateOptions(gateOf(aid)) : {}),
+      ...(gated ? gateOptions(onScreenGate(gateOf(aid))) : {}),
     })),
   });
 
@@ -229,9 +230,7 @@ export function useNotificationFeed(
     accountIds,
     rows,
     reads,
-    // A gated-off Creator (not armed yet: its query is disabled, so never `isLoading`) is not read yet, not empty.
-    loading: enabled && (queries.some((q) => q.isLoading)
-      || (gated && targets.some((t, i) => gateOf(t.aid) === "off" && queries[i]?.data === undefined))),
+    loading: enabled && queries.some((q) => q.isLoading),
     error: queries.find((q) => q.error)?.error as Error | undefined,
     /** Re-reads every failed page. */
     refetch: () => { for (const q of queries) if (q.error) void q.refetch(); },

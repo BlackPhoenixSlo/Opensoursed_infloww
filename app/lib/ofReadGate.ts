@@ -34,6 +34,12 @@ export function readGate(o: { leased: boolean; armed: boolean }): ReadGate {
   return o.leased ? "live" : o.armed ? "once" : "off";
 }
 
+/** A reader whose query runs only while the operator has its list on screen (the bell's open dropdown): the open is
+ *  the ask, so an unarmed Creator reads `once` there, not `off` (no background read: off screen the query is off). */
+export function onScreenGate(gate: ReadGate): ReadGate {
+  return gate === "off" ? "once" : gate;
+}
+
 /** The query options a gate overrides: `off` disabled; `once` no interval, no focus refetch, never stale by age;
  *  `live` the reader's own. */
 export function gateOptions(gate: ReadGate): {

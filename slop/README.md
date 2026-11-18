@@ -97,7 +97,7 @@ The loop while developing, all of it already here (no other selection exists):
 ```sh
 slop/run --changed --dry          # what the diff reaches, with estimates; runs nothing, takes no gate slot
 slop/run --changed                # run those picks (own/flow always, the shared tail within --budget)
-slop/run <pick> --break --baseline=slop/evidence/<its green folder>   # own pick whose FAULT/targets this diff adds or changes
+slop/run <pick> --break --baseline=slop/evidence/<its green folder>   # each pick whose FAULT/targets this diff adds or changes
 ```
 
 `--changed` is for development. `slop/run all` and `slop/run nightly` stay the complete sweep: deploys,
@@ -205,8 +205,8 @@ built: no list to curate. `all` stays for deploys and harness-wide changes.
   With `--no-ui`, a pick whose every reason is a page a browser visited prints as `SKIP (needs
   UI)`, same rules. A scenario declaring `P95_VS_LAST`, `CPU_BUDGET_PCT` or `POOL_GATE` is tagged
   `volume` (in the pick and `--list`): its `--scale=medium --users=120 --no-ui` runs only in the nightly `volume` phase (3 per night, rotating), never per task
-  (owner 2026-11-12); `--break --baseline=<its green folder>` is for every `own` pick that declares
-  `FAULT` (`--changed --break` refuses: break is per scenario, by name). It prints each pick with its
+  (owner 2026-11-12); `--break --baseline=<its green folder>` is for each scenario whose
+  `FAULT` or targets the diff adds or changes, any tier (`--changed --break` refuses: break is per scenario, by name). It prints each pick with its
   estimate, tier, tag and reasons, the base shas and how far behind HEAD, the WARNs (a file absent at a map sha picks every scenario as `shared`; a file no mapped
   scenario reaches is printed as `NOT VERIFIED (no scenario reaches)`; `not executed by any scenario:
   file::func`: a body hunk in a function no scenario ran; `deleted app file`; `non-.py runtime file`;
@@ -1451,8 +1451,8 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   (client: markers.ts' figure strip skipped; `figure_stripped` alone). Shots `prepass-trigger`, `prepass-settled`,
   `card-trigger`, `card-settled`, `chatter-card`.
 - `2026-11-11-ai-daily-cap` (UI, desktop 1440x900 and 390x844 phone): the owner raises a Creator's daily AI spend
-  limit in dollars on Settings > AI keys mid-day. SQL: every Creator at the $1 default with today's DeepSeek spend
-  at the cap; Copilot suggest (DeepSeek faked by `lib/ai_cap_relay.py`) is 429 for all, then 5.00 saved → 500 cents
+  limit in dollars on Settings > AI keys mid-day. SQL: every Creator at the $1 default with today's shared chat-budget
+  spend (`grok_daily_cost` provider `chat`, the row llm_client reserves Copilot on) at the cap; Copilot suggest (DeepSeek faked by `lib/ai_cap_relay.py`) is 429 for all, then 5.00 saved → 500 cents
   and the same call is admitted for that Creator only; phone saves 7.50 → 750. Checks and the reads budget:
   `lib/ai_cap_faults.py` + the docstring. Fault `ai-cap-ui-sends-dollars-as-cents` (client: the box's dollars sent
   as cents; the DB and admit checks alone). Shots `ai-cap-trigger`, `ai-cap-settled` (+ `-phone`).
