@@ -8,7 +8,10 @@
  * Promotion type, Offer limit, Offer expiration, Free trial duration or Discount percent, Message; the body is OF
  * Manager's own promotionBody), the tips box, then "Campaign insights": Show expired, the antd table (Promo / Claims /
  * Revenue / Actions) and its pager, 10 a page; then the settings rows, "Auto-activate campaign" (`PromoReactivateCard`,
- * a read-only status: the per-campaign Keep running tick is the one switch, on by default in Create promotion)
+ * a read-only status: the per-campaign Keep running tick is the one switch; in Create promotion it is on by default
+ * for a discount and off for a Free trial, which needs a Re-create limit when ticked, and names the campaign it
+ * takes Keep running from; under it, on the dialog and a kept row, the second tick Re-create at 90% filled, ticked by
+ * default and off under an Offer limit of 10)
  * and "Add fans to list" (`PromoListRow`, Infloww's account-level switch and list). Infloww puts the two rows above
  * Campaign insights; ours lead with the campaigns, the page's reason (UI flow audit C33). OF is the source of truth; a local mirror keeps the
  * operator's name, the discount (OF does not echo it) and the Keep running switch.
@@ -20,7 +23,7 @@
  * campaign, and Subscription bundles under the table (Infloww has them in OF Manager's settings).
  */
 
-import { Fragment, useReducer, useState } from "react";
+import { Fragment, useEffect, useReducer, useState } from "react";
 import { Info, RotateCw } from "lucide-react";
 
 import { Badge, ExtraTag } from "@/components/ui/primitives";
@@ -31,7 +34,7 @@ import {
 import { errMsg, useIfConfirm } from "@/components/growth/_bits";
 import {
   usePromotions, useCreatePromotion, useDeletePromotion, useFinishPromotion, useOfMe, useSetPromoAutoReactivate,
-  type PromoCampaign,
+  type PromoCampaign, type PromoCreated,
 } from "@/hooks/useGrowth";
 import { NOT_WIRED, Unreachable } from "@/components/growth/LinksListFrame";
 import { usePagedFilters } from "@/hooks/pagedFilters";
@@ -45,9 +48,13 @@ import {
   EXPIRATIONS, PROMO_DURATIONS, PROMO_LIMITS, discountDisabled, promotionBody,
   type Audience, type PromotionForm,
 } from "@/lib/ofMirrorOffers";
-import { INITIAL_CREATE, buildPayload, canSubmit, createPromotionReducer } from "@/components/growth/createPromotionForm";
+import {
+  INITIAL_CREATE, RECREATE_MAX, RECREATE_MIN, blockReason, buildPayload, createPromotionReducer, keepRunningOn, movedTo,
+  preemptUsable, takeoverNotice, type TakenFrom,
+} from "@/components/growth/createPromotionForm";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
-import { ofErrorMessage } from "@/lib/ofMirrorWrites";
+import { ofErrorMessage, unresolvedId } from "@/lib/ofMirrorWrites";
+import { RelayError } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { GrowthRailFrame } from "@/components/growth/GrowthFrame";
 import { useGrowthCreator } from "@/hooks/useAccounts";
@@ -59,6 +66,13 @@ const AUDIENCES: IfOption<Audience>[] = [
   { value: "both", label: "Both new and expired" },
 ];
 const MESSAGE_MAX = 500;
+/** A Free trial's Re-create limit choices (the relay's 1-10). */
+const RECREATE_LIMITS = Array.from({ length: RECREATE_MAX - RECREATE_MIN + 1 }, (_, i) => {
+  const n = RECREATE_MIN + i;
+  return { value: String(n), label: `${n} re-create${n === 1 ? "" : "s"}` };
+});
+/** A Free trial campaign (OF's 100% off for its duration). */
+const isTrial = (c: PromoCampaign) => c.discount_percent === 100;
 const PAGE_SIZE = 10;
 /** The bundle's titles: 16 / 600 T1. */
 const TITLE = "text-[16px] font-semibold text-fg";
@@ -110,13 +124,17 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
 
   const [creating, setCreating] = useState(false);
   const [details, setDetails] = useState<string | null>(null);
-  /** Why the campaign just created could not keep running (the create still went through). */
-  const [refused, setRefused] = useState<string | null>(null);
+  /** The create just made: why it could not keep running (it still went through), or the campaign it took Keep
+   *  running from. */
+  const [created, setCreated] = useState<PromoCreated | null>(null);
+  /** The Free trial row being ticked: it asks for its Re-create limit first. */
+  const [retick, setRetick] = useState<PromoCampaign | null>(null);
   const { showExpired, page, set, setPage } = usePagedFilters({ showExpired: false });
 
   const campaigns = promosQ.data?.campaigns ?? [];
   const shown = visibleOffers(campaigns, showExpired);
   const ofAvailable = promosQ.data?.of_available ?? false;
+  const kept = campaigns.find((c) => c.auto_reactivate && c.id != null) ?? null;
   const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
   const current = Math.min(page, pages);
   const rows = shown.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
@@ -137,7 +155,20 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
           <IfButton variant="primary" onClick={() => setCreating(true)} disabled={!accountId}>Create promotion</IfButton>
         </div>
         <Tips />
-        {refused && <div role="status" className="text-[14px] text-warn">Created, but Keep running is off: {refused}.</div>}
+        {/* OF answered without the new promo: nothing proves it exists yet, so never "Created". */}
+        {created?.create === "unknown" && (
+          <div role="status" className="break-words text-[14px] text-warn">
+            Sent, but OnlyFans hasn&apos;t confirmed it. It shows here once OnlyFans lists it; tick Keep running then.
+          </div>
+        )}
+        {created?.create !== "unknown" && created?.auto_reactivate_refused && (
+          <div role="status" className="text-[14px] text-warn">Created, but Keep running is off: {created.auto_reactivate_refused}.</div>
+        )}
+        {created?.keep_running_taken_from && (
+          <div role="status" className="break-words text-[14px] text-fg-dim">
+            Created. Took Keep running from “{created.keep_running_taken_from.name}”.
+          </div>
+        )}
         {!ofAvailable && !promosQ.isLoading && accountId && (
           <Unreachable text="OnlyFans not reachable — showing saved campaigns only." />
         )}
@@ -200,12 +231,21 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
                               type="checkbox"
                               checked={c.auto_reactivate}
                               disabled={reactM.isPending}
-                              onChange={(e) => reactM.mutate({ id: c.id!, auto_reactivate: e.target.checked })}
+                              onChange={(e) => (e.target.checked && isTrial(c)
+                                ? setRetick(c) : reactM.mutate({ id: c.id!, auto_reactivate: e.target.checked }))}
                               className="w-3.5 h-3.5 rounded accent-accent cursor-pointer"
                             />
                             Keep running <span className="opacity-70">— re-create it when it ends</span>
                             {c.reactivate_count > 0 && <Badge color="info">re-armed {c.reactivate_count}×</Badge>}
+                            {c.auto_reactivate && c.recreates_left != null && (
+                              <Badge color="muted">{c.recreates_left} re-create{c.recreates_left === 1 ? "" : "s"} left</Badge>
+                            )}
                           </label>
+                        )}
+                        {c.id != null && c.auto_reactivate && (
+                          <PreemptTick className="max-w-[146px] text-[12px] text-fg-dim md:max-w-none" checked={!!c.preempt}
+                            usable={preemptUsable(c.subscribe_counts)} disabled={reactM.isPending}
+                            onChange={(on) => reactM.mutate({ id: c.id!, preempt: on })} />
                         )}
                       </td>
                       <td className={cn(IF_TABLE.td, "tabular-nums")}>{claimsText(c.subscriber_count, c.subscribe_counts)}</td>
@@ -263,7 +303,11 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
 
       <SubscriptionBundles accountId={accountId} />
 
-      {creating && <CreatePromotionModal accountId={accountId} onClose={() => setCreating(false)} onCreated={setRefused} />}
+      {creating && (
+        <CreatePromotionModal accountId={accountId} kept={kept && { id: kept.id!, name: kept.name }}
+          onClose={() => setCreating(false)} onCreated={setCreated} />
+      )}
+      {retick && <TrialRetickModal accountId={accountId} campaign={retick} onClose={() => setRetick(null)} />}
       {confirm.modal}
     </div>
   );
@@ -286,15 +330,86 @@ function Row({ label, htmlFor, children }: { label: string; htmlFor?: string; ch
   );
 }
 
+/** A Free trial's Re-create limit: full width, so it fits a 390 px phone. */
+function RecreateLimit({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  return (
+    <Row label="Re-create limit">
+      <NumSelect label="Re-create limit" value={value} options={RECREATE_LIMITS} onChange={onChange} />
+      <span className="text-[12px] text-fg-dim">Re-creates the free trial at most this many times, then Keep running turns off.</span>
+    </Row>
+  );
+}
+
+/** Re-create at 90% filled, the second tick under Keep running: its own line, indented 24 px, a 44 px tap row on a
+ *  phone. Under an Offer limit of 10 (or none) it can never act, so it shows off, disabled, and says why. */
+function PreemptTick({ checked, usable, disabled = false, onChange, className }: {
+  checked: boolean; usable: boolean; disabled?: boolean; onChange: (on: boolean) => void; className: string;
+}) {
+  return (
+    <div className={className}>
+      <label title={EXTRA_LABEL}
+        className={cn("flex min-h-11 items-center gap-2 pl-6 md:min-h-0", usable ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
+        <input type="checkbox" checked={usable && checked} disabled={disabled || !usable}
+          onChange={(e) => onChange(e.target.checked)} className="w-3.5 h-3.5 shrink-0 rounded accent-accent cursor-pointer" />
+        Re-create at 90% filled
+      </label>
+      {!usable && <span className="block break-words pl-6 text-[12px] text-fg-dim">Needs an Offer limit of 10 or more</span>}
+    </div>
+  );
+}
+
+/** Ticking Keep running on a Free trial row: its Re-create limit first (the relay refuses the tick without one). */
+function TrialRetickModal({ accountId, campaign, onClose }: {
+  accountId: string | null; campaign: PromoCampaign; onClose: () => void;
+}) {
+  const reactM = useSetPromoAutoReactivate(accountId);
+  const [limit, setLimit] = useState(3);
+  async function tick() {
+    try {
+      await reactM.mutateAsync({ id: campaign.id!, auto_reactivate: true, recreate_limit: limit });
+      onClose();
+    } catch { /* reactM.error shows the relay's line */ }
+  }
+  return (
+    <IfModal
+      title="Keep running"
+      width={420}
+      onClose={onClose}
+      footer={(
+        <>
+          <IfButton onClick={onClose}>Cancel</IfButton>
+          <IfButton variant="primary" onClick={() => void tick()} disabled={reactM.isPending}>Keep running</IfButton>
+        </>
+      )}
+    >
+      <div className="flex flex-col gap-4">
+        <p className="break-words text-[14px] text-fg">Keep “{campaign.name}” running: a free trial needs a Re-create limit.</p>
+        <RecreateLimit value={limit} onChange={setLimit} />
+        {reactM.error && (
+          <div className="text-err text-[12px]" role="alert">{ofErrorMessage(reactM.error) ?? reactM.error.message}</div>
+        )}
+      </div>
+    </IfModal>
+  );
+}
+
 /** `CreatePromotionModal`: 520px, label over control, Cancel then Create. The line over the footer says what
- *  OnlyFans will be asked to run (ours, in place of a second confirm). */
-function CreatePromotionModal({ accountId, onClose, onCreated }: {
-  accountId: string | null; onClose: () => void; onCreated: (refused: string | null) => void;
+ *  OnlyFans will be asked to run (ours, in place of a second confirm). `kept`: the campaign keeping running now. */
+function CreatePromotionModal({ accountId, kept, onClose, onCreated }: {
+  accountId: string | null; kept: TakenFrom | null; onClose: () => void; onCreated: (out: PromoCreated | null) => void;
 }) {
   const meQ = useOfMe(accountId);
   const createM = useCreatePromotion(accountId);
   const [state, dispatch] = useReducer(createPromotionReducer, INITIAL_CREATE);
-  const { name, form, keepRunning, err } = state;
+  const { name, form, preempt, recreateLimit, takenFrom, err, unresolved } = state;
+  const keepOn = keepRunningOn(state);
+  const takeover = keepOn ? takeoverNotice(takenFrom?.name) : null;
+  // The line shown is what the create sends (expect_taken_from): follow the campaigns read as it lands.
+  const keptId = kept?.id ?? null;
+  const keptName = kept?.name ?? "";
+  useEffect(() => {
+    dispatch({ type: "takenFromLoaded", kept: keptId === null ? null : { id: keptId, name: keptName } });
+  }, [keptId, keptName]);
   const price = Number(meQ.data?.subscribePrice ?? 0);
   // OF disables First-month discount when its smallest step would take the price under OF's minimum.
   const noDiscount = price > 0 && discountDisabled(price);
@@ -307,14 +422,23 @@ function CreatePromotionModal({ accountId, onClose, onCreated }: {
   const cap = form.limit ? `up to ${form.limit} claim${form.limit === 1 ? "" : "s"}` : "UNLIMITED claims";
   const ends = form.expiration ? `on offer for ${form.expiration} day${form.expiration === 1 ? "" : "s"}` : "no expiration";
 
-  async function create() {
+  /** `resolve`: "It did not go through — create anyway" clears the earlier create the relay could not settle. */
+  async function create(resolve = false) {
+    const payload = buildPayload(state, resolve);
     dispatch({ type: "clear" });
-    if (!canSubmit(state)) { dispatch({ type: "failed", err: "Name is required." }); return; }
+    const why = blockReason(state);
+    if (why) { dispatch({ type: "failed", err: why }); return; }
     try {
-      const out = await createM.mutateAsync(buildPayload(state));
-      onCreated(out?.auto_reactivate_refused ?? null);
+      onCreated((await createM.mutateAsync(payload)) ?? null);
       onClose();
-    } catch (e) { dispatch({ type: "failed", err: ofErrorMessage(e) ?? errMsg(e, "Create failed") }); }
+    } catch (e) {
+      const said = ofErrorMessage(e) ?? errMsg(e, "Create failed");
+      const id = e instanceof RelayError ? unresolvedId(e.body) : null;
+      // Keep running moved meanwhile: show where it is now, so the next Create sends that.
+      const moved = e instanceof RelayError ? movedTo(e.body) : undefined;
+      if (moved) dispatch({ type: "takenFromLoaded", kept: moved.kept });
+      dispatch(id === null ? { type: "failed", err: said } : { type: "unresolved", id, err: said });
+    }
   }
 
   return (
@@ -375,16 +499,29 @@ function CreatePromotionModal({ accountId, onClose, onCreated }: {
             onChange={(e) => set({ message: e.target.value })} placeholder="Shown with the promotion" />
           <span className="self-end text-[12px] text-fg-dim tabular-nums">{form.message.length}/{MESSAGE_MAX}</span>
         </Row>
-        {/* Ours: on by default; the new campaign takes Keep running from any other. */}
+        {/* Ours: on by default for a discount, off for a Free trial; the new campaign takes Keep running from any other. */}
         <label className="inline-flex items-center gap-2 text-[14px] text-fg cursor-pointer" title={EXTRA_LABEL}>
-          <input type="checkbox" checked={keepRunning} onChange={(e) => dispatch({ type: "keepRunning", on: e.target.checked })}
+          <input type="checkbox" checked={keepOn} onChange={(e) => dispatch({ type: "keepRunning", on: e.target.checked })}
             className="w-3.5 h-3.5 rounded accent-accent cursor-pointer" />
           Keep running <span className="text-fg-dim">— re-create it when it ends</span>
         </label>
+        {keepOn && (
+          <PreemptTick className="-mt-3 text-[14px] text-fg" checked={preempt} usable={preemptUsable(form.limit)}
+            onChange={(on) => dispatch({ type: "preempt", on })} />
+        )}
+        {keepOn && form.kind === "trial" && (
+          <RecreateLimit value={recreateLimit} onChange={(value) => dispatch({ type: "recreateLimit", value })} />
+        )}
+        {takeover && <p data-takeover className="break-words text-[14px] text-warn">{takeover}</p>}
         <p className="text-[12px] text-fg-dim">
           Creates a real OnlyFans promotion: {offer}, {promoAudience(body.type.join(",")).toLowerCase()}, {cap}, {ends}.
         </p>
         {err && <div className="text-err text-[12px]" role="alert">{err}</div>}
+        {unresolved !== null && (
+          <IfButton className="w-full whitespace-normal h-auto py-2" onClick={() => void create(true)} disabled={createM.isPending}>
+            It did not go through — create anyway
+          </IfButton>
+        )}
       </div>
     </IfModal>
   );

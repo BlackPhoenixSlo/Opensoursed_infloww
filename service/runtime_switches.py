@@ -103,6 +103,10 @@ SWITCHES: tuple[Switch, ...] = (
     Switch("FULL_AI_CHAT_OFF", "Full AI Chat off",
            "On: Full AI Chat sends nothing on any Creator; its Fans go back to the other automations.",
            "bool", False, _truthy, "automations/full_ai_owner_io._off"),
+    Switch("PROMO_PREEMPT_ENABLED", "Re-create promos before they end",
+           "Off: Keep running re-creates a promo only after it ends (no re-create at 90% filled "
+           "or shortly before OnlyFans's end time).",
+           "bool", True, _not_off, "automations/promo_reactivate, promo_create_guard._recheck"),
 )
 BY_NAME: dict[str, Switch] = {s.env: s for s in SWITCHES}
 

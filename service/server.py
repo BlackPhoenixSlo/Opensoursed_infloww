@@ -148,6 +148,10 @@ from db.engine import sync_database_url  # noqa: E402
 from of_tracking_api import router as _of_tracking_router  # noqa: E402
 from link_metrics import router as _link_metrics_router  # noqa: E402
 from promotions_api import router as _promotions_router  # noqa: E402
+from promotions_api import (IN_FLIGHT as _PROMO_IN_FLIGHT,  # noqa: E402
+                            reserve_manual as _promo_reserve_manual,
+                            untick_kept_promo as _untick_kept_promo)
+import promo_create_guard  # noqa: E402
 from link_share_api import router as _link_share_router  # noqa: E402
 from bio_pages.admin import router as _bio_admin_router  # noqa: E402
 from owner_tokens_api import router as _owner_tokens_router  # noqa: E402
@@ -1761,6 +1765,19 @@ async def _start_push() -> None:
         await push_send.start()
     except Exception:
         log.exception("push_send start failed; push off")
+
+
+@app.on_event("startup")
+async def _promo_fence_notices() -> None:
+    """Kept campaigns this box will not re-create (Host fence, ADR-0041): one owner notice
+    each, so a deploy with PROMO_CREATE_HOST_ID unset or changed is seen; and the duplicate
+    Kept campaigns the one-Kept migration unticked. Not behind the test-mode guard: the
+    proof relay checks it."""
+    try:
+        await promo_create_guard.fence_notices()
+        await promo_create_guard.duplicate_notices()
+    except Exception:
+        log.exception("promo fence notices failed")
 
 
 @app.on_event("shutdown")
@@ -5548,26 +5565,37 @@ class _PromoBody(BaseModel):
     type: str | list[str] = "all"
     # The offer's expiration in days (0 = no limit); OF's composer sends it.
     finish_days: int | None = Field(None, ge=0, le=30)
+    # "It did not go through — create anyway": the create_unresolved row's id to clear.
+    resolve_open: int | None = None
 
 @app.post("/api/of/v2/promotions")
-def of_create_promo(body: _PromoBody = Body(...)):
-    """Create a promo campaign. Touches public-facing offers; double-check before exposing."""
+async def of_create_promo(body: _PromoBody = Body(...)):
+    """Create a promo campaign, under the Creator's create reservation like every create
+    (promotions_api.reserve_manual: 409 while another is open)."""
     if isinstance(body.type, list) and (not body.type or not set(body.type) <= {"all", "expired"}):
         raise HTTPException(status_code=422, detail='type: a list of "all" and/or "expired"')
-    return _proxy(lambda: _get_client().create_promo(
-        discount=body.discount, subscribe_counts=body.subscribe_counts,
-        subscribe_days=body.subscribe_days, message=body.message, type=body.type,
-        finish_days=body.finish_days,
-    ))
+    terms = {"discount": body.discount, "subscribe_counts": body.subscribe_counts,
+             "subscribe_days": body.subscribe_days, "message": body.message, "type": body.type,
+             "finish_days": body.finish_days}
+    res = await _promo_reserve_manual(_current_aid(), "manual_raw", terms, body.resolve_open)
+    sent = await promo_create_guard.send(res, {}, _get_client, terms, wrap=_proxy)
+    if sent.outcome is None:
+        raise HTTPException(409, {"reason": "create_in_flight", "message": _PROMO_IN_FLIGHT})
+    if sent.error is not None:
+        raise sent.error
+    return sent.result
 
 @app.post("/api/of/v2/promotions/{promo_id}/finish")
-def of_finish_promo(promo_id: int):
-    """Stop promotion: OF's POST /promotions/{id}/finish (the campaign ends, the row stays)."""
-    return _proxy(lambda: _get_client().finish_promo(promo_id))
+async def of_finish_promo(promo_id: int):
+    """Stop promotion: OF's POST /promotions/{id}/finish (the campaign ends, the row stays).
+    A Kept promo is unticked first, so Keep running never re-creates it."""
+    await _untick_kept_promo(_current_aid(), promo_id)
+    return await asyncio.to_thread(_proxy, lambda: _get_client().finish_promo(promo_id))
 
 @app.delete("/api/of/v2/promotions/{promo_id}")
-def of_delete_promo(promo_id: int):
-    return _proxy(lambda: _get_client().delete_promo(promo_id))
+async def of_delete_promo(promo_id: int):
+    await _untick_kept_promo(_current_aid(), promo_id)
+    return await asyncio.to_thread(_proxy, lambda: _get_client().delete_promo(promo_id))
 
 # ── Tracking links (/campaigns) ──────────────────────────────
 

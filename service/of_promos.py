@@ -96,11 +96,14 @@ def normalise_of_promo(item: dict) -> dict:
     finished = bool(of_field(item, "isFinished", default=False))
     can_claim = item.get("canClaim")
     cap = safe_int(of_field(item, "subscribeCounts", "subscribe_counts", default=0))
-    claims = safe_int(of_field(item, "claimsCount", "countSubscribers",
-                               "subscribersCount", default=0))
+    raw_claims = of_field(item, "claimsCount", "countSubscribers", "subscribersCount")
+    claims = safe_int(raw_claims, default=0)
+    # A missing or junk count reads as 0 above but is never trusted (Keep running's memo).
+    claims_present = raw_claims is not None and safe_int(raw_claims, default=-1) >= 0
     capped = cap > 0 and claims >= cap
     # Absent canClaim → don't infer death from it; only an explicit False counts.
-    is_live = (not finished) and (can_claim is not False) and not capped
+    flags_live = (not finished) and (can_claim is not False)
+    is_live = flags_live and not capped
     return {
         "of_promo_id": coerce_of_id(of_field(item, "id", "promoId")),
         "price_cents": to_cents(of_field(item, "price", default=0)),
@@ -113,10 +116,14 @@ def normalise_of_promo(item: dict) -> dict:
         "finished_at": of_field(item, "finishedAt"),
         # performance = how many claimed it
         "subscriber_count": claims,
+        "claims_present": claims_present,
         "can_claim": can_claim,
         # "finished" here means "not on offer", which is what every caller
         # actually wants to know.
         "is_finished": not is_live,
+        # Ended only by our claims >= cap reading while OF's own flags still say live:
+        # Keep running re-creates on it only with a trusted claim history.
+        "cap_inferred": flags_live and capped,
         "status": "active" if is_live else "finished",
     }
 
@@ -161,14 +168,15 @@ def extract_created_promo(res) -> dict:
     """OF's create returns a LIST holding the created promo; some shapes wrap it
     as {"items":[...]} or return the bare object. Pull the created item out so
     the caller can capture of_promo_id — without it, delete/re-arm can't reach
-    OF and a live promo is orphaned."""
+    OF and a live promo is orphaned. A dict with no id (and no usable items) is {}:
+    the create's outcome is unknown, so nothing may read an id out of it."""
     if isinstance(res, list) and res and isinstance(res[0], dict):
         return res[0]
     if isinstance(res, dict):
         items = res.get("items")
         if isinstance(items, list) and items and isinstance(items[0], dict):
             return items[0]
-        return res
+        return res if of_field(res, "id", "promoId") is not None else {}
     return {}
 
 

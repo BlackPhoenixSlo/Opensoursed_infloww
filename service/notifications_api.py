@@ -34,6 +34,8 @@ Where the rows come from (settings_schema.NOTIFICATION_KINDS):
                         /creators/logins?queue=<id>)
   consent_required      consent_notices: OnlyFans wants the Creator's signed consent
                         form (NC/AL law); one per Creator while it lasts
+  promo_keep_running    promo_create_guard: every automatic promo Re-create (one per
+                        Create reservation) and every time Inflowwww turns Keep running off
 
 A PINNED_KIND row is a standing problem, not news: it is no
 NOTIFICATION_KINDS switch (never filtered), `read` refuses it (409), read-all
@@ -336,17 +338,34 @@ async def notify_creator_owners(account_id: str, build: Callable[[str], Notice])
     owner already holding its `dedupe` key is skipped without a write. Returns
     how many were filed."""
     async with get_session() as s:
-        owners = set((await s.execute(select(UserAccount.user_id).where(
-            UserAccount.account_id == account_id))).scalars().all())
-        acc = await s.get(Account, account_id)
-        notice = build((acc.nickname if acc is not None else None) or account_id)
-        if notice.dedupe and owners:
-            owners -= set((await s.execute(select(AgencyNotification.agency_user_id).where(
-                AgencyNotification.agency_user_id.in_(owners),
-                AgencyNotification.dedupe_key == notice.dedupe))).scalars().all())
-    filed = 0
+        filed = await file_for_creator_owners(s, account_id, build)
+    await push_unread(filed)
+    return len(filed)
+
+
+async def file_for_creator_owners(s, account_id: str, build: Callable[[str], Notice]) -> list[str]:
+    """notify_creator_owners inside the caller's transaction `s`, so the notice
+    commits or rolls back with the change it reports (promo_create_guard's
+    settle). Returns the Agencies filed for: the caller pushes their unread
+    count (push_unread) after its commit."""
+    owners = set((await s.execute(select(UserAccount.user_id).where(
+        UserAccount.account_id == account_id))).scalars().all())
+    acc = await s.get(Account, account_id)
+    notice = build((acc.nickname if acc is not None else None) or account_id)
+    if notice.dedupe and owners:
+        owners -= set((await s.execute(select(AgencyNotification.agency_user_id).where(
+            AgencyNotification.agency_user_id.in_(owners),
+            AgencyNotification.dedupe_key == notice.dedupe))).scalars().all())
+    filed: list[str] = []
+    now = datetime.utcnow()
     for owner in sorted(owners):
-        filed += await notify(owner, [notice])
+        if notice.kind in await _switched_off(s, owner):
+            continue
+        row = dict(agency_user_id=owner, kind=notice.kind, text=notice.text, account_id=notice.account_id,
+                   employee_id=notice.employee_id, data_json=json.dumps(notice.data) if notice.data else None,
+                   dedupe_key=notice.dedupe, created_at=now)
+        if (await s.execute(sqlite_insert(AgencyNotification).values(row).on_conflict_do_nothing())).rowcount:
+            filed.append(owner)
     return filed
 
 
@@ -379,9 +398,10 @@ def _session_dead_notice(account_id: str, name: str, reason: str, since: datetim
 # ── The periodic sweep: missed clock-ins, retention ──────────────────
 
 async def push_unread(agencies: Sequence[str]) -> None:
-    """Push the unread count to each Agency that lost unread rows outside
-    `notify` (the sweep's prune, a cleared pinned row): `notify` pushes only
-    when it files, so a delete alone would leave the badge stale."""
+    """Push the unread count to each Agency whose unread rows changed outside
+    `notify` (the sweep's prune, a cleared pinned row, file_for_creator_owners
+    after its caller commits): `notify` pushes only when it files, so a delete
+    alone would leave the badge stale."""
     if not agencies:
         return
     async with get_session() as s:

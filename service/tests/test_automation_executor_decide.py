@@ -33,6 +33,9 @@ these; `_drain_due_jobs_once` spawns what plan_dispatch returns). No DB, no loop
                                due, in that precedence; then a band -> CheckQuiet, else Enqueue.
                                A poked interval rule under the floor re-pokes (deferred, not
                                spent). A poke never makes a clock rule due.
+  case_rv_c15_busy_send_welcome_poke_spent_then_idle_not_rerun: busy pass spends a non-REPOKE poke.
+  case_send_welcome_underfloor_poke_spent: under the floor only REPOKE_KINDS (promo_reactivate,
+                               purchase_followup) keep the poke; send_welcome spends it.
   case_plan_rule_needs_runs:   max_runs set and run_count None -> ValueError (shell invariant).
   case_quiet_plan_table:       the band gate: inside -> Skip; outside -> Enqueue; no clock ->
                                Enqueue(no_clock=True) (the shell warns once).
@@ -60,8 +63,8 @@ from datetime import datetime, timedelta  # noqa: E402
 from isotime import parse_iso  # noqa: E402
 
 from dispatch_plan import (  # noqa: E402
-    POKE_FLOOR_S, CheckQuiet, Clock, Disable, Enqueue, Interval, Pair, Repoke, Skip, Spawn, clock_due,
-    in_quiet_hours, interval_due, next_due, parse_trigger, plan_dispatch, plan_rule, quiet_plan,
+    POKE_FLOOR_S, REPOKE_KINDS, CheckQuiet, Clock, Disable, Enqueue, Interval, Pair, Repoke, Skip, Spawn,
+    clock_due, in_quiet_hours, interval_due, next_due, parse_trigger, plan_dispatch, plan_rule, quiet_plan,
     run_key, trigger_of,
 )
 
@@ -301,21 +304,54 @@ def case_plan_rule_table():
     ]
     for trig, busy, poked, last, runs, qh, want in rows:
         got = plan_rule(trig, busy=busy, poked=poked, last_fired=last, run_count=runs,
-                        quiet_hours_json=qh, now=NOW)
+                        quiet_hours_json=qh, now=NOW, kind="promo_reactivate")
         assert got == want, (trig, busy, poked, last, runs, qh, got)
+
+
+def case_send_welcome_underfloor_poke_spent():
+    """Only REPOKE_KINDS keep a poke that lands under the floor; send_welcome spends it
+    (pre-#850), so a busy Creator's toasts do not run welcome every minute. A poke on a
+    running job follows the same per-kind policy (rv c15)."""
+    hourly = Interval(3600, None)
+    under = NOW - timedelta(seconds=POKE_FLOOR_S - 1)
+    for kind, want in (("send_welcome", Skip("not_due")), ("promo_reactivate", Repoke()),
+                       ("purchase_followup", Repoke())):
+        got = plan_rule(hourly, busy=None, poked=True, last_fired=under, run_count=None,
+                        quiet_hours_json=None, now=NOW, kind=kind)
+        assert got == want, (kind, got)
+        got = plan_rule(hourly, busy="running", poked=True, last_fired=under, run_count=None,
+                        quiet_hours_json=None, now=NOW, kind=kind)
+        assert got == (Skip("busy") if kind == "send_welcome" else Repoke()), (kind, got)
+    assert REPOKE_KINDS == {"promo_reactivate", "purchase_followup"}, REPOKE_KINDS
+
+
+def case_rv_c15_busy_send_welcome_poke_spent_then_idle_not_rerun():
+    """A toast early in a send_welcome run that lasts past the floor: the busy pass spends the
+    poke, so the next idle pass is not due (no re-run on the old poke); promo_reactivate keeps it."""
+    hourly = Interval(3600, None)
+    started = NOW - timedelta(seconds=POKE_FLOOR_S + 30)
+    for kind, busy_want, idle_want in (("send_welcome", Skip("busy"), Skip("not_due")),
+                                       ("promo_reactivate", Repoke(), Enqueue(False))):
+        got = plan_rule(hourly, busy="running", poked=True, last_fired=started, run_count=None,
+                        quiet_hours_json=None, now=NOW, kind=kind)
+        assert got == busy_want, (kind, got)
+        # The idle pass: poked only when the busy pass kept it (Repoke).
+        got = plan_rule(hourly, busy=None, poked=busy_want == Repoke(), last_fired=started,
+                        run_count=None, quiet_hours_json=None, now=NOW, kind=kind)
+        assert got == idle_want, (kind, got)
 
 
 def case_plan_rule_needs_runs():
     try:
         plan_rule(Interval(3600, 3), busy=None, poked=False, last_fired=None, run_count=None,
-                  quiet_hours_json=None, now=NOW)
+                  quiet_hours_json=None, now=NOW, kind="send_welcome")
     except ValueError:
         pass
     else:
         raise AssertionError("max_runs set, run_count None: must raise")
     # busy wins before the run limit is looked at (the shell reads run_count anyway)
     assert plan_rule(Interval(3600, 3), busy="pending", poked=False, last_fired=None,
-                     run_count=None, quiet_hours_json=None, now=NOW) == Skip("busy")
+                     run_count=None, quiet_hours_json=None, now=NOW, kind="send_welcome") == Skip("busy")
 
 
 def case_quiet_plan_table():

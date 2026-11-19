@@ -153,7 +153,7 @@ def _account(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:
 
 # The agency notification kinds (notifications_api) the owner may switch off; absent is on.
 NOTIFICATION_KINDS = ("role_changed", "employee_deactivated", "message_unsent", "clock_in_missed", "session_dead",
-                      "ultra_done")
+                      "ultra_done", "promo_keep_running")
 
 
 def _preferences(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:

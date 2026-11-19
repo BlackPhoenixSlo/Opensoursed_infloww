@@ -50,6 +50,7 @@ export const KIND_LABELS = {
   clock_in_missed: "Missed clock-ins",
   session_dead: "Creator logged out",
   ultra_done: "Ultra plan finished",
+  promo_keep_running: "Keep running promos",
 } as const;
 type Kind = keyof typeof KIND_LABELS;
 

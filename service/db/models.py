@@ -3591,11 +3591,98 @@ class PromoCampaign(Base):
     # else NULL; promo_reactivate schedules its re-check just past it.
     finish_days: Mapped[int | None] = mapped_column(Integer)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Keep running's guards (docs/spec/phase-01-promo-preempt.md, migration 0126):
+    # recreates_left = Free-trial Re-create limit left (NULL = no limit); keep_host_id =
+    # PROMO_CREATE_HOST_ID stamped on tick (Host fence, ADR-0041); keep_warning = why
+    # Inflowwww turned Keep running off (keep_warning_at: when, the 4 h sweep reads committed
+    # stops); keep_ticked_at = when Keep running was last ticked (the Zero-claim breaker counts
+    # only creates since); preempt = the second tick (Slice B). One Kept campaign per Creator
+    # (uq_promo_keep_one): two would take turns ending each other's promo.
+    recreates_left: Mapped[int | None] = mapped_column(Integer)
+    keep_host_id: Mapped[str | None] = mapped_column(String)
+    keep_warning: Mapped[str | None] = mapped_column(String)
+    keep_warning_at: Mapped[datetime | None] = mapped_column(DateTime)
+    keep_ticked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    preempt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True,
+                                          server_default=text("1"))
     created_at: Mapped[datetime] = _ts_now()
 
     __table_args__ = (
         Index("ix_promo_campaigns_account", "account_id", "of_promo_id"),
+        Index("uq_promo_keep_one", "account_id", unique=True,
+              sqlite_where=text("auto_reactivate = 1"), postgresql_where=text("auto_reactivate")),
     )
+
+
+class PromoCreateReservation(Base):
+    """One promo create on OnlyFans, committed before the POST and settled after, so a
+    crash, an unparsed id or a racing create can never mint a duplicate (ADR-0040).
+    States pending -> sending -> created | failed | unknown; unknown -> created | lost |
+    cleared. At most one open row per Creator (uq_promo_create_open). Migration 0126."""
+    __tablename__ = "promo_create_reservations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("promo_campaigns.id", ondelete="SET NULL")
+    )
+    source: Mapped[str] = mapped_column(String, nullable=False)   # manual | manual_raw | auto_*
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    terms_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # OF promo ids seen in the read before the send: never adopted by the reconcile. NULL = no
+    # such read (a manual create reserved at once): never adopted, the operator resolves it.
+    pre_ids_json: Mapped[str | None] = mapped_column(Text)
+    # The promo this create replaced: its last and first Claims while Kept (the breaker's
+    # "gained no Claims" is claims_seen - first_claims <= 0, NULL = 0).
+    replaced_of_promo_id: Mapped[int | None] = mapped_column(BigInteger)
+    claims_seen: Mapped[int | None] = mapped_column(Integer)
+    first_claims: Mapped[int | None] = mapped_column(Integer)
+    host_id: Mapped[str | None] = mapped_column(String)
+    of_promo_id: Mapped[int | None] = mapped_column(BigInteger)
+    listed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    error_class: Mapped[str | None] = mapped_column(String)
+    retry_after_s: Mapped[int | None] = mapped_column(Integer)
+    not_before: Mapped[datetime | None] = mapped_column(DateTime)
+    reconcile_reads: Mapped[int] = mapped_column(Integer, nullable=False, default=0,
+                                                 server_default=text("0"))
+    created_at: Mapped[datetime] = _ts_now()
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("uq_promo_create_open", "account_id", unique=True,
+              sqlite_where=text("state IN ('pending','sending','unknown')"),
+              postgresql_where=text("state IN ('pending','sending','unknown')")),
+        Index("ix_promo_create_account_time", "account_id", "created_at"),
+    )
+
+
+class PromoKeepState(Base):
+    """Keep running's per-Creator memory, in the DB so a restart or a second worker sees
+    the same history: the claim memo of the Kept promo and the one Re-check slot.
+    No row = nothing seen yet. Migration 0126."""
+    __tablename__ = "promo_keep_state"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    kept_of_promo_id: Mapped[int | None] = mapped_column(BigInteger)
+    # Claims on the first read of kept_of_promo_id; NULL once that history cannot be
+    # trusted (the first read had no count, or Claims went down since).
+    first_claims: Mapped[int | None] = mapped_column(Integer)
+    last_claims: Mapped[int | None] = mapped_column(Integer)
+    seen_below: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False,
+                                             server_default=text("0"))
+    finished_at: Mapped[str | None] = mapped_column(Text)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # The pending Re-check's run_at and its job (the slot's owner): claimed by compare-and-set,
+    # cleared only by that job's run.
+    recheck_at: Mapped[datetime | None] = mapped_column(DateTime)
+    recheck_job_id: Mapped[int | None] = mapped_column(Integer)
+    skew_s: Mapped[int | None] = mapped_column(Integer)
+    wait_reason: Mapped[str | None] = mapped_column(String)
 
 
 class LinkMeta(Base):

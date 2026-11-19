@@ -206,7 +206,7 @@ async def _store_walk(account_id: str, kind: str, of_id: int, fans: list[dict],
             if f["lifetime"] is not None:
                 for k in _LIFETIME:
                     setattr(row, f"lifetime_{k}_cents", f["lifetime"][k])
-        meta = await _meta_row(s, account_id, kind, of_id)
+        meta = await meta_row(s, account_id, kind, of_id)
         meta.claim_count = count if count is not None else len(fans)
         meta.walked_at = now
         meta.checked_at = now
@@ -214,7 +214,7 @@ async def _store_walk(account_id: str, kind: str, of_id: int, fans: list[dict],
             meta.campaign_id = campaign_id
 
 
-async def _meta_row(s, account_id: str, kind: str, of_id: int) -> LinkMeta:
+async def meta_row(s, account_id: str, kind: str, of_id: int) -> LinkMeta:
     row = (await s.execute(select(LinkMeta).where(
         LinkMeta.account_id == account_id, LinkMeta.kind == kind, LinkMeta.of_id == of_id))).scalar_one_or_none()
     if row is None:
@@ -260,7 +260,7 @@ async def refresh(account_id: str, kind: str, links: list[Link]) -> dict[str, in
                 camp = {of_id: c for of_id, _n, c in links}
                 async with get_session() as s:
                     for of_id in same:
-                        m = await _meta_row(s, account_id, kind, of_id)
+                        m = await meta_row(s, account_id, kind, of_id)
                         m.checked_at = now
                         if camp.get(of_id) is not None:
                             m.campaign_id = camp[of_id]
@@ -579,7 +579,7 @@ async def _add_one(account_id: str, client, kind: str, of_id: int, list_id: str,
         _LIST_FAILED_AT[account_id] = time.monotonic()
         raise
     async with get_session() as s:
-        m = await _meta_row(s, account_id, kind, of_id)
+        m = await meta_row(s, account_id, kind, of_id)
         if m.list_id == list_id:
             m.list_added_count = count
     log.info("link list add account=%s %s=%s list=%s count=%s added=%s", account_id, kind, of_id, list_id, count,
@@ -597,7 +597,7 @@ async def _point_promos_at_setting(account_id: str, counts: dict[int, int]) -> b
         for of_id, n in counts.items():
             if not n or n <= 0:
                 continue
-            m = await _meta_row(s, account_id, "promo", of_id)
+            m = await meta_row(s, account_id, "promo", of_id)
             if m.list_id != st.list_id:
                 m.list_id = st.list_id
                 m.list_added_count = None
@@ -756,7 +756,7 @@ async def store_meta(account_id: str, kind: str, of_id: int, meta: dict[str, Any
     `claim_count` (a new link: 0) that count counts as added. Then, if the
     List is due its first add, one is queued in the background."""
     async with get_session() as s:
-        row = await _meta_row(s, account_id, kind, of_id)
+        row = await meta_row(s, account_id, kind, of_id)
         row.promo_cost_cents = meta["promo_cost_cents"]
         row.source = meta["source"]
         row.tags_json = json.dumps(meta["tags"]) if meta["tags"] else None
@@ -815,7 +815,7 @@ async def save_link_meta_batch(body: _BatchBody = Body(...)) -> dict[str, Any]:
     now = _now()
     async with get_session() as s:
         for of_id in ids:
-            row = await _meta_row(s, body.account_id, body.kind, of_id)
+            row = await meta_row(s, body.account_id, body.kind, of_id)
             if "promo_cost" in fields:
                 row.promo_cost_cents = meta["promo_cost_cents"]
             if "source" in fields:

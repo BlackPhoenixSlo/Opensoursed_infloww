@@ -661,3 +661,103 @@ _Avoid_: **Total spend** (the Fan List's per-Fan figure), buy rate (a per-Route 
 One of S0 (offline replay) to S6 (sext) through which a Creator's Full AI Chat moves; only the owner flips one forward, after its checks pass.
 _Avoid_: **Stage** (a Capacity campaign ladder step), phase (a plan's PR slice), **Gate** (the Capacity campaign's G1–G13)
 ASSUMPTION: named "Rollout stage" so the Capacity campaign's Stage keeps one meaning; overturned if the specs say S0–S6 only.
+
+### Keep promos running
+
+**Keep running**:
+The per-campaign tick, one switch over `promo_campaigns.auto_reactivate` and the Creator's `promo_reactivate` rule, that has Inflowwww re-create a Creator's promo instead of letting it lapse. At most one campaign per Creator has it.
+_Avoid_: auto-reactivate, Auto-activate campaign (the read-only status row's label), armed, re-arm
+
+**Kept campaign**:
+The one `promo_campaigns` row of a Creator with Keep running ticked.
+_Avoid_: armed campaign, managed campaign, auto-reactivate campaign
+
+**Live promo**:
+The OnlyFans subscription promo a Creator has on offer: not finished, claimable and under its Claim cap (`of_promos.normalise_of_promo`). Taken to be at most one per Creator.
+_Avoid_: active promo, current promo, running promo
+
+**Kept promo**:
+The Live promo whose OF id is the Kept campaign's current `of_promo_id`: the only promo Inflowwww ever replaces (ADR-0039).
+_Avoid_: our promo, managed promo, armed promo
+
+**Re-create**:
+One create on OnlyFans with a Kept campaign's saved terms, after which the campaign points at the new promo. Both After-end re-create and Pre-emption are Re-creates.
+_Avoid_: reactivate, re-arm, renew, resurrect (code keeps `reactivate` in names: `reactivate_count`, `last_reactivated_at`)
+
+**After-end re-create**:
+A Re-create when no promo is live any more: the PR #850 path, kept as the fallback.
+_Avoid_: reactivation, expiry path, restore
+
+**Pre-emption**:
+A Re-create while the Kept promo is still live, so OnlyFans ends it and the profile has no gap: Fill pre-emption at 90 % of the Claim cap, Timed pre-emption shortly before the OF end time (ADR-0039).
+_Avoid_: pre-emptive re-create, early re-create, rollover, swap
+
+**Re-create at 90% filled**:
+The Kept campaign's second tick, under Keep running, that allows Pre-emption; ticked by default.
+_Avoid_: pre-empt flag, early re-create switch
+
+**Claim cap**:
+The most Fans who may claim one promo (OF `subscribeCounts`, the mirror's `subscribe_counts`; 0 is unlimited).
+_Avoid_: Offer limit (the Create promotion form's label only), subscribe counts, limit, cap on its own
+ASSUMPTION: "Claim cap" (plan, code) over the form label "Offer limit"; overturned if the specs or UI copy must say "Offer limit".
+
+**Claims**:
+How many Fans have claimed one promo (OF `claimsCount`, the mirror's `subscriber_count`).
+_Avoid_: subscribers, uses, redemptions, fill
+
+**Trusted count**:
+Claims of the Kept promo that are present on the read, read ≤ 90 s ago, never went down, below the Claim cap, and whose first read of that promo id was 0, with a recovery create left in the Create budget; the only Claims a Fill pre-emption acts on.
+_Avoid_: fresh count, verified claims, live count
+
+**OF end time**:
+A promo's `finishedAt` as OnlyFans returned it: the only end time a Timed pre-emption acts on.
+_Avoid_: expires_at (it may hold the guessed end), guessed end (created + finish days; it times Re-checks only), expiry
+
+**Free-trial promo**:
+A promo at 100 % off, the Create promotion form's "Free trial" type. Keep running starts unticked on it, and a Kept one has a finite Re-create limit.
+_Avoid_: free trial on its own (OnlyFans's Free trial links, `/trials`), free promo
+ASSUMPTION: named apart from Free trial links though the form says "Free trial"; overturned if the specs never mention trial links.
+
+**Create reservation**:
+The durable per-Creator row written before every promo create, automatic or manual, and settled after it; while one is open no create runs until it is reconciled against OnlyFans's promo list or the Employee clears it (ADR-0040).
+_Avoid_: lock, lease (the View lease, the fan lease), pending create, intent
+
+**Create budget**:
+How many automatic promo creates one Creator may attempt per hour and per day, failures and unknown outcomes included; the Employee's manual creates neither count nor are refused (ADR-0040).
+_Avoid_: rate limit, quota, Claim cap, max re-arms (`max_reactivations`, a lifetime cycle count)
+
+**Create back-off**:
+The wait after a failed create before Keep running tries again, OnlyFans's Retry-After first.
+_Avoid_: **Backoff ladder** (the purchases feed's), Cooldown, pause
+
+**Cooldown**:
+The least time between two Re-creates of the same Kept campaign (`cooldown_minutes`, default 2).
+_Avoid_: Create back-off, throttle
+
+**Zero-claim breaker**:
+The stop that turns Keep running off and warns after N Re-creates in a row whose replaced promo gained no Claims or whose new promo was never seen live.
+_Avoid_: circuit breaker on its own, kill switch, Create budget
+
+**Host fence**:
+The rule that a Relay makes automatic promo creates only when its own environment's host id (`PROMO_CREATE_HOST_ID`, one per box) equals the id stamped on the Kept campaign, so a copied DB never creates (ADR-0041).
+_Avoid_: kill switch (a `runtime_switches` override, which a copied DB carries), host lock, Create reservation
+
+**Takeover**:
+A new campaign created with Keep running ticked taking the tick from the previous Kept campaign; the Employee is told which campaign lost it.
+_Avoid_: move, unarm, untick
+
+**Subscribe toast**:
+The OnlyFans "subscribed" websocket notification on which `event_transcoder` Pokes `promo_reactivate` and `send_welcome`. Whether a promo claim fires one is not yet measured.
+_Avoid_: new-subscriber event, subscriber event, sub notification
+
+**Poke**:
+An event asking an interval rule to run before its interval, no sooner than `POKE_FLOOR_S` (60 s) after its last job; one under the floor is kept for a later pass (`Repoke`) only for `promo_reactivate` and `purchase_followup`, else spent.
+_Avoid_: trigger, wake, nudge (`nudge_online` is an automation)
+
+**Backstop**:
+The `promo_reactivate` rule's own hourly run.
+_Avoid_: poll, tick, sweep
+
+**Re-check**:
+A `promo_reactivate` run the automation queues for itself (near_cap, expiry or cooldown), at most one pending per Creator.
+_Avoid_: follow-up on its own (any `enqueue_followup` job), retry, recheck

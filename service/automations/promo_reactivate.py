@@ -21,7 +21,9 @@ steps_json (per-run knobs):
 Event-driven, not a faster poll. A run fires on the hourly backstop, on a
 subscribe toast (event_transcoder pokes this kind; a poke under the floor is
 deferred, not dropped), and on the bounded re-checks a run queues for itself
-(`_recheck` follow-ups, never more than one pending per account):
+(`_recheck` follow-ups; one Re-check slot per Creator, `promo_keep_state.recheck_at` +
+`recheck_job_id`, claimed by compare-and-set while no owning job is pending or running,
+freed only by its own job, so never two pending):
   near_cap  the live kept promo is one claim from its cap: look again in 90 s
             (OF may count the claim after the toast). Not from a re-check run.
   expiry    the live kept promo's expires_at falls before the next backstop:
@@ -29,7 +31,27 @@ deferred, not dropped), and on the bounded re-checks a run queues for itself
             wins (no create): look again in 60 s, at most 3 times.
   cooldown  a campaign is held by the cooldown and nothing was re-armed: look
             at last_reactivated_at + cooldown + 5 s.
+  timed     Pre-emption applies and the live kept promo ends before the next
+            backstop: look just inside TIMED_LEAD_S of OF's read finishedAt, on OF's
+            clock (needs the skew known); a guessed expires_at only gets its expiry
+            check. One-shot: never from a timed re-check.
+  recovery  a sent Pre-emption failed (OF may have ended the live promo): look when
+            its back-off ends, so After-end recovers before the backstop.
 None in dry run (it never acts, so nothing is owed a timely look).
+
+Pre-emption (Slice B; PROMO_PREEMPT_ENABLED, the server's kill switch, and the campaign's
+`preempt` tick; cap >= 10 only): while the Kept promo is live, re-create it at a Trusted
+count of ceil(0.9 x cap) (Fill) or within TIMED_LEAD_S of OF's own end time read twice
+unchanged, with our clock within 30 s of OF's (Timed), so the next promo is up before the
+old one ends. Same reservation, guards, budget, cycle cap and Cooldown as After-end, plus a
+recovery create left in both budget windows; a failed one warns "no promo may be live" and
+After-end recovers after the back-off (an OF refusal also unticks `preempt`; only a captcha,
+a deactivated Creator or a free page turn Keep running off). Why it waits instead is the
+card's waiting line (wait_reason).
+
+Toast gate (`should_poke`): a subscribe toast pokes this kind only when a run could be owed
+(no fresh read of the live Kept promo, its count plus the toasts since near the threshold,
+or its end near), so a busy Creator's toasts cost no list reads far from the threshold.
 
 Safety — every unknown is read as "leave it alone", never as "re-create it":
   • Fails CLOSED when OF is unreachable — a failed fetch must never be read as
@@ -40,7 +62,34 @@ Safety — every unknown is read as "leave it alone", never as "re-create it":
     and we'd burn a call per tick.
   • Deleting a campaign in the UI removes its mirror row, so it stops re-arming.
   • A filled claim cap is ended (of_promos.normalise_of_promo), so the next
-    promo goes up as the last claim lands; 0 = unlimited, never filled.
+    promo goes up as the last claim lands; 0 = unlimited, never filled. While OF's
+    own flags still say live, only for the Kept promo first read at 0 Claims whose
+    count never went down (the claim memo, promo_keep_state); else wait. An earlier
+    promo of the same campaign in that state is ended (Inflowwww replaced it); one OF
+    still lists live is a second live promo: stand down.
+  • Every create is a Create reservation (promo_create_guard, ADR-0040): reserved,
+    flipped to sending right before the POST, settled after; an answer with no id is
+    unknown, adopted only when a later read shows a unique matching promo. While a
+    create is open no other starts; one never seen within UNKNOWN_OFF_S turns Keep
+    running off (create_unknown).
+  • Zero-claim breaker (promo_keep_decide): after a create, no next one until its
+    promo is seen live or NOT_LISTED_S passes; 3 in a row with no new Claims or
+    never live turn Keep running off (breaker). Each create and stop notifies the
+    owners (promo_keep_running).
+  • Create budget and back-off: at most 3 automatic creates per rolling hour, 8 per
+    day; a failed one holds the next (doubling from 120 s, OF's Retry-After in full).
+    A captcha, a free page, another 4xx or a second 403/429 in a row turn Keep running
+    off; a dead session flags the account (run_once then skips it).
+  • Host fence (ADR-0041): only the box whose PROMO_CREATE_HOST_ID is stamped on the
+    campaign (at tick) re-creates it; a fenced campaign costs no OF read, so a DB copy or
+    a box with the env unset never creates.
+  • A Free trial ticked before the Offer/Re-create limit existed (trial_unlimited) costs no
+    OF read either: the run turns it off once (limit_needed), with a notice.
+  • An operator stop wins: the decision read's start, the claimed rule and the campaign's
+    tick ride on the reservation; a create sent or settled after the read (Growth, the OF
+    mirror), a fresh manual promo missing from the read, the rule gone/off/dry run, a new
+    tick or a read over 90 s old refuse this one, at reserve and at the sending CAS.
+  • Dry run never writes: no reconcile, no turn-off, no create.
 
 Self-registers via @register("promo_reactivate"); scheduled by an
 automation_rules row (kind="promo_reactivate", trigger_json={"every_seconds": N}).
@@ -50,19 +99,30 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import account_health
 import automation_executor as ax
-from automation_registry import kind_family, register
+from automation_registry import register
 from ._common import bool_knob
 from db.engine import get_session
-from db.models import AutomationRule, PromoCampaign, ScheduledJob
+from db.models import AutomationRule, PromoCampaign, PromoKeepState, ScheduledJob
 import job_queue
+import link_metrics
 import of_pacing
-from of_promos import (extract_created_promo, fetch_of_promos, normalise_of_promo,
-                       promo_expires_at, promo_type_body)
+import promo_create_guard
+import runtime_switches
+from isotime import parse_iso
+from notifications_api import push_unread
+from of_promos import fetch_of_promos, promo_type_body
+from promo_create_guard import PREEMPT_SWITCH, Refused
+from promo_keep_decide import (NOT_LISTED_S, SKEW_MAX_S, TIMED_LEAD_S, AfterEnd, Created, Fill, Inputs,
+                               Kept, Memo, Tally, Timed, TurnOff, Wait, decide, observe, threshold)
 
 log = logging.getLogger("of-relay.automation.promo_reactivate")
 
@@ -76,6 +136,57 @@ EXPIRY_GRACE_S = 30                 # expiry: look this long after expires_at
 EXPIRY_RETRY_S = 60                 # ... and again while OF still says on offer
 EXPIRY_MAX_RETRIES = 3
 COOLDOWN_GRACE_S = 5
+TIMED_GRACE_S = 5                   # timed: land inside the lead, not on its edge
+GATE_STALE_S = 600                  # toast gate: an older read, or an end this near, pokes
+
+
+def _preempts(r: PromoCampaign | None, cap: int) -> bool:
+    """Pre-emption applies to this Kept campaign's promo of this cap."""
+    return (r is not None and bool(r.preempt) and runtime_switches.on(PREEMPT_SWITCH)
+            and threshold(cap) is not None)
+
+
+@dataclass(frozen=True)
+class _Gate:
+    """The toast gate's copy of the last read of the live Kept promo."""
+    claims: int
+    trigger: int | None     # Claims at which a run is owed (threshold, else cap); None: never
+    read_mono: float        # monotonic, at the read's start: later toasts are not in `claims`
+    ends_at: datetime | None
+
+
+# In-process on purpose: a restart empties both, and no entry means every toast pokes.
+_gate: dict[str, _Gate] = {}
+_toasts: dict[str, list[float]] = {}
+
+
+def _set_gate(account_id: str, p: dict | None, r: PromoCampaign | None, read_mono: float) -> None:
+    """After a read (or a create's answer): `p` the live Kept promo, None when not known live."""
+    aid = str(account_id)
+    if p is None or not p.get("claims_present"):
+        _gate.pop(aid, None)
+        return
+    cap = int(p.get("subscribe_counts") or 0)
+    trigger = threshold(cap) if _preempts(r, cap) else (cap or None)
+    _gate[aid] = _Gate(int(p.get("subscriber_count") or 0), trigger, read_mono,
+                       parse_iso(p.get("finished_at")))
+
+
+def should_poke(account_id: str, n_toasts: int) -> bool:
+    """Do `n_toasts` subscribe toasts owe this kind a run? Sync and in-memory (the
+    transcoder's hot path). Yes with no fresh read of the live Kept promo, when its end is
+    near, or when its last Claims plus the toasts since that read reach one short of the
+    trigger (OF may count a claim after its toast, like near_cap)."""
+    aid, now = str(account_id), time.monotonic()
+    g = _gate.get(aid)
+    since = g.read_mono if g is not None else now - GATE_STALE_S
+    seen = [t for t in _toasts.get(aid, ()) if t >= since] + [now] * max(int(n_toasts), 0)
+    _toasts[aid] = seen
+    if g is None or now - g.read_mono > GATE_STALE_S:
+        return True
+    if g.ends_at is not None and g.ends_at - datetime.utcnow() <= timedelta(seconds=GATE_STALE_S):
+        return True
+    return g.trigger is not None and g.claims + len(seen) >= g.trigger - 1
 
 
 def _kept(value: int | None, default: int) -> int:
@@ -91,34 +202,119 @@ def _kept(value: int | None, default: int) -> int:
     return default if value is None else int(value)
 
 
-async def _recheck_pending(account_id: str) -> bool:
-    """A re-check of this account is already queued (the dedupe: never two)."""
-    async with get_session() as s:
-        return (await s.execute(
-            select(ScheduledJob.id).where(
-                ScheduledJob.account_id == str(account_id),
-                ScheduledJob.kind.in_(kind_family(KIND)),
-                ScheduledJob.status == "pending",
-                ScheduledJob.payload_json.contains(f'"{RECHECK}"', autoescape=True),
-            ).limit(1))).scalar_one_or_none() is not None
-
-
 async def _queue_recheck(account_id: str, payload: dict, reason: str, at: datetime,
                          retries: int = 0) -> dict | None:
-    """Queue ONE re-check run at `at` (rule-bound through enqueue_followup, so turning
-    the rule off drops it), unless one is pending. The run's own knobs ride along."""
-    if await _recheck_pending(account_id):
-        return None
+    """Queue ONE re-check run at `at`, unless the Creator's Re-check slot is taken.
+
+    The slot is `promo_keep_state.recheck_at` + `recheck_job_id`, claimed by a
+    compare-and-set (racing runs: one wins) while its owning job is not pending or running
+    (a done, failed or cancelled owner frees it at once; boot heals orphaned running jobs).
+    The job is inserted in the same transaction, rule-bound like enqueue_followup: a rule
+    turned off mid-run rolls the claim back. The run's own knobs ride along."""
     knobs = {k: v for k, v in payload.items()
              if k not in (RECHECK, _RETRIES, job_queue.FOLLOWUP_MARK)}
-    job_id = await ax.enqueue_followup(
-        account_id, KIND, run_at=at,
-        payload={**knobs, RECHECK: reason, _RETRIES: retries})
-    if job_id is None:
-        return None
+    body = {**knobs, RECHECK: reason, _RETRIES: retries}
+    rid = job_queue.current_rule_id()
+    aid = str(account_id)
+    async with get_session() as s:
+        # Writes first: the transaction holds SQLite's write lock before it reads.
+        await s.execute(sqlite_insert(PromoKeepState).values(account_id=aid)
+                        .on_conflict_do_nothing(index_elements=["account_id"]))
+        owner_live = exists().where(ScheduledJob.id == PromoKeepState.recheck_job_id,
+                                    ScheduledJob.status.in_(("pending", "running")))
+        claimed = (await s.execute(
+            update(PromoKeepState)
+            .where(PromoKeepState.account_id == aid,
+                   or_(PromoKeepState.recheck_at.is_(None), ~owner_live))
+            .values(recheck_at=at, recheck_job_id=None))).rowcount == 1
+        if not claimed:
+            return None
+        if rid is not None:
+            if not await job_queue.rule_is_live(s, rid):
+                await s.rollback()
+                log.info("promo_reactivate re-check dropped, rule off account=%s rule=%s", aid, rid)
+                return None
+            body[job_queue.FOLLOWUP_MARK] = True
+        jid = await job_queue.enqueue_job(aid, KIND, payload=body, run_at=at, rule_id=rid, session=s)
+        await s.execute(update(PromoKeepState).where(PromoKeepState.account_id == aid)
+                        .values(recheck_job_id=jid))
     log.info("promo_reactivate re-check queued account=%s reason=%s at=%s retries=%s",
              account_id, reason, at.isoformat(), retries)
     return {"reason": reason, "at": at.isoformat(), "retries": retries}
+
+
+async def _observe(account_id: str, live: list[dict] | None, kept_ids: set[int],
+                   now: datetime, *, persist: bool = True) -> tuple[Memo, Memo, int | None]:
+    """Fold this read into the Creator's claim memo (promo_keep_state) and persist it, so
+    a restart keeps the history an inferred cap and Pre-emption need (not in dry run: it
+    writes nothing). Returns the committed memo before and after this read, and skew_s.
+    One transaction, the write first: it holds SQLite's write lock before the read, so a
+    racing fold waits and folds onto this one (a drop it saw is never written over)."""
+    aid = str(account_id)
+    async with get_session() as s:
+        if persist:
+            await s.execute(sqlite_insert(PromoKeepState).values(account_id=aid)
+                            .on_conflict_do_nothing(index_elements=["account_id"]))
+        st = await s.get(PromoKeepState, aid)
+        memo = Memo() if st is None else Memo(st.kept_of_promo_id, st.first_claims,
+                                              st.last_claims, st.read_at, st.finished_at)
+        skew = None if st is None else st.skew_s
+        new = observe(memo, live, kept_ids, now)
+        if persist and new != memo:
+            await s.execute(update(PromoKeepState).where(PromoKeepState.account_id == aid).values(
+                kept_of_promo_id=new.kept_of_promo_id, first_claims=new.first_claims,
+                last_claims=new.last_claims, read_at=new.read_at, finished_at=new.finished_at))
+    return memo, new, skew
+
+
+async def _note_wait(account_id: str, why: str | None) -> None:
+    """The card's waiting line (keep_wait): why the live Kept promo is not pre-empted."""
+    async with get_session() as s:
+        await s.execute(update(PromoKeepState).where(
+            PromoKeepState.account_id == str(account_id),
+            PromoKeepState.wait_reason.is_distinct_from(why)).values(wait_reason=why))
+
+
+async def _managed(account_id: str) -> list[PromoCampaign]:
+    async with get_session() as s:
+        return list((await s.execute(select(PromoCampaign).where(
+            PromoCampaign.account_id == str(account_id),
+            PromoCampaign.auto_reactivate.is_(True)))).scalars())
+
+
+def _here(managed: list[PromoCampaign]) -> list[PromoCampaign]:
+    """The Kept campaigns this box may re-create (Host fence; a Free trial with no Offer or
+    Re-create limit never is)."""
+    return [r for r in managed if not promo_create_guard.fenced(r.keep_host_id)
+            and not promo_create_guard.trial_unlimited(r)]
+
+
+async def _limit_needed(account_id: str, managed: list[PromoCampaign]) -> list[int]:
+    """Turn off, once, this box's Kept Free trials with no Offer or Re-create limit (ticked
+    before the limit existed): they would idle silently. Returns the campaign ids."""
+    bad = [r.id for r in managed if not promo_create_guard.fenced(r.keep_host_id)
+           and promo_create_guard.trial_unlimited(r)]
+    if bad:
+        now = datetime.utcnow()
+        filed: list[str] = []
+        async with get_session() as s:
+            for cid in bad:
+                filed += await promo_create_guard.turn_off(s, account_id, cid, "limit_needed", now)
+        await push_unread(filed)
+    return bad
+
+
+async def _owned_ids(account_id: str, managed: list[PromoCampaign], live: list[dict] | None) -> frozenset[int]:
+    """Earlier OF promos of the Kept campaigns (their past ids, the ids their reservations
+    replaced): one still listed full by count only is ended, never a reason to wait. Read
+    only when the list holds such a promo."""
+    if not live or not any(p.get("cap_inferred") for p in live):
+        return frozenset()
+    mine = {r.id for r in managed}
+    past = await link_metrics.past_promo_ids(account_id)
+    ids = {o for cid in mine for o in past.get(cid, ())}
+    ids |= await promo_create_guard.replaced_ids(account_id, mine)
+    return frozenset(ids)
 
 
 async def _interval_s() -> float:
@@ -137,10 +333,27 @@ async def _interval_s() -> float:
     return _DEFAULT_INTERVAL_S
 
 
+async def _recovery(account_id: str, payload: dict, campaign_id: int) -> dict | None:
+    """A sent Pre-emption failed: OF may have ended the live promo. Forget the toast gate's
+    copy of it (toasts poke again) and, while Keep running is on, look once the back-off
+    ends through the Re-check slot, so After-end recovers before the backstop."""
+    _gate.pop(str(account_id), None)
+    async with get_session() as s:
+        c = await s.get(PromoCampaign, campaign_id)
+    if c is None or not c.auto_reactivate:
+        return None
+    now = datetime.utcnow()
+    nb = (await promo_create_guard.budget_state(account_id, now)).not_before
+    at = max(nb or now, now) + timedelta(seconds=COOLDOWN_GRACE_S)
+    if at >= now + timedelta(seconds=await _interval_s()):
+        return None                 # the backstop's
+    return await _queue_recheck(account_id, payload, "recovery", at)
+
+
 async def _live_followup(account_id: str, payload: dict, kept: PromoCampaign | None,
-                         live: dict, now: datetime) -> dict | None:
+                         live: dict, now: datetime, skew: int | None) -> dict | None:
     """The stand-down's re-check, when the live promo is a kept campaign's own (`kept`):
-    the earliest of near_cap / expiry. None when nothing is owed or one is pending."""
+    the earliest of near_cap / timed / expiry. None when nothing is owed or one is pending."""
     if kept is None:
         return None
     again = payload.get(RECHECK)
@@ -149,6 +362,14 @@ async def _live_followup(account_id: str, payload: dict, kept: PromoCampaign | N
     if not again and cap > 0 and claims >= cap - 1:
         plans.append((now + timedelta(seconds=NEAR_CAP_S), "near_cap", 0))
     exp = kept.expires_at
+    # Only OF's own end time on a known clock can make a Timed create: a guessed expiry
+    # keeps its one expiry check. OF's end reaches our clock at end + skew.
+    end = parse_iso(live.get("finished_at"))
+    if (again != "timed" and end is not None and skew is not None and abs(skew) <= SKEW_MAX_S
+            and _preempts(kept, cap)):
+        at = end + timedelta(seconds=skew - (TIMED_LEAD_S - TIMED_GRACE_S))
+        if now < at < now + timedelta(seconds=await _interval_s()):
+            plans.append((at, "timed", 0))
     if exp is not None:
         if exp > now:
             if exp < now + timedelta(seconds=await _interval_s()):
@@ -183,151 +404,208 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     except (TypeError, ValueError):
         cooldown_min = _DEFAULT_COOLDOWN_MIN
 
-    async with get_session() as s:
-        managed = (await s.execute(
-            select(PromoCampaign).where(
-                PromoCampaign.account_id == str(account_id),
-                PromoCampaign.auto_reactivate.is_(True),
-            )
-        )).scalars().all()
+    if payload.get(RECHECK):
+        async with get_session() as s:
+            # The slot's own job running frees it so this run may plan the next; another
+            # job's slot (claimed after this one's owner died) is not ours to clear.
+            await s.execute(update(PromoKeepState)
+                            .where(PromoKeepState.account_id == str(account_id),
+                                   PromoKeepState.recheck_job_id == job_queue.current_job_id())
+                            .values(recheck_at=None, recheck_job_id=None))
+    managed = await _managed(account_id)
     if not managed:
         return {"managed": 0, "reactivated": 0, "dry_run": dry_run}
+    off = [] if dry_run else await _limit_needed(account_id, managed)
+    if off:
+        managed = [r for r in managed if r.id not in off]
+        if not managed:
+            return {"managed": 0, "reactivated": 0, "skipped": "limit_needed", "dry_run": dry_run}
+    if not _here(managed):
+        # Before any OF read: a fenced box spends nothing on Keep running.
+        log.info("promo_reactivate fenced account=%s campaigns=%s", account_id, [r.id for r in managed])
+        return {"managed": len(managed), "reactivated": 0, "skipped": "fence", "dry_run": dry_run}
+    managed = _here(managed)
 
-    # Fail CLOSED: if we can't read OF, we cannot tell "finished" from
-    # "unreachable" — re-creating on a failed fetch would duplicate live promos.
     # Pass the ids we manage so paging stops as soon as they're all located:
     # /promotions holds the creator's whole promo history (230+ on a real
     # account) and page 1 alone would show an older-but-LIVE promo as absent,
     # i.e. "expired", i.e. re-create it.
     managed_ids = {int(r.of_promo_id) for r in managed if r.of_promo_id is not None}
+    # Before the read: any create sent or settled after this instant (a manual one
+    # mid-walk) beats this run's (newer_create).
+    read_at, read_mono = datetime.utcnow(), time.monotonic()
     # A background walk (of_pacing): paging to an older managed promo can take pages.
     live = await of_pacing.walk(account_id, "promo_reactivate",
                                 lambda: fetch_of_promos(account_id, need_ids=managed_ids))
-    if live is None:
+    # Every read first settles an open create; one settled may have repointed a campaign.
+    # Dry run writes nothing (a lost row would turn Keep running off).
+    if not dry_run and await promo_create_guard.reconcile(account_id, live):
+        managed = _here(await _managed(account_id))
+        managed_ids = {int(r.of_promo_id) for r in managed if r.of_promo_id is not None}
+        if not managed:
+            return {"managed": 0, "reactivated": 0, "dry_run": dry_run}
+    shown = next((p for p in live or () if p.get("of_promo_id") in managed_ids and not p.get("is_finished")), None)
+    _set_gate(account_id, shown, next((r for r in managed if shown and r.of_promo_id == shown["of_promo_id"]), None),
+              read_mono)
+    if await promo_create_guard.has_open(account_id):
+        # Still open (no unique candidate yet): a second create could duplicate it. Natural
+        # reads settle it; UNKNOWN_OFF_S after its send it is lost and Keep running stops.
+        return {"managed": len(managed), "reactivated": 0, "skipped": "create_open",
+                "dry_run": dry_run}
+    now = datetime.utcnow()
+    prior, memo, skew = await _observe(account_id, live, managed_ids, now, persist=not dry_run)
+    budget = await promo_create_guard.budget_state(account_id, now)
+    owned = await _owned_ids(account_id, managed, live)
+    creates = await promo_create_guard.recent_creates(account_id)
+    verdict = decide(Inputs(
+        campaigns=tuple(Kept(r.id, r.of_promo_id, int(r.discount_percent or 0),
+                             int(r.reactivate_count or 0), r.last_reactivated_at, r.keep_ticked_at,
+                             bool(r.preempt))
+                        for r in managed),
+        promos=live, now=now, max_reactivations=max_reactivations, cooldown_min=cooldown_min,
+        memo=memo, owned_ids=owned,
+        creates=tuple(Created(c.campaign_id, c.settled_at, c.listed_at, c.claims_seen, c.first_claims)
+                      for c in creates),
+        auto_times=budget.auto_times, not_before=budget.not_before,
+        preempt_enabled=runtime_switches.on(PREEMPT_SWITCH), prior=prior, skew_s=skew))
+
+    if isinstance(verdict, Wait) and verdict.reason == "of_unreachable":
         log.info("promo_reactivate: OF unreachable account=%s — standing down", account_id)
         return {"managed": len(managed), "reactivated": 0,
                 "skipped": "of_unreachable", "dry_run": dry_run}
-
-    # OnlyFans runs ONE subscription promo at a time — creating a new one flips
-    # the current one to isFinished. So a campaign can be "finished" because it
-    # was SUPERSEDED by a sibling, not because it lapsed. With two armed
-    # campaigns that produced a ping-pong: re-arming A finished B, so next tick
-    # B looked expired and was re-armed, which finished A... a real promo minted
-    # on the creator's public profile every tick, forever.
-    #
-    # The invariant that kills it: if any promo is live, a discount IS on offer
-    # and there is nothing to restore. Stand down. (/promotions is newest-first,
-    # so a live promo is always on the first page we fetch.)
-    live_now = [p for p in live if not p.get("is_finished")]
-    if live_now:
-        by_id = {int(r.of_promo_id): r for r in managed if r.of_promo_id is not None}
-        shown = next((p for p in live_now if p.get("of_promo_id") in by_id), live_now[0])
+    if not dry_run:
+        await _note_wait(account_id, verdict.wait_reason if isinstance(verdict, Wait) else None)
+    if isinstance(verdict, Wait) and verdict.reason == "promo_already_live":
         out = {"managed": len(managed), "reactivated": 0,
                "skipped": "promo_already_live",
-               "live_of_promo_id": shown.get("of_promo_id"),
+               "live_of_promo_id": verdict.live.get("of_promo_id"),
                "dry_run": dry_run}
+        if verdict.wait_reason:
+            out["wait_reason"] = verdict.wait_reason
+        # OF may list the promo our newest create replaced as live for a while after it:
+        # not alerted until NOT_LISTED_S past that settle (it still blocks any create).
+        top = creates[0] if creates else None
+        lag = (top.replaced_of_promo_id if top is not None
+               and now < top.settled_at + timedelta(seconds=NOT_LISTED_S) else None)
+        foreign = [p.get("of_promo_id") for p in live if not p.get("is_finished")
+                   and p.get("of_promo_id") not in managed_ids and p.get("of_promo_id") != lag]
+        if verdict.kept is not None and foreign:
+            # OF should run one promo at a time: another live beside the Kept one is the
+            # 4 h sweep's alert (promo_keep_creates), a replaced one of ours too.
+            log.warning("promo_keep_second_live account=%s campaign=%s live=%s",
+                        account_id, verdict.kept, [verdict.live.get("of_promo_id"), *foreign])
         if not dry_run:
-            recheck = await _live_followup(account_id, payload, by_id.get(shown.get("of_promo_id")),
-                                           shown, datetime.utcnow())
+            kept = next((r for r in managed if r.id == verdict.kept), None)
+            recheck = await _live_followup(account_id, payload, kept, verdict.live, now, skew)
             if recheck:
                 out["recheck"] = recheck
         return out
+    if isinstance(verdict, Wait) and verdict.reason == "inferred_cap_untrusted":
+        # Full only by our count while OF still offers it, and no clean history: OF
+        # flipping a flag, or the backstop, decides; a create could end a live promo.
+        log.info("promo_reactivate: account=%s promo=%s full by count only, no trusted "
+                 "claim history — waiting", account_id, verdict.live.get("of_promo_id"))
+        return {"managed": len(managed), "reactivated": 0, "skipped": "inferred_cap_untrusted",
+                "live_of_promo_id": verdict.live.get("of_promo_id"), "dry_run": dry_run}
 
-    # Past this point NOTHING is on offer — the return above is the single home of
-    # the liveness question, so a campaign's own OF row can only be finished (or
-    # gone from history entirely). Both mean the same thing here: re-arm it. There
-    # is deliberately no per-campaign "still active?" re-check; it could only ever
-    # be false, and having one invited two rival notions of "active".
-    now = datetime.utcnow()
-    due: list[PromoCampaign] = []
-    skipped_cap = skipped_cooldown = skipped_no_discount = 0
-    skipped_unverifiable = 0
-    held: list[datetime] = []          # last_reactivated_at of each campaign the cooldown holds
+    if isinstance(verdict, TurnOff):
+        out = {"managed": len(managed), "reactivated": 0, "skipped": verdict.reason, "dry_run": dry_run}
+        if not dry_run:
+            async with get_session() as s:
+                filed = await promo_create_guard.turn_off(s, account_id, verdict.campaign_id,
+                                                          verdict.reason, now)
+            await push_unread(filed)
+            out["turned_off"] = verdict.campaign_id
+        return out
 
-    for r in managed:
-        disc = int(r.discount_percent or 0)
-        if not (1 <= disc <= 100):
-            skipped_no_discount += 1
-            continue
-        if max_reactivations and int(r.reactivate_count or 0) >= max_reactivations:
-            skipped_cap += 1
-            continue
-        if r.last_reactivated_at and (now - r.last_reactivated_at) < timedelta(minutes=cooldown_min):
-            skipped_cooldown += 1
-            held.append(r.last_reactivated_at)
-            continue
-        if r.of_promo_id is None:
-            # No OF id → we cannot tell "finished" from "still live", so
-            # re-creating would mint a DUPLICATE promo every cycle (and the new
-            # id may not be captured either, so it would never converge). Same
-            # fail-closed rule as an unreachable fetch.
-            skipped_unverifiable += 1
-            log.info("promo_reactivate: campaign=%s has no of_promo_id — cannot verify, skipping", r.id)
-            continue
-        due.append(r)
+    pre = isinstance(verdict, (Fill, Timed))
+    tally = Tally() if pre else verdict.tally
+    if tally.skipped_unverifiable:
+        log.info("promo_reactivate: account=%s %s campaign(s) with no of_promo_id — cannot verify, "
+                 "skipping", account_id, tally.skipped_unverifiable)
+    base = {"managed": len(managed), **asdict(tally)}
 
-    base = {"managed": len(managed), "due": len(due),
-            "skipped_cap": skipped_cap, "skipped_cooldown": skipped_cooldown,
-            "skipped_no_discount": skipped_no_discount,
-            "skipped_unverifiable": skipped_unverifiable}
-
-    if not due:
+    if isinstance(verdict, Wait):
         out = {**base, "reactivated": 0, "dry_run": dry_run}
-        if held and not dry_run:
-            # Held only by the cooldown: look again just past it, not at the backstop.
-            at = min(held) + timedelta(minutes=cooldown_min, seconds=COOLDOWN_GRACE_S)
-            recheck = await _queue_recheck(account_id, payload, "cooldown", at)
-            if recheck:
-                out["recheck"] = recheck
+        held = verdict.reason in ("breaker_hold", "backoff", "budget")
+        if held:
+            out["skipped"] = verdict.reason
+        if verdict.cooldown_ends and not dry_run:
+            # Held by the cooldown, the breaker hold, the back-off or the budget: look again
+            # just past it, not at the backstop; a hold past the backstop is the backstop's.
+            at = verdict.cooldown_ends + timedelta(seconds=COOLDOWN_GRACE_S)
+            if at < now + timedelta(seconds=await _interval_s()):
+                recheck = await _queue_recheck(account_id, payload,
+                                               verdict.reason if held else "cooldown", at)
+                if recheck:
+                    out["recheck"] = recheck
         return out
+    source = "auto_fill" if isinstance(verdict, Fill) else "auto_timed" if pre else "auto_ended"
+    due = verdict.due if isinstance(verdict, AfterEnd) else (verdict.campaign_id,)
     if dry_run:
+        rows = {r.id: r for r in managed}
         return {**base, "reactivated": 0, "dry_run": True,
-                "would_reactivate": [{"id": r.id, "name": r.name,
-                                      "discount": int(r.discount_percent or 0)} for r in due]}
+                "would_reactivate": [{"id": rows[c].id, "name": rows[c].name,
+                                      "discount": int(rows[c].discount_percent or 0)}
+                                     for c in due],
+                **({"source": source} if pre else {})}
 
+    r = next(r for r in managed if r.id == verdict.campaign_id)
+    done = {**base, "reactivated": 0, "errors": 0, "deferred": len(due) - 1, "dry_run": False}
+    if pre:
+        done["source"] = source
     client = await asyncio.to_thread(ax._make_client, account_id)
-    reactivated = errors = 0
-    # At most ONE re-arm per run: OF only holds one live promo, so re-arming a
-    # second here would immediately finish the one we just created.
-    for r in due[:1]:
+    terms = {"discount": int(r.discount_percent),
+             "subscribe_counts": _kept(r.subscribe_counts, 1),
+             "subscribe_days": _kept(r.subscribe_days, 30),
+             "message": r.message or "",
+             # "all,expired" (both audiences) goes back as OF's list.
+             "type": promo_type_body(r.promo_type)}
+    if r.finish_days is not None:
         # The offer expiration goes back too (sent only when one was: None = never sent).
-        extra = {} if r.finish_days is None else {"finish_days": int(r.finish_days)}
-        try:
-            res = await asyncio.to_thread(
-                lambda rr=r: client.create_promo(
-                    discount=int(rr.discount_percent),
-                    subscribe_counts=_kept(rr.subscribe_counts, 1),
-                    subscribe_days=_kept(rr.subscribe_days, 30),
-                    message=rr.message or "",
-                    # "all,expired" (both audiences) goes back as OF's list.
-                    type=promo_type_body(rr.promo_type), **extra),
-            )
-        except Exception:
-            errors += 1
-            log.warning("promo_reactivate create failed account=%s campaign=%s",
-                        account_id, r.id, exc_info=True)
-            continue
-        of = normalise_of_promo(extract_created_promo(res))
-        new_id = of.get("of_promo_id")
-        stamp = datetime.utcnow()
-        async with get_session() as s:
-            row = await s.get(PromoCampaign, r.id)
-            if row is None:      # deleted mid-run → don't resurrect the mirror
-                continue
-            if row.of_promo_id and new_id is not None and new_id != row.of_promo_id:
-                # Keep the finished OF promo under this campaign, so its claimers'
-                # spend still counts toward the campaign's Revenue (link_metrics).
-                from link_metrics import _meta_row
-                (await _meta_row(s, account_id, "promo", int(row.of_promo_id))).campaign_id = row.id
-            row.of_promo_id = new_id if new_id is not None else row.of_promo_id
-            row.status = "active"
-            row.subscriber_count = 0          # fresh promo, fresh claim count
-            row.reactivate_count = int(row.reactivate_count or 0) + 1
-            row.last_reactivated_at = stamp
-            row.expires_at = promo_expires_at(of.get("finished_at"), row.finish_days, stamp)
-        reactivated += 1
-        log.info("promo_reactivate re-armed account=%s campaign=%s new_of_id=%s cycle=%s",
-                 account_id, r.id, new_id, int(r.reactivate_count or 0) + 1)
-
-    return {**base, "reactivated": reactivated, "errors": errors,
-            "deferred": max(0, len(due) - 1), "dry_run": False}
+        terms["finish_days"] = int(r.finish_days)
+    # The replaced promo's Claims while Kept: the Zero-claim breaker's "gained" input.
+    old = next((p for p in live if p.get("of_promo_id") == r.of_promo_id), None)
+    same = memo.kept_of_promo_id == r.of_promo_id
+    claims = (int(old["subscriber_count"]) if old is not None and old.get("claims_present")
+              else memo.last_claims if same else None)
+    still = {"auto_reactivate": True, "of_promo_id": r.of_promo_id}
+    if pre:
+        still["preempt"] = True     # the second tick, unticked since the read: no POST
+    # Timed: OF's end on our clock, so the window is re-checked right before the POST.
+    timed_end = (parse_iso(verdict.live.get("finished_at")) + timedelta(seconds=skew)
+                 if isinstance(verdict, Timed) else None)
+    res = await promo_create_guard.reserve(
+        account_id, r.id, source, terms, still,
+        [p["of_promo_id"] for p in live if p.get("of_promo_id") is not None], read_at,
+        replaced_of_promo_id=r.of_promo_id, claims_seen=claims,
+        first_claims=memo.first_claims if same else None,
+        rule_id=job_queue.current_rule_id(), ticked_at=r.keep_ticked_at, timed_end=timed_end)
+    if isinstance(res, Refused):
+        log.info("promo_reactivate create refused account=%s campaign=%s reason=%s",
+                 account_id, r.id, res.reason)
+        return {**done, "skipped": res.reason}
+    sent = await promo_create_guard.send(res, still, lambda: client, terms)
+    outcome = sent.outcome
+    if outcome is None:
+        return {**done, "skipped": "not_sent"}
+    if outcome.error_class == "session_dead":
+        # Keep running stays on: run_once skips the account until the session is back.
+        await account_health.mark_session_dead(account_id, account_health.is_session_dead_error(sent.error))
+    if outcome.state != "created":
+        # unknown: the next reads adopt it or, UNKNOWN_OFF_S on, call it lost.
+        out = {**done, "errors": int(outcome.state == "failed"), "create": outcome.state,
+               "error_class": outcome.error_class}
+        if pre and outcome.error_class != "not_sent":
+            out["warning"] = "no_promo_may_be_live"     # OF may have ended the old one anyway
+            if outcome.state == "failed" and outcome.error_class != "session_dead":
+                recheck = await _recovery(account_id, payload, r.id)
+                if recheck:
+                    out["recheck"] = recheck
+        return out
+    log.info("promo_reactivate re-armed account=%s campaign=%s new_of_id=%s cycle=%s source=%s",
+             account_id, r.id, outcome.item.get("of_promo_id"), int(r.reactivate_count or 0) + 1, source)
+    # The new promo is the live Kept one: its answer seeds the toast gate until the next read.
+    _set_gate(account_id, None if outcome.item.get("is_finished") else outcome.item, r,
+              time.monotonic())
+    return {**done, "reactivated": 1}

@@ -1,0 +1,10 @@
+# Every promo create is a durable Create reservation before it is sent
+
+**Status: proposed** (2026-11-19, `goal_promo_preempt.txt` Phase 01; nothing built yet).
+
+OnlyFans's create has no idempotency key in the body we send (`of_sends.create_promo`, inferred: none observed), and PR #850 records nothing when a create fails and writes the new id only after the POST returns, so a 429, a captcha, an unparsed id or a Relay crash between the POST and the DB write each end in another create on the next Poke. We decided every promo create, `promo_reactivate`'s, the manual `POST /admin/promotions` and the OF mirror's raw `POST /api/of/v2/promotions`, first commits a Create reservation row for its Creator in the Relay's DB, marks it sending just before the POST, then settles the row with its outcome (created with id, failed, or unknown). An open reservation blocks every create on that Creator until it is reconciled against OnlyFans's promo list: adopt a promo only when it is the unique candidate (not in the decision read, made in the window, same terms), never on a guess; a row never sent becomes failed; a sent row with no candidate after 15 min becomes lost and turns Keep running off, because a negative read cannot prove OnlyFans made nothing. The Employee can clear an unresolved row from Create promotion ("It did not go through — create anyway"). Every automatic reservation, whatever its outcome, counts against the Creator's Create budget; manual ones are neither counted nor refused by it. We chose a DB row because it survives a restart, is seen by every Relay on the same DB, and puts the manual path and the automation behind one gate, so neither can race the other. The cost: the Employee's Create promotion can be refused while a reservation is open, and is told why. Going back means a schema change and unwiring both create paths.
+
+## Considered Options
+
+- **In-process lock.** Rejected: lost on restart, private to one process.
+- **Write the new id only, as today.** Rejected: leaves the crash window and the unparsed-id loop open.

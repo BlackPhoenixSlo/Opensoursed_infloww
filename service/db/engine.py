@@ -442,6 +442,17 @@ async def init_db() -> None:
             import logging as _logging
             _log = _logging.getLogger("of-relay.engine")
             inspector = inspect(sync_engine)
+            # One Kept campaign per Creator (uq_promo_keep_one, migration 0126): a legacy
+            # Creator with several keeps its last ticked one, or the index cannot build.
+            if "promo_campaigns" in inspector.get_table_names() and "uq_promo_keep_one" not in {
+                    ix["name"] for ix in inspector.get_indexes("promo_campaigns")}:
+                try:
+                    with sync_engine.begin() as conn:
+                        n = conn.execute(text(PROMO_KEPT_DEDUPE)).rowcount
+                    if n:
+                        _log.warning("promo_keep_dedupe: %s duplicate Kept campaign(s) unticked", n)
+                except Exception:
+                    _log.exception("promo_keep_dedupe failed")
             for table_name, table_obj in Base.metadata.tables.items():
                 if table_name not in inspector.get_table_names():
                     continue
@@ -812,3 +823,12 @@ def compact_vault_list_states_once(sync_engine, batch: int = _VAULT_COMPACT_BATC
                      {"n": _VAULT_LIST_STATES_COMPACT})
     log.info("vault listStates compact: %d row(s) rewritten", changed)
     return changed
+
+
+# A Creator's Kept campaigns but the one ticked (else created) last: unticked with
+# keep_warning 'kept_duplicate' (migration 0126 runs the same statement).
+PROMO_KEPT_DEDUPE = (
+    "UPDATE promo_campaigns SET auto_reactivate = 0, keep_warning = 'kept_duplicate', "
+    "keep_warning_at = CURRENT_TIMESTAMP WHERE auto_reactivate = 1 AND id <> ("
+    "SELECT k.id FROM promo_campaigns k WHERE k.account_id = promo_campaigns.account_id "
+    "AND k.auto_reactivate = 1 ORDER BY COALESCE(k.keep_ticked_at, k.created_at) DESC, k.id DESC LIMIT 1)")

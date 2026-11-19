@@ -160,6 +160,16 @@ poll start, gains go through app_open_warm's one per-exit gate (`note_read`); no
 (measured: HEAD's accounts_admin_api.py with every other change of this fix == the prior golden).
 Golden refresh (2026-11-17, Full AI offer details): Test Chat's turn body gains optional `reply_to_n`
 (full_ai_api.TestTurn, the reply mark); no route row changes; diff = the sha.
+Golden refresh (2026-11-19, promo preempt 09/11): POST /admin/promotions and POST /api/of/v2/promotions
+bodies gain optional `resolve_open` ("create anyway"); the raw create/finish docstrings change; no route
+row changes; diff = the sha.
+Golden refresh (2026-11-19, promo preempt 14/15): POST /admin/promotions' body gains optional `recreate_limit`
+and `expect_taken_from`, PATCH /admin/promotions/{id}'s gains `recreate_limit` (its schema description reworded);
+no route row changes; diff = the sha (measured: sha1 with those three fields removed and the old PatchBody
+description restored == the prior golden).
+Golden refresh (2026-11-19, promo preempt 21): POST /admin/promotions' body gains optional `preempt`; PATCH
+/admin/promotions/{id}'s gains `preempt`, `auto_reactivate` turns optional, its description reworded; no route
+row changes; diff = the sha (HEAD's tree green on the prior golden, measured).
 Golden refresh (2026-11-19, Money rail one read per Creator): adds GET /api/of/v2/users/notifications/money
 (of_notifications_money) right after /users/notifications/count; no existing row moves; diff = that row + the sha.
 

@@ -9,7 +9,7 @@ no loop, no clock: automation_executor reads the facts and calls these.
     clock_due(now, times, tz_offset_minutes, last_job_at) -> bool
     next_due(trig, last_fired, now, run_count=) -> datetime | None  when it next fires
     in_quiet_hours(quiet_hours_json, tz_off_min, now) -> bool
-    plan_rule(trig, busy=, poked=, last_fired=, run_count=, quiet_hours_json=, now=)
+    plan_rule(trig, busy=, poked=, last_fired=, run_count=, quiet_hours_json=, now=, kind=)
         -> Enqueue | Skip | Repoke | Disable | CheckQuiet
     quiet_plan(band, tz_off_min, now) -> Enqueue | Skip
     plan_dispatch(pairs, inflight, last_served, rank, bulk_kinds, per_fan=) -> [Spawn]
@@ -41,6 +41,11 @@ log = logging.getLogger("of-relay.automation.dispatch_plan")
 # A poke fires an interval rule only once its last job is at least min(every_seconds,
 # POKE_FLOOR_S) old (automation_executor.poke_rule has the why).
 POKE_FLOOR_S = 60
+
+# Kinds whose poke under the floor is kept (Repoke) rather than spent: each poke may be the
+# one event that owes a run (a filled promo, a purchase). Others, send_welcome first, spend
+# it, so a busy Creator's toasts do not run them every minute (phase-01-promo-preempt MN14).
+REPOKE_KINDS = frozenset({"promo_reactivate", "purchase_followup"})
 
 
 def _positive_number(v) -> bool:
@@ -138,7 +143,7 @@ def interval_due(every: int | float, last_fired: datetime | None, now: datetime,
     """An interval rule is due once its own last job (`last_fired`, the cadence anchor) is
     `every` seconds old, or never fired. A poke only shortens the wait down to
     min(every, POKE_FLOOR_S); one landing sooner is not due yet, and plan_rule keeps it
-    (Repoke) for the first pass past the floor."""
+    (Repoke) for the first pass past the floor when the kind is in REPOKE_KINDS."""
     if last_fired is None:
         return True
     age = (now - last_fired).total_seconds()
@@ -306,15 +311,17 @@ QuietPlan = Union[Enqueue, Skip]
 
 
 def plan_rule(trig: Trigger, *, busy: Busy | None, poked: bool, last_fired: datetime | None,
-              run_count: int | None, quiet_hours_json: str | None, now: datetime) -> RulePlan:
+              run_count: int | None, quiet_hours_json: str | None, now: datetime,
+              kind: str) -> RulePlan:
     """One rule's step this pass. `busy`: the status of a due pending/running job of its
     (account, kind), or None; `poked`: an event poked the pair; `last_fired`: the rule's own
     last job (the cadence anchor); `run_count`: the pair's runs, required when
     `trig.max_runs` is set (None otherwise). Gate order: busy, run limit, due; then a set
-    band is CheckQuiet, else Enqueue. A poked interval rule that is not due yet (under the
-    floor) is Repoke, so the shell keeps the poke."""
+    band is CheckQuiet, else Enqueue. A poked interval rule of a REPOKE_KINDS `kind` that is
+    not due yet (under the floor), or poked while its job runs, is Repoke, so the shell keeps
+    the poke; other kinds spend it (a run that outlasts the floor would re-run on an old poke)."""
     if busy is not None:
-        return Repoke() if busy == "running" and poked else Skip("busy")
+        return Repoke() if busy == "running" and poked and kind in REPOKE_KINDS else Skip("busy")
     if trig.max_runs is not None:
         if run_count is None:
             raise ValueError("plan_rule: run_count is required when max_runs is set")
@@ -328,8 +335,9 @@ def plan_rule(trig: Trigger, *, busy: Busy | None, poked: bool, last_fired: date
         case _:
             assert_never(trig)
     if not due:
-        # A poke under the floor is deferred, not spent: the event still owes a run.
-        return Repoke() if poked and isinstance(trig, Interval) else Skip("not_due")
+        # A poke under the floor is deferred, not spent, for kinds whose event still owes a run.
+        keep = poked and isinstance(trig, Interval) and kind in REPOKE_KINDS
+        return Repoke() if keep else Skip("not_due")
     if quiet_hours_json:
         return CheckQuiet(quiet_hours_json)
     return Enqueue(no_clock=False)

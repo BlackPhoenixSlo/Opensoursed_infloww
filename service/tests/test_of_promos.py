@@ -9,14 +9,15 @@ safe_int is int(float(v)): "30.0"/"1e3" parse, bool → 0/1, junk/None/NaN → d
 falsy non-None values (0, "", False) win. normalise_of_promo reads camelCase first, snake_case /
 alt spellings after; missing fields → id None, 0 counts, "" message, type "all"; is_live = not
 isFinished AND canClaim is not False (absent canClaim never kills it) AND the claim cap is not
-filled (cap > 0 and claims >= cap; cap 0 = unlimited); finished_at is finishedAt as given; no
-nested `data` unwrap.
+filled (cap > 0 and claims >= cap; cap 0 = unlimited); claims_present says OF gave a count;
+cap_inferred marks a promo ended only by that cap while OF's flags say live; finished_at is
+finishedAt as given; no nested `data` unwrap.
 normalise_of_trial: name from name then trialLinkName, url from url/shareUrl/link, liveness off
 isFinished only. promo_type_store sorts to "all", "expired", "all,expired" and ValueErrors on
 empty/unknown; promo_type_body inverts it (unknown parts dropped, empty/None → "all") and
 store(body(s)) == s for every canonical stored value; a non-canonical one comes back canonical.
-extract_created_promo: list → first dict, {"items":[…]} → first dict, other dict → itself,
-anything else → {}. _rows_from_payload: a list as-is; a dict's
+extract_created_promo: list → first dict, {"items":[…]} → first dict, a dict with id/promoId →
+itself, anything else → {} (an unparsed create is unknown, never the old id). _rows_from_payload: a list as-is; a dict's
 first non-None key in order, list or None; no nested `data`; other junk → None.
 
 BUG (asserted as current behaviour, `# BUG: see PR`): safe_int / coerce_of_id let OverflowError
@@ -152,8 +153,26 @@ def test_promo_defaults():
     assert normalise_of_promo({}) == {
         "of_promo_id": None, "price_cents": 0, "subscribe_counts": 0, "subscribe_days": 0,
         "message": "", "promo_type": "all", "created_at": None, "finished_at": None,
-        "subscriber_count": 0,
-        "can_claim": None, "is_finished": False, "status": "active"}
+        "subscriber_count": 0, "claims_present": False,
+        "can_claim": None, "is_finished": False, "cap_inferred": False, "status": "active"}
+
+
+@table("item,want", [   # want: (claims_present, cap_inferred)
+    ({"claimsCount": 0}, (True, False)),
+    ({"claimsCount": None}, (False, False)),                 # missing is never a 0
+    ({"claimsCount": "x"}, (False, False)),
+    ({"countSubscribers": "4"}, (True, False)),
+    # finished only because Claims >= cap while OF's own flags still say live
+    ({"subscribeCounts": 10, "claimsCount": 10}, (True, True)),
+    ({"subscribeCounts": 10, "claimsCount": 10, "canClaim": True}, (True, True)),
+    ({"subscribeCounts": 10, "claimsCount": 10, "canClaim": False}, (True, False)),   # OF ended it
+    ({"subscribeCounts": 10, "claimsCount": 10, "isFinished": True}, (True, False)),
+    ({"subscribeCounts": 10, "claimsCount": 9}, (True, False)),
+    ({"subscribeCounts": 0, "claimsCount": 99}, (True, False)),
+])
+def test_promo_claims_trust(item, want):
+    p = normalise_of_promo(item)
+    assert (p["claims_present"], p["cap_inferred"]) == want, p
 
 
 @table("item,key,want", [
@@ -272,8 +291,10 @@ def test_promo_type_round_trip(stored, want):
     ([{"id": 1}, {"id": 2}], {"id": 1}),
     ({"items": [{"id": 3}]}, {"id": 3}),
     ({"id": 4}, {"id": 4}),
-    ({"items": []}, {"items": []}),            # wrapper with nothing → the wrapper itself
-    ({"items": [5]}, {"items": [5]}),
+    ({"promoId": 6}, {"promoId": 6}),
+    ({"items": []}, {}),                       # no id anywhere: unknown, never the old id
+    ({"items": [5]}, {}),
+    ({"success": True}, {}),
     ({}, {}),
     ([], {}),
     ([1], {}),

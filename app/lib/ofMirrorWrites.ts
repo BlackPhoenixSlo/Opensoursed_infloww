@@ -13,7 +13,9 @@
  * {description, scheduledDate, isShowTips: true} is read from OF's own JS; the tracking link's
  * {name} is verified live by the relay's create_campaign (OF picks the code). The promotion modal's "Start campaign",
  * the bundle modal's "Save" and the free trial modal's "Create link" send OF's own bodies, read from its bundle (not
- * observed live; ofMirrorOffers keeps their dialogs' state and builds them).
+ * observed live; ofMirrorOffers keeps their dialogs' state and builds them). A Start campaign the relay refuses with 409
+ * create_unresolved (an earlier create OF never answered) asks in OF's ModalConfirm and, confirmed, resends with
+ * `resolve_open`.
  * A profile Save or welcome switch that saved shows OF's settings toast (SAVED_TOAST).
  * Any other control a user changes on any Mirror page, in either scope, sends nothing, shows a small "Read-only"
  * note and (a toggle) flips back, unless it is marked data-oi-wired (its binder owns it). The "Dark mode" switch is left
@@ -554,6 +556,11 @@ export const message = (e: unknown) =>
       : String(e);
 /** OF's own error text (its `error.message`) in a relay error, as OF's toasts show it; null without one. */
 export const ofErrorMessage = (e: unknown): string | null => (e instanceof RelayError ? (parseSendFailure(e.body).reason ?? null) : null);
+/** The relay's 409 `create_unresolved` body → the open create's reservation id, else null. */
+export function unresolvedId(body: unknown): number | null {
+  const d = (body as { detail?: { reason?: unknown; id?: unknown } } | null)?.detail;
+  return d?.reason === "create_unresolved" && typeof d.id === "number" ? d.id : null;
+}
 
 /**
  * Wire the writable controls of the mirrored page at `path` (its full path under of-mirror/pages:
@@ -652,9 +659,17 @@ export function bindWrites(doc: Document, path: string, handlers: WriteHandlers 
     if (typeof body === "string") return note(doc, button, body, true);
     button.disabled = sending = true;
     doc.getElementById("oi-note")?.remove();
-    handlers.submit(submit.send, body).then(
+    const post = (b: object): Promise<void> => handlers.submit(submit.send, b).then(
       () => handlers.navigate(submit.then(doc)),
-      (e) => {
+      async (e) => {
+        // Start campaign met an earlier create OF never answered: the operator says whether it went through.
+        const open = e instanceof RelayError ? unresolvedId(e.body) : null;
+        if (open !== null) {
+          const text = String(((e as RelayError).body as { detail?: { message?: unknown } }).detail?.message ?? "");
+          if (await ofConfirm(doc, { title: "Create anyway?", text, ok: "Create anyway" })) return post({ ...b, resolve_open: open });
+          button.disabled = sending = false;
+          return;
+        }
         button.disabled = sending = false;
         const of = submit.ofToast ? ofErrorMessage(e) : null;
         if (submit.closeOnError) handlers.navigate(submit.then(doc), of ?? `${submit.fail}: ${message(e)}`);
@@ -662,6 +677,7 @@ export function bindWrites(doc: Document, path: string, handlers: WriteHandlers 
         else note(doc, button, `${submit.fail}: ${message(e)}`, true);
       },
     );
+    void post(body);
   };
 
   /** Every native submit (Enter in a field, a submit button's click), on any page: cancelled, so it never reloads the frame; a SUBMITS page's is sent. */

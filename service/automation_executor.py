@@ -123,18 +123,19 @@ from job_queue import (  # noqa: F401 — re-exports
     _automation_employee,
     _by_operator,
     _claim_due_job,
+    _current_job_id,
     _current_rule_id,
     _finalize_run,
     _mark_job,
     _mark_job_failure,
     _open_run,
     _park_failed_job,
-    _rule_is_live,
     cancel_jobs_missed_while_off,
     current_rule_id,
     enabled_rule_id,
     enqueue_followup,
     enqueue_job,
+    rule_is_live,
     rule_last_fired_at,
 )
 
@@ -275,10 +276,10 @@ def wake_supervisor() -> None:
 #
 # FLOOR: a poke fires the rule only once its last job is at least
 # min(every_seconds, dispatch_plan.POKE_FLOOR_S) old, so a stream of events cannot turn a
-# long cadence into a sweep per event. A poke under the floor is deferred, not
-# spent: the plan (dispatch_plan.Repoke) keeps it for the first pass past the
-# floor, so an event right after a run waits at most the floor plus one tick,
-# not a whole cadence. Only an enabled rule's loop re-adds it, so a poke for a
+# long cadence into a sweep per event. For dispatch_plan.REPOKE_KINDS a poke under
+# the floor is deferred, not spent: the plan (dispatch_plan.Repoke) keeps it for the
+# first pass past the floor, so an event right after a run waits at most the floor
+# plus one tick, not a whole cadence. Other kinds (send_welcome) spend it. Only an enabled rule's loop re-adds it, so a poke for a
 # pair with no enabled rule is cleared. (purchase_followup's cadence IS 60 s, so
 # there a poke only saves the wait for the supervisor's next tick.)
 _poked: set[tuple[str, str]] = set()
@@ -613,7 +614,7 @@ async def _materialize_due_rules() -> int:
             acct = rule.account_id
             plan = dispatch_plan.plan_rule(
                 trig, busy=pending, poked=pair in poked, last_fired=last_rule_job_at,
-                run_count=run_count, quiet_hours_json=rule.quiet_hours_json, now=now)
+                run_count=run_count, quiet_hours_json=rule.quiet_hours_json, now=now, kind=pair[1])
             # ── quiet hours (opt-in; default off) ────────────────────────
             # A due rule inside its creator-local quiet band does NOT enqueue this
             # tick — it'll materialize on the first tick after the band ends (it's
@@ -905,7 +906,7 @@ async def run_once(
                 live = None
                 if check is not None:
                     async with get_session() as s:
-                        live = await _rule_is_live(s, check)
+                        live = await rule_is_live(s, check)
                 match claim := run_decide.bind_claim(claimed.payload_json, claimed.rule_id, live):
                     case run_decide.Drop(rule_id=tagged):
                         await _mark_job(job_id, JOB_CANCELLED, RULE_OFF_REASON)
@@ -927,6 +928,7 @@ async def run_once(
         run_id = await _open_run(account_id, kind)
         t0 = time.monotonic()
         rule_token = _current_rule_id.set(rule_id)
+        job_token = _current_job_id.set(job_id)
         write = run_decide.RunWrites()   # of_write_paced keeps it per attempt
         write_token = _RUN_WRITE.set(write)
         once = run_decide.sends_once(kind)
@@ -1004,6 +1006,7 @@ async def run_once(
             OUTBOUND_TEXT_GUARD.reset(guard_token)
             _RUN_WRITE.reset(write_token)
             _current_rule_id.reset(rule_token)
+            _current_job_id.reset(job_token)
 
 
 def _log_parked(job_status: str, account_id: str, kind: str, run_id: int,

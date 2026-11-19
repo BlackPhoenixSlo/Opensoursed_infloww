@@ -48,6 +48,7 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+import os  # noqa: E402
 
 from sqlalchemy import delete, select  # noqa: E402
 
@@ -60,6 +61,9 @@ from db.models import AutomationRule, PromoCampaign, ScheduledJob  # noqa: E402
 IDS = fx.seed_two_agencies()
 AID = IDS["creator_a"]
 UI = fx.login_owner("agency_a_owner")   # a real owner session, like the browser's
+
+# This box creates promos (Host fence): a tick stamps it, so Keep running is not fenced here.
+os.environ["PROMO_CREATE_HOST_ID"] = "test-box"
 
 reg.load_automation_plugins()            # register every kind BEFORE any patching
 from automations import promo_reactivate  # noqa: E402

@@ -182,6 +182,11 @@ services:
       # Inflowwww proxy pool (Add creator › "Inflowwww proxy"): the proxy
       # lines, comma-separated, read at startup. Format: docs/proxies.md.
       INFLOWW_PROXIES: "${INFLOWW_PROXIES:-}"
+      # Keep running's Host fence (ADR-0041): this box's id, UNIQUE per box (never shared by
+      # a failover pair). Ticking Keep running stamps it; only the box whose id matches makes
+      # automatic promo creates. Unset = none here (test, shadow, demo and copied stacks).
+      # After a failover run service/scripts/promo_keep_restamp.py --apply on the new box.
+      PROMO_CREATE_HOST_ID: "${PROMO_CREATE_HOST_ID:-}"
       # Setup › "Try Browserbase login" (service/remote_login.py). Unset = the
       # card's start call fails with "BROWSERBASE_API_KEY is not set".
       BROWSERBASE_API_KEY: "${BROWSERBASE_API_KEY:-}"

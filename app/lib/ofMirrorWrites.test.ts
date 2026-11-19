@@ -368,6 +368,36 @@ describe("bindWrites", () => {
     }
   });
 
+  it("rv_c07 promotion: a 409 create_unresolved asks in OF's ModalConfirm; Create anyway resends with resolve_open, Cancel sends nothing more", async () => {
+    const unresolved = () => new RelayError(409, { detail: { reason: "create_unresolved", id: 7, message: "An earlier create is unconfirmed." } });
+    for (const yes of [true, false]) {
+      const d = loadPage(PROMOTION);
+      d.querySelector(".modal.show form")!.setAttribute("data-oi-offer", JSON.stringify({ audience: "new", kind: "trial", limit: 10, expiration: 7, duration: 7, percent: 5, message: "" }));
+      const submit = vi.fn((_path: string, _body: unknown) => Promise.resolve({ id: 1 }));
+      submit.mockImplementationOnce(() => Promise.reject(unresolved()));
+      const h = { ...handlers(), submit };
+      const unbind = bindWrites(d, PROMOTION, h);
+      const start = footerButton(d, PROMOTION);
+      start.click();
+      await flush();
+      const m = d.getElementById("ModalConfirm")!;
+      expect(m.querySelector(".dialog_message")?.textContent).toBe("An earlier create is unconfirmed.");
+      expect(start.disabled).toBe(true);
+      m.querySelectorAll<HTMLButtonElement>(".modal-footer button")[yes ? 1 : 0].click();
+      await flush();
+      if (yes) {
+        expect(submit).toHaveBeenCalledTimes(2);
+        expect(submit.mock.calls[1][1]).toEqual({ ...(submit.mock.calls[0][1] as object), resolve_open: 7 });
+        expect(h.navigate).toHaveBeenCalledWith("/of-manager/settings/subscription/promotion-campaign");
+      } else {
+        expect(submit).toHaveBeenCalledTimes(1);
+        expect(h.navigate).not.toHaveBeenCalled();
+        expect(start.disabled).toBe(false);
+      }
+      unbind();
+    }
+  });
+
   it("promotion and bundle: a native submit from any form on the page is prevented and calls no handler", () => {
     for (const page of [PROMOTION, BUNDLE]) {
       const d = loadPage(page);

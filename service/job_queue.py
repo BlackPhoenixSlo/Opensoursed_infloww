@@ -198,12 +198,21 @@ def current_rule_id() -> int | None:
     return _current_rule_id.get()
 
 
+# The job the CURRENT run claimed (None: a direct call): a run that owns a slot by job id
+# (promo_reactivate's Re-check slot) frees only its own.
+_current_job_id: ContextVar[int | None] = ContextVar("_current_job_id", default=None)
+
+
+def current_job_id() -> int | None:
+    return _current_job_id.get()
+
+
 # Job status + reason a rule's queued work gets when its rule goes OFF/away.
 JOB_CANCELLED = "cancelled"
 RULE_OFF_REASON = "rule switched off"
 
 
-async def _rule_is_live(s, rule_id: int) -> bool:
+async def rule_is_live(s, rule_id: int) -> bool:
     """True iff the rule still exists AND is switched on."""
     rule = await s.get(AutomationRule, int(rule_id))
     return rule is not None and bool(rule.is_enabled)
@@ -268,7 +277,7 @@ async def enqueue_followup(
         return await enqueue_job(account_id, kind, payload=payload, run_at=run_at,
                                  created_by_employee_id=created_by_employee_id)
     async with get_session() as s:
-        if not await _rule_is_live(s, rid):
+        if not await rule_is_live(s, rid):
             log.info("automation_followup_dropped_rule_off account=%s kind=%s rule=%s",
                      account_id, kind, rid)
             return None
@@ -363,7 +372,7 @@ async def _park_failed_job(s, job_id: int, err: str, *, refused: bool = False) -
     # The orders only differ on a job carrying both, and no producer writes
     # both (webhook_dispatch tags `_rule_id` on a rule-less row).
     rid = job.rule_id or run_decide.payload_rule_id(job.payload_json)
-    live = None if rid is None else await _rule_is_live(s, rid)
+    live = None if rid is None else await rule_is_live(s, rid)
     match decision := run_decide.park(attempts, live, budget, backoff_s):
         case run_decide.Cancelled():
             job.status = JOB_CANCELLED

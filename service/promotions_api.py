@@ -9,38 +9,58 @@ without a live round-trip.
 Routes (owner-gated, under /admin/*):
   GET    /admin/promotions?account_id=    merged mirror ∪ live OF (best-effort)
   POST   /admin/promotions                create on OF + upsert mirror (+ Keep running)
-  PATCH  /admin/promotions/{mirror_id}    Keep running on/off for one campaign
+  PATCH  /admin/promotions/{mirror_id}    Keep running / Re-create at 90% filled on/off (+ Re-create limit)
   DELETE /admin/promotions/{mirror_id}    delete on OF + drop mirror row
 
 Keep running is ONE switch: the campaign's `auto_reactivate` flag plus the
 account's `promo_reactivate` rule, written in one transaction. Ticking ensures
 the rule (enabled, hourly backstop, dry_run false, cooldown 2, no cycle cap);
 unticking the last armed campaign switches it off.
+
+Every create takes the Creator's create reservation (promo_create_guard): while one
+is open, a create reconciles inline (one page-1 read) and else answers 409
+`create_in_flight` or `create_unresolved`; the operator's "create anyway" resends
+with `resolve_open` = that row's id, which clears it.
+
+A tick stamps this box's PROMO_CREATE_HOST_ID (Host fence, ADR-0041). A Free trial
+(discount 100) keeps running only with a Claim cap and a Re-create limit (1-10). A create
+that moves Keep running names the campaign it took it from; `expect_taken_from` (what the
+form showed) refuses with 409 `keep_running_moved` when that changed meanwhile, checked
+again at the sending CAS. Every tick (create or PATCH) goes through `_arm`, under the write
+lock; the database holds one Kept campaign per Creator (uq_promo_keep_one).
+
+The second tick, `preempt` (Re-create at 90% filled, default on), lets Keep running re-create
+the Kept promo before it ends while the server switch PROMO_PREEMPT_ENABLED is on; GET shows
+why it is waiting (`keep_wait`) and `keep_blocked` switch / clock.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 import automation_executor as ax
 import link_metrics
+import notifications_api
 from api_errors import raise_if_free_page_denied
 from auth import assert_account_owned
 from automation_rules_api import ensure_kind_rule
 from db.engine import get_session
-from db.models import PromoCampaign
+from db.models import PromoCampaign, PromoCreateReservation, PromoKeepState
 from isotime import iso_plain
 import of_pacing
+import promo_create_guard
+import runtime_switches
 from of_mirror import delete_mirrored, merge_mirrors
-from of_promos import (extract_created_promo, fetch_of_promos, normalise_of_promo,
-                       promo_expires_at, promo_type_body, promo_type_store)
+from of_promos import fetch_of_promos, promo_type_body, promo_type_store
 from permissions import require_opt_in_kind
+from promo_create_guard import NO_EXPECT, PREEMPT_SWITCH, Reservation
+from promo_keep_decide import create_hold
 
 log = logging.getLogger("of-relay.promotions_api")
 
@@ -74,19 +94,133 @@ def _unarmable(discount: int | None, of_promo_id: int | None) -> str | None:
     return None
 
 
+IN_FLIGHT = ("A promotion create for this Creator is still waiting on OnlyFans — "
+             "give it a minute, then try again.")
+
+
+def _trial_refusal(discount: int | None, cap: int | None, limit: int | None) -> dict | None:
+    """Why a Free trial (discount 100) may not keep running, or None: an unlimited one could
+    hand out free subs without end, so it needs a Claim cap and a Re-create limit."""
+    if int(discount or 0) != 100:
+        return None
+    if not cap:
+        return {"error": "trial_unlimited",
+                "message": "A free trial with unlimited claims can't keep running — set an Offer limit first."}
+    if limit is None:
+        return {"error": "recreate_limit_required",
+                "message": "A free trial needs a Re-create limit (1-10) to keep running."}
+    return None
+
+
+async def _kept_now(s, account_id: str) -> PromoCampaign | None:
+    """The account's Kept campaign (at most one), if any."""
+    return (await s.execute(select(PromoCampaign).where(
+        PromoCampaign.account_id == account_id,
+        PromoCampaign.auto_reactivate.is_(True)).order_by(PromoCampaign.id).limit(1))).scalar_one_or_none()
+
+
+def _moved(now: PromoCampaign | None) -> HTTPException:
+    where = f"is now on “{now.name}”" if now else "is now off"
+    return HTTPException(409, {
+        "reason": "keep_running_moved",
+        "taken_from": {"id": now.id, "name": now.name} if now else None,
+        "message": f"Keep running {where} — check the form and create again."})
+
+
+def _terms_line(t: dict) -> str:
+    cap = int(t.get("subscribe_counts") or 0)
+    return f"{t.get('discount')}% off, {cap or 'unlimited'} claims"
+
+
+async def _moved_now(account_id: str) -> HTTPException:
+    async with get_session() as s:
+        return _moved(await _kept_now(s, account_id))
+
+
+async def reserve_manual(account_id: str, source: str, terms: dict, resolve_open: int | None,
+                         expect_kept: Any = NO_EXPECT) -> Reservation:
+    """The create reservation for an operator's create (Growth or the OF mirror). Never
+    budget-refused, but never beside an open create either: one page-1 read settles a
+    create that landed; one still open answers 409, and one whose send is past the grace
+    can be cleared by the operator (`resolve_open`), so a manual create is never blocked
+    for good. Only a reservation made after that read knows the ids before its send (a
+    first-try one has none, so a read never adopts it). `expect_kept`: the Takeover the
+    form showed (409 keep_running_moved)."""
+    got = await promo_create_guard.reserve(account_id, None, source, terms, {}, None, None,
+                                           expect_kept=expect_kept)
+    if isinstance(got, Reservation):
+        return got
+    if got.reason == "keep_running_moved":
+        raise await _moved_now(account_id)
+    items = await fetch_of_promos(account_id, need_ids=set(), max_pages=1)
+    await promo_create_guard.reconcile(account_id, items)
+    row = await promo_create_guard.open_row(account_id)
+    if row is not None:
+        # A sent row's sender may still be in its POST: its age runs from the send.
+        since = row.sent_at if row.state != "pending" and row.sent_at else row.created_at
+        if (datetime.utcnow() - since).total_seconds() <= promo_create_guard.SETTLE_GRACE_S:
+            raise HTTPException(409, {"reason": "create_in_flight", "message": IN_FLIGHT})
+        if resolve_open != row.id:
+            t = promo_create_guard.reservation_of(row).terms
+            raise HTTPException(409, {
+                "reason": "create_unresolved", "id": row.id, "terms": t,
+                "message": f"An earlier create ({_terms_line(t)}) got no answer from OnlyFans and "
+                           f"isn't on its list. If it did not go through, create anyway."})
+        await promo_create_guard.clear(row)
+    pre = None if items is None else [p["of_promo_id"] for p in items if p.get("of_promo_id") is not None]
+    got = await promo_create_guard.reserve(account_id, None, source, terms, {}, pre, None,
+                                           expect_kept=expect_kept)
+    if isinstance(got, Reservation):
+        return got
+    if got.reason == "keep_running_moved":
+        raise await _moved_now(account_id)
+    raise HTTPException(409, {"reason": "create_in_flight", "message": IN_FLIGHT})
+
+
 @router.get("/admin/promotions")
 async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     of_pacing.note_user(account_id)   # a person on the Promotions page: the hourly prewarm defers the account
+    fetched = await fetch_of_promos(account_id)
+    # Settle open creates against this read first, so a landed one shows as its campaign.
+    await promo_create_guard.reconcile(account_id, fetched)
+    now = datetime.utcnow()
+    budget = await promo_create_guard.budget_state(account_id, now)
+    hold = create_hold(budget.auto_times, budget.not_before, now)
     async with get_session() as s:
         mirrors = (await s.execute(
             select(PromoCampaign).where(PromoCampaign.account_id == account_id)
             .order_by(PromoCampaign.created_at.desc())
         )).scalars().all()
+        # A create sent with no answer yet: Keep running waits on it (card: unknown create).
+        unresolved = set((await s.execute(select(PromoCreateReservation.campaign_id).where(
+            PromoCreateReservation.account_id == account_id,
+            PromoCreateReservation.state.in_(("sending", "unknown"))))).scalars().all())
+        keep = await s.get(PromoKeepState, account_id)
+    wait_reason = keep.wait_reason if keep else None
+    preempt_on = runtime_switches.on(PREEMPT_SWITCH)
 
-    fetched = await fetch_of_promos(account_id)
+    def _waits(m: PromoCampaign) -> bool:
+        """The run's waiting line applies: Kept, ticked early, the server switch on."""
+        return bool(m.auto_reactivate and m.preempt and preempt_on)
+
+    def _blocked(m: PromoCampaign) -> tuple[str | None, datetime | None]:
+        if m.id in unresolved:
+            return "unknown", None
+        if m.auto_reactivate and promo_create_guard.fenced(m.keep_host_id):
+            return promo_create_guard.fenced(m.keep_host_id), None   # fence / retick: never on this box
+        if m.auto_reactivate and promo_create_guard.trial_unlimited(m):
+            return "retick", None    # a Free trial ticked before the Re-create limit existed
+        if m.auto_reactivate and hold:
+            return hold     # back-off or Create budget: no automatic create until then
+        if m.auto_reactivate and m.preempt and not preempt_on:
+            return "switch", None    # the second tick does nothing on this server
+        if _waits(m) and wait_reason == "clock":
+            return "clock", None     # OF's clock too far off ours: Timed waits
+        return None, None
 
     def _from_mirror(m: PromoCampaign, live: dict | None) -> dict:
+        blocked, until = _blocked(m)
         return {
             "id": m.id,
             "of_promo_id": m.of_promo_id,
@@ -107,6 +241,15 @@ async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
             "auto_reactivate": bool(m.auto_reactivate),
             "reactivate_count": int(m.reactivate_count or 0),
             "last_reactivated_at": iso_plain(m.last_reactivated_at),
+            "recreates_left": m.recreates_left,
+            # Why Inflowwww turned Keep running off (until a re-tick), and what holds it now.
+            "keep_warning": m.keep_warning,
+            "keep_blocked": blocked,
+            "keep_blocked_until": iso_plain(until),
+            # The second tick means nothing off a Kept campaign (stored for a later tick).
+            "preempt": bool(m.preempt and m.auto_reactivate),
+            # Why the last run did not re-create the live Kept promo early (None: not waiting).
+            "keep_wait": wait_reason if _waits(m) else None,
             "created_at": iso_plain(m.created_at),
             "source": "mirror",
         }
@@ -128,6 +271,12 @@ async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
             "auto_reactivate": False,
             "reactivate_count": 0,
             "last_reactivated_at": None,
+            "recreates_left": None,
+            "keep_warning": None,
+            "keep_blocked": None,
+            "keep_blocked_until": None,
+            "preempt": False,
+            "keep_wait": None,
             "created_at": p.get("created_at"),
             "source": "onlyfans",
         }
@@ -170,6 +319,15 @@ class _CreateBody(BaseModel):
     # flag: any other armed campaign of the account is unticked. False (the API
     # default) creates it unarmed, as before.
     auto_reactivate: bool = False
+    # A Free trial's Re-create limit (required with auto_reactivate on discount 100).
+    recreate_limit: int | None = Field(None, ge=1, le=10)
+    # Re-create at 90% filled / shortly before it ends; stored only with auto_reactivate.
+    preempt: bool = True
+    # The Kept campaign the form showed it would take Keep running from (None: none).
+    # Sent only by the form; checked only when sent.
+    expect_taken_from: int | None = None
+    # "It did not go through — create anyway": the create_unresolved row's id to clear.
+    resolve_open: int | None = None
 
 
 @router.post("/admin/promotions")
@@ -195,96 +353,157 @@ async def create_promotion(body: _CreateBody = Body(...)) -> dict[str, Any]:
     # needs a real duration or the create 400s.
     if discount >= 100:
         days = max(1, days)
+    # Before OF hears, at reserve and again at the sending CAS: a Takeover the operator did
+    # not see never happens.
+    expect = (body.expect_taken_from if body.auto_reactivate
+              and "expect_taken_from" in body.model_fields_set else NO_EXPECT)
+    if body.auto_reactivate:
+        why = _trial_refusal(discount, counts, body.recreate_limit)
+        if why:
+            raise HTTPException(422, why)
 
-    try:
-        # _make_client inside the try so a missing/expired session surfaces as a
-        # clean 502 (with a reason) rather than an unhandled 500.
-        client = await asyncio.to_thread(ax._make_client, body.account_id)
-        extra = {} if body.finish_days is None else {"finish_days": int(body.finish_days)}
-        res = await asyncio.to_thread(
-            lambda: client.create_promo(
-                discount=discount, subscribe_counts=counts,
-                subscribe_days=days, message=body.message or "",
-                type=promo_type_body(promo_type), **extra),
-        )
-    except Exception as e:
-        log.warning("create_promo OF call failed account=%s", body.account_id, exc_info=True)
-        raise_if_free_page_denied(e, "promotions")
-        raise HTTPException(502, f"OnlyFans promotion create failed (session/API): {repr(e)[:200]}")
-
-    # OF's create returns a LIST holding the created promo — extract_created_promo
-    # handles that (and the wrapped/bare shapes) so of_promo_id is captured; without
-    # it delete/re-arm can't reach OF and a live promo is orphaned.
-    of = normalise_of_promo(extract_created_promo(res))
-    # Store what OF ACTUALLY did, not what was asked for. For a percent discount
-    # OF discards subscribeDays and stores 0 (finishedAt stays null — the offer
-    # runs until the claim cap fills or it's ended). subscribeDays is only
-    # honoured for a 100%-off / free promo. Echoing the operator's number back
-    # made the UI promise an expiry that does not exist.
-    effective_days = of.get("subscribe_days")
-    if effective_days is None:
-        effective_days = days
-    now = datetime.utcnow()
-    of_id = of.get("of_promo_id")
+    # create_promo's kwargs, plus what the mirror row needs when a read adopts it later.
+    terms = {"discount": discount, "subscribe_counts": counts, "subscribe_days": days,
+             "message": body.message or "", "type": promo_type_body(promo_type),
+             **({} if body.finish_days is None else {"finish_days": int(body.finish_days)}),
+             "mirror": {"name": name, "promo_type": promo_type}}
+    res = await reserve_manual(body.account_id, "manual", terms, body.resolve_open, expect)
+    # The client loads inside send, so a missing/expired session is a clean 502, not a 500.
+    sent = await promo_create_guard.send(res, {}, lambda: ax._make_client(body.account_id), terms)
+    if sent.refused == "keep_running_moved":
+        raise await _moved_now(body.account_id)
+    if sent.outcome is None:
+        raise HTTPException(409, {"reason": "create_in_flight", "message": IN_FLIGHT})
+    if sent.error is not None:
+        raise_if_free_page_denied(sent.error, "promotions")
+        maybe = (" — it may still have gone through: it shows here once OnlyFans lists it"
+                 if sent.outcome.state == "unknown" else "")
+        raise HTTPException(502, f"OnlyFans promotion create failed (session/API){maybe}: "
+                                 f"{repr(sent.error)[:200]}")
+    unresolved = {"id": None, "of_promo_id": None, "name": name, "create": "unknown",
+                  "auto_reactivate": False,
+                  "auto_reactivate_refused": "OnlyFans answered without the new promo, so it "
+                                             "shows here once OnlyFans lists it — tick Keep running then"}
+    if sent.outcome.state != "created":
+        # OF answered without the promo's id: the reservation stays open for a read to adopt.
+        return unresolved
+    # settle made the mirror row from what OF ACTUALLY did (OF stores subscribeDays 0
+    # for a percent discount; echoing the typed duration promised an expiry that does
+    # not exist).
     async with get_session() as s:
-        row = PromoCampaign(
-            account_id=body.account_id, of_promo_id=of_id,
-            name=name, discount_percent=discount, price_cents=0,
-            subscribe_counts=counts, subscribe_days=effective_days,
-            message=body.message or "", promo_type=promo_type,
-            status="active", subscriber_count=of.get("subscriber_count") or 0,
-            created_at=now, finish_days=body.finish_days,
-            expires_at=promo_expires_at(of.get("finished_at"), body.finish_days, now),
-        )
-        s.add(row)
-        await s.flush()
-        mirror_id = row.id
+        mirror_id = (await s.get(PromoCreateReservation, res.id)).campaign_id
+        row = None if mirror_id is None else await s.get(PromoCampaign, mirror_id)
+        if row is None:
+            # The row was cleared ("create anyway" in another tab) before this answer: settle
+            # kept OF's id on it but made no mirror row.
+            return {**unresolved, "of_promo_id": (sent.outcome.item or {}).get("of_promo_id")}
+        of_id, effective_days, subs = row.of_promo_id, row.subscribe_days, row.subscriber_count
     log.info("promo_created id=%s account=%s of_id=%s discount=%s%%",
              mirror_id, body.account_id, of_id, discount)
     # The mirror row is committed above on its own: the promo is live on OF, so a
     # failed arm below must never lose the row that tracks it.
-    armed, refused = False, None
+    armed, refused, taken = False, None, None
     if body.auto_reactivate:
         refused = _unarmable(discount, of_id)
         if refused is None:
             try:
-                await _arm(body.account_id, mirror_id)
+                taken = await _arm(body.account_id, mirror_id, body.recreate_limit,
+                                   _ANY if expect is NO_EXPECT else expect, preempt=body.preempt)
                 armed = True
             except HTTPException as e:
-                refused = str(e.detail)
+                refused = e.detail["message"] if isinstance(e.detail, dict) else str(e.detail)
         if refused:
             log.info("promo_created_unarmed id=%s reason=%s", mirror_id, refused)
     out = {"id": mirror_id, "of_promo_id": of_id, "name": name,
            "discount_percent": discount, "price_cents": 0, "subscribe_counts": counts,
            "subscribe_days": effective_days, "message": body.message or "",
            "promo_type": promo_type, "status": "active",
-           "subscriber_count": of.get("subscriber_count") or 0,
-           "auto_reactivate": armed, "reactivate_count": 0,
-           "last_reactivated_at": None, "source": "mirror"}
+           "subscriber_count": subs,
+           "auto_reactivate": armed, "preempt": body.preempt if armed else None,
+           "reactivate_count": 0,
+           "last_reactivated_at": None, "source": "mirror",
+           "keep_running_taken_from": taken}
     if refused:
         out["auto_reactivate_refused"] = refused
     return out
 
 
-async def _arm(account_id: str, mirror_id: int) -> None:
+def _tick(row: PromoCampaign, recreate_limit: int | None, preempt: bool | None) -> None:
+    """Tick Keep running: the operator accepts it again, so Inflowwww's warning goes and
+    the Zero-claim breaker counts only creates from now (keep_ticked_at). Stamps this box
+    as the one that re-creates it (Host fence; unset env stamps "", fenced) and the Free
+    trial's Re-create limit (no limit on other discounts). `preempt` None keeps the second tick."""
+    row.auto_reactivate = True
+    if preempt is not None:
+        row.preempt = preempt
+    row.keep_warning = None
+    row.keep_ticked_at = datetime.utcnow()
+    row.keep_host_id = promo_create_guard.host_id()
+    row.recreates_left = recreate_limit if int(row.discount_percent or 0) == 100 else None
+
+
+_ANY = object()   # _arm: no Takeover expectation to check
+
+
+async def _arm(account_id: str, mirror_id: int, recreate_limit: int | None,
+               expect_taken_from: Any = _ANY, *, refuse_others: bool = False,
+               preempt: bool | None = None) -> dict | None:
     """Move Keep running onto `mirror_id`: untick every other campaign of the account,
-    tick this one, ensure the rule. One transaction."""
-    async with get_session() as s:
-        others = (await s.execute(select(PromoCampaign).where(
-            PromoCampaign.account_id == account_id,
-            PromoCampaign.auto_reactivate.is_(True),
-            PromoCampaign.id != mirror_id))).scalars().all()
-        for o in others:
-            o.auto_reactivate = False
-        row = await s.get(PromoCampaign, mirror_id)
-        row.auto_reactivate = True
-        await _keep_running_rule(s, account_id, on=True)
+    tick this one, ensure the rule, notify the owners of a Takeover. One transaction, which
+    takes the write lock before it reads the Kept set (two ticks never both pass).
+    Returns the campaign it took Keep running from ({id, name}), or None.
+    `expect_taken_from`: the Kept campaign the form showed; another one now → 409.
+    `refuse_others` (the PATCH tick): another Kept campaign → 409, never a Takeover."""
+    try:
+        async with get_session() as s:
+            # A write first: SQLite's write lock, so the read below is the one the tick acts on.
+            await s.execute(update(PromoCampaign).where(PromoCampaign.id == mirror_id)
+                            .values(auto_reactivate=PromoCampaign.auto_reactivate))
+            row = await s.get(PromoCampaign, mirror_id)
+            if row is None:
+                raise HTTPException(404, "promotion not found")
+            others = (await s.execute(select(PromoCampaign).where(
+                PromoCampaign.account_id == account_id,
+                PromoCampaign.auto_reactivate.is_(True),
+                PromoCampaign.id != mirror_id).order_by(PromoCampaign.id))).scalars().all()
+            if refuse_others and others:
+                # OF runs one promo at a time, so a second armed campaign would just take
+                # turns finishing the first — a real promo minted every tick.
+                raise HTTPException(
+                    409, f"“{others[0].name}” is already set to keep running. OnlyFans only runs "
+                         f"one promotion at a time, so turn that one off first.")
+            if expect_taken_from is not _ANY and (others[0].id if others else None) != expect_taken_from:
+                raise _moved(others[0] if others else None)
+            for o in others:
+                o.auto_reactivate = False
+            await s.flush()      # the untick before the tick: one Kept row per Creator (index)
+            _tick(row, recreate_limit, preempt)
+            await _keep_running_rule(s, account_id, on=True)
+            filed: list[str] = []
+            if others:
+                prev = others[0]
+                filed = await notifications_api.file_for_creator_owners(
+                    s, account_id, lambda nick: notifications_api.Notice(
+                        promo_create_guard.NOTICE_KIND,
+                        f"{nick}: Keep running moved from “{prev.name}” to “{row.name}”.",
+                        account_id=account_id, data={"campaign_id": mirror_id, "taken_from": prev.id},
+                        dedupe=f"promo_keep_taken:{mirror_id}"))
+    except IntegrityError:
+        # Another tick won (the one-Kept index): never two Kept campaigns.
+        async with get_session() as s:
+            raise _moved(await _kept_now(s, account_id))
+    await notifications_api.push_unread(filed)
     log.info("promo_keep_running_moved id=%s unarmed=%s", mirror_id, [o.id for o in others])
+    return {"id": others[0].id, "name": others[0].name} if others else None
 
 
 class _PatchBody(BaseModel):
-    """Only the operator-toggleable field: keep this promo permanently on offer."""
-    auto_reactivate: bool
+    """The operator-toggleable fields: keep this promo permanently on offer, a Free
+    trial's Re-create limit (required to tick one), and Re-create at 90% filled. Omitted
+    = unchanged; at least one of the two ticks."""
+    auto_reactivate: bool | None = None
+    recreate_limit: int | None = Field(None, ge=1, le=10)
+    preempt: bool | None = None     # stored only on a campaign Kept or ticked by this request
 
 
 @router.patch("/admin/promotions/{mirror_id}")
@@ -295,6 +514,9 @@ async def update_promotion(mirror_id: int, body: _PatchBody = Body(...)) -> dict
     A second campaign is REFUSED (409), not moved onto: unlike the create form,
     this tick does not make a new promo, so taking the flag from a running one
     is an operator's explicit untick first."""
+    if body.auto_reactivate is None and body.preempt is None:
+        raise HTTPException(422, "send auto_reactivate or preempt")
+    # The tick goes through `_arm` (write lock, the one-Kept index).
     async with get_session() as s:
         row = await s.get(PromoCampaign, mirror_id)
         if row is None:
@@ -302,39 +524,61 @@ async def update_promotion(mirror_id: int, body: _PatchBody = Body(...)) -> dict
         assert_account_owned(row.account_id)
         if body.auto_reactivate and not (1 <= int(row.discount_percent or 0) <= 100):
             raise HTTPException(422, _unarmable(row.discount_percent, row.of_promo_id))
-        if body.auto_reactivate:
-            # OF runs one promo at a time, so a second armed campaign would just
-            # take turns finishing the first — a real promo minted every tick.
-            other = (await s.execute(
-                select(PromoCampaign.name).where(
-                    PromoCampaign.account_id == row.account_id,
-                    PromoCampaign.auto_reactivate.is_(True),
-                    PromoCampaign.id != row.id,
-                ).limit(1)
-            )).scalar_one_or_none()
-            if other is not None:
-                raise HTTPException(
-                    409, f"“{other}” is already set to keep running. OnlyFans only runs one "
-                         f"promotion at a time, so turn that one off first.")
         if body.auto_reactivate and row.of_promo_id is None:
             # The automation fails closed on these (it can't look the promo up to
             # tell finished from live), so arming one would silently do nothing.
             raise HTTPException(422, _unarmable(row.discount_percent, row.of_promo_id))
-        row.auto_reactivate = bool(body.auto_reactivate)
-        if body.auto_reactivate:
-            await _keep_running_rule(s, row.account_id, on=True)
-        else:
-            still = (await s.execute(select(PromoCampaign.id).where(
-                PromoCampaign.account_id == row.account_id,
-                PromoCampaign.auto_reactivate.is_(True),
-                PromoCampaign.id != row.id).limit(1))).scalar_one_or_none()
-            if still is None:
-                await _keep_running_rule(s, row.account_id, on=False)
+        why = body.auto_reactivate and _trial_refusal(row.discount_percent, row.subscribe_counts,
+                                                      body.recreate_limit)
+        if why:
+            raise HTTPException(422, why)
+        account_id = row.account_id
+        if body.auto_reactivate is False:
+            await _untick(s, row)      # an untick never stores the second tick
+        elif body.preempt is not None and body.auto_reactivate is None:
+            # Only on a Kept campaign; the CAS loses to an untick racing it.
+            done = (await s.execute(update(PromoCampaign).where(
+                PromoCampaign.id == mirror_id, PromoCampaign.auto_reactivate.is_(True))
+                .values(preempt=body.preempt))).rowcount
+            if not done:
+                raise HTTPException(422, "tick Keep running first")
+    if body.auto_reactivate:
+        await _arm(account_id, mirror_id, body.recreate_limit, refuse_others=True,
+                   preempt=body.preempt)
+    async with get_session() as s:
+        row = await s.get(PromoCampaign, mirror_id)
         out = {"id": row.id, "auto_reactivate": row.auto_reactivate,
+               "preempt": bool(row.preempt and row.auto_reactivate),
+               "recreates_left": row.recreates_left,
                "reactivate_count": int(row.reactivate_count or 0),
                "last_reactivated_at": iso_plain(row.last_reactivated_at)}
-    log.info("promo_auto_reactivate id=%s -> %s", mirror_id, body.auto_reactivate)
+    log.info("promo_auto_reactivate id=%s -> %s preempt=%s", mirror_id, body.auto_reactivate,
+             body.preempt)
     return out
+
+
+async def _untick(s, row: PromoCampaign) -> None:
+    """Untick Keep running; the last armed campaign takes the rule off with it."""
+    still = (await s.execute(select(PromoCampaign.id).where(
+        PromoCampaign.account_id == row.account_id,
+        PromoCampaign.auto_reactivate.is_(True),
+        PromoCampaign.id != row.id).limit(1))).scalar_one_or_none()
+    row.auto_reactivate = False
+    if still is None:
+        await _keep_running_rule(s, row.account_id, on=False)
+
+
+async def untick_kept_promo(account_id: str, of_promo_id: int) -> None:
+    """The OF mirror's Stop/Delete on the Kept promo: untick it before OF hears, so the
+    tick never re-creates what the operator just ended."""
+    async with get_session() as s:
+        row = (await s.execute(select(PromoCampaign).where(
+            PromoCampaign.account_id == str(account_id),
+            PromoCampaign.of_promo_id == int(of_promo_id),
+            PromoCampaign.auto_reactivate.is_(True)).limit(1))).scalar_one_or_none()
+        if row is not None:
+            await _untick(s, row)
+            log.info("promo_keep_unticked_by_raw_stop id=%s of_id=%s", row.id, of_promo_id)
 
 
 @router.delete("/admin/promotions/{mirror_id}")

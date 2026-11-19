@@ -13,11 +13,16 @@ else. Pinned here against the real materializer and a temp DB:
     while that job is still pending adds nothing and is spent; a poke while it
     RUNS fires once more after it, never during it;
   • the floor: a poke within min(every_seconds, 60 s) of the last fire does
-    not fire yet; it is kept and fires on the first pass past the floor;
+    not fire yet; for promo_reactivate / purchase_followup it is kept and fires on
+    the first pass past the floor, for send_welcome it is spent;
   • no rule, a disabled rule, or quiet hours: a poke enqueues nothing;
   • the hooks: a fresh purchase notification pokes once, its re-sighting and
     a stale one do not; a `subscribed` toast pokes send_welcome and
-    promo_reactivate, a `favorited` one does not; a WS unlock frame pokes purchase_followup.
+    promo_reactivate, a `favorited` one does not; a WS unlock frame pokes purchase_followup;
+  • the toast gate (`promo_reactivate.should_poke`): with a fresh read of the live Kept
+    promo, promo_reactivate is poked only when its Claims plus the toasts since that read
+    reach one short of the trigger (the Fill threshold, else the cap), or its end is near;
+    no read, or one older than 600 s, pokes. send_welcome is always poked.
 
 No network: no OF client is built, nothing runs a job.
 
@@ -30,11 +35,14 @@ import _harness  # MUST be first — binds a throwaway temp DB before any db imp
 _harness.bootstrap()
 
 import json  # noqa: E402
+import time  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
 from sqlalchemy import select, update  # noqa: E402
 
 import automation_executor as ax  # noqa: E402
+import automations.promo_reactivate as pr  # noqa: E402
 import dispatch_plan  # noqa: E402
 import event_transcoder  # noqa: E402
 import ownership  # noqa: E402
@@ -152,34 +160,45 @@ async def case_a_poke_during_a_run_fires_once_after_it_never_during():
 
 
 async def case_a_poke_under_the_floor_is_deferred_to_the_first_pass_past_it():
-    aid = await _rule(WELCOME, every=300)
+    aid = await _rule(PROMO, every=300)
     await ax._materialize_due_rules()
     await _set_status(aid, "done")
     await _age(aid, 10)                        # last fire 10 s ago: under the 60 s floor
-    ax.poke_rule(aid, WELCOME)
+    ax.poke_rule(aid, PROMO)
     for _ in range(2):                         # passes under the floor: no job, poke kept
         await ax._materialize_due_rules()
-        assert len(await _jobs(aid, WELCOME)) == 1, "a poke under the floor fired the rule"
-        assert (aid, WELCOME) in ax._poked, "the floored poke was spent"
+        assert len(await _jobs(aid, PROMO)) == 1, "a poke under the floor fired the rule"
+        assert (aid, PROMO) in ax._poked, "the floored poke was spent"
     await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
     await ax._materialize_due_rules()
-    jobs = await _jobs(aid, WELCOME)
+    jobs = await _jobs(aid, PROMO)
     assert [j.status for j in jobs] == ["done", "pending"], [j.status for j in jobs]
     assert ax._poked == set(), ax._poked       # fired: spent now
     await _set_status(aid, "done")
     await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
     await ax._materialize_due_rules()
-    assert len(await _jobs(aid, WELCOME)) == 2, "the deferred poke fired twice"
-
-
-async def case_a_deferred_poke_is_cleared_when_its_rule_goes_off():
+    assert len(await _jobs(aid, PROMO)) == 2, "the deferred poke fired twice"
+    # send_welcome is not a REPOKE_KINDS kind: its poke under the floor is spent
     aid = await _rule(WELCOME, every=300)
     await ax._materialize_due_rules()
     await _set_status(aid, "done")
     await _age(aid, 10)
     ax.poke_rule(aid, WELCOME)
     await ax._materialize_due_rules()
-    assert (aid, WELCOME) in ax._poked
+    assert (aid, WELCOME) not in ax._poked, "send_welcome kept a poke under the floor"
+    await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
+    await ax._materialize_due_rules()
+    assert len(await _jobs(aid, WELCOME)) == 1, "a spent welcome poke fired later"
+
+
+async def case_a_deferred_poke_is_cleared_when_its_rule_goes_off():
+    aid = await _rule(PROMO, every=300)
+    await ax._materialize_due_rules()
+    await _set_status(aid, "done")
+    await _age(aid, 10)
+    ax.poke_rule(aid, PROMO)
+    await ax._materialize_due_rules()
+    assert (aid, PROMO) in ax._poked
     async with get_session() as s:
         await s.execute(update(AutomationRule).where(AutomationRule.account_id == aid)
                         .values(is_enabled=False))
@@ -258,6 +277,68 @@ async def case_a_subscribed_toast_pokes_the_welcome_and_promo_and_other_toasts_d
         await event_transcoder.transcode({"toasts": {"type": "subscribed"},
                                           "__account_id": "evt_toast2"})
         assert p.seen[-2:] == [("evt_toast2", WELCOME), ("evt_toast2", PROMO)], p.seen
+
+
+def _gate(aid, claims, *, cap=50, preempt=True, age_s=0.0, ends_in_s=None):
+    """The toast gate as if a run just read the live Kept promo."""
+    fin = None if ends_in_s is None else \
+        (datetime.utcnow() + timedelta(seconds=ends_in_s)).isoformat() + "+00:00"
+    pr._set_gate(aid, {"claims_present": True, "subscriber_count": claims,
+                       "subscribe_counts": cap, "finished_at": fin},
+                 SimpleNamespace(preempt=preempt), time.monotonic() - age_s)
+
+
+async def _toast(aid, n=1):
+    await event_transcoder.transcode({"toasts": [{"type": "subscribed"}] * n, "__account_id": aid})
+
+
+async def case_toast_far_from_threshold_no_poke():
+    _gate("gate_far", 2)
+    with _Pokes() as p:
+        for _ in range(5):
+            await _toast("gate_far")
+        assert p.seen == [("gate_far", WELCOME)] * 5, p.seen
+
+
+async def case_toast_near_threshold_pokes():
+    _gate("gate_near", 42)                      # cap 50: threshold 45, poke at 44
+    with _Pokes() as p:
+        await _toast("gate_near")
+        assert ("gate_near", PROMO) not in p.seen, p.seen
+        await _toast("gate_near")
+        assert p.seen[-1] == ("gate_near", PROMO), p.seen
+
+
+async def case_toast_burst_in_one_frame_counts_each():
+    _gate("gate_burst", 41)
+    with _Pokes() as p:
+        await _toast("gate_burst", 3)          # 41 + 3 = 44
+        assert p.seen == [("gate_burst", WELCOME), ("gate_burst", PROMO)], p.seen
+
+
+async def case_toast_no_or_stale_read_pokes():
+    pr._set_gate("gate_none", None, None, time.monotonic())
+    _gate("gate_stale", 2, age_s=601)
+    with _Pokes() as p:
+        await _toast("gate_none")
+        await _toast("gate_stale")
+        assert ("gate_none", PROMO) in p.seen and ("gate_stale", PROMO) in p.seen, p.seen
+
+
+async def case_toast_end_near_pokes():
+    _gate("gate_end", 2, ends_in_s=300)
+    with _Pokes() as p:
+        await _toast("gate_end")
+        assert p.seen[-1] == ("gate_end", PROMO), p.seen
+
+
+async def case_toast_without_preempt_waits_for_the_cap():
+    _gate("gate_cap", 44, preempt=False)        # After-end only: trigger = cap 50, poke at 49
+    with _Pokes() as p:
+        await _toast("gate_cap", 4)
+        assert ("gate_cap", PROMO) not in p.seen, p.seen
+        await _toast("gate_cap")
+        assert p.seen[-1] == ("gate_cap", PROMO), p.seen
 
 
 async def case_a_ws_unlock_frame_pokes_the_followup():

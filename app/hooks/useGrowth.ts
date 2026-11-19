@@ -423,6 +423,22 @@ export interface PromoCampaign {
   /** How many times it has been re-armed so far. */
   reactivate_count: number;
   last_reactivated_at: string | null;
+  /** Why Inflowwww turned Keep running off (service/promo_create_guard.OFF_TEXT's keys), until a re-tick. */
+  keep_warning?: string | null;
+  /** What holds Keep running now: unknown (a create OnlyFans has not shown yet), backoff (after a failed create),
+   *  budget (3 re-creates an hour, 8 a day), fence (this server does not create promos: the owner sets it up) or
+   *  retick (ticked before this server's setup or the Free-trial limit: tick Keep running again), switch (Re-create at
+   *  90% filled is off on this server) or clock (OnlyFans' clock is off from ours: `keep_wait` says so). */
+  keep_blocked?: string | null;
+  /** A Free trial's re-creates left before Keep running turns off (null: no limit). */
+  recreates_left?: number | null;
+  /** When a backoff or budget hold ends (relay UTC, zone-less). */
+  keep_blocked_until?: string | null;
+  /** Re-create at 90% filled: the second tick under Keep running (acts only on a Claim cap of 10 or more). */
+  preempt?: boolean;
+  /** Why the last run did not re-create the live Kept promo early (service/promo_keep_decide wait_reason; null: not
+   *  waiting). */
+  keep_wait?: string | null;
   created_at: string | null;
   source: "mirror" | "onlyfans";
   /** Revenue and its fans, over every OF promo the campaign was re-armed as. */
@@ -467,10 +483,16 @@ export function usePromotions(accountId: string | null) {
   });
 }
 
+/** POST /admin/promotions' answer: the campaign, why Keep running was refused, and the campaign it took Keep running
+ *  from (null: none kept running). */
+export type PromoCreated = PromoCampaign & {
+  auto_reactivate_refused?: string; create?: "unknown"; keep_running_taken_from?: { id: number; name: string } | null;
+};
+
 export function useCreatePromotion(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<
-    PromoCampaign & { auto_reactivate_refused?: string }, Error,
+    PromoCreated, Error,
     {
       name: string; discount: number; subscribe_counts: number;
       subscribe_days: number; message?: string;
@@ -480,10 +502,18 @@ export function useCreatePromotion(accountId: string | null) {
       finish_days?: number;
       /** Keep running: moves the flag onto the new campaign; refused (created unarmed) says why. */
       auto_reactivate?: boolean;
+      /** A Free trial kept running: re-creates allowed (1-10) before Keep running turns off. */
+      recreate_limit?: number;
+      /** Re-create at 90% filled; only with Keep running on. */
+      preempt?: boolean;
+      /** The Kept campaign the dialog showed (null: none); a different one now answers 409 keep_running_moved. */
+      expect_taken_from?: number | null;
+      /** "Create anyway": the 409 create_unresolved row's id, cleared before this create. */
+      resolve_open?: number;
     }
   >({
     mutationFn: (body) =>
-      relay.post<PromoCampaign & { auto_reactivate_refused?: string }>("/admin/promotions", { account_id: accountId, ...body }),
+      relay.post<PromoCreated>("/admin/promotions", { account_id: accountId, ...body }),
     onSuccess: () => invalidatePromos(qc, accountId),
   });
 }
@@ -502,15 +532,16 @@ function invalidatePromos(qc: ReturnType<typeof useQueryClient>, accountId: stri
   return qc.invalidateQueries({ queryKey: [PROMO_KEY, accountId] });
 }
 
-/** Toggle "keep this promo running" for one campaign: the one switch; the relay turns the rule on/off with it. */
+/** Toggle "keep this promo running" for one campaign: the one switch; the relay turns the rule on/off with it. Or
+ *  its second tick, Re-create at 90% filled (`preempt` alone). */
 export function useSetPromoAutoReactivate(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<
-    { id: number; auto_reactivate: boolean }, Error,
-    { id: number; auto_reactivate: boolean }
+    { id: number; auto_reactivate: boolean; preempt: boolean }, Error,
+    /** recreate_limit: a Free trial's tick needs it (1-10). */
+    { id: number; auto_reactivate?: boolean; recreate_limit?: number; preempt?: boolean }
   >({
-    mutationFn: ({ id, auto_reactivate }) =>
-      relay.patch(`/admin/promotions/${id}`, { auto_reactivate }),
+    mutationFn: ({ id, ...body }) => relay.patch(`/admin/promotions/${id}`, body),
     onSuccess: () => invalidatePromos(qc, accountId),
   });
 }

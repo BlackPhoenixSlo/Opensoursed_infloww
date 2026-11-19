@@ -549,10 +549,14 @@ the **Offer expiration** and an optional **Message**, then Create. It is a real
 campaign on OnlyFans. Campaigns are listed under **Campaign insights** with
 their claims and revenue.
 
-To keep an offer alive, leave **Keep running** ticked in Create promotion (it
-is on by default) or tick it on the campaign's row in Campaign insights — that
-one tick is the whole setup. The **Auto-activate campaign** row under the table
-only shows which campaign keeps running and the last check.
+To keep an offer alive, tick **Keep running** in Create promotion (on by
+default for a First-month discount, off for a Free trial) or on the campaign's
+row in Campaign insights — that one tick is the whole setup. A Free trial also
+needs an **Offer limit** and a **Re-create limit** (1-10, default 3). Under Keep
+running sits a second tick, **Re-create at 90% filled** (ticked by default): the
+promo is re-made before it runs out, so the profile never shows a gap. It needs an
+Offer limit of 10 or more; under that it is greyed out. The **Auto-activate campaign** row under the table
+only shows which campaign keeps running, when it re-creates, and the last check.
 See `promo_reactivate` below.
 
 ## Growth → Scripts — the script library
@@ -703,7 +707,7 @@ online right now, use **Message online fans** instead.
    notification (free pages only; see `auto_follow`).
 2. **Growth → Profile promotion** → **Create promotion** with **User type** =
    **Expired subscribers** and a Free trial or First-month discount, with
-   **Keep running** ticked (the default).
+   **Keep running** ticked (a Free trial also asks its **Re-create limit**).
 3. **A message to expired fans:** Messages Pro → **+** → **Message online
    fans**, untick **Only fans online right now**, and set **Expired over** to N
    days. That reaches fans whose subscription ended at least N days ago, sent as
@@ -1600,23 +1604,33 @@ claim cap fills. This checks the campaign you marked "Keep running" and, if
 nothing is on offer any more, re-creates the same campaign with the same terms
 (discount, claim cap, length, audience, message, and offer expiration when
 known) — usually
-within about 2 minutes of it ending.
+within about 2 minutes of it ending. With the second tick, **Re-create at 90%
+filled**, it re-makes the promo while it is still live instead: when 90% of the
+Offer limit has claimed, or about 2 minutes before OnlyFans' own end time, so
+there is no gap.
 
 **Where:** **Growth → Profile promotion**. **Keep running** in Create promotion
-(ticked by default) or on a campaign's row in Campaign insights. The
-**Auto-activate campaign** row under the table is read-only: which campaign
-keeps running and the last check.
+(ticked by default for a discount, unticked for a Free trial) or on a campaign's
+row in Campaign insights. **Re-create at 90% filled** sits under Keep running in
+both places, ticked by default; it is greyed out ("Needs an Offer limit of 10 or
+more") under an Offer limit of 10 or with no limit, and those promos re-create
+after they end. The **Auto-activate campaign** row under the table is read-only:
+which campaign keeps running, "Re-creates at 90% filled or shortly before it
+ends" or "Re-creates after it ends", and the last check.
 
 **How to enable — one tick:** **Keep running** on the campaign. Ticking it turns
 the automation on (re-creates for real, no dry run); unticking the last one
 turns it off. Creating a new campaign with Keep running ticked moves the tick
-onto it from any other campaign.
+onto it from any other campaign: the dialog names that campaign first, refuses
+if Keep running moved meanwhile ("check the form and create again"), and says
+"Took Keep running from …" after; the owner gets a notice too.
 
 **When it checks:** right after a fan claims a promo (the subscribe
 notification), a short re-check when the claim cap is nearly full, a re-check
 about 30 seconds after the offer's expiration (up to 3 more a minute apart if
-OnlyFans still shows it live), and an hourly backstop. It never polls
-OnlyFans faster than that.
+OnlyFans still shows it live), one just before OnlyFans' own end time when Re-create
+at 90% filled can act, one when the wait after a failed early re-create ends, and
+an hourly backstop. It never polls OnlyFans faster than that.
 
 **Key knobs:** none on any page. Cooldown 2 minutes between re-creates of the
 same campaign · no cap on re-arms. Through the raw rule only: dry run (TRUE
@@ -1629,10 +1643,35 @@ cooldown, max re-arms.
 - A campaign with no saved discount, or not linked to an OnlyFans promo, can't
   keep running: the row refuses the tick, and Create promotion creates it
   without Keep running and says why.
-- If any promo is live on the profile — including one made by hand — it stands
-  down and re-creates nothing. A promo whose claim cap is full counts as ended.
+- If any other promo is live on the profile — including one made by hand, or the
+  promo it just replaced if OnlyFans still shows that one live — it stands down
+  and re-creates nothing. A promo whose claim cap is full counts as ended. Only
+  the kept campaign's own live promo is ever re-made early.
+- **"Waiting: will re-create after it ends (…)":** Re-create at 90% filled could
+  not act safely this time, so the promo is re-made after it ends as usual. The
+  reason in brackets says why: the claim count isn't reliable yet, OnlyFans' end
+  time isn't confirmed yet, OnlyFans' clock doesn't match ours, another promo is
+  live too, the last re-create hasn't shown up yet or failed, the last re-create
+  was moments ago, the hourly/daily re-create limit, or one re-create is kept
+  spare in case one fails. Nothing to do; it clears by itself.
+- **An early re-create failed:** the owner gets a notice that no promo may be
+  live. If OnlyFans refused it, Re-create at 90% filled turns off for that
+  campaign (tick it again to retry); Keep running stays on and re-creates after
+  the promo ends. Otherwise it re-creates after a short wait. Only a captcha, a
+  deactivated Creator or a free page turn Keep running itself off.
+- **"Re-create at 90% filled is off on this server — ask the owner":** the owner
+  switched early re-creates off on this server; Keep running still re-creates
+  after the promo ends.
 - If OnlyFans can't be reached, it re-creates nothing and tries again later.
 - At most one re-create per run; deleting the campaign stops it.
+- **Free trials:** Keep running needs an Offer limit (unlimited free trials are
+  refused) and a **Re-create limit** of 1-10. Each re-create uses one; at 0
+  Keep running turns off and the card says to tick it again for a new limit.
+- **"This server is not set to create promos — ask the owner to set it up":**
+  only the one server set up to create promos re-creates (the owner sets
+  `PROMO_CREATE_HOST_ID` there, then ticks again or runs the restamp script).
+  **"Tick Keep running again"**: the campaign was ticked before that setup or
+  before the Free-trial limit existed.
 
 ## kind: gen_info — Generate fan profiles
 

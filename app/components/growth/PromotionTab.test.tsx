@@ -2,7 +2,8 @@
  * Growth's Profile promotion on Infloww's legacy page (page-parity ticket 12): Create promotion in its pop-up with
  * Infloww's/OF's fields (the body OF Manager sends) and Keep running, the Auto-activate status row, Add fans to
  * list, Campaign insights' table with Show expired, Deactivate behind Infloww's confirm, the pager, bundles under it; a promotion's Revenue
- * "from N fans" from the relay's cache. The free trial links tests are in TrialLinksTab.test.tsx.
+ * "from N fans" from the relay's cache; an earlier unanswered create's "create anyway"; a Free trial's Re-create limit
+ * and the Takeover line, and the second tick, Re-create at 90% filled (docs/spec/phase-01-promo-preempt.md). The free trial links tests are in TrialLinksTab.test.tsx.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -15,7 +16,7 @@ vi.mock("@/lib/relay", async (importOriginal) => {
 
 import PromoListRow from "@/components/growth/PromoListRow";
 import PromotionTab from "@/components/growth/PromotionTab";
-import { relay } from "@/lib/relay";
+import { relay, RelayError } from "@/lib/relay";
 
 const get = relay.get as unknown as Mock;
 const post = relay.post as unknown as Mock;
@@ -84,6 +85,7 @@ describe("PromotionTab before its first data", () => {
 describe("PromotionTab", () => {
   it("creates in Infloww's pop-up with its fields and sends OF Manager's body (audience list, offer expiration)", async () => {
     mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
     fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
     const dlg = screen.getByRole("dialog", { name: "Create promotion" });
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Fall" } });
@@ -96,21 +98,116 @@ describe("PromotionTab", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", {
       account_id: "a1", name: "Fall", discount: 30, subscribe_counts: 0, subscribe_days: 14, finish_days: 14,
-      message: "", promo_type: ["all", "expired"], auto_reactivate: true,
+      message: "", promo_type: ["all", "expired"], auto_reactivate: true, expect_taken_from: 1, preempt: false,
     }));
     expect(window.confirm).not.toHaveBeenCalled();
   });
 
-  it("Create's Keep running is ticked by default; unticked it sends auto_reactivate false", async () => {
+  it("a Free trial starts with Keep running off: no limit field, no Takeover line, sends auto_reactivate false", async () => {
     mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
     fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
     const dlg = screen.getByRole("dialog", { name: "Create promotion" });
     const keep = within(dlg).getByRole("checkbox", { name: /Keep running/ }) as HTMLInputElement;
-    expect(keep.checked).toBe(true);
+    expect(keep.checked).toBe(false);
+    expect(within(dlg).queryByRole("combobox", { name: "Re-create limit" })).toBeNull();
+    expect(dlg.querySelector("[data-takeover]")).toBeNull();
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
-    fireEvent.click(keep);
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", expect.objectContaining({ name: "Week", auto_reactivate: false })));
+    expect(post.mock.calls[0][1]).not.toHaveProperty("recreate_limit");
+    expect(post.mock.calls[0][1]).not.toHaveProperty("expect_taken_from");
+    expect(post.mock.calls[0][1]).not.toHaveProperty("preempt");
+    expect(within(dlg).queryByRole("checkbox", { name: /Re-create at 90% filled/ })).toBeNull();
+  });
+
+  it("Re-create at 90% filled: ticked under Keep running on its own 44 px indented row, sent with it", async () => {
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
+    fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    fireEvent.click(within(dlg).getByLabelText("First-month discount"));
+    const tick = within(dlg).getByRole("checkbox", { name: /Re-create at 90% filled/ }) as HTMLInputElement;
+    expect(tick.checked).toBe(true);
+    expect(tick.disabled).toBe(false);
+    const row = tick.closest("label")!;
+    expect(row.className).toContain("min-h-11");
+    expect(row.className).toContain("pl-6");
+    fireEvent.click(tick);
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions",
+      expect.objectContaining({ auto_reactivate: true, preempt: false })));
+  });
+
+  it.each<[string, string]>([["under 10", "5 subscribers"], ["unlimited", "No limits"]])(
+    "Re-create at 90% filled with an Offer limit %s: disabled with a hint that wraps, sends false", async (_name, limit) => {
+      mount(<PromotionTab accountId="a1" />);
+      await screen.findByText("Live week");
+      fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+      const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+      fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+      fireEvent.click(within(dlg).getByLabelText("First-month discount"));
+      choose(within(dlg).getByRole("combobox", { name: "Offer limit" }), limit);
+      const tick = within(dlg).getByRole("checkbox", { name: /Re-create at 90% filled/ }) as HTMLInputElement;
+      expect(tick.disabled).toBe(true);
+      expect(tick.checked).toBe(false);
+      const hint = within(dlg).getByText("Needs an Offer limit of 10 or more");
+      expect(hint.className).toContain("break-words");
+      fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+      await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions",
+        expect.objectContaining({ auto_reactivate: true, preempt: false })));
+    });
+
+  it("a Free trial ticked asks a full-width Re-create limit, names the campaign it takes from, and confirms after", async () => {
+    post.mockResolvedValue({ id: 3, auto_reactivate: true, keep_running_taken_from: { id: 1, name: "Live week" } });
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
+    fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    fireEvent.click(within(dlg).getByRole("checkbox", { name: /Keep running/ }));
+    const limit = within(dlg).getByRole("combobox", { name: "Re-create limit" });
+    expect(limit.className).toContain("w-full");
+    expect(optionsOf(limit)).toEqual(Array.from({ length: 10 }, (_, i) => `${i + 1} re-create${i ? "s" : ""}`));
+    choose(limit, "5 re-creates");
+    const line = dlg.querySelector("[data-takeover]")!;
+    expect(line.textContent).toBe("Keep running moves from “Live week” to this promotion.");
+    expect(line.className).toContain("break-words");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", expect.objectContaining({
+      auto_reactivate: true, recreate_limit: 5, expect_taken_from: 1 })));
+    expect(await screen.findByText("Created. Took Keep running from “Live week”.")).toBeTruthy();
+  });
+
+  it("a Free trial with unlimited claims can't keep running: refused before any create", async () => {
+    mount(<PromotionTab accountId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    fireEvent.click(within(dlg).getByRole("checkbox", { name: /Keep running/ }));
+    choose(within(dlg).getByRole("combobox", { name: "Offer limit" }), "No limits");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    expect((await within(dlg).findByRole("alert")).textContent).toMatch(/unlimited claims can't keep running/);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("Keep running moved meanwhile: the relay's 409 line, the Takeover line follows, the next Create sends it", async () => {
+    const message = "Keep running is now on “Other” — check the form and create again.";
+    post.mockRejectedValueOnce(new RelayError(409, { detail: {
+      reason: "keep_running_moved", taken_from: { id: 9, name: "Other" }, message } }));
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
+    fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    fireEvent.click(within(dlg).getByLabelText("First-month discount"));
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    expect((await within(dlg).findByRole("alert")).textContent).toBe(message);
+    expect(dlg.querySelector("[data-takeover]")!.textContent).toBe("Keep running moves from “Other” to this promotion.");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(post).toHaveBeenLastCalledWith("/admin/promotions", expect.objectContaining({ expect_taken_from: 9 })));
+    expect(post.mock.calls[0][1]).toMatchObject({ expect_taken_from: 1 });
   });
 
   it("a create the relay could not arm still closes, and says why Keep running is off", async () => {
@@ -122,6 +219,35 @@ describe("PromotionTab", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     expect(await screen.findByText("Created, but Keep running is off: this campaign isn't linked to an OnlyFans promo.")).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: "Create promotion" })).toBeNull();
+  });
+
+  it("rv_c14 a create OnlyFans answered without the promo says unconfirmed, never Created", async () => {
+    post.mockResolvedValue({ id: null, of_promo_id: null, name: "Week", create: "unknown", auto_reactivate: false,
+      auto_reactivate_refused: "OnlyFans answered without the new promo, so it shows here once OnlyFans lists it — tick Keep running then" });
+    mount(<PromotionTab accountId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    expect(await screen.findByText("Sent, but OnlyFans hasn't confirmed it. It shows here once OnlyFans lists it; tick Keep running then.")).toBeTruthy();
+    expect(screen.queryByText(/^Created/)).toBeNull();
+  });
+
+  it("an earlier create with no answer: the relay's line, then \"create anyway\" resends clearing it", async () => {
+    const message = "An earlier create (30% off, 5 claims) got no answer from OnlyFans and isn't on its list. " +
+      "If it did not go through, create anyway.";
+    post.mockRejectedValueOnce(new RelayError(409, { detail: { reason: "create_unresolved", id: 7, message, terms: {} } }));
+    mount(<PromotionTab accountId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    expect(within(dlg).queryByRole("button", { name: /create anyway/ })).toBeNull();
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    expect((await within(dlg).findByRole("alert")).textContent).toBe(message);
+    fireEvent.click(within(dlg).getByRole("button", { name: "It did not go through — create anyway" }));
+    await waitFor(() => expect(post).toHaveBeenLastCalledWith("/admin/promotions",
+      expect.objectContaining({ name: "Week", resolve_open: 7 })));
+    expect(post.mock.calls[0][1]).not.toHaveProperty("resolve_open");
   });
 
   it("lists only campaigns on offer until Show expired, in Infloww's table with bundles under it", async () => {
@@ -201,6 +327,59 @@ describe("PromotionTab", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /Keep running/ }));
     await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { auto_reactivate: false }));
     expect(post).not.toHaveBeenCalledWith("/admin/automation-rules", expect.anything());
+  });
+
+  it("a kept row's Re-create at 90% filled PATCHes the second tick alone", async () => {
+    get.mockImplementation((path: string) => path.startsWith("/admin/promotions")
+      ? Promise.resolve({ campaigns: [{ ...CAMPAIGNS[0], preempt: true }], of_available: true }) : Promise.resolve({}));
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
+    const tick = screen.getByRole("checkbox", { name: /Re-create at 90% filled/ }) as HTMLInputElement;
+    expect(tick.checked).toBe(true);
+    expect(tick.closest("label")!.className).toContain("min-h-11");
+    fireEvent.click(tick);
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { preempt: false }));
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["a cap under 10", { subscribe_counts: 9 }],
+    ["no limit", { subscribe_counts: 0 }],
+  ])("a kept row with %s: the second tick is disabled with the hint", async (_name, over) => {
+    get.mockImplementation((path: string) => path.startsWith("/admin/promotions")
+      ? Promise.resolve({ campaigns: [{ ...CAMPAIGNS[0], preempt: true, ...over }], of_available: true }) : Promise.resolve({}));
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
+    const tick = screen.getByRole("checkbox", { name: /Re-create at 90% filled/ }) as HTMLInputElement;
+    expect(tick.disabled).toBe(true);
+    expect(tick.checked).toBe(false);
+    expect(screen.getByText("Needs an Offer limit of 10 or more")).toBeTruthy();
+  });
+
+  it("a row not kept running has no second tick", async () => {
+    get.mockImplementation((path: string) => path.startsWith("/admin/promotions")
+      ? Promise.resolve({ campaigns: [{ ...CAMPAIGNS[0], auto_reactivate: false, preempt: true }], of_available: true })
+      : Promise.resolve({}));
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
+    expect(screen.queryByRole("checkbox", { name: /Re-create at 90% filled/ })).toBeNull();
+  });
+
+  it("ticking a Free trial row asks its Re-create limit first, then PATCHes it; the relay's refusal shows", async () => {
+    const trial = promo({ id: 4, of_promo_id: 504, name: "Trial", discount_percent: 100 });
+    get.mockImplementation((path: string) => path.startsWith("/admin/promotions")
+      ? Promise.resolve({ campaigns: [trial], of_available: true }) : Promise.resolve({}));
+    patch.mockRejectedValueOnce(new RelayError(422, { detail: { error: "trial_unlimited", message: "Set an Offer limit first." } }));
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Trial");
+    fireEvent.click(screen.getByRole("checkbox", { name: /Keep running/ }));
+    expect(patch).not.toHaveBeenCalled();
+    const dlg = screen.getByRole("dialog", { name: "Keep running" });
+    choose(within(dlg).getByRole("combobox", { name: "Re-create limit" }), "2 re-creates");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Keep running" }));
+    expect((await within(dlg).findByRole("alert")).textContent).toBe("Set an Offer limit first.");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Keep running" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Keep running" })).toBeNull());
+    expect(patch).toHaveBeenLastCalledWith("/admin/promotions/4", { auto_reactivate: true, recreate_limit: 2 });
   });
 });
 

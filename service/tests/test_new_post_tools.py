@@ -15,12 +15,15 @@ import _harness  # noqa: F401 — MUST be first (binds temp DB before engine imp
 
 _harness.bootstrap()
 
+import asyncio  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 
 import of_client  # noqa: E402
 import server  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
+from db.engine import get_session  # noqa: E402
+from db.models import Account  # noqa: E402
 
 API = of_client.API_BASE
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "..", "app", "lib", "__fixtures__", "of")
@@ -41,15 +44,27 @@ def _client():
     return c
 
 
+AID = "npt_acct"   # the promo routes' create reservation and Kept-promo untick are per account
+
+
+async def _seed():
+    async with get_session() as s:
+        s.add(Account(id=AID))
+asyncio.run(_seed())
+
+
 def _route(fn, *args, **kwargs):
-    """Call a sync route with `_get_client` returning a recording client; the client's sends."""
+    """Call a route (sync or async) with `_get_client` returning a recording client; the client's sends."""
     c = _client()
-    orig = server._get_client
+    orig, orig_aid = server._get_client, server._current_aid
     server._get_client = lambda: c
+    server._current_aid = lambda: AID
     try:
-        fn(*args, **kwargs)
+        out = fn(*args, **kwargs)
+        if asyncio.iscoroutine(out):
+            asyncio.run(out)
     finally:
-        server._get_client = orig
+        server._get_client, server._current_aid = orig, orig_aid
     return c.sent
 
 
