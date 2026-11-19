@@ -23,7 +23,7 @@ import { add, agendaText, at, cell, count, display, elOf, enable, isObj, loading
 import { amount, drawPair, intoRows, mediaCounts, seriesOf, usersLink, type TopPostItem } from "@/lib/ofMirrorStatsKit";
 import { fullStat } from "@/lib/ofMirrorStatsPostStat";
 import { storyBody, streamBody } from "@/lib/ofMirrorStatsOverview";
-import { usd } from "@/lib/ofMirrorMoney";
+import { DASH, usd } from "@/lib/ofMirrorMoney";
 
 /**
  * Engagement › Messages: one row per mass message (OF's EngagementTopStatisticsRow). Its buttons as OF's: one that can
@@ -294,6 +294,42 @@ function postsPage(doc: Document, data: StatsData, p: Period, x: EngagementCtx) 
   drawPair(doc, doc.querySelector("[data-oi-posts-chart]"), [s.chart, POSTS_TITLE[x.by], isMoney ? "money" : "count"], posts?.chart ? [posts.chart, "Posts", "count"] : null, p.key === "24h" ? "UTC" : p.tz);
 }
 
+/**
+ * The sidebar Summary of Streaming and Stories from the overview read, in OF's Summary rows, once it shows activity
+ * in the period (else the card keeps its empty text, which applyEmpties fills when the period is proven empty).
+ */
+function summaryCard(doc: Document, kind: "streams" | "stories", data: StatsData) {
+  const o = at(kind === "streams" ? data.streams : data.story, kind);
+  const span = [...doc.querySelectorAll<HTMLElement>(".l-wrapper__sidebar .b-useful-data > .empty-message [data-oi-empty]")][0];
+  if (!isObj(o) || !span) return;
+  const total = at(o, "count.total");
+  const none = total == null || o.hasStatistic === false || /^0(\D|$)/.test(String(total));
+  if (none) return;
+  const el = elOf(doc);
+  const row = (label: string, value: string) => {
+    const r = el("div", "b-elements-determinant");
+    const unit = el("div", "b-elements-determinant__unit");
+    unit.append(el("div", "b-elements-determinant__label", ` ${label} `), el("div", "b-elements-determinant__value", ` ${value} `));
+    r.append(unit);
+    return r;
+  };
+  const moneyOf = (v: unknown) => (num(v) === null ? DASH : usd(num(v)!));
+  const item = el("div", "b-statistics-item");
+  item.append(
+    row(kind === "streams" ? "Streams" : "Stories", kind === "streams" ? String(total) : ofCount(total)),
+    row(kind === "streams" ? "Viewers" : "Views", at(o, "views.total") == null ? "—" : ofCount(at(o, "views.total"))),
+    kind === "streams" ? row("Stream earnings", moneyOf(at(o, "earnings.total"))) : row("Tips", moneyOf(at(o, "tips.total"))),
+  );
+  const cols = el("div", "b-statistics-columns m-separate-block");
+  cols.setAttribute("data-oi-summary-card", kind);
+  cols.append(item);
+  const msg = span.closest<HTMLElement>(".empty-message")!;
+  add(doc, cols, msg, "after");
+  display(doc, msg, false);
+  const header = msg.parentElement?.querySelector(":scope > .b-useful-data__header");
+  if (header) setClass(doc, header, "m-without-content", false);
+}
+
 /** Streaming and Stories: tabs, the period's cards, OF's summary and chart while it has some. */
 function listPage(doc: Document, kind: "streams" | "stories", data: StatsData, p: Period, x: EngagementCtx) {
   const by = x.picks[kind];
@@ -301,6 +337,7 @@ function listPage(doc: Document, kind: "streams" | "stories", data: StatsData, p
     for (const b of doc.querySelectorAll(`[data-oi-pick^='${kind}:'][data-oi-enable]`)) enable(doc, b);
     pickTabs(doc, kind, by);
   }
+  summaryCard(doc, kind, data);
   const body = data[kind === "streams" ? "streamsTop" : "storiesTop"] as Partial<PagedBody> | undefined;
   const box = doc.querySelector<HTMLElement>(`[data-oi-list='${kind}']`);
   const empty = doc.querySelector(".b-statistics-page-content__wrapper > .empty-message [data-oi-empty]");

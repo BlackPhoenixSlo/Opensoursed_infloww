@@ -13,7 +13,8 @@
  * - The charts' canvases get their series in OF's colours, axes and tooltip (ofMirrorChart).
  * Shapes: app/lib/__fixtures__/of/statistics-*.json (live bodies, scrubbed; the phase-2 Relay's synthetic, in OF's shapes).
  * No data yet, a field missing or a Relay error: a dash, as the generator draws it; a read still failing after its
- * retries (retryable) also puts OF's info alert over the content, with a Retry for the failed reads.
+ * retries (retryable) also puts OF's info alert over the content, with a Retry for the failed reads, and keeps the
+ * last figures that read gave for this Creator and period (ofMirrorStatsLastGood), the alert saying as of when.
  */
 
 import { useEffect, useMemo, type RefObject } from "react";
@@ -44,6 +45,7 @@ import { applyOverview, overviewRekey } from "@/lib/ofMirrorStatsOverview";
 import { applyEngagement, applyEngagementPosts, applyMassMessages, messagesRekey, postsRekey } from "@/lib/ofMirrorStatsEngagement";
 import { applyCampaignSummary, applyReach, applyVisitors, type ProfileStats } from "@/lib/ofMirrorStatsReach";
 import { applyFans, subsRekey } from "@/lib/ofMirrorStatsFans";
+import { lastGoodKey, shownFor } from "@/lib/ofMirrorStatsLastGood";
 
 export { wallOf } from "@/lib/ofMirrorStatsDom";
 export * from "@/lib/ofMirrorStatsPeriod";
@@ -191,10 +193,17 @@ export interface ApplyCtx {
   img?: (u: string) => string;
   /** Some of the page's reads failed after their retries: asks them again (the notice's Retry). */
   retry?: (() => void) | null;
+  /** The failed reads' parts show their last good answer: when the oldest of those was read (ms), and the time zone to say it in. */
+  asOf?: number | null;
+  tz?: string | null;
 }
 
 /** OF's info alert over the page's content (where OF puts its own: m-after-alerts), its Retry asking the failed reads again. */
-function failedNotice(doc: Document, retry: () => void) {
+/** "Nov 19, 11:42 am", in the Creator's zone. */
+export const asOfText = (at: number, tz: string | null) =>
+  new Date(at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...(tz ? { timeZone: tz } : {}) }).replace(/\s?([AP])M$/, (_m, a: string) => ` ${a.toLowerCase()}m`);
+
+function failedNotice(doc: Document, retry: () => void, asOf?: number | null, tz?: string | null) {
   const content = doc.querySelector(".b-statistics-page-content");
   if (!content) return;
   const el = elOf(doc);
@@ -204,7 +213,7 @@ function failedNotice(doc: Document, retry: () => void) {
   const btn = el("button", "g-btn m-flat m-link m-no-uppercase m-reset-width ml-auto", "Retry");
   btn.setAttribute("type", "button");
   btn.addEventListener("click", retry);
-  text.append(el("span", "", "Some figures couldn't be loaded."), btn);
+  text.append(el("span", "", asOf ? `Some figures couldn't be loaded. Showing the last ones, as of ${asOfText(asOf, tz ?? null)}.` : "Some figures couldn't be loaded."), btn);
   box.append(iconOf(doc, "alert", "m-alert-icon g-icon"), text);
   add(doc, box, content, "before");
 }
@@ -224,7 +233,7 @@ export function applyStats(doc: Document, page: string, data: StatsData, p: Peri
   const series = sub === "statements/earnings" ? statementsSeries(data, type, picks.tips) : null;
   const all: StatsData & { series?: unknown } = { ...data, derived: derive(data), ...(series ? { series } : {}) };
   applyRange(doc, p);
-  if (x.retry) failedNotice(doc, x.retry);
+  if (x.retry) failedNotice(doc, x.retry, x.asOf, x.tz);
   const rekeys: Record<string, (el: Element, key: string) => string> = {
     "statements/earnings": rekeyFor(type, !!series),
     "statements/referrals/earnings": rekeyReferrals(isObj(data.referralsChart)),
@@ -306,7 +315,7 @@ function usePaged(accountId: string | null, route: ((param: PageParam) => string
   const stalled = (!!pages && nothingNew(pages.at(-1), pages)) || (skip && ahead && !!hasNextPage && (pages?.length ?? 0) >= SKIP_PAGES);
   const more = !!hasNextPage && !(skip && reached) && !stalled;
   const body: PagedBody | undefined = list && { list, hasMore: more, loading: isFetching, more: more && !isFetching ? () => void fetchNextPage() : null, stalled };
-  return { body, stamp: `${q.dataUpdatedAt}:${q.status}:${isFetching}:${pages?.length ?? 0}`, error: q.isError, refetch: q.refetch };
+  return { body, stamp: `${q.dataUpdatedAt}:${q.status}:${isFetching}:${pages?.length ?? 0}`, error: q.isError, refetch: q.refetch, at: q.dataUpdatedAt, route: route ? route({ offset: 0 }) : null };
 }
 
 /**
@@ -360,9 +369,8 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   // All time needs the Creator's start before it can ask for anything.
   const ready = (key !== "all" || !!userStart) && known;
   const x: RouteCtx = { picks: pk, v2, v3, sub, tz, top: probeQ.data };
-  const results = useQueries({
-    queries: ALL_SOURCES.map((s) => query(s, FIXED.includes(s) ? fixedRoute(s) : ready ? statsRoute(s, p, x) : null)),
-  });
+  const routes = ALL_SOURCES.map((s) => (FIXED.includes(s) ? fixedRoute(s) : ready ? statsRoute(s, p, x) : null));
+  const results = useQueries({ queries: ALL_SOURCES.map((s, i) => query(s, routes[i])) });
   // The read-ahead cap only where the Relay cannot page OF's way: transactions before phase 2, the payout lists before phase 1.
   const skipAhead: Partial<Record<StatSource, boolean>> = v3
     ? {}
@@ -385,16 +393,29 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     const frame = frameRef.current;
     if (!frame || !sources.length) return;
     const data: StatsData = {};
+    // A read that failed keeps its last good answer for this Creator and period; the notice says as of when.
+    let asOf: number | null = null;
+    const shown = (s: StatSource, route: string | null, r: { data: unknown; failed: boolean; at: number }) => {
+      const got = shownFor(lastGoodKey(accountId, key, route), r);
+      if (got.asOf && sources.includes(s)) asOf = Math.min(asOf ?? Infinity, got.asOf);
+      return got.data;
+    };
     if (accountId) {
-      ALL_SOURCES.forEach((s, i) => (data[s] = results[i].data));
-      PAGED.forEach((s, i) => (data[s] = lists[i].body));
+      ALL_SOURCES.forEach((s, i) => (data[s] = shown(s, routes[i], { data: results[i].data, failed: results[i].isError, at: results[i].dataUpdatedAt })));
+      PAGED.forEach((s, i) => {
+        const l = lists[i];
+        // Remembered without its live paging: the next page is asked again once a read answers.
+        const body = l.body && !l.error ? { ...l.body, loading: false, more: null } : l.body;
+        const got = shown(s, l.route, { data: body, failed: l.error, at: l.at });
+        data[s] = l.body && !l.error ? l.body : got;
+      });
     }
     const apply = () => {
       const doc = frame.contentDocument;
       if (!doc?.body) return;
       bindMenu(doc, p, userStart);
       bindPicks(doc);
-      applyStats(doc, page, data, p, { picks: pk, v2, v3, me, accountId, img: (u) => proxyImage(u, accountId), retry });
+      applyStats(doc, page, data, p, { picks: pk, v2, v3, me, accountId, img: (u) => proxyImage(u, accountId), retry, asOf, tz });
     };
     if (frame.contentDocument?.readyState === "complete") apply();
     frame.addEventListener("load", apply);

@@ -511,6 +511,24 @@ describe("applyEngagement: the phase-2 parts per Engagement page", () => {
     expect(spec(doc, "[data-oi-chart='stories'] canvas.b-chart__double-line__aside")!.series.title).toBe("Stories");
   });
 
+  it.each([
+    ["stories with figures: OF's Summary rows, the placeholder hidden", "stories", { story: { stories: { hasStatistic: true, count: { total: "1204" }, views: { total: "1" }, tips: { total: 0 } } } }, ["Stories 1,204", "Views 1", "Tips $0.00"]],
+    ["a figure the read lacks: a dash", "stories", { story: { stories: { hasStatistic: true, count: { total: 4 } } } }, ["Stories 4", "Views —", "Tips —"]],
+    ["no stories in the period: the card keeps its own text", "stories", { story: { stories: { hasStatistic: true, count: { total: "0" } } } }, null],
+    ["the read did not answer: the placeholder", "stories", {}, null],
+    ["streams with figures", "streaming", { streams: { streams: { hasStatistic: true, count: { total: "1h 5m" }, views: { total: 12 }, earnings: { total: 30.5 } } } }, ["Streams 1h 5m", "Viewers 12", "Stream earnings $30.50"]],
+    ["streams: OF has no statistic", "streaming", { streams: { streams: { hasStatistic: false, count: { total: "0m" } } } }, null],
+  ] as [string, string, StatsData, string[] | null][])("sidebar Summary, %s", (_name, tab, data, want) => {
+    const doc = load(`statistics/engagement/${tab}`);
+    const page = `statistics/engagement/${tab}`;
+    applyStats(doc, page, data, D30, { v2: true });
+    expect(texts(doc, ".l-wrapper__sidebar [data-oi-summary-card] .b-elements-determinant")).toEqual(want ?? []);
+    expect(texts(doc, ".l-wrapper__sidebar .b-useful-data > .empty-message")).toHaveLength(want ? 0 : 1);
+    applyStats(doc, page, {}, D30, { v2: true }); // restored on the next apply
+    expect(doc.querySelector("[data-oi-summary-card]")).toBeNull();
+    expect(texts(doc, ".l-wrapper__sidebar .b-useful-data > .empty-message")).toEqual([NOT_YET]);
+  });
+
   it("Stories without v2: tabs stay disabled, no cards", () => {
     const off = load("statistics/engagement/stories");
     applyEngagement(off, "engagement/stories", {}, D30, ctx({ v2: false }));

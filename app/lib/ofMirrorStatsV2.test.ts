@@ -860,4 +860,9 @@ describe("a read that failed", () => {
     applyStats(doc, page, { ...BASE }, D30, { retry: null });
     expect(doc.querySelector("[data-oi-failed]")).toBeNull();
   });
+  it("the notice says as of when the last figures were read, in the Creator's zone", () => {
+    const doc = load("statistics/reach/profile-visitors");
+    applyStats(doc, "statistics/reach/profile-visitors", { ...BASE }, D30, { retry: () => {}, asOf: Date.parse("2026-11-19T10:42:00Z"), tz: "Europe/Ljubljana" });
+    expect(doc.querySelector("[data-oi-failed] span")!.textContent).toBe("Some figures couldn't be loaded. Showing the last ones, as of Nov 19, 11:42 am.");
+  });
 });
