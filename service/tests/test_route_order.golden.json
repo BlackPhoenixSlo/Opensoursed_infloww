@@ -1,4 +1,4 @@
-{"openapi_sha1": "5d4232f2f3bdb56a112f975d975ecd5331e47c80",
+{"openapi_sha1": "4c64f7f6d3c045df809cbaa33c4b5fb74921b906",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -418,6 +418,7 @@
   ["GET", "/api/of/v2/labels", "of_labels"],
   ["GET", "/api/of/v2/users/notifications", "of_notifications"],
   ["GET", "/api/of/v2/users/notifications/count", "of_notifications_count"],
+  ["GET", "/api/of/v2/users/notifications/money", "of_notifications_money"],
   ["GET", "/api/of/v2/release-forms/mentions", "of_release_form_mentions"],
   ["GET", "/api/of/v2/users/me/settings", "of_my_settings"],
   ["POST", "/api/of/v2/streams", "of_schedule_stream"],

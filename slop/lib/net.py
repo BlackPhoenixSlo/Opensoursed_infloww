@@ -117,9 +117,11 @@ class Meter:
         rid = e["requestId"]
         if rid not in self.reqs:
             self.order.append(rid)
+        # The Creator a scoped call is for (app/lib/relay.ts sends it as X-Account-Id; None when unscoped).
+        account = next((v for k, v in (e["request"].get("headers") or {}).items() if k.lower() == "x-account-id"), None)
         self.reqs[rid] = {"path": path, "method": e["request"]["method"], "kind": _kind(u.path, e.get("type", "")),
                           "start": self._wall(e["timestamp"]), "end": None, "resp": None, "status": None, "bytes": 0,
-                          "cached": False, "failed": None}
+                          "cached": False, "failed": None, "account": account}
 
     def _resp(self, e: dict) -> None:
         r = self.reqs.get(e["requestId"])

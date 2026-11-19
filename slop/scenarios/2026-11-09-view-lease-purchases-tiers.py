@@ -154,7 +154,7 @@ LEGS = [importlib.import_module(f"slop.lib.{m.stem}")
         for m in sorted((Path(__file__).resolve().parents[1] / "lib").glob("view_lease_tiers_*_leg.py"))]
 SELLER_KINDS = ("reply_mass_funnel", "purchase_followup") + tuple(k for g in LEGS for k in getattr(g, "SELLER_KINDS", ()))
 IDLE_RULES = {role: kind for g in LEGS for role, kind in getattr(g, "IDLE_RULES", {}).items()}
-THROUGH = (re.compile(r"/api/of/v2/users/notifications(/count)?"), re.compile(r"/api/of/v2/chats"))
+THROUGH = (re.compile(r"/api/of/v2/users/notifications(/count|/money)?"), re.compile(r"/api/of/v2/chats"))
 PPV_BASE = 7_700_000_000
 # App-open warm leg. Proxies: WARM_PX fake ones (lib/sweep_pacing_proxy.bind) of WARM_PER_PX Creators each, the rest
 # direct. GAP / REUSE: app_open_warm's Knob defaults (APP_OPEN_WARM_GAP_S 1.0, APP_OPEN_WARM_REUSE_S 30), not scaled.

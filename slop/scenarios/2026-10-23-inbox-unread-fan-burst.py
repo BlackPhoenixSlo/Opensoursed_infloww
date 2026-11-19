@@ -32,6 +32,7 @@ import asyncio
 import json
 import math
 import re
+from urllib.parse import parse_qs, urlsplit
 
 from slop.actors import fan_dm, manager, notif_click, ui
 
@@ -199,7 +200,12 @@ async def _quick_reply(ctx, creators: list[dict], fans: dict) -> dict:
         return (await ctx.owner.get("/__slop/fake/calls?sends=1")).json()["of_sends"]
 
     async def feed(r):  # declared bypass: OF's notifications feed empty, the rows are the DMs' own
-        await r.fulfill(json={} if "/count" in r.request.url else {"list": [], "hasMore": False})
+        url = r.request.url
+        if "/money" in url:  # the rail's combined read: each asked money type, empty
+            types = parse_qs(urlsplit(url).query).get("types", [""])[0].split(",")
+            await r.fulfill(json={t: {"list": [], "hasMore": False} for t in types if t})
+            return
+        await r.fulfill(json={} if "/count" in url else {"list": [], "hasMore": False})
 
     async with ui.owner_browser(ctx, send=True) as page:
         await page.route("**/api/of/v2/users/notifications**", feed)

@@ -36,6 +36,11 @@ Covered — the cache half:
   case_a_purchase_busts_the_badge_too (the whole set, not just the feed)
   case_a_purchase_drops_the_cached_pins       (chat_pinned: a pinned PPV's lock)
   case_invalidation_is_account_scoped
+…and the Money rail's combined read (`/users/notifications/money`): the per-type entries, no extra OF call
+  case_money_cold_reads_each_type_once / case_money_both_cached_costs_of_nothing /
+  case_money_one_cached_reads_only_the_other / case_money_reads_only_the_asked_types /
+  case_money_coalesces_with_a_per_type_read_in_flight / case_money_one_failed_type_answers_the_other /
+  case_money_rejects_other_types
 
 Run: ./venv/bin/python service/tests/test_notifications_cache.py   (exit 0 = pass)
 """
@@ -373,6 +378,115 @@ async def case_invalidation_is_account_scoped():
 
     assert await _call(type="tip") != warm_a, "this account's entry survived"
     assert len(_fake.calls) == 3, f"expected a refetch for {_AID}: {_fake.calls}"
+
+
+# ── the Money rail's combined read (/users/notifications/money) ───────
+
+async def _money(types: str = "purchases,tip"):
+    return await server.of_notifications_money(types=types, limit=20, offset=0)
+
+
+async def case_money_cold_reads_each_type_once():
+    _reset()
+    got = await _money()
+    assert sorted(_fake.calls) == [(20, 0, "purchases"), (20, 0, "tip")], _fake.calls
+    # Each the exact body the per-type route answers, out of the same entry.
+    assert got["tip"] == await _call(type="tip") and got["purchases"] == await _call(type="purchases")
+    assert len(_fake.calls) == 2, f"the per-type route missed the combined read's entries: {_fake.calls}"
+
+
+async def case_money_both_cached_costs_of_nothing():
+    _reset()
+    tip, purchases = await _call(type="tip"), await _call(type="purchases")
+    got = await _money()
+    assert len(_fake.calls) == 2, f"a cached list was read again: {_fake.calls}"
+    assert got == {"purchases": purchases, "tip": tip}, got
+
+
+async def case_money_one_cached_reads_only_the_other():
+    _reset()
+    tip = await _call(type="tip")
+    got = await _money()
+    assert _fake.calls == [(20, 0, "tip"), (20, 0, "purchases")], _fake.calls
+    assert got["tip"] == tip
+
+
+async def case_money_reads_only_the_asked_types():
+    _reset()
+    got = await _money("tip")
+    assert _fake.calls == [(20, 0, "tip")] and set(got) == {"tip"}, (_fake.calls, got)
+
+
+async def case_money_coalesces_with_a_per_type_read_in_flight():
+    _reset()
+    # Each case runs on its own loop: drop the single-flight locks an earlier case's contention bound to its loop.
+    relay_cache._locks.clear()
+    relay_cache._registry_lock = asyncio.Lock()
+    slow = threading.Event()
+    real = _fake.notifications
+
+    def _slow(**kw):
+        slow.wait()
+        return real(**kw)
+
+    _fake.notifications = _slow  # type: ignore[assignment]
+    try:
+        task = asyncio.gather(_call(type="tip"), _money())
+        await asyncio.sleep(0.05)
+        slow.set()
+        single, combined = await task
+    finally:
+        _fake.notifications = real  # type: ignore[assignment]
+    assert sorted(_fake.calls) == [(20, 0, "purchases"), (20, 0, "tip")], _fake.calls
+    assert combined["tip"] == single
+
+
+async def case_money_one_failed_type_answers_the_other():
+    _reset()
+    real = _fake.notifications
+
+    def _tip_fails(**kw):
+        if kw.get("type") == "tip":
+            raise server.HTTPException(status_code=429, detail="slow down")
+        return real(**kw)
+
+    _fake.notifications = _tip_fails  # type: ignore[assignment]
+    try:
+        server._proxy = _proxy_passthrough(server._proxy)
+        got = await _money()
+        both_failed = None
+        try:
+            await _money("tip")
+        except server.HTTPException as e:
+            both_failed = e.status_code
+    finally:
+        _fake.notifications = real  # type: ignore[assignment]
+        server._proxy = server._proxy.__wrapped__  # type: ignore[attr-defined]
+    assert "purchases" in got and got["errors"] == {"tip": {"status": 429, "detail": "slow down"}}, got
+    assert both_failed == 429, both_failed
+
+
+def _proxy_passthrough(real):
+    """`_proxy` with an HTTPException the fake raises let through as is (its own mapping is not what's under test)."""
+    def proxy(fn, *a, **kw):
+        try:
+            return real(fn, *a, **kw)
+        except server.HTTPException:
+            raise
+    proxy.__wrapped__ = real  # type: ignore[attr-defined]
+    return proxy
+
+
+async def case_money_rejects_other_types():
+    _reset()
+    for bad in ("", "all", "tip,message"):
+        try:
+            await _money(bad)
+        except server.HTTPException as e:
+            assert e.status_code == 422
+        else:
+            raise AssertionError(f"types={bad!r} was read")
+    assert _fake.calls == []
 
 
 _harness.run()

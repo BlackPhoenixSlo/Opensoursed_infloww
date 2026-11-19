@@ -160,6 +160,8 @@ poll start, gains go through app_open_warm's one per-exit gate (`note_read`); no
 (measured: HEAD's accounts_admin_api.py with every other change of this fix == the prior golden).
 Golden refresh (2026-11-17, Full AI offer details): Test Chat's turn body gains optional `reply_to_n`
 (full_ai_api.TestTurn, the reply mark); no route row changes; diff = the sha.
+Golden refresh (2026-11-19, Money rail one read per Creator): adds GET /api/of/v2/users/notifications/money
+(of_notifications_money) right after /users/notifications/count; no existing row moves; diff = that row + the sha.
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 """

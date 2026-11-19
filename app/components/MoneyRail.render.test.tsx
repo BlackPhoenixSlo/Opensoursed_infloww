@@ -38,6 +38,9 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/relay", () => ({
   relay: { get: (...args: unknown[]) => relayGet(...args) },
+  RelayError: class RelayError extends Error {
+    constructor(public status: number, public body: unknown) { super(`relay ${status}`); }
+  },
   proxyImage: () => "",
 }));
 
@@ -63,6 +66,8 @@ import { MoneyRail, MoneyRailRestoreButton } from "./MoneyRail";
  *  our own SQLite (`/admin/messages/...`) — relay-local, not OF, so it is
  *  never counted as OF load. */
 const OF_NOTIFICATIONS = "/api/of/v2/users/notifications";
+/** The rail's read: one per Creator for the types asked together (lib/moneyLists.ts). */
+const OF_MONEY = "/api/of/v2/users/notifications/money";
 const OF_CHAT_DETAIL = "/api/of/v2/chats/";
 
 /** 2 accounts × {purchases, tip}. */
@@ -70,6 +75,17 @@ const FANOUT = accounts.length * 2;
 
 function callsTo(prefix: string): string[] {
   return relayGet.mock.calls.map((c) => String(c[0])).filter((p) => p.startsWith(prefix));
+}
+
+/** The lists read (one per Creator × type), however they were batched: `aid:type` per list. */
+function listReads(aid?: string): string[] {
+  return relayGet.mock.calls.flatMap((c) => {
+    const [path, ctx] = [String(c[0]), c[1] as { accountId?: string } | undefined];
+    if (!path.startsWith(OF_NOTIFICATIONS) || (aid && ctx?.accountId !== aid)) return [];
+    const q = new URLSearchParams(path.split("?")[1] ?? "");
+    const types = path.startsWith(OF_MONEY) ? (q.get("types") ?? "").split(",") : [q.get("type") ?? ""];
+    return types.map((t) => `${ctx?.accountId}:${t}`);
+  });
 }
 
 function notif(id: number, name: string, amount: string): NotificationItem {
@@ -91,6 +107,10 @@ const ROWS: Record<string, NotificationItem[]> = {
 
 function seedRelay(): void {
   relayGet.mockImplementation((path: string, opts?: { accountId?: string }) => {
+    if (path.startsWith(OF_MONEY)) {
+      const types = (new URLSearchParams(path.split("?")[1] ?? "").get("types") ?? "").split(",");
+      return Promise.resolve(Object.fromEntries(types.map((t) => [t, { list: ROWS[`${opts?.accountId}:${t}`] ?? [] }])));
+    }
     if (path.startsWith(OF_NOTIFICATIONS)) {
       const type = new URLSearchParams(path.split("?")[1] ?? "").get("type") ?? "";
       return Promise.resolve({ list: ROWS[`${opts?.accountId}:${type}`] ?? [] });
@@ -164,7 +184,9 @@ describe("MoneyRail surface gate", () => {
     await flush();
 
     // Calibrates flush() for the hidden-surface case above — see its comment.
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+    expect(listReads()).toHaveLength(FANOUT);
+    // One relay read per Creator carries both its lists.
+    expect(callsTo(OF_MONEY)).toEqual(accounts.map(() => `${OF_MONEY}?types=purchases%2Ctip&limit=20&offset=0`));
     expect(await screen.findByText("Jim")).toBeInTheDocument();
     // The per-fan detail fan-out is derived from those rows, so it only starts
     // once they land.
@@ -181,7 +203,7 @@ describe("MoneyRail surface gate", () => {
 
     // Dock defaults to collapsed, so this is the collapsed path.
     expect(await screen.findByTitle("Expand")).toBeInTheDocument();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+    expect(listReads()).toHaveLength(FANOUT);
     const body = await waitFor(() => {
       const el = container.querySelector<HTMLElement>(".overflow-y-auto");
       expect(el).not.toBeNull();
@@ -200,14 +222,14 @@ describe("MoneyRail surface gate", () => {
     route.pathname = "/messages-pro";
     const { rerender, container } = renderWithProviders(<MoneyRail />);
     expect(await screen.findByText("Jim")).toBeInTheDocument();
-    const fetched = callsTo(OF_NOTIFICATIONS).length;
+    const fetched = listReads().length;
 
     route.pathname = "/group"; // its own saved dock spot, same shared cache
     await act(async () => {
       rerender(<MoneyRail />);
     });
     expect(screen.getByText("Jim")).toBeInTheDocument();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(fetched);
+    expect(listReads()).toHaveLength(fetched);
 
     route.pathname = "/stats"; // an admin page — now it does go away
     await act(async () => {
@@ -228,7 +250,7 @@ describe("MoneyRail surface gate", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    await waitFor(() => expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT));
+    await waitFor(() => expect(listReads()).toHaveLength(FANOUT));
     expect(await screen.findByText("Jim")).toBeInTheDocument();
   });
 });
@@ -286,17 +308,17 @@ describe("MoneyRail OF call budget", () => {
   it("a tab return re-reads OF's lists only once they are stale, then once", async () => {
     renderWithProviders(<MoneyRail />);
     await flush();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+    expect(listReads()).toHaveLength(FANOUT);
 
     // Fresh lists (SSE keeps them live): a quick tab switch costs nothing.
     await hideAndReturn();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+    expect(listReads()).toHaveLength(FANOUT);
 
     // Long enough away that they went stale: exactly one re-read each.
     const later = Date.now() + 5 * 60_000 + 1;
     vi.spyOn(Date, "now").mockReturnValue(later);
     await hideAndReturn();
-    await waitFor(() => expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(2 * FANOUT));
+    await waitFor(() => expect(listReads()).toHaveLength(2 * FANOUT));
   });
 });
 
@@ -306,14 +328,13 @@ describe("MoneyRail lease gate", () => {
     focusManager.setFocused(undefined);
   });
 
-  const listsOf = (aid: string) =>
-    relayGet.mock.calls.filter((c) => String(c[0]).startsWith(OF_NOTIFICATIONS) && (c[1] as { accountId?: string })?.accountId === aid);
+  const listsOf = (aid: string) => listReads(aid);
 
   it("an unleased Creator reads nothing until its creator_warmed, then once, with no focus re-read", async () => {
     release();
     renderWithProviders(<MoneyRail />);
     await flush();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(0);
+    expect(listReads()).toHaveLength(0);
 
     await act(async () => { armRead("1001"); });
     await flush();
@@ -325,7 +346,7 @@ describe("MoneyRail lease gate", () => {
     await act(async () => { focusManager.setFocused(false); });
     await act(async () => { focusManager.setFocused(true); });
     await flush();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(2);
+    expect(listReads()).toHaveLength(2);
   });
 
   it("an unleased Creator whose warm never came reads at the fallback deadline after the load", async () => {
@@ -334,7 +355,7 @@ describe("MoneyRail lease gate", () => {
     renderWithProviders(<MoneyRail />);
     await flush();
     await flush();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+    expect(listReads()).toHaveLength(FANOUT);
   });
 
   it("a lease gain refetches a list older than 30 s, not a fresher one", async () => {
@@ -343,12 +364,12 @@ describe("MoneyRail lease gate", () => {
     armRead("1002");
     renderWithProviders(<MoneyRail />);
     await flush();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+    expect(listReads()).toHaveLength(FANOUT);
 
     const t0 = Date.now();
     const off1 = holdLease("chat", ["1001"]);
     await flush();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+    expect(listReads()).toHaveLength(FANOUT);
 
     vi.spyOn(Date, "now").mockReturnValue(t0 + 31_000);
     const off2 = holdLease("strip", ["1002"]);
@@ -362,7 +383,7 @@ describe("MoneyRail lease gate", () => {
   it("a selection refetches its stale lists even if already leased", async () => {
     renderWithProviders(<MoneyRail />);
     await flush();
-    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+    expect(listReads()).toHaveLength(FANOUT);
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
     const off = holdLease(SELECTED_SOURCE, ["1002"]);
     await flush();
@@ -378,7 +399,7 @@ describe("MoneyRail lease gate", () => {
     try {
       renderWithProviders(<MoneyRail />);
       await flush();
-      expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+      expect(listReads()).toHaveLength(FANOUT);
       expect(listsOf("1003")).toHaveLength(0);
     } finally {
       off();

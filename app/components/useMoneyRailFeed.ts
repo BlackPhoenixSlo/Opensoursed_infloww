@@ -44,7 +44,8 @@ import {
   type CachedNotification,
   type NotifTypeKey,
 } from "@/lib/notifSettings";
-import { MONEY_ROWS_CAP, MONEY_TYPES, isMoney, notifPath, parseList, type MoneyTypeKey } from "@/lib/notifText";
+import { MONEY_ROWS_CAP, MONEY_TYPES, isMoney, type MoneyTypeKey } from "@/lib/notifText";
+import { readMoneyList } from "@/lib/moneyLists";
 import {
   SEEN_KEY,
   SNAPSHOT_MAX_ITEMS,
@@ -374,9 +375,9 @@ export function useMoneyRailFeed({
   const listQueries = useQueries({
     queries: queryDefs.map(({ aid, type }) => ({
       queryKey: ["notif-list", aid, type] as const,
-      // A feed, not a click: background (app/lib/relaySchedule.ts), dropped when the rail unmounts.
-      queryFn: async ({ signal }) =>
-        parseList(await relay.get(notifPath(type), { accountId: aid, priority: "background" }, signal)),
+      // A feed, not a click: background (app/lib/relaySchedule.ts), dropped when the rail unmounts. A Creator's
+      // types asked together share one relay read (lib/moneyLists.ts).
+      queryFn: ({ signal }) => readMoneyList(aid, type, signal),
       enabled: hydrated,
       // OF CALL BUDGET (header): SSE keeps these live; OF is
       // re-read on return to a hidden tab only past LIST_STALE_MS.

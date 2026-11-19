@@ -4020,7 +4020,12 @@ async def of_notifications(
     not per-employee (OF serves this off the session, and nothing on this
     path reads X-Employee-Id), so it satisfies relay_coalesce's rules.
     """
-    aid = _current_aid()
+    return await _notifications_read(_current_aid(), limit, offset, type, related_user, refresh)
+
+
+async def _notifications_read(aid: str, limit: int, offset: int, type: str | None, related_user: int | None,
+                              refresh: bool) -> Any:
+    """`of_notifications`' read for `aid`: its relay_cache entry, coalesce key and `_proxy` (lane, Fansly shim)."""
     # `type or ""` collapses absent and empty to ONE entry, matching
     # of_client.notifications, which forwards `type` only when truthy.
     extras = (limit, offset, type or "") + ((related_user,) if related_user is not None else ())
@@ -4060,6 +4065,39 @@ async def of_notifications_count(
 # The Money Rail's and the bell's money-list read (app/lib/notifText.ts notifPath: NOTIF_PAGE_SIZE, offset 0, MONEY_TYPES).
 _RAIL_PAGE_SIZE = 20
 _RAIL_MONEY_TYPES = ("tip", "purchases")
+
+
+@app.get("/api/of/v2/users/notifications/money")
+async def of_notifications_money(
+    types: str = Query(..., description="Comma-separated money types: 'purchases', 'tip'."),
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+):
+    """The Money rail's lists for one Creator in one call (app/lib/moneyLists.ts): `{type: body}` per asked type,
+    each the exact body `GET /api/of/v2/users/notifications?type=<type>` answers, read through the same relay_cache
+    entry and coalesce key (`_notifications_read`), so a list still cached costs OF nothing and nothing is read
+    that was not asked. A type whose read failed is under `errors` as `{status, detail}` instead while another
+    answered; every type failed → the first failure, as the per-type route would answer it."""
+    asked = list(dict.fromkeys(t for t in types.split(",") if t))
+    if not asked or any(t not in _RAIL_MONEY_TYPES for t in asked):
+        raise HTTPException(status_code=422, detail=f"types: one or more of {', '.join(_RAIL_MONEY_TYPES)}")
+    aid = _current_aid()
+    got = await asyncio.gather(*(_notifications_read(aid, limit, offset, t, None, False) for t in asked),
+                               return_exceptions=True)
+    out: dict[str, Any] = {}
+    errors: dict[str, Any] = {}
+    for t, v in zip(asked, got):
+        if isinstance(v, HTTPException):
+            errors[t] = {"status": v.status_code, "detail": v.detail}
+        elif isinstance(v, BaseException):
+            raise v
+        else:
+            out[t] = v
+    if not out:
+        raise next(v for v in got if isinstance(v, HTTPException))
+    if errors:
+        out["errors"] = errors
+    return out
 
 
 def _warm_fetch(coalesce_key: tuple, aid: str, read: Callable[[OFClient], Any]):

@@ -7,8 +7,28 @@ from slop.lib.slow_connections_metrics import thread_reads
 LOCAL = (re.compile(r"^/admin/messages/\d+/\d+(\?|/attribution|$)"),)
 
 
-def _g(path: str, start: float = 0) -> dict:
-    return {"method": "GET", "path": path, "start": start}
+def _g(path: str, start: float = 0, account: str | None = None) -> dict:
+    return {"method": "GET", "path": path, "start": start, "account": account}
+
+
+def test_one_route_per_creator_is_not_a_dupe():
+    """Two Creators' reads of one route (the thread's Creator, another the warm reached) are each one read."""
+    r = thread_reads([_g("/api/of/v2/users/notifications?type=tip", account="1"),
+                      _g("/api/of/v2/users/notifications?type=tip", account="2")], 100, LOCAL)
+    assert r["dupes"] == {}
+
+
+def test_one_creator_reading_a_route_twice_is_a_dupe_whatever_the_query():
+    r = thread_reads([_g("/api/of/v2/users/notifications?type=purchases", account="1"),
+                      _g("/api/of/v2/users/notifications?type=tip", account="1"),
+                      _g("/api/of/v2/users/notifications?type=tip", account="2")], 100, LOCAL)
+    assert r["dupes"] == {"1 /api/of/v2/users/notifications": 2}
+
+
+def test_attribution_twice_for_one_creator_still_a_dupe():
+    r = thread_reads([_g("/admin/messages/1/7/attribution", account="1"),
+                      _g("/admin/messages/1/7/attribution?since_id=9", account="1")], 100, LOCAL)
+    assert r["dupes"] == {"1 /admin/messages/1/7/attribution": 2}
 
 
 def test_fill_page_is_not_a_dupe_nor_local():

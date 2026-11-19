@@ -31,7 +31,9 @@ def _before_id(path: str) -> str | None:
 
 
 def thread_reads(reqs: list[dict], wave_gap_ms: float, thread_local) -> dict:
-    """The thread open's reads: routes GET more than once (/img aside; an older page, `before_id`, is its own read per
+    """The thread open's reads: routes GET more than once for one Creator (/img aside; the query aside, so a bare read
+    and its `since_id` follow-up are one route; per X-Account-Id, so another Creator's read landing in the window, e.g.
+    the App-open warm reaching it, is not the thread's; an older page, `before_id`, is its own read per
     cursor: a short thread fills older pages at once, app/components/chat/threadPin.ts MAX_FILL_PAGES), the bundle
     calls, the open's local reads per route (older pages aside: the bundle carries the head), the older pages OF
     was asked for (distinct cursors), and waves (start clusters)."""
@@ -40,6 +42,8 @@ def thread_reads(reqs: list[dict], wave_gap_ms: float, thread_local) -> dict:
     for q in gets:
         base, cur = q["path"].split("?", 1)[0], _before_id(q["path"])
         key = base if cur is None else f"{base}?before_id={cur}"
+        if q.get("account"):
+            key = f"{q['account']} {key}"
         by[key] = by.get(key, 0) + 1
     starts = sorted(q["start"] for q in reqs if q.get("start") is not None)
     waves = sum(1 for i, t in enumerate(starts) if i == 0 or t - starts[i - 1] > wave_gap_ms)
@@ -69,4 +73,4 @@ def reqs(meter: Meter) -> list[dict]:
              "bytes": q["bytes"], "start": q["start"],
              "ms": None if q["end"] is None else q["end"] - q["start"],
              "ttfb": None if q["resp"] is None else q["resp"] - q["start"],
-             "cached": q["cached"], "failed": q["failed"]} for q in meter.window()]
+             "cached": q["cached"], "failed": q["failed"], "account": q.get("account")} for q in meter.window()]

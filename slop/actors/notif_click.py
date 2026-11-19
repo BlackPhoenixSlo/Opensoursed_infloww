@@ -236,9 +236,13 @@ def _feed(account_id: str, fan: dict, text: str):
         if "/count" in r.request.url:
             await r.fulfill(json={})
             return
+        q = parse_qs(urlsplit(r.request.url).query)
+        if "/money" in r.request.url:  # the rail's combined read: each asked money type, empty
+            await r.fulfill(json={t: {"list": [], "hasMore": False} for t in q.get("types", [""])[0].split(",") if t})
+            return
         # As OF: a row is listed for its own type only (the money rail's type=tip and type=purchases
         # lists never carry a message; one would show twice there, under one key).
-        typ = parse_qs(urlsplit(r.request.url).query).get("type", ["message"])[0]
+        typ = q.get("type", ["message"])[0]
         if r.request.headers.get("x-account-id") != account_id or typ != "message":
             await r.fulfill(json={"list": [], "hasMore": False})
             return
