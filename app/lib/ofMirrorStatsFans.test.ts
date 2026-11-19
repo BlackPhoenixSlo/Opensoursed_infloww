@@ -96,7 +96,7 @@ describe("applyFans › Subscriptions", () => {
     const doc = load("statistics/fans/subscriptions");
     applyFans(doc, "fans/subscriptions", data(), D30, ctx({ picks: picks({ subs: "renew" }) }));
     expect(tabs(doc)).toEqual([["All", false, false], ["Renews", false, true], ["New subscribers", false, false]]);
-    expect(level(doc)).toEqual(["-20%"]);
+    expect(level(doc)).toEqual(["20%"]); // OF's ChartSummary: unsigned, the icon (m-level-down) the direction
     expect(doc.querySelector(".b-statistics-page-content__wrapper .b-statistics-level")!.classList.contains("m-level-down")).toBe(true);
     expect(texts(doc, "[data-oi-table='subs'] thead th")).toEqual(["Name", "Price", "Price/ Renew date"]);
     expect(rows(doc, "[data-oi-table='subs']")).toEqual([

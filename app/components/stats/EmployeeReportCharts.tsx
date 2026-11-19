@@ -89,12 +89,21 @@ export function useEmployeeCharts(from: string | null, to: string | null, bucket
     if (series.isError) void series.refetch();
     if (stats.isError) void stats.refetch();
   };
+  // A new range, bucket or chatter filter reads anew: the last answer (placeholder data) is another window's bars,
+  // so the charts show "Loading…" until it lands rather than the old points under the new labels.
   return {
-    data: series.data ?? null, error: series.isError || stats.isError, bucket, rows, rowsPending: stats.isPending, onRetry,
+    data: series.isPlaceholderData ? null : series.data ?? null, error: series.isError || stats.isError, bucket, rows,
+    rowsPending: stats.isPending, onRetry,
   };
 }
 
 const LOADING = "Loading…";
+const COMPARE_H = 210;
+/** Employee comparison's plot area inside its chart box (`plotFrame`; its right inset does not depend on the width). */
+const COMPARE_PLOT = (() => {
+  const f = plotFrame(0, COMPARE_H);
+  return { left: f.L, right: -f.R, top: f.T, bottom: COMPARE_H - f.B };
+})();
 const labelsOf = (data: ChattingSeriesResp | null, bucket: Gran) =>
   (data?.series ?? []).map((p) => bucketLabel(p.start, bucket));
 
@@ -134,10 +143,12 @@ export function EmployeeOverviewCharts({ data, error, bucket, rows, rowsPending,
               </span>
             ))}
           </div>
-          <LineChart height={210} labels={labels} message={LOADING} valueFmt={fmtCents} lines={compared}
+          <LineChart height={COMPARE_H} labels={labels} message={LOADING} valueFmt={fmtCents} lines={compared}
             empty={(
-              <p className="absolute inset-0 flex items-center justify-center text-sm text-fg-dim">
-                Select up to three employees to compare
+              // Over the plot area only, not the y-axis ticks (a phone's narrow plot wrapped it onto "$2").
+              <p style={COMPARE_PLOT}
+                className="absolute flex items-center justify-center px-2 text-center text-sm text-fg-dim">
+                <span className="bg-bg px-1">Select up to three employees to compare</span>
               </p>
             )} />
         </Section>

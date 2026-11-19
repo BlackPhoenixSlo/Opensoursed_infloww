@@ -1191,6 +1191,13 @@ describe("earnings: claimers x the ledger", () => {
     expect(table.parentElement?.classList.contains("overflow-x-auto")).toBe(true);
   });
 
+  it("casts a shadow left of the fixed Actions column, head and cells, so what scrolls under it reads as more", async () => {
+    await mountWithEarnings();
+    const table = screen.getByRole("table", { name: "Links list" });
+    const actions = [within(table).getByRole("columnheader", { name: "Actions" }), cell("Link one", "Actions")];
+    for (const el of actions) expect(el.className).toMatch(/(^| )after:shadow-\[/);
+  });
+
   it("switches every money cell to gross with Show net earnings off, and the Dashboard follows the same switch", async () => {
     await mountWithEarnings();
     fireEvent.click(screen.getByRole("switch", { name: "Show net earnings" }));

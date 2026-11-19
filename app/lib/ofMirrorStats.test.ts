@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { applyStats, bindMenu, bindPicks, currentPeriodKey, currentPicks, customKey, nextOffset, pagedRoute, resetPicks, setPick, derive, isPeriodKey, periodMenu, periodOf, setPeriod, startOf, statsRoute, statsSources, utcOffset, type StatsData } from "./ofMirrorStats";
+import { applyStats, bindMenu, bindPicks, currentPeriodKey, currentPicks, customKey, nextOffset, nothingNew, pagedRoute, rowId, uniqueRows, resetPicks, setPick, derive, isPeriodKey, periodMenu, periodOf, setPeriod, startOf, statsRoute, statsSources, utcOffset, type StatsData } from "./ofMirrorStats";
 import { chartSpecOf, viewDuration } from "./ofMirrorChart";
 import { parseDay } from "./ofMirrorDatepicker";
 import { standInModel } from "./ofMirrorProfile";
@@ -137,7 +137,8 @@ describe("the generator's Statistics pages", () => {
   it("no captured figure, fan, example text or level mark shows; the period button is OF's, wired", { timeout: 30_000 }, () => {
     for (const p of ["overview/earnings", "overview/top-highlights", "overview/streaks", "engagement/messages", "engagement/posts", "fans/subscriptions", "fans/top-fans", "reach/profile-visitors", "reach/promotions", "statements/earnings", "statements/disputes"]) {
       const doc = load(`statistics/${p}`);
-      const main = [...doc.querySelectorAll("main")].map((m) => [...m.querySelectorAll("*")].filter(visible)).flat();
+      // A <style>'s text is no figure (the streak tabs' CSS).
+      const main = [...doc.querySelectorAll("main")].map((m) => [...m.querySelectorAll("*")].filter((e) => visible(e) && e.tagName !== "STYLE")).flat();
       const text = main.map((e) => [...e.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(" ")).join(" ");
       expect(text.replace("Minimum withdrawal amount is $20", ""), p).not.toMatch(/\$\d|Fan \d|@fan|Lorem|\d+(\.\d+)?%|TOP \d|\b\d+ \/ \d+\b/);
       expect(doc.querySelectorAll(".b-statistics-level").length, p).toBe(0);
@@ -497,6 +498,19 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     expect(nextOffset(page(50), [page(50)])).toBe(50); // no hasMore (payout requests): a full page may have more
     expect(nextOffset(page(12), [page(12)])).toBeUndefined();
     expect(nextOffset(page(50, 0, true), [page(50, 0, true), page(50, 0, true)])).toBeUndefined(); // OF ignored the offset
+  });
+
+  it("rows once: by id, invoice or (a dispute, id 0) payment; 0 or empty is no identity, such rows are all kept", () => {
+    const disputes = [1, 2, 3].map((n) => ({ id: 0, createdAt: `2026-10-0${n}T10:00:00+00:00`, payment: { id: `p${n}`, amount: n } }));
+    expect(uniqueRows([{ list: disputes }])).toHaveLength(3);
+    expect(uniqueRows([{ list: disputes }, { list: disputes }])).toHaveLength(3); // a page read twice
+    expect(uniqueRows([{ list: [{ id: 0 }, { id: 0 }, { id: "" }, { invoiceId: "" }, {}] }])).toHaveLength(5);
+    expect(uniqueRows([{ list: [{ id: 7 }, { invoiceId: "a" }] }, { list: [{ id: 7 }, { invoiceId: "a" }, { invoiceId: "b" }] }])).toEqual([{ id: 7 }, { invoiceId: "a" }, { invoiceId: "b" }]);
+    expect([{ id: 5 }, { id: "x" }, { id: 0, invoiceId: 9 }, { id: 0, payment: { id: "h" } }, { id: 0, payment: null }, { id: "0" }].map(rowId)).toEqual(["5", "x", "9", "h", undefined, undefined]);
+    // A next page of distinct id-0 disputes is new; the same page again is not.
+    const pg = (from: number) => ({ list: Array.from({ length: 10 }, (_, i) => ({ id: 0, payment: { id: `p${from + i}` } })), hasMore: true });
+    expect(nothingNew(pg(10), [pg(0), pg(10)])).toBe(false);
+    expect(nothingNew(pg(0), [pg(0), pg(0)])).toBe(true);
   });
 });
 

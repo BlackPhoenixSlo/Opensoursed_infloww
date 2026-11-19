@@ -72,6 +72,9 @@ describe("FanReport", () => {
     const reads = renderPage();
     await waitFor(() => expect(reads().length).toBeGreaterThan(0));
     expect(reads().every((p) => p.includes("account_id="))).toBe(true);
+    // The column's head read "All creators" over a report scoped to its first Creator.
+    const column = within(screen.getByRole("complementary", { name: "Creators" }));
+    expect(column.queryByText("All creators")).toBeNull();
     fireEvent.click(screen.getByRole("combobox", { name: "Creator" }));
     expect(screen.getAllByRole("option")).toHaveLength(2);
     expect(screen.queryByRole("option", { name: /All creators/ })).toBeNull();

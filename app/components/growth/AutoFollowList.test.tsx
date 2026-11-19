@@ -88,6 +88,19 @@ describe("AutoFollowList", () => {
     expect(screen.getByText("Automatically follow fans whose subscriptions have expired")).toBeTruthy();
   });
 
+  it("keeps every column on a phone: the table scrolls sideways under the shadowed, pinned switch", async () => {
+    mount();
+    await waitFor(() => expect(screen.getByText("42")).toBeTruthy());
+    for (const h of ["Yesterday", "7 days", "30 days", "Last followed"]) {
+      expect(screen.getByRole("columnheader", { name: h }).className, h).not.toMatch(/(^| )hidden( |$)/);
+    }
+    const row = screen.getByTestId("af-row-a1");
+    expect([...row.querySelectorAll("td")].some((td) => /(^| )hidden( |$)/.test(td.className))).toBe(false);
+    expect(screen.getByRole("table").parentElement?.classList.contains("overflow-x-auto")).toBe(true);
+    const pinned = [screen.getByRole("columnheader", { name: "Action" }), row.querySelector("td:last-child")!];
+    for (const el of pinned) expect(el.className).toMatch(/sticky.*after:shadow-\[|after:shadow-\[.*sticky/);
+  });
+
   it("formats the follow time as MMMM DD, YYYY hh:mm A", () => {
     expect(formatFollowedAt(null)).toBe("-");
     expect(formatFollowedAt("2026-10-18T09:05:00")).toMatch(/^[A-Z][a-z]+ \d\d, \d{4} \d\d:\d\d (AM|PM)$/);

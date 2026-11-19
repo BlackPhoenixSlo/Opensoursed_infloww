@@ -21,7 +21,9 @@ export const OF_INSIGHTS_PX = 280;
  *  them at 368px and 999px), so they run to the frame's edge as in Infloww's window rather than leaving the nav's gap,
  *  and no #content edge line where the nav ended. With the Fan insights column over the frame's right 280px, the chats
  *  page leaves it that room, as Infloww's column inside OF's `.b-chats__conversations` does: OF keeps its wide layout
- *  (the chat list beside the chat, from 1004px), which a frame narrowed by the column would drop. On a phone the
+ *  (the chat list beside the chat, from 1004px), which a frame narrowed by the column would drop. Below 1004px the chat
+ *  list is OF's one column, full width, with no "Select any Conversation" pane (a chat's pages hide the list there:
+ *  scripts/of-mirror.mjs), as OF renders on a phone. On a phone the
  *  composer's icon row scrolls inside itself so Send stays in view (else the frame scrolls sideways). */
 export const OF_CHROME_CSS = `
 .l-header{position:absolute!important;pointer-events:none!important}
@@ -31,7 +33,8 @@ export const OF_CHROME_CSS = `
 .l-wrapper__content{margin-left:0!important;max-width:100%}
 .container{max-width:100%!important;padding:0!important}
 .l-wrapper__sidebar{flex:1 0 300px!important;min-width:300px!important;max-width:none!important;margin-right:0!important;padding-right:16px!important}
-.b-chats__conversations-list{max-width:345px!important;flex:0 0 345px!important}
+@media(min-width:1004px){.b-chats__conversations-list{max-width:345px!important;flex:0 0 345px!important}}
+@media(max-width:1003.98px){.b-chats__conversations-list{flex:1 1 auto!important}.b-chats__conversations-content.m-empty-chat{display:none!important}}
 .b-chats__conversations{max-width:100%!important}
 html[${OF_INSIGHTS_ATTR}] .b-chats__conversations{padding-right:${OF_INSIGHTS_PX}px!important}
 html[${OF_INSIGHTS_ATTR}] .b-chats__conversations-content{max-width:none!important}

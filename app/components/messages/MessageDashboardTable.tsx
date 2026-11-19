@@ -63,6 +63,10 @@ export function replyTime(sec: number | null | undefined): string {
   return `${Math.floor(sec / 60)}m ${Math.floor(sec % 60)}s`;
 }
 
+/** Actions pins right from `sm` up; on a phone the pinned 120px left the other ten columns a ~220px strip (Sender and
+ *  Creator filled it, Message off-screen), so there it scrolls with the row (RuleTable's precedent). */
+const UNPIN_PHONE = "max-sm:static max-sm:shadow-none max-sm:[html[data-theme=light]_&]:shadow-none";
+
 function senderOf(r: PaidMessageRow): string {
   return r.employee_name || r.sender_name || automationLabel(r.automation_kind) || DASH;
 }
@@ -155,7 +159,7 @@ export default function MessageDashboardTable({
                 : r.fan.display_name || (r.fan.username ? `@${r.fan.username}` : `#${r.fan_id}`)}
             </span>
           </td>
-          <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight, "w-[120px]")}>
+          <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight, "w-[120px]", UNPIN_PHONE)}>
             <span className="flex items-center justify-center gap-2">
               {!r.is_mass_summary && (
                 <Link href={href} onClick={(e) => onPopoutClick(e, href)} aria-label="Open chat" title="Open chat"
@@ -181,7 +185,7 @@ export default function MessageDashboardTable({
             <tr>
               {COLUMNS.map((c) => (
                 <th key={c.title} scope="col" style={{ width: c.width }}
-                  className={cn(IF_TABLE.th, IF_TABLE.thDivider, c.title === "Actions" && cn(IF_TABLE.fixedRightHead, "w-[120px] text-center"))}>
+                  className={cn(IF_TABLE.th, IF_TABLE.thDivider, c.title === "Actions" && cn(IF_TABLE.fixedRightHead, "w-[120px] text-center", UNPIN_PHONE))}>
                   <span className="inline-flex items-center gap-1">
                     {c.title}
                     {c.tip && (

@@ -103,6 +103,24 @@ describe("EmployeeReportCharts", () => {
     expect(screen.getByText("Select up to three employees to compare")).toBeTruthy();
   });
 
+  it("shows Loading, not the last range's bars, while a new bucket's series is read (90d chart stayed stale)", async () => {
+    const { rerender } = renderWithProviders(<Tab tab="overview" />);
+    const sales = await screen.findByRole("region", { name: "Employee sales" });
+    await waitFor(() => expect(within(sales).getAllByTestId("sales-bar")).toHaveLength(2));
+    const base = fetchMock.getMockImplementation() as (url: string) => Promise<Response>;
+    fetchMock.mockImplementation((url: string) => new URL(String(url), "http://relay.test").searchParams.get("bucket")
+      === "week" ? new Promise(() => {}) : base(url));
+    rerender(<Tab tab="overview" bucket="week" />);
+    await waitFor(() => expect(within(sales).queryAllByTestId("sales-bar")).toHaveLength(0));
+    expect(within(sales).getByText("Loading…")).toBeInTheDocument();
+  });
+
+  it("puts the comparison's empty label over the plot area, clear of the y-axis ticks (it overlapped \"$2\" on a phone)", async () => {
+    renderWithProviders(<Tab tab="overview" />);
+    const label = (await screen.findByText("Select up to three employees to compare")).parentElement!;
+    expect([label.style.left, label.style.top]).toEqual(["72px", "8px"]);
+  });
+
   it("charts the top seller on Employee performance from the same read", async () => {
     renderWithProviders(<Tab tab="performance" />);
     const sales = await screen.findByRole("region", { name: "Sales" });

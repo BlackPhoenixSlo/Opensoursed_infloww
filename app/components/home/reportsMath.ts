@@ -136,25 +136,32 @@ type Kind = keyof PerModelRow["revenue_by_kind"];
 /** A bucket's gross, or its OnlyFans net; net is null (a "-") from an older relay with no net by kind. */
 const kindOf = (k: Kind) => (m: PerModelRow) => m.revenue_by_kind?.[k] ?? 0;
 const netKindOf = (k: Kind) => (m: PerModelRow) => (m.net_revenue_by_kind ? m.net_revenue_by_kind[k] ?? 0 : null);
+/** A bucket less what the Earnings summary's channels leave out (`other_by_kind`: stream sales, unknown kinds, Total
+ *  earnings only, as `bucketOf`), so Tips and Message match its tiles. */
+const chanOf = (k: Kind) => (m: PerModelRow) => kindOf(k)(m) - (m.other_by_kind?.[k] ?? 0);
+const netChanOf = (k: Kind) => (m: PerModelRow) => {
+  const n = netKindOf(k)(m);
+  return n === null ? null : n - (m.net_other_by_kind?.[k] ?? 0);
+};
 const subsOf = (m: PerModelRow) => (m.revenue_by_kind?.subscription ?? 0) + (m.revenue_by_kind?.rebill ?? 0);
 const netSubsOf = (m: PerModelRow) => {
   const n = m.net_revenue_by_kind;
   return n ? (n.subscription ?? 0) + (n.rebill ?? 0) : null;
 };
 /** Message earnings: PPVs and paid customs (sold in chat: Messages, as `bucketOf` and the Earnings summary's
- *  Messages tile count them; the per-model read files customs under their own `custom` bucket). Creator statistics'
- *  Message column and card. */
-export const msgOf = (m: PerModelRow) => (m.revenue_by_kind?.ppv ?? 0) + (m.revenue_by_kind?.custom ?? 0);
+ *  Messages tile count them; the per-model read files customs under their own `custom` bucket), stream PPVs out.
+ *  Creator statistics' Message column and card. */
+export const msgOf = (m: PerModelRow) => chanOf("ppv")(m) + chanOf("custom")(m);
 export const netMsgOf = (m: PerModelRow) => {
-  const n = m.net_revenue_by_kind;
-  return n ? (n.ppv ?? 0) + (n.custom ?? 0) : null;
+  const p = netChanOf("ppv")(m);
+  return p === null ? null : p + (netChanOf("custom")(m) ?? 0);
 };
 /** Messages and tips, the numerator of #117 and #133 (the bundle's column descriptions, index.9f50f370.js near
- *  @13245838). The per-model read files stream tips and PPVs under tips and messages. */
-const engagedOf = (m: PerModelRow) => msgOf(m) + (m.revenue_by_kind?.tip ?? 0);
+ *  @13245838), as the Tips and Message columns read them. */
+const engagedOf = (m: PerModelRow) => msgOf(m) + chanOf("tip")(m);
 const netEngagedOf = (m: PerModelRow) => {
   const n = netMsgOf(m);
-  return n == null ? null : n + (m.net_revenue_by_kind?.tip ?? 0);
+  return n == null ? null : n + (netChanOf("tip")(m) ?? 0);
 };
 /** #112 to #146: every column after "Creator" (#111, always shown), in the capture's order, then ours (the capture's
  *  Streams left out: stream sales have no channel here). The ones without `v` need OF
@@ -164,7 +171,7 @@ export const STAT_COLS: readonly StatCol[] = [
   { key: "totalSubscriptionsEarnings", title: "Total subscription earnings", width: 270, show: true, fmt: "usd", v: subsOf, netV: netSubsOf },
   { key: "subscriptionsEarnings", title: "Subscription earnings", width: 240, show: false, fmt: "usd", v: kindOf("subscription"), netV: netKindOf("subscription") },
   { key: "recurringSubscriptionEarnings", title: "Recurring subscription earnings", width: 305, show: false, fmt: "usd", v: kindOf("rebill"), netV: netKindOf("rebill") },
-  { key: "tips", title: "Tips", width: 112, show: true, fmt: "usd", v: kindOf("tip"), netV: netKindOf("tip") },
+  { key: "tips", title: "Tips", width: 112, show: true, fmt: "usd", v: chanOf("tip"), netV: netChanOf("tip") },
   { key: "message", title: "Message", width: 145, show: true, fmt: "usd", v: msgOf, netV: netMsgOf },
   { key: "engagementEarningsRatio", title: "Engagement earnings ratio", width: 280, show: true, fmt: "pct", v: (m) => (subsOf(m) > 0 ? (100 * engagedOf(m)) / subsOf(m) : null) },
   { key: "posts", title: "Posts", width: 120, show: false, fmt: "usd", v: kindOf("post"), netV: netKindOf("post") },
@@ -295,18 +302,24 @@ export function fmtBucketLabel(day: string, p: Gran): string {
   return d.toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
 }
 
-export interface Point { label: string; value: number }
+/** `partial`: a week or month bucket the range cuts short, "2 of 7 days" (the charts mark it, so its low figure does
+ *  not read as a fall). */
+export interface Point { label: string; value: number; partial?: string }
 /** The days' values rolled into `p`: each day; seven days at a time from the range's first day; calendar months. With
  *  `hour` the slots are hours (`hoursOf`), each its own bucket. */
 export function rollUp(days: string[], values: number[], p: Gran): Point[] {
   if (p === "day" || p === "hour") return days.map((d, i) => ({ label: fmtBucketLabel(d, p), value: values[i] ?? 0 }));
-  const out: Point[] = [];
+  const out: (Point & { days: number; full: number })[] = [];
   days.forEach((d, i) => {
     const starts = p === "week" ? i % 7 === 0 : i === 0 || d.slice(0, 7) !== days[i - 1].slice(0, 7);
-    if (starts) out.push({ label: fmtBucketLabel(d, p), value: 0 });
-    out[out.length - 1].value += values[i] ?? 0;
+    // A month's length: day 0 of the next month.
+    const full = p === "week" ? 7 : new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)).getUTCDate();
+    if (starts) out.push({ label: fmtBucketLabel(d, p), value: 0, days: 0, full });
+    const b = out[out.length - 1];
+    b.value += values[i] ?? 0;
+    b.days += 1;
   });
-  return out;
+  return out.map(({ label, value, days: n, full }) => (n < full ? { label, value, partial: `${n} of ${full} days` } : { label, value }));
 }
 
 /* ── kind bucketing ── */

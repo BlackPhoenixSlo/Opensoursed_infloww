@@ -81,8 +81,8 @@ describe("messagesRekey: Engagement › Messages' summary from OF's chart for th
   const cases: [name: string, chart: unknown, t: string, key: string, want: string][] = [
     ["direct count", DIRECT, "direct", "messages:massMessages.count.total", "messagesChart:direct_messages.total"],
     ["direct earnings", DIRECT, "direct", "messages:massMessages.earnings.total", "messagesChart:direct_messages_purchases.total"],
-    // OF's single summary change is the purchases' (the count's delta key reads it). The rekey ignores the element: the
-    // sidebar's Messages change reads it too (see the BUG (pinned) sidebar test under applyEngagement).
+    // OF's single summary change is the purchases' (the count's delta key reads it); the sidebar keeps the overview's
+    // (see the sidebar test under applyEngagement).
     ["direct count delta -> purchases delta", DIRECT, "direct", "messages:massMessages.count.delta", "messagesChart:direct_messages_purchases.delta"],
     ["earnings delta not rekeyed", DIRECT, "direct", "messages:massMessages.earnings.delta", "messages:massMessages.earnings.delta"],
     ["another key", DIRECT, "direct", "posts:posts.count.total", "posts:posts.count.total"],
@@ -98,6 +98,12 @@ describe("messagesRekey: Engagement › Messages' summary from OF's chart for th
   ];
   it.each(cases)("%s", (_n, chart, t, key, want) => {
     expect(messagesRekey(chart, t)(el(), key)).toBe(want);
+  });
+  it("sidebar Summary: never rekeyed", () => {
+    const side = document.createElement("div");
+    side.className = "l-wrapper__sidebar";
+    side.append(el());
+    expect(messagesRekey(DIRECT, "direct")(side.firstElementChild!, "messages:massMessages.count.total")).toBe("messages:massMessages.count.total");
   });
 });
 
@@ -525,18 +531,12 @@ describe("applyEngagement: the phase-2 parts per Engagement page", () => {
     expect(doc.querySelector<HTMLInputElement>("[data-oi-search] input")!.disabled).toBe(true);
   });
 
-  it("BUG (pinned): with OF's chart, the sidebar Summary shows the tab chart's figures and change, not the overview's (through applyStats)", () => {
-    // BUG: see PR — messagesRekey (like subsRekey) ignores the element it rekeys, and applyStats' figures pass every
-    // [data-oi-stat] / [data-oi-delta] on the page through it, the `.l-wrapper__sidebar` Summary's included. So with the
-    // Direct tab's chart the sidebar "Messages" reads the chart's direct count (2) with the chart's PURCHASES change
-    // (+12.5%; the count's own change is 0), and "Message earnings" the chart's purchases ($9.98) with the overview's
-    // change (-30%). Correct: the sidebar keeps the overview's figures and changes ("Messages 40 5%", "Message earnings
-    // $100.00 -30%"), as it does without the chart (second half).
+  it("with OF's chart, the sidebar Summary keeps the overview's figures and changes (OF's SummaryBlock), through applyStats", () => {
     const overview = { messages: { massMessages: { count: { total: 40, delta: 5 }, earnings: { total: 100, delta: -30 } } } };
     const side = (doc: Document) => squash(doc.querySelector(".l-wrapper__sidebar .b-useful-data")!.textContent);
     const doc = load("statistics/engagement/messages");
     applyStats(doc, "statistics/engagement/messages", { ...overview, messagesChart: fixture("messages-chart-direct") }, D30, { v2: true, picks: { msg: "direct" } });
-    expect(side(doc)).toBe("Summary Messages 2 12.5% Message earnings $9.98 -30%");
+    expect(side(doc)).toBe("Summary Messages 40 5% Message earnings $100.00 -30%");
     const plain = load("statistics/engagement/messages");
     applyStats(plain, "statistics/engagement/messages", overview, D30, { v2: true, picks: { msg: "direct" } });
     expect(side(plain)).toBe("Summary Messages 40 5% Message earnings $100.00 -30%");

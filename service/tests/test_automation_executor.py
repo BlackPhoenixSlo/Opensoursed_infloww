@@ -25,6 +25,10 @@ Plus the harness primitives every P4 automation depends on:
       (429, OF 5xx, proxy, timeout) anywhere, raises (no full_sweep) and keeps what it
       scraped; a scraped chat or a parse failure resets the count, a 404 never counts;
       the before-first-scan stop is unchanged; the Knob is read at call time.
+  case_scrape_sweep_stops_at_its_time_budget:
+      a sweep starts no new chat past SCRAPE_SWEEP_BUDGET_S, ends ok with
+      budget_stopped / chats_left, a `{}` run still marks full_sweep; 0 = no cap;
+      an explicit fan_ids scrape is never capped.
   case_scrape_silent_mass_only_chat_costs_one_page_and_defers /
   case_scrape_not_silent_chats_are_backfilled_as_today /
   case_scrape_cursor_write_clears_the_deferred_mark /
@@ -597,6 +601,47 @@ async def case_scrape_sweep_fail_fast_before_first_scan_and_knob():
         assert isinstance(res, RuntimeError) and len(fake.tried) == 4, (res, fake.tried)
     finally:
         del os.environ["SCRAPE_SWEEP_FAIL_FAST"]
+
+
+async def case_scrape_sweep_stops_at_its_time_budget():
+    """Each chat costs 400 s on a fake clock, budget 900 s: chats 1-3 run (started at
+    0/400/800), the 4th sees 1200 s and the sweep stops ok, still a full sweep."""
+    import os
+    from automations import scrape_chats as sc
+    real_clock = sc._clock
+    t = {"now": 0.0}
+
+    def tick() -> float:
+        now = t["now"]
+        t["now"] += 400.0
+        return now
+    script = [(7000 + i, "ok") for i in range(10)]
+    try:
+        sc._clock = tick
+        res, fake = await _sweep("acc_budget", script)
+        assert isinstance(res, dict) and res["full_sweep"] is True, res
+        assert res["budget_stopped"] is True and res["chats_left"] == 7, res
+        assert res["chats_scanned"] == 3 and fake.tried == [7000, 7001, 7002], (res, fake.tried)
+        # 0 = no cap: every chat runs, no budget fields.
+        os.environ["SCRAPE_SWEEP_BUDGET_S"] = "0"
+        t["now"] = 0.0
+        res, fake = await _sweep("acc_budget_off", [(7100 + i, "ok") for i in range(10)])
+        assert res["chats_scanned"] == 10 and "budget_stopped" not in res, res
+        del os.environ["SCRAPE_SWEEP_BUDGET_S"]
+        # An explicit fan_ids scrape is never capped.
+        t["now"] = 0.0
+        ids = [7200 + i for i in range(6)]
+        fake = ScriptedSweepClient([(c, "ok") for c in ids])
+        ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+        real_sleep, sc._PAGE_SLEEP_S = sc._PAGE_SLEEP_S, 0
+        try:
+            res = await sc._automation_scrape_chats("acc_budget", {"fan_ids": ids}, run_id=0)
+        finally:
+            sc._PAGE_SLEEP_S = real_sleep
+        assert res["chats_scanned"] == 6 and "budget_stopped" not in res, res
+    finally:
+        sc._clock = real_clock
+        os.environ.pop("SCRAPE_SWEEP_BUDGET_S", None)
 
 
 # ── A `{}` sweep defers a Silent mass-only chat's deep history (SCRAPE_EAGER_HISTORY) ──
@@ -2090,6 +2135,7 @@ _harness.run(
     case_scrape_sweep_stops_after_five_systemic_failures_in_a_row,
     case_scrape_sweep_fail_fast_counts_only_in_a_row,
     case_scrape_sweep_fail_fast_before_first_scan_and_knob,
+    case_scrape_sweep_stops_at_its_time_budget,
     case_scrape_silent_mass_only_chat_costs_one_page_and_defers,
     case_scrape_not_silent_chats_are_backfilled_as_today,
     case_scrape_cursor_write_clears_the_deferred_mark,

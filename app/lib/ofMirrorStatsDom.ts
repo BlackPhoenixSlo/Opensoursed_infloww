@@ -118,8 +118,9 @@ export const at = (body: unknown, path: string): unknown => path.split(".").redu
 export const zero = (v: number | null) => v !== null && Math.abs(v) < 0.005;
 /** A plain object (not an array, not null). */
 export const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
-/** OF's count (utils' `c6`): an integer grouped, anything else as sent. */
-export const ofCount = (v: unknown) => (typeof v === "number" && Number.isInteger(v) ? v.toLocaleString("en-US") : v == null ? "—" : String(v));
+/** OF's count (utils' `c6`): an integer grouped (one sent as a string too, e.g. `/profile/stats`' guests), anything else as sent. */
+export const ofCount = (v: unknown): string =>
+  typeof v === "string" && /^\d+$/.test(v) ? ofCount(Number(v)) : typeof v === "number" && Number.isInteger(v) ? v.toLocaleString("en-US") : v == null ? "—" : String(v);
 /** OF's money (utils-money): "$1,234.50"; none: "". */
 export const money = (v: unknown) => {
   const n = num(v);

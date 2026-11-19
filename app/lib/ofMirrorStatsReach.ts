@@ -40,7 +40,11 @@ export function applyVisitors(doc: Document, s: ProfileStats, all = false) {
     ["stat-duration", ["guests", "users", "total"].map((k) => (num(time[k]) === null ? "—" : viewDuration(num(time[k])!)))],
   ] as const) {
     const tpl = doc.querySelector<HTMLElement>(`tr[data-oi-template='${kind}']`);
-    intoRows(doc, tpl?.parentElement, [cells], () => tpl, (el, c) => fill(el, [...c]));
+    intoRows(doc, tpl?.parentElement, [cells], () => tpl, (el, c) => {
+      fill(el, [...c]);
+      // A long view duration ("10d 02h:56m") on one line (OF's own `g-nowrap`).
+      if (kind === "stat-duration") el.querySelectorAll("td").forEach((td) => td.classList.add("g-nowrap"));
+    });
   }
   const country = doc.querySelector<HTMLElement>("tr[data-oi-template='country']");
   const others = doc.querySelector<HTMLElement>("tr[data-oi-template='others']");
@@ -105,9 +109,11 @@ function summary(doc: Document, kind: string, a: string, b: string | null, delta
   display(doc, box, true);
   setText(doc, box.querySelector("[data-oi-summary-a]"), ` ${a} `);
   const second = box.querySelector<HTMLElement>("[data-oi-summary-b]");
-  setText(doc, second, b ? ` ${b} ` : "");
-  display(doc, second, !!b);
-  if (delta && p.key !== "all") add(doc, level(doc, delta, true), box);
+  // OF renders one group then (Tracking links): a hidden second item would still put OF's "," (its CSS
+  // `:not(:last-of-type):after`) after the first.
+  if (!b) second?.remove();
+  else setText(doc, second, ` ${b} `);
+  if (delta && p.key !== "all") add(doc, level(doc, delta, false), box); // OF's ChartSummary: the change unsigned, its icon the direction
 }
 
 interface Offer {
@@ -304,8 +310,8 @@ function campaignsPage(doc: Document, data: StatsData, p: Period, x: ReachCtx) {
     const subs = el("td", "text-right");
     // OF's subscribers count opens the link's subscribers (UserList CampaignClaimers) when there are any.
     const n = num(c.countSubscribers) ?? 0;
-    subs.append(n > 0 && x.v3 && c.id !== undefined ? usersLink(doc, String(n), "campaign", c.id) : el("span", "", String(n)));
-    tr.append(name, el("td", "", start ? ` ${dayText(start, p.tz, false)} ` : " — "), el("td", "", end ? ` ${dayText(end, "UTC", false)} ` : " - "), el("td", "text-right", ` ${num(c.countTransitions) ?? 0} `), subs);
+    subs.append(n > 0 && x.v3 && c.id !== undefined ? usersLink(doc, ofCount(n), "campaign", c.id) : el("span", "", ofCount(n)));
+    tr.append(name, el("td", "", start ? ` ${dayText(start, p.tz, false)} ` : " — "), el("td", "", end ? ` ${dayText(end, "UTC", false)} ` : " - "), el("td", "text-right", ` ${ofCount(num(c.countTransitions) ?? 0)} `), subs);
     add(doc, tr, tbody);
   }
   listShown(doc, wrap, empty, body);

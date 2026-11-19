@@ -433,12 +433,32 @@ export function nextOffset(last: unknown, pages: unknown[], size = PAGE_SIZE): n
   return pages.reduce<number>((n, pg) => n + (listOf(pg)?.length ?? 0), 0);
 }
 
+/** An id that names a row: OF sends 0 (or nothing) where a row has none, e.g. every dispute's `id`. */
+const realId = (v: unknown) => ((typeof v === "number" && v !== 0) || (typeof v === "string" && v !== "" && v !== "0") ? String(v) : undefined);
+/** A row's identity: its id, else its invoice's, else its payment's (a dispute's own id is 0); none when the reply has no real one. */
+export function rowId(r: unknown): string | undefined {
+  const o = r as { id?: unknown; invoiceId?: unknown; payment?: { id?: unknown } | null } | null;
+  return realId(o?.id) ?? realId(o?.invoiceId) ?? realId(o?.payment?.id);
+}
+
+/** Each page's rows, once (a page read twice, or a list OF re-sent from an earlier end: its rows once); a row without an identity is kept. */
+export function uniqueRows(pages: unknown[]): PayoutRow[] {
+  const seen = new Set<string>();
+  return pages.flatMap((pg) => listOf<PayoutRow>(pg) ?? []).filter((r) => {
+    const k = rowId(r);
+    if (k === undefined) return true;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 /** Whether the last page brought nothing new (every row already read: the Relay ignored the page asked). */
 export function nothingNew(last: unknown, pages: unknown[]): boolean {
   const rows = listOf<{ id?: unknown; invoiceId?: unknown }>(last);
   if (!rows?.length || pages.length < 2) return false;
-  const id = (r: { id?: unknown; invoiceId?: unknown }) => String(r.id ?? r.invoiceId ?? JSON.stringify(r));
-  const seen = new Set(pages.slice(0, -1).flatMap((pg) => (listOf<{ id?: unknown }>(pg) ?? []).map(id)));
+  const id = (r: unknown) => rowId(r) ?? JSON.stringify(r);
+  const seen = new Set(pages.slice(0, -1).flatMap((pg) => (listOf<unknown>(pg) ?? []).map(id)));
   return rows.every((r) => seen.has(id(r)));
 }
 

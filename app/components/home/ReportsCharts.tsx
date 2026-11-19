@@ -169,7 +169,7 @@ export function Sparkline({ values, color }: { values: number[]; color: string }
 /* ───────── charts ───────── */
 
 /** #67, #82, #83: Earnings trends, a 220px bar chart, each bar's tooltip its Earnings and its Growth over the bucket
- *  before. `perf` is Creator performance's Earnings (#161, #162): 336px high, 25px bars (never wider than their slot),
+ *  before; a bucket the range cuts short (`Point.partial`) at half opacity, its tooltip saying so. `perf` is Creator performance's Earnings (#161, #162): 336px high, 25px bars (never wider than their slot),
  *  the x labels 16px off the axis. `null` points draw the blank chart with `message`. */
 export function TrendBars({ points, message, height = 220, perf = false }: {
   points: Point[] | null; message: string; height?: number; perf?: boolean;
@@ -205,8 +205,10 @@ export function TrendBars({ points, message, height = 220, perf = false }: {
                   width={bw}
                   height={h}
                   className="fill-accent"
+                  opacity={p.partial ? 0.5 : undefined}
+                  data-partial={p.partial ? "" : undefined}
                 >
-                  <title>{`${p.label}\nEarnings ${fmtUsd(p.value)}\nGrowth ${g}`}</title>
+                  <title>{`${p.label}${p.partial ? ` (${p.partial})` : ""}\nEarnings ${fmtUsd(p.value)}\nGrowth ${g}`}</title>
                 </rect>
               );
             })}

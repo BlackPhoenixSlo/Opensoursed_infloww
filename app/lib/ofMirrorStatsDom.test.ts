@@ -110,7 +110,7 @@ describe("zero (|v| under half a cent)", () => {
   });
 });
 
-describe("ofCount (an integer grouped, anything else as sent)", () => {
+describe("ofCount (an integer grouped, a digits-only string too, anything else as sent)", () => {
   it.each<[unknown, string]>([
     [1234, "1,234"],
     [1234567, "1,234,567"],
@@ -118,8 +118,11 @@ describe("ofCount (an integer grouped, anything else as sent)", () => {
     [-1234, "-1,234"],
     [1234.5, "1234.5"],
     [NaN, "NaN"],
-    ["1234", "1234"],
+    // An integer sent as a string (`/profile/stats`' guests) grouped too; any other string as sent.
+    ["1234", "1,234"],
     ["43", "43"],
+    ["-1234", "-1234"],
+    ["12.5", "12.5"],
     ["", ""],
     [true, "true"],
     [null, "—"],

@@ -30,6 +30,7 @@ import { EmptyState, IF_TABLE } from "@/components/ui/infloww";
 import { type ChattingStatsRow, useChattingStats } from "@/hooks/useStats";
 import { fmtCents, fmtInt, fmtPrice, fmtReplyTime, growthOf } from "@/lib/format";
 import { useOptionalUser } from "@/contexts/UserContext";
+import { RelayError } from "@/lib/relay";
 import { calcMinutes, useTimesheet, type TimesheetRow } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
 import { InfoTip } from "@/components/ui/InfoTip";
@@ -112,9 +113,10 @@ const CLOCKED: NumKey[] = ["clocked_minutes", "sales_per_clocked_hour_cents", "m
 
 const CELL = "whitespace-nowrap";
 /** Infloww's two pinned columns (`showPinKeys`): Employees, then Creators beside it, at Employees' fixed width; the
- *  head's on the head colour, the body's on the page's. */
+ *  head's on the head colour, the body's on the page's. Creators casts IF_TABLE.fixedRight's shadow mirrored, so the
+ *  figures scrolled under the pair read as passing under an edge, not as clipped ("ocked hours"). */
 const PIN_EMP = "sticky left-0 z-[1] w-40 min-w-40 max-w-40";
-const PIN_CREATORS = "sticky left-40 z-[1] max-w-48";
+const PIN_CREATORS = "sticky left-40 z-[1] max-w-48 shadow-[6px_0_6px_-4px_rgba(0,0,0,.35)] [html[data-theme=light]_&]:shadow-[6px_0_6px_-4px_#f5f6fa]";
 
 /** Infloww's blue-outline "Export" (antd small): 24px, a 1px M1 border, M1 text, radius 4. */
 const EXPORT_OUTLINE = "h-6 gap-1.5 rounded-[4px] border border-accent bg-transparent px-2 py-0 text-[14px] font-normal text-accent hover:border-accent hover:bg-accent/10";
@@ -125,11 +127,12 @@ const pctOf = (num: number, den: number) => (den > 0 ? `${((num / den) * 100).to
  *  Employee's Sales (pending sales included, as the Sales Settings rules count them); Unlock rate is the pooled
  *  ratio, PPVs unlocked over direct PPVs sent; the response time (all replies) is each Employee's average weighted
  *  by its replies. Total number of scheduled hours sums the Timesheet's `scheduled_minutes` (null: no Timesheet read,
- *  Not wired); with `chatterOnly`, only the Employees in `rows`. The scheduled-hours response time is Not wired: the
- *  reply read has no shift filter. */
+ *  Not wired); with `chatterOnly`, only the Employees in `rows`. `sheetNote` is the Timesheet's refusal (its 422 text,
+ *  "the range is at most 42 days"): the card stays "-" and says why under its label. The scheduled-hours response
+ *  time is Not wired: the reply read has no shift filter. */
 export function chattingKpis(
-  rows: ChattingStatsRow[], sheet: TimesheetRow[] | null = null, chatterOnly = false,
-): { label: string; tip: string; value: string; wired: boolean }[] {
+  rows: ChattingStatsRow[], sheet: TimesheetRow[] | null = null, chatterOnly = false, sheetNote: string | null = null,
+): { label: string; tip: string; value: string; wired: boolean; note?: string }[] {
   const sum = (f: (r: ChattingStatsRow) => number) => rows.reduce((s, r) => s + f(r), 0);
   const timed = rows.filter((r) => r.avg_reply_seconds != null && r.replies > 0);
   const replies = timed.reduce((s, r) => s + r.replies, 0);
@@ -151,22 +154,24 @@ export function chattingKpis(
     { label: "Total number of scheduled hours", tip: "Hours of the shifts scheduled in the time frame",
       // Decimal hours ("3,425.9h"), so the 28px figure keeps to one line in the card.
       value: scheduled == null ? "-" : `${(scheduled / 60).toLocaleString("en-US", { maximumFractionDigits: 1 })}h`,
-      wired: scheduled != null },
+      wired: scheduled != null, ...(scheduled == null && sheetNote ? { note: `Not shown: ${sheetNote}.` } : {}) },
   ];
 }
 
 /** One card: #151515 with a 1px L1 border, radius 4; the value 28px / 600 T1 over a 12px T3 label with its (i). A
- *  Not wired card is titled "not wired", its value "-". */
-function KpiCard({ label, tip, value, wired }: ReturnType<typeof chattingKpis>[number]) {
+ *  Not wired card is titled "not wired", its value "-"; a card with a `note` (why it has no figure) shows it under
+ *  the label instead. */
+function KpiCard({ label, tip, value, wired, note }: ReturnType<typeof chattingKpis>[number]) {
   return (
-    <div role="group" aria-label={label} title={wired ? undefined : "not wired"}
+    <div role="group" aria-label={label} title={wired || note ? undefined : "not wired"}
       className={cn("flex min-h-[128px] flex-col rounded-[4px] border border-border bg-bg px-6 pt-7 pb-4",
-        !wired && "opacity-60")}>
+        !wired && !note && "opacity-60")}>
       <span className="text-[28px] font-semibold leading-9 text-fg tabular-nums">{value}</span>
       <span className="mt-1 flex items-start justify-between gap-3 text-[12px] text-muted">
         {label}
         <InfoTip text={tip} className="mt-0.5" />
       </span>
+      {note && <span className="mt-1 text-[12px] text-fg-dim">{note}</span>}
     </div>
   );
 }
@@ -203,6 +208,8 @@ export default function ChattingStatsTable({
   // Scheduled hours: the Clocked hours card's Timesheet read (one query, same key); owner and Master only.
   const ranged = !!from && !!to;
   const sheet = useTimesheet(new Date(from ?? 0), new Date(to ?? 0), "employee", !!useOptionalUser()?.user && ranged);
+  // A range past the Timesheet's limit is refused 422 with the reason, which the card shows instead of a bare "-".
+  const sheetNote = sheet.error instanceof RelayError && sheet.error.status === 422 ? sheet.error.message : null;
   const [sortKey, setSortKey] = useState<Key>("sales_cents");
   const [desc, setDesc] = useState(true);
 
@@ -252,7 +259,7 @@ export default function ChattingStatsTable({
       ) : (
         <>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
-            {chattingKpis(rows, sheet.data?.rows ?? null, chatterOnly).map((k) => <KpiCard key={k.label} {...k} />)}
+            {chattingKpis(rows, sheet.data?.rows ?? null, chatterOnly, sheetNote).map((k) => <KpiCard key={k.label} {...k} />)}
           </div>
           {rows.length === 0 ? (
             <EmptyState size="sm" text="No chatting in this window." />

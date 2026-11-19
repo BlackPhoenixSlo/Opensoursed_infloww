@@ -482,8 +482,9 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     pickBasis("Gross");
     await shows(ALL_GROSS.total);
     await waitFor(() => expect(channelFigure("chargebacks")).toBe("-$29"));
+    // Gross comes from the same answer: the switch reads nothing more.
     expect(reversedReads().map(({ url }) => [url.searchParams.get("group_by"), url.searchParams.get("include_net")]))
-      .toEqual([["kind", "true"], ["kind", null]]);
+      .toEqual([["kind", "true"]]);
   });
 
   it("a failed Chargebacks read shows '-', titled, never $0, and leaves the other tiles", async () => {
@@ -536,16 +537,16 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     }
   });
 
-  it("Net sends include_net=true, Gross sends the ticket-24 read unchanged, and switching back restores each", async () => {
+  it("one include_net=true read serves Net and Gross: switching shows the other figure at once, reading nothing", async () => {
     revenue = [byBasis(ALL_KINDS, ALL_KINDS_NET)];
     await mountHome();
     await shows(ALL_NET.total);
     pickBasis("Gross");
     expect(basis()).toHaveTextContent("Gross earnings");
-    await shows(ALL_GROSS.total);
+    // No placeholder in between: the Gross figure is already there.
+    expect(figure()).toBe(ALL_GROSS.total);
     expect(revenueReads().map(({ url }) => url.search)).toEqual([
       "?from=2026-10-11T10%3A00%3A00.000Z&to=2026-10-18T09%3A59%3A59.999Z&group_by=kind&include_net=true",
-      "?from=2026-10-11T10%3A00%3A00.000Z&to=2026-10-18T09%3A59%3A59.999Z&group_by=kind",
     ]);
     pickBasis("Net");
     await shows(ALL_NET.total);
@@ -669,8 +670,8 @@ describe("the saved Total: Total earnings' read and the Applied settings ride th
     const saved = keys.filter((k) => shouldPersistKey(k));
     expect(saved).toEqual(expect.arrayContaining([
       ["applied-settings", "owner-1", null],
-      ["dashboard", "revenue-by-kind", "owner-1", ...WEEK, "Net"],
-      ["dashboard", "revenue-reversed-by-kind", "owner-1", ...WEEK, "Net"],
+      ["dashboard", "revenue-by-kind", "owner-1", ...WEEK],
+      ["dashboard", "revenue-reversed-by-kind", "owner-1", ...WEEK],
     ]));
     const persisted = ["revenue-by-kind", "revenue-reversed-by-kind"];
     expect(saved.every((k) => k[0] === "applied-settings" || persisted.includes(k[1] as string))).toBe(true);
@@ -683,7 +684,7 @@ describe("the saved Total: Total earnings' read and the Applied settings ride th
   it("a return visit paints the saved Total before any read answers, then takes the fresh one", async () => {
     const qc = restored();
     qc.setQueryData(["applied-settings", "owner-1", null], await appliedRes().json(), lastVisit);
-    qc.setQueryData(["dashboard", "revenue-by-kind", "owner-1", ...WEEK, "Net"], { rows: [BY_KIND_NET.rows[0]] }, lastVisit);
+    qc.setQueryData(["dashboard", "revenue-by-kind", "owner-1", ...WEEK], { rows: [BY_KIND_NET.rows[0]] }, lastVisit);
     let answer!: () => void;
     revenue = [() => new Promise((done) => { answer = () => done(jsonRes(BY_KIND_NET)); })];
     renderWithProviders(<HomePage />, qc);
@@ -704,7 +705,7 @@ describe("the saved Total: Total earnings' read and the Applied settings ride th
   it("another principal's saved Total is never shown: the figure shimmers until its own read answers", async () => {
     const qc = restored();
     qc.setQueryData(["applied-settings", "owner-1", null], await appliedRes().json(), lastVisit);
-    qc.setQueryData(["dashboard", "revenue-by-kind", "owner-1", ...WEEK, "Net"], BY_KIND_NET, lastVisit);
+    qc.setQueryData(["dashboard", "revenue-by-kind", "owner-1", ...WEEK], BY_KIND_NET, lastVisit);
     session = { user: { user_id: "owner-2", username: "other" }, chatter: null };
     applied = never;
     renderWithProviders(<HomePage />, qc);

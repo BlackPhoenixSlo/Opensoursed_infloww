@@ -33,10 +33,11 @@
  * the session's own Creators.
  *
  * The Net earnings / Gross earnings select opens on the capture's Net (#4) and
- * toggles every money tile (#32). Net adds `include_net=true` to the read and
- * shows OnlyFans's own `net_cents`; when some of the window's sales have no
- * net figure yet (`net_missing_count`), a note under the tiles says how many,
- * so gross is never read as net. Gross sends ticket 24's read unchanged. The
+ * toggles every money tile (#32). The read always carries `include_net=true`;
+ * Net shows OnlyFans's own `net_cents`, Gross the same answer's `total_cents`,
+ * so a switch reads nothing. When some of the window's sales have no
+ * net figure yet (`net_missing_count`), Net's note under the tiles says how many,
+ * so gross is never read as net. The
  * select does not drive the Creator Reports card (Phase 3's). Referrals has
  * no sales kind: its tile reads `GET /admin/stats/referrals` (`useReferrals`,
  * OnlyFans' own figure per Creator, the same under Net and Gross), and Total
@@ -403,13 +404,13 @@ export default function DashboardHeader() {
 
   // The window's by-kind read; `reversed`, Chargebacks': the same over the reversals (`status=reversed`: chargedback,
   // refunded, refund pending). The earnings one is saved with the snapshot (providers.tsx PERSIST_KEYS): the
-  // principal keeps one login's figure from another's.
+  // principal keeps one login's figure from another's. Both bases come from one answer (`include_net` only adds
+  // keys; `total_cents` is Gross), so the basis is not in the key: switching it reads nothing.
   const byKind = (reversedOnly: boolean) => ({
-    queryKey: ["dashboard", reversedOnly ? "revenue-reversed-by-kind" : "revenue-by-kind", principalId, from, to, basis],
+    queryKey: ["dashboard", reversedOnly ? "revenue-reversed-by-kind" : "revenue-by-kind", principalId, from, to],
     queryFn: () => {
-      const qs = new URLSearchParams({ from, to, group_by: "kind" });
+      const qs = new URLSearchParams({ from, to, group_by: "kind", include_net: "true" });
       if (reversedOnly) qs.set("status", "reversed");
-      if (basis === "Net") qs.set("include_net", "true");
       return relay.get<RevenueResp>(`/admin/stats/revenue?${qs.toString()}`);
     },
     enabled: ready,

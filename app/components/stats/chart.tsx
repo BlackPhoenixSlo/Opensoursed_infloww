@@ -10,7 +10,7 @@
  *   LineChart     2px lines, one per series, with a hover column per x that names every line's value there.
  */
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { fmtCents } from "@/lib/format";
 
 /** A "Shown by" granularity. */
@@ -40,15 +40,17 @@ export function rangeDays(fromIso: string, toIso: string): number {
   return Math.round((Date.parse(toIso) - Date.parse(fromIso) + 1) / 86_400_000);
 }
 
-/** A rounded-up axis maximum of `gridLines` even steps (1, 2 or 5 × 10ⁿ). */
+/** A rounded-up axis maximum of `gridLines` even steps: 1, 2, 3, 4, 5, 6 or 8 × 10ⁿ for a whole step (whole units, or
+ *  whole dollars of cents), 1, 2 or 5 × 10ⁿ below 1. 1, 2 or 5 alone left up to 2.5× headroom ($800,697 drew a $2M
+ *  axis). */
 export function niceMax(maxValue: number, gridLines: number): number {
   if (maxValue <= 0) return gridLines;
   const raw = maxValue / gridLines;
   const exp = Math.floor(Math.log10(raw));
   const base = Math.pow(10, exp);
   const m = raw / base;
-  const stepMult = m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10;
-  const step = stepMult * base;
+  const ladder = exp >= 0 ? [1, 2, 3, 4, 5, 6, 8, 10] : [1, 2, 5, 10];
+  const step = (ladder.find((k) => m <= k) ?? 10) * base;
   return step * gridLines;
 }
 
@@ -142,13 +144,28 @@ export function ChartMessage({ message, title }: { message: string; title?: stri
 
 export type ChartLine = { name: string; color: string; values: number[] };
 
+/** A line's path: one solid path, or with `partial` (per x, a bucket the range cuts short: "2 of 7 days") the
+ *  segments touching a partial x apart, to draw dashed, so a short bucket's low figure does not read as a fall. */
+export function linePaths(values: number[], at: (i: number) => string, partial?: readonly (string | undefined)[]) {
+  if (!partial?.some(Boolean)) return { solid: values.map((_, i) => `${i === 0 ? "M" : "L"}${at(i)}`).join(" "), dashed: "" };
+  const solid: string[] = [], dashed: string[] = [];
+  if (values.length === 1) solid.push(`M${at(0)}`);
+  for (let i = 1; i < values.length; i++) {
+    const out = partial[i] || partial[i - 1] ? dashed : solid;
+    out.push(`M${at(i - 1)} L${at(i)}`);
+  }
+  return { solid: solid.join(" "), dashed: dashed.join(" ") };
+}
+
 /** 2px lines, one per series over `labels`, a legend under them unless `legend` is off. Each x has a full-height
  *  hover column whose tooltip names every line's value there (`valueFmt`), however many points. `null` lines draw the
- *  blank chart with `message` (titled `messageTitle`). */
+ *  blank chart with `message` (titled `messageTitle`). `partial` (per x, optional): a bucket the range cuts short, its
+ *  segments dashed and its tooltip saying how short ("Nov 18 (2 of 7 days)"). */
 export function LineChart({
-  labels, lines, message, messageTitle, height = 250, fmt, valueFmt = String, empty, legend = true,
+  labels, lines, message, messageTitle, height = 250, fmt, valueFmt = String, empty, legend = true, partial,
 }: {
   labels: string[]; lines: ChartLine[] | null; message: string; messageTitle?: string; height?: number;
+  partial?: readonly (string | undefined)[];
   /** The y ticks (ChartAxes' `fmt`). */
   fmt?: (value: number) => string;
   valueFmt?: (value: number) => string;
@@ -174,23 +191,24 @@ export function LineChart({
         {!lines ? <BlankChart W={W} H={H} /> : (
           <>
             <ChartAxes W={W} H={H} max={max} labels={labels} xAt={xAt} fmt={fmt} />
-            {lines.map((l, k) => (
-              <path
-                key={k}
-                role="img"
-                aria-label={l.name}
-                d={l.values.map((v, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(2)},${yAt(v).toFixed(2)}`).join(" ")}
-                fill="none"
-                stroke={l.color}
-                strokeWidth={2}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-              />
-            ))}
+            {lines.map((l, k) => {
+              const d = linePaths(l.values, (i) => `${xAt(i).toFixed(2)},${yAt(l.values[i]).toFixed(2)}`, partial);
+              return (
+                <Fragment key={k}>
+                  <path role="img" aria-label={l.name} d={d.solid} fill="none" stroke={l.color} strokeWidth={2}
+                    strokeLinejoin="round" strokeLinecap="round" />
+                  {d.dashed && (
+                    <path data-partial d={d.dashed} fill="none" stroke={l.color} strokeWidth={2} strokeDasharray="4 4"
+                      aria-hidden />
+                  )}
+                </Fragment>
+              );
+            })}
             {labels.map((label, i) => (
               <rect key={i} data-testid="chart-hover" x={xAt(i) - slot / 2} y={f.T} width={Math.max(slot, 1)}
                 height={f.B - f.T} fill="transparent">
-                <title>{[label, ...lines.map((l) => `${l.name}: ${valueFmt(l.values[i] ?? 0)}`)].join("\n")}</title>
+                <title>{[partial?.[i] ? `${label} (${partial[i]})` : label,
+                  ...lines.map((l) => `${l.name}: ${valueFmt(l.values[i] ?? 0)}`)].join("\n")}</title>
               </rect>
             ))}
           </>

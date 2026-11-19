@@ -22,13 +22,17 @@ describe("rollUp", () => {
     ["week, seven days from the first, month boundary",
       ["2026-01-28", "2026-01-29", "2026-01-30", "2026-01-31", "2026-02-01", "2026-02-02", "2026-02-03", "2026-02-04"],
       [1, 1, 1, 1, 1, 1, 1, 5], "week",
-      [{ label: "Jan 28", value: 7 }, { label: "Feb 4", value: 5 }]],
+      [{ label: "Jan 28", value: 7 }, { label: "Feb 4", value: 5, partial: "1 of 7 days" }]],
     ["week, year boundary", daysFrom("2026-12-26", "2027-01-02"), [1, 2, 3, 4, 5, 6, 7, 8], "week",
-      [{ label: "Dec 26", value: 28 }, { label: "Jan 2", value: 8 }]],
+      [{ label: "Dec 26", value: 28 }, { label: "Jan 2", value: 8, partial: "1 of 7 days" }]],
+    ["week, whole weeks: none partial", daysFrom("2026-01-01", "2026-01-14"), Array(14).fill(1), "week",
+      [{ label: "Jan 1", value: 7 }, { label: "Jan 8", value: 7 }]],
     ["month, month boundary", ["2026-01-30", "2026-01-31", "2026-02-01"], [1, 2, 3], "month",
-      [{ label: "Jan 26", value: 3 }, { label: "Feb 26", value: 3 }]],
+      [{ label: "Jan 26", value: 3, partial: "2 of 31 days" }, { label: "Feb 26", value: 3, partial: "1 of 28 days" }]],
     ["month, year boundary", ["2026-12-31", "2027-01-01", "2027-01-02"], [5, 1, 1], "month",
-      [{ label: "Dec 26", value: 5 }, { label: "Jan 27", value: 2 }]],
+      [{ label: "Dec 26", value: 5, partial: "1 of 31 days" }, { label: "Jan 27", value: 2, partial: "2 of 31 days" }]],
+    ["month, a whole leap February", daysFrom("2028-02-01", "2028-02-29"), Array(29).fill(1), "month",
+      [{ label: "Feb 28", value: 29 }]],
     ["missing values count 0", ["2026-01-01", "2026-01-02"], [7], "day",
       [{ label: "Jan 1", value: 7 }, { label: "Jan 2", value: 0 }]],
   ] as const)("%s", (_name, days, values, p, want) => {
@@ -114,6 +118,15 @@ describe("cellCsv", () => {
     expect([cellCsv(col("message"), c, gross), cellCsv(col("message"), c, netCtx)]).toEqual([155, 124]);
     // (15,000 + 500 + 1,999) / 1,000 subs
     expect(cellCsv(col("engagementEarningsRatio"), c, gross)).toEqual(1749.9);
+  });
+  it("Tips and Message leave out what the summary's channels do (other_by_kind: streams), in both bases", () => {
+    const c = { ...m, revenue_by_kind: { tip: 1999, subscription: 1000, ppv: 500, custom: 100 },
+      net_revenue_by_kind: { tip: 1599, subscription: 800, ppv: 400, custom: 80 },
+      other_by_kind: { tip: 999, ppv: 300 }, net_other_by_kind: { tip: 799, ppv: 240 } } as unknown as PerModelRow;
+    expect(["tips", "message"].map((k) => [cellCsv(col(k), c, gross), cellCsv(col(k), c, netCtx)]))
+      .toEqual([[10, 8], [3, 2.4]]);
+    // (1,000 tips + 300 message) / 1,000 subs
+    expect(cellCsv(col("engagementEarningsRatio"), c, gross)).toEqual(130);
   });
   it("leaves quoting to the writer: a name with commas and quotes stays verbatim", () => {
     expect(creatorRows([col("totalEarnings")], [m], gross)).toEqual([

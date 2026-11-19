@@ -78,10 +78,10 @@ function subscriptionsPage(doc: Document, data: StatsData, p: Period, x: FansCtx
     for (const b of doc.querySelectorAll("[data-oi-pick^='subs:'][data-oi-enable]")) enable(doc, b);
     pickTabs(doc, "subs", tab);
   }
-  // OF's fansSummary: the chart's change for the tab (none for All time).
+  // OF's fansSummary (a ChartSummary: unsigned, its icon the direction): the chart's change for the tab (none for All time).
   const delta = x.v2 && isObj(data.subsChart) ? num(data.subsChart.delta) : null;
   const holder = doc.querySelector(".b-statistics-page-content__wrapper > .b-elements-determinant__value");
-  if (holder && delta && p.key !== "all" && !holder.querySelector(".b-statistics-level")) add(doc, level(doc, delta, true), holder);
+  if (holder && delta && p.key !== "all" && !holder.querySelector(".b-statistics-level")) add(doc, level(doc, delta, false), holder);
   const head = doc.querySelectorAll("[data-oi-table='subs'] thead th")[2];
   if (head && x.v2) swapIn(doc, head, /Total duration|Renew date|Subscription date/, SUBS_COLUMN[tab] ?? "Total duration");
   const el = elOf(doc);

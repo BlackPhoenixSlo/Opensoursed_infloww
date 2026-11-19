@@ -151,6 +151,16 @@ describe("MessageDashboardTable", () => {
   });
 });
 
+describe("pinned Actions", () => {
+  it("pins right from sm up only: on a phone the Message column gets the width (it sat off-screen)", () => {
+    renderWithProviders(<MessageDashboardTable rows={[BASE]} reportTz="UTC" loading={false} hasNextPage={false}
+      isFetchingNextPage={false} fetchNextPage={vi.fn()} />);
+    expect(screen.getByRole("columnheader", { name: "Actions" }).className).toContain("max-sm:static");
+    const cell = screen.getByRole("link", { name: "Open chat" }).closest("td")!;
+    expect(cell.className).toMatch(/\bsticky\b.*max-sm:static/);
+  });
+});
+
 describe("column widths", () => {
   it("Sent time ends inside the 856px a 1280px window shows beside the pinned Actions (it read \"Sent t\")", () => {
     const upTo = COLUMNS.slice(0, COLUMNS.findIndex((c) => c.title === "Sent time") + 1);

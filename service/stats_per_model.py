@@ -69,6 +69,15 @@ def _kind_bucket(kind: str | None) -> str:
     return "custom"
 
 
+def _off_channel(kind: str | None) -> bool:
+    """Whether a kind's money in its `_kind_bucket` is outside Creator reports'
+    channels (app reportsMath `bucketOf` calls it `other`, Total earnings
+    only): stream sales and tips other than plain `tip` (in `tip`/`ppv`),
+    and null, unknown or `referral` kinds (in `custom`)."""
+    b = _kind_bucket(kind)
+    return (b == "tip" and kind != "tip") or (b == "ppv" and kind == "ppv_stream") or (b == "custom" and kind != "custom")
+
+
 def _safe_div(num: int, den: int) -> int | None:
     """Integer division returning None when the denominator is 0 — the UI
     distinguishes "no data" from a real zero (a model with no new subs has
@@ -76,6 +85,9 @@ def _safe_div(num: int, den: int) -> int | None:
     if den <= 0:
         return None
     return int(num // den)
+
+
+_BUCKETS = ("ppv", "post", "tip", "subscription", "rebill", "custom")
 
 
 def empty_model_row(aid: str, *, engagement: bool, active_subs_known: bool) -> dict[str, Any]:
@@ -112,6 +124,11 @@ def empty_model_row(aid: str, *, engagement: bool, active_subs_known: bool) -> d
             "rebill": 0,
             "custom": 0,
         },
+        # The part of each revenue_by_kind / net_revenue_by_kind bucket that
+        # Creator reports' channels leave out (`_off_channel`), so its Tips and
+        # Message columns match its Earnings summary; the buckets keep it.
+        "other_by_kind": dict.fromkeys(_BUCKETS, 0),
+        "net_other_by_kind": dict.fromkeys(_BUCKETS, 0),
         "total_revenue_cents": 0,
         # OF's own post-fee figure, summed from transactions.net_cents.
         # `net_missing_count` > 0 means some rows have no net yet (a
@@ -194,6 +211,9 @@ def pivot_models(*, acct_rows: list[Any], r_sums: list[Any], top: list[dict[str,
             row["total_net_revenue_cents"] += int(r.net_cents or 0)
             row["net_revenue_by_kind"][bucket] += int(r.net_cents or 0)
             row["net_missing_count"] += int(r.net_missing or 0)
+            if _off_channel(r.kind):
+                row["other_by_kind"][bucket] += amount
+                row["net_other_by_kind"][bucket] += int(r.net_cents or 0)
             # PPV conversions: every tracked PPV sale in the window (a
             # re-purchase is a separate sale), the attribution view's rows.
             if r.kind in PPV_KINDS:
@@ -213,6 +233,9 @@ def pivot_models(*, acct_rows: list[Any], r_sums: list[Any], top: list[dict[str,
         row = _ensure(c["account_id"])
         row["revenue_by_kind"][_kind_bucket(c["kind"])] += c["gross_cents"]
         row["net_revenue_by_kind"][_kind_bucket(c["kind"])] += c["net_cents"]
+        if _off_channel(c["kind"]):
+            row["other_by_kind"][_kind_bucket(c["kind"])] += c["gross_cents"]
+            row["net_other_by_kind"][_kind_bucket(c["kind"])] += c["net_cents"]
         row["total_revenue_cents"] += c["gross_cents"]
         row["total_net_revenue_cents"] += c["net_cents"]
 
@@ -284,6 +307,8 @@ async def per_model(
       • account_id / display_name
       • revenue_by_kind   — {ppv, tip, subscription, rebill, custom}
       • net_revenue_by_kind — the same buckets in OF's net
+      • other_by_kind / net_other_by_kind — the part of each bucket Creator
+                             reports' channels leave out (`_off_channel`)
       • total_revenue_cents
       • messages_sent     — an Employee's own sends, no mass or automated ones
                              (`msg_stats.chatter_sends`)

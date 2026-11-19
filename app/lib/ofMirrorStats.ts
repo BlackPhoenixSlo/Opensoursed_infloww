@@ -12,14 +12,15 @@
  *   the period empty (PROOFS); else "Not available in Inflowwww yet", as the generator draws it.
  * - The charts' canvases get their series in OF's colours, axes and tooltip (ofMirrorChart).
  * Shapes: app/lib/__fixtures__/of/statistics-*.json (live bodies, scrubbed; the phase-2 Relay's synthetic, in OF's shapes).
- * No data yet, a field missing or a Relay error: a dash, as the generator draws it.
+ * No data yet, a field missing or a Relay error: a dash, as the generator draws it; a read still failing after its
+ * retries (retryable) also puts OF's info alert over the content, with a Retry for the failed reads.
  */
 
 import { useEffect, useMemo, type RefObject } from "react";
 import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
 import { useAppliedSettings } from "@/lib/appliedSettings";
-import { relay } from "@/lib/relay";
+import { relay, RelayError } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { rowsOf } from "@/lib/ofMirrorData";
 import type { Transaction } from "@/lib/ofMirrorFeedsStatements";
@@ -27,13 +28,13 @@ import { DASH, usd } from "@/lib/ofMirrorMoney";
 import { BLUE } from "@/lib/ofMirrorChart";
 import { basePage } from "@/lib/ofMirrorRow";
 import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
-import { add, at, display, isObj, level, num, restoreStats, setClass, setText, zero } from "@/lib/ofMirrorStatsDom";
+import { add, at, display, elOf, iconOf, isObj, level, num, restoreStats, setClass, setText, zero } from "@/lib/ofMirrorStatsDom";
 import { bindUserLists, drawLine, drawPair } from "@/lib/ofMirrorStatsKit";
 import { POST_STATS_PROBE, postStatsProbe } from "@/lib/ofMirrorStatsPostStat";
 import { applyRange, bindMenu, periodOf, startOf, usePeriodKey, type Period } from "@/lib/ofMirrorStatsPeriod";
 import {
   ALL_SOURCES, FIXED, PAGED, PICK_DEFAULTS, V2_ONLY, bindPicks, inPeriod, listOf, listRoute, nextParam, nothingNew, pagedDone,
-  resetPicks, setPick, statsRoute, statsSources, timeOf, usePicks, valueOf,
+  resetPicks, setPick, statsRoute, statsSources, timeOf, uniqueRows, usePicks, valueOf,
   type EarningsType, type MassMessage, type PageParam, type PagedBody, type PayoutRow, type Picks, type PostsBy, type RouteCtx, type StatSource, type StatsData,
 } from "@/lib/ofMirrorStatsSources";
 import {
@@ -145,6 +146,9 @@ const ROW_CHARTS: Record<string, string> = {
   "Mass-offers": "promo:promo.chartData",
   Trials: "trials:trials.chartData",
 };
+/** A Summary card's line colour (OF's SummaryBlock `borderColor`: Posts', Messages'; the other cards its default grey). */
+const SUMMARY_COLORS: Record<string, string> = { Posts: BLUE, Messages: "#ffa000" };
+const SUMMARY_GREY = "#8d96a2";
 
 /**
  * The main charts Phase 1 draws, OF's pair (DoubleLineChart: the first series on the upper chart in blue, the second
@@ -164,10 +168,12 @@ function applyCharts(doc: Document, sub: string, data: StatsData, p: Period, by:
     drawPair(doc, root, [at(data.postsChart, "purchases.chart"), "Purchases", "money"], [at(data.postsChart, "posts.chart"), "Posts", "count"], tz);
   if (sub === "engagement/messages" && !isObj(data.messagesChart)) drawPair(doc, root, [at(data.messages, "massMessages.chartData"), "Mass messages purchases", "money"], null, tz);
   for (const c of doc.querySelectorAll<HTMLCanvasElement>(".l-wrapper__sidebar .b-elements-determinant canvas")) {
-    const label = c.closest(".b-elements-determinant")?.querySelector(".b-elements-determinant__label")?.textContent?.trim() ?? "";
+    // A Summary card's chart (OF's SummaryBlock) sits in its own unlabelled row: its card's first row names it.
+    const summary = c.closest(".b-elements-determinant.m-chart-summary");
+    const label = ((summary ? summary.closest(".b-statistics-item") : c.closest(".b-elements-determinant"))?.querySelector(".b-elements-determinant__label")?.textContent ?? "").trim();
     const key = ROW_CHARTS[label];
     const i = key?.indexOf(":") ?? -1;
-    if (key) drawLine(doc, c, [at(data[key.slice(0, i) as StatSource], key.slice(i + 1)), label, "money"], BLUE, 0, false, tz);
+    if (key) drawLine(doc, c, [at(data[key.slice(0, i) as StatSource], key.slice(i + 1)), label, "money"], summary ? (SUMMARY_COLORS[label] ?? SUMMARY_GREY) : BLUE, 0, false, tz);
   }
 }
 
@@ -183,6 +189,24 @@ export interface ApplyCtx {
   me?: OfMe | null;
   accountId?: string | null;
   img?: (u: string) => string;
+  /** Some of the page's reads failed after their retries: asks them again (the notice's Retry). */
+  retry?: (() => void) | null;
+}
+
+/** OF's info alert over the page's content (where OF puts its own: m-after-alerts), its Retry asking the failed reads again. */
+function failedNotice(doc: Document, retry: () => void) {
+  const content = doc.querySelector(".b-statistics-page-content");
+  if (!content) return;
+  const el = elOf(doc);
+  const box = el("div", "alert alert-info m-wider mb-0");
+  box.setAttribute("data-oi-failed", "");
+  const text = el("div", "alert-text-wrapper mb-0 flex-row align-items-center");
+  const btn = el("button", "g-btn m-flat m-link m-no-uppercase m-reset-width ml-auto", "Retry");
+  btn.setAttribute("type", "button");
+  btn.addEventListener("click", retry);
+  text.append(el("span", "", "Some figures couldn't be loaded."), btn);
+  box.append(iconOf(doc, "alert", "m-alert-icon g-icon"), text);
+  add(doc, box, content, "before");
 }
 
 /** Show `data` for period `p` on `doc` (the generator's dashes again for what it lacks; idempotent). */
@@ -200,6 +224,7 @@ export function applyStats(doc: Document, page: string, data: StatsData, p: Peri
   const series = sub === "statements/earnings" ? statementsSeries(data, type, picks.tips) : null;
   const all: StatsData & { series?: unknown } = { ...data, derived: derive(data), ...(series ? { series } : {}) };
   applyRange(doc, p);
+  if (x.retry) failedNotice(doc, x.retry);
   const rekeys: Record<string, (el: Element, key: string) => string> = {
     "statements/earnings": rekeyFor(type, !!series),
     "statements/referrals/earnings": rekeyReferrals(isObj(data.referralsChart)),
@@ -242,18 +267,17 @@ export function applyStats(doc: Document, page: string, data: StatsData, p: Peri
  */
 const SKIP_PAGES = 5;
 
-/** Each page's rows, once (a page read twice, or a list OF re-sent from an earlier end: its rows once). */
-const uniqueRows = (pages: unknown[]) => {
-  const seen = new Set<string>();
-  return pages.flatMap((pg) => listOf<PayoutRow>(pg) ?? []).filter((r) => {
-    const id = r.id ?? r.invoiceId;
-    if (id === undefined || id === null) return true;
-    const k = String(id);
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-};
+/** Answers asking again would not change: the Relay's own, or OF's behind the Relay's 502 (`detail.upstream_status`). */
+const PERMANENT = [400, 401, 403, 404, 409, 422];
+/** Whether a failed Statistics read is worth asking again: any failure but a permanent answer (a 5xx, a timeout, the network). */
+export function retryable(err: unknown): boolean {
+  if (!(err instanceof RelayError)) return true;
+  const detail = isObj(err.body) ? err.body.detail : undefined;
+  const up = isObj(detail) ? detail.upstream_status : undefined;
+  return !PERMANENT.includes(err.status) && !(typeof up === "number" && PERMANENT.includes(up));
+}
+/** A Statistics read's retries: two, about 1 s then 3 s after a failure. */
+const RETRY = { retry: (n: number, err: unknown) => n < 2 && retryable(err), retryDelay: (n: number) => (n ? 3000 : 1000) };
 
 /**
  * A paged source (PAGED) for `route(param)` (null: not on this page), as one body (PagedBody) and a stamp that changes
@@ -268,7 +292,7 @@ function usePaged(accountId: string | null, route: ((param: PageParam) => string
     getNextPageParam: (last: unknown, pages: unknown[]) => next(last, pages),
     enabled: !!accountId && !!route,
     staleTime: 60_000,
-    retry: false,
+    ...RETRY,
   });
   const pages = q.data?.pages;
   const list = pages && listOf(pages[0]) ? uniqueRows(pages) : undefined;
@@ -282,7 +306,7 @@ function usePaged(accountId: string | null, route: ((param: PageParam) => string
   const stalled = (!!pages && nothingNew(pages.at(-1), pages)) || (skip && ahead && !!hasNextPage && (pages?.length ?? 0) >= SKIP_PAGES);
   const more = !!hasNextPage && !(skip && reached) && !stalled;
   const body: PagedBody | undefined = list && { list, hasMore: more, loading: isFetching, more: more && !isFetching ? () => void fetchNextPage() : null, stalled };
-  return { body, stamp: `${q.dataUpdatedAt}:${isFetching}:${pages?.length ?? 0}` };
+  return { body, stamp: `${q.dataUpdatedAt}:${q.status}:${isFetching}:${pages?.length ?? 0}`, error: q.isError, refetch: q.refetch };
 }
 
 /**
@@ -313,7 +337,8 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     // A phase-2 read only once the probe found that Relay: today's gets the probe's one 404, nothing else.
     enabled: !!accountId && !!route && (source === "probe" ? sources.length > 0 : sources.includes(source) && (phase2 || !V2_ONLY.includes(source))),
     staleTime: source === "probe" ? Infinity : 60_000,
-    retry: false,
+    // The probes never: today's Relay answers their 404 at once.
+    ...(source === "probe" ? { retry: false } : RETRY),
   });
   const fixedRoute = (s: StatSource) => statsRoute(s, { startApi: "", endApi: "" });
   const [startQ, probeQ, probe3Q] = useQueries({
@@ -349,7 +374,10 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     // eslint-disable-next-line react-hooks/rules-of-hooks
     usePaged(accountId, sources.includes(s) && ready && (v2 || !V2_ONLY.includes(s)) ? (param) => listRoute(s, p, param, x) : null, (last, pages) => nextParam(s, last, pages, x), p, !!skipAhead[s]),
   );
-  const stamp = [...results.map((r) => r.dataUpdatedAt), ...lists.map((l) => l.stamp), probeQ.dataUpdatedAt].join(",");
+  const stamp = [...results.map((r) => `${r.dataUpdatedAt}:${r.status}`), ...lists.map((l) => l.stamp), probeQ.dataUpdatedAt].join(",");
+  // The page's reads still failing after their retries: Retry asks only these again.
+  const failed = [...results.filter((r, i) => r.isError && sources.includes(ALL_SOURCES[i])), ...lists.filter((l, i) => l.error && sources.includes(PAGED[i]))];
+  const retry = failed.length ? () => failed.forEach((q) => void q.refetch()) : null;
   // OF opens each page on its default tabs (the top countries collapsed, Posts on Purchases).
   useEffect(() => resetPicks(), [src]);
 
@@ -366,7 +394,7 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
       if (!doc?.body) return;
       bindMenu(doc, p, userStart);
       bindPicks(doc);
-      applyStats(doc, page, data, p, { picks: pk, v2, v3, me, accountId, img: (u) => proxyImage(u, accountId) });
+      applyStats(doc, page, data, p, { picks: pk, v2, v3, me, accountId, img: (u) => proxyImage(u, accountId), retry });
     };
     if (frame.contentDocument?.readyState === "complete") apply();
     frame.addEventListener("load", apply);

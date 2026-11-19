@@ -279,6 +279,11 @@ export interface PerModelRow {
    *  `net_revenue_by_kind` splits it by bucket (optional: an older relay leaves it out). `net_missing_count` counts the rows with no net figure yet, which the net total leaves out. */
   total_net_revenue_cents: number;
   net_revenue_by_kind?: PerModelRevenueByKind;
+  /** The part of each bucket above (gross, and OnlyFans' net) Creator reports' channels leave out: stream sales,
+   *  tips other than plain ones, unknown kinds (reportsMath `bucketOf`'s `other`). Optional: an older relay leaves
+   *  them out. */
+  other_by_kind?: Partial<PerModelRevenueByKind>;
+  net_other_by_kind?: Partial<PerModelRevenueByKind>;
   net_missing_count: number;
   /** Sum of amount_cents where status='loading' in the window. Always
    *  present (zero is a valid value). Renders as a dim sub-line under

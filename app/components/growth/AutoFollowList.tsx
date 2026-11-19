@@ -14,8 +14,8 @@
  *
  * Counts: Total and Last followed are lifetime; Today / Yesterday / 7 days /
  * 30 days count from the follow log, cut at midnight in the browser's zone.
- * Last followed reads "3 h ago", the full date on hover. On a phone the table keeps
- * Creator, Total, Today and the switch (no sideways scroll); the rest is md and up.
+ * Last followed reads "3 h ago", the full date on hover. Too wide for the screen (a phone),
+ * the table scrolls sideways under the pinned switch column, whose left shadow says so.
  */
 
 import { useMemo, useState } from "react";
@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/infloww";
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { errMsg } from "@/components/growth/_bits";
+import { PIN_SHADOW } from "@/components/growth/LinksListFrame";
 import {
   useAutoFollowRecords, useAutoFollowStats, useAutoFollowSwitch,
   type AutoFollowStatsRow, type RecordQuery, type RecordSort,
@@ -81,8 +82,6 @@ const NO_FILTERS: { creator: string; onFilter: OnFilter } = { creator: "all", on
 const RESET = "border-accent text-accent";
 /** Infloww's column widths (Total follows 120, Last followed 200, Action 80). */
 const W = { total: "max-md:whitespace-normal max-md:leading-tight md:w-[120px]", last: "w-[200px]", action: "w-[80px]" };
-/** The columns a phone drops. */
-const MD = "hidden md:table-cell";
 
 export default function AutoFollowList({ accounts, accountsLoading = false }: {
   accounts: AccountMeta[];
@@ -158,11 +157,11 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
               <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>Creator name</th>
               <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, W.total)}>Total follows</th>
               <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>Today</th>
-              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, MD)}>Yesterday</th>
-              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, MD)}>7 days</th>
-              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, MD)}>30 days</th>
-              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, MD, W.last)}>Last followed</th>
-              <th className={cn(IF_TABLE.th, "sticky right-0", W.action)}>Action</th>
+              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>Yesterday</th>
+              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>7 days</th>
+              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>30 days</th>
+              <th className={cn(IF_TABLE.th, IF_TABLE.thDivider, W.last)}>Last followed</th>
+              <th className={cn(IF_TABLE.th, PIN_SHADOW, "sticky right-0", W.action)}>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -188,13 +187,13 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
                   </td>
                   <td className={IF_TABLE.td}>{s?.total ?? 0}</td>
                   <td className={IF_TABLE.td}>{s?.today ?? 0}</td>
-                  <td className={cn(IF_TABLE.td, MD)}>{s?.yesterday ?? 0}</td>
-                  <td className={cn(IF_TABLE.td, MD)}>{s?.d7 ?? 0}</td>
-                  <td className={cn(IF_TABLE.td, MD)}>{s?.d30 ?? 0}</td>
-                  <td className={cn(IF_TABLE.td, MD, "whitespace-nowrap")}>
+                  <td className={IF_TABLE.td}>{s?.yesterday ?? 0}</td>
+                  <td className={IF_TABLE.td}>{s?.d7 ?? 0}</td>
+                  <td className={IF_TABLE.td}>{s?.d30 ?? 0}</td>
+                  <td className={cn(IF_TABLE.td, "whitespace-nowrap")}>
                     <LastFollowed iso={s?.last_followed_at ?? null} />
                   </td>
-                  <td className={cn(IF_TABLE.td, "sticky right-0 bg-bg")} onClick={(e) => e.stopPropagation()}>
+                  <td className={cn(IF_TABLE.td, PIN_SHADOW, "sticky right-0 bg-bg")} onClick={(e) => e.stopPropagation()}>
                     <IfSwitch aria-label={`Auto-follow ${label}`} checked={on}
                       disabled={sw.isPending || stats.isLoading}
                       onChange={(enable) => sw.mutate({ accountId: account.id, enable })} />

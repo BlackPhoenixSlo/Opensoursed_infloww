@@ -271,6 +271,22 @@ describe("ChattingStatsTable", () => {
     expect([k.value, k.wired]).toEqual([value, wired]);
   });
 
+  it("says why scheduled hours read \"-\" when the Timesheet refuses the range (422), under the card's label", async () => {
+    owner = true;
+    const base = fetchMock.getMockImplementation() as (url: string) => Promise<Response>;
+    fetchMock.mockImplementation(async (url: string) => String(url).split("?")[0] === "/admin/shifts/timesheet"
+      ? jsonRes({ detail: "the range is at most 42 days" }, 422) : base(url));
+    renderWithProviders(<ChattingStatsTable from={FROM} to={TO} />);
+    const card = () => screen.getByRole("group", { name: "Total number of scheduled hours" });
+    await waitFor(() => expect(within(card()).getByText("Not shown: the range is at most 42 days.")).toBeInTheDocument());
+    expect(within(card()).getByText("-")).toBeInTheDocument();
+    expect(card()).not.toHaveAttribute("title");
+    const k = chattingKpis([ROW], null, false, "x").find((c) => c.label === "Total number of scheduled hours")!;
+    expect([k.value, k.note]).toEqual(["-", "Not shown: x."]);
+    expect(chattingKpis([ROW], [], false, "x").find((c) => c.label === "Total number of scheduled hours")!.note)
+      .toBeUndefined();
+  });
+
   it("formats response times", () => {
     expect([fmtReplyTime(null), fmtReplyTime(45.4), fmtReplyTime(185), fmtReplyTime(7620)])
       .toEqual(["—", "45s", "3m 05s", "2h 07m"]);

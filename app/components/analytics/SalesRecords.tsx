@@ -94,7 +94,7 @@ import { InfoTip } from "@/components/ui/InfoTip";
 
 const ROUTE = "/admin/stats/sales-records";
 
-/** The sale kinds the attribution view carries, with their Type labels. */
+/** The sale kinds the read lists (service/sales_attribution.py `CREDITED_KINDS`), with their Type labels. */
 export const SALES_TYPES: { kind: string; label: string }[] = [
   { kind: "ppv", label: "PPV" },
   { kind: "ppv_message", label: "PPV message" },
@@ -104,6 +104,10 @@ export const SALES_TYPES: { kind: string; label: string }[] = [
   { kind: "tip_post", label: "Tip on post" },
   { kind: "tip_stream", label: "Tip on stream" },
   { kind: "custom", label: "Custom" },
+  // Credited too since Employee reports credit each kind by its Sales Settings rule (`CREDITED_KINDS`).
+  { kind: "subscription", label: "Subscription" },
+  { kind: "rebill", label: "Rebill" },
+  { kind: "referral", label: "Referral" },
 ];
 
 const RULE_LABELS: Record<string, string> = {
@@ -206,6 +210,9 @@ function fmtWhen(iso: string, timeZone: string | null): string {
 
 const CELL = cn(IF_TABLE.td, "whitespace-nowrap py-2 h-12");
 const HEAD = cn(IF_TABLE.th, IF_TABLE.thDivider);
+/** Action pins right from `sm` up; on a phone a pinned 122px column left the rest a sliver ("E" for Employee), so
+ *  there it scrolls with the row (RuleTable's precedent). */
+const UNPIN_PHONE = "max-sm:static max-sm:shadow-none max-sm:[html[data-theme=light]_&]:shadow-none";
 
 /** The batch bar: how many sales are selected, a picker, "Reassign selected" and "Clear selection". */
 function BatchReassign({ txIds, employees, capped, onDone }: {
@@ -341,7 +348,7 @@ export default function SalesRecords() {
                   ) : c}
                 </th>
               ))}
-              {user && <th className={cn(HEAD, IF_TABLE.fixedRightHead)}>Action</th>}
+              {user && <th className={cn(HEAD, IF_TABLE.fixedRightHead, UNPIN_PHONE)}>Action</th>}
             </tr>
           </thead>
           <tbody>
@@ -378,7 +385,7 @@ export default function SalesRecords() {
                     </span>
                   </td>
                   {user && (
-                    <td className={cn(CELL, IF_TABLE.fixedRight)}>
+                    <td className={cn(CELL, IF_TABLE.fixedRight, UNPIN_PHONE)}>
                       <ReassignCell txId={r.tx_id} employees={pickers} />
                     </td>
                   )}
@@ -393,7 +400,9 @@ export default function SalesRecords() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
+      {/* On a phone it wraps, so Export drops under the filters instead of running off the edge; from `sm` up the
+          filters shrink and wrap beside it. */}
+      <div className="flex items-start justify-between gap-4 max-sm:flex-wrap">
         <div className="flex flex-wrap items-center gap-2">
           <span title="not wired">
             <IfSelect aria-label="Creator tag" value="" options={[]} onChange={() => {}} disabled

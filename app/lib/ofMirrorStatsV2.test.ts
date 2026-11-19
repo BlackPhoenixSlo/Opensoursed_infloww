@@ -6,14 +6,14 @@
 import { readFileSync } from "node:fs";
 import type { OfMe } from "./ofMirrorIdentity";
 import { promotionText } from "./ofMirrorStatsReach";
-import { streakTime } from "./ofMirrorStatsOverview";
+import { streakCounts, streakTime } from "./ofMirrorStatsOverview";
 import { bindUserLists, drawPair, usersLink, usersRoute } from "./ofMirrorStatsKit";
 import { durationText, postStatRows, postStatsProbe, postStatsRoute } from "./ofMirrorStatsPostStat";
 import { ELSEWHERE } from "./ofMirrorTooltip";
 import { relay, RelayError } from "./relay";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { PICK_DEFAULTS, applyStats, firstMarker, listRoute, nextParam, periodOf, startOf, statsRoute, type PagedBody, type Picks, type StatsData } from "./ofMirrorStats";
+import { PICK_DEFAULTS, applyStats, firstMarker, listRoute, nextParam, periodOf, retryable, startOf, statsRoute, type PagedBody, type Picks, type StatsData } from "./ofMirrorStats";
 import { barColor, chartSpecOf, chartTooltip, fansChartOf, fansTooltip, linesOf, nextLabel, sectorColors, sectorsOf } from "./ofMirrorChart";
 
 const capture = (p: string) => readFileSync(resolve(__dirname, `../public/of-mirror/pages/${p}.html`), "utf8");
@@ -298,10 +298,40 @@ describe("Overview", () => {
     applyStats(doc, "statistics/overview/streaks", BASE, D30);
     expect(texts(doc, "[data-oi-streaks-clean] .empty-message")).toEqual([NOT_YET]);
   });
+  it("Activity Streak counts as OF's activeStreak: days + today + every rest day (today's too), yesterday's only once today was active", () => {
+    const now = new Date("2026-10-17T10:00:00Z");
+    const active = (frozenDays: string[]) => [{ isActive: true, daysCount: 10, frozenDays }];
+    const top = { isActive: true, daysCount: 10 };
+    expect(streakCounts(active(["2026-09-01T00:00:00+00:00", "2026-10-17T01:00:00+00:00"]), top, { chats: 4 }, now, "UTC")).toEqual({ current: 13, longest: 13, today: true });
+    expect(streakCounts(active(["2026-09-01T00:00:00+00:00", "2026-10-16T00:00:00+00:00"]), top, { chats: 0 }, now, "UTC")).toEqual({ current: 11, longest: 11, today: false });
+    expect(streakCounts(active(["2026-10-16T00:00:00+00:00"]), { isActive: false, daysCount: 20, frozenDays: ["a", "b"] }, { posts: 1 }, now, "UTC").longest).toBe(22);
+  });
+  it("Activity Streak tabs carry OF's own streak-tab CSS (its chunk is not in the dump): the counts are not in the tab row's font-size 0", () => {
+    const doc = load("statistics/overview/streaks");
+    applyStats(doc, "statistics/overview/streaks", { ...BASE, streaks: fixture("streaks"), streaksTop: fixture("streaks-top"), todayActivity: fixture("today-activity") }, D30);
+    const count = doc.querySelector("[data-oi-streaks] .b-streak-tab__count")!;
+    expect(getComputedStyle(count).fontSize).toBe("22px");
+    expect(getComputedStyle(count.closest(".b-streak-tab")!).fontSize).toBe("14px");
+  });
 });
 
 describe("Engagement", () => {
   const OV = fixture<Record<string, unknown>>("overview");
+  it("Summary cards: the sidebar sparkline drawn from the overview's chartData in OF's SummaryBlock colour", () => {
+    const pts = (a: number, b: number) => [{ date: "2026-10-10T00:00:00+00:00", count: a }, { date: "2026-10-11T00:00:00+00:00", count: b }];
+    const side = ".l-wrapper__sidebar .m-chart-summary canvas";
+    const cases: [page: string, data: StatsData, title: string, color: string, counts: number[]][] = [
+      ["engagement/posts", { posts: { posts: { count: { total: 8 }, chartData: pts(3, 5) } } }, "Posts", "#00aff0", [3, 5]],
+      ["engagement/messages", { messages: { massMessages: { count: { total: 9 }, chartData: pts(4, 5) } } }, "Messages", "#ffa000", [4, 5]],
+      ["reach/profile-visitors", { visitors: { visitors: { chartData: pts(6, 7) } } }, "Profile visitors", "#8d96a2", [6, 7]],
+    ];
+    for (const [page, data, title, color, counts] of cases) {
+      const doc = load(`statistics/${page}`);
+      applyStats(doc, `statistics/${page}`, { ...BASE, ...data }, D30, { v2: true, picks: picks() });
+      const s = spec(doc, side);
+      expect([page, s?.series.title, s?.series.color.toLowerCase(), s?.series.values.filter((v) => v)]).toEqual([page, title, color, counts]);
+    }
+  });
   it("routes: Messages OF's way (10 a page back from the last date; a search by offset), Posts by offset, Streaming / Stories by tab", () => {
     const x = { v2: true, picks: picks({ msg: "direct" }) };
     expect(listRoute("massMessages", D30, { offset: 0 }, { ...x })).toBe("/api/of/v2/users/me/stats/messages/direct?startDate=2026-09-17+00%3A00%3A00&endDate=2026-10-17+10%3A00%3A00&limit=10&offset=0");
@@ -448,6 +478,26 @@ describe("Reach", () => {
     const th = doc.querySelector<HTMLElement>("th[data-oi-sort='created_date']")!;
     expect(th.classList.contains("m-active")).toBe(true);
   });
+  it("counts grouped (OF's integers, `/profile/stats`' string ones too), a long view duration unwrapped; Tracking links' one-group summary: no trailing comma, its change unsigned", () => {
+    let doc = load("statistics/reach/tracking-links");
+    const list = paged({ list: [{ id: 1, countSubscribers: 1234, countTransitions: 8263, campaignName: "Synthetic big link", createdAt: "2026-10-01T00:00:00+00:00", endDate: null }] });
+    applyStats(doc, "statistics/reach/tracking-links", { ...BASE, ...OV, campaignsList: list, campaignsChart: { ...fixture<object>("campaigns-chart"), total: 1101, delta: -33 } }, D30);
+    expect(rows(doc, "[data-oi-table='campaigns']")[0].slice(3)).toEqual(["8,263", "1,234"]);
+    // OF's CSS puts "," after every summary item but the last of its type: a hidden second one would keep it.
+    expect([...doc.querySelectorAll("[data-oi-summary='campaigns'] .b-engagements-summary__item")].map((e) => e.textContent!.trim())).toEqual(["1,101 Subscribers"]);
+    // OF's ChartSummary prints the change unsigned, its icon the direction (the sidebar's SummaryBlock signs it).
+    const chip = doc.querySelector("[data-oi-summary='campaigns'] .b-statistics-level")!;
+    expect([chip.textContent!.trim(), chip.classList.contains("m-level-down")]).toEqual(["33%", true]);
+    doc = load("statistics/reach/profile-visitors");
+    const totals = { guests: "25389", users: "67216", total: 92605 };
+    applyStats(doc, "statistics/reach/profile-visitors", { ...BASE, profileStats: { topDurationUsers: { totals: { total: 864000 + 2 * 3600 + 56 * 60 } }, topCountries: { totals, rows: [{ rank: 1, countryCode: "SI", countryName: "Slovenia", viewsCount: { guests: "1200", users: 34, total: 1234 } }] } } }, D30);
+    const stat = rows(doc, "table:has(tr[data-oi-template='stat-visitors'])");
+    expect(stat[0]).toEqual(["Profile visitors", "25,389", "67,216", "92,605"]);
+    expect(rows(doc, "table:has(tr[data-oi-template='country'])")[0]).toEqual(["Slovenia", "1,200", "34", "1,234"]);
+    // A long view duration kept on one line (OF's `g-nowrap`).
+    const dur = [...doc.querySelectorAll("tbody > tr")].filter(visible).find((r) => r.querySelector("td")?.textContent?.trim() === "View duration")!;
+    expect([...dur.querySelectorAll("td")].map((td) => [td.textContent!.trim(), td.classList.contains("g-nowrap")]).at(-1)).toEqual(["10d 02h:56m", true]);
+  });
   it("Reach with the phase-1 Relay: Claimed / Subscribers open OF's lists; Tracking links' copy icon copies OF's link", async () => {
     let doc = load("statistics/reach/promotions");
     const me = { subscribePrice: 10, username: "u_creator" } as OfMe;
@@ -493,7 +543,7 @@ describe("Fans", () => {
     const data = { ...BASE, ...OV, subsChart: fixture("subs-chart-renew"), subsLatest: paged(fixture("subs-latest")) };
     applyStats(doc, "statistics/fans/subscriptions", data, D30, { v2: true, picks: picks({ subs: "renew" }) });
     expect([...doc.querySelectorAll<HTMLButtonElement>("[data-oi-pick^='subs:']")].map((b) => [b.textContent!.trim(), b.disabled, b.classList.contains("m-current")])).toEqual([["All", false, false], ["Renews", false, true], ["New subscribers", false, false]]);
-    expect(texts(doc, ".b-statistics-page-content__wrapper > .b-elements-determinant__value")).toEqual(["2 Subscribers $19.98 -20%"]);
+    expect(texts(doc, ".b-statistics-page-content__wrapper > .b-elements-determinant__value")).toEqual(["2 Subscribers $19.98 20%"]);
     expect(texts(doc, "[data-oi-table='subs'] thead th")).toEqual(["Name", "Price", "Price/ Renew date"]);
     expect(rows(doc, "[data-oi-table='subs']")).toEqual([
       ["SF Synthetic Fan D @u_synthetic_d", "free", ""],
@@ -778,5 +828,36 @@ describe("postStatsProbe: the phase-1 Relay's per-item reads, found with a 2xx (
       expect(get).toHaveBeenCalledWith("/api/of/v2/posts/stats", { accountId: "acct-1" });
       get.mockRestore();
     }
+  });
+});
+
+describe("a read that failed", () => {
+  const up = (status: number, upstream: unknown) => new RelayError(status, { detail: { upstream_status: upstream, upstream_body: "" } });
+  it.each<[string, unknown, boolean]>([
+    ["the Relay's 502 for OF's 500", up(502, 500), true],
+    ["the Relay's 502, OF unreachable", up(502, "proxy_unreachable"), true],
+    ["a timeout (504)", up(504, "timeout"), true],
+    ["a busy signed pool (503)", up(503, "signed_pool_busy"), true],
+    ["the network (fetch's TypeError)", new TypeError("Failed to fetch"), true],
+    ["a 5xx without a body", new RelayError(500, "oops"), true],
+    ...[400, 401, 403, 404, 409, 422].map((s) => [`the Relay's ${s}`, new RelayError(s, { detail: "x" }), false] as [string, unknown, boolean]),
+    ...[400, 401, 403, 404, 409, 422].map((s) => [`OF's ${s} behind the Relay's 502`, up(502, s), false] as [string, unknown, boolean]),
+  ])("%s: retryable %s", (_name, err, want) => {
+    expect(retryable(err)).toBe(want);
+  });
+  it("OF's info alert over the content while a read failed, its Retry asks again; gone on the next apply without one", () => {
+    const doc = load("statistics/reach/profile-visitors");
+    const page = "statistics/reach/profile-visitors";
+    const retry = vi.fn();
+    applyStats(doc, page, { ...BASE }, D30, { retry });
+    const notes = [...doc.querySelectorAll("[data-oi-failed]")];
+    expect(notes.map((n) => [n.querySelector("span")!.textContent, n.querySelector("button")!.textContent])).toEqual([["Some figures couldn't be loaded.", "Retry"]]);
+    expect(notes[0].nextElementSibling!.classList.contains("b-statistics-page-content")).toBe(true);
+    applyStats(doc, page, { ...BASE }, D30, { retry }); // idempotent: one notice
+    expect(doc.querySelectorAll("[data-oi-failed]")).toHaveLength(1);
+    doc.querySelector<HTMLButtonElement>("[data-oi-failed] button")!.click();
+    expect(retry).toHaveBeenCalledTimes(1);
+    applyStats(doc, page, { ...BASE }, D30, { retry: null });
+    expect(doc.querySelector("[data-oi-failed]")).toBeNull();
   });
 });

@@ -45,7 +45,8 @@ def _sum(aid, kind, status, gross, net=None, net_missing=0, sales=1):
 NO_READS = dict(acct_rows=[], r_sums=[], top=[], r_new=[], r_act=[], r_msg=[], r_reply=[], r_pending=[],
                 r_spend=[], r_of={}, active_subs_source="unavailable", engagement=False)
 ROW_KEYS = {
-    "account_id", "display_name", "revenue_by_kind", "pending_by_kind", "net_revenue_by_kind", "total_revenue_cents",
+    "account_id", "display_name", "revenue_by_kind", "pending_by_kind", "net_revenue_by_kind", "other_by_kind",
+    "net_other_by_kind", "total_revenue_cents",
     "total_net_revenue_cents", "net_missing_count", "messages_sent", "ppv_conversions", "new_subs_count",
     "active_subs_count", "ltv_cents", "arpu_cents", "pending_revenue_cents", "pending_clears_by", "refunded_cents",
     "refunded_net_cents", "spenders_count", "avg_spend_per_spender_cents", "avg_spend_per_transaction_cents",
@@ -126,6 +127,21 @@ def case_kinds_bucket_and_ppv_conversions_count_ppv_sales():
     assert row["ppv_conversions"] == 5, row
 
 
+def case_other_by_kind_holds_what_creator_reports_channels_leave_out():
+    # Creator reports' Tips / Message = bucket - other (app reportsMath `bucketOf`: streams, unknown kinds are
+    # Total only); the buckets themselves still hold every sale.
+    row = one(pivot([(A, "a")], [
+        _sum(A, "tip", "cleared", 1000, net=800), _sum(A, "tip_stream", "pending", 300, net=240),
+        _sum(A, "ppv_message", "cleared", 500, net=400), _sum(A, "ppv_stream", "cleared", 200, net=160),
+        _sum(A, "custom", "cleared", 70, net=56), _sum(A, "weird", "cleared", 5, net=4),
+        _sum(A, "tip_post", "cleared", 9, net=7), _sum(A, "tip_stream", "refunded", 999, net=799),
+    ], [{"account_id": A, "kind": "ppv_stream", "gross_cents": 40, "net_cents": 30}]), A)
+    assert row["revenue_by_kind"]["tip"] == 1300 and row["revenue_by_kind"]["ppv"] == 740, row
+    assert row["other_by_kind"] == {**dict.fromkeys(BUCKETS, 0), "tip": 300, "ppv": 240, "custom": 5}, row
+    assert row["net_other_by_kind"] == {**dict.fromkeys(BUCKETS, 0), "tip": 240, "ppv": 190, "custom": 4}, row
+    assert spm._off_channel(None) and spm._off_channel("referral") and not spm._off_channel("ppv"), row
+
+
 def case_of_top_up_adds_to_revenue_and_net_only():
     sums = [_sum(A, "ppv_message", "pending", 1000, net=800, sales=4)]
     top = [{"account_id": A, "kind": "tip", "gross_cents": 300, "net_cents": 240},
@@ -152,12 +168,13 @@ def case_zero_traffic_creator_listed_every_field_zero_or_null():
     assert b["revenue_by_kind"] == dict.fromkeys(BUCKETS, 0), b
     assert b["pending_by_kind"] == dict.fromkeys(BUCKETS, 0), b
     assert b["net_revenue_by_kind"] == dict.fromkeys(BUCKETS, 0), b
+    assert b["other_by_kind"] == b["net_other_by_kind"] == dict.fromkeys(BUCKETS, 0), b
     assert b["display_name"] == "b", b
     nulls = {"ltv_cents", "arpu_cents", "active_subs_count", "pending_clears_by", "avg_spend_per_spender_cents",
              "avg_spend_per_transaction_cents", "of_visitors", "of_renewals", "of_new_sub_conversion_pct",
              "of_renew_on", "of_renew_on_pct"}
     for k in ROW_KEYS - {"account_id", "display_name", "revenue_by_kind", "pending_by_kind",
-                              "net_revenue_by_kind"}:
+                              "net_revenue_by_kind", "other_by_kind", "net_other_by_kind"}:
         assert b[k] == (None if k in nulls else 0), (k, b[k])
         assert b[k] is None or type(b[k]) is int, (k, b[k])
 

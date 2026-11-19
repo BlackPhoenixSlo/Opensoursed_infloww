@@ -168,11 +168,15 @@ export const TH = cn(HB_TABLE.th, "text-start whitespace-normal");
 export const TD = cn(HB_TABLE.td, HB_TABLE.row, "overflow-hidden text-ellipsis whitespace-nowrap");
 /** The fixed cells: the head's on the panel colour, the body's on the page colour they sit over. */
 export const STICKY_TD = "bg-hb-bg";
-/** The fixed Actions column's left edge: a 1px rule, then a 24px fade in the cell's own fill over what scrolls under it,
- *  so a head cut there (Fans who spent at 1280) reads as scrolled under, not as running into "Actions". Pseudo-elements
- *  on the sticky cell: under border-collapse Chrome draws neither its border-l nor a box-shadow. */
-const EDGE = "after:absolute after:inset-y-0 after:left-0 after:w-px after:bg-border after:content-[''] "
-  + "before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-6 before:bg-linear-to-l before:to-transparent before:content-['']";
+/** A fixed right column's scroll cue: a shadow cast left of it (IF_TABLE.fixedRight's look), from a transparent
+ *  `after:` box over the cell: under border-collapse Chrome draws neither a sticky cell's border-l nor its box-shadow. */
+export const PIN_SHADOW = "after:pointer-events-none after:absolute after:inset-0 after:content-[''] "
+  + "after:shadow-[-8px_0_8px_-4px_rgba(0,0,0,.5)] [html[data-theme=light]_&]:after:shadow-[-8px_0_8px_-4px_rgba(0,0,0,.2)]";
+/** The fixed Actions column's left edge: a 1px rule with PIN_SHADOW, then a 24px fade in the cell's own fill over
+ *  what scrolls under it, so a head cut there (Earnings at 1280) reads as scrolled under, not as running into
+ *  "Actions", and the shadow says there is more to scroll to. */
+const EDGE = cn(PIN_SHADOW, "after:border-l after:border-border "
+  + "before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-6 before:bg-linear-to-l before:to-transparent before:content-['']");
 const ACTIONS_EDGE_HEAD = cn(EDGE, "before:from-panel");
 const ACTIONS_EDGE = cn(EDGE, "before:from-hb-bg");
 /** The list's fit: 12px sides on the metric cells, a 200px name, a 160px Actions. */

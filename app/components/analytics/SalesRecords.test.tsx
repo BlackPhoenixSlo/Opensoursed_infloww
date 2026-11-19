@@ -180,6 +180,25 @@ describe("SalesRecords", () => {
     ]);
   });
 
+  it("offers and labels every credited kind, Subscription, Rebill and Referral included, and filters by them", async () => {
+    onePage = [{ ...LOOSE_ROW, tx_id: 101, kind: "rebill" }, { ...LOOSE_ROW, tx_id: 102, kind: "subscription" }];
+    renderWithProviders(<SalesRecords />);
+    const table = await screen.findByRole("table");
+    await waitFor(() => expect(within(table).getAllByRole("row").slice(1).map((r) => cells(r)[8]))
+      .toEqual(["Rebill", "Subscription"]));
+    expect(await optionsOf("Sales types")).toEqual(expect.arrayContaining(["Subscription", "Rebill", "Referral"]));
+    await pick("Sales types", "Subscription");
+    await waitFor(() => expect(last().getAll("kind")).toEqual(["subscription"]));
+  });
+
+  it("pins Action right from sm up only: on a phone it scrolls with the row", async () => {
+    renderWithProviders(<SalesRecords />);
+    const table = await screen.findByRole("table");
+    expect(within(table).getByRole("columnheader", { name: "Action" }).className).toContain("max-sm:static");
+    const [, first] = within(table).getAllByRole("row");
+    expect(within(first).getAllByRole("cell").at(-1)!.className).toMatch(/\bsticky\b.*max-sm:static/);
+  });
+
   it("labels every relay status as Infloww does: Complete, Pending, Reverse, Refunded", async () => {
     onePage = ["cleared", "pending", "chargedback", "refunded", "refund_pending"].map((status, i) => ({
       ...LOOSE_ROW, tx_id: 100 + i, status,

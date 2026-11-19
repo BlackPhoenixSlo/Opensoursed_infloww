@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { EmployeeSalesPoint } from "@/hooks/useStats";
-import { useChartWidth } from "@/components/stats/chart";
+import { useChartWidth, xLabelPos } from "@/components/stats/chart";
 
 
 const dateLabel = (date: string) => new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", {
@@ -17,6 +17,13 @@ const money = (cents: number) => (cents / 100).toLocaleString("en-US", {
  *  this is a prefix; a day still to come has no sales yet, so it keeps its axis slot but no line, marker or tooltip. */
 export const shownPoints = (points: EmployeeSalesPoint[], today?: string) =>
   today ? points.filter((p) => p.start <= today) : points;
+
+/** The days labelled: one per `stride` (a label per 65px of plot), counted back from the last day so the newest day
+ *  is always named (from the first, a phone's 30 days ended on Nov 9 of Nov 18). */
+export function labelled(n: number, plotWidth: number): number[] {
+  const stride = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(plotWidth / 65))));
+  return Array.from({ length: n }, (_, i) => i).filter((i) => (n - 1 - i) % stride === 0);
+}
 
 /** Daily attributed sales, with zero days retained and keyboard-accessible point details. */
 export function EmployeeSalesChart({ points: days, today }: { points: EmployeeSalesPoint[]; today?: string }) {
@@ -43,7 +50,7 @@ export function EmployeeSalesChart({ points: days, today }: { points: EmployeeSa
     if (!i) return `M ${x(i)} ${y(p.revenue_cents)}`;
     return `C ${x(i - 1) + slot / 3} ${y(points[i - 1].revenue_cents) + tangents[i - 1] * slot / 3} ${x(i) - slot / 3} ${y(p.revenue_cents) - tangents[i] * slot / 3} ${x(i)} ${y(p.revenue_cents)}`;
   }).join(" ");
-  const stride = Math.max(1, Math.ceil(days.length / Math.max(1, Math.floor((right - left) / 65))));
+  const labels = labelled(days.length, right - left);
   const detail = (i: number) => {
     const point = points[i], previous = points[i - 1]?.revenue_cents;
     const growth = previous ? `${((point.revenue_cents - previous) / previous * 100).toFixed(2)}%` : "—";
@@ -61,8 +68,8 @@ export function EmployeeSalesChart({ points: days, today }: { points: EmployeeSa
         })}
         {points.length > 0 && <path d={`${path} L ${x(points.length - 1)} ${bottom} L ${x(0)} ${bottom} Z`} className="fill-[#aeb6c5]/[0.06] [html[data-theme=light]_&]:fill-[#3467ff]/[0.06]" />}
         {points.length > 0 && <path role="img" aria-label="Earnings" d={path} fill="none" stroke="#3467ff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />}
-        {days.map((day, i) => i % stride === 0 && <text key={day.start} x={x(i)} y="341" textAnchor="middle"
-          className="fill-muted text-[12px]">{dateLabel(day.start)}</text>)}
+        {labels.map((i) => <text key={days[i].start} {...xLabelPos(dateLabel(days[i].start), x(i), width)} y="341"
+          className="fill-muted text-[12px]">{dateLabel(days[i].start)}</text>)}
         {active !== null && <line x1={x(active)} x2={x(active)} y1={y(points[active].revenue_cents)} y2={bottom} stroke="#3467ff" />}
         {points.map((point, i) => <g key={point.start}>
           <circle cx={x(i)} cy={y(point.revenue_cents)} r={active === i ? 5 : 4} fill="white" stroke="#3467ff" strokeWidth="2" />

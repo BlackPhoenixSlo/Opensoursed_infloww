@@ -192,6 +192,7 @@ export default function CreatorOverview({
               <LineChart
                 height={190}
                 labels={trendPoints.map((p) => p.label)}
+                partial={trendPoints.map((p) => p.partial)}
                 lines={ready && channelLines.length > 0
                   ? channelLines.map((c) => ({ name: c.label, color: c.color, values: c.points.map((p) => p.value) })) : null}
                 // Only Referrals picked and it has no figure: why, not empty axes (as Creator performance's chart).

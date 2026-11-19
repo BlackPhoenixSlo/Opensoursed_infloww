@@ -16,6 +16,11 @@ Env knobs (read at call time):
                              spend in the DB) keeps page 1 and defers the deep history
                              (`history_deferred_at`, cursor NULL); 1 = today's both-ends backfill
                              on every first scrape
+  SCRAPE_SWEEP_BUDGET_S=900  a sweep (no chat/fan ids) starts no new chat after this many
+                             seconds: it ends ok (a `{}` run still marks full_sweep, so the
+                             4h cadence holds) with `budget_stopped`; per-chat cursors carry
+                             the rest to the next sweep. Bounds how long one big creator
+                             holds a bulk slot (public 3536964: 4900 s runs, 11-18). 0 = no cap
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Any, Callable
 
@@ -61,6 +67,17 @@ def _sweep_fail_fast() -> int:
     except ValueError:
         return 5
     return n if n > 0 else 5
+
+
+def _sweep_budget_s() -> float:
+    """Knob SCRAPE_SWEEP_BUDGET_S, read at call time (default 900; 0 or less = no cap)."""
+    try:
+        return float(os.environ.get("SCRAPE_SWEEP_BUDGET_S", "900"))
+    except ValueError:
+        return 900.0
+
+
+_clock = time.monotonic   # seam: tests patch automations.scrape_chats._clock
 
 
 def _eager_history() -> bool:
@@ -695,6 +712,9 @@ async def _automation_scrape_chats(
     messages_inserted = 0
     messages_seen = 0
     deferred_ids: set[int] = set()
+    budget_s = 0.0 if explicit else _sweep_budget_s()
+    started = _clock()
+    chats_left = 0
     if explicit and targets:
         async with get_session() as s:
             deferred_ids = set((await s.execute(select(ScrapeHistory.fan_id).where(
@@ -702,7 +722,12 @@ async def _automation_scrape_chats(
                 ScrapeHistory.fan_id.in_([c for c, _w, _m in targets]),
                 ScrapeHistory.history_deferred_at.is_not(None),
             ))).scalars().all())
-    for chat_id, with_user, is_muted in targets:
+    for n, (chat_id, with_user, is_muted) in enumerate(targets):
+        if budget_s > 0 and n and _clock() - started >= budget_s:
+            chats_left = len(targets) - n
+            log.info("scrape_sweep_budget account=%s stopped after %ds: %d of %d chats left",
+                     account_id, int(budget_s), chats_left, len(targets))
+            break
         try:
             with (of_call_counter.caller(DEFERRED_HISTORY_CALLER) if chat_id in deferred_ids
                   else contextlib.nullcontext()):
@@ -752,6 +777,9 @@ async def _automation_scrape_chats(
         "messages_inserted": messages_inserted,
         "messages_seen": messages_seen,
     }
+    if chats_left:
+        out["budget_stopped"] = True
+        out["chats_left"] = chats_left
     if not payload:
         # Payload exactly `{}`: sweep_cadence anchors the next full sweep on this run
         # (`{"limit": 50}`, a per-fan job, ... never count). Nothing scraped and a chat

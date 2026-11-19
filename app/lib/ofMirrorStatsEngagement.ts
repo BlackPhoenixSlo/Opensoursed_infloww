@@ -177,8 +177,12 @@ export interface EngagementCtx {
 
 /** A messages-chart figure (OF's `<key>.total|delta`) for the tab `t`. */
 const messagesKey = (chart: unknown, key: string, field: "total" | "delta") => (isObj(chart) && isObj(chart[key]) ? `messagesChart:${key}.${field}` : null);
-/** Engagement › Messages' summary from OF's chart for the tab (its messages and their purchases), else the overview's. */
-export const messagesRekey = (chart: unknown, t: string) => (_el: Element, key: string) => {
+/**
+ * Engagement › Messages' chart summary from OF's chart for the tab (its messages and their purchases), else the
+ * overview's. The sidebar Summary (OF's SummaryBlock) always reads the overview's `massMessages`.
+ */
+export const messagesRekey = (chart: unknown, t: string) => (el: Element, key: string) => {
+  if (el.closest(".l-wrapper__sidebar")) return key;
   const map: Record<string, string | null> = {
     "messages:massMessages.count.total": messagesKey(chart, `${t}_messages`, "total"),
     "messages:massMessages.earnings.total": messagesKey(chart, `${t}_messages_purchases`, "total"),

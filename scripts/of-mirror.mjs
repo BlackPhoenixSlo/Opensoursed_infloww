@@ -759,6 +759,10 @@ const THEME_BOOT = `<script>try{if(parent!==window&&parent.document.documentElem
 
 const BODY_CLASSES = new Set(["m-black-body", "m-stream-body"]); // the <body> classes a page keeps
 
+// The streak tabs' CSS chunk (OF's statistics-overview, scope data-v-4cefb516) is not in the dump: its rules, verbatim, or the
+// tabs' counts sit in OF's font-size 0 tab row, invisible.
+const STREAK_CSS = `<style data-oi-streak-css="">.b-streak-tab[data-v-4cefb516]{font-size:14px;line-height:24px;text-transform:none;padding-top:5px}.m-finished-streak .b-streak-tab[data-v-4cefb516],.m-no-streak .b-streak-tab[data-v-4cefb516]{color:#8a96a3}.b-streak-tab .g-icon[data-v-4cefb516]{width:42px;height:42px;flex:0 0 42px;margin-top:-2px}.m-active-streak.m-disabled .b-streak-tab__body[data-v-4cefb516]{color:#0091ea}.b-streak-tab__icon[data-v-4cefb516]{flex:0 0 62px;height:38px;position:relative}.b-streak-tab__icon .g-icon[data-v-4cefb516]{position:absolute;transform:translate(-50%,-50%);top:50%;left:50%}.b-streak-tab__count[data-v-4cefb516]{font-size:22px;line-height:25px;font-weight:500}.b-streak-tab__count.m-color[data-v-4cefb516]{color:#fda700}.m-no-streak .b-streak-tab__count.m-color[data-v-4cefb516]{color:#00aff0}.m-no-streak .b-tabs__nav__link[data-v-4cefb516]{opacity:1}</style>`;
+
 // OF's own layout (left nav + content + right column) applies as is; these only patch what the mirror changes.
 const OVERRIDES = `<style id="of-mirror-overrides">
 /* The "Offer claimed" list's CSS chunk is not in the dump: keep names clear of the avatars. */
@@ -2433,7 +2437,7 @@ function statisticsPage(html, sub) {
         .replace(/(<div\b[^>]*class="b-streaks-swither__btn[^"]*"[^>]*><button\b)/g, (m) => `${m} data-oi-streak-month="${(n++ ? "next" : "prev")}"`)
         .replace(/(<button\b(?:(?!title=)[^>])*\sdisabled="disabled"(?:(?!title=)[^>])*)>/g, `$1 title="${NOT_YET_TITLE}">`)
         .replace(/(<button\b[^>]*\sclass="b-tabs__nav__link[^"]*\bm-current\b[^"]*")/, '$1 data-oi-wired="" data-oi-pick="stab:current"');
-      html = html.slice(0, tabs.at) + `<div class="pt-0 b-separate-section g-negative-sides-gaps g-sides-gaps" data-oi-streaks-clean="">${notYetState("Streaks", "m-mb-14")}</div><div data-oi-streaks="" style="display:none">${own}</div>` + html.slice(box.at + box.el.length);
+      html = html.slice(0, tabs.at) + `${STREAK_CSS}<div class="pt-0 b-separate-section g-negative-sides-gaps g-sides-gaps" data-oi-streaks-clean="">${notYetState("Streaks", "m-mb-14")}</div><div data-oi-streaks="" style="display:none">${own}</div>` + html.slice(box.at + box.el.length);
     }
     html = dropEl(html, "alert-info"); // "Let's start! Take action": the streaks' call
   }

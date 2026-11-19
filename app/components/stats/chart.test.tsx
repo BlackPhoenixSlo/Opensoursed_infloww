@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 
-import { LineChart, xLabelPos } from "@/components/stats/chart";
+import { LineChart, linePaths, niceMax, xLabelPos } from "@/components/stats/chart";
 
 // The y ticks sit 8px left of the plot (x 64); an edge x label is end-anchored too.
 const ticks = (c: HTMLElement) => Array.from(c.querySelectorAll("text[text-anchor='end'][x='64']")).map((t) => t.textContent);
@@ -46,5 +46,35 @@ describe("x labels at the chart's edge", () => {
     );
     const xs = Array.from(container.querySelectorAll("svg text")).filter((t) => /^(Oct|Nov)/.test(t.textContent ?? ""));
     expect(xs.map((t) => t.getAttribute("text-anchor"))).toEqual(["middle", "middle", "end"]);
+  });
+});
+
+describe("niceMax", () => {
+  it.each([
+    ["$800,697 a month: $1.2M, not $2M", 80_069_700, 120_000_000],
+    ["exact step stays", 40_000_000, 40_000_000],
+    ["whole dollars of cents: $4.01 → $8 ($2 steps)", 401, 800],
+    ["a sub-1 step keeps 1, 2, 5", 1, 2],
+    ["nothing: one per grid line", 0, 4],
+  ] as const)("%s", (_name, v, want) => expect(niceMax(v, 4)).toBe(want));
+});
+
+describe("partial buckets", () => {
+  afterEach(cleanup);
+  const at = (i: number) => `${i},0`;
+  it("no partial: one solid path, as before", () =>
+    expect(linePaths([1, 2, 3], at)).toEqual({ solid: "M0,0 L1,0 L2,0", dashed: "" }));
+  it("a short first and last bucket: their segments dashed, the rest solid", () =>
+    expect(linePaths([1, 2, 3, 4], at, ["1 of 30 days", undefined, undefined, "2 of 7 days"]))
+      .toEqual({ solid: "M1,0 L2,0", dashed: "M0,0 L1,0 M2,0 L3,0" }));
+  it("LineChart dashes the last segment and its tooltip says how short", () => {
+    const { container } = render(
+      <LineChart labels={["Nov 4", "Nov 11", "Nov 18"]} message="" partial={[undefined, undefined, "1 of 7 days"]}
+        lines={[{ name: "Tips", color: "#000", values: [5, 6, 1] }]} />,
+    );
+    expect(container.querySelectorAll("path[data-partial]")).toHaveLength(1);
+    const tips = Array.from(container.querySelectorAll("[data-testid='chart-hover'] title")).map((t) => t.textContent);
+    expect(tips[2]).toBe("Nov 18 (1 of 7 days)\nTips: 1");
+    expect(tips[1]).toBe("Nov 11\nTips: 6");
   });
 });
