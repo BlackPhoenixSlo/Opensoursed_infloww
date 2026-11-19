@@ -342,6 +342,13 @@ def peek(namespace: str, account_id: str, key_extras: tuple) -> Any | None:
     return entry[0] if entry is not None else None
 
 
+def peek_fresh(namespace: str, account_id: str, key_extras: tuple) -> Any | None:
+    """The value a read of this key would be served now (held and not expired), or None. No fetch, no hit or miss
+    counted."""
+    entry = _cache.get((namespace, account_id, tuple(key_extras)))
+    return entry[0] if entry is not None and entry[1] > time.monotonic() else None
+
+
 def invalidate(
     namespace: str,
     account_id: str,

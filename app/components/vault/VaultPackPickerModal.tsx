@@ -43,7 +43,7 @@
  * /thumb: the thumb is a 300x300 centre-crop of a 3:4 portrait and feet sit at
  * exactly the edge it discards — judging from the square means judging from less
  * of the picture than the vision model saw. But /image is a relay-side fetch,
- * the relay refetches at VAULT_STILL_CONCURRENCY=6, and a cold pane asking for
+ * the relay refetches at VAULT_STILL_CONCURRENCY=12, and a cold pane asking for
  * 280 at once is the documented route to fd exhaustion, which takes the DB and
  * the send lane down with it. So `useImageSlot` below holds a hard in-flight cap
  * and tiles queue for a turn.
@@ -85,7 +85,7 @@ import { useIfConfirm } from "@/hooks/useIfConfirm";
 import { errText } from "@/lib/errText";
 import { cn } from "@/lib/utils";
 
-/** Strictly below the relay's own VAULT_STILL_CONCURRENCY (6) so the pane can
+/** Strictly below the relay's own VAULT_STILL_CONCURRENCY (12) so the pane can
  *  never be the thing that exhausts it, with headroom for the rest of the app. */
 const MAX_INFLIGHT_IMAGES = 4;
 

@@ -23,14 +23,16 @@ these; `_drain_due_jobs_once` spawns what plan_dispatch returns). No DB, no loop
                                Infinity / 1e400 / NaN ignored (the shell disables the rule at
                                runs >= max_runs); a non-finite every_seconds is no interval.
   case_interval_cadence_table: due at every_seconds since the rule's own last job; a poke
-                               shortens the wait down to min(every, POKE_FLOOR_S), not below.
+                               shortens the wait down to min(every, POKE_FLOOR_S), not below
+                               (plan_rule keeps one under the floor: Repoke).
   case_clock_trigger_table:    a daily_at slot is due once per day after it passes, in the
                                trigger's local offset; a later slot still owed is due.
   case_quiet_hours_table:      inside the creator-local band; wrap, dict form, [0,0], half
                                hours, no clock (never inside), malformed (never inside).
   case_plan_rule_table:        one rule's step: busy (a running poked pair re-pokes), run limit,
                                due, in that precedence; then a band -> CheckQuiet, else Enqueue.
-                               A poke never makes a clock rule due.
+                               A poked interval rule under the floor re-pokes (deferred, not
+                               spent). A poke never makes a clock rule due.
   case_plan_rule_needs_runs:   max_runs set and run_count None -> ValueError (shell invariant).
   case_quiet_plan_table:       the band gate: inside -> Skip; outside -> Enqueue; no clock ->
                                Enqueue(no_clock=True) (the shell warns once).
@@ -205,7 +207,7 @@ def case_interval_cadence_table():
         (3600, 3600, False, True),
         (3600, 4000, False, True),
         (3600, POKE_FLOOR_S, True, True),          # a poke: due from the floor
-        (3600, POKE_FLOOR_S - 1, True, False),     # under the floor: spent, the cadence covers it
+        (3600, POKE_FLOOR_S - 1, True, False),     # under the floor: not due (plan_rule defers it)
         (3600, POKE_FLOOR_S, False, False),        # ... and without the poke, not due
         (30, 29, True, False),                     # floor = min(every, 60) = 30
         (30, 30, False, True),
@@ -272,6 +274,11 @@ def case_plan_rule_table():
         (hourly, None, False, old, None, None, E),
         (hourly, None, False, fresh, None, None, Skip("not_due")),
         (hourly, None, True, fresh, None, None, E),                       # a poke past the floor
+        (hourly, None, True, NOW - timedelta(seconds=POKE_FLOOR_S - 1), None, None,
+         Repoke()),                                                       # under it: deferred
+        (hourly, None, True, NOW - timedelta(seconds=1), None, band, Repoke()),  # band not read yet
+        (Interval(30, None), None, True, NOW - timedelta(seconds=29), None, None, Repoke()),
+        (hourly, None, False, NOW - timedelta(seconds=1), None, None, Skip("not_due")),
         (hourly, "pending", False, None, None, None, Skip("busy")),
         (hourly, "pending", True, None, None, None, Skip("busy")),        # that job will see it
         (hourly, "running", False, None, None, None, Skip("busy")),

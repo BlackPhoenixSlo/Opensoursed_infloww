@@ -11,8 +11,8 @@ runtime reads (`_materialize_due_rules` → `scheduled_jobs` → `run_once`):
 Pages and the request each switch sends:
   /growth/auto-follow       AutoFollowTab "Enabled" + "Dry run" → POST/PATCH
                             /admin/automation-rules (is_enabled, payload.dry_run)
-  /growth/profile-promotion PromoReactivateCard "Enabled" → PATCH rule;
-                            PromotionTab "Keep running" → PATCH /admin/promotions/{id}
+  /growth/profile-promotion PromotionTab "Keep running" → PATCH /admin/promotions/{id}
+                            (the one switch: flag + promo_reactivate rule, test_promotions)
   /growth/auto-story        AutoStoriesTab "Enabled" → PATCH rule (is_enabled)
   /growth/auto-post         ReadyMadePanel row checkbox → PATCH {is_enabled}
                             (auto_posts; the mass_premade tab is the same panel)

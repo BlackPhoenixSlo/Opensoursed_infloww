@@ -187,11 +187,13 @@ async def run(ctx) -> None:
     def jobs() -> list[dict]:
         con = w.sql()
         try:
-            rows = con.execute("SELECT id, account_id, payload_json, status, last_error FROM scheduled_jobs"
-                               " WHERE kind='scrape_chats' ORDER BY id").fetchall()
+            # scrape_fan: a one-fan scrape (enqueue_fan_scrape, its own kind since 90e5e97b4: the sender lane)
+            rows = con.execute("SELECT id, account_id, payload_json, status, last_error, kind FROM scheduled_jobs"
+                               " WHERE kind IN ('scrape_chats', 'scrape_fan') ORDER BY id").fetchall()
         finally:
             con.close()
-        return [{"id": r[0], "account_id": r[1], "payload": r[2], "status": r[3], "last_error": r[4]} for r in rows]
+        return [{"id": r[0], "account_id": r[1], "payload": r[2], "status": r[3], "last_error": r[4], "kind": r[5]}
+                for r in rows]
 
     def open_sweeps(js: list[dict]) -> Counter:
         return Counter(j["account_id"] for j in js if j["payload"] == "{}" and j["status"] in ("pending", "running"))
@@ -293,7 +295,8 @@ async def run(ctx) -> None:
     # (3b) the deferred chats' triggers: a fan reply frame, head reads at user / background priority;
     # a head read of a not-deferred deep chat too. Then supervisor passes run what they enqueued.
     def backfills() -> Counter:
-        return Counter((j["account_id"], fid) for j in jobs() for fid in json.loads(j["payload"]).get("fan_ids", [])
+        return Counter((j["account_id"], fid) for j in jobs() if j["kind"] == "scrape_fan"
+                       for fid in json.loads(j["payload"]).get("fan_ids", [])
                        if json.loads(j["payload"]).get("source") == "deferred_history")
 
     def deferred_now(aid: str, fan: int) -> bool:

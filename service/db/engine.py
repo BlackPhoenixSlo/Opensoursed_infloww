@@ -379,6 +379,12 @@ async def init_db() -> None:
                 conn.execute(text(
                     "INSERT INTO alembic_version (version_num) VALUES ('0001_initial')"
                 ))
+                # A fresh DB has nothing to compact: mark the one-time vault step
+                # done, else the box's SECOND boot (catch-up branch) wipes the
+                # vault cache its first run just filled.
+                conn.execute(text(_DATA_MIGRATIONS_DDL))
+                conn.execute(text("INSERT OR IGNORE INTO data_migrations (name) VALUES (:n)"),
+                             {"n": _VAULT_LIST_STATES_COMPACT})
         else:
             # Cheap idempotent catch-up for additive schema changes: any new
             # tables defined in models.py that aren't in the DB yet get

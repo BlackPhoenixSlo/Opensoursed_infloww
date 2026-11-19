@@ -28,6 +28,8 @@ export type CreatorPick = {
   allLabel?: string;
   /** No "All creators" row: the page always works on one creator. */
   noAll?: boolean;
+  /** "All creators" as a creator row with a rainbow tile, one click; else the menu. */
+  allRow?: boolean;
   /** Watcher accounts, shown after the creators as non-selectable rows. */
   watchers?: WatcherAccount[];
 };
@@ -40,7 +42,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
   className?: string;
   children: ReactNode;
 }) {
-  const { accounts, value, onChange, onAll, allLabel, noAll, watchers } = creators;
+  const { accounts, value, onChange, onAll, allLabel, noAll, allRow, watchers } = creators;
   return (
     // `.h-chat` on the column subtracts the header (`top`) too.
     <div className="flex min-h-0 min-w-0 flex-1" style={{ ["--shell-top" as string]: `calc(var(--chrome-top) + ${top})` }}>
@@ -50,6 +52,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
         onChange={onChange}
         all={onAll && { on: value === null, pick: onAll, label: allLabel }}
         noAll={noAll}
+        allRow={allRow}
         watchers={watchers}
         className="md:flex w-[260px] border-r border-border"
       />

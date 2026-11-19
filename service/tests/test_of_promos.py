@@ -8,7 +8,9 @@ safe_int is int(float(v)): "30.0"/"1e3" parse, bool → 0/1, junk/None/NaN → d
 (BUG, see below). of_field returns the first listed key whose value is not None, else default;
 falsy non-None values (0, "", False) win. normalise_of_promo reads camelCase first, snake_case /
 alt spellings after; missing fields → id None, 0 counts, "" message, type "all"; is_live = not
-isFinished AND canClaim is not False (absent canClaim never kills it); no nested `data` unwrap.
+isFinished AND canClaim is not False (absent canClaim never kills it) AND the claim cap is not
+filled (cap > 0 and claims >= cap; cap 0 = unlimited); finished_at is finishedAt as given; no
+nested `data` unwrap.
 normalise_of_trial: name from name then trialLinkName, url from url/shareUrl/link, liveness off
 isFinished only. promo_type_store sorts to "all", "expired", "all,expired" and ValueErrors on
 empty/unknown; promo_type_body inverts it (unknown parts dropped, empty/None → "all") and
@@ -133,6 +135,13 @@ def test_of_field(item, names, default, want):
     ({"canClaim": 0}, (False, "active", 0)),             # only an explicit False kills
     ({"isFinished": "false"}, (True, "finished", None)),  # bool("false") is True — as coded
     ({"isFinished": 0}, (False, "active", None)),
+    # the claim cap: filled = ended, whatever the flags say; 0 / null = unlimited
+    ({"canClaim": True, "subscribeCounts": 10, "claimsCount": 10}, (True, "finished", True)),
+    ({"canClaim": True, "subscribeCounts": 10, "claimsCount": 11}, (True, "finished", True)),
+    ({"canClaim": True, "subscribeCounts": 10, "claimsCount": 9}, (False, "active", True)),
+    ({"canClaim": True, "subscribeCounts": 0, "claimsCount": 100}, (False, "active", True)),
+    ({"canClaim": True, "subscribeCounts": None, "claimsCount": 100}, (False, "active", True)),
+    ({"subscribeCounts": 1, "claimsCount": 1}, (True, "finished", None)),
 ])
 def test_promo_liveness(item, want):
     p = normalise_of_promo(item)
@@ -142,7 +151,8 @@ def test_promo_liveness(item, want):
 def test_promo_defaults():
     assert normalise_of_promo({}) == {
         "of_promo_id": None, "price_cents": 0, "subscribe_counts": 0, "subscribe_days": 0,
-        "message": "", "promo_type": "all", "created_at": None, "subscriber_count": 0,
+        "message": "", "promo_type": "all", "created_at": None, "finished_at": None,
+        "subscriber_count": 0,
         "can_claim": None, "is_finished": False, "status": "active"}
 
 
@@ -164,6 +174,8 @@ def test_promo_defaults():
     ({"type": "expired"}, "promo_type", "expired"),
     ({"type": None}, "promo_type", "all"),
     ({"createdAt": "2026-07-22"}, "created_at", "2026-07-22"),
+    ({"finishedAt": "2026-07-29T10:00:00+00:00"}, "finished_at", "2026-07-29T10:00:00+00:00"),
+    ({"finishedAt": None}, "finished_at", None),
     ({"claimsCount": 3}, "subscriber_count", 3),
     ({"countSubscribers": 4}, "subscriber_count", 4),
     ({"subscribersCount": "5"}, "subscriber_count", 5),

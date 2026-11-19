@@ -16,7 +16,7 @@
  */
 
 import { useCallback } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
 import { ssePoll } from "@/lib/events";
 import { relay, type OFChatItem } from "@/lib/relay";
@@ -62,6 +62,7 @@ export function useRosterCountsRead(): { counts: Record<string, RosterCount>; se
   const q = useQuery<RosterCountsResp>({
     queryKey: rosterCountsKey(principalId),
     queryFn: async () => {
+      const key = rosterCountsKey(principalId);
       // Stamp BEFORE the network read: any optimistic patchLocal that lands
       // while this poll is in flight stamps a LATER time, and mergeRosterCounts
       // then keeps the fresher local value instead of letting this (now stale)
@@ -70,7 +71,8 @@ export function useRosterCountsRead(): { counts: Record<string, RosterCount>; se
       // the 60s poll revert an instant badge back to a pre-event count.
       const fetchStartedAt = Date.now();
       const resp = await relay.get<RosterCountsResp>("/admin/accounts/roster-counts");
-      const prev = qc.getQueryData<RosterCountsResp>(rosterCountsKey(principalId));
+      // No answer cached yet: a warm's counts that came while this read was in flight (seedWarmedRosterCount).
+      const prev = qc.getQueryData<RosterCountsResp>(key) ?? takeWarmSeed(JSON.stringify(key));
       return mergeRosterCounts(
         resp,
         prev,
@@ -110,6 +112,7 @@ const lastLocalPatchAt = new Map<string, number>();
 /** Tests only: forget the module's refresh cooldowns, in-flight refreshes
  *  and local-patch stamps, so one case's refresh cannot swallow the next's. */
 export function resetRosterCountsModuleState() {
+  warmSeeds.clear();
   lastRefreshAt.clear();
   inFlightRefresh.clear();
   lastLocalPatchAt.clear();
@@ -176,6 +179,39 @@ export function rosterPriorFromRow(row: OFChatItem | null | undefined): RosterPr
   return { wasUnread, fanSpokeLast };
 }
 
+// A warm's counts (`creator_warmed`) for a roster read that has no answer yet: its first answer merges over them
+// (a newer `as_of` kept), so the warm needs no re-read. Keyed by the query hash; taken by that read.
+const warmSeeds = new Map<string, Record<string, RosterCount>>();
+
+export function takeWarmSeed(hash: string): RosterCountsResp | undefined {
+  const seed = warmSeeds.get(hash);
+  warmSeeds.delete(hash);
+  return seed ? { counts: seed } : undefined;
+}
+
+/** A warm's count for one Creator (`creator_warmed` carries it: the relay's `roster_count` entry, with `as_of`),
+ *  written into one cached roster answer instead of re-reading it. Kept out when the cached count is as new
+ *  (`as_of`) or a local patch is newer (mergeRosterCounts; `serverNow` is the event's epoch ms, `receivedAt` this
+ *  tab's clock when it came). No answer cached yet (its first read in flight): seeded for that read instead. */
+export function writeWarmedRosterCount(
+  qc: QueryClient, queryKey: QueryKey, accountId: string, count: RosterCount, serverNow: number | undefined,
+  receivedAt: number,
+): void {
+  const prev = qc.getQueryData<RosterCountsResp>(queryKey);
+  if (!prev) {
+    const hash = JSON.stringify(queryKey);
+    warmSeeds.set(hash, { ...warmSeeds.get(hash), [accountId]: count });
+    return;
+  }
+  const cur = prev.counts?.[accountId];
+  if (cur?.as_of && count.as_of && cur.as_of >= count.as_of) return;
+  const principalId = String(queryKey[1]);
+  qc.setQueryData<RosterCountsResp>(queryKey, mergeRosterCounts(
+    { counts: { [accountId]: count }, now: serverNow }, prev, receivedAt,
+    (aid) => lastLocalPatchAt.get(`${principalId}:${aid}`) ?? 0,
+  ));
+}
+
 /** Pure: fold a fresh server roster response over the currently-cached one,
  *  PRESERVING any per-account value that a local patch (optimistic or SSE) rewrote
  *  after the server's snapshot. `patchedAt(aid)` returns an account's last local-patch
@@ -186,7 +222,8 @@ export function rosterPriorFromRow(row: OFChatItem | null | undefined): RosterPr
  *  dropped); without an `as_of`, `fetchStartedAt` (when this poll began its network read). An account patched AFTER
  *  it keeps its local value, so an Idle Creator's held, older count never jumps a live
  *  badge back. An account the server left out (an Idle Creator it holds nothing for,
- *  e.g. after a Relay restart) keeps its cached value. */
+ *  e.g. after a Relay restart) keeps its cached value, and so does one whose cached
+ *  count has a newer `as_of` (a warm's that came while this read was in flight). */
 export function mergeRosterCounts(
   server: RosterCountsResp | undefined,
   prev: RosterCountsResp | undefined,
@@ -199,7 +236,9 @@ export function mergeRosterCounts(
   const out: Record<string, RosterCount> = { ...serverCounts };
   for (const aid of Object.keys(prevCounts)) {
     const fresh = serverCounts[aid];
-    if (!fresh || patchedAt(aid) > (fresh.as_of ? fresh.as_of - skew : fetchStartedAt)) out[aid] = prevCounts[aid];
+    const held = prevCounts[aid];
+    if (!fresh || patchedAt(aid) > (fresh.as_of ? fresh.as_of - skew : fetchStartedAt)
+      || (fresh.as_of && held.as_of && held.as_of > fresh.as_of)) out[aid] = held;
   }
   return { counts: out };
 }

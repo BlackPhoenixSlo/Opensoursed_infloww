@@ -7,7 +7,9 @@
  * so every reader shares one cache entry. `accountId` null reads nothing (the
  * callers pass null for a Dead-session Creator). A failed read counts 0.
  * Re-read only while this tab leases the Creator; an unleased one reads once
- * armed and then only on its next `creator_warmed` (lib/ofReadGate.ts).
+ * armed and then only on its next `creator_warmed` (lib/ofReadGate.ts), which
+ * carries the warmed count: written into this entry, no read
+ * (hooks/useAccountStateEvents.ts).
  * `staleMs`: how long a read stays fresh (OF Manager's column: 60 s, as Infloww's).
  */
 

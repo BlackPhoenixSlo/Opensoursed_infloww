@@ -2,8 +2,8 @@
 """Event-driven purchase and welcome triggers (roadmap W2 2.10).
 
 A purchase (the 30s purchases poll proving one, or a WS unlock frame) pokes the
-`purchase_followup` rule, and a `subscribed` toast pokes `send_welcome`
-(`automation_executor.poke_rule`). The next materializer pass treats a poked
+`purchase_followup` rule, and a `subscribed` toast pokes `send_welcome` and
+`promo_reactivate` (`automation_executor.poke_rule`). The next materializer pass treats a poked
 interval rule as due without waiting for its cadence, and changes nothing
 else. Pinned here against the real materializer and a temp DB:
 
@@ -12,12 +12,12 @@ else. Pinned here against the real materializer and a temp DB:
   • no double-fire: repeated pokes over repeated passes give ONE job; a poke
     while that job is still pending adds nothing and is spent; a poke while it
     RUNS fires once more after it, never during it;
-  • the floor: a poke within min(every_seconds, 60 s) of the last fire is
-    spent without firing, and the cadence covers it;
+  • the floor: a poke within min(every_seconds, 60 s) of the last fire does
+    not fire yet; it is kept and fires on the first pass past the floor;
   • no rule, a disabled rule, or quiet hours: a poke enqueues nothing;
   • the hooks: a fresh purchase notification pokes once, its re-sighting and
-    a stale one do not; a `subscribed` toast pokes send_welcome and a
-    `favorited` one does not; a WS unlock frame pokes purchase_followup.
+    a stale one do not; a `subscribed` toast pokes send_welcome and
+    promo_reactivate, a `favorited` one does not; a WS unlock frame pokes purchase_followup.
 
 No network: no OF client is built, nothing runs a job.
 
@@ -42,7 +42,7 @@ import purchase_notifications as pn  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, AccountAiConfig, AutomationRule, ScheduledJob  # noqa: E402
 
-FOLLOWUP, WELCOME = "purchase_followup", "send_welcome"
+FOLLOWUP, WELCOME, PROMO = "purchase_followup", "send_welcome", "promo_reactivate"
 _STEPS = {"enabled": False, "text": "thanks {name}"}   # never sends: no job runs here
 _N = 0
 
@@ -151,21 +151,40 @@ async def case_a_poke_during_a_run_fires_once_after_it_never_during():
     assert [j.status for j in jobs] == ["done", "pending"], [j.status for j in jobs]
 
 
-async def case_a_poke_under_the_floor_is_spent_and_the_cadence_covers_it():
+async def case_a_poke_under_the_floor_is_deferred_to_the_first_pass_past_it():
     aid = await _rule(WELCOME, every=300)
     await ax._materialize_due_rules()
     await _set_status(aid, "done")
     await _age(aid, 10)                        # last fire 10 s ago: under the 60 s floor
     ax.poke_rule(aid, WELCOME)
-    await ax._materialize_due_rules()
-    assert len(await _jobs(aid, WELCOME)) == 1, "a poke under the floor fired the rule"
-    assert ax._poked == set(), "the floored poke was kept"
+    for _ in range(2):                         # passes under the floor: no job, poke kept
+        await ax._materialize_due_rules()
+        assert len(await _jobs(aid, WELCOME)) == 1, "a poke under the floor fired the rule"
+        assert (aid, WELCOME) in ax._poked, "the floored poke was spent"
     await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
     await ax._materialize_due_rules()
-    assert len(await _jobs(aid, WELCOME)) == 1, "the spent poke fired later"
-    await _age(aid, 301)                       # the cadence backstop
+    jobs = await _jobs(aid, WELCOME)
+    assert [j.status for j in jobs] == ["done", "pending"], [j.status for j in jobs]
+    assert ax._poked == set(), ax._poked       # fired: spent now
+    await _set_status(aid, "done")
+    await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
     await ax._materialize_due_rules()
-    assert len(await _jobs(aid, WELCOME)) == 2
+    assert len(await _jobs(aid, WELCOME)) == 2, "the deferred poke fired twice"
+
+
+async def case_a_deferred_poke_is_cleared_when_its_rule_goes_off():
+    aid = await _rule(WELCOME, every=300)
+    await ax._materialize_due_rules()
+    await _set_status(aid, "done")
+    await _age(aid, 10)
+    ax.poke_rule(aid, WELCOME)
+    await ax._materialize_due_rules()
+    assert (aid, WELCOME) in ax._poked
+    async with get_session() as s:
+        await s.execute(update(AutomationRule).where(AutomationRule.account_id == aid)
+                        .values(is_enabled=False))
+    await ax._materialize_due_rules()
+    assert ax._poked == set(), "a poke with no enabled rule was kept"
 
 
 async def case_no_rule_a_disabled_rule_or_quiet_hours_enqueue_nothing():
@@ -226,7 +245,7 @@ async def case_a_fresh_purchase_pokes_the_followup_once_and_never_on_a_re_sighti
         pn._flip_paid, ownership.try_stamp_message = orig_flip, orig_stamp
 
 
-async def case_a_subscribed_toast_pokes_the_welcome_and_other_toasts_do_not():
+async def case_a_subscribed_toast_pokes_the_welcome_and_promo_and_other_toasts_do_not():
     with _Pokes() as p:
         await event_transcoder.transcode({"toasts": [{"type": "favorited", "data": {}}],
                                           "__account_id": "evt_toast"})
@@ -235,10 +254,10 @@ async def case_a_subscribed_toast_pokes_the_welcome_and_other_toasts_do_not():
             "toasts": [{"id": 1, "type": "subscribed", "title": "New subscriber",
                         "data": {"relatedUser": {"id": 77, "name": "Al"}}}],
             "__account_id": "evt_toast"})
-        assert p.seen == [("evt_toast", WELCOME)], p.seen
+        assert p.seen == [("evt_toast", WELCOME), ("evt_toast", PROMO)], p.seen
         await event_transcoder.transcode({"toasts": {"type": "subscribed"},
                                           "__account_id": "evt_toast2"})
-        assert p.seen[-1] == ("evt_toast2", WELCOME), p.seen
+        assert p.seen[-2:] == [("evt_toast2", WELCOME), ("evt_toast2", PROMO)], p.seen
 
 
 async def case_a_ws_unlock_frame_pokes_the_followup():

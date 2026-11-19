@@ -1,7 +1,7 @@
 /**
  * Growth's Profile promotion on Infloww's legacy page (page-parity ticket 12): Create promotion in its pop-up with
- * Infloww's/OF's fields (the body OF Manager sends), Auto-activate campaign, Add fans to list, Campaign insights'
- * table with Show expired, Deactivate behind Infloww's confirm, the pager, bundles under it; a promotion's Revenue
+ * Infloww's/OF's fields (the body OF Manager sends) and Keep running, the Auto-activate status row, Add fans to
+ * list, Campaign insights' table with Show expired, Deactivate behind Infloww's confirm, the pager, bundles under it; a promotion's Revenue
  * "from N fans" from the relay's cache. The free trial links tests are in TrialLinksTab.test.tsx.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -96,9 +96,32 @@ describe("PromotionTab", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", {
       account_id: "a1", name: "Fall", discount: 30, subscribe_counts: 0, subscribe_days: 14, finish_days: 14,
-      message: "", promo_type: ["all", "expired"],
+      message: "", promo_type: ["all", "expired"], auto_reactivate: true,
     }));
     expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it("Create's Keep running is ticked by default; unticked it sends auto_reactivate false", async () => {
+    mount(<PromotionTab accountId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    const keep = within(dlg).getByRole("checkbox", { name: /Keep running/ }) as HTMLInputElement;
+    expect(keep.checked).toBe(true);
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    fireEvent.click(keep);
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", expect.objectContaining({ name: "Week", auto_reactivate: false })));
+  });
+
+  it("a create the relay could not arm still closes, and says why Keep running is off", async () => {
+    post.mockResolvedValue({ id: 3, auto_reactivate: false, auto_reactivate_refused: "this campaign isn't linked to an OnlyFans promo" });
+    mount(<PromotionTab accountId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    expect(await screen.findByText("Created, but Keep running is off: this campaign isn't linked to an OnlyFans promo.")).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Create promotion" })).toBeNull();
   });
 
   it("lists only campaigns on offer until Show expired, in Infloww's table with bundles under it", async () => {
@@ -140,45 +163,44 @@ describe("PromotionTab", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
-  it("draws the Auto-activate campaign row with its switch", async () => {
-    mount(<PromotionTab accountId="a1" />);
-    const row = await screen.findByRole("region", { name: "Auto-activate campaign" });
-    expect(within(row).getByText("Enable to automatically reactivate your promotions when they expire")).toBeTruthy();
-    expect(within(row).getByRole("switch", { name: "Auto-activate campaign" })).toBeTruthy();
-  });
-
-  it("Auto-activate is the one control: no Keep promos running card; switching on creates the rule, dry run on", async () => {
-    mount(<PromotionTab accountId="a1" />);
-    const row = await screen.findByRole("region", { name: "Auto-activate campaign" });
-    expect(screen.queryByText("Keep promos running")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Create automation" })).toBeNull();
-    expect(await within(row).findByText("1 campaign set to keep running")).toBeTruthy();
-    fireEvent.click(within(row).getByRole("switch", { name: "Auto-activate campaign" }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/automation-rules", {
-      account_id: "a1", kind: "promo_reactivate", name: "Keep promos running", every_seconds: 3600,
-      payload: { max_reactivations: 0, dry_run: true }, is_enabled: true,
-    }));
-  });
-
-  it("Settings opens the engine's knobs in a pop-up; Save writes them to the existing rule", async () => {
-    const rule = { id: 9, kind: "promo_reactivate", is_enabled: true, every_seconds: 3600,
-      payload: { dry_run: true, max_reactivations: 0 }, last_run: null };
+  const withRule = (rule: Record<string, unknown> | null) => {
     const base = get.getMockImplementation()!;
     get.mockImplementation((path: string) =>
-      path.startsWith("/admin/automation-rules") ? Promise.resolve({ rules: [rule] }) : base(path));
+      path.startsWith("/admin/automation-rules") ? Promise.resolve({ rules: rule ? [rule] : [] }) : base(path));
+  };
+  const RULE = { id: 9, kind: "promo_reactivate", is_enabled: true, every_seconds: 3600,
+    payload: { dry_run: false, cooldown_minutes: 2, max_reactivations: 0 },
+    last_run: { status: "ok", stats: { reactivated: 1, errors: 0 }, started_at: null, error_text: null } };
+
+  it("Auto-activate is a read-only status row: no switch, Settings or Check now; Keep running is the one control", async () => {
+    withRule(RULE);
     mount(<PromotionTab accountId="a1" />);
     const row = await screen.findByRole("region", { name: "Auto-activate campaign" });
-    await waitFor(() => expect(within(row).getByRole("switch", { name: "Auto-activate campaign" })).toHaveAttribute("aria-checked", "true"));
-    expect(within(row).getByText(/Dry run: reports only/)).toBeTruthy();
-    fireEvent.click(within(row).getByRole("button", { name: "Settings" }));
-    const dlg = screen.getByRole("dialog", { name: "Auto-activate settings" });
-    fireEvent.click(within(dlg).getByRole("switch", { name: /Dry run/ }));
-    fireEvent.change(within(dlg).getByRole("spinbutton", { name: "Check every (minutes)" }), { target: { value: "30" } });
-    fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/automation-rules/9", {
-      is_enabled: true, every_seconds: 1800, payload: { max_reactivations: 0, dry_run: false },
-    }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Auto-activate settings" })).toBeNull());
+    expect(await within(row).findByText("Keeping “Live week” running")).toBeTruthy();
+    await waitFor(() => expect(within(row).getByText(/Last check:/)).toBeTruthy());
+    expect(within(row).queryByRole("switch")).toBeNull();
+    expect(within(row).queryByRole("button")).toBeNull();
+    expect(within(row).queryByRole("alert")).toBeNull();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, Record<string, unknown> | null, string]>([
+    ["missing", null, "missing"],
+    ["off", { ...RULE, is_enabled: false }, "off"],
+    ["an old dry-run rule", { ...RULE, payload: { dry_run: true } }, "in dry run"],
+  ])("warns when a campaign is ticked but its rule is %s", async (_name, rule, word) => {
+    withRule(rule);
+    mount(<PromotionTab accountId="a1" />);
+    const row = await screen.findByRole("region", { name: "Auto-activate campaign" });
+    expect((await within(row).findByRole("alert")).textContent).toContain(`automation is ${word}`);
+  });
+
+  it("ticking Keep running on a row is the one switch (PATCH; the relay owns the rule)", async () => {
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
+    fireEvent.click(screen.getByRole("checkbox", { name: /Keep running/ }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { auto_reactivate: false }));
+    expect(post).not.toHaveBeenCalledWith("/admin/automation-rules", expect.anything());
   });
 });
 

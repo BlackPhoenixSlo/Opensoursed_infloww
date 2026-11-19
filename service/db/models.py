@@ -3585,6 +3585,12 @@ class PromoCampaign(Base):
     auto_reactivate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     reactivate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_reactivated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # The offer expiration the operator asked for (OF `finishDays`, 0 = none,
+    # NULL = not sent): the re-create sends it back. expires_at (naive UTC) is
+    # OF's `finishedAt` when it gave a future one, else created + finish_days,
+    # else NULL; promo_reactivate schedules its re-check just past it.
+    finish_days: Mapped[int | None] = mapped_column(Integer)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = _ts_now()
 
     __table_args__ = (

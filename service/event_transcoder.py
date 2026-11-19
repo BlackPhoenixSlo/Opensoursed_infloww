@@ -162,8 +162,11 @@ async def _transcode_toast(account_id: Any, payload: Any) -> None:
         if _has_subscribe_toast(payload):
             # A new subscriber: the welcome sweep need not wait out its
             # cadence (W2 2.10). welcome_sent keeps it one welcome per fan.
+            # A claim may also have filled or ended the kept promo, so its
+            # re-check runs now too (one OF list read; no rule = no-op).
             from automation_executor import poke_rule  # lazy: the executor is heavy
             poke_rule(account_id, "send_welcome")
+            poke_rule(account_id, "promo_reactivate")
     _log_unknown("toasts", payload)
 
 

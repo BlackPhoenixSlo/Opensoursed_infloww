@@ -278,8 +278,8 @@ SSE_TYPES = frozenset({
     "chat_queue_update",
     "chat_queue_finish",
     "chat_responded",
-    # The App-open warm read a Creator (app_open_warm; any-scope): the tab re-reads its
-    # notif lists, notif count and roster counts from the warmed cache.
+    # The App-open warm read a Creator (app_open_warm; any-scope): the tab writes the roster and
+    # notif counts it carries and re-reads the notif lists it read before the warm.
     "creator_warmed",
 }) | STATE_TYPES
 

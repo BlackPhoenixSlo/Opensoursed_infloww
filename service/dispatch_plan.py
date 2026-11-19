@@ -137,7 +137,8 @@ def interval_due(every: int | float, last_fired: datetime | None, now: datetime,
                  poked: bool) -> bool:
     """An interval rule is due once its own last job (`last_fired`, the cadence anchor) is
     `every` seconds old, or never fired. A poke only shortens the wait down to
-    min(every, POKE_FLOOR_S); one landing sooner is spent and the cadence picks it up."""
+    min(every, POKE_FLOOR_S); one landing sooner is not due yet, and plan_rule keeps it
+    (Repoke) for the first pass past the floor."""
     if last_fired is None:
         return True
     age = (now - last_fired).total_seconds()
@@ -280,8 +281,9 @@ class Skip:
 
 @dataclass(frozen=True)
 class Repoke:
-    """A poked pair's job is running: that run may predate the event, so keep the poke for
-    the pass after it (and skip this one)."""
+    """Keep a poke for a later pass and skip this one: the pair's job is running (that run
+    may predate the event), or the poke landed under the floor (interval_due), so it fires
+    on the first pass past it instead of waiting out the whole cadence."""
 
 
 @dataclass(frozen=True)
@@ -309,7 +311,8 @@ def plan_rule(trig: Trigger, *, busy: Busy | None, poked: bool, last_fired: date
     (account, kind), or None; `poked`: an event poked the pair; `last_fired`: the rule's own
     last job (the cadence anchor); `run_count`: the pair's runs, required when
     `trig.max_runs` is set (None otherwise). Gate order: busy, run limit, due; then a set
-    band is CheckQuiet, else Enqueue."""
+    band is CheckQuiet, else Enqueue. A poked interval rule that is not due yet (under the
+    floor) is Repoke, so the shell keeps the poke."""
     if busy is not None:
         return Repoke() if busy == "running" and poked else Skip("busy")
     if trig.max_runs is not None:
@@ -325,7 +328,8 @@ def plan_rule(trig: Trigger, *, busy: Busy | None, poked: bool, last_fired: date
         case _:
             assert_never(trig)
     if not due:
-        return Skip("not_due")
+        # A poke under the floor is deferred, not spent: the event still owes a run.
+        return Repoke() if poked and isinstance(trig, Interval) else Skip("not_due")
     if quiet_hours_json:
         return CheckQuiet(quiet_hours_json)
     return Enqueue(no_clock=False)

@@ -27,11 +27,9 @@ browser's read would send, null for the /admin routes; past the deadline
 """
 from __future__ import annotations
 
-import base64
 import json
 import time
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
 
 from fastapi import APIRouter, Query, Request, Response
 
@@ -42,6 +40,7 @@ import relay_host
 import saved_replies_api
 import sensitive_words_api
 import vault_sends_api
+import vault_stills
 from screens_api import DEADLINE_MAX_MS, DEADLINE_MS, Read, deadline_at, run_screen
 
 router = APIRouter()
@@ -52,23 +51,6 @@ THUMBS = 6         # the newest media tiles a phone's first screen shows (the cl
 LACKS = ("savedReplies", "sensitiveWords")
 
 
-def _expired(url: str, now: float) -> bool:
-    """A CloudFront-signed URL past its expiry (canned `Expires=`, or a custom Policy's DateLessThan
-    AWS:EpochTime). Anything unparseable counts as fresh: /img decides."""
-    q = parse_qs(urlsplit(url).query)
-    try:
-        if "Expires" in q:
-            return float(q["Expires"][0]) < now
-        if "Policy" in q:
-            raw = q["Policy"][0].replace("-", "+").replace("_", "=").replace("~", "/")
-            pol = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)))
-            exp = pol["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"]
-            return float(exp) < now
-    except Exception:  # noqa: BLE001
-        return False
-    return False
-
-
 def thumbs(seed: Any, now: float | None = None) -> list[str]:
     """The seed page's photo thumbnails (the URL MessageMedia paints: a video's tile is its still), newest message
     first, at most THUMBS, none expired."""
@@ -77,7 +59,7 @@ def thumbs(seed: Any, now: float | None = None) -> list[str]:
     for m in (seed or {}).get("messages") or []:
         for med in m.get("media") or []:
             u = med.get("thumb_url") if med.get("type") == "photo" else None
-            if u and not _expired(u, now) and u not in out:
+            if u and not vault_stills.signed_url_expired(u, now) and u not in out:
                 out.append(u)
             if len(out) >= THUMBS:
                 return out

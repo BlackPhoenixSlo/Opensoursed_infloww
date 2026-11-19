@@ -7,7 +7,8 @@
  * "Promotion campaigns" with the primary "Create promotion" (Infloww's `CreatePromotionModal`, 520px: User type,
  * Promotion type, Offer limit, Offer expiration, Free trial duration or Discount percent, Message; the body is OF
  * Manager's own promotionBody), the tips box, then "Campaign insights": Show expired, the antd table (Promo / Claims /
- * Revenue / Actions) and its pager, 10 a page; then the settings rows, "Auto-activate campaign" (`PromoReactivateCard`)
+ * Revenue / Actions) and its pager, 10 a page; then the settings rows, "Auto-activate campaign" (`PromoReactivateCard`,
+ * a read-only status: the per-campaign Keep running tick is the one switch, on by default in Create promotion)
  * and "Add fans to list" (`PromoListRow`, Infloww's account-level switch and list). Infloww puts the two rows above
  * Campaign insights; ours lead with the campaigns, the page's reason (UI flow audit C33). OF is the source of truth; a local mirror keeps the
  * operator's name, the discount (OF does not echo it) and the Keep running switch.
@@ -19,7 +20,7 @@
  * campaign, and Subscription bundles under the table (Infloww has them in OF Manager's settings).
  */
 
-import { Fragment, useState } from "react";
+import { Fragment, useReducer, useState } from "react";
 import { Info, RotateCw } from "lucide-react";
 
 import { Badge, ExtraTag } from "@/components/ui/primitives";
@@ -41,9 +42,10 @@ import OfferClaimers from "@/components/growth/OfferClaimers";
 import { DASH, aeps, money, share, updatedAgo } from "@/components/growth/linkMetrics";
 import { claimsText, discountSteps, offerDate, promoAudience, promoOffer, visibleOffers } from "@/components/growth/offerFormat";
 import {
-  EXPIRATIONS, PROMOTION_DEFAULTS, PROMO_DURATIONS, PROMO_LIMITS, discountDisabled, promotionBody,
+  EXPIRATIONS, PROMO_DURATIONS, PROMO_LIMITS, discountDisabled, promotionBody,
   type Audience, type PromotionForm,
 } from "@/lib/ofMirrorOffers";
+import { INITIAL_CREATE, buildPayload, canSubmit, createPromotionReducer } from "@/components/growth/createPromotionForm";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { ofErrorMessage } from "@/lib/ofMirrorWrites";
 import { cn } from "@/lib/utils";
@@ -108,6 +110,8 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
 
   const [creating, setCreating] = useState(false);
   const [details, setDetails] = useState<string | null>(null);
+  /** Why the campaign just created could not keep running (the create still went through). */
+  const [refused, setRefused] = useState<string | null>(null);
   const { showExpired, page, set, setPage } = usePagedFilters({ showExpired: false });
 
   const campaigns = promosQ.data?.campaigns ?? [];
@@ -133,6 +137,7 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
           <IfButton variant="primary" onClick={() => setCreating(true)} disabled={!accountId}>Create promotion</IfButton>
         </div>
         <Tips />
+        {refused && <div role="status" className="text-[14px] text-warn">Created, but Keep running is off: {refused}.</div>}
         {!ofAvailable && !promosQ.isLoading && accountId && (
           <Unreachable text="OnlyFans not reachable — showing saved campaigns only." />
         )}
@@ -258,7 +263,7 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
 
       <SubscriptionBundles accountId={accountId} />
 
-      {creating && <CreatePromotionModal accountId={accountId} onClose={() => setCreating(false)} />}
+      {creating && <CreatePromotionModal accountId={accountId} onClose={() => setCreating(false)} onCreated={setRefused} />}
       {confirm.modal}
     </div>
   );
@@ -283,16 +288,17 @@ function Row({ label, htmlFor, children }: { label: string; htmlFor?: string; ch
 
 /** `CreatePromotionModal`: 520px, label over control, Cancel then Create. The line over the footer says what
  *  OnlyFans will be asked to run (ours, in place of a second confirm). */
-function CreatePromotionModal({ accountId, onClose }: { accountId: string | null; onClose: () => void }) {
+function CreatePromotionModal({ accountId, onClose, onCreated }: {
+  accountId: string | null; onClose: () => void; onCreated: (refused: string | null) => void;
+}) {
   const meQ = useOfMe(accountId);
   const createM = useCreatePromotion(accountId);
-  const [name, setName] = useState("");
-  const [form, setForm] = useState<PromotionForm>(PROMOTION_DEFAULTS);
-  const [err, setErr] = useState<string | null>(null);
+  const [state, dispatch] = useReducer(createPromotionReducer, INITIAL_CREATE);
+  const { name, form, keepRunning, err } = state;
   const price = Number(meQ.data?.subscribePrice ?? 0);
   // OF disables First-month discount when its smallest step would take the price under OF's minimum.
   const noDiscount = price > 0 && discountDisabled(price);
-  const set = (patch: Partial<PromotionForm>) => setForm((f) => ({ ...f, ...patch }));
+  const set = (patch: Partial<PromotionForm>) => dispatch({ type: "edit", patch });
 
   const body = promotionBody(form);
   const offer = form.kind === "trial"
@@ -302,16 +308,13 @@ function CreatePromotionModal({ accountId, onClose }: { accountId: string | null
   const ends = form.expiration ? `on offer for ${form.expiration} day${form.expiration === 1 ? "" : "s"}` : "no expiration";
 
   async function create() {
-    setErr(null);
-    if (!name.trim()) { setErr("Name is required."); return; }
+    dispatch({ type: "clear" });
+    if (!canSubmit(state)) { dispatch({ type: "failed", err: "Name is required." }); return; }
     try {
-      await createM.mutateAsync({
-        name: name.trim(), discount: body.discount, subscribe_counts: body.subscribe_counts,
-        subscribe_days: body.subscribe_days, finish_days: body.finish_days, message: body.message.trim(),
-        promo_type: body.type,
-      });
+      const out = await createM.mutateAsync(buildPayload(state));
+      onCreated(out?.auto_reactivate_refused ?? null);
       onClose();
-    } catch (e) { setErr(ofErrorMessage(e) ?? errMsg(e, "Create failed")); }
+    } catch (e) { dispatch({ type: "failed", err: ofErrorMessage(e) ?? errMsg(e, "Create failed") }); }
   }
 
   return (
@@ -331,7 +334,7 @@ function CreatePromotionModal({ accountId, onClose }: { accountId: string | null
       <div className="flex flex-col gap-5">
         <Row label="Name" htmlFor="promo-new-name">
           <span className="flex items-center gap-2">
-            <IfInput id="promo-new-name" className="flex-1" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Summer free week" />
+            <IfInput id="promo-new-name" className="flex-1" value={name} onChange={(e) => dispatch({ type: "name", value: e.target.value })} placeholder="e.g. Summer free week" />
             <ExtraTag />
           </span>
         </Row>
@@ -372,6 +375,12 @@ function CreatePromotionModal({ accountId, onClose }: { accountId: string | null
             onChange={(e) => set({ message: e.target.value })} placeholder="Shown with the promotion" />
           <span className="self-end text-[12px] text-fg-dim tabular-nums">{form.message.length}/{MESSAGE_MAX}</span>
         </Row>
+        {/* Ours: on by default; the new campaign takes Keep running from any other. */}
+        <label className="inline-flex items-center gap-2 text-[14px] text-fg cursor-pointer" title={EXTRA_LABEL}>
+          <input type="checkbox" checked={keepRunning} onChange={(e) => dispatch({ type: "keepRunning", on: e.target.checked })}
+            className="w-3.5 h-3.5 rounded accent-accent cursor-pointer" />
+          Keep running <span className="text-fg-dim">— re-create it when it ends</span>
+        </label>
         <p className="text-[12px] text-fg-dim">
           Creates a real OnlyFans promotion: {offer}, {promoAudience(body.type.join(",")).toLowerCase()}, {cap}, {ends}.
         </p>

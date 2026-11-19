@@ -275,9 +275,12 @@ def wake_supervisor() -> None:
 #
 # FLOOR: a poke fires the rule only once its last job is at least
 # min(every_seconds, dispatch_plan.POKE_FLOOR_S) old, so a stream of events cannot turn a
-# long cadence into a sweep per event. A poke under the floor is spent; the
-# cadence covers it. (purchase_followup's cadence IS 60 s, so there a poke only
-# saves the wait for the supervisor's next tick.)
+# long cadence into a sweep per event. A poke under the floor is deferred, not
+# spent: the plan (dispatch_plan.Repoke) keeps it for the first pass past the
+# floor, so an event right after a run waits at most the floor plus one tick,
+# not a whole cadence. Only an enabled rule's loop re-adds it, so a poke for a
+# pair with no enabled rule is cleared. (purchase_followup's cadence IS 60 s, so
+# there a poke only saves the wait for the supervisor's next tick.)
 _poked: set[tuple[str, str]] = set()
 
 
@@ -622,7 +625,7 @@ async def _materialize_due_rules() -> int:
                     plan.band, await _account_clock(s, acct, offsets, now), now)
             match plan:
                 case dispatch_plan.Repoke():
-                    _poked.add(pair)   # that run may predate the event: fire once more after it
+                    _poked.add(pair)   # running, or under the floor: fire once more later
                     continue
                 case dispatch_plan.Skip(reason="quiet_hours"):
                     log.info("automation_rule_quiet_hours rule_id=%s account=%s kind=%s",

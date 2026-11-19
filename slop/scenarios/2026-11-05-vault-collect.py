@@ -25,7 +25,7 @@ Checks (lib/vault_collect_faults.py names):
                          in RAM; exempt past MAX_SKIP_S). CDN thumbs already queued behind the user are excluded.
   collect_fills_mirror   per quiet Creator: latest auto run done/auto:done, vault_items == the fake's count,
                          /admin/vault-ai/cache/summary complete + count, the picker's hot keys in vault_response_cache.
-  collect_thumbs_warm    per quiet Creator: the thumbs store holds exactly the newest 100 media; no image /
+  collect_thumbs_warm    per quiet Creator: the thumbs store holds every media (all links live); no image /
                          poster / storyboard file; every CDN fetch a thumb, every one 200.
   collect_resume         the restarted relay's first walk page for the stopped Creator is the persisted cursor,
                          no walk offset fetched twice but that one, the walk reaches auto:done, mirror complete.
@@ -90,7 +90,6 @@ BUSY_FRAC = 0.6
 CDN_LATENCY_S = 0.05
 LINGER_S = 15.0
 SPAN_GAP_S = 20.0
-HOT_THUMBS = 100
 TOL_S = 0.05
 STALE_S = 21600           # vault_collect's default, not shortened here
 WAIT_S = 360.0            # one walk in flight (<= a full walk) + the re-warm's run + the next rival's start, with room
@@ -314,7 +313,7 @@ async def run(ctx):
     warm_bad = {}
     for a in quiet:
         have = {p.name for p in (stills / "thumbs" / a).glob("*")} if (stills / "thumbs" / a).is_dir() else set()
-        want = {f"{m}.jpg" for m in vw.newest(a, HOT_THUMBS)}
+        want = {f"{m}.jpg" for m in vw.newest(a, n_items)}
         other = [str(p) for sub in ("images", "posters", "storyboards") for p in (stills / sub).rglob(f"*{a}*")]
         if have != want or other:
             warm_bad[a] = {"have": len(have), "want": len(want), "extra": sorted(have - want)[:3],

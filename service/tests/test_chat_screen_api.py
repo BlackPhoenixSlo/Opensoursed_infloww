@@ -23,6 +23,7 @@ import accounts as account_registry  # noqa: E402
 import employees  # noqa: E402
 import server  # noqa: F401, E402  (loads every router)
 import chat_screen_api  # noqa: E402
+import vault_stills  # noqa: E402
 
 IDS = fx.seed_two_agencies()
 A1, B1 = IDS["creator_a"], IDS["creator_b"]
@@ -178,9 +179,9 @@ def case_thumbs_fresh_photos_newest_first_at_most_six():
     ]}
     got = chat_screen_api.thumbs(seed, now=now)
     assert got == [fresh] + [f"https://public.onlyfans.com/{i}.jpg" for i in range(5)], got
-    assert chat_screen_api._expired(old, now) and not chat_screen_api._expired(fresh, now)
-    assert not chat_screen_api._expired("https://cdn2.onlyfans.com/a.jpg?Policy=%%%", now)   # unreadable: /img decides
-    assert chat_screen_api._expired("https://x/a.jpg?Expires=10", now)
+    assert vault_stills.signed_url_expired(old, now) and not vault_stills.signed_url_expired(fresh, now)
+    assert not vault_stills.signed_url_expired("https://cdn2.onlyfans.com/a.jpg?Policy=%%%", now)   # unreadable: /img decides
+    assert vault_stills.signed_url_expired("https://x/a.jpg?Expires=10", now)
 
 
 def case_the_backfill_answers_the_new_history():

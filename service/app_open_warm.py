@@ -3,7 +3,8 @@ The App-open warm (ADR-0031, phase-01 1b): when an Employee opens Inflowwww on a
 `POST /admin/view-lease` of a document load carries `opened: true`), every Creator they can access
 gets ONE refresh, so the first screen anyone sees is current, even for Creators they never open.
 As each Creator's reads land it publishes `creator_warmed`; every tab that can access the Creator
-(events_decide.ANY_SCOPE_TYPES) re-reads its rail, bell and strip entries from the warmed cache.
+(events_decide.ANY_SCOPE_TYPES) writes the roster and notifications counts it carries and re-reads, from the warmed
+cache, only the rail and bell entries it read before the warm.
 
   The one gate: every read this module makes goes through ONE queue per proxy exit (`proxies.egress_identity`
   of the Creator's client, the ledger pacer's exit key; "direct" without one), shared by every caller (`start`
@@ -145,8 +146,17 @@ def current(account_id: str) -> bool:
 
 
 def _publish(account_id: str) -> None:
-    events.publish({"creator_warmed": {"account_id": account_id,
-                                       "at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+    """`creator_warmed`, with what the warmed entries serve now (server.app_open_warm_values: the roster count and
+    the notifications count, when held) and `now` (epoch ms, the tab's clock-skew reference): the tab writes those
+    instead of re-reading them."""
+    try:
+        values = _server().app_open_warm_values(account_id)
+    except Exception:  # noqa: BLE001 — the event still goes; the tab re-reads what it lacks
+        log.debug("app_open_warm_values failed account=%s", account_id, exc_info=True)
+        values = {}
+    now = datetime.now(timezone.utc)
+    events.publish({"creator_warmed": {"account_id": account_id, "at": now.isoformat(timespec="seconds"),
+                                       "now": int(now.timestamp() * 1000), **values},
                     "__account_id": account_id})
 
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 type Handler = (e: Record<string, unknown>, type: string) => void;
 const handlers = new Map<string, Set<Handler>>();
@@ -25,14 +25,14 @@ vi.mock("@/lib/events", () => ({
 
 import { makeTestQueryClient } from "@/test-utils";
 import { isArmed, resetReadGate } from "@/lib/ofReadGate";
-import { COALESCE_MS, RESYNC_MIN_MS, SALES_MIN_MS, useAccountStateEvents } from "./useAccountStateEvents";
+import { resetRosterCountsModuleState } from "./useRosterCounts";
+import { COALESCE_MS, RESYNC_MIN_MS, SALES_MIN_MS, useAccountStateEvents, warmMark } from "./useAccountStateEvents";
 
 function emit(type: string, e: Record<string, unknown> = {}) {
   act(() => { for (const fn of handlers.get(type) ?? []) fn(e, type); });
 }
 
-function mount() {
-  const qc = makeTestQueryClient();
+function mount(qc = makeTestQueryClient()) {
   const spy = vi.spyOn(qc, "invalidateQueries").mockResolvedValue();
   renderHook(() => useAccountStateEvents(), {
     wrapper: ({ children }: { children: ReactNode }) => (
@@ -106,27 +106,95 @@ describe("useAccountStateEvents", () => {
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
-  it("re-reads a warmed Creator's rail, bell and strip entries, gathered per window; arms its reads at once", () => {
-    resetReadGate();
-    const { keys } = mount();
-    const warmed = (aid: string) => ({ __account_id: aid, creator_warmed: { account_id: aid, at: "2026-11-09T10:00:00Z" } });
-    emit("creator_warmed", warmed("7"));
-    emit("creator_warmed", warmed("8"));
-    emit("creator_warmed", warmed("7"));
-    expect(keys()).toEqual([]);
-    expect([isArmed("7"), isArmed("8"), isArmed("9")]).toEqual([true, true, false]);
-    act(() => { vi.advanceTimersByTime(COALESCE_MS); });
-    expect(keys()).toEqual([
-      ["notif-list", "7"], ["of-notif-count", "7"], ["roster-counts"],
-      ["notif-list", "8"], ["of-notif-count", "8"],
-    ]);
-  });
+  describe("creator_warmed", () => {
+    const warmed = (aid: string, extra: Record<string, unknown> = {}) =>
+      ({ __account_id: aid, creator_warmed: { account_id: aid, at: "2026-11-09T10:00:00Z", ...extra } });
+    const ROSTER = ["roster-counts", "u1"];
+    const qcKeep = () => new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false, staleTime: 0 } } });
+    /** A query with no data and no read (an unarmed reader's entry, lib/ofReadGate `off`). */
+    const empty = (qc: QueryClient, queryKey: unknown[]) => qc.getQueryCache().build(qc, { queryKey });
+    /** A query whose read is in flight; `end()` lands it. */
+    function inFlight(qc: QueryClient, queryKey: unknown[], data: unknown) {
+      let end!: () => void;
+      void qc.fetchQuery({ queryKey, queryFn: () => new Promise((r) => { end = () => r(data); }) });
+      return () => act(async () => { end(); await Promise.resolve(); await Promise.resolve(); });
+    }
+    beforeEach(() => { resetReadGate(); resetRosterCountsModuleState(); });
 
-  it("ignores a warm with no Creator", () => {
-    const { keys } = mount();
-    emit("creator_warmed", { creator_warmed: {} });
-    act(() => { vi.advanceTimersByTime(COALESCE_MS); });
-    expect(keys()).toEqual([]);
+    it.each([
+      // [case, state, hasValue, want]
+      ["a read in flight: re-read (it may predate the warm)", { fetchStatus: "fetching", dataUpdatedAt: 5, errorUpdatedAt: 0 }, true, "must"],
+      ["data, the event carries the value: written", { fetchStatus: "idle", dataUpdatedAt: 5, errorUpdatedAt: 0 }, true, "write"],
+      ["no data, the event carries the value: written (an unarmed count's first read)", { fetchStatus: "idle", dataUpdatedAt: 0, errorUpdatedAt: 0 }, true, "write"],
+      ["data, no value: re-read unless a read ends first", { fetchStatus: "idle", dataUpdatedAt: 5, errorUpdatedAt: 0 }, false, "unless"],
+      ["an error, no value: re-read unless a read ends first", { fetchStatus: "idle", dataUpdatedAt: 0, errorUpdatedAt: 5 }, false, "unless"],
+      ["never read, no value: nothing (its first read is the warm's)", { fetchStatus: "idle", dataUpdatedAt: 0, errorUpdatedAt: 0 }, false, "skip"],
+    ] as const)("warmMark: %s", (_n, s, hasValue, want) => {
+      expect(warmMark(s, hasValue)).toBe(want);
+    });
+
+    it("writes the counts it carries; re-reads only lists read before it, gathered per window; arms at once", () => {
+      const qc = qcKeep();
+      qc.setQueryData(ROSTER, { counts: { 7: { unread: 0, owe_reply: 0, as_of: 100 }, 9: { unread: 4, owe_reply: 0, as_of: 100 } } });
+      qc.setQueryData(["of-notif-count", "7"], 1);
+      qc.setQueryData(["notif-list", "7", "tip"], { list: [] });         // read before the warm
+      empty(qc, ["notif-list", "8", "tip"]);                              // unarmed: never read
+      empty(qc, ["of-notif-count", "8"]);
+      const { keys } = mount(qc);
+      emit("creator_warmed", warmed("7", { roster: { unread: 2, owe_reply: 1, as_of: 200 }, notif_count: 5, now: Date.now() }));
+      emit("creator_warmed", warmed("8", { roster: { unread: 1, owe_reply: 0, as_of: 200 }, notif_count: 3, now: Date.now() }));
+      expect([isArmed("7"), isArmed("8"), isArmed("9")]).toEqual([true, true, false]);
+      expect((qc.getQueryData(ROSTER) as { counts: unknown }).counts).toEqual({
+        7: { unread: 2, owe_reply: 1, as_of: 200 }, 8: { unread: 1, owe_reply: 0, as_of: 200 }, 9: { unread: 4, owe_reply: 0, as_of: 100 },
+      });
+      expect([qc.getQueryData(["of-notif-count", "7"]), qc.getQueryData(["of-notif-count", "8"])]).toEqual([5, 3]);
+      expect(keys()).toEqual([]);
+      act(() => { vi.advanceTimersByTime(COALESCE_MS); });
+      expect(keys()).toEqual([["notif-list", "7", "tip"]]);
+    });
+
+    it("without values (an old relay, an expired entry): re-reads what it holds, not what it never read", () => {
+      const qc = qcKeep();
+      qc.setQueryData(ROSTER, { counts: {} });
+      qc.setQueryData(["of-notif-count", "7"], 1);
+      empty(qc, ["notif-list", "7", "tip"]);
+      const { keys } = mount(qc);
+      emit("creator_warmed", warmed("7"));
+      emit("creator_warmed", warmed("7"));
+      act(() => { vi.advanceTimersByTime(COALESCE_MS); });
+      expect(keys()).toEqual([ROSTER, ["of-notif-count", "7"]]);
+    });
+
+    it("a list read ending after it is not re-read; one in flight when it came is, even after that read ends", async () => {
+      const qc = qcKeep();
+      qc.setQueryData(["notif-list", "7", "tip"], { list: [] });
+      const endPurchases = inFlight(qc, ["notif-list", "7", "purchases"], { list: [] });
+      const { keys } = mount(qc);
+      emit("creator_warmed", warmed("7"));
+      // A read of the tip list starts and ends after the warm came: served the warm's entry.
+      await act(async () => { await qc.fetchQuery({ queryKey: ["notif-list", "7", "tip"], queryFn: async () => ({ list: [1] }) }); });
+      await endPurchases();
+      act(() => { vi.advanceTimersByTime(COALESCE_MS); });
+      expect(keys()).toEqual([["notif-list", "7", "purchases"]]);
+    });
+
+    it("a roster read in flight when it came: written, no re-read (that read's merge keeps the newer as_of)", () => {
+      const qc = qcKeep();
+      qc.setQueryData(ROSTER, { counts: { 7: { unread: 0, owe_reply: 0, as_of: 100 } } });
+      inFlight(qc, ROSTER, { counts: {} });
+      const { keys } = mount(qc);
+      emit("creator_warmed", warmed("7", { roster: { unread: 2, owe_reply: 1, as_of: 200 }, now: Date.now() }));
+      expect((qc.getQueryData(ROSTER) as { counts: Record<string, unknown> }).counts[7]).toEqual({ unread: 2, owe_reply: 1, as_of: 200 });
+      act(() => { vi.advanceTimersByTime(COALESCE_MS); });
+      expect(keys()).toEqual([]);
+    });
+
+    it("ignores a warm with no Creator", () => {
+      const { keys } = mount();
+      emit("creator_warmed", { creator_warmed: {} });
+      act(() => { vi.advanceTimersByTime(COALESCE_MS); });
+      expect(keys()).toEqual([]);
+    });
   });
 
   it("invalidates account-state queries at once", () => {

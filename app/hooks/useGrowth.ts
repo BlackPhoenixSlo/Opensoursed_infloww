@@ -470,7 +470,7 @@ export function usePromotions(accountId: string | null) {
 export function useCreatePromotion(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<
-    PromoCampaign, Error,
+    PromoCampaign & { auto_reactivate_refused?: string }, Error,
     {
       name: string; discount: number; subscribe_counts: number;
       subscribe_days: number; message?: string;
@@ -478,11 +478,13 @@ export function useCreatePromotion(accountId: string | null) {
       promo_type?: string | string[];
       /** Offer expiration in days, 0 = none (OF's finishDays). */
       finish_days?: number;
+      /** Keep running: moves the flag onto the new campaign; refused (created unarmed) says why. */
+      auto_reactivate?: boolean;
     }
   >({
     mutationFn: (body) =>
-      relay.post<PromoCampaign>("/admin/promotions", { account_id: accountId, ...body }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: [PROMO_KEY, accountId] }),
+      relay.post<PromoCampaign & { auto_reactivate_refused?: string }>("/admin/promotions", { account_id: accountId, ...body }),
+    onSuccess: () => invalidatePromos(qc, accountId),
   });
 }
 
@@ -494,7 +496,13 @@ export function useDeletePromotion(accountId: string | null) {
   });
 }
 
-/** Toggle "keep this promo running" for one campaign. */
+/** The campaigns, and the promo_reactivate rule Keep running owns (the status row reads its last run). */
+function invalidatePromos(qc: ReturnType<typeof useQueryClient>, accountId: string | null) {
+  void qc.invalidateQueries({ queryKey: ["automation-rules", accountId] });
+  return qc.invalidateQueries({ queryKey: [PROMO_KEY, accountId] });
+}
+
+/** Toggle "keep this promo running" for one campaign: the one switch; the relay turns the rule on/off with it. */
 export function useSetPromoAutoReactivate(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<
@@ -503,12 +511,12 @@ export function useSetPromoAutoReactivate(accountId: string | null) {
   >({
     mutationFn: ({ id, auto_reactivate }) =>
       relay.patch(`/admin/promotions/${id}`, { auto_reactivate }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: [PROMO_KEY, accountId] }),
+    onSuccess: () => invalidatePromos(qc, accountId),
   });
 }
 
 /** Deactivate (Infloww's, OF's "Stop promotion"): OF's POST /promotions/{id}/finish ends the offer, the row stays as
- *  ended. As Infloww's ("Auto-activate switch will be turned off"), a campaign set to keep running is turned off
+ *  ended. As Infloww's ("Auto-activate switch will be turned off"), a campaign set to Keep running is turned off
  *  first, or the re-arm automation would re-create the offer just stopped. */
 export function useFinishPromotion(accountId: string | null) {
   const qc = useQueryClient();

@@ -148,7 +148,7 @@ An automation only runs when there is an **enabled rule** for it.
 wakes the rule: every My Automations page (Auto Post, Auto Story, Auto Mass,
 Gen-Info), Auto-reply, Get to know fans, the Auto Funnel **Reply walking**
 switch, the Smart Messages triggers (Nudge, Delayed welcome, Purchased and the
-lifecycle ones), Growth → Auto-follow, the **Auto-activate campaign** switch on
+lifecycle ones), Growth → Auto-follow, a campaign's **Keep running** tick on
 Growth → Profile promotion and the **Auto-unsend (automation)** card on Smart
 Messages → Mass Auto Unsend Messages.
 
@@ -549,12 +549,10 @@ the **Offer expiration** and an optional **Message**, then Create. It is a real
 campaign on OnlyFans. Campaigns are listed under **Campaign insights** with
 their claims and revenue.
 
-To keep an offer alive, tick **Keep running** on the campaign's row in Campaign
-insights — that is the opt-in. The **Auto-activate campaign** switch under the
-table is the engine behind it (switching it on the first time creates it), and
-the link beside that switch opens the engine's settings (how often it
-checks, a max number of re-arms, and a **Dry run** switch that is **on by
-default** — turn it off or it will only report).
+To keep an offer alive, leave **Keep running** ticked in Create promotion (it
+is on by default) or tick it on the campaign's row in Campaign insights — that
+one tick is the whole setup. The **Auto-activate campaign** row under the table
+only shows which campaign keeps running and the last check.
 See `promo_reactivate` below.
 
 ## Growth → Scripts — the script library
@@ -704,9 +702,8 @@ online right now, use **Message online fans** instead.
    whose subscription expired, so OnlyFans sends each a "started following you"
    notification (free pages only; see `auto_follow`).
 2. **Growth → Profile promotion** → **Create promotion** with **User type** =
-   **Expired subscribers** and a Free trial or First-month discount, then tick
-   **Keep running** on it in Campaign insights and set up **Auto-activate
-   campaign** with the **Keep promos running** card's **Dry run unticked**.
+   **Expired subscribers** and a Free trial or First-month discount, with
+   **Keep running** ticked (the default).
 3. **A message to expired fans:** Messages Pro → **+** → **Message online
    fans**, untick **Only fans online right now**, and set **Expired over** to N
    days. That reaches fans whose subscription ended at least N days ago, sent as
@@ -1599,30 +1596,43 @@ my fans" in OnlyFans' own Fans and following settings.
 ## kind: promo_reactivate — Keep promos running
 
 **What it does:** OnlyFans ends a profile promotion when its clock runs out or its
-claim cap fills. This checks the campaigns you marked "Keep running" and, if
-nothing is on offer any more, re-creates the same campaign with the same terms.
+claim cap fills. This checks the campaign you marked "Keep running" and, if
+nothing is on offer any more, re-creates the same campaign with the same terms
+(discount, claim cap, length, audience, message, and offer expiration when
+known) — usually
+within about 2 minutes of it ending.
 
-**Where:** **Growth → Profile promotion** → the **Auto-activate campaign**
-switch and the **Keep promos running** card under it. None of its knobs are
-anywhere else.
+**Where:** **Growth → Profile promotion**. **Keep running** in Create promotion
+(ticked by default) or on a campaign's row in Campaign insights. The
+**Auto-activate campaign** row under the table is read-only: which campaign
+keeps running and the last check.
 
-**How to enable — three things, all required:** tick **"Keep running"** on the
-individual campaign in Campaign insights; turn **Auto-activate campaign** on
-(it saves when you flip it); and in the Keep promos running card **untick Dry
-run** and press **Save changes** (**Create automation** the first time).
+**How to enable — one tick:** **Keep running** on the campaign. Ticking it turns
+the automation on (re-creates for real, no dry run); unticking the last one
+turns it off. Creating a new campaign with Keep running ticked moves the tick
+onto it from any other campaign.
 
-**Key knobs:** check every 60 minutes · dry run (**on** by default) · max re-arms
-per campaign (0 = unlimited).
+**When it checks:** right after a fan claims a promo (the subscribe
+notification), a short re-check when the claim cap is nearly full, a re-check
+about 30 seconds after the offer's expiration (up to 3 more a minute apart if
+OnlyFans still shows it live), and an hourly backstop. It never polls
+OnlyFans faster than that.
+
+**Key knobs:** none on any page. Cooldown 2 minutes between re-creates of the
+same campaign · no cap on re-arms. Through the raw rule only: dry run (TRUE
+when the payload leaves it out — the Keep running tick always writes it off),
+cooldown, max re-arms.
 
 **Caveats:**
-- Dry run is on by default, so an operator who switches it on and saves gets
-  an automation that reports forever and re-creates nothing.
-- **Only one campaign per account can be set to "Keep running."** Arming a second
-  is refused.
+- **Only one campaign per account can be set to "Keep running."** Ticking a
+  second on its row is refused; Create promotion moves it instead.
+- A campaign with no saved discount, or not linked to an OnlyFans promo, can't
+  keep running: the row refuses the tick, and Create promotion creates it
+  without Keep running and says why.
 - If any promo is live on the profile — including one made by hand — it stands
-  down and re-creates nothing.
-- "Check now" runs the last saved config; with dry run off it can create a real
-  public promo immediately.
+  down and re-creates nothing. A promo whose claim cap is full counts as ended.
+- If OnlyFans can't be reached, it re-creates nothing and tries again later.
+- At most one re-create per run; deleting the campaign stops it.
 
 ## kind: gen_info — Generate fan profiles
 
@@ -1896,8 +1906,10 @@ Work down this list:
    switched on (My Automations, Auto-reply, Get to know fans, or the trigger's row on Growth → Smart
    Messages). An operator-only automation (see "Removed or operator-only")
    cannot be checked from the app.
-3. **Is dry run still on?** The **Keep promos running** card on Growth →
-   Profile promotion defaults to dry run.
+3. **Is dry run still on?** An old Keep running setup can be: the
+   **Auto-activate campaign** row on Growth →
+   Profile promotion warns, and unticking then re-ticking **Keep running**
+   fixes it.
 4. **Is the agency AI key set?** Settings → AI keys. Without it every
    AI-written message fails closed — Auto-reply, follow-ups, profiles. The
    welcome and the nudges still send, because their text is not AI-written.

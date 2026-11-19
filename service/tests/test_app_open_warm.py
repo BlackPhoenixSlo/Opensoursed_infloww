@@ -34,7 +34,7 @@ transaction_ingest.live_account_ids), the reuse clock (`app_open_warm._clock`), 
   • case_dead_after_feed_read: a Creator its feed read flags a Dead session reads nothing more and publishes nothing.
   • case_read_set_on_the_real_routes: the real server helper and roster-counts recompute over a fake OF client:
     the four steps in order, at most 5 reads, the money lists at the rail's page size, `creator_warmed` in the house
-    envelope; the entries are the pass-through's (`of_notifications`, `of_notifications_count`, roster-counts,
+    envelope carrying the roster count and the notifications count (an expired entry is left out); the entries are the pass-through's (`of_notifications`, `of_notifications_count`, roster-counts,
     the Fan List's page 0): read 25 s after the warm, no OF call; at 31 s the money list reads OF again.
 
 Run:  ./venv/bin/python service/tests/test_app_open_warm.py
@@ -86,7 +86,7 @@ async def _steps(aid):
     await asyncio.sleep(STEP_S)
 
 
-SERVER = types.SimpleNamespace(app_open_warm_reads=_steps)
+SERVER = types.SimpleNamespace(app_open_warm_reads=_steps, app_open_warm_values=lambda _aid: {})
 
 
 DEAD_NOW: set[str] = set()
@@ -420,6 +420,10 @@ async def case_read_set_on_the_real_routes():
             assert all(c[1:3] == (20, 0) for c in of.calls if c[0] == "notifications"), \
                 f"the rail's page (app/lib/notifText.ts NOTIF_PAGE_SIZE 20, offset 0): {of.calls}"
             assert _warmed_ids() == [P1A], PUBLISHED
+            warmed = PUBLISHED[0]["creator_warmed"]
+            # The event carries what the warmed entries serve: the tab writes those, no re-read.
+            assert {k: warmed["roster"][k] for k in ("unread", "owe_reply")} == {"unread": 1, "owe_reply": 0}, warmed
+            assert warmed["roster"]["as_of"] > 0 and warmed["notif_count"] == 3 and warmed["now"] > 0, warmed
             n = len(of.calls)
             # 25 s later the tab's own reads, through the real routes, are served from the warm's entries.
             now[0] += 25.0
@@ -444,6 +448,9 @@ async def case_read_set_on_the_real_routes():
             now[0] += 6.0   # 31 s: past the pass-through's 30 s TTL
             await server.of_notifications(limit=20, offset=0, type="tip", related_user=None, refresh=False)
             assert len(of.calls) == n + 1, of.calls
+            # An expired entry is not carried (a reused warm's event then makes the tab re-read the count).
+            assert "notif_count" not in server.app_open_warm_values(P1A), server.app_open_warm_values(P1A)
+            assert server.app_open_warm_values(P1A)["roster"] == got, "the roster entry (300 s) still carried"
         finally:
             for m, k, v in old:
                 setattr(m, k, v)

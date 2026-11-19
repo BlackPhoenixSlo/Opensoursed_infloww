@@ -24,7 +24,8 @@ Cases:
       hasMedia → 3; no-listStates / already-compact / junk / NULL rows byte-equal;
       of_folder_ids + updated_at never move; batches of 2 cross the keyset; the
       marker stops a second run; vault_response_cache emptied.
-  case_init_db_compacts_at_boot — booting (init_db, alembic never runs) applies
+  case_init_db_compacts_at_boot — a fresh box (init_db's create_all branch) is
+      marked done; a pre-#816 box's boot (catch-up branch, no marker) applies
       both (row compacted, cache wiped, marker written).
 
 Run: cd service/tests && \
@@ -197,8 +198,11 @@ def case_init_db_compacts_at_boot():
     raw = json.dumps({"id": 77, "type": "photo", "listStates": _lists(50, (110,))})
     with eng.begin() as c:
         assert c.execute(sa.text("SELECT 1 FROM data_migrations WHERE name = :n"),
-                         {"n": db_engine._VAULT_LIST_STATES_COMPACT}).first() is None, \
-            "the fresh-box branch must not have run it yet"
+                         {"n": db_engine._VAULT_LIST_STATES_COMPACT}).first() is not None, \
+            "the fresh-box branch marks it done (nothing to compact; a 2nd boot must not wipe the cache)"
+        # Now play a box from before #816: no marker, a fat row, a cached page.
+        c.execute(sa.text("DELETE FROM data_migrations WHERE name = :n"),
+                  {"n": db_engine._VAULT_LIST_STATES_COMPACT})
         c.execute(sa.text("INSERT OR IGNORE INTO accounts (id, nickname, color) VALUES ('boot', 'boot', '#aaaaaa')"))
         c.execute(sa.text("INSERT INTO vault_items (account_id, media_id, kind, raw_json, created_at, tags, "
                           "send_count) VALUES ('boot', 77, 'photo', :r, '2026-01-01', '[]', 0)"), {"r": raw})

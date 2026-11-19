@@ -4094,6 +4094,22 @@ async def app_open_warm_reads(account_id: str) -> None:
         fetcher=_warm_fetch(("notifications_count", aid), aid, lambda c: c.notifications_count()))
 
 
+def app_open_warm_values(account_id: str) -> dict[str, Any]:
+    """What `creator_warmed` carries, so a tab writes it instead of re-reading (app hooks/useAccountStateEvents.ts):
+    `roster`, the count roster-counts serves (with its `as_of`), and `notif_count`, the count route's `all`; each only
+    while its entry is held unexpired (one dropped since, by a WS patch or a money event, is left out: the tab
+    re-reads it)."""
+    aid = str(account_id)
+    out: dict[str, Any] = {}
+    roster = relay_cache.peek_fresh("roster_count", aid, ())
+    if isinstance(roster, dict) and roster.get("as_of"):
+        out["roster"] = {k: roster[k] for k in ("unread", "owe_reply", "as_of") if k in roster}
+    count = relay_cache.peek_fresh("notifications_count", aid, ())
+    if isinstance(count, dict) and isinstance(count.get("all"), int) and not isinstance(count.get("all"), bool):
+        out["notif_count"] = count["all"]
+    return out
+
+
 @app.get("/api/of/v2/release-forms/mentions")
 def of_release_form_mentions(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
     """Notifications' Tags tab: posts the creator is tagged in, notification-shaped."""

@@ -42,12 +42,15 @@ send lane down with it.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import os
 import weakref
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, Response
@@ -123,7 +126,9 @@ _IMAGE_MAGIC = (
 # Queueing behind it is the POINT. A tile that waits renders late; a tile that
 # takes the last descriptor takes the relay down with it.
 import lane_config as _lane_config
-_MAX_INFLIGHT_FETCHES = _lane_config.resolve("VAULT_STILL_CONCURRENCY", 6)
+# 12 since 2026-11-19 (was 6): a cold pane's tail queued >10 s on AE; the executor is sized per account
+# (far above 12) and 12 curl handles are nothing next to the fd limit that the unbounded 500 hit.
+_MAX_INFLIGHT_FETCHES = _lane_config.resolve("VAULT_STILL_CONCURRENCY", 12)
 
 # Per-loop, because the test harness runs each case in its own `asyncio.run()`
 # and an `asyncio.Semaphore` that has parked a waiter belongs to the loop it
@@ -138,6 +143,22 @@ def _fetch_slot() -> asyncio.Semaphore:
     if sem is None:
         sem = _SLOTS[loop] = asyncio.Semaphore(_MAX_INFLIGHT_FETCHES)
     return sem
+
+
+def signed_url_expired(url: str, now: float) -> bool:
+    """A CloudFront-signed URL past its expiry (canned `Expires=`, or a custom Policy's DateLessThan
+    AWS:EpochTime). Anything unparseable counts as live: the fetch decides."""
+    q = parse_qs(urlsplit(url).query)
+    try:
+        if "Expires" in q:
+            return float(q["Expires"][0]) < now
+        if "Policy" in q:
+            raw = q["Policy"][0].replace("-", "+").replace("_", "=").replace("~", "/")
+            pol = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)))
+            return float(pol["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"]) < now
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 def _looks_like_an_image(data: bytes) -> bool:

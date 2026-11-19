@@ -8,7 +8,7 @@ Covers: pacing (≥GAP_S between OF calls), one account at a time, skip a busy
 account + bounded starvation, dead-session accounts never called, resume of an
 errored / interrupted walk at its cursor (a "restart"), a stale account gets the
 hot set + thumbs without a second full walk, the pages it caches are the ones
-the picker routes read (same keys), thumbs only for the newest 100. Interruptions
+the picker routes read (same keys), thumbs for every media with a live link, newest first (VAULT_COLLECT_THUMB_WARM_MAX caps). Interruptions
 (manual Collect, a person mid-walk, a proxy change) pause at the cursor without an
 error; the page cap is not a full walk; one bad folder page does not stop the walk;
 thumb workers stop together; old auto rows are pruned; every OF call is inside an
@@ -225,12 +225,38 @@ async def case_cached_pages_are_what_the_picker_routes_read():
             real_aid, real_gate, real_client)
 
 
-async def case_thumbs_newest_100_only():
+async def case_thumbs_all_live_links():
     await _reset("accT")
     await vc.tick()
     files = sorted(int(p.stem) for p in (vault_stills.THUMB_DIR / "accT").glob("*.jpg"))
+    assert files == list(range(1, 251)), (len(files), files[:3], files[-3:])
+    assert len(_thumb_fetches) == 250
+
+
+async def case_thumbs_cap_takes_newest():
+    await _reset("accTc")
+    real, vc.THUMB_WARM_MAX = vc.THUMB_WARM_MAX, 100
+    try:
+        await vc.tick()
+    finally:
+        vc.THUMB_WARM_MAX = real
+    files = sorted(int(p.stem) for p in (vault_stills.THUMB_DIR / "accTc").glob("*.jpg"))
     assert files == list(range(151, 251)), (len(files), files[:3], files[-3:])
-    assert len(_thumb_fetches) == 100
+
+
+async def case_thumbs_skip_expired_links():
+    """A dead signed link is never fetched (it would 403): its tile fills on view, re-signed."""
+    await _reset("accTx")
+    real = FakeOF._item
+    FakeOF._item = lambda self, i: {**real(self, i), "files": {"thumb": {"url":
+        f"https://cdn.example/{self.aid}/{i}.jpg" + ("?Expires=7" if i % 2 else f"?Expires={2**40}")}}}
+    try:
+        await vc.tick()
+    finally:
+        FakeOF._item = real
+    files = sorted(int(p.stem) for p in (vault_stills.THUMB_DIR / "accTx").glob("*.jpg"))
+    assert files == list(range(2, 251, 2)), (len(files), files[:3])
+    assert not any(u.endswith("?Expires=7") for u in _thumb_fetches), _thumb_fetches[:3]
 
 
 async def case_one_account_at_a_time():

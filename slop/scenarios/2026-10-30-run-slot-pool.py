@@ -4,11 +4,12 @@ every Creator's follow-up run asking at once.
 World: `agency_pool` (`agency_inbox`'s shape with at least 7 Creators, so more runs ask than
 the pool's 4 slots at every scale) + seed/followup_drip.py (lib/followup.py `setup`, as
 2026-10-30-followup-drip). Load: two follow-up ticks, each `POST /__slop/run-automation` (kind
-`send_followup`) for every Creator at once (`send_followup` holds its slot for the whole run, so
-all are fresh runs; the first tick nudges, the second finds every due fan held by the gap).
+`send_followup`) for every Creator at once (every first ask is a fresh run; a run frees its slot
+around its model call and takes it back ahead of fresh runs, run_slot.freed; the first tick
+nudges, the second finds every due fan held by the gap).
 
-Invariants, from the hook's ask / got / done stamps: never more runs holding a slot than the
-pool's size, and it fills when more ask (CAP); queued runs are granted in the order they asked,
+Invariants, from the hook's ask / got / done stamps and the pool's own peak of permits out
+(`in_use`): never more slots out than the pool's size, and it fills when more ask (CAP); queued runs are granted in the order they asked,
 every one (FIFO). Small (7 Creators, 4 slots) queues 3 per tick, medium (10) 6; a run where
 nobody queued SKIPs both with that reason. Budget: the hook's round trip per run (slot wait included), p95,
 vs the last green run.
@@ -50,7 +51,9 @@ def _slot_checks(ctx, ticks: list[dict]) -> None:
             top = max(top, cur)
         return top
 
-    held, asking = peak("got"), peak("ask")
+    # held: the pool's own peak of permits out (lib/relay.py `in_use`), not the got..done overlap:
+    # a run frees its permit around its model call (run_slot.freed, 90e5e97b4) and takes it back.
+    held, asking = max((s.get("in_use", 0) for s in got), default=0), peak("ask")
     waited = sorted((s for s in got if s["got"] != s["ask"] + 1), key=lambda s: s["ask"])
     by_ask = [s["got"] for s in sorted(got, key=lambda s: s["ask"])]
     overtaken = sum(1 for a, b in zip(by_ask, by_ask[1:]) if b < a)

@@ -14,6 +14,20 @@
   case_respects_cycle_cap        max_reactivations reached → skipped.
   case_skips_without_discount    no saved discount → skipped (OF would reject).
   case_rearm_keeps_both_audiences  "all,expired" goes back to OF as its list.
+  case_cap_reached_is_rearmed    claims >= cap is ended even with canClaim true.
+  case_near_cap_queues_one_recheck  one claim short → ONE re-check in ~90 s,
+                                 never two pending, never from a re-check run.
+  case_expiring_soon_queues_an_expiry_recheck  expires_at before the next
+                                 backstop → a re-check at expires_at + 30 s.
+  case_expiry_past_but_of_live_retries_bounded  OF wins over our expires_at:
+                                 no create, +60 s re-checks, at most 3.
+  case_cooldown_queues_a_recheck_and_never_mints  held by the cooldown → no
+                                 create, a re-check just past it (default 2 min).
+  case_rearm_sends_finish_days_and_refreshes_expires_at  the bug: finish_days
+                                 was dropped on re-create.
+  case_dry_run_and_rule_off_queue_no_recheck  dry run never queues one; a rule
+                                 switched off drops it.
+  case_deleted_campaign_stops_rearming  no mirror row → nothing re-armed.
 
 Run: ./venv/bin/python service/tests/test_promo_reactivate.py
 """
@@ -22,12 +36,14 @@ from __future__ import annotations
 import _harness  # MUST be first
 _harness.bootstrap()
 
-from datetime import datetime  # noqa: E402
+import json  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
 
 import automation_executor as ax  # noqa: E402,F401 — registers plugins
 from automation_executor import run_once  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, LinkMeta, PromoCampaign  # noqa: E402
+import automations.promo_reactivate as pr  # noqa: E402
+from db.models import Account, AutomationRule, LinkMeta, PromoCampaign, ScheduledJob  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 
@@ -39,14 +55,14 @@ class FakeOF:
         self.created: list[dict] = []
         self.types: list = []
 
-    def _item(self, pid, *, counts, days, message, finished):
+    def _item(self, pid, *, counts, days, message, finished, claims=0, finished_at=None):
         return {"id": pid, "message": message, "price": 3, "type": "all",
                 "subscribeCounts": counts, "subscribeDays": days,
-                "claimsCount": 0, "isFinished": finished}
+                "claimsCount": claims, "isFinished": finished, "finishedAt": finished_at}
 
-    def seed(self, pid, *, finished, counts=10, days=30, message=""):
+    def seed(self, pid, *, finished, counts=10, days=30, message="", claims=0):
         self.store[pid] = self._item(pid, counts=counts, days=days,
-                                     message=message, finished=finished)
+                                     message=message, finished=finished, claims=claims)
 
     def promotions(self, *, offset=0, limit=100):
         # OF pages this endpoint and its hasMore is ALWAYS true, so the fake
@@ -54,14 +70,17 @@ class FakeOF:
         page = list(self.store.values())[offset:offset + limit]
         return {"hasMore": True, "items": page}
 
-    def create_promo(self, *, discount, subscribe_counts, subscribe_days=30, message="", type="all"):
+    finished_at = None   # what OF echoes as finishedAt on create (null for most)
+
+    def create_promo(self, *, discount, subscribe_counts, subscribe_days=30, message="", type="all",
+                     **kw):
         self.types.append(type)
         self._id += 1
         item = self._item(self._id, counts=subscribe_counts, days=subscribe_days,
-                          message=message, finished=False)
+                          message=message, finished=False, finished_at=self.finished_at)
         self.store[self._id] = item
         self.created.append({"discount": discount, "counts": subscribe_counts,
-                             "days": subscribe_days, "message": message})
+                             "days": subscribe_days, "message": message, **kw})
         return [item]   # LIST response
 
 
@@ -72,7 +91,8 @@ def _use_fake() -> FakeOF:
 
 
 async def _seed_campaign(aid, *, of_id, auto=True, discount=50, count=0, message="Promo",
-                         subscribe_counts=10, subscribe_days=30, promo_type="all"):
+                         subscribe_counts=10, subscribe_days=30, promo_type="all",
+                         finish_days=None, expires_at=None, last_reactivated_at=None):
     async with get_session() as s:
         if not await s.get(Account, aid):
             s.add(Account(id=aid))
@@ -82,6 +102,7 @@ async def _seed_campaign(aid, *, of_id, auto=True, discount=50, count=0, message
             subscribe_days=subscribe_days, message=message,
             promo_type=promo_type, status="active", subscriber_count=0,
             auto_reactivate=auto, reactivate_count=count, created_at=datetime.utcnow(),
+            finish_days=finish_days, expires_at=expires_at, last_reactivated_at=last_reactivated_at,
         )
         s.add(row)
         await s.flush()
@@ -91,6 +112,39 @@ async def _seed_campaign(aid, *, of_id, auto=True, discount=50, count=0, message
 async def _campaign(cid):
     async with get_session() as s:
         return await s.get(PromoCampaign, cid)
+
+
+async def _rechecks(aid) -> list[ScheduledJob]:
+    async with get_session() as s:
+        return list((await s.execute(select(ScheduledJob).where(
+            ScheduledJob.account_id == aid, ScheduledJob.kind == "promo_reactivate",
+            ScheduledJob.status == "pending").order_by(ScheduledJob.id))).scalars())
+
+
+def _near(a: datetime, b: datetime, slack_s: float = 5) -> bool:
+    return abs((a - b).total_seconds()) <= slack_s
+
+
+GO = {"dry_run": False}
+
+
+async def _rule(aid, *, every=3600, enabled=True) -> int:
+    async with get_session() as s:
+        rule = AutomationRule(account_id=aid, name="keep", kind="promo_reactivate",
+                              is_enabled=enabled, trigger_json=json.dumps({"every_seconds": every}),
+                              steps_json=json.dumps(GO))
+        s.add(rule)
+        await s.flush()
+        return rule.id
+
+
+async def _run_rule_job(aid, rid) -> dict:
+    """The rule's own job, claimed by run_once (so the run is bound to the rule)."""
+    async with get_session() as s:
+        s.add(ScheduledJob(account_id=aid, kind="promo_reactivate", payload_json=json.dumps(GO),
+                           run_at=datetime.utcnow() - timedelta(seconds=1), status="pending",
+                           rule_id=rid))
+    return await run_once(aid, "promo_reactivate")
 
 
 async def case_dry_run_is_default():
@@ -318,6 +372,183 @@ async def case_rearm_keeps_both_audiences():
     assert f.types == ["expired"], f.types
 
 
+async def case_cap_reached_is_rearmed():
+    """OF can lag flipping canClaim on a filled cap: claims >= cap is ended
+    (of_promos.normalise_of_promo), so the next promo goes up now."""
+    aid = "pr_capfull"
+    await _seed_campaign(aid, of_id=1201, subscribe_counts=10)
+    f = _use_fake(); f.seed(1201, finished=False, counts=10, claims=10)
+    f.store[1201]["canClaim"] = True
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res["reactivated"] == 1, res
+    # ... and an unlimited cap (0) is never "filled"
+    aid = "pr_capzero"
+    await _seed_campaign(aid, of_id=1202, subscribe_counts=0)
+    f = _use_fake(); f.seed(1202, finished=False, counts=0, claims=500)
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res["skipped"] == "promo_already_live" and f.created == [], res
+
+
+async def case_near_cap_queues_one_recheck():
+    aid = "pr_nearcap"
+    await _seed_campaign(aid, of_id=1301, subscribe_counts=10)
+    f = _use_fake(); f.seed(1301, finished=False, counts=10, claims=9)
+    t0 = datetime.utcnow()
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res["skipped"] == "promo_already_live" and f.created == [], res
+    assert res["recheck"]["reason"] == "near_cap", res
+    jobs = await _rechecks(aid)
+    assert len(jobs) == 1 and _near(jobs[0].run_at, t0 + timedelta(seconds=90)), jobs
+    body = json.loads(jobs[0].payload_json)
+    assert body["_recheck"] == "near_cap" and body["dry_run"] is False, body
+    # never stacks: a second run while it is pending queues nothing
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert "recheck" not in res and len(await _rechecks(aid)) == 1, res
+    # a re-check run never queues another near_cap
+    async with get_session() as s:
+        (await s.get(ScheduledJob, jobs[0].id)).status = "done"
+    res = await run_once(aid, "promo_reactivate", payload={**GO, "_recheck": "near_cap"})
+    assert "recheck" not in res and await _rechecks(aid) == [], res
+    # two short is not near the cap
+    aid = "pr_nearcap2"
+    await _seed_campaign(aid, of_id=1302, subscribe_counts=10)
+    f = _use_fake(); f.seed(1302, finished=False, counts=10, claims=8)
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert "recheck" not in res and await _rechecks(aid) == [], res
+
+
+async def case_expiring_soon_queues_an_expiry_recheck():
+    aid = "pr_expsoon"
+    exp = datetime.utcnow() + timedelta(minutes=10)
+    await _seed_campaign(aid, of_id=1401, expires_at=exp)
+    f = _use_fake(); f.seed(1401, finished=False)
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res["recheck"]["reason"] == "expiry" and f.created == [], res
+    jobs = await _rechecks(aid)
+    assert len(jobs) == 1 and _near(jobs[0].run_at, exp + timedelta(seconds=30), 1), jobs
+    # past the next backstop (hourly with no rule): nothing yet, the backstop has it
+    aid = "pr_explater"
+    await _seed_campaign(aid, of_id=1402, expires_at=datetime.utcnow() + timedelta(hours=2))
+    f = _use_fake(); f.seed(1402, finished=False)
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert "recheck" not in res and await _rechecks(aid) == [], res
+    # the rule's own cadence is the horizon: a 3-hour rule reaches it
+    rid = await _rule(aid, every=3 * 3600)
+    res = await _run_rule_job(aid, rid)
+    assert res["recheck"]["reason"] == "expiry", res
+    jobs = await _rechecks(aid)
+    assert len(jobs) == 1 and jobs[0].rule_id == rid, jobs
+    assert json.loads(jobs[0].payload_json).get("_followup") is True, jobs[0].payload_json
+
+
+async def case_expiry_past_but_of_live_retries_bounded():
+    """Our expires_at is often a guess (created + finish_days). OF saying the
+    promo is still on offer wins: no create, +60 s, at most 3 retries."""
+    aid = "pr_expwrong"
+    await _seed_campaign(aid, of_id=1501, expires_at=datetime.utcnow() - timedelta(seconds=40))
+    f = _use_fake(); f.seed(1501, finished=False)
+    retries = []
+    for done in range(4):
+        t0 = datetime.utcnow()
+        res = await run_once(aid, "promo_reactivate",
+                             payload={**GO, "_recheck": "expiry", "_expiry_retries": done})
+        assert res["skipped"] == "promo_already_live", res
+        jobs = await _rechecks(aid)
+        if jobs:
+            assert len(jobs) == 1 and _near(jobs[0].run_at, t0 + timedelta(seconds=60)), jobs
+            retries.append(json.loads(jobs[0].payload_json)["_expiry_retries"])
+            async with get_session() as s:
+                (await s.get(ScheduledJob, jobs[0].id)).status = "done"
+    assert retries == [1, 2, 3], retries
+    assert f.created == [], "re-created while OF said the promo was on offer"
+    # a backstop run past the guess starts no retry chain
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert "recheck" not in res and await _rechecks(aid) == [], res
+
+
+async def case_cooldown_queues_a_recheck_and_never_mints():
+    aid = "pr_cool"
+    last = datetime.utcnow() - timedelta(seconds=60)
+    await _seed_campaign(aid, of_id=1601, last_reactivated_at=last)
+    f = _use_fake(); f.seed(1601, finished=True)
+    res = await run_once(aid, "promo_reactivate", payload=GO)   # default cooldown: 2 min
+    assert res["skipped_cooldown"] == 1 and res["reactivated"] == 0 and f.created == [], res
+    jobs = await _rechecks(aid)
+    want = last + timedelta(minutes=2, seconds=5)
+    assert len(jobs) == 1 and _near(jobs[0].run_at, want, 1), (jobs, want)
+    assert json.loads(jobs[0].payload_json)["_recheck"] == "cooldown"
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert "recheck" not in res and len(await _rechecks(aid)) == 1, res
+    # past the cooldown it re-arms
+    async with get_session() as s:
+        (await s.get(ScheduledJob, jobs[0].id)).status = "done"
+    res = await run_once(aid, "promo_reactivate",
+                         payload={**GO, "_recheck": "cooldown", "cooldown_minutes": 1})
+    assert res["reactivated"] == 1 and len(f.created) == 1, res
+
+
+async def case_rearm_sends_finish_days_and_refreshes_expires_at():
+    aid = "pr_finish"
+    cid = await _seed_campaign(aid, of_id=1701, finish_days=7,
+                               expires_at=datetime.utcnow() - timedelta(days=1))
+    f = _use_fake(); f.seed(1701, finished=True)
+    t0 = datetime.utcnow()
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res["reactivated"] == 1, res
+    assert f.created[0]["finish_days"] == 7, f.created
+    row = await _campaign(cid)
+    assert _near(row.expires_at, t0 + timedelta(days=7)), row.expires_at
+    # OF's own future finishedAt wins over the guess
+    aid = "pr_finish_of"
+    cid = await _seed_campaign(aid, of_id=1702, finish_days=7)
+    f = _use_fake(); f.seed(1702, finished=True)
+    of_end = (datetime.utcnow() + timedelta(days=6, hours=23)).replace(microsecond=0)
+    f.finished_at = of_end.isoformat() + "+00:00"
+    await run_once(aid, "promo_reactivate", payload=GO)
+    assert (await _campaign(cid)).expires_at == of_end
+    # never sent → not sent back, and no expiry known
+    aid = "pr_finish_none"
+    cid = await _seed_campaign(aid, of_id=1703)
+    f = _use_fake(); f.seed(1703, finished=True)
+    await run_once(aid, "promo_reactivate", payload=GO)
+    assert "finish_days" not in f.created[0] and (await _campaign(cid)).expires_at is None, f.created
+
+
+async def case_dry_run_and_rule_off_queue_no_recheck():
+    aid = "pr_nore_dry"
+    await _seed_campaign(aid, of_id=1801, subscribe_counts=10)
+    f = _use_fake(); f.seed(1801, finished=False, counts=10, claims=9)
+    res = await run_once(aid, "promo_reactivate", payload={})
+    assert "recheck" not in res and await _rechecks(aid) == [], res
+    aid = "pr_nore_off"
+    await _seed_campaign(aid, of_id=1802, subscribe_counts=10)
+    f = _use_fake(); f.seed(1802, finished=False, counts=10, claims=9)
+    rid = await _rule(aid)
+    orig = pr.of_pacing.walk
+
+    async def walk_then_switch_off(*a, **kw):   # the operator unticks mid-run
+        async with get_session() as s:
+            (await s.get(AutomationRule, rid)).is_enabled = False
+        return await orig(*a, **kw)
+    pr.of_pacing.walk = walk_then_switch_off
+    try:
+        res = await _run_rule_job(aid, rid)
+    finally:
+        pr.of_pacing.walk = orig
+    assert res["skipped"] == "promo_already_live", res
+    assert "recheck" not in res and await _rechecks(aid) == [], res
+
+
+async def case_deleted_campaign_stops_rearming():
+    aid = "pr_deleted"
+    cid = await _seed_campaign(aid, of_id=1901)
+    f = _use_fake(); f.seed(1901, finished=True)
+    async with get_session() as s:
+        await s.delete(await s.get(PromoCampaign, cid))
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res["managed"] == 0 and f.created == [], res
+
+
 _harness.run(
     case_rearm_keeps_both_audiences,
     case_dry_run_is_default,
@@ -333,4 +564,12 @@ _harness.run(
     case_two_armed_campaigns_do_not_ping_pong,
     case_spent_promo_with_stale_isfinished_is_rearmed,
     case_finds_promo_beyond_page_one,
+    case_cap_reached_is_rearmed,
+    case_near_cap_queues_one_recheck,
+    case_expiring_soon_queues_an_expiry_recheck,
+    case_expiry_past_but_of_live_retries_bounded,
+    case_cooldown_queues_a_recheck_and_never_mints,
+    case_rearm_sends_finish_days_and_refreshes_expires_at,
+    case_dry_run_and_rule_off_queue_no_recheck,
+    case_deleted_campaign_stops_rearming,
 )

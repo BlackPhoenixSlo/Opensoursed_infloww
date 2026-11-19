@@ -12,7 +12,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, RotateCw, Search } from "lucide-react";
+import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, RotateCw, Search, Users } from "lucide-react";
 
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { EmptyState } from "@/components/ui/infloww";
@@ -79,6 +79,8 @@ export function CreatorColumn(props: {
   all?: { on: boolean; pick: () => void; label?: string };
   /** A controlled column with no "All creators" row at all (pages that always work on one creator). */
   noAll?: boolean;
+  /** "All creators" as a creator row (rainbow tile) that picks it in one click, in place of the menu. */
+  allRow?: boolean;
   /** Watcher accounts: dimmed rows after the creators, never picked (a page that passes them). OF Manager's
    *  own lists its watchers in `accounts` instead, as pickable rows with a "watcher" badge (WatcherScope). */
   watchers?: WatcherAccount[];
@@ -113,7 +115,7 @@ function ScopedColumn({ accounts, onPicked, className }: {
   );
 }
 
-function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, groups, ofManager = false, className, variant, marks }: {
+function ColumnBody({ accounts, value, onChange, all, noAll = false, allRow = false, watchers, groups, ofManager = false, className, variant, marks }: {
   accounts: AccountMeta[];
   value?: string | null;
   onChange: (accountId: string) => void;
@@ -122,6 +124,8 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
   all?: { on: boolean; pick: () => void; label?: string };
   /** No "All creators" row. */
   noAll?: boolean;
+  /** "All creators" as a one-click creator row, no menu. */
+  allRow?: boolean;
   /** Watcher accounts after the creators, not pickable. */
   watchers?: WatcherAccount[];
   /** OF Manager's creator groups (the Tags) under All creators; `value` "" is none picked. */
@@ -188,6 +192,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
     if (next >= 0) rows[next]?.focus();
     else if (i === 0) searchRef.current?.focus();
   };
+  const allLabel = all?.label || "All creators";
   const q = filter.trim().toLowerCase();
   const shown = q ? accounts.filter((a) => (a.nickname || a.id).toLowerCase().includes(q)) : accounts;
   const shownWatchers = (watchers ?? []).filter((w) => !q || (w.nickname || w.name || w.id).toLowerCase().includes(q));
@@ -251,7 +256,29 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
         </button>
       </div>}
       {(s4s || collapsed || noAll) && <div className="h-4 shrink-0" />}
-      {!s4s && !collapsed && !noAll && <div className="relative" ref={menuRef}>
+      {/* `allRow`: "All creators" is one more creator row (rainbow tile, name, count); one click picks it. */}
+      {allRow && !s4s && !collapsed && !noAll && (
+        <button
+          type="button"
+          onClick={() => all?.pick()}
+          aria-current={all?.on || undefined}
+          aria-label={allLabel}
+          data-testid="of-all-creators-row"
+          className={cn(
+            "w-full flex items-center gap-3 px-4 py-3 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ofm-blue)]",
+            all?.on ? "bg-[var(--ofm-active)]" : "hover:bg-[var(--ofm-hover)]",
+          )}
+        >
+          <AllCreatorsTile />
+          <span className="min-w-0 flex flex-col gap-1">
+            <span className="text-sm font-medium truncate">{allLabel}</span>
+            <span className="text-xs text-[var(--ofm-fg2)] tabular-nums">
+              {accounts.length} {accounts.length === 1 ? "creator" : "creators"}
+            </span>
+          </span>
+        </button>
+      )}
+      {!allRow && !s4s && !collapsed && !noAll && <div className="relative" ref={menuRef}>
         <button
           type="button"
           onClick={() => setMenuOpen((v) => !v)}
@@ -320,6 +347,20 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
         </button>
       )}
     </aside>
+  );
+}
+
+/** The "All creators" row's picture: a rainbow tile in place of a creator's photo. */
+const RAINBOW = "linear-gradient(135deg,#ff5f6d 0%,#ffa94d 20%,#ffe066 38%,#69db7c 55%,#4dabf7 72%,#9775fa 88%,#f783ac 100%)";
+function AllCreatorsTile({ small = false }: { small?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn("shrink-0 grid place-items-center rounded text-white", small ? "w-5 h-5" : "w-9 h-9")}
+      style={{ background: RAINBOW }}
+    >
+      <Users className={cn("drop-shadow-[0_1px_1px_rgb(0_0_0/35%)]", small ? "w-3 h-3" : "w-4 h-4")} />
+    </span>
   );
 }
 

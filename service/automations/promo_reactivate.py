@@ -8,12 +8,28 @@ the fresh OF promo. Net effect: an always-on offer that renews itself instead of
 quietly lapsing.
 
 Opt-in PER CAMPAIGN — only `promo_campaigns.auto_reactivate = 1` rows are
-touched, so a one-off promo is never resurrected behind your back.
+touched, so a one-off promo is never resurrected behind your back. Ticking
+"Keep running" (promotions_api) also ensures this kind's rule (hourly,
+dry_run false, cooldown 2); unticking the last armed campaign switches it off.
 
 steps_json (per-run knobs):
   max_reactivations  cycle cap per campaign (0 = unlimited)
-  cooldown_minutes   min gap between re-arms of the same campaign (default 10)
-  dry_run            plan only, hit no OF endpoint (DEFAULT TRUE — safe)
+  cooldown_minutes   min gap between re-arms of the same campaign (default 2)
+  dry_run            plan only, hit no OF endpoint (DEFAULT TRUE when omitted —
+                     safe; only the rule the Keep running tick makes sets false)
+
+Event-driven, not a faster poll. A run fires on the hourly backstop, on a
+subscribe toast (event_transcoder pokes this kind; a poke under the floor is
+deferred, not dropped), and on the bounded re-checks a run queues for itself
+(`_recheck` follow-ups, never more than one pending per account):
+  near_cap  the live kept promo is one claim from its cap: look again in 90 s
+            (OF may count the claim after the toast). Not from a re-check run.
+  expiry    the live kept promo's expires_at falls before the next backstop:
+            look at expires_at + 30 s. OF still saying it is on offer past that
+            wins (no create): look again in 60 s, at most 3 times.
+  cooldown  a campaign is held by the cooldown and nothing was re-armed: look
+            at last_reactivated_at + cooldown + 5 s.
+None in dry run (it never acts, so nothing is owed a timely look).
 
 Safety — every unknown is read as "leave it alone", never as "re-create it":
   • Fails CLOSED when OF is unreachable — a failed fetch must never be read as
@@ -23,30 +39,43 @@ Safety — every unknown is read as "leave it alone", never as "re-create it":
   • A campaign with no usable discount (1-100) is skipped: OF rejects the create
     and we'd burn a call per tick.
   • Deleting a campaign in the UI removes its mirror row, so it stops re-arming.
+  • A filled claim cap is ended (of_promos.normalise_of_promo), so the next
+    promo goes up as the last claim lands; 0 = unlimited, never filled.
 
 Self-registers via @register("promo_reactivate"); scheduled by an
 automation_rules row (kind="promo_reactivate", trigger_json={"every_seconds": N}).
-Promos run for days, so an hourly cadence is plenty.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
 import automation_executor as ax
-from automation_registry import register
+from automation_registry import kind_family, register
 from ._common import bool_knob
 from db.engine import get_session
-from db.models import PromoCampaign
+from db.models import AutomationRule, PromoCampaign, ScheduledJob
+import job_queue
 import of_pacing
-from of_promos import extract_created_promo, fetch_of_promos, normalise_of_promo, promo_type_body
+from of_promos import (extract_created_promo, fetch_of_promos, normalise_of_promo,
+                       promo_expires_at, promo_type_body)
 
 log = logging.getLogger("of-relay.automation.promo_reactivate")
 
-_DEFAULT_COOLDOWN_MIN = 10
+KIND = "promo_reactivate"
+_DEFAULT_COOLDOWN_MIN = 2
+_DEFAULT_INTERVAL_S = 3600          # the backstop cadence when the run has no rule
+RECHECK = "_recheck"                # payload key on this kind's own re-check jobs
+_RETRIES = "_expiry_retries"
+NEAR_CAP_S = 90                     # near_cap: look again after OF counts the claim
+EXPIRY_GRACE_S = 30                 # expiry: look this long after expires_at
+EXPIRY_RETRY_S = 60                 # ... and again while OF still says on offer
+EXPIRY_MAX_RETRIES = 3
+COOLDOWN_GRACE_S = 5
 
 
 def _kept(value: int | None, default: int) -> int:
@@ -60,6 +89,84 @@ def _kept(value: int | None, default: int) -> int:
     campaign than the one the operator ticked "keep running".
     """
     return default if value is None else int(value)
+
+
+async def _recheck_pending(account_id: str) -> bool:
+    """A re-check of this account is already queued (the dedupe: never two)."""
+    async with get_session() as s:
+        return (await s.execute(
+            select(ScheduledJob.id).where(
+                ScheduledJob.account_id == str(account_id),
+                ScheduledJob.kind.in_(kind_family(KIND)),
+                ScheduledJob.status == "pending",
+                ScheduledJob.payload_json.contains(f'"{RECHECK}"', autoescape=True),
+            ).limit(1))).scalar_one_or_none() is not None
+
+
+async def _queue_recheck(account_id: str, payload: dict, reason: str, at: datetime,
+                         retries: int = 0) -> dict | None:
+    """Queue ONE re-check run at `at` (rule-bound through enqueue_followup, so turning
+    the rule off drops it), unless one is pending. The run's own knobs ride along."""
+    if await _recheck_pending(account_id):
+        return None
+    knobs = {k: v for k, v in payload.items()
+             if k not in (RECHECK, _RETRIES, job_queue.FOLLOWUP_MARK)}
+    job_id = await ax.enqueue_followup(
+        account_id, KIND, run_at=at,
+        payload={**knobs, RECHECK: reason, _RETRIES: retries})
+    if job_id is None:
+        return None
+    log.info("promo_reactivate re-check queued account=%s reason=%s at=%s retries=%s",
+             account_id, reason, at.isoformat(), retries)
+    return {"reason": reason, "at": at.isoformat(), "retries": retries}
+
+
+async def _interval_s() -> float:
+    """The run's rule cadence (seconds), else the hourly default."""
+    rid = job_queue.current_rule_id()
+    if rid is None:
+        return _DEFAULT_INTERVAL_S
+    async with get_session() as s:
+        rule = await s.get(AutomationRule, rid)
+    try:
+        every = json.loads(rule.trigger_json or "{}").get("every_seconds") if rule else None
+    except (TypeError, ValueError):
+        every = None
+    if isinstance(every, (int, float)) and not isinstance(every, bool) and every > 0:
+        return float(every)
+    return _DEFAULT_INTERVAL_S
+
+
+async def _live_followup(account_id: str, payload: dict, kept: PromoCampaign | None,
+                         live: dict, now: datetime) -> dict | None:
+    """The stand-down's re-check, when the live promo is a kept campaign's own (`kept`):
+    the earliest of near_cap / expiry. None when nothing is owed or one is pending."""
+    if kept is None:
+        return None
+    again = payload.get(RECHECK)
+    plans: list[tuple[datetime, str, int]] = []
+    cap, claims = int(live.get("subscribe_counts") or 0), int(live.get("subscriber_count") or 0)
+    if not again and cap > 0 and claims >= cap - 1:
+        plans.append((now + timedelta(seconds=NEAR_CAP_S), "near_cap", 0))
+    exp = kept.expires_at
+    if exp is not None:
+        if exp > now:
+            if exp < now + timedelta(seconds=await _interval_s()):
+                plans.append((exp + timedelta(seconds=EXPIRY_GRACE_S), "expiry", 0))
+        elif again == "expiry":
+            # The expiry re-check found it still on offer past our expires_at (often
+            # only our created + finish_days guess): OF wins, no create. Look again
+            # in 60 s, at most EXPIRY_MAX_RETRIES times; then the backstop has it.
+            try:
+                done = int(payload.get(_RETRIES) or 0)
+            except (TypeError, ValueError):
+                done = EXPIRY_MAX_RETRIES
+            if done < EXPIRY_MAX_RETRIES:
+                plans.append((now + timedelta(seconds=EXPIRY_RETRY_S), "expiry", done + 1))
+    if not plans:
+        return None
+    at, reason, retries = min(plans, key=lambda p: p[0])
+    return await _queue_recheck(account_id, payload, reason, at, retries)
 
 
 @register("promo_reactivate")
@@ -113,10 +220,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # so a live promo is always on the first page we fetch.)
     live_now = [p for p in live if not p.get("is_finished")]
     if live_now:
-        return {"managed": len(managed), "reactivated": 0,
-                "skipped": "promo_already_live",
-                "live_of_promo_id": live_now[0].get("of_promo_id"),
-                "dry_run": dry_run}
+        by_id = {int(r.of_promo_id): r for r in managed if r.of_promo_id is not None}
+        shown = next((p for p in live_now if p.get("of_promo_id") in by_id), live_now[0])
+        out = {"managed": len(managed), "reactivated": 0,
+               "skipped": "promo_already_live",
+               "live_of_promo_id": shown.get("of_promo_id"),
+               "dry_run": dry_run}
+        if not dry_run:
+            recheck = await _live_followup(account_id, payload, by_id.get(shown.get("of_promo_id")),
+                                           shown, datetime.utcnow())
+            if recheck:
+                out["recheck"] = recheck
+        return out
 
     # Past this point NOTHING is on offer — the return above is the single home of
     # the liveness question, so a campaign's own OF row can only be finished (or
@@ -127,6 +242,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     due: list[PromoCampaign] = []
     skipped_cap = skipped_cooldown = skipped_no_discount = 0
     skipped_unverifiable = 0
+    held: list[datetime] = []          # last_reactivated_at of each campaign the cooldown holds
 
     for r in managed:
         disc = int(r.discount_percent or 0)
@@ -138,6 +254,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             continue
         if r.last_reactivated_at and (now - r.last_reactivated_at) < timedelta(minutes=cooldown_min):
             skipped_cooldown += 1
+            held.append(r.last_reactivated_at)
             continue
         if r.of_promo_id is None:
             # No OF id → we cannot tell "finished" from "still live", so
@@ -155,7 +272,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "skipped_unverifiable": skipped_unverifiable}
 
     if not due:
-        return {**base, "reactivated": 0, "dry_run": dry_run}
+        out = {**base, "reactivated": 0, "dry_run": dry_run}
+        if held and not dry_run:
+            # Held only by the cooldown: look again just past it, not at the backstop.
+            at = min(held) + timedelta(minutes=cooldown_min, seconds=COOLDOWN_GRACE_S)
+            recheck = await _queue_recheck(account_id, payload, "cooldown", at)
+            if recheck:
+                out["recheck"] = recheck
+        return out
     if dry_run:
         return {**base, "reactivated": 0, "dry_run": True,
                 "would_reactivate": [{"id": r.id, "name": r.name,
@@ -166,6 +290,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # At most ONE re-arm per run: OF only holds one live promo, so re-arming a
     # second here would immediately finish the one we just created.
     for r in due[:1]:
+        # The offer expiration goes back too (sent only when one was: None = never sent).
+        extra = {} if r.finish_days is None else {"finish_days": int(r.finish_days)}
         try:
             res = await asyncio.to_thread(
                 lambda rr=r: client.create_promo(
@@ -174,7 +300,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     subscribe_days=_kept(rr.subscribe_days, 30),
                     message=rr.message or "",
                     # "all,expired" (both audiences) goes back as OF's list.
-                    type=promo_type_body(rr.promo_type)),
+                    type=promo_type_body(rr.promo_type), **extra),
             )
         except Exception:
             errors += 1
@@ -198,6 +324,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             row.subscriber_count = 0          # fresh promo, fresh claim count
             row.reactivate_count = int(row.reactivate_count or 0) + 1
             row.last_reactivated_at = stamp
+            row.expires_at = promo_expires_at(of.get("finished_at"), row.finish_days, stamp)
         reactivated += 1
         log.info("promo_reactivate re-armed account=%s campaign=%s new_of_id=%s cycle=%s",
                  account_id, r.id, new_id, int(r.reactivate_count or 0) + 1)

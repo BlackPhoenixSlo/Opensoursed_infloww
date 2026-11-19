@@ -67,6 +67,7 @@ Env knobs (read at import):
   VAULT_COLLECT_USER_QUIET_S=120      stay off an account used this recently
   VAULT_COLLECT_MAX_SKIP_S=1800       …unless skipped that long (bounded starvation)
   VAULT_COLLECT_THUMB_CONCURRENCY=2   parallel thumb fetches (0.5 s gap each)
+  VAULT_COLLECT_THUMB_WARM_MAX=0      thumbs warmed per run, newest first, live links only (0 = all)
 """
 from __future__ import annotations
 
@@ -123,7 +124,12 @@ LISTS_MAX_PAGES = 20     # same hard cap as the picker
 PICKER_PAGE = 24         # useVaultMedia.ts PAGE
 WALK_PAGE = 100          # OF's cap; same as Collect
 WALK_MAX_PAGES = 200     # 20k-item backstop, same as Collect
-HOT_THUMBS = 100
+# Thumbs warmed per run: every missing one, newest first, whose stored OF link is still live (0 = no cap).
+# Links last ~a day and the weekly full walk re-signs all of them, so a run right after it fills the whole
+# vault; a 6 h hot run only reaches the newest. A dead link is skipped, not fetched: it would only 403.
+# Was 100: an older tile then cost its first viewer an OF by-id re-sign + CDN fetch behind
+# VAULT_STILL_CONCURRENCY (AE 2026-11-19, 12.6k-item vault with 1k thumbs: tiles queued >10 s).
+THUMB_WARM_MAX = max(0, int(_env("VAULT_COLLECT_THUMB_WARM_MAX", 0)))
 
 P_HOT, P_THUMBS, P_DONE = "auto:hot", "auto:thumbs", "auto:done"
 P_ALL = "auto:all:"
@@ -399,15 +405,20 @@ async def _thumbs(aid: str, client: Any) -> None:
         rows = (await s.execute(
             select(VaultItem.media_id, VaultItem.kind, VaultItem.raw_json, VaultItem.thumb_url)
             .where(VaultItem.account_id == aid, VaultItem.removed_at.is_(None))
-            .order_by(VaultItem.created_at.desc()).limit(HOT_THUMBS)
+            .order_by(VaultItem.created_at.desc())
         )).all()
+    now = time.time()
     todo: list[tuple[Any, str]] = []
     for mid, kind, raw, turl in rows:
+        if THUMB_WARM_MAX and len(todo) >= THUMB_WARM_MAX:
+            break
         if not vault_mirror.has_still(kind):
             continue
         path = vault_stills.thumb_path(aid, mid)
+        if path.is_file():
+            continue
         url = vault_frames.pick_thumb(load_json(raw, {}) or {}) or turl
-        if url and not path.is_file():
+        if url and not vault_stills.signed_url_expired(url, now):
             todo.append((path, url))
     queue: asyncio.Queue = asyncio.Queue()
     for t in todo:

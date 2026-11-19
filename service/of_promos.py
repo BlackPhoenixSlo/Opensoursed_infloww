@@ -37,12 +37,14 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
 import automation_executor as ax
 from db.engine import get_session
 from db.models import PromoCampaign, PromoListSetting
+from isotime import parse_iso
 from of_coerce import cents_or_zero
 
 log = logging.getLogger("of-relay.of_promos")
@@ -86,28 +88,50 @@ def normalise_of_promo(item: dict) -> dict:
     isFinished alone showed them as live campaigns in the UI, and would have
     made promo_reactivate stand down forever ("a promo is already live") on an
     account that actually has no offer running.
+
+    A filled claim cap is ended too: `subscribe_counts > 0 and claims >=
+    subscribe_counts` is not live, whatever the flags say (OF may lag flipping
+    them). 0 (OF echoes null) is unlimited, never capped.
     """
     finished = bool(of_field(item, "isFinished", default=False))
     can_claim = item.get("canClaim")
+    cap = safe_int(of_field(item, "subscribeCounts", "subscribe_counts", default=0))
+    claims = safe_int(of_field(item, "claimsCount", "countSubscribers",
+                               "subscribersCount", default=0))
+    capped = cap > 0 and claims >= cap
     # Absent canClaim → don't infer death from it; only an explicit False counts.
-    is_live = (not finished) and (can_claim is not False)
+    is_live = (not finished) and (can_claim is not False) and not capped
     return {
         "of_promo_id": coerce_of_id(of_field(item, "id", "promoId")),
         "price_cents": to_cents(of_field(item, "price", default=0)),
-        "subscribe_counts": safe_int(of_field(item, "subscribeCounts", "subscribe_counts", default=0)),
+        "subscribe_counts": cap,
         "subscribe_days": safe_int(of_field(item, "subscribeDays", "subscribe_days", default=0)),
         "message": of_field(item, "message", "text", default=""),
         "promo_type": of_field(item, "type", default="all"),
         "created_at": of_field(item, "createdAt"),
+        # OF's expiry instant (ISO, null = none): the create path stores it as expires_at.
+        "finished_at": of_field(item, "finishedAt"),
         # performance = how many claimed it
-        "subscriber_count": safe_int(of_field(item, "claimsCount", "countSubscribers",
-                                              "subscribersCount", default=0)),
+        "subscriber_count": claims,
         "can_claim": can_claim,
         # "finished" here means "not on offer", which is what every caller
         # actually wants to know.
         "is_finished": not is_live,
         "status": "active" if is_live else "finished",
     }
+
+
+def promo_expires_at(finished_at, finish_days: int | None, created: datetime) -> datetime | None:
+    """When a just-made promo stops being on offer (naive UTC), or None (no expiry known):
+    OF's `finishedAt` when it gave one in the future (it is null for most), else
+    `created` + finish_days days when finish_days > 0 (our guess from what was sent),
+    else None. Never raises (a junk finishedAt reads as absent)."""
+    of = parse_iso(finished_at)
+    if of is not None and of > created:
+        return of
+    if finish_days and int(finish_days) > 0:
+        return created + timedelta(days=int(finish_days))
+    return None
 
 
 # A promo's audience: OF's "all" (new subscribers), "expired", or both. OF's own

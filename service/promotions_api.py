@@ -8,8 +8,14 @@ without a live round-trip.
 
 Routes (owner-gated, under /admin/*):
   GET    /admin/promotions?account_id=    merged mirror ∪ live OF (best-effort)
-  POST   /admin/promotions                create on OF + upsert mirror
+  POST   /admin/promotions                create on OF + upsert mirror (+ Keep running)
+  PATCH  /admin/promotions/{mirror_id}    Keep running on/off for one campaign
   DELETE /admin/promotions/{mirror_id}    delete on OF + drop mirror row
+
+Keep running is ONE switch: the campaign's `auto_reactivate` flag plus the
+account's `promo_reactivate` rule, written in one transaction. Ticking ensures
+the rule (enabled, hourly backstop, dry_run false, cooldown 2, no cycle cap);
+unticking the last armed campaign switches it off.
 """
 from __future__ import annotations
 
@@ -26,17 +32,46 @@ import automation_executor as ax
 import link_metrics
 from api_errors import raise_if_free_page_denied
 from auth import assert_account_owned
+from automation_rules_api import ensure_kind_rule
 from db.engine import get_session
 from db.models import PromoCampaign
 from isotime import iso_plain
 import of_pacing
 from of_mirror import delete_mirrored, merge_mirrors
 from of_promos import (extract_created_promo, fetch_of_promos, normalise_of_promo,
-                       promo_type_body, promo_type_store)
+                       promo_expires_at, promo_type_body, promo_type_store)
+from permissions import require_opt_in_kind
 
 log = logging.getLogger("of-relay.promotions_api")
 
 router = APIRouter()
+
+# The rule the Keep running tick owns (promo_reactivate's knobs): an hourly
+# backstop behind the event pokes, real re-creates, a 2-minute cooldown, no cap.
+KEEP_RUNNING_KIND = "promo_reactivate"
+KEEP_RUNNING_EVERY_S = 3600
+KEEP_RUNNING_STEPS = {"dry_run": False, "cooldown_minutes": 2, "max_reactivations": 0}
+
+
+async def _keep_running_rule(s, account_id: str, *, on: bool) -> str:
+    """The account's promo_reactivate rule follows Keep running (caller's transaction)."""
+    await require_opt_in_kind(KEEP_RUNNING_KIND, account_id)
+    if on:
+        return await ensure_kind_rule(s, account_id, KEEP_RUNNING_KIND, enable=True,
+                                      every_seconds=KEEP_RUNNING_EVERY_S,
+                                      steps=dict(KEEP_RUNNING_STEPS))
+    return await ensure_kind_rule(s, account_id, KEEP_RUNNING_KIND, enable=False)
+
+
+def _unarmable(discount: int | None, of_promo_id: int | None) -> str | None:
+    """Why a campaign cannot keep running, or None. The automation fails closed on
+    both, so arming one would silently do nothing."""
+    if not (1 <= int(discount or 0) <= 100):
+        return "this campaign has no saved discount, so it can't be re-created"
+    if of_promo_id is None:
+        return ("this campaign isn't linked to an OnlyFans promo, so its state "
+                "can't be checked — re-create it to enable Keep running")
+    return None
 
 
 @router.get("/admin/promotions")
@@ -131,6 +166,10 @@ class _CreateBody(BaseModel):
     # Offer expiration in days, 0 = no expiration (OF's `finishDays`; Infloww's
     # and OF's composer both send it). None = not sent, as before.
     finish_days: int | None = Field(None, ge=0, le=30)
+    # Keep running from the start (the Growth form ticks it by default). Moves the
+    # flag: any other armed campaign of the account is unticked. False (the API
+    # default) creates it unarmed, as before.
+    auto_reactivate: bool = False
 
 
 @router.post("/admin/promotions")
@@ -186,27 +225,61 @@ async def create_promotion(body: _CreateBody = Body(...)) -> dict[str, Any]:
     if effective_days is None:
         effective_days = days
     now = datetime.utcnow()
+    of_id = of.get("of_promo_id")
     async with get_session() as s:
         row = PromoCampaign(
-            account_id=body.account_id, of_promo_id=of.get("of_promo_id"),
+            account_id=body.account_id, of_promo_id=of_id,
             name=name, discount_percent=discount, price_cents=0,
             subscribe_counts=counts, subscribe_days=effective_days,
             message=body.message or "", promo_type=promo_type,
             status="active", subscriber_count=of.get("subscriber_count") or 0,
-            created_at=now,
+            created_at=now, finish_days=body.finish_days,
+            expires_at=promo_expires_at(of.get("finished_at"), body.finish_days, now),
         )
         s.add(row)
         await s.flush()
         mirror_id = row.id
     log.info("promo_created id=%s account=%s of_id=%s discount=%s%%",
-             mirror_id, body.account_id, of.get("of_promo_id"), discount)
-    return {"id": mirror_id, "of_promo_id": of.get("of_promo_id"), "name": name,
-            "discount_percent": discount, "price_cents": 0, "subscribe_counts": counts,
-            "subscribe_days": effective_days, "message": body.message or "",
-            "promo_type": promo_type, "status": "active",
-            "subscriber_count": of.get("subscriber_count") or 0,
-            "auto_reactivate": False, "reactivate_count": 0,
-            "last_reactivated_at": None, "source": "mirror"}
+             mirror_id, body.account_id, of_id, discount)
+    # The mirror row is committed above on its own: the promo is live on OF, so a
+    # failed arm below must never lose the row that tracks it.
+    armed, refused = False, None
+    if body.auto_reactivate:
+        refused = _unarmable(discount, of_id)
+        if refused is None:
+            try:
+                await _arm(body.account_id, mirror_id)
+                armed = True
+            except HTTPException as e:
+                refused = str(e.detail)
+        if refused:
+            log.info("promo_created_unarmed id=%s reason=%s", mirror_id, refused)
+    out = {"id": mirror_id, "of_promo_id": of_id, "name": name,
+           "discount_percent": discount, "price_cents": 0, "subscribe_counts": counts,
+           "subscribe_days": effective_days, "message": body.message or "",
+           "promo_type": promo_type, "status": "active",
+           "subscriber_count": of.get("subscriber_count") or 0,
+           "auto_reactivate": armed, "reactivate_count": 0,
+           "last_reactivated_at": None, "source": "mirror"}
+    if refused:
+        out["auto_reactivate_refused"] = refused
+    return out
+
+
+async def _arm(account_id: str, mirror_id: int) -> None:
+    """Move Keep running onto `mirror_id`: untick every other campaign of the account,
+    tick this one, ensure the rule. One transaction."""
+    async with get_session() as s:
+        others = (await s.execute(select(PromoCampaign).where(
+            PromoCampaign.account_id == account_id,
+            PromoCampaign.auto_reactivate.is_(True),
+            PromoCampaign.id != mirror_id))).scalars().all()
+        for o in others:
+            o.auto_reactivate = False
+        row = await s.get(PromoCampaign, mirror_id)
+        row.auto_reactivate = True
+        await _keep_running_rule(s, account_id, on=True)
+    log.info("promo_keep_running_moved id=%s unarmed=%s", mirror_id, [o.id for o in others])
 
 
 class _PatchBody(BaseModel):
@@ -216,16 +289,19 @@ class _PatchBody(BaseModel):
 
 @router.patch("/admin/promotions/{mirror_id}")
 async def update_promotion(mirror_id: int, body: _PatchBody = Body(...)) -> dict[str, Any]:
-    """Turn auto-reactivate on/off for one campaign. When on, the
-    `promo_reactivate` automation re-creates it on OF each time it finishes."""
+    """Turn Keep running on/off for one campaign. When on, the `promo_reactivate`
+    automation re-creates it on OF each time it finishes; the rule is ensured
+    (on) or, with no armed campaign left, switched off, in the same transaction.
+    A second campaign is REFUSED (409), not moved onto: unlike the create form,
+    this tick does not make a new promo, so taking the flag from a running one
+    is an operator's explicit untick first."""
     async with get_session() as s:
         row = await s.get(PromoCampaign, mirror_id)
         if row is None:
             raise HTTPException(404, "promotion not found")
         assert_account_owned(row.account_id)
         if body.auto_reactivate and not (1 <= int(row.discount_percent or 0) <= 100):
-            raise HTTPException(
-                422, "this campaign has no saved discount, so it can't be re-created")
+            raise HTTPException(422, _unarmable(row.discount_percent, row.of_promo_id))
         if body.auto_reactivate:
             # OF runs one promo at a time, so a second armed campaign would just
             # take turns finishing the first — a real promo minted every tick.
@@ -243,10 +319,17 @@ async def update_promotion(mirror_id: int, body: _PatchBody = Body(...)) -> dict
         if body.auto_reactivate and row.of_promo_id is None:
             # The automation fails closed on these (it can't look the promo up to
             # tell finished from live), so arming one would silently do nothing.
-            raise HTTPException(
-                422, "this campaign isn't linked to an OnlyFans promo, so its state "
-                     "can't be checked — re-create it to enable Keep running")
+            raise HTTPException(422, _unarmable(row.discount_percent, row.of_promo_id))
         row.auto_reactivate = bool(body.auto_reactivate)
+        if body.auto_reactivate:
+            await _keep_running_rule(s, row.account_id, on=True)
+        else:
+            still = (await s.execute(select(PromoCampaign.id).where(
+                PromoCampaign.account_id == row.account_id,
+                PromoCampaign.auto_reactivate.is_(True),
+                PromoCampaign.id != row.id).limit(1))).scalar_one_or_none()
+            if still is None:
+                await _keep_running_rule(s, row.account_id, on=False)
         out = {"id": row.id, "auto_reactivate": row.auto_reactivate,
                "reactivate_count": int(row.reactivate_count or 0),
                "last_reactivated_at": iso_plain(row.last_reactivated_at)}

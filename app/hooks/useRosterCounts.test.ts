@@ -7,13 +7,17 @@
  * contributes at most 1 to unread OR owe_reply) plus the poll-merge guard that
  * stops the 60s poll from clobbering an optimistic patch.
  */
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
 
 import {
   rosterDelta,
   applyRosterDelta,
   rosterPriorFromRow,
   mergeRosterCounts,
+  resetRosterCountsModuleState,
+  takeWarmSeed,
+  writeWarmedRosterCount,
   type RosterCountsResp,
 } from "./useRosterCounts";
 import type { OFChatItem } from "@/lib/relay";
@@ -145,5 +149,52 @@ describe("mergeRosterCounts clock skew (as_of is server clock, patches are this 
   ] as const)("%s", (_n, now, started, patched, want) => {
     const out = mergeRosterCounts(resp(now), prev, started, () => patched);
     expect(out.counts.a).toEqual(want === "local" ? local : held);
+  });
+});
+
+describe("mergeRosterCounts: a cached count with a newer as_of is kept (a warm's, while a poll was in flight)", () => {
+  const c = (unread: number, as_of?: number) => ({ unread, owe_reply: 0, ...(as_of === undefined ? {} : { as_of }) });
+  it.each([
+    // [case, cached, server, want]
+    ["cached newer: kept", c(5, 200), c(1, 100), "cached"],
+    ["equal as_of: the server's", c(5, 200), c(1, 200), "server"],
+    ["server newer: the server's", c(5, 100), c(1, 200), "server"],
+    ["server as_of 0 (a failed read): unchanged rule, the server's", c(5, 200), c(0, 0), "server"],
+    ["cached without as_of (a local patch): the patch stamp decides", c(5), c(1, 100), "server"],
+  ] as const)("%s", (_n, cached, server, want) => {
+    const out = mergeRosterCounts({ counts: { a: server } }, { counts: { a: cached } }, 1_000, () => 0);
+    expect(out.counts.a).toEqual(want === "cached" ? cached : server);
+  });
+});
+
+describe("writeWarmedRosterCount (creator_warmed carries the count: written, not re-read)", () => {
+  const key = ["roster-counts", "u1"] as const;
+  const qcOf = () => new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } });
+  beforeEach(() => resetRosterCountsModuleState());
+
+  it.each([
+    // [case, cached a, warm a, want a]
+    ["older cached: the warm's", { unread: 0, owe_reply: 0, as_of: 100 }, { unread: 2, owe_reply: 1, as_of: 200 }, "warm"],
+    ["as new cached: kept", { unread: 0, owe_reply: 0, as_of: 200 }, { unread: 2, owe_reply: 1, as_of: 200 }, "cached"],
+    ["newer cached: kept", { unread: 0, owe_reply: 0, as_of: 300 }, { unread: 2, owe_reply: 1, as_of: 200 }, "cached"],
+  ] as const)("%s; the other Creators untouched", (_n, cached, warm, want) => {
+    const qc = qcOf();
+    const other = { unread: 7, owe_reply: 0, as_of: 50 };
+    qc.setQueryData<RosterCountsResp>(key, { counts: { a: cached, b: other } });
+    writeWarmedRosterCount(qc, key, "a", warm, undefined, Date.now());
+    expect(qc.getQueryData<RosterCountsResp>(key)?.counts).toEqual({ a: want === "warm" ? warm : cached, b: other });
+  });
+
+  it("no answer cached yet: the first read merges over it, keeping the warm's newer count", () => {
+    const qc = qcOf();
+    const warm = { unread: 2, owe_reply: 1, as_of: 200 };
+    writeWarmedRosterCount(qc, key, "a", warm, undefined, Date.now());
+    expect(qc.getQueryData(key)).toBeUndefined();
+    // The read's own merge, as useRosterCountsRead's queryFn does it (prev: the cache, else the seed).
+    const prev = qc.getQueryData<RosterCountsResp>(key) ?? takeWarmSeed(JSON.stringify(key));
+    const out = mergeRosterCounts({ counts: { a: { unread: 0, owe_reply: 0, as_of: 100 }, b: { unread: 1, owe_reply: 0, as_of: 100 } } },
+      prev, Date.now(), () => 0);
+    expect(out.counts).toEqual({ a: warm, b: { unread: 1, owe_reply: 0, as_of: 100 } });
+    expect(takeWarmSeed(JSON.stringify(key))).toBeUndefined();
   });
 });
