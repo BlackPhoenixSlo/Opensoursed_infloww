@@ -1,5 +1,5 @@
 ---
-title: "How to scale on mym: a five-step operating system with no operating fee"
+title: "How to scale on mym: a five-step operating system"
 description: "How agencies scale a creator on mym in five steps: finish the page, post daily, send tracked traffic, earn reach, sell in chat."
 date: 2026-10-12
 tags: ["platforms", "mym", "agency-growth"]
@@ -54,4 +54,4 @@ On platforms with internal discovery, engagement from your traffic signals that 
 
 When something underperforms, diagnose by pattern. Strong subscriptions with weak paid sales point at chat. Strong engagement with weak conversion points at the offer or price. Good posting and chat with flat growth points back to Step 3: traffic. Weak everything means consistency.
 
-> **The pitch.** Inflowwww does not support mym today; it covers OnlyFans, self-hosted and MIT-licensed. There is no mym client in the repo. Hiring: open a pull request. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Inflowwww does not support mym today; it covers OnlyFans, self-hosted and MIT-licensed. There is no mym client in the repo. Pull requests welcome. [Deploy it yourself]({{ '/#deploy' | url }}).

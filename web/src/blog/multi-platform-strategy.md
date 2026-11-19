@@ -56,6 +56,6 @@ The agencies that do multi-platform well treat each platform as its own channel 
 - Keep the creator's voice consistent, so fans recognise them anywhere.
 - Track each platform separately. If one is not earning its hours after 90 days, it is fine to stop.
 
-In Inflowwww, OnlyFans chat runs through Messages Pro, and Analytics > Creator reports is where you compare creators. We have no partnerships page, and we are comfortable with that.
+In Inflowwww, OnlyFans chat runs through Messages Pro, and Analytics > Creator reports is where you compare creators.
 
 > **The pitch.** Partnerships need numbers both sides trust, and Tracking links show which partner sent which fan, on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).

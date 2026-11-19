@@ -64,4 +64,4 @@ Fans now choose what they subscribe to rather than taking what's put in front of
 
 The industry isn't being ruined. Its structure is changing: less gatekeeping, more direct income, and more responsibility for performers. The winners are those who choose their mix deliberately and run their side like a business.
 
-> **The pitch.** Direct platforms cut out a middle layer, and Inflowwww is free, self-hosted software for the business side. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Going direct moved the money to performers. Inflowwww keeps the business tools with them too: free, on their own server. [Deploy it yourself]({{ '/#deploy' | url }}).

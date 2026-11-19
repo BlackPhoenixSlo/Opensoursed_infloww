@@ -1,5 +1,5 @@
 ---
-title: "25 OnlyFans fitness content ideas. Progressive overload, for everything but the bill."
+title: "25 OnlyFans fitness content ideas. Progressive overload: one new format a week."
 description: "Twenty-five fitness content ideas for OnlyFans across warm-ups, lifting, cardio and lifestyle, with safety notes and a plan."
 date: 2026-10-12
 tags: ["content-ideas", "fitness", "content-calendar"]

@@ -65,4 +65,4 @@ Do not hide the platform from your audience. Explain it once, clearly.
 - Use Auto Post (`/growth/auto-post`) or the platform's own scheduler to keep releases on time.
 - Reply to subscriber messages a few times a week. That direct contact is part of what they pay for.
 
-> **The pitch.** Inflowwww manages OnlyFans accounts for teams, free and MIT-licensed, on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Run the paid tier like a show: Auto Post keeps releases on time, and Tracking links show which show note converts. [Deploy it yourself]({{ '/#deploy' | url }}).

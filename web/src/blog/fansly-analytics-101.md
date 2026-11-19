@@ -1,5 +1,5 @@
 ---
-title: "Fansly analytics 101: five numbers to read every week. Our price is not one of them."
+title: "Fansly analytics 101: five numbers to read every week, and one to change at a time"
 description: "The five Fansly numbers worth reading every week, what each one tells you, and what to change when one of them moves."
 date: 2026-10-12
 tags: ["platforms", "fansly", "analytics"]

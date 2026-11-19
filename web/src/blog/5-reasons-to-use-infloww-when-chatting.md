@@ -60,7 +60,7 @@ Use notes for facts the fan has told you: time zone, what they like to talk abou
 
 ## 5. It costs $0
 
-Inflowwww is MIT-licensed and runs on your own server with Docker Compose. There is no per-creator fee, so adding a fifth or a fiftieth creator does not change the software bill. Under $500: $0. Over $75,000: still $0.
+Inflowwww is MIT-licensed and runs on your own server with Docker Compose. There is no per-creator fee, so adding a fifth or a fiftieth creator does not change the software bill.
 
 What you do pay for is the server and, if you turn them on, optional LLM provider keys, billed by that provider. The dashboard works without them.
 

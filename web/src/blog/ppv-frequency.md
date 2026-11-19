@@ -65,4 +65,4 @@ Scheduling is what stops PPV from becoming a daily scramble. In Inflowwww:
 
 Set a cadence, schedule it, then spend the saved time talking to fans.
 
-> **The pitch.** Your PPV frequency should follow your audience. Our price frequency is simpler: never. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Your PPV frequency should follow your audience. Our billing frequency is simpler: never. [Deploy it yourself]({{ '/#deploy' | url }}).

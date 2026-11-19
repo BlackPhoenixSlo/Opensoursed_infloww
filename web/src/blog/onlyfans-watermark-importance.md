@@ -65,4 +65,4 @@ Batch it. Watermark a whole set in one pass right after editing, before anything
 
 If you work in a team, write the per-fan code in the fan's notes. If you run Inflowwww, the fan panel in Messages Pro has free-form notes per fan, shared across the team, and Vault Pro (`/growth/vault-pro`) is where you browse each creator's vault.
 
-> **The pitch.** Watermark the content and note which fan got which code; Messages Pro keeps those notes for the whole team, at $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Watermark the content and note which fan got which code; Messages Pro keeps those notes for the whole team. [Deploy it yourself]({{ '/#deploy' | url }}).

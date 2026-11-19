@@ -68,4 +68,4 @@ Giveaways work when they are clear and honest.
 - Reply to everyone who replies to you, even with one line.
 - Write down what fans told you, so next year's message can be just as specific.
 
-> **The pitch.** A specific thank-you beats a generic one, and so does software you can inspect: Inflowwww is $0 per creator, MIT-licensed, and keeps its database on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** A thank-you that names what the fan told you beats a generic one. Inflowwww's fan panel keeps those notes per fan, shared across the team, on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).

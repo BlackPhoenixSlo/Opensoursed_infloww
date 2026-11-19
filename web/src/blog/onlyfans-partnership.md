@@ -42,7 +42,7 @@ Look for someone who complements you rather than copies you:
 
 Creator communities on Reddit, X and Discord are the usual places to meet. When you reach out, be specific: what you have in mind, what you bring, and what your limits are.
 
-If you were hoping for a matching tool in Inflowwww: Share for Share ships in our NotBuiltYet edition: the page is real, the feature is not. Discover creators, Requests and S4S schedule (`/share-for-share/...`) are all empty screens today, so for now a shared spreadsheet and a group chat do the job.
+If you were hoping for a matching tool in Inflowwww: Inflowwww has no partner-matching tool yet, so a shared spreadsheet and a group chat do the job.
 
 ## Agree the terms in writing
 

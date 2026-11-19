@@ -39,7 +39,7 @@ When the ratio is low, open **Analytics > Employee reports** for the same window
 
 ## Return on the team's hours
 
-There is no hourly earnings view, and **Employees > Shift schedule** is NotBuiltYet: the page is real, the feature is not. You can still do this in a spreadsheet:
+There is no hourly earnings view, and **Employees > Shift schedule** is a placeholder page for now. You can still do this in a spreadsheet:
 
 1. Take the window's total revenue for the creator.
 2. Divide by the hours your team covered that account. Your own rota is the source.

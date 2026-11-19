@@ -1,5 +1,5 @@
 ---
-title: "How to build an X posting schedule for OnlyFans, in your timezone, on your server"
+title: "How to build an X posting schedule for OnlyFans, around when your followers are online"
 description: "How to build an X posting schedule for OnlyFans around when your followers are online, with a post mix you can keep up every day."
 date: 2026-10-12
 tags: ["promotion", "x-twitter", "content-planning"]

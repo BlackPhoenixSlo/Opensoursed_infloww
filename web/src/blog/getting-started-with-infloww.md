@@ -40,7 +40,7 @@ docker compose up -d --build
 
 The app container joins an external network called `n8n_default`, so it has to exist first (the network name comes from the maintainer's own Traefik setup; you don't need n8n). The proxies file and the database are bind-mounted, so they must exist as files, not directories. If Docker creates them for you, it creates folders and the relay will not start.
 
-Optional extras for `.env`: `ADMIN_PASSWORD` (without it, founder-only actions return 503) and the LLM keys `DEEPSEEK_API_KEY`, `DEEPINFRA_API_KEY` and `ZAI_API_KEY`. The dashboard works without them. Keep this file out of chat logs and screenshots. The .env File™ (not actually trademarked) is the closest thing we have to an account page.
+Optional extras for `.env`: `ADMIN_PASSWORD` (without it, founder-only actions return 503) and the LLM keys `DEEPSEEK_API_KEY`, `DEEPINFRA_API_KEY` and `ZAI_API_KEY`. The dashboard works without them. Keep this file out of chat logs and screenshots. There is no account page; this file is it.
 
 The last command starts three containers: `openinflowwww-relay` on 127.0.0.1:8787, `openinflowwww-app` on 127.0.0.1:3001, and `openinflowwww-autoheal`, which restarts services that fail their healthcheck.
 
@@ -68,7 +68,7 @@ You paste it under **Creators > Manage creators** (`/creators`), in the Paste cU
 
 Invite each chatter from **Employees > Manage employees > Chatters** (`/employees`): under Invite a new chatter, **Mint invite URL** makes a one-time `/chatter-login?token=...` link, valid for 24 hours, and they pick a username and password there. Login is a share token for the dashboard plus per-user logins for the owner and each chatter (`/chatter-login`); [Running a team]({{ '/help/#team' | url }}) in the Help center covers the rest. Chatters never see the creator's OnlyFans password, because the relay holds a captured session, not the password.
 
-Owner screens such as Vault Pro, Smart lists and Manage creators are hidden from chatter sessions; chatters attach media from the chat composer, limited to the vault folders the owner grants them. Shift schedule (`/employees/shifts`) is NotBuiltYet: the page is real, the feature is not.
+Owner screens such as Vault Pro, Smart lists and Manage creators are hidden from chatter sessions; chatters attach media from the chat composer, limited to the vault folders the owner grants them. Shift schedule (`/employees/shifts`) is a placeholder page for now.
 
 ## What's next
 

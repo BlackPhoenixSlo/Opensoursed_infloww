@@ -73,4 +73,4 @@ A short checklist for running it as a business:
 5. Fixed working hours and at least one day off a week.
 6. A yearly review of what you earn, what you spend and whether it is still working for you.
 
-> **The pitch.** Treating OnlyFans as a job means tracking hours and income; Inflowwww is a free, self-hosted CRM for chats, content and reports. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Every job has overhead. Run Inflowwww on your own server and the CRM line is the server bill. [Deploy it yourself]({{ '/#deploy' | url }}).

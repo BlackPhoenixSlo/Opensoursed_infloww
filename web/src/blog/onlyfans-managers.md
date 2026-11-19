@@ -1,5 +1,5 @@
 ---
-title: "What is an OnlyFans manager? A person, not a pricing tier."
+title: "What is an OnlyFans manager? A person you trust with your brand."
 description: "What an OnlyFans manager does, the kinds of manager, how to tell if you need one, and how to judge a trial month."
 date: 2026-10-12
 tags: ["agency", "creators", "hiring"]
@@ -20,7 +20,7 @@ A manager can be one person or a team at an agency. Most are paid a percentage o
 - **Pricing and analytics.** What sells, at what price, to which fans.
 - **Compliance.** Keeping up with the platform's rules so your account stays in good standing.
 
-Some managers cover everything. Many are strong at one or two. Hire for the gap you actually have. A manager is a person you trust with your brand. The software they use is a separate decision, and in our case it costs $0.
+Some managers cover everything. Many are strong at one or two. Hire for the gap you actually have. A manager is a person you trust with your brand.
 
 ## Do you need one? Run a time audit
 

@@ -67,6 +67,6 @@ If you work with an agency or a manager, give them a one-paragraph description o
 
 ## For agencies
 
-Choose a niche per creator, not one template for the whole roster. In Inflowwww, per-creator scripts under Growth > Scripts and per-creator numbers in Analytics > Creator reports make it easier to see which positioning is working. Our own positioning fits on one line: $0.
+Choose a niche per creator, not one template for the whole roster. In Inflowwww, per-creator scripts under Growth > Scripts and per-creator numbers in Analytics > Creator reports make it easier to see which positioning is working. 
 
-> **The pitch.** Your niche is yours. If you ever run a team, Inflowwww is a free, MIT-licensed CRM for it, on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Your niche is yours. Per-creator Scripts and Creator reports show which positioning works once you run several. [Deploy it yourself]({{ '/#deploy' | url }}).

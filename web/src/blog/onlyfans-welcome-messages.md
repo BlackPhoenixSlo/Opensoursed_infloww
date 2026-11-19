@@ -1,5 +1,5 @@
 ---
-title: "How to change your OnlyFans welcome message. No CRM subscription required."
+title: "How to change your OnlyFans welcome message. What to put in it."
 description: "The welcome message reaches every new subscriber at peak interest. How to change it in OnlyFans settings, what to include, three examples and keeping it fresh."
 date: 2026-10-12
 tags: ["getting-started", "messaging", "welcome-message"]

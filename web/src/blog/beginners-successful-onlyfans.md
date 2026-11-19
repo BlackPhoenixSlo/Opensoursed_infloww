@@ -64,4 +64,4 @@ These three come up in almost every list of lessons, and they deserve plain trea
 - **Boundaries:** decide what you will and will not do before your first message arrives, write it down, and apply it to every fan the same way. Some people will push. You are allowed to block them.
 - **Consistency:** a modest schedule you keep is better than an ambitious one you abandon. Three posts a week, every week, reads as professional.
 
-> **The pitch.** Every tip above works with OnlyFans and a calendar alone. Inflowwww is a self-hosted dashboard for the business side: Messages Pro for chats, Vault Pro for content, and Creator, Employee and Fan reports in Analytics. Our price has no room to discount, because it is $0. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Every tip above works with OnlyFans and a calendar alone. Inflowwww is a self-hosted dashboard for the business side: Messages Pro for chats, Vault Pro for content, and Creator, Employee and Fan reports in Analytics. [Deploy it yourself]({{ '/#deploy' | url }}).

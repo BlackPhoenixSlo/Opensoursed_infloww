@@ -55,4 +55,4 @@ Visitors may arrive with assumptions about the platform. Your profile should ans
 - Use a separate tracked link per channel so you know where subscribers come from. Tracking links (`/growth/tracking-links`) do that in Inflowwww.
 - Collaborate with creators in neighbouring niches: a trainer and a cook, a musician and a producer.
 
-> **The pitch.** A non-adult page still needs an inbox once it grows. Running a team someday? There is no sales call, just the README. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** A non-adult page still needs a schedule and a library: Auto Post and Vault Pro, on a server you run. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -47,7 +47,7 @@ This is not legal advice; have a lawyer in your jurisdiction draft or review the
 
 Encourage the creator to read the contract in their own time and, if they want, to have someone independent review it. An agency that is confident in its terms does not need a signature in the next five minutes.
 
-Showing the creator how they will see their numbers helps. If you run Inflowwww, **Creator reports** (`/analytics/creator-reports`) cover revenue per creator, so you can tell them what they will be looking at each month. It costs the same whether they earn $400 or $40,000: $0 at every bracket.
+Showing the creator how they will see their numbers helps. If you run Inflowwww, **Creator reports** (`/analytics/creator-reports`) cover revenue per creator, so you can tell them what they will be looking at each month. It costs the same whether they earn $400 or $40,000: nothing.
 
 ## Closing and next steps
 

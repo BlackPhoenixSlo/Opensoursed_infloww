@@ -59,4 +59,4 @@ Stigma shrinks when ordinary people stop repeating it. Treat creators as workers
 
 The stigma says more about history and assumptions than about you. Many creators run thoughtful, ethical businesses and still face judgment. If the weight of it gets heavy, reach out to someone you trust or a professional. You deserve the same support as anyone in any other job.
 
-> **The pitch.** Inflowwww is a free, open-source CRM for creators and agencies that runs on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** You choose who knows about your work. Self-host Inflowwww and the list of people who can see your fan data stays just as short. [Deploy it yourself]({{ '/#deploy' | url }}).

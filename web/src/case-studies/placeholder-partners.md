@@ -11,8 +11,6 @@ stats:
     label: "Lines in the handover note template"
   - value: "10 min"
     label: "Overlap between outgoing and incoming chatter"
-  - value: "0"
-    label: "Demo calls attended. The demo is docker compose up."
 quote: "The note takes five minutes to write. Explaining to a fan why we forgot what they said took longer."
 quoteBy: "Marco, shift manager, Placeholder Partners"
 ---

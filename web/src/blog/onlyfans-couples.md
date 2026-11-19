@@ -74,4 +74,4 @@ This is not legal advice; have a lawyer in your jurisdiction draft or review the
 
 If you work with a manager or an agency, give them your written boundaries list and make sure every chatter has read it.
 
-> **The pitch.** If the two of you ever bring in a team, Inflowwww is a free CRM that runs on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Put the money split in writing. Inflowwww needs no line in it: it is free and runs on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).

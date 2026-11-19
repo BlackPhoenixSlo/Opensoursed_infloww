@@ -54,7 +54,7 @@ The coverage table shows, per account, how outbound messages split into **Human*
 
 Response time is not a column in Employee reports. You can measure it from the **Message dashboard** export; the [post on messaging benchmarks]({{ '/blog/infloww-messaging-benchmarks/' | url }}) walks through it.
 
-Shift scheduling lives in **Employees > Shift schedule**, which is a NotBuiltYet page: the screen is real, the feature is not. Until then, keep your rota where it is today and line it up with the report's date range by hand.
+Shift scheduling lives in **Employees > Shift schedule**, which is a placeholder page for now. Until then, keep your rota where it is today and line it up with the report's date range by hand.
 
 ## A fair review routine
 

@@ -70,4 +70,4 @@ Some creators skip Amazon and use services designed for online creators:
 
 Features and fees change, so read each service's current privacy and payout pages before you sign up, and compare them with what you need: address privacy, the stores you want, and how money reaches you.
 
-> **The pitch.** If a team ever manages your page, Inflowwww is a free, self-hosted CRM that keeps fan data on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Fans see the wishlist, never your address. Scripts keeps the wishlist reminder word for word, so nobody on shift improvises one. [Deploy it yourself]({{ '/#deploy' | url }}).

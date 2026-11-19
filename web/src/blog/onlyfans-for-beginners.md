@@ -1,5 +1,5 @@
 ---
-title: "How OnlyFans works: the beginner's guide, with no paid tier to steer you to"
+title: "How OnlyFans works: the beginner's guide"
 description: "How OnlyFans works, how creators earn, and what to plan, set up, protect and read before launch. A practical beginner's guide with nothing to buy at the end."
 date: 2026-10-12
 tags: ["getting-started", "beginners", "privacy"]

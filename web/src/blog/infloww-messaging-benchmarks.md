@@ -1,5 +1,5 @@
 ---
-title: "Inflowwww messaging benchmarks: exactly as fast as your server"
+title: "Inflowwww messaging benchmarks: we have no data to pool, so use yours"
 description: "How to measure your chatters' response times and PPV ratios from the Message dashboard export, and set targets your team trusts."
 date: 2026-10-12
 tags: ["product", "message-dashboard", "benchmarks"]

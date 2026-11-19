@@ -1,5 +1,5 @@
 ---
-title: "Why your OnlyFans bio matters: the one text box that works harder than any pricing page"
+title: "Why your OnlyFans bio matters: a few lines that decide who subscribes"
 description: "A visitor decides from a few lines of text whether to subscribe. What makes a bio work, what fans want to know, a fill-in template and how to test changes."
 date: 2026-10-12
 tags: ["getting-started", "bio", "conversion"]

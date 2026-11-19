@@ -57,4 +57,4 @@ Your existing channels are the traffic plan.
 - Run a monthly poll on next month's topics. Subscribers who pick the content tend to stay for it.
 - Keep a note of who joined from which channel and what they ask about. Fan notes in Messages Pro are made for that.
 
-> **The pitch.** If a team ever helps run the page, Inflowwww is free, MIT-licensed and runs on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Tracking links show whether streams or videos bring subscribers, and fan notes in Messages Pro remember who came from where. [Deploy it yourself]({{ '/#deploy' | url }}).

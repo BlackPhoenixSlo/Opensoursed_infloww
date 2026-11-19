@@ -79,4 +79,4 @@ September is when you plan Halloween. Pick three costumes and run a vote in the 
 
 To queue the month, Inflowwww's Auto Post (`/growth/auto-post`) releases a list of ready posts one at a time, on a delay you set, with a dry-run mode to check the plan first. For the payday PPV, Smart Messages (`/growth/smart-messages`) schedules the send to a list built in Smart lists (`/growth/smart-lists`).
 
-> **The pitch.** New season, same price: Inflowwww costs $0 per creator, runs on your own server with Docker Compose, and keeps its database in SQLite. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** New month, same queue: Auto Post releases the posts on a delay, and Smart Messages sends the payday PPV. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -7,8 +7,6 @@ tagline: "14 creators, one checklist, and a software line item that rounds to ze
 stats:
   - value: "$0"
     label: "Per creator per month, times 14 creators, times 12 months"
-  - value: "0%"
-    label: "Increase in software fees after onboarding creator number 14"
   - value: "12"
     label: "Steps on the onboarding checklist, all of them below"
 quote: "We used to onboard from memory. Now we onboard from a list, and the list does not take holidays."

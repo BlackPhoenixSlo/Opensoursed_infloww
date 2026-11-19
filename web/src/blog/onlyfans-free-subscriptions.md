@@ -1,5 +1,5 @@
 ---
-title: "Free vs. paid OnlyFans pages compared. Our only model is free."
+title: "Free vs. paid OnlyFans pages compared. When to run both."
 description: "A free OnlyFans page lives on paid messages and tips; a paid page adds steady monthly income from subscriptions. How they compare and when to run both."
 date: 2026-10-12
 tags: ["getting-started", "pricing", "free-pages"]

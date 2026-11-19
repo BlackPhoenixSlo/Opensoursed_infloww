@@ -31,9 +31,9 @@ These sidebar items are hidden from chatter sessions:
 - **Growth**: Smart lists, Auto-follow, Vault Pro, Profile promotion, Free trial links, Tracking links.
 - **My Automations**: Auto Post and Auto Story.
 - **Creators**: Manage creators and Custom proxy.
-- **Employees**: Manage employees and Shift schedule (NotBuiltYet).
+- **Employees**: Manage employees and Shift schedule (placeholder).
 
-What remains is the working set: the Dashboard, Messages Pro, Smart Messages, Scripts, the Analytics section and Settings. Several of these, like the Settings tabs, are NotBuiltYet pages: the page is real, the feature is not.
+What remains is the working set: the Dashboard, Messages Pro, Smart Messages, Scripts, the Analytics section and Settings. Several of these, like the Settings tabs, are placeholder pages for now.
 
 Hiding a menu item is not the same as hiding data. Before you invite the team, check what the remaining screens show to a chatter (step 3 below) and decide whether that is acceptable for your agency.
 

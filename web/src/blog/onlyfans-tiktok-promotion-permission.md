@@ -72,4 +72,4 @@ Write one TikTok rule for every creator you manage, and train everyone who posts
 
 The creator owns the account and decides what goes on it. The agency's job is to keep it in good standing.
 
-> **The pitch.** Inflowwww is a free, self-hosted CRM for the OnlyFans side of an agency, and TikTok's rules still apply to every account you run. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** TikTok's rules still apply to every account you run. Tracking links show which platform actually sends subscribers. [Deploy it yourself]({{ '/#deploy' | url }}).

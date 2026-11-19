@@ -71,4 +71,4 @@ OnlyFans has limited built-in discovery, so most growth comes from promotion els
 
 Use a unique password and two-factor authentication, watermark your media, consider geoblocking your local area, and keep your stage identity separate from your personal one. Geoblocking is a filter, not a wall: anyone using a VPN can get past it. Block, restrict and report anyone who crosses a line.
 
-> **The pitch.** Now you know how the platform works; Inflowwww is a free, open-source CRM that runs on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** That is the whole system on one page. The team's side fits on one server: Inflowwww, free and self-hosted. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -66,6 +66,6 @@ If a payout is stuck, contact OnlyFans support through the help centre in your a
 
 ## Where Inflowwww fits
 
-Inflowwww doesn't handle payouts. The OF Manager Bank and Statements screens are not built yet. Use OnlyFans' own settings for anything involving money. For checking that payouts match earnings across several creators, per-creator earnings are at `/analytics/creator-reports`.
+Inflowwww doesn't handle payouts. Use OnlyFans' own settings for anything involving money. For checking that payouts match earnings across several creators, per-creator earnings are at `/analytics/creator-reports`.
 
 > **The pitch.** Inflowwww is not a payout method and never touches creator earnings. [Deploy it yourself]({{ '/#deploy' | url }}).

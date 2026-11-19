@@ -63,6 +63,6 @@ Don't share login details, codes or documents with anyone offering to "speed up"
 
 ## If you run a team
 
-When several creators are waiting on payouts, track each one separately. Payouts belong to the creator's own account. Inflowwww doesn't handle money. The OF Manager Statements and Bank screens are not built yet. Per-creator earnings at `/analytics/creator-reports` help you check what should have been paid.
+When several creators are waiting on payouts, track each one separately. Payouts belong to the creator's own account. Inflowwww doesn't handle money. Per-creator earnings at `/analytics/creator-reports` help you check what should have been paid.
 
 > **The pitch.** A missing payout is a question for OnlyFans support and your bank; Inflowwww, a free, self-hosted CRM, does not handle money. [Deploy it yourself]({{ '/#deploy' | url }}).

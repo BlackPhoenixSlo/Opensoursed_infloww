@@ -1,5 +1,5 @@
 ---
-title: "Behind the scenes of a successful creator portfolio, run on a CRM with no earnings ladder"
+title: "Behind the scenes of a successful creator portfolio, and a software bill that stays flat"
 description: "What a sustainable agency portfolio looks like: a healthy income mix, the right platforms, a lean team and weekly numbers."
 date: 2026-10-12
 tags: ["agency", "portfolio", "multi-platform"]
@@ -39,7 +39,7 @@ Small teams can support several creators when every person knows their lane. An 
 - **Two or more chatters** covering shifts, working from shared scripts.
 - **One content assistant** who handles scheduling, captions and the vault.
 
-Write down who covers what, and when. Add each person under Employees > Manage employees, giving chatters chatter logins and keeping owner access to the people who need it. Shift schedule ships in our NotBuiltYet edition: the page is real, the feature is not. A shared calendar covers it today.
+Write down who covers what, and when. Add each person under Employees > Manage employees, giving chatters chatter logins and keeping owner access to the people who need it. Shift schedule is a placeholder page for now. A shared calendar covers it today.
 
 ## Track the same numbers, every week
 

@@ -42,7 +42,7 @@ A simple rule set that holds up:
 - Chatters get chatter logins. Owner access stays with the people who handle payouts and creator setup.
 - Remove access on someone's last day, not at the end of the month.
 
-Shifts need a plan too. Shift schedule ships in our NotBuiltYet edition: the page is real, the feature is not. Until someone builds it, a shared calendar with one row per creator per shift does the job.
+Shifts need a plan too. Shift schedule is a placeholder page for now. Until someone builds it, a shared calendar with one row per creator per shift does the job.
 
 ## 4. Agree on one content pipeline
 

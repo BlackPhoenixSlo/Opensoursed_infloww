@@ -1,5 +1,5 @@
 ---
-title: "Six ways to promote your OnlyFans with Discord. None of them require booking a demo."
+title: "Six ways to promote your OnlyFans with Discord, and the rules that keep it safe"
 description: "Discord promotion deepens relationships with fans you already have and connects you with other creators. Six strategies, with the rules that keep them safe."
 date: 2026-10-12
 tags: ["promotion", "discord", "community"]

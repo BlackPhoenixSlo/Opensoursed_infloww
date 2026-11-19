@@ -52,6 +52,6 @@ Your payouts are taxable self-employment income. Move a fixed share of each payo
 
 ## Where Inflowwww fits
 
-Inflowwww doesn't hold, move or see bank accounts. The OF Manager Bank and Statements screens are not built yet. Until someone builds them, manage payout settings directly in OnlyFans. Inflowwww can show per-creator earnings at `/analytics/creator-reports`, which helps you check that each payout matches what was earned.
+Inflowwww doesn't hold, move or see bank accounts. Manage payout settings directly in OnlyFans. Inflowwww can show per-creator earnings at `/analytics/creator-reports`, which helps you check that each payout matches what was earned.
 
 > **The pitch.** Payouts stay in OnlyFans' own settings; Inflowwww does not handle them. [Deploy it yourself]({{ '/#deploy' | url }}).

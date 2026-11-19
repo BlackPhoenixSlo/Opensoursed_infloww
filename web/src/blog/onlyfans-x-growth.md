@@ -1,5 +1,5 @@
 ---
-title: "How to use X to get more OnlyFans subscribers, in four stages and zero pricing tiers"
+title: "How to use X to get more OnlyFans subscribers, in four stages"
 description: "X is the main subscriber channel for most OnlyFans creators. Grow in order: a converting profile, steady posting, real engagement, then creator partnerships."
 date: 2026-10-12
 tags: ["promotion", "x-twitter", "subscriber-growth"]
@@ -56,7 +56,7 @@ Once you post consistently, partnerships multiply your reach.
 - **Repost accounts:** some large accounts repost creators in a niche. Ask before tagging, and if they charge, treat it as advertising and measure it.
 - **Collaborations:** joint content needs every participant verified with OnlyFans first.
 
-Give each partner their own tracking link. If you run Inflowwww, that is **Tracking links** (`/growth/tracking-links`), and you can see which partner sends subscribers, not just likes. Our Share for Share pages ship in our NotBuiltYet edition: the pages are real, the feature is not. Until then, a shared sheet with partner, date and link works.
+Give each partner their own tracking link. If you run Inflowwww, that is **Tracking links** (`/growth/tracking-links`), and you can see which partner sends subscribers, not just likes. Inflowwww has no Share for Share tool yet; a shared sheet with partner, date and link works.
 
 ## Then, and only then, paid promotion
 

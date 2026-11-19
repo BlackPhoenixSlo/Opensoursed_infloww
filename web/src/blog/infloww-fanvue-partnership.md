@@ -31,7 +31,7 @@ These screens are real, with the route so you can check:
 
 ## What is a stub, and what does not exist
 
-Some pages exist in the sidebar but show an empty state. The 12 OF Manager sections, the 3 Share for Share sections, Shift schedule, the Settings tabs and the Help center ship in our NotBuiltYet edition: the page is real, the feature is not.
+Some pages exist in the sidebar but show an empty state. The 12 OF Manager sections, the 3 Share for Share sections, Shift schedule, the Settings tabs and the Help center are placeholder pages for now.
 
 Things that do not exist at all: Fanvue support, mym support, a native phone app, an AI copilot, a support desk and any uptime figure. The phone experience is the same web app, which is responsive. There is also an Electron desktop shell that loads the web app from your server.
 

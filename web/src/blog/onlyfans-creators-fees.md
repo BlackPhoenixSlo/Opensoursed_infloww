@@ -1,5 +1,5 @@
 ---
-title: "How much does OnlyFans charge creators? 20%. Your CRM? Check the slider."
+title: "How much does OnlyFans charge creators? 20%. Some CRMs then charge more as you earn more."
 description: "How much OnlyFans charges creators, what its 20% fee covers, the other costs before take-home, and how to price with all of them."
 date: 2026-10-12
 tags: ["money", "fees", "pricing"]

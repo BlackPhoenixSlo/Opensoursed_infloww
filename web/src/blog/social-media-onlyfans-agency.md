@@ -60,7 +60,7 @@ The quickest way to lose credibility is a number nobody can check. Before you po
 - Use real figures from your reports, with the time period stated.
 - Say what you did, not just what happened: "moved posting to evenings and segmented mass messages" is more convincing than "+300%".
 
-We hold ourselves to the same rule. Join everyone who ran `docker compose up`. We don't count.
+We hold ourselves to the same rule: no "join 10,000 agencies" banner here, because we do not count installs.
 
 ## Measure what matters
 

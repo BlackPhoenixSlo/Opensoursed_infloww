@@ -1,5 +1,5 @@
 ---
-title: "What is Inflowwww? Product updates and feature guides, NotBuiltYet included"
+title: "What is Inflowwww? Product updates and feature guides, unfinished screens included"
 description: "Inflowwww is a free, open-source, self-hosted tool for OnlyFans agencies. What it is, how it works, what is built, what is not, and how to try it in an hour."
 date: 2026-10-12
 tags: ["product", "openinflowwww", "overview"]

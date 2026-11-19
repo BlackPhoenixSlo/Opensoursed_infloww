@@ -58,4 +58,4 @@ You only know whether PPV is costing you subscribers if you look at both numbers
 
 Start with OnlyFans' own Statistics and Statements pages, which split earnings by subscriptions, messages and tips. If you run Inflowwww, the **Message dashboard** (`/analytics/message-dashboard`) keeps the PPV, tips and messages log, and **Fan reports** (`/analytics/fan-reports`) show who is spending. **Smart lists** (`/growth/smart-lists`) let you send offers to a chosen group of fans instead of the whole audience. Change one thing at a time and give it a few weeks before you judge it.
 
-> **The pitch.** You can debate PPV pricing all day; the Message dashboard and Fan reports show what your own fans actually bought. No demo call. The demo is `docker compose up`. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** You can debate PPV pricing all day; the Message dashboard and Fan reports show what your own fans actually bought. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -58,4 +58,4 @@ Good collaborators usually come from relationships: creators you already talk to
 
 Keep a simple shared sheet of collab partners, agreed terms and each person's verification status.
 
-> **The pitch.** Release forms go through OnlyFans' own process and no CRM replaces it; Inflowwww is a free, self-hosted one for fan notes and chats. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Release forms go through OnlyFans' own process and no CRM replaces it, ours included. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -1,5 +1,5 @@
 ---
-title: "How to choose your OnlyFans profile picture: one small square, one job, no monthly fee"
+title: "How to choose your OnlyFans profile picture: one small square, one job"
 description: "A profile picture has one job: making a visitor stop and read your bio. How to match it to your persona, how much it should show and the technical basics."
 date: 2026-10-12
 tags: ["getting-started", "profile", "branding"]
@@ -51,4 +51,4 @@ Refresh the photo when your look changes significantly, so fans who meet you in 
 - [ ] Recognisable at thumbnail size.
 - [ ] Kept for long enough to measure.
 
-> **The pitch.** One small square does the job; Inflowwww's Manage creators screen (`/creators`) lists each creator's accounts on a server you run. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Test a profile picture before you commit to it. Inflowwww is free, so testing it costs a server, not a contract. [Deploy it yourself]({{ '/#deploy' | url }}).

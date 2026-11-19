@@ -1,5 +1,5 @@
 ---
-title: "How to design your OnlyFans banner. Every tool here is free, and so is the dashboard."
+title: "How to design your OnlyFans banner"
 description: "How to design an OnlyFans banner that backs up your picture and bio, works in both desktop and phone crops, and uses free tools."
 date: 2026-10-12
 tags: ["getting-started", "profile", "branding"]
@@ -61,4 +61,4 @@ Whatever you use, keep the source file. Store each creator's banner sources, fon
 - [ ] Checked on a phone and a laptop after upload.
 - [ ] Refreshed when your look or theme changes, for example each season.
 
-> **The pitch.** A banner is free to make in Canva, and Vault Pro (`/growth/vault-pro`) browses every creator's vault from one self-hosted dashboard at $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** A banner costs nothing to make in Canva or Photopea. Inflowwww costs nothing either; the server is your only bill. [Deploy it yourself]({{ '/#deploy' | url }}).

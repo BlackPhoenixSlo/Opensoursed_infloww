@@ -1,5 +1,5 @@
 ---
-title: "OnlyFans pricing that keeps subscribers renewing. Our slider has one position."
+title: "OnlyFans pricing that keeps subscribers renewing: subscription, tip menu, PPV ladder"
 description: "How to price an OnlyFans page: free or paid, the subscription, a tip menu, a PPV ladder, and discounts that keep fans renewing."
 date: 2026-10-12
 tags: ["money", "pricing", "retention"]

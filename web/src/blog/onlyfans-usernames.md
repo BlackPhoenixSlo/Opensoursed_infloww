@@ -54,4 +54,4 @@ Write down twenty candidates without judging them. Then cut the list using the r
 
 Then put it everywhere: bios, banners, watermarks and link pages. Consistency is what turns a handle into a brand.
 
-> **The pitch.** If a team ever runs your page, Inflowwww is a free CRM. No demo call. The demo is `docker compose up`. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Check a username before you commit to it. Check Inflowwww the same way: the demo is `docker compose up`, no call needed. [Deploy it yourself]({{ '/#deploy' | url }}).

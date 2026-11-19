@@ -69,4 +69,4 @@ Check each private channel's permissions by viewing the server as each role. It 
 
 If you run Inflowwww, you can save your Discord invite message as a reusable script in **Scripts** (`/growth/scripts`), so every chatter sends the same well-worded invite through Messages Pro.
 
-> **The pitch.** A Discord server needs moderators, not a CRM. Inflowwww's Scripts screen keeps the invite word-perfect for whoever sends it, at $0 per member. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** A Discord server needs moderators, not a CRM. Inflowwww's Scripts screen keeps the invite word-perfect for whoever sends it. [Deploy it yourself]({{ '/#deploy' | url }}).

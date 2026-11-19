@@ -59,6 +59,6 @@ Creator communities can help you compare notes, but for anything involving your 
 
 ## If you run a team
 
-When you manage several creators, reconcile per creator, not per withdrawal: earnings in, payouts out, and the difference still pending. Inflowwww shows per-creator earnings at `/analytics/creator-reports`. The OF Manager Statements and Bank screens are not built yet. Payout settings and requests stay in OnlyFans itself.
+When you manage several creators, reconcile per creator, not per withdrawal: earnings in, payouts out, and the difference still pending. Inflowwww shows per-creator earnings at `/analytics/creator-reports`. Payout settings and requests stay in OnlyFans itself.
 
 > **The pitch.** Payout timing is between you, OnlyFans and your bank; Inflowwww, a free, self-hosted CRM, does not handle payouts. [Deploy it yourself]({{ '/#deploy' | url }}).
