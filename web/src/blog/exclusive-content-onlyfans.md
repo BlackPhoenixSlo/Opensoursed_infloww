@@ -37,8 +37,6 @@ Not every fan wants the same thing. A simple three-tier structure:
 
 You do not need separate accounts. You need lists. If you run Inflowwww, Smart lists (`/growth/smart-lists`) segment fans, Smart Messages (`/growth/smart-messages`) send to a list, and the fan panel in Messages Pro shows lifetime spend, notes and tags per fan.
 
-Our own pricing has one tier, which makes this table easier for us to fill in.
-
 ## Unique content and emphasised value
 
 **Unique content** is something only this page has: a recurring series, a running joke with your regulars, a format you invented. Name it, schedule it and protect it. Do not post it to public socials.

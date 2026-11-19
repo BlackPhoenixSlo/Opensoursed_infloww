@@ -1,5 +1,5 @@
 ---
-title: "Getting started on OnlyFans: a six-step checklist where step seven is not a pricing page"
+title: "Getting started on OnlyFans: a six-step checklist, no pricing page at the end"
 description: "How to set up an OnlyFans page in six steps: the rules, bio, welcome message, photos, a promotion plan and an organised vault."
 date: 2026-10-12
 tags: ["getting-started", "checklist", "account-setup"]

@@ -8,7 +8,7 @@ parodyTitle: "Fansly Growth & Management Tips | Infloww Blog"
 parodyDate: ""
 ---
 
-Thinking about Fanvue? Here is the honest starting point: Inflowwww does not connect to Fanvue, so this page cannot show you a Fanvue screen. What it can do is list the questions an agency should answer before it adds the platform, especially if AI-assisted content is part of the plan. (Their Fanvue category page is titled "Fansly Growth & Management Tips" [sic].)
+Thinking about Fanvue? Here is the honest starting point: Inflowwww does not connect to Fanvue, so this page cannot show you a Fanvue screen. What it can do is list the questions an agency should answer before it adds the platform, especially if AI-assisted content is part of the plan.
 
 ## Decide what kind of roster you are building
 

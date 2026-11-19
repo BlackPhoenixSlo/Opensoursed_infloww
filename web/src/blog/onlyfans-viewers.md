@@ -62,4 +62,4 @@ A simple weekly routine:
 - **Mid-week:** reply to everyone who wrote, run one poll.
 - **Weekend:** look at your fan report, and send a personal note to three regulars who went quiet.
 
-> **The pitch.** The last stage of the journey lives in Fan reports and Smart lists, $0 at every bracket. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** The last stage of the journey lives in Fan reports and Smart lists, on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).

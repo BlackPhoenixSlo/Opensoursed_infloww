@@ -1,5 +1,5 @@
 ---
-title: "How to choose the right OnlyFans agency, from a CRM that is not one"
+title: "How to choose the right OnlyFans agency, from a CRM that is not an agency"
 description: "How a creator can judge an OnlyFans agency before signing: verifiable results, written terms, clear reports and an exit plan."
 date: 2026-10-12
 tags: ["agency", "creators", "contracts"]

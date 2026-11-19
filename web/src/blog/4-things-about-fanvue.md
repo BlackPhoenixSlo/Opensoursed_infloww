@@ -35,8 +35,6 @@ Run a dry check from a fan account:
 
 Then price around what you saw. If tipping is easy, design offers that invite tips. If checkout is long, keep the number of separate purchases low and favour bundles.
 
-No demo call. The demo is a fan account and twenty minutes.
-
 ## 3. Treat internal discovery as a bonus, not a plan
 
 Some platforms surface creators through their own feeds and suggestion tabs, which OnlyFans largely does not. That helps, but no agency should build a launch on an algorithm it cannot see.
@@ -65,4 +63,4 @@ Keep a simple weekly log: new subscribers, revenue by source, hours spent, and o
 
 Inflowwww has no Fanvue support. It runs OnlyFans sessions. A Fansly client lives in the repo; the Docker image does not ship it yet. If you test Fanvue, that part of the roster lives in Fanvue's own dashboard.
 
-> **The pitch.** Fanvue is a test you run in Fanvue's own dashboard; Inflowwww covers OnlyFans, free and MIT-licensed. The checkout page is a git clone. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Fanvue is a test you run in Fanvue's own dashboard; Inflowwww covers OnlyFans, free and MIT-licensed. [Deploy it yourself]({{ '/#deploy' | url }}).

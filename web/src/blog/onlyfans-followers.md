@@ -66,4 +66,4 @@ New subscribers are expensive; renewals are cheap.
 
 Check your monthly retention alongside your new-subscriber count. A page that keeps most of its fans grows month after month; a page that loses most of them has to replace them before it can grow at all.
 
-> **The pitch.** Followers matter once they subscribe, and Inflowwww's Fan reports show who stayed. Trusted by the people who read the code. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Followers matter once they subscribe, and Inflowwww's Fan reports show who stayed. [Deploy it yourself]({{ '/#deploy' | url }}).

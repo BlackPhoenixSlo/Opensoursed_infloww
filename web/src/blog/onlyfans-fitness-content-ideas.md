@@ -80,4 +80,3 @@ Lifting tip that applies to content too: progressive overload. Add one new forma
 
 To queue the week, Inflowwww's Auto Post (`/growth/auto-post`) releases a list of ready posts one at a time on a delay you set. The full-session PPV can go out through Smart Messages (`/growth/smart-messages`).
 
-> **The pitch.** Train harder, pay the same: Inflowwww is $0 per creator, MIT-licensed, and runs on your own server with Docker Compose. [Deploy it yourself]({{ '/#deploy' | url }}).

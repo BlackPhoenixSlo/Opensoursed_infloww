@@ -56,4 +56,4 @@ Once you know your best slots, schedule posts ahead of time so you are not tied 
 
 If you run Inflowwww, it has Auto Post under My Automations, at `/growth/auto-post`. You give it a list of ready posts; it publishes the first, then the next after the delay you set, and it can delete a post after a set number of hours if you ask it to. Scheduled mass messages live in Smart Messages, at `/growth/smart-messages`. The schedule runs on your own server, so uptime is whatever your VPS does.
 
-> **The pitch.** The timing test needs numbers, and Creator reports, Fan reports and the Message dashboard keep them on your own server. The best time to deploy it is whenever your server is free. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** The timing test needs numbers, and Creator reports, Fan reports and the Message dashboard keep them on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).

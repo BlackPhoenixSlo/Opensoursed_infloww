@@ -67,8 +67,6 @@ Price by effort and exclusivity, not by an imagined market rate:
 
 Write your custom menu down with what is included, and stick to it. Customs take the most time, so price them that way.
 
-Our own price list is short. Every line is $0.
-
 ## Promotion
 
 **Captions and hashtags.** Be descriptive and specific: "Fresh French tips, 15 close-ups", not "new pics". Use the niche's own vocabulary on the socials you promote on, within each platform's rules.

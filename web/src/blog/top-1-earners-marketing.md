@@ -64,4 +64,4 @@ Engagement is the habit that compounds: fast replies, remembered details and tha
 
 In Inflowwww, each promotion channel gets its own link at `/growth/tracking-links`, trials at `/growth/free-trial-links`, and discounted promotions at `/growth/profile-promotion`. Messages Pro (`/messages-pro`) keeps chats and fan insights in one place, and `/analytics/fan-reports` shows who your top spenders are.
 
-> **The pitch.** Top earners track every channel, and Inflowwww's Tracking links and Fan reports do that. Under $500: $0. Over $75,000: still $0. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Top earners track every channel, and Inflowwww's Tracking links and Fan reports do that. [Deploy it yourself]({{ '/#deploy' | url }}).

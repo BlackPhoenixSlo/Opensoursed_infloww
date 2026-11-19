@@ -27,7 +27,7 @@ A recent phone is enough. If you want to upgrade, do it in this order:
 2. **A light.** A ring light or a small LED panel with a diffuser. Neutral white, not too close.
 3. **A remote shutter or the phone's timer.** Bluetooth remotes cost very little and stop you running back and forth.
 
-A dedicated camera comes later, if at all. Our own upgrade path is similar: $0 now, $0 later.
+A dedicated camera comes later, if at all.
 
 ## Posing: a short list to rotate
 

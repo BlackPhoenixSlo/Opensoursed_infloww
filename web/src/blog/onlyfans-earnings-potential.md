@@ -56,5 +56,4 @@ What makes fans choose one page over another is usually personality: your intere
 
 Create those tracking links in your OnlyFans settings, and read the results on its Statistics page. If you work with an agency that runs Inflowwww, the same links live in Tracking links (`/growth/tracking-links`), and per-creator earnings in Creator reports (`/analytics/creator-reports`). Comparing week 13 to week 1 tells you more than any platform average.
 
-
-> **The pitch.** A beginner's income grows in steps, and no tool skips them, Inflowwww included. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** No CRM makes a first month bigger. Ours just does not charge for the second. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -45,4 +45,4 @@ Do tips 1 to 3 and 6 today. Each takes minutes and affects every visitor from th
 
 If you run a team with several creators, the same list becomes a checklist per account. Write it down once and reuse it for every new creator, so nobody's profile skips a step.
 
-> **The pitch.** Tip 10 is easier with a report. If you run Inflowwww, Creator reports, Fan reports and the Message dashboard read from a SQLite database you own. The checkout page is a git clone. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Tip 10 is easier with a report. If you run Inflowwww, Creator reports, Fan reports and the Message dashboard read from a SQLite database you own. [Deploy it yourself]({{ '/#deploy' | url }}).

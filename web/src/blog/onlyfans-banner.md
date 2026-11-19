@@ -50,7 +50,7 @@ You do not need paid software:
 - **Photopea** is a free, browser-based editor with layers.
 - **Figma** works well if you want precise guides for the safe zone.
 
-Whatever you use, keep the source file. Store each creator's banner sources, fonts and colour codes in A Folder™ so the next update takes ten minutes, not an afternoon.
+Whatever you use, keep the source file. Store each creator's banner sources, fonts and colour codes in one folder so the next update takes ten minutes, not an afternoon.
 
 ## A quick checklist
 

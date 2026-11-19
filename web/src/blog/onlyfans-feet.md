@@ -75,4 +75,4 @@ Keep a record of who ordered what, and when. Inflowwww's Message dashboard (`/an
 - Strip location data from photos before uploading.
 - Use a separate email and payment setup for the business.
 
-> **The pitch.** A niche business lives on margins, and Inflowwww keeps the software line at $0 per creator, self-hosted and MIT-licensed. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Foot fans re-order. Notes on who liked which polish are the one CRM feature this niche actually uses. [Deploy it yourself]({{ '/#deploy' | url }}).

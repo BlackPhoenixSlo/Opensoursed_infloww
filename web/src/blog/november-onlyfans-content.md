@@ -62,8 +62,6 @@ Plan the sales around the last week. The rest of the month is there to warm fans
 29. **Last call.** The final day of the sale.
 30. **Recap and preview.** Thank the buyers; tease December.
 
-The sale has an end date. Our price does not have a start date.
-
 ## Shooting it in four sessions
 
 - **Session A (late October):** cosy, candle, nail, and slow sets (days 2, 5, 8, 10, 17).
@@ -81,4 +79,4 @@ Talking-to-camera days (AMA, teaching, recap) take ten minutes each. Film them o
 
 If you run Inflowwww, Smart lists (`/growth/smart-lists`) build the segment and Smart Messages (`/growth/smart-messages`) schedules the three sends. Auto Post (`/growth/auto-post`) can drip the week-one posts while you shoot week four.
 
-> **The pitch.** Plan the whole month in one sitting; Smart lists and Smart Messages hold it, minus the invoice. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Plan the whole month in one sitting; Smart lists and Smart Messages hold it. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -1,5 +1,5 @@
 ---
-title: "Going viral: how creators use TikTok to build their brand. Virality not guaranteed."
+title: "Going viral: how creators use TikTok to build their brand."
 description: "TikTok bans adult content and adult promotion, so creators use it for reach and personality. How the For You feed works, what to post, how to build a following."
 date: 2026-10-12
 tags: ["promotion", "tiktok", "video"]
@@ -67,4 +67,4 @@ Your TikTok audience does not need a link to find you elsewhere. If they like yo
 
 On platforms that allow adult promotion, like X, measure what each channel sends with its own OnlyFans tracking link. If you run Inflowwww, that is **Tracking links** (`/growth/tracking-links`), which lets you compare channels by subscribers, not just clicks.
 
-> **The pitch.** TikTok virality can't be planned, but the OnlyFans posts it sends people to can, with Auto Post. The README is open 24/7. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** TikTok virality can't be planned, but the OnlyFans posts it sends people to can, with Auto Post. [Deploy it yourself]({{ '/#deploy' | url }}).

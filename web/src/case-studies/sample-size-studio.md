@@ -56,7 +56,7 @@ The creator is in the loop on every change to their pricing. It is their page an
 
 The review takes about ten minutes per creator, so 90 minutes for the roster. The owner and one manager run it together. Chatters see the decisions the same day, and any new opener goes into Growth > Scripts (`/growth/scripts`) so everyone uses the same text.
 
-One line in the log never changes. When a creator moves up an earnings bracket, the software bill stays put: under $500: $0, over $75,000: still $0.
+One line in the log never changes: the software bill. Infloww charges more as a creator earns more (infloww.com/pricing). Here a record month costs $0 extra.
 
 ## Results
 

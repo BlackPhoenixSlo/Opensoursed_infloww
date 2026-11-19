@@ -66,4 +66,4 @@ Do not send fan-birthday messages from a template that looks like one. If you us
 
 For fan birthdays, the plan is simpler: check the list Monday, send the message on the day, log what you sent in the notes.
 
-> **The pitch.** Fan notes and tags in Messages Pro keep every birthday where whoever is on shift will see it. No credit card required, because there is no card form. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Fan notes and tags in Messages Pro keep every birthday where whoever is on shift will see it. [Deploy it yourself]({{ '/#deploy' | url }}).

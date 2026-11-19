@@ -11,8 +11,6 @@ stats:
     label: "Increase in software fees after onboarding creator number 14"
   - value: "12"
     label: "Steps on the onboarding checklist, all of them below"
-  - value: "0"
-    label: "Demo calls attended before the first install"
 quote: "We used to onboard from memory. Now we onboard from a list, and the list does not take holidays."
 quoteBy: "Priya, operations lead, Example Talent Co."
 ---

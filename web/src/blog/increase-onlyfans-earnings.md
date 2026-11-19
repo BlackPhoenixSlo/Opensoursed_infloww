@@ -66,4 +66,4 @@ Then make one change based on what you found, and check the effect next month.
 
 OnlyFans' own Statistics page covers most of the review. If you run Inflowwww, the routine maps onto a few screens. Messages Pro (`/messages-pro`) holds chats and fan insights. Reusable texts, including a welcome message, live in Scripts (`/growth/scripts`). Mass and scheduled messages go through Smart Messages (`/growth/smart-messages`). Fan segments are in Smart lists, and results are in Fan reports (`/analytics/fan-reports`) and the Message dashboard (`/analytics/message-dashboard`).
 
-> **The pitch.** Raising earnings is easier when you can see where they come from, and Inflowwww's Message dashboard and Fan reports show it on your own server. No demo call. The demo is `docker compose up`. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Raising earnings is easier when you can see where they come from, and Inflowwww's Message dashboard and Fan reports show it on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).

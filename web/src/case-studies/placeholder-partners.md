@@ -3,7 +3,7 @@ title: "How Placeholder Partners stopped losing context between chat shifts"
 description: "A fictional agency with three shifts a day adopts a five-line handover note. The template is below, and it costs nothing in any CRM."
 date: 2026-10-12
 agency: "Placeholder Partners"
-tagline: "Three shifts a day, one five-line note per shift, and a software bill that never clocks in."
+tagline: "Three shifts a day and one five-line note per shift."
 stats:
   - value: "$0"
     label: "Per creator per month x 8 creators = $0"

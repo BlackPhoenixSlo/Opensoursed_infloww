@@ -75,4 +75,4 @@ If you tick fewer than three, a hybrid may suit you better: a full feed, plus a 
 
 Whichever you choose, measure it. If you run Inflowwww, **Creator reports** (`/analytics/creator-reports`) track revenue per creator and the **Message dashboard** (`/analytics/message-dashboard`) logs PPVs and tips, so you can see whether a switch helped. Run any change for at least six weeks before judging it.
 
-> **The pitch.** A no-PPV page includes everything in one price. Inflowwww includes everything in no price: every screen, MIT-licensed, on your server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** A no-PPV page puts everything in one price. Inflowwww puts everything in none: every screen, MIT-licensed, on your server. [Deploy it yourself]({{ '/#deploy' | url }}).

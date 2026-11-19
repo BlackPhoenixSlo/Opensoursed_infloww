@@ -66,4 +66,4 @@ Share the method with the team, not only the result. A chatter who knows how res
 
 The app's speed depends on your server and your connection to OnlyFans. Uptime is whatever your VPS does. If replies feel slow, check the server's load before you check the team.
 
-> **The pitch.** Your benchmark, computed from your data, on your own server, for $0 per creator. Book a demo: open the README. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Your benchmark, computed from your data, on your own server, for $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -3,7 +3,7 @@ title: "How Foobar Creative reviews chat quality with a five-point rubric instea
 description: "A fictional agency scores ten threads per chatter per week on five criteria, then coaches on the lowest one. The rubric and the routine are below."
 date: 2026-10-12
 agency: "Foobar Creative"
-tagline: "Eighteen chatters, a five-criterion rubric, and one coaching conversation a week. The software bill was not invited."
+tagline: "Eighteen chatters, a five-criterion rubric, and one coaching conversation a week."
 stats:
   - value: "$0"
     label: "Per creator per month x 30 creators = $0"
@@ -11,8 +11,6 @@ stats:
     label: "Threads reviewed per chatter per week"
   - value: "5"
     label: "Criteria, scored 0 to 2, for a total out of 10"
-  - value: "0%"
-    label: "Increase in software fees when creator number 30 signed"
 quote: "Before the rubric, feedback was 'be better'. Now it is 'criterion 3, here is the thread, here is what to try'."
 quoteBy: "Ade, head of chat, Foobar Creative"
 ---

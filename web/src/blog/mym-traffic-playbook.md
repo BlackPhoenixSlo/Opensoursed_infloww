@@ -56,4 +56,4 @@ If posting and chat are strong but subscriber growth is flat, the problem is ups
 - **Stage 3: lean on organic reach.** As engagement rises, discovery does more, and paid spend can come down.
 - **Stage 4: run both engines.** Outside traffic, discovery and any placements together, with tracked links showing which part pays.
 
-> **The pitch.** mym traffic is counted on mym; for your OnlyFans pages, Tracking links show which channel sent which fan, minus the invoice. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** mym traffic is counted on mym; for your OnlyFans pages, Tracking links show which channel sent which fan, in a database you own. [Deploy it yourself]({{ '/#deploy' | url }}).

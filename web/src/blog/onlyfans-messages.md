@@ -30,7 +30,7 @@ Recording something new for every reply is not sustainable. Keep a library of pr
 - teasers for upcoming sets,
 - PPV items, grouped by price.
 
-Name things so anyone on your team can find them in seconds. If you run Inflowwww, the vault is **Vault Pro** (`/growth/vault-pro`), an owner page for that library; chatters attach from it in the chat composer, limited to the folders the owner grants them. A Folder™ with a sensible naming scheme is the other half of the job.
+Name things so anyone on your team can find them in seconds. If you run Inflowwww, the vault is **Vault Pro** (`/growth/vault-pro`), an owner page for that library; chatters attach from it in the chat composer, limited to the folders the owner grants them. A folder with a sensible naming scheme is the other half of the job.
 
 ## Use scheduled and mass messages wisely
 

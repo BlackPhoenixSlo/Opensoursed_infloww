@@ -67,4 +67,4 @@ Safety includes your mental health.
 
 For leaks and file security, read [how to protect your OnlyFans content]({{ '/blog/protect-onlyfans-content/' | url }}).
 
-> **The pitch.** We make no security promises: Inflowwww is a free, open-source CRM you run yourself, and securing that server is your job. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** We make no security promises beyond the code: it is MIT-licensed and public, and the server it runs on is yours to lock down. [Deploy it yourself]({{ '/#deploy' | url }}).

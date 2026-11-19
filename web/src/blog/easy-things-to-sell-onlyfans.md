@@ -59,8 +59,6 @@ Price low ($5-$20) and bundle. A bundle of three presets at $15 usually sells be
 
 Set a price per minute or per item, write down what is and is not included, and stick to it. Boundaries are easier to hold when they are printed in the menu.
 
-We would put our own price in the menu, but the column only has zeros.
-
 ## Pricing and positioning
 
 - **Subscription:** keep it low enough to try, especially for SFW pages.

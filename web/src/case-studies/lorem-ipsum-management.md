@@ -11,8 +11,6 @@ stats:
     label: "Daily and weekly backups kept"
   - value: "1"
     label: "Restore test per month, on a scratch copy"
-  - value: "1"
-    label: "Command to install, after the README's other seven"
 quote: "When we self-hosted, the backups became our job. So we made them a scheduled job."
 quoteBy: "Tomas, technical manager, Lorem Ipsum Management"
 ---

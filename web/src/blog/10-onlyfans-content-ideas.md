@@ -30,8 +30,6 @@ The content that earns is rarely the loudest. It is the most specific: a post th
 
 **Rate and review.** You have tested a lot of gear, outfits and apps. Turn that into content: "my three favourite lights under $50", "the outfit I re-bought twice", "what I would buy again". Reviews give fans a reason to ask questions, and questions start conversations.
 
-We reviewed our own price for this section and found it to be $0 at every bracket.
-
 ## 7-8. AMAs and journey posts
 
 **Ask me anything.** Run a weekly AMA with a theme per week: how you started, your routine, your favourite music, what you would do if you were not creating. A regular slot teaches fans when to come back. Set your limits before you open the box and skip questions you do not want to answer. No answer is owed.

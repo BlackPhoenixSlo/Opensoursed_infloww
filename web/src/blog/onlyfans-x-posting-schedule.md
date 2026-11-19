@@ -76,4 +76,4 @@ Every Sunday, spend 20 minutes:
 
 After a month, your schedule is built from evidence. Keep reviewing; audiences shift with seasons and with your own growth.
 
-> **The pitch.** Your X schedule runs in your timezone, and Auto Post runs your OnlyFans schedule. The README is open 24/7. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Your X schedule runs in your timezone, and Auto Post runs your OnlyFans schedule. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -59,7 +59,7 @@ Content is your inventory. Losing it is expensive.
 - Organise by date and set, with the same folder structure in both places.
 - Encrypt drives and turn on two-factor authentication on cloud accounts.
 
-The most reliable copy is the one on Your Own Disk™, backed up somewhere else.
+The most reliable copy is the one on your own disk, backed up somewhere else.
 
 ## The business side
 

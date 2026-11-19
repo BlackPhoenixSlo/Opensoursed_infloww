@@ -69,4 +69,4 @@ Not every follower will subscribe. The useful question is which content moves th
 
 A Fansly client lives in the repo; the Docker image does not ship it yet. Once it is wired in, a Fansly creator's chats come into the same app as your OnlyFans accounts. It does not replace Fansly's Statistics pages for the numbers above; the item-by-item Fansly status is written down in `fansly/FANSLY_PARITY_STATUS.md` in the repo. Fan notes and lists are the parts most useful for step 5.
 
-> **The pitch.** Fansly's five numbers live in Fansly's own dashboard; for OnlyFans creators, Inflowwww's Creator reports give the same kind of weekly view. Book a demo: open the README. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Fansly's five numbers live in Fansly's own dashboard; for OnlyFans creators, Inflowwww's Creator reports give the same kind of weekly view. [Deploy it yourself]({{ '/#deploy' | url }}).

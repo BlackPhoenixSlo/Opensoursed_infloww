@@ -1,5 +1,5 @@
 ---
-title: "OnlyFans picture ideas to unlock your creativity, saved in A Folder™"
+title: "OnlyFans picture ideas to unlock your creativity"
 description: "OnlyFans photo ideas by pose, theme, location and props, with profile picture tips and how to fill weeks of posts in one shoot."
 date: 2026-10-12
 tags: ["content-ideas", "photography", "profile-tips"]
@@ -82,4 +82,3 @@ The profile picture is the most viewed image on your page. Treat it like a produ
 
 Those leftovers are good story material. If you run Inflowwww, Auto Story (`/growth/auto-story`) posts random photos from a chosen vault folder as stories on a schedule, so a spare-frames folder in Vault Pro (`/growth/vault-pro`) keeps working without you.
 
-> **The pitch.** Creativity is free. So is the CRM: Inflowwww is MIT-licensed, self-hosted, and $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

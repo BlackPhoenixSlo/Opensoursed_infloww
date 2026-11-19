@@ -1,5 +1,5 @@
 ---
-title: "31 OnlyFans content ideas for October, scheduled from Your Own Disk™"
+title: "31 OnlyFans content ideas for October, scheduled from a server you own"
 description: "A 31-day October content plan for OnlyFans that builds to Halloween over three weeks, with real dates to post on and a batch plan."
 date: 2026-10-12
 tags: ["content-ideas", "content-calendar", "halloween"]

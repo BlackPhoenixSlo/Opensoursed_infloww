@@ -1,5 +1,5 @@
 ---
-title: "How to choose an OnlyFans username you won't need to change. We changed ours once."
+title: "How to choose an OnlyFans username you won't need to change"
 description: "Your OnlyFans username is your URL, so changing it breaks old links. Rules for picking one, idea patterns, mistakes to avoid and checks before committing."
 date: 2026-10-12
 tags: ["getting-started", "branding", "profile"]
