@@ -106,6 +106,18 @@ def _chatters(con, d: Dataset, user_id: str) -> None:
                     (cid, user_id, ts(d.now - timedelta(days=190))))
 
 
+def _fill_fan_columns(con, account_ids: list[str]) -> None:
+    """The slop seeders' fan-column hooks. A tree without `slop/` (the demo image) has none to run."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    try:
+        from slop.seed.fans import fill_fan_columns
+    except ModuleNotFoundError as e:
+        if (e.name or "").split(".")[0] != "slop":
+            raise
+        return
+    fill_fan_columns(con, account_ids)
+
+
 def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
     now = d.now
     spend: dict[tuple[str, int], int] = {}
@@ -139,9 +151,7 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         "deep_convo_state, deep_convo_skip_level, deep_convo_skip_remaining, source, created_at, updated_at, tags) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
     # A flow's own fans columns: the slop seeders' `*_fan_columns.py` hooks (slop/seed/fans.py), when present.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from slop.seed.fans import fill_fan_columns
-    fill_fan_columns(con, sorted({s["account_id"] for s in d.subs}))
+    _fill_fan_columns(con, sorted({s["account_id"] for s in d.subs}))
     # NOT NULL text columns the insert above leaves to their defaults are filled here if the schema has no default.
 
     # Messages first: a sale's credit trigger reads the message that earned it.
