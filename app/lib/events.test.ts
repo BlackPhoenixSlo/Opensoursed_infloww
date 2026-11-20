@@ -5,6 +5,11 @@
  *
  * Batches: an `event: batch` frame reaches listeners as the same individual
  * events, in order, with one notify flush, and its id is the resume point.
+ *
+ * Ping: one carrying `fresh` (the Shared refresher's Knob on) reaches `ping`
+ * listeners; today's (no `fresh`) dispatches nothing. Either keeps the stream fresh.
+ * Every ping sets the tab's Relay-clock offset (lib/ageClock); an event's `now`,
+ * replayed or live, never does.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RETRY_MAX_MS, RETRY_MIN_MS } from "./eventBusReducer";
@@ -17,12 +22,14 @@ class FakeEventSource {
   onopen: (() => void) | null = null;
   onmessage: ((m: MessageEvent) => void) | null = null;
   onerror: (() => void) | null = null;
-  private listeners = new Map<string, (m: MessageEvent) => void>();
+  private listeners = new Map<string, ((m: MessageEvent) => void)[]>();
   constructor(public url: string) { FakeEventSource.all.push(this); }
-  addEventListener(type: string, fn: (m: MessageEvent) => void) { this.listeners.set(type, fn); }
+  addEventListener(type: string, fn: (m: MessageEvent) => void) {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+  }
   close() { this.readyState = FakeEventSource.CLOSED; }
   emit(type: string, lastEventId: string, data = "{}") {
-    this.listeners.get(type)?.({ data, lastEventId } as MessageEvent);
+    for (const fn of this.listeners.get(type) ?? []) fn({ data, lastEventId } as MessageEvent);
   }
 }
 
@@ -349,5 +356,100 @@ describe("eventBus adaptive apply", () => {
     vi.advanceTimersByTime(50);
     expect(t.order).toHaveLength(10);
     t.done();
+  });
+});
+
+describe("eventBus ping", () => {
+  const ping = (data: unknown) => JSON.stringify(data);
+
+  it("a ping carrying `fresh` reaches `ping` listeners once, as it came; it keeps the stream fresh", async () => {
+    const { eventBus } = await import("./events");
+    eventBus.setScope("all");
+    vi.advanceTimersByTime(50);
+    const seen: [string, unknown][] = [];
+    eventBus.on("ping", (e, t) => seen.push([t, e]));  // after open: no second native listener
+    const es = FakeEventSource.all[0];
+    es.onopen?.();
+    vi.advanceTimersByTime(40_000);
+    es.emit("ping", "", ping({ ts: 1700000000.5, fresh: { a1: 9_000 } }));
+    vi.advanceTimersByTime(1_000);
+    expect(seen).toEqual([["ping", { ts: 1700000000.5, fresh: { a1: 9_000 } }]]);
+    expect(eventBus.isConnected()).toBe(true);
+  });
+
+  it("today's ping (Knob off, no `fresh`) dispatches nothing and still keeps the stream fresh", async () => {
+    const { eventBus } = await import("./events");
+    const seen: unknown[] = [];
+    eventBus.on("ping", (e) => seen.push(e));  // before open
+    eventBus.on("*", (e) => seen.push(e));
+    eventBus.setScope("all");
+    vi.advanceTimersByTime(50);
+    const es = FakeEventSource.all[0];
+    es.onopen?.();
+    vi.advanceTimersByTime(40_000);
+    es.emit("ping", "", ping({ ts: 1700000000.5 }));
+    es.emit("ping", "", "not json");
+    vi.advanceTimersByTime(1_000);
+    expect(seen).toEqual([]);
+    expect(eventBus.isConnected()).toBe(true);
+  });
+
+  it("with no `ping` listener a `fresh` ping dispatches nothing", async () => {
+    const { eventBus } = await import("./events");
+    const seen: unknown[] = [];
+    eventBus.on("*", (e) => seen.push(e));
+    eventBus.setScope("all");
+    vi.advanceTimersByTime(50);
+    FakeEventSource.all[0].emit("ping", "", ping({ ts: 1, fresh: { a1: 9_000 } }));
+    vi.advanceTimersByTime(1_000);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe("eventBus ping: the Relay's clock (phase-03, Which clock)", () => {
+  const T = 1_800_000_000_000;
+  const MIN = 60_000;
+  const ping = (data: unknown) => JSON.stringify(data);
+
+  async function open() {
+    vi.setSystemTime(T);
+    const { eventBus } = await import("./events");
+    const ageClock = await import("./ageClock");
+    eventBus.on("creator_refreshed", () => {});
+    eventBus.setScope("all");
+    vi.advanceTimersByTime(50);
+    const es = FakeEventSource.all[0];
+    es.onopen?.();
+    return { ageClock, es };
+  }
+
+  it("a ping sets the offset: tab clock minus the ping's `ts` (today's ping too, no `fresh`)", async () => {
+    const { ageClock, es } = await open();
+    expect(ageClock.relayOffset()).toBe(0);
+    es.emit("ping", "", ping({ ts: (Date.now() - 5 * MIN) / 1000 }));
+    expect(ageClock.relayOffset()).toBe(5 * MIN);
+    es.emit("ping", "", ping({ ts: (Date.now() + 2 * MIN) / 1000, fresh: { a1: 9_000 } }));
+    expect(ageClock.relayOffset()).toBe(-2 * MIN);
+  });
+
+  it("a ping with no `ts` or not JSON leaves it", async () => {
+    const { ageClock, es } = await open();
+    es.emit("ping", "", ping({ ts: (Date.now() - 5 * MIN) / 1000 }));
+    es.emit("ping", "", ping({ fresh: {} }));
+    es.emit("ping", "", "not json");
+    expect(ageClock.relayOffset()).toBe(5 * MIN);
+  });
+
+  it("a replayed envelope's `now` never moves it, before or after a ping (single or batched)", async () => {
+    const { ageClock, es } = await open();
+    const old = { creator_refreshed: { account_id: "a", now: T - 30 * MIN }, now: T - 30 * MIN };
+    es.emit("creator_refreshed", "e1.1", JSON.stringify(old));
+    es.emit("batch", "e1.2", JSON.stringify([{ id: "e1.2", type: "creator_refreshed", data: old }]));
+    vi.advanceTimersByTime(1_000);
+    expect(ageClock.relayOffset()).toBe(0);
+    es.emit("ping", "", ping({ ts: (Date.now() - 1 * MIN) / 1000 }));
+    es.emit("creator_refreshed", "e1.3", JSON.stringify(old));
+    vi.advanceTimersByTime(1_000);
+    expect(ageClock.relayOffset()).toBe(1 * MIN);
   });
 });

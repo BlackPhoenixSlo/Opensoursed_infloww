@@ -1,9 +1,11 @@
 /**
- * The Mass messages tab's pure row rules: which rows show, which a bulk
- * unsend picks. OF's mass unsend is irreversible, so the bulk pick is here,
- * time injected (`now`), tested in massUnsendRules.test.ts.
+ * The Mass messages tab's row rules: which rows show, which a bulk unsend
+ * picks, and the order it runs them in (`unsendByCreator`). OF's mass unsend
+ * is irreversible, so the bulk pick is here, time injected (`now`), tested in
+ * massUnsendRules.test.ts.
  */
 
+import { runFanOut } from "@/components/compose/fanOut";
 import type { MassMessageRow } from "@/hooks/useMassMessages";
 
 /** The bulk actions of the tab's bar; each button's key. */
@@ -118,4 +120,37 @@ export function bulkCounts(
   const out: Record<BulkAction, number> = { all: 0, "non-image": 0, "with-image": 0, "free-text-old": 0 };
   for (const { action } of BULK_ACTIONS) out[action] = bulkTargets(rows, models, action, now).length;
   return out;
+}
+
+/** Unsend `targets` Creator by Creator (`runFanOut`, first-listed Creator
+ *  first), one delete at a time within each: one OF delete in flight, never
+ *  a burst on a Creator or on the proxy it shares. The browser's order is the
+ *  only pacing: the relay's 11 s write gate would make 200 unsends a 36 min
+ *  run and hold that Creator's automation behind it. Never throws; returns how
+ *  many deletes failed. `onProgress(done, total)` follows each delete, `done`
+ *  counting successes and failures alike. */
+export async function unsendByCreator(
+  targets: readonly ActionableRow[],
+  cancel: (row: ActionableRow) => Promise<unknown>,
+  onProgress?: (done: number, total: number) => void,
+): Promise<number> {
+  const byCreator = new Map<string, ActionableRow[]>();
+  for (const r of targets) {
+    const list = byCreator.get(r.__accountId);
+    if (list) list.push(r);
+    else byCreator.set(r.__accountId, [r]);
+  }
+  let failed = 0;
+  let done = 0;
+  await runFanOut([...byCreator.keys()], async (accountId) => {
+    for (const r of byCreator.get(accountId) ?? []) {
+      try {
+        await cancel(r);
+      } catch {
+        failed += 1;
+      }
+      onProgress?.(++done, targets.length);
+    }
+  });
+  return failed;
 }

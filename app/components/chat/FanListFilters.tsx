@@ -108,7 +108,7 @@ type GearSettings = {
 };
 
 export function FanListFilters({
-  active, onActiveChange, unreadCount, activeCount, oweReplyCount,
+  active, onActiveChange, unreadCount, unreadAge, activeCount, oweReplyCount,
   pinnedFolders, hasLists, onOpenFolderPicker,
   showInboxSelector, groupCount, group, onGroupChange, onOpenSplitInbox,
   fetching, onRefresh, sortMode, onSortModeChange, tipsEnabled, ...gear
@@ -117,6 +117,9 @@ export function FanListFilters({
   onActiveChange: (next: ActiveChip) => void;
   /** Unread chats in the cached All set; the Unread chip always shows it. */
   unreadCount: number;
+  /** The Unread count's age once a Creator it counts is late (components/chat/dataAge `badgeAge`): "as of 4 min"
+   *  after the label, the long form as the chip's title. Absent: today's chip. */
+  unreadAge?: ChipAge | null;
   /** Chats needing attention in the active filter's rows. */
   activeCount: number;
   oweReplyCount: number;
@@ -204,7 +207,7 @@ export function FanListFilters({
             title={extraTitle("Owe reply", "Chats where the fan sent the last message and we haven't replied")}
           >Owe reply</BuiltinChip>
           <BuiltinChip filter="pinned" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>Pinned</BuiltinChip>
-          <BuiltinChip filter="unread" active={active} onActiveChange={onActiveChange} count={unreadCount}>Unread</BuiltinChip>
+          <BuiltinChip filter="unread" active={active} onActiveChange={onActiveChange} count={unreadCount} age={unreadAge}>Unread</BuiltinChip>
           <BuiltinChip filter="who_tipped" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>With Tips</BuiltinChip>
           {tipsEnabled && (
             <BuiltinChip filter="unread_tips" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>Unread with tips</BuiltinChip>
@@ -442,7 +445,7 @@ function SortControl({ sortMode, onSortModeChange }: SortChoice) {
  *  reply's in `amber`); `activeCount` only while the chip is the active
  *  filter. */
 function BuiltinChip({
-  filter, active, onActiveChange, count, activeCount, title, amber, children,
+  filter, active, onActiveChange, count, activeCount, title, amber, age, children,
 }: {
   filter: BuiltinFilter;
   active: ActiveChip;
@@ -451,6 +454,7 @@ function BuiltinChip({
   activeCount?: number;
   title?: string;
   amber?: boolean;
+  age?: ChipAge | null;
   children: React.ReactNode;
 }) {
   const isActive = active.kind === "builtin" && active.key === filter;
@@ -461,12 +465,16 @@ function BuiltinChip({
       count={count ?? (isActive ? activeCount : null)}
       title={title}
       amber={amber}
+      age={age}
     >{children}</FilterChip>
   );
 }
 
+/** A chip count's age: the short text after the label and the chip's title. */
+type ChipAge = { text: string; title: string };
+
 function FilterChip({
-  active, onClick, children, title, count, amber,
+  active, onClick, children, title, count, amber, age,
 }: {
   active: boolean;
   onClick: () => void;
@@ -475,13 +483,16 @@ function FilterChip({
   count?: number | null;
   /** The Clone's `.cbadge.amber` (mh:146): the owe-reply count. */
   amber?: boolean;
+  /** Its count's age (the Unread chip's "as of"): small dim text after the count, read last ("Unread 12 as of 4
+   *  min"); its title replaces the chip's. No live region: an age ticking is never announced. */
+  age?: ChipAge | null;
 }) {
   const showCount = count != null && count > 0;
   return (
     <button
       type="button"
       onClick={onClick}
-      title={title}
+      title={age?.title ?? title}
       aria-pressed={active}
       className={cn(
         G.chip, O.chip,
@@ -497,6 +508,12 @@ function FilterChip({
         // Unread is `info` like every unread count; owe stays `warn` (spec D6).
         <span className={cn(G.chipBadge, O.chipBadge, "absolute grid place-items-center", amber ? "bg-warn text-bg" : "bg-err text-white")}>
           {count}
+        </span>
+      )}
+      {age && " "}
+      {age && (
+        <span className={cn(O.chipAge, active ? "text-white/80" : "text-fg-dim")}>
+          {age.text}
         </span>
       )}
     </button>

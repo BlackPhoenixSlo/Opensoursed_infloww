@@ -17,6 +17,14 @@
  * member is dispatched exactly as if it had come as its own frame, all inside
  * one React Query notify batch, so a 50-event frame is one render pass.
  *
+ * Ping: every one keeps the stream fresh. One carrying `fresh` (the Shared
+ * refresher's Knob on: `{aid: at}`, service/events.py `_fresh`) is also
+ * dispatched to `ping` listeners (useAccountStateEvents' `confirmed`); today's
+ * (no `fresh`) dispatches nothing. Every ping's `ts` also sets the tab's
+ * Relay-clock offset (lib/ageClock, the data ages' clock): a ping is never
+ * replayed, while an event's `now` (`creator_refreshed`, `creator_warmed`) is
+ * as old as its send when replayed, so no event moves it.
+ *
  * Backoff, idle mode, freshness and adaptive apply are eventBusReducer.ts's
  * rules (its header); this file is their I/O.
  *
@@ -32,6 +40,8 @@ import {
   decide, eventsUrl, follow, initialBusState, isConnected,
 } from "./eventBusReducer";
 import { resolveShareToken } from "./shareToken";
+import { setRelayOffset } from "./ageClock";
+import { serverOffset } from "@/components/chat/dataAge";
 
 export type { EventEnvelope, Scope } from "./eventBusReducer";
 
@@ -164,15 +174,15 @@ class EventBus {
     // show a "reconnecting…" pill if they care.
     es.onerror = () => this.send({ type: "Errored", now: Date.now(), ready: this.ready(), gen });
 
-    // Backend heartbeat — freshness only, nothing dispatched (no consumer
-    // should care about pings). Without this, an idle relay (no real
-    // events) would degrade to "disconnected" every 45 s.
-    es.addEventListener("ping", (msg) => this.frame(msg as MessageEvent, []));
+    // Backend heartbeat: freshness, plus its `fresh` when it carries one.
+    // Without this, an idle relay (no real events) would degrade to
+    // "disconnected" every 45 s.
+    es.addEventListener("ping", (msg) => this.frame(msg as MessageEvent, this.pingEvents((msg as MessageEvent).data)));
     es.addEventListener("batch", (msg) => this.frame(msg as MessageEvent, this.batchMembers((msg as MessageEvent).data)));
 
     // Re-register every known type-listener against the new EventSource.
     for (const type of this.byType.keys()) {
-      if (type === "*" || type === "__error") continue;
+      if (NOT_NATIVE.has(type)) continue;
       this.attachNativeListener(es, type);
     }
   }
@@ -183,6 +193,16 @@ class EventBus {
 
   private frame(msg: MessageEvent, events: Queued[]) {
     this.send({ type: "Frame", now: Date.now(), ready: this.ready(), id: msg.lastEventId, events });
+  }
+
+  /** A ping as an event: only one carrying a `fresh` object, and only when someone listens for `ping`. Every ping
+   *  with a `ts` (epoch seconds, the Relay's clock) first sets the Relay-clock offset. */
+  private pingEvents(raw: string): Queued[] {
+    const p = parse(raw);
+    if (typeof p.ts === "number" && Number.isFinite(p.ts)) setRelayOffset(serverOffset(p.ts * 1000, Date.now()));
+    if (!this.byType.has("ping")) return [];
+    const fresh = p.fresh;
+    return fresh && typeof fresh === "object" && !Array.isArray(fresh) ? [["ping", p]] : [];
   }
 
   /** One notify batch, so the cache writes they make render once. */
@@ -232,7 +252,7 @@ class EventBus {
       // If we already have a live EventSource, register the named-event
       // listener on it now so new subscribers don't miss types they care
       // about that the wildcard onmessage doesn't see.
-      if (this.es && type !== "*" && type !== "__error") {
+      if (this.es && !NOT_NATIVE.has(type)) {
         this.attachNativeListener(this.es, type);
       }
     }
@@ -242,6 +262,9 @@ class EventBus {
     };
   }
 }
+
+/** Listener keys with no native listener of their own: the wildcard, the bus's error, the ping (its own, above). */
+const NOT_NATIVE = new Set(["*", "__error", "ping"]);
 
 function parse(raw: string): EventEnvelope {
   try {

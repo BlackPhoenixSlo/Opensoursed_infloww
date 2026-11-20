@@ -1,7 +1,7 @@
 /**
  * NotificationsPage: the full page at /notifications reached from the bell's
  * "See all" (docs/spec/phase-05-remaining-parity-gaps.md, stories 40-44,
- * Testing Decisions): the eight tabs, Tips / Mark all read / gear Not wired,
+ * Testing Decisions): the eight tabs, Tips / gear Not wired, Mark all read's OF write per Creator,
  * the same request (path and Creator scope) as the bell for the same tab, and
  * "Load more" advancing the offset on a single-type tab.
  */
@@ -9,8 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const { relayGet, scope, accounts, router, accountsQ } = vi.hoisted(() => ({
+const { relayGet, relayPost, scope, accounts, router, accountsQ } = vi.hoisted(() => ({
   relayGet: vi.fn(),
+  relayPost: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ counters: { all: 0 } })),
   accountsQ: { isLoading: false },
   router: { push: vi.fn(), back: vi.fn() },
   scope: { accountId: "acc-1" as string | null },
@@ -20,7 +21,9 @@ const { relayGet, scope, accounts, router, accountsQ } = vi.hoisted(() => ({
   ],
 }));
 
-vi.mock("@/lib/relay", () => ({ relay: { get: (...args: unknown[]) => relayGet(...args) } }));
+vi.mock("@/lib/relay", () => ({
+  relay: { get: (...args: unknown[]) => relayGet(...args), post: (...args: unknown[]) => relayPost(...args) },
+}));
 vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => accounts, useAccounts: () => accountsQ }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => scope }));
 vi.mock("next/navigation", () => ({
@@ -98,14 +101,13 @@ describe("NotificationsPage", () => {
     expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
   });
 
-  it("Tips, Mark all read and the gear are Not wired: disabled, titled \"not wired\", and Tips reads nothing", async () => {
+  it("Tips and the gear are Not wired: disabled, titled \"not wired\", and Tips reads nothing", async () => {
     relayGet.mockResolvedValue({ list: [] });
     renderWithProviders(<NotificationsPage />);
     await screen.findByText("No notifications");
 
     for (const el of [
       screen.getByRole("tab", { name: "Tips" }),
-      screen.getByRole("button", { name: "Mark all read" }),
       screen.getByRole("button", { name: "Notification settings" }),
     ]) {
       expect(el).toBeDisabled();
@@ -115,6 +117,20 @@ describe("NotificationsPage", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Tips" }));
     expect(feedReads().some(([path]) => String(path).includes("type=tip"))).toBe(false);
     expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it.each<[string, string | null, string[]]>([
+    ["the scoped Creator", "acc-1", ["acc-1"]],
+    ["each Creator under All Creators", null, ["acc-1", "acc-2"]],
+  ])("Mark all read sends OF's mark-read once for %s", async (_n, scoped, want) => {
+    scope.accountId = scoped;
+    relayGet.mockResolvedValue({ list: [] });
+    relayPost.mockClear();
+    renderWithProviders(<NotificationsPage />);
+    await screen.findByText("No notifications");
+    await userEvent.click(screen.getByRole("button", { name: "Mark all read" }));
+    expect(relayPost.mock.calls.map(([p, , ctx]) => [p, (ctx as { accountId: string }).accountId]))
+      .toEqual(want.map((aid) => ["/api/of/v2/users/notifications/read", aid]));
   });
 
   it("issues the bell's request (path and Creator scope) for every wired tab, for one Creator", async () => {

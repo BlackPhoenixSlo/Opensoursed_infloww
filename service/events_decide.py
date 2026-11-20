@@ -53,8 +53,8 @@ tests); `agencies` the audiences (owner user ids, `owner:` / `sessions:` keys) w
 events it gets. `wants`: an Agency-wide event (`__agency`) reaches its audience whatever the
 scope; an account event (`__account_id`) the subscribers that `sees` that account (scope match,
 then the clamp); an event with neither only an unclamped "all" subscriber. Ids compare as str.
-Any-scope (`ANY_SCOPE_TYPES`, phase-01 1b): the warm event and the rail's money events also reach
-a model-scoped subscriber for any Creator in its clamp (its accessible set, resolved at
+Any-scope (`ANY_SCOPE_TYPES`, phase-01 1b): the warm event, the chat-list patches (read flip, reply) and the
+rail's money events also reach a model-scoped subscriber for any Creator in its clamp (its accessible set, resolved at
 subscribe for owners and chatters), so a tab scoped to one Creator still fills its rail with
 another's sale; never past the clamp (another Agency), never for an unclamped subscriber.
 Replay (a reconnect) reads the same: the rings its scope sees, plus (`sees_any`) its other clamped
@@ -80,8 +80,9 @@ RATE_TAU_S = 1.0    # time constant of a stream's rate average, seconds
 # Per type, the body field that names what a frame is about: within one batch
 # only the newest frame per (type, account, that field) is kept. `chat_typing`
 # is a "still typing" ping and `chat_queue_update` a mass message's progress,
-# so the newest says everything the older ones did.
-COALESCE = {"chat_typing": "fan_id", "chat_queue_update": "id"}
+# so the newest says everything the older ones did; `creator_refreshed` is a
+# Creator's whole snapshot, so the newest per Creator replaces the rest.
+COALESCE = {"chat_typing": "fan_id", "chat_queue_update": "id", "creator_refreshed": "account_id"}
 
 
 # ── state ──
@@ -277,17 +278,25 @@ SSE_TYPES = frozenset({
     # Only the finish frame's `total` is trustworthy (event_transcoder).
     "chat_queue_update",
     "chat_queue_finish",
+    # A person's DM through the relay (server._record_fan_send; any-scope): the bell's "<by> has responded",
+    # and other tabs move the fan's row in their cached chat lists (app hooks/useInboxRealtime.ts).
     "chat_responded",
     # The App-open warm read a Creator (app_open_warm; any-scope): the tab writes the roster and
     # notif counts it carries and re-reads the notif lists it read before the warm.
     "creator_warmed",
+    # The Shared refresher's per-Creator snapshot changed (shared_refresher; any-scope, coalesced per Creator).
+    "creator_refreshed",
+    # A chatter's read flip through the relay (server._publish_read_flip; any-scope): other tabs flip the row's unread
+    # flags in their cached chat lists (app hooks/useAccountStateEvents.ts).
+    "chat_read_changed",
 }) | STATE_TYPES
 
 # Account events that reach a model-scoped subscriber for every Creator in its clamp, not only
-# the one its scope names (`wants`): `creator_warmed` and what the Money Rail and the bell seed
-# from: `transaction_recorded`, `purchase_notified`, and a `toasts` frame holding a tip or
+# the one its scope names (`wants`): `creator_warmed`, `creator_refreshed`, `chat_read_changed`, `chat_responded` (a tab's
+# cached All Models lists hold every Creator) and what the Money Rail and the bell seed from: `transaction_recorded`, `purchase_notified`, and a `toasts` frame holding a tip or
 # purchase toast (`is_money_toast`; any other toast routes by scope).
-ANY_SCOPE_TYPES = frozenset({"creator_warmed", "transaction_recorded", "purchase_notified", "toasts"})
+ANY_SCOPE_TYPES = frozenset({"creator_warmed", "creator_refreshed", "chat_read_changed", "chat_responded",
+                             "transaction_recorded", "purchase_notified", "toasts"})
 # OF's toast types the app reads as money (app/lib/notifSettings.ts mapOfTypeToKey: tip, purchases).
 MONEY_TOAST_TYPES = frozenset({"tip", "tips", "purchase", "purchases", "paided_message"})
 

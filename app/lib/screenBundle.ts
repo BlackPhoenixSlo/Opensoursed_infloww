@@ -105,7 +105,10 @@ export function classify(url: string, accountId: string | null, screen: Screen):
   if (screen.kind === "chat") return classifyChat(path, params, bare, accountId, screen);
   if (screen.kind === "dashboard") {
     const { from, to } = screen;
-    if (path === "/api/of/v2/users/me" && bare) return own("profile", false, screen);
+    // Bare, or `max_age` alone (hooks/useAccountAvatar fetchOwnProfile): the bundle's read is fresher than any age.
+    if (path === "/api/of/v2/users/me" && exactly(params, { max_age: params.get("max_age") })) {
+      return own("profile", false, screen);
+    }
     if (path === "/api/of/v2/subscriptions/count/all" && bare) return own("subscriberCounts", true, screen);
     if (path === "/api/of/v2/subscriptions/subscribers/chart" && exactly(params, { start: from, end: to })) {
       return own("newFans", true, screen);

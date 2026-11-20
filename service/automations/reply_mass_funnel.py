@@ -581,27 +581,31 @@ async def _run_steps(mass_run_id: int) -> list[dict]:
     return await _load_funnel_steps(int(funnel_id)) if funnel_id is not None else []
 
 
-async def _replay_landed(account_id: str, cs: FunnelState, now: datetime) -> None:
-    """One UNCONFIRMED row: its step landed → saved as Sent at `sending_at` (never
-    `now`: it is the next "offer taken" baseline), marker cleared, nothing re-sent.
-    A row it cannot replay (no steps, a shortened funnel, a bad ctx) is a miss."""
+async def _replay_landed(account_id: str, cs: FunnelState, now: datetime, *,
+                         confirmed: bool = False) -> bool:
+    """One UNCONFIRMED row: its step landed (or the user `confirmed` it did) →
+    saved as Sent at `sending_at` (never `now`: it is the next "offer taken"
+    baseline), marker cleared, nothing re-sent. A row it cannot replay (no steps,
+    a shortened funnel, a bad ctx) is a miss. True iff it cleared the marker."""
     steps = await _run_steps(cs.mass_run_id)
     if not 0 <= int(cs.current_step) < len(steps):
-        return
+        return False
     try:
         ctx = json.loads(cs.sending_ctx or "null")
     except ValueError:
-        return
+        return False
     if not isinstance(ctx, dict) or set(ctx) != set(vars(fd.Facts())):
-        return
-    if not await smst.landed(account_id, cs.fan_id, smd.lookup_since(cs.sending_at), _PURPOSE,
-                             mass_run_id=int(cs.mass_run_id),
-                             funnel_step=fd.step_number(steps[int(cs.current_step)])):
-        return
+        return False
+    if not confirmed and not await smst.landed(
+            account_id, cs.fan_id, smd.lookup_since(cs.sending_at), _PURPOSE,
+            mass_run_id=int(cs.mass_run_id),
+            funnel_step=fd.step_number(steps[int(cs.current_step)])):
+        return False
     script = fd.Script(steps=steps, num_to_idx=step_number_index(steps), max_hops=_MAX_HOPS)
     e, _fx = fd.decide(fd.Entry.from_row(cs), fd.Sent(cs.sending_at, fd.Facts(**ctx)), script)
-    await smst.clear(FunnelState, _keys(cs.mass_run_id, cs.fan_id), if_sending_at=cs.sending_at,
-                     **{**_state_values(e, now), "last_error": None})
+    return await smst.clear(FunnelState, _keys(cs.mass_run_id, cs.fan_id),
+                            if_sending_at=cs.sending_at,
+                            **{**_state_values(e, now), "last_error": None})
 
 
 async def settle_landed(account_id: str, boot_ts: datetime, now: datetime) -> None:
@@ -642,6 +646,38 @@ async def retry_clear(account_id: str, fan_id: int, mass_run_id: int | None,
     only while the row still carries `sending_at`."""
     return await smst.clear(FunnelState, _keys(mass_run_id, fan_id), if_sending_at=sending_at,
                             status="pending", next_check_at=now, last_error=None, updated_at=now)
+
+
+async def dismiss_sent(account_id: str, fan_id: int, mass_run_id: int | None,
+                       sending_at: datetime, now: datetime,
+                       hint_message_id: int | None = None) -> bool:
+    """The user's "It went through": the step saved as Sent exactly as a confirmed
+    landing (`_replay_landed`), marker cleared, never re-sent; only while the row
+    still carries `sending_at`. False: it changed, or it cannot be replayed.
+    `hint_message_id` (the untagged row the user saw as this send) gets the step's
+    tags, so the next step waits for a reply after it (without it, a reply from
+    before this step may count as one to it)."""
+    if mass_run_id is None:
+        return False
+    rows = await smst.marked_rows(
+        FunnelState, *_house(account_id), FunnelState.mass_run_id == int(mass_run_id),
+        FunnelState.fan_id == int(fan_id), FunnelState.sending_at == sending_at, join=_HOUSE_JOIN)
+    if not rows:
+        return False
+    # Tagged BEFORE the advance is saved: a tick between the two must not see the
+    # next step due with the reply baseline still behind this send.
+    tagged = False
+    steps = await _run_steps(mass_run_id)
+    if hint_message_id is not None and 0 <= int(rows[0].current_step) < len(steps):
+        tagged = await smst.tag_out(
+            account_id, fan_id, smd.lookup_since(sending_at), hint_message_id, _PURPOSE,
+            mass_run_id=int(mass_run_id),
+            funnel_step=fd.step_number(steps[int(rows[0].current_step)]))
+    if await _replay_landed(account_id, rows[0], now, confirmed=True):
+        return True
+    if tagged:
+        await smst.untag_out(account_id, hint_message_id, _PURPOSE)
+    return False
 
 
 # ── Step text (static verbatim, or generate via llm_client) ──────────

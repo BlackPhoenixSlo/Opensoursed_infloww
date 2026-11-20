@@ -1,4 +1,4 @@
-{"openapi_sha1": "e3fb0d64e1239b1a139da103ef409cb8d4975472",
+{"openapi_sha1": "ce18b95826a9149677bac786e3f4a523a27534cd",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -67,6 +67,7 @@
   ["DELETE", "/admin/funnels/{funnel_id}/media/{account_id}", "delete_funnel_media"],
   ["GET", "/admin/unconfirmed-sends", "list_unconfirmed_sends"],
   ["POST", "/admin/unconfirmed-sends/retry", "retry_unconfirmed_send"],
+  ["POST", "/admin/unconfirmed-sends/dismiss", "dismiss_unconfirmed_send"],
   ["GET", "/admin/nudge-config", "get_nudge_config"],
   ["PUT", "/admin/nudge-config", "put_nudge_config"],
   ["POST", "/admin/nudge-config/preview", "preview_nudge"],
@@ -418,6 +419,7 @@
   ["GET", "/api/of/v2/labels", "of_labels"],
   ["GET", "/api/of/v2/users/notifications", "of_notifications"],
   ["GET", "/api/of/v2/users/notifications/count", "of_notifications_count"],
+  ["POST", "/api/of/v2/users/notifications/read", "of_notifications_mark_read"],
   ["GET", "/api/of/v2/users/notifications/money", "of_notifications_money"],
   ["GET", "/api/of/v2/release-forms/mentions", "of_release_form_mentions"],
   ["GET", "/api/of/v2/users/me/settings", "of_my_settings"],

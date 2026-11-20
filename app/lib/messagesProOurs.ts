@@ -24,6 +24,11 @@ export const OURS = {
      *  4px below it (ours: Phase 2's Fan List menus; the Clone's is 6px,
      *  mj:118), above the panes. */
     pickerPlace: "left-0 mt-1 z-30",
+    /** The No-live-connection / Disconnected dot at the avatar's foot, on a
+     *  tab and a picker row (watched-creator-refresher Phase 3): the house
+     *  status dot (`CreatorAvatar`'s online dot, infloww.tsx), 6px, ringed in
+     *  the background behind it. */
+    liveMark: "absolute -bottom-px -right-px size-1.5 rounded-full ring-1",
   },
   FanTabs: {
     /** The tab's pick target, `role="tab"`: the name, unread badge
@@ -55,6 +60,9 @@ export const OURS = {
     menuPlace: "right-0 mt-1 z-30",
   },
   FanListFilters: {
+    /** The Unread chip's "as of N min" (watched-creator-refresher Phase 3):
+     *  the house 10px small text, 4px after the label. */
+    chipAge: "ml-1 text-[10px]",
     /** The gear menu's place: from the gear's left edge, 4px below it, as
      *  the "All inboxes" menu. Below md it opens against the filter row
      *  instead, at the row's 11px inset and 4px under its 36px line: a

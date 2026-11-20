@@ -21,8 +21,12 @@ concurrently and are recorded in arrival order.
                                            pump is live (bypass, declared: no chats);
                                            a scenario may set `chats[uid]` (OF chat
                                            items) and gets them back, `offset`/`limit`
-  GET  /api2/v2/users/notifications/count  the bell's counts, all zero (`{"all": 0, ...}`):
-                                           the shell's per-Creator badge read
+  GET  /api2/v2/users/notifications/count  the bell's counts, `notif_counts[uid]` as a scenario set them,
+                                           else all zero (`{"all": 0, ...}`): the shell's per-Creator badge read
+  POST /api2/v2/users/notifications/read   OF's mark-read (OF web on opening its All notifications tab):
+                                           zeroes every count;
+                                           answers `{counters}` (the count shape), each (t, type) kept per
+                                           Creator in order (`notif_reads`)
   GET  /cdn-cgi/trace                      Cloudflare's trace, as `proxy_probe.probe` reads it
                                            (ip / loc / colo lines; lib/relay.py points
                                            `proxy_probe.TRACE_URL` here under OF_WIRE), so a
@@ -263,6 +267,8 @@ class FakeOF:
         self.vault_media: dict[str, list[dict]] = {}  # per Creator, the vault page's media, newest first
         self.fan_counts: dict[str, int] = {}  # per Creator, `subscribers.active` (else id % 900 + 100)
         self.purchases: dict[str, list[dict]] = {}  # per Creator, the type=purchases feed, newest first
+        self.notif_counts: dict[str, dict[str, int]] = {}  # per Creator, the /users/notifications/count body
+        self.notif_reads: dict[str, list[tuple[float, str | None]]] = {}  # per Creator, each mark-read (t, type)
         self.profiles: dict[str, dict] = {}  # per Creator, fields laid over its /users/me (name, username, avatar)
         self.lock = threading.Lock()
         self.calls: list[dict] = []          # every call, answer order: {t0, t, account, route, query, status}
@@ -523,7 +529,16 @@ class FakeOF:
                         "id": 8_000_000 + fan % 1_000_000, "text": "hey", "fromUser": {"id": fan}, "isFree": True,
                         "price": 0, "media": [], "createdAt": "2026-11-05T10:00:00+00:00"}], "hasMore": False})
                 if method == "GET" and u.path == "/api2/v2/users/notifications/count":
-                    return self._record(uid, route, 200, {"all": 0, "subscribed": 0, "purchases": 0, "tip": 0})
+                    with fake.lock:
+                        counts = dict(fake.notif_counts.get(uid) or {"all": 0, "subscribed": 0, "purchases": 0, "tip": 0})
+                    return self._record(uid, route, 200, counts)
+                if method == "POST" and u.path == "/api2/v2/users/notifications/read":
+                    with fake.lock:
+                        counts = dict(fake.notif_counts.get(uid) or {"all": 0, "subscribed": 0, "purchases": 0, "tip": 0})
+                        counts = {k: 0 for k in counts}
+                        fake.notif_counts[uid] = counts
+                        fake.notif_reads.setdefault(uid, []).append((time.time(), None))
+                    return self._record(uid, route, 200, {"counters": counts})
                 if method == "GET" and u.path == "/api2/v2/subscriptions/count/all":
                     n = fake.fan_counts.get(uid, int(uid or 0) % 900 + 100)
                     return self._record(uid, route, 200, {"subscribers": {"active": n, "all": 2 * n, "expired": n},

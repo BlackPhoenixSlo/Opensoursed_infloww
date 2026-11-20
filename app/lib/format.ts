@@ -165,3 +165,9 @@ export function clockTime(d: Date): string {
 // Intl.DateTimeFormat each time, the top self-time frame of a Fan List render
 // under a DM flood (measured). Same output.
 const CLOCK = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
+
+/** A roster badge's unread text: "N+" when the count may be cut off at the relay's chats window
+ *  (hooks/useRosterCounts `unread_capped`). */
+export function rosterUnreadText(unread: number, capped?: boolean): string {
+  return capped ? `${unread}+` : String(unread);
+}

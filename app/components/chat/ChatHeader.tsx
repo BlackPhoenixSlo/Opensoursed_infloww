@@ -80,7 +80,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { cn } from "@/lib/utils";
 import { useAccountLabel } from "@/hooks/useAccounts";
@@ -94,6 +94,7 @@ import { MP } from "@/lib/messagesPro";
 import { ChatActionsMenu } from "./ChatActionsMenu";
 import { FanAvatarMenu } from "./AvatarMenu";
 import { ChatGallery } from "./ChatGallery";
+import { patchCachedChat } from "./useMarkChatRead";
 import { ICON_BUTTON } from "./MenuParts";
 import { OpenInNewTabButton } from "./FanTabs";
 import { isFanOnline, newestSeen, type Seen } from "./isFanOnline";
@@ -382,9 +383,11 @@ export const CHAT_MUTE = "chat-mute";
 /** This chat's one mute state and call (spec, Implementation Decisions, Mute),
  *  shared by the mute icon and the Kebab menu's mute row. It starts from the
  *  conversation's `isMutedNotifications`, follows it when the row changes, and
- *  takes the requested state when the relay call succeeds. `toggle` rejects
+ *  takes the requested state when the relay call succeeds, on every cached
+ *  chat-list row too (a remount starts from that row). `toggle` rejects
  *  with the relay's error, which the Kebab menu shows on its status line. */
 function useChatMute(accountId: string, fanId: FanId, chat: OFChatItem) {
+  const qc = useQueryClient();
   const [muted, setMuted] = useState(!!chat.isMutedNotifications);
   useEffect(() => { setMuted(!!chat.isMutedNotifications); }, [chat.isMutedNotifications]);
   const call = useMutation({
@@ -393,7 +396,10 @@ function useChatMute(accountId: string, fanId: FanId, chat: OFChatItem) {
       next
         ? relay.post(`/api/of/v2/chats/${fanId}/mute`, undefined, { accountId })
         : relay.delete(`/api/of/v2/chats/${fanId}/mute`, { accountId }),
-    onSuccess: (_data, next) => setMuted(next),
+    onSuccess: (_data, next) => {
+      setMuted(next);
+      patchCachedChat(qc, accountId, fanId, { isMutedNotifications: next });
+    },
   });
   const toggle = async () => { await call.mutateAsync(!muted); };
   return { muted, pending: call.isPending, toggle };

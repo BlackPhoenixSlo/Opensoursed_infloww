@@ -68,15 +68,108 @@ class _AppErrorBody(BaseModel):
     context: dict[str, Any] | None = None
 
 
+def _employee_ids_of(actor):
+    """The Employee rows an actor's error rows may name: an owner's are its
+    Agency's (`Employee.user_id`), a chatter's its own Mirror rows
+    (`Employee.chatter_id`), active ones only (an Agency that unlinked the
+    chatter keeps the row, deactivated) — as a subquery for the /admin/errors filters."""
+    from sqlalchemy import select
+    from db.models import Employee
+    if actor.kind == "user":
+        return select(Employee.id).where(Employee.user_id == actor.id)
+    return select(Employee.id).where(Employee.chatter_id == actor.id, Employee.is_active.is_(True))
+
+
+def _errors_scope(actor, is_master: bool):
+    """Which app_errors rows a principal may read or clear, as a WHERE clause
+    (None = every row). A row belongs to the Creator it names (`account_id`,
+    the principal's reach `actor.account_ids`, as the account isolation
+    middleware gates), else to the Employee it names (`_employee_ids_of`).
+    A row naming neither — or a Creator/Employee outside the principal — is
+    the Master's alone (`users.is_admin`: the instance owner, as
+    `auth.require_master` gates /admin/system's all-accounts reads)."""
+    from sqlalchemy import and_, or_
+    from db.models import AppError
+    if is_master:
+        return None
+    return or_(
+        AppError.account_id.in_(sorted(actor.account_ids)),
+        and_(AppError.account_id.is_(None), AppError.employee_id.in_(_employee_ids_of(actor))),
+    )
+
+
+def _principal():
+    """(actor, is_master) of the request; 401 with no principal."""
+    from fastapi import HTTPException
+    from auth import get_request_user
+    from chatters import current_actor
+    actor = current_actor()
+    if actor is None:
+        raise HTTPException(status_code=401, detail="sign in required")
+    user = get_request_user()
+    return actor, bool(user is not None and user.is_admin)
+
+
+def header_attribution(request: Request) -> tuple[str | None, int | None]:
+    """The request's X-Account-Id / X-Employee-Id, unchecked."""
+    try:
+        employee_id = int(request.headers.get("x-employee-id") or "") or None
+    except ValueError:
+        employee_id = None
+    return request.headers.get("x-account-id") or None, employee_id
+
+
+async def owned_attribution(
+    account_id: str | None, employee_id: int | None, *, owner_fallback: bool = False,
+) -> tuple[str | None, int | None]:
+    """The (account_id, employee_id) an app_errors row is stored under, for the
+    current principal: a Creator outside its reach (`actor.account_ids`) or an
+    Employee not its own (`_employee_ids_of`; the Master may name any) is
+    dropped, so no session can file a row into another Agency's list.
+    `owner_fallback`: an owner session naming no Employee gets its own. A
+    chatter naming none gets its one Mirror Employee. No principal: nothing
+    kept (the row is the Master's)."""
+    from auth import get_request_user
+    from chatters import current_actor
+    from db.engine import get_session
+    from db.models import Employee
+    import employees
+    actor = current_actor()
+    if actor is None:
+        return None, None
+    user = get_request_user()
+    if account_id is not None and account_id not in actor.account_ids:
+        account_id = None
+    if employee_id is not None and not (user is not None and user.is_admin):
+        async with get_session() as s:
+            mine = (await s.execute(_employee_ids_of(actor).where(Employee.id == employee_id))).first()
+        employee_id = employee_id if mine else None
+    if employee_id is None and owner_fallback and user is not None:
+        employee_id = await employees.get_owner_employee_id(user)
+    if employee_id is None and actor.kind != "user":
+        # A chatter naming nobody (a page with no Creator picked) is its own
+        # Mirror Employee, so its Agency's owner still reads the row. Only when
+        # it has exactly one: with several Agencies the row cannot be placed.
+        async with get_session() as s:
+            mine = (await s.execute(_employee_ids_of(actor).limit(2))).scalars().all()
+        employee_id = mine[0] if len(mine) == 1 else None
+    return (account_id[:64] if account_id else None), employee_id
+
+
 @router.post("/admin/errors")
-async def admin_errors_create(body: _AppErrorBody = Body(...)) -> dict[str, Any]:
-    """Persist a single error report. Never raises — if we can't write
-    we still 200 so the reporter loop doesn't error-on-error."""
+async def admin_errors_create(request: Request, body: _AppErrorBody = Body(...)) -> dict[str, Any]:
+    """Persist a single error report under the reporter's own Creator/Employee
+    (`owned_attribution`). Never raises — if we can't write we still 200 so the
+    reporter loop doesn't error-on-error."""
     from db.engine import get_session
     from db.models import AppError
-    # The list is served to every caller (not tenant-filtered): no pool proxy secrets in it.
+    # The Master reads every row: no pool proxy secrets in it.
     scrub = proxy_registry.scrub_pool_secrets
     try:
+        h_account, h_employee = header_attribution(request)
+        account_id, employee_id = await owned_attribution(
+            body.account_id or h_account, body.employee_id if body.employee_id is not None else h_employee,
+            owner_fallback=True)
         async with get_session() as s:
             row = AppError(
                 source=(body.source or "browser")[:32],
@@ -84,8 +177,8 @@ async def admin_errors_create(body: _AppErrorBody = Body(...)) -> dict[str, Any]
                 message=scrub(body.message or "")[:4096],
                 stack=scrub(body.stack)[:16384] if body.stack else None,
                 url=scrub(body.url)[:1024] if body.url else None,
-                account_id=body.account_id[:64] if body.account_id else None,
-                employee_id=body.employee_id,
+                account_id=account_id,
+                employee_id=employee_id,
                 user_agent=body.user_agent[:512] if body.user_agent else None,
                 context_json=_app_error_context_json(scrub(json.dumps(body.context))) if body.context else None,
             )
@@ -97,25 +190,35 @@ async def admin_errors_create(body: _AppErrorBody = Body(...)) -> dict[str, Any]
         return {"ok": False}
 
 
+_ERRORS_OWNER_ONLY = "owner-only — chatter sessions cannot clear the error log"
+
+
 @router.delete("/admin/errors")
 async def admin_errors_clear(
     since_hours: int | None = Query(None, ge=1, le=720, description="Only clear rows within this window; omit to clear all"),
     source: str | None = Query(None, description="Filter by 'browser' or 'server'"),
 ) -> dict[str, Any]:
-    """Dismiss errors — used by the TopNav badge's Clear button. Deletes
-    rows matching the same filter the GET uses so the badge count drops
-    to zero immediately."""
+    """Dismiss errors — used by the TopNav badge's Clear button. Owner-only
+    (`owner_context`: a chatter session 403s). Deletes only the rows the
+    caller's GET shows (`_errors_scope`), matching its filter so the badge
+    count drops to zero immediately."""
+    from agency_context import owner_context
     from db.engine import get_session
     from db.models import AppError
     from sqlalchemy import delete as sa_delete
+    ctx = await owner_context(None, _ERRORS_OWNER_ONLY)
+    actor, _ = _principal()
     async with get_session() as s:
         stmt = sa_delete(AppError)
+        scope = _errors_scope(actor, ctx.is_master)
+        if scope is not None:
+            stmt = stmt.where(scope)
         if since_hours is not None:
             cutoff = datetime.utcnow() - timedelta(hours=since_hours)
             stmt = stmt.where(AppError.occurred_at >= cutoff)
         if source:
             stmt = stmt.where(AppError.source == source)
-        result = await s.execute(stmt)
+        result = await s.execute(stmt.execution_options(synchronize_session=False))
         await s.commit()
         return {"ok": True, "deleted": result.rowcount or 0}
 
@@ -126,20 +229,26 @@ async def admin_errors_list(
     since_hours: int = Query(24, ge=1, le=720),
     source: str | None = Query(None, description="Filter by 'browser' or 'server'"),
 ) -> dict[str, Any]:
-    """Recent errors, newest first. `since_hours` defaults to 24h so the
-    TopNav badge can count today's errors cheaply."""
+    """Recent errors the caller may see (`_errors_scope`), newest first.
+    `since_hours` defaults to 24h so the TopNav badge can count today's errors
+    cheaply; `count` is every matching row, `list` at most `limit` of them."""
     from db.engine import get_session
     from db.models import AppError
-    from sqlalchemy import select, and_
+    from sqlalchemy import func, select
+    actor, is_master = _principal()
     cutoff = datetime.utcnow() - timedelta(hours=since_hours)
+    conds = [AppError.occurred_at >= cutoff]
+    scope = _errors_scope(actor, is_master)
+    if scope is not None:
+        conds.append(scope)
+    if source:
+        conds.append(AppError.source == source)
     async with get_session() as s:
-        stmt = select(AppError).where(AppError.occurred_at >= cutoff)
-        if source:
-            stmt = stmt.where(AppError.source == source)
-        stmt = stmt.order_by(AppError.occurred_at.desc()).limit(limit)
+        total = (await s.execute(select(func.count(AppError.id)).where(*conds))).scalar_one()
+        stmt = select(AppError).where(*conds).order_by(AppError.occurred_at.desc()).limit(limit)
         rows = (await s.execute(stmt)).scalars().all()
         return {
-            "count": len(rows),
+            "count": total,
             "since_hours": since_hours,
             "list": [
                 {
@@ -259,7 +368,10 @@ async def admin_perflog_recent(
 ) -> dict[str, Any]:
     """Recent perfLog events, newest first. Powers ad-hoc inspection of
     timing across chatters — e.g. histogram of `vault.media` request→
-    delivered deltas, or per-tab "open → first useful paint" times."""
+    delivered deltas, or per-tab "open → first useful paint" times. Every
+    Agency's rows, so the Master's alone (`auth.require_master`)."""
+    from auth import require_master
+    require_master()
     from db.engine import get_session
     from db.models import PerfEventRow
     from sqlalchemy import select

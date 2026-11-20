@@ -39,9 +39,11 @@
  * honours `offset` (a live OnlyFans call is off limits). Overturned by a feed
  * that returns page 1 again for `offset=20`: then "Load more" is Not wired.
  *
+ * "Mark all read" sends OF's mark-read for each listed live Creator not
+ * cached at 0 (one write each, `useMarkAllOfNotifsRead`) and clears the bells' arrivals.
+ *
  * Not wired (ADR-0008): Tips, until its OnlyFans `type` value is settled
- * (connectors ticket 31), and "Mark all read" and the gear, because the
- * Relay has no mark-read endpoint.
+ * (connectors ticket 31), and the gear.
  */
 
 import { useState } from "react";
@@ -49,6 +51,8 @@ import { useRouter } from "next/navigation";
 import { CheckCheck, Settings } from "lucide-react";
 
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
+import { useMarkAllOfNotifsRead } from "@/hooks/useOfNotifCount";
+import { dispatchNotifCleared } from "@/lib/notifSettings";
 import { IfBody, IfButton, IfTabs, InflowwPageHeader } from "@/components/ui/infloww";
 import {
   FILTERS,
@@ -110,6 +114,12 @@ export default function NotificationsPage() {
     return next;
   });
   const showAccountTag = targetAccountIds.length > 1;
+  const { marking, markAll } = useMarkAllOfNotifsRead();
+  const liveIds = targetAccountIds.filter((aid) => !activeAccounts.some((a) => a.id === aid && a.session_dead_at));
+  const markAllRead = async () => {
+    dispatchNotifCleared();
+    await markAll(liveIds);
+  };
 
   return (
     <div className="min-w-0">
@@ -118,7 +128,8 @@ export default function NotificationsPage() {
         onBack={back}
         actions={(
           <>
-            <IfButton disabled title={NOT_WIRED} aria-label="Mark all read" className="max-sm:w-8 max-sm:px-0">
+            <IfButton disabled={marking || liveIds.length === 0} onClick={() => void markAllRead()}
+              aria-label="Mark all read" className="max-sm:w-8 max-sm:px-0">
               <CheckCheck aria-hidden className="h-4 w-4 sm:hidden" />
               <span className="max-sm:hidden">Mark all read</span>
             </IfButton>

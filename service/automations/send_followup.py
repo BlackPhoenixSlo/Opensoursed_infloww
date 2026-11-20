@@ -481,18 +481,21 @@ def _keys(account_id: str, fan_id: int) -> dict:
     return {"account_id": str(account_id), "fan_id": int(fan_id)}
 
 
-async def _replay_landed(account_id: str, r: FollowupState, now: datetime) -> None:
-    """One UNCONFIRMED row: his nudge landed ('followup' messages row) → saved
-    Sent(step, sending_at), marker cleared, nothing re-sent; else a miss."""
+async def _replay_landed(account_id: str, r: FollowupState, now: datetime, *,
+                         confirmed: bool = False) -> bool:
+    """One UNCONFIRMED row: his nudge landed ('followup' messages row, or the user
+    `confirmed` it did) → saved Sent(step, sending_at), marker cleared, nothing
+    re-sent; else a miss. True iff it cleared the marker."""
     e = Entry.from_row(r)
     step = (e.sending_ctx or {}).get("step")
     if step not in _STEP_THRESHOLDS_H:
-        return  # nothing to replay: stays listed for the user's Retry
-    if not await smst.landed(account_id, r.fan_id, smd.lookup_since(e.sending_at), _PURPOSE):
-        return
+        return False  # nothing to replay: stays listed for the user's Retry
+    if not confirmed and not await smst.landed(
+            account_id, r.fan_id, smd.lookup_since(e.sending_at), _PURPOSE):
+        return False
     e2, _fx = decide(e, Sent(int(step), e.sending_at), _STEP_THRESHOLDS_H)
-    await smst.clear(FollowupState, _keys(account_id, r.fan_id), if_sending_at=e.sending_at,
-                     **_entry_values(e2, now))
+    return await smst.clear(FollowupState, _keys(account_id, r.fan_id),
+                            if_sending_at=e.sending_at, **_entry_values(e2, now))
 
 
 async def settle_landed(account_id: str, boot_ts: datetime, now: datetime) -> None:
@@ -527,6 +530,24 @@ async def retry_clear(account_id: str, fan_id: int, mass_run_id: int | None,
     row still carries `sending_at`."""
     return await smst.clear(FollowupState, _keys(account_id, fan_id), if_sending_at=sending_at,
                             updated_at=now)
+
+
+async def dismiss_sent(account_id: str, fan_id: int, mass_run_id: int | None,
+                       sending_at: datetime, now: datetime,
+                       hint_message_id: int | None = None) -> bool:
+    """The user's "It went through": his nudge saved as Sent exactly as a confirmed
+    landing (`_replay_landed`), marker cleared, never re-sent; only while the row
+    still carries `sending_at`. False: it changed, or it cannot be replayed.
+    `hint_message_id` (the untagged row the user saw as this nudge) gets its tag."""
+    rows = await smst.marked_rows(FollowupState, FollowupState.account_id == str(account_id),
+                                  FollowupState.fan_id == int(fan_id),
+                                  FollowupState.sending_at == sending_at)
+    if not rows or not await _replay_landed(account_id, rows[0], now, confirmed=True):
+        return False
+    if hint_message_id is not None:
+        await smst.tag_out(account_id, fan_id, smd.lookup_since(sending_at), hint_message_id,
+                           _PURPOSE)
+    return True
 
 
 # ── Vault image (network-rewrite of the DOM "bot" folder click) ───────

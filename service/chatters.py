@@ -31,7 +31,7 @@ import uuid
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 log = logging.getLogger("of-relay.chatters")
 
@@ -44,6 +44,7 @@ import account_health
 import accounts as account_registry
 import chatter_identity_cache as identity_cache
 import events
+import shared_refresher
 from account_security import (
     TwoFactorChallenge,
     challenge_for,
@@ -380,6 +381,9 @@ class FlatAccountDTO(BaseModel):
     # "watcher" for a watcher account (a fan account that reads what the Creators send): the
     # app lists it in OF Manager only, never as a Creator. None = a Creator.
     role: Literal["watcher"] | None = None
+    # The Creator's Freshness (Shared refresher, P1 Contract 4; `now` inside it, this answer being a bare list).
+    # Off, or a watcher: absent from the row, not null.
+    freshness: dict[str, Any] | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class ChatterMeResp(BaseModel):
@@ -736,6 +740,7 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
         existing = seen.get(r.account_id)
         if existing is None or (r.username or "").lower() < existing.owner_username.lower():
             health = dead.get(r.account_id, account_health.NO_DEAD_SESSION)
+            role = account_registry.get_role(r.account_id)
             seen[r.account_id] = FlatAccountDTO(
                 account_id=r.account_id,
                 nickname=r.nickname,
@@ -745,7 +750,9 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
                 session_dead_at=health.at,
                 session_dead_reason=health.reason,
                 is_active=r.account_id not in off,
-                role=account_registry.get_role(r.account_id),
+                role=role,
+                freshness=shared_refresher.snapshot(r.account_id) if shared_refresher.ENABLED and role is None
+                else None,
             )
     return sorted(
         seen.values(),

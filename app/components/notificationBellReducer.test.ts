@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  BADGE_MAX, initialBellState, notificationBellReducer, ofListOnScreen,
+  BADGE_MAX, cachedCountSum, initialBellState, markAllTargets, notificationBellReducer, ofListOnScreen,
   type BellAction, type BellState,
 } from "./notificationBellReducer";
 
@@ -53,6 +53,22 @@ describe("notificationBellReducer", () => {
     expect({ open: s.open, pane: s.pane, arrivals: s.arrivals }).toEqual(want);
   });
 
+  it.each<[string, BellAction[], "none" | "due" | "sent"]>([
+    ["closed: nothing due", [], "none"],
+    ["open on OnlyFans: due", [OPEN_TOPBAR], "due"],
+    ["sent once the bell sent it", [OPEN_TOPBAR, { type: "markReadSent" }], "sent"],
+    ["a later tab switch back to OnlyFans in the same open: stays sent", [
+      OPEN_TOPBAR, { type: "markReadSent" }, { type: "pane", pane: "settings" }, { type: "pane", pane: "of" }], "sent"],
+    ["the next open: due again", [OPEN_TOPBAR, { type: "markReadSent" }, { type: "close" }, OPEN_TOPBAR], "due"],
+    ["open on Agency: not until OnlyFans shows", [{ type: "open", agencyUnread: 2 }], "none"],
+    ["…then OnlyFans shows: due", [{ type: "open", agencyUnread: 2 }, { type: "pane", pane: "of" }], "due"],
+    ["openAgency from closed: none", [{ type: "openAgency" }], "none"],
+    ["pane to OnlyFans while closed: none", [{ type: "pane", pane: "of" }], "none"],
+    ["markReadSent with nothing due: no-op", [{ type: "markReadSent" }], "none"],
+  ])("markRead — %s", (_n, actions, want) => {
+    expect(run(actions).markRead).toBe(want);
+  });
+
   it("openAgency on an open Agency panel is a no-op", () => {
     const opened = run([{ type: "open", agencyUnread: 2 }]);
     expect(notificationBellReducer(opened, { type: "openAgency" })).toBe(opened);
@@ -84,5 +100,19 @@ describe("notificationBellReducer", () => {
     const opened = run([OPEN_TOPBAR]);
     expect(notificationBellReducer(opened, OPEN_TOPBAR)).toBe(opened);
     expect(notificationBellReducer(initialBellState, { type: "close" })).toBe(initialBellState);
+  });
+});
+
+describe("All Models counts", () => {
+  const counts: Record<string, number> = { a: 3, b: 0, c: 4 };
+  const countOf = (id: string) => counts[id];
+  it.each<[string, string[], number, string[]]>([
+    ["none", [], 0, []],
+    ["known and unknown", ["a", "b", "c", "u"], 7, ["a", "c", "u"]],
+    ["only zeros", ["b"], 0, []],
+    ["only unknown", ["u", "v"], 0, ["u", "v"]],
+  ])("%s", (_n, ids, sum, targets) => {
+    expect(cachedCountSum(ids, countOf)).toBe(sum);
+    expect(markAllTargets(ids, countOf)).toEqual(targets);
   });
 });

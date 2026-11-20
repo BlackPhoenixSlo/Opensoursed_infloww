@@ -29,7 +29,8 @@ PY="$ROOT/venv/bin/python"
 OUT="$ROOT/docs/screenshots"
 # Every output the harness owns; all are deleted at start so nothing stale can pass.
 OUTPUTS=(messages-pro-desktop messages-pro-popout messages-pro-insights messages-pro-phone-list
-         messages-pro-phone-thread messages-pro-composer-ppv)
+         messages-pro-phone-thread messages-pro-composer-ppv unread-badge-trigger unread-badge-settled
+         live-mark-on live-mark-cleared live-mark-dead data-age-fresh data-age-stale)
 REPORT_NAME=messages-pro-report.json
 # The sweep (UI_SHOTS_SWEEP=1) owns only its own outputs and leaves the default run's alone.
 if [ "${UI_SHOTS_SWEEP:-}" = 1 ]; then
@@ -394,6 +395,28 @@ def fan_record(fan):  # FanRecord in app/lib/relay.ts
 FAN_BY_ID = {str(f["id"]): f for f in FANS}
 
 
+def freshness(unread_total=None, at_s_ago=30, live="up", cycle_s=120, live_s_ago=600):
+    """The Shared refresher's snapshot on an accounts row (P1 C1, app/lib/creatorFreshness.ts `Freshness`).
+    `unread_total` None: no `unread_total` key (the Knob off); else `{n, at}` (Phase 2's slot). `live` has held
+    for `live_s_ago` seconds on the Relay's clock (`live_since`)."""
+    now = int(time.time() * 1000)
+    values = {} if unread_total is None else {"unread_total": {"n": unread_total, "at": now - at_s_ago * 1000}}
+    return {"account_id": ACCOUNT_ID, "boot": now - 3_600_000, "seq": 1, "now": now, "at": now - at_s_ago * 1000,
+            "cycle_s": cycle_s, "live": live, "live_since": now - live_s_ago * 1000, "values": values}
+
+
+def accounts_answer(fresh=None, **row):
+    """GET /admin/accounts; `fresh` (freshness()) rides the row as with SHARED_REFRESHER on (Phases 2 and 3 reuse it);
+    `row` overrides the account's own fields (`session_dead_at`)."""
+    return {"accounts": [{**ACCOUNT, **row, **({"freshness": fresh} if fresh else {})}],
+            "active_account_id": ACCOUNT_ID}
+
+
+# Phase 2 ticket 15: OF holds 7 unread chats for Ella (whole inbox) while her page 0 flags one (Chloe).
+UNREAD_TOTAL_N = 7
+UNREAD_FLAGGED = sum(1 for c in CHATS if c["hasUnread"])
+
+
 def fixture(method, path, q):
     """Answer one relay-bound request, or None when no fixture matches."""
     one = lambda k: (q.get(k) or [None])[0]  # noqa: E731
@@ -491,7 +514,35 @@ OWN_ORIGINS = {APP, RELAY}
 LAUNCH_ARGS = ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"]
 
 
-def make_router(rec):
+HELD = []  # (route, body) a shot's `hold` left unanswered, answered once the shot is taken
+
+
+def restamped(body):
+    """A shot's own answer with each accounts row's `freshness` moved to the time it is served: every Relay stamp
+    (`now`, `boot`, `at`, `live_since`, each slot's `at`) shifted by the same delta, so its ages hold however long
+    after the fixture was built it is served. The tab also takes the live Relay's clock from each stream ping
+    (app/lib/events.ts), which a build-time `now` would contradict. The report keeps the payload as built."""
+    rows = body.get("accounts") if isinstance(body, dict) else None
+    if not rows or not any(r.get("freshness") for r in rows):
+        return body
+    now = int(time.time() * 1000)
+
+    def shift(f):
+        d = now - f["now"]
+        mv = lambda v: None if v is None else v + d  # noqa: E731
+        values = {k: ({**v, "at": mv(v.get("at"))} if isinstance(v, dict) and "at" in v else v)
+                  for k, v in f["values"].items()}
+        return {**f, "now": now, "boot": mv(f["boot"]), "at": mv(f["at"]), "live_since": mv(f["live_since"]),
+                "values": values}
+    return {**body, "accounts": [{**r, "freshness": shift(r["freshness"])} if r.get("freshness") else r
+                                 for r in rows]}
+
+
+def make_router(rec, spec=None):
+    # A shot's own answers (`fixtures`, by path) win over fixture(); a `hold` path is never answered,
+    # so the shot sees the page before that answer lands.
+    own, hold = (spec or {}).get("fixtures", {}), (spec or {}).get("hold", ())
+
     def handle(route, request):
         u = urlsplit(request.url)
         if u.scheme in ("data", "blob"):
@@ -506,7 +557,11 @@ def make_router(rec):
         p = u.path
         if not relay_bound(p) or TO_RELAY(p):
             return route.continue_()
-        body = fixture(request.method, p, parse_qs(u.query))
+        if request.method == "GET" and p in hold:
+            rec["heldRequests"].append(p)
+            HELD.append((route, restamped(own.get(p, {}))))
+            return None
+        body = restamped(own[p]) if request.method == "GET" and p in own else fixture(request.method, p, parse_qs(u.query))
         if body is None:
             rec["unmatchedRequests"].append(f"{request.method} {p}{'?' + u.query if u.query else ''}")
             body = {}
@@ -577,6 +632,19 @@ def open_in_new_tab(page):
 
 def show_fan_list(page):
     page.get_by_text(FAN_NAMES[0], exact=True).first.wait_for(timeout=60_000)
+
+
+def unread_chip(page):
+    """The Fan List's Unread filter chip ("Unread" or "Unread <n>")."""
+    return page.get_by_role("button", name=re.compile(r"^Unread( \d+)?$")).first
+
+
+def wait_unread_chip(page):
+    unread_chip(page).wait_for(timeout=60_000)
+
+
+def wait_unread_total(page):
+    page.get_by_role("button", name=f"Unread {UNREAD_TOTAL_N}", exact=True).wait_for(timeout=60_000)
 
 
 PPV_PRICE = "25"
@@ -1320,6 +1388,122 @@ def check_app_accent_outside(page):
              "ok": accent == APP_ACCENT, "got": accent}]
 
 
+# Phase 2 ticket 15 (watched-creator-refresher): the Unread badge from the Relay's totals.
+def check_badge_no_number(page):
+    """A fresh session before the accounts answer: the chip shows no number."""
+    text = " ".join(unread_chip(page).inner_text().split())  # the count is its own box: "Unread\n7"
+    return [{"name": "Unread chip shows no number before the accounts answer", "ok": text == "Unread",
+             "chipText": text}]
+
+
+def check_badge_total(page):
+    """The chip reads the fixture's Σ unread_total.n, not the page-0 rows' unread flags."""
+    text = " ".join(unread_chip(page).inner_text().split())  # the count is its own box: "Unread\n7"
+    return [{"name": f"Unread chip reads Σ unread_total.n ({UNREAD_TOTAL_N}) over {UNREAD_FLAGGED} flagged row(s)",
+             "ok": text == f"Unread {UNREAD_TOTAL_N}" and UNREAD_FLAGGED != UNREAD_TOTAL_N,
+             "chipText": text, "unreadTotalSum": UNREAD_TOTAL_N, "rowsFlaggedUnread": UNREAD_FLAGGED}]
+
+
+# Phase 3 tickets 17, 18 (watched-creator-refresher): the No-live-connection / Disconnected mark on the Creator tab
+# and its "+ Add a Creator" row. The fixture's `live_since` is on the Relay's clock: the tab ages it from the
+# answer's `now`, so the minutes hold however long after the fixture was built the page loads.
+LIVE_DOWN_S = 210  # 3.5 min: "for 3 min" whatever the 15 s tick's floor
+LIVE_DOWN_TITLE = "No live connection for 3 min: new messages may arrive late"
+
+
+def creator_tab(page, name=None):
+    return page.get_by_role("tab", name=name or re.compile(r"^Ella\b")).first
+
+
+def wait_tab_down(page):
+    creator_tab(page, re.compile(r"^Ella\b.* no live connection$")).wait_for(timeout=60_000)
+
+
+def wait_tab_dead(page):
+    creator_tab(page, re.compile(r"^Ella\b.* disconnected$")).wait_for(timeout=60_000)
+
+
+def wait_tab(page):
+    creator_tab(page).wait_for(timeout=60_000)
+
+
+def open_creator_picker(page):
+    page.get_by_role("button", name="Add a Creator", exact=True).click(timeout=30_000)
+    page.get_by_role("region", name="Creator picker").wait_for(timeout=10_000)
+
+
+def mark_facts(el):
+    """What a tab or picker row shows of the mark: the dot (kind, colour), its title, its accessible name."""
+    dot = el.locator("[data-live-mark]")
+    has = dot.count() > 0
+    named = re.search(r'"(.*)"', el.aria_snapshot().splitlines()[0])  # `- tab "Ella 1 unread no live connection"`
+    return {"dot": dot.first.get_attribute("data-live-mark") if has else None,
+            "dotColour": dot.first.evaluate("(e) => getComputedStyle(e).backgroundColor") if has else None,
+            "title": el.get_attribute("title") or "", "accessibleName": named.group(1) if named else ""}
+
+
+def check_live_mark_down(page):
+    f = mark_facts(creator_tab(page))
+    return [{"name": f"Creator tab: amber dot, title ends {LIVE_DOWN_TITLE!r}, name ends 'no live connection'",
+             "ok": f["dot"] == "down" and f["title"].endswith(f" unread — {LIVE_DOWN_TITLE}")
+             and f["accessibleName"].endswith(" no live connection"), **f}]
+
+
+def check_live_mark_cleared(page):
+    f = mark_facts(creator_tab(page))
+    return [{"name": "Creator tab back up (re-captured): no dot, no mark words",
+             "ok": f["dot"] is None and f["title"].endswith(" unread")
+             and not f["accessibleName"].endswith(("no live connection", "disconnected")), **f}]
+
+
+def check_live_mark_dead(page):
+    tab = mark_facts(creator_tab(page))
+    row = mark_facts(page.get_by_role("region", name="Creator picker").get_by_role("button", name=re.compile(r"^Ella\b")))
+    return [{"name": "Creator tab: red dot, title ends 'Disconnected', name ends 'disconnected'",
+             "ok": tab["dot"] == "dead" and tab["title"].endswith(" unread — Disconnected")
+             and tab["accessibleName"].endswith(" disconnected"), **tab},
+            {"name": "'+ Add a Creator' row: red dot, title 'Disconnected', name ends 'disconnected'",
+             "ok": row["dot"] == "dead" and row["title"] == "Disconnected"
+             and row["accessibleName"].endswith(" disconnected"), **row}]
+
+
+# Phase 3 tickets 24, 25 (watched-creator-refresher): the Unread chip's "as of" once a Creator it counts is older
+# than its Cycle plus 40 s slack. The fixture's ages are on the Relay's clock (restamped when served); the tab floors
+# its clock to the 15 s tick, so 335 s reads "as of 5 min" from serve until 360 s.
+DATA_AGE_STALE_S = 335
+DATA_AGE_STALE_TITLE = "As of 5 min ago: not refreshed within its 2 min Cycle"
+
+
+def wait_chip_stale(page):
+    page.get_by_role("button", name=re.compile(r"^Unread \d+ as of ")).first.wait_for(timeout=60_000)
+
+
+def chip_facts(page):
+    """What the Unread chip shows: its text, title, accessible name, any live region on it or its ancestors."""
+    el = page.get_by_role("button", name=re.compile(r"^Unread\b(?! with tips)")).first
+    named = re.search(r'"(.*)"', el.aria_snapshot().splitlines()[0])  # `- button "Unread 7 as of 5 min"`
+    return {"chipText": " ".join(el.inner_text().split()), "title": el.get_attribute("title"),
+            "accessibleName": named.group(1) if named else "",
+            "ariaLive": el.evaluate("(e) => !!e.closest('[aria-live]')"),
+            "tabDot": mark_facts(creator_tab(page))["dot"]}
+
+
+def check_data_age_fresh(page):
+    f = chip_facts(page)
+    return [{"name": f"Unread chip within its Cycle: 'Unread {UNREAD_TOTAL_N}', no 'as of', no title, no tab dot",
+             "ok": f["chipText"] == f"Unread {UNREAD_TOTAL_N}" and "as of" not in f["chipText"]
+             and not f["title"] and f["tabDot"] is None, **f}]
+
+
+def check_data_age_stale(page):
+    f = chip_facts(page)
+    want = f"Unread {UNREAD_TOTAL_N} as of 5 min"
+    return [{"name": f"Unread chip one Creator's total {DATA_AGE_STALE_S} s old (Cycle 120 s): {want!r}",
+             "ok": f["chipText"] == want and f["tabDot"] is None, **f},
+            {"name": f"Unread chip: title {DATA_AGE_STALE_TITLE!r}, accessible name {want!r}, no aria-live",
+             "ok": f["title"] == DATA_AGE_STALE_TITLE and f["accessibleName"] == want and not f["ariaLive"], **f}]
+
+
 OPEN_FIRST_FAN = [pick_employee, open_first_fan]
 # The desktop shot only: two Fan tabs, the first Fan's last, so its conversation stays open and
 # every earlier desktop check (selected row, Thread, PPV, Fan insights) still reads the first Fan.
@@ -1397,6 +1581,38 @@ SHOTS = [
     {"name": "messages-pro-composer-ppv", "url": "/messages-pro", "viewport": [1440, 900],
      "steps": OPEN_FIRST_FAN + [type_ppv_price], "checks": [check_ppv_price, check_composer_in_viewport, check_composer_rows,
                                                          check_ppv_row_between]},
+    # Phase 2 ticket 15. Trigger: a fresh session, the accounts answer (totals on) held: no number.
+    {"name": "unread-badge-trigger", "url": "/messages-pro", "viewport": [1440, 900], "steps": [wait_unread_chip],
+     "fixtures": {"/admin/accounts": accounts_answer(freshness(UNREAD_TOTAL_N))}, "hold": ("/admin/accounts",),
+     "checks": [check_badge_no_number]},
+    # Settled: the answer lands; the chip is Σ unread_total.n beside the rows' stale flags.
+    {"name": "unread-badge-settled", "url": "/messages-pro", "viewport": [1440, 900],
+     "steps": [pick_employee, wait_unread_total],
+     "fixtures": {"/admin/accounts": accounts_answer(freshness(UNREAD_TOTAL_N))},
+     "checks": [check_badge_total]},
+    # Phase 3 ticket 17. Trigger: the Relay's Live connection for Ella down 3.5 min: the amber mark.
+    {"name": "live-mark-on", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_tab_down],
+     "fixtures": {"/admin/accounts": accounts_answer(freshness(live="down", live_s_ago=LIVE_DOWN_S))},
+     "checks": [check_live_mark_down]},
+    # Settled (tickets 17, 18): the socket back up 5 s ago beside a stale `session_dead_at` (re-captured): no mark.
+    {"name": "live-mark-cleared", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_tab],
+     "fixtures": {"/admin/accounts": accounts_answer(freshness(live="up", live_s_ago=5),
+                                                     session_dead_at=ago(10))},
+     "checks": [check_live_mark_cleared]},
+    # Phase 3 ticket 18. Trigger: a Dead session (snapshot `live` "dead", the row not flagged yet): red at once,
+    # on the tab and on its "+ Add a Creator" row (the picker open in the shot).
+    {"name": "live-mark-dead", "url": "/messages-pro", "viewport": [1440, 900],
+     "steps": [pick_employee, wait_tab_dead, open_creator_picker],
+     "fixtures": {"/admin/accounts": accounts_answer(freshness(live="dead", live_s_ago=1))},
+     "checks": [check_live_mark_dead]},
+    # Phase 3 ticket 24. Trigger: every Creator's total within its Cycle (30 s old, lease 120 s): today's chip.
+    {"name": "data-age-fresh", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_unread_total],
+     "fixtures": {"/admin/accounts": accounts_answer(freshness(UNREAD_TOTAL_N))},
+     "checks": [check_data_age_fresh]},
+    # Settled (tickets 24, 25): Ella's total and Last refresh 335 s old on a 120 s Cycle: "as of 5 min", its title.
+    {"name": "data-age-stale", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_chip_stale],
+     "fixtures": {"/admin/accounts": accounts_answer(freshness(UNREAD_TOTAL_N, at_s_ago=DATA_AGE_STALE_S))},
+     "checks": [check_data_age_stale]},
 ]
 
 
@@ -1615,13 +1831,13 @@ FLOWS = [
 ]
 
 
-def open_page(browser, viewport, net, rec):
+def open_page(browser, viewport, net, rec, spec=None):
     """A fresh context: router and WebSocket router log to `net`, console errors to `rec`."""
     w, h = viewport
     # Fixed timezone and locale: shots match across machines and carry no host location.
     ctx = browser.new_context(viewport={"width": w, "height": h}, service_workers="block",
                               timezone_id="UTC", locale="en-US")
-    ctx.route("**/*", make_router(net))
+    ctx.route("**/*", make_router(net, spec))
     ctx.route_web_socket(re.compile(".*"), make_ws_router(net))
     page = ctx.new_page()
     page.on("console", lambda m: m.type == "error" and rec["consoleErrors"].append(m.text))
@@ -1660,8 +1876,10 @@ def run_flow(browser, n, spec):
 def run_shot(browser, n, spec):
     rec = {"name": spec["name"], "file": f"{OUT}/{spec['name']}.png", "url": spec["url"],
            "viewport": spec["viewport"], "gated": True, "overflowX": False, "consoleErrors": [],
-           "offHostRequests": [], "stubbedRequests": [], "unmatchedRequests": [], "checks": []}
-    ctx, page = open_page(browser, spec["viewport"], rec, rec)
+           "offHostRequests": [], "stubbedRequests": [], "unmatchedRequests": [], "heldRequests": [], "checks": []}
+    if spec.get("fixtures"):
+        rec["fixtures"] = spec["fixtures"]
+    ctx, page = open_page(browser, spec["viewport"], rec, rec, spec)
     reached = True
     try:
         login(page, n)
@@ -1687,6 +1905,9 @@ def run_shot(browser, n, spec):
         target.screenshot(path=str(ROOT / rec["file"]))
     except Exception as e:  # noqa: BLE001
         print(f"  {spec['name']}: screenshot failed: {str(e).splitlines()[0]}")
+    while HELD:  # the held answers land only after the shot, so the context closes with no request open
+        route, body = HELD.pop()
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
     ctx.close()
     return rec
 

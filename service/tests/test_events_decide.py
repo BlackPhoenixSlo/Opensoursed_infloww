@@ -278,6 +278,9 @@ def test_window_off_sends_everything_alone():
       {"chat_queue_update": {"id": 6, "n": 3}}], [2, 3]),
     ([{"chat_typing": {"n": 1}}, {"chat_typing": {"n": 2}}], [1, 2]),  # no fan id: kept
     ([{"chat_queue_finish": {"id": 5, "n": 1}}, {"chat_queue_finish": {"id": 5, "n": 2}}], [1, 2]),
+    ([{"creator_refreshed": {"account_id": A, "n": 1}, "__account_id": A},              # newest snapshot per Creator
+      {"creator_refreshed": {"account_id": B, "n": 2}, "__account_id": B},
+      {"creator_refreshed": {"account_id": A, "n": 3}, "__account_id": A}], [2, 3]),
 ])
 def test_coalesce(frames, kept):
     out = coalesce(frames)
@@ -417,6 +420,8 @@ def test_sse_types():
     assert ed.ENDS_STREAM <= ed.STATE_TYPES
     assert not (ed.FEED_POST_TYPES & ed.SSE_TYPES)
     assert "typing" not in ed.SSE_TYPES and "chat_typing" in ed.SSE_TYPES
+    assert "creator_refreshed" in ed.SSE_TYPES and "creator_refreshed" not in ed.STATE_TYPES
+    assert ed.COALESCE == {"chat_typing": "fan_id", "chat_queue_update": "id", "creator_refreshed": "account_id"}
 
 
 if __name__ == "__main__":

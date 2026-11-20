@@ -2,14 +2,13 @@
 
 /**
  * CreatorRail — Smart lists' creator layout for any page under Infloww's 48px header: the 260px creator column
- * (`CreatorColumn`: Search, refresh, "All creators", a row per creator with its photo, online dot and counts) left of
+ * (`CreatorColumn`: Search, refresh, a row per creator with its photo, online dot and counts) left of
  * the page's content. Below md the column hides and a creator select tops the content instead.
  *
  * The page keeps its own pick (`?creator=`, state, a context): `value` and `onChange` only show and change it.
- * `onAll` makes "All creators" a pick (`value` null while it is on), for pages that work across creators;
- * `noAll` drops the "All creators" row entirely, for pages that always work on one creator.
- * `watchers` lists the owner's watcher accounts after the creators as dimmed rows that cannot be picked (a watcher
- * is no Creator, but the owner must still see it exists); only a page that passes it shows them.
+ * `onAll` makes "All creators" a pick (`value` null while it is on), for pages that work across creators; without it
+ * there is no "All creators" row (owner 2026-11-20: only pages where it means something offer it).
+ * `watchers` lists the owner's watcher accounts after the creators as dimmed rows that cannot be picked (a watcher is no Creator, but the owner must still see it exists); only a page that passes it shows them.
  */
 
 import type { ReactNode } from "react";
@@ -26,8 +25,6 @@ export type CreatorPick = {
   onAll?: () => void;
   /** Relabels the "All creators" row/pick (Scripts' "All models"), default "All creators". */
   allLabel?: string;
-  /** No "All creators" row: the page always works on one creator. */
-  noAll?: boolean;
   /** "All creators" as a creator row with a rainbow tile, one click; else the menu. */
   allRow?: boolean;
   /** Watcher accounts, shown after the creators as non-selectable rows. */
@@ -42,7 +39,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
   className?: string;
   children: ReactNode;
 }) {
-  const { accounts, value, onChange, onAll, allLabel, noAll, allRow, watchers } = creators;
+  const { accounts, value, onChange, onAll, allLabel, allRow, watchers } = creators;
   return (
     // `.h-chat` on the column subtracts the header (`top`) too.
     <div className="flex min-h-0 min-w-0 flex-1" style={{ ["--shell-top" as string]: `calc(var(--chrome-top) + ${top})` }}>
@@ -51,7 +48,6 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
         value={value}
         onChange={onChange}
         all={onAll && { on: value === null, pick: onAll, label: allLabel }}
-        noAll={noAll}
         allRow={allRow}
         watchers={watchers}
         className="md:flex w-[260px] border-r border-border"

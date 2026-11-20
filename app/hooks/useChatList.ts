@@ -32,8 +32,10 @@ import {
 import { useScope, type Scope } from "@/contexts/ScopeContext";
 import { eventBus } from "@/lib/events";
 import { relay, relayFocus, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
-import { compareFanIds, fanIdFromParam, type FanId } from "@/lib/fanId";
+import { fanIdFromParam, type FanId } from "@/lib/fanId";
 import { CHATS_PAGE } from "@/lib/screenBundle";
+import { compareChats, completeUnreadView, type UnreadView } from "@/lib/chatsCache";
+import { cacheMark, cacheMovedSince } from "@/lib/queryCacheMark";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 import { usePlatformAccounts } from "./useAccounts";
 import { avatarThumb, mergeOFUserName, ofUserNameKey, type OFUserName } from "./useOFUser";
@@ -67,6 +69,7 @@ export function shareChatPages(prev: unknown, next: unknown): unknown {
     const was = p.pages[i];
     if (pg === was) return was;
     let same = !!was && was.hasMore === pg.hasMore && was.session === pg.session &&
+      !was.partial === !pg.partial &&
       was.rows.length === pg.rows.length;
     const rows = pg.rows.map((c, j) => {
       const prevRow = old.get(chatRowKey(c));
@@ -292,26 +295,28 @@ export async function enrichWithUsers(
   });
 }
 
-/** Sort newest-first by lastMessage.createdAt. Falls back to fan id so
- *  rows without a lastMessage still get a stable order. */
-export function compareChats(a: OFChatItem, b: OFChatItem): number {
-  const ta = a.lastMessage?.createdAt ?? "";
-  const tb = b.lastMessage?.createdAt ?? "";
-  if (ta && tb && ta !== tb) return tb.localeCompare(ta);
-  // Descending by id, via the canonical comparator — never `b.id - a.id`,
-  // which is NaN on a Fansly string snowflake (see compareFanIds).
-  return compareFanIds(b.withUser?.id, a.withUser?.id);
-}
 
 /** This page load. A page read from OF carries it; one restored from disk
  *  (this tab's earlier load, or another tab's) carries another or none. */
 const SESSION = Math.random().toString(36).slice(2);
+
+/** The scope's cached Unread list (`key`) as an `UnreadView`, this page
+ *  load's reads only (lib/chatsCache completeUnreadView). A page kept by
+ *  `shareChatPages` keeps its older stamp, which only makes the read look
+ *  older than it was. */
+export function cachedUnreadView(qc: QueryClient, key: QueryKey): UnreadView | null {
+  return completeUnreadView(qc.getQueryData(key), SESSION);
+}
 
 interface ChatsPage {
   rows: OFChatItem[];
   hasMore: boolean;
   /** The page load that read it from OF (`SESSION`); persisted along with it. */
   session?: string;
+  /** When OF was asked for it (ms; before the request left). */
+  askedAt?: number;
+  /** All Models: a Creator's call failed, so its rows are missing. */
+  partial?: boolean;
 }
 
 /** Paint-attribution key for one list view. Exported so ChatList and
@@ -364,6 +369,7 @@ async function fetchPage(
   if (listId) qs.set("list_id", listId);
   if (query) qs.set("query", query);
   const path = `/api/of/v2/chats?${qs.toString()}`;
+  const askedAt = Date.now();
 
   // Per-page perf op. offset=0 is "load messages" / first paint; offset>0
   // is "load next N messages" via infinite scroll. We log filter/listId/
@@ -396,7 +402,7 @@ async function fetchPage(
       // the row component observes that cache and picks up names + nicknames
       // as soon as /users/list lands. Don't await — that would slow cold paint.
       void enrichWithUsers(raw, scope.accountId, qc).catch(() => {});
-      return { rows: raw.sort(sort), hasMore: !!resp.hasMore, session: SESSION };
+      return { rows: raw.sort(sort), hasMore: !!resp.hasMore, session: SESSION, askedAt };
     } catch (err) {
       perfError(opId, "chat.list", { message: (err as Error)?.message });
       throw err;
@@ -436,7 +442,10 @@ async function fetchPage(
   perfDelivered(opId, "chat.list", {
     count: merged.length, hasMore: anyMore, accountCount: accounts.length, failed,
   });
-  return { rows: merged.sort(sort), hasMore: anyMore, session: SESSION };
+  return {
+    rows: merged.sort(sort), hasMore: anyMore, session: SESSION, askedAt,
+    ...(failed ? { partial: true } : {}),
+  };
 }
 
 /**
@@ -512,6 +521,8 @@ export function prefetchModelChatList(
  * through a real refetch is a key with NO pages (cold or errored), where a
  * spinner and an error state are exactly what should be showing.
  */
+const RACED_RETRY_MS = 15_000;
+
 function useHeadPagePoll(args: {
   enabled: boolean;
   queryKey: QueryKey;
@@ -531,8 +542,9 @@ function useHeadPagePoll(args: {
     if (!enabled) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
+    let retries = 0;
 
-    const tick = async () => {
+    const tick = async (): Promise<true | void> => {
       // Idle mode (useIdleMode) pauses SSE; the disconnect must not turn this
       // into the faster offline cadence. Resume refetches stale queries.
       if (eventBus.isPaused()) return;
@@ -551,9 +563,15 @@ function useHeadPagePoll(args: {
         void qc.refetchQueries({ queryKey: key, exact: true });
         return;
       }
+      // A write landing during the read (mark-read, a send, an SSE bump) is
+      // newer than the head it returns: that head must not overwrite it.
+      const before = cacheMark(qc, key);
       try {
         const head = await fetchHead();
         if (cancelled) return;
+        // Skipped, not done: `run` re-reads soon, or a busy list (SSE bumps
+        // every few seconds in All Models) would starve the poll for good.
+        if (cacheMovedSince(before, cacheMark(qc, key))) return true;
         qc.setQueryData<InfiniteData<ChatsPage>>(key, (prev) => {
           // `prev` is whatever the cache holds NOW, which is not necessarily
           // what we checked before the await: the entry can have been reset or
@@ -571,14 +589,20 @@ function useHeadPagePoll(args: {
     // Re-read `document.hidden` at each scheduling point rather than arming one
     // fixed interval — same shape as the function-form `refetchInterval` this
     // replaces: 90s in the foreground, 5min once the tab is hidden or SSE is live.
-    const schedule = () => {
+    const schedule = (soon = false) => {
       const hidden = typeof document !== "undefined" && document.hidden;
-      timer = setTimeout(run, hidden || eventBus.isConnected() ? HIDDEN_POLL_MS : POLL_MS);
+      timer = setTimeout(run, soon ? RACED_RETRY_MS : hidden || eventBus.isConnected() ? HIDDEN_POLL_MS : POLL_MS);
     };
     // Schedule-AFTER-settle, never a bare interval: at most one tick is ever in
     // flight, so a slow fan-out can't stack ticks on top of itself.
     const run = () => {
-      void tick().finally(() => { if (!cancelled) schedule(); });
+      void tick().then((raced) => raced === true, () => false).then((raced) => {
+        if (cancelled) return;
+        // A head dropped for a write during its read gets two quick retries,
+        // then the normal cadence again.
+        retries = raced && retries < 2 ? retries + 1 : 0;
+        schedule(retries > 0);
+      });
     };
 
     schedule();
@@ -595,6 +619,17 @@ export function chatListAccountKey(scope: Scope, accounts: ReadonlyArray<{ id: s
   return scope.kind === "model" ? scope.accountId : accounts.map((a) => a.id).sort().join(",");
 }
 
+/** A chat list's query key: `["chats", scopeKind, accountKey, filter, listId,
+ *  query, limit]`, plus `order` only when not "recent" (every older key stays
+ *  as it was). The one builder: FanList reads the All and Unread lists' caches by it. */
+export function chatsQueryKey(
+  scopeKind: Scope["kind"], accountKey: string,
+  { filter = null, listId = null, query = null, limit = PAGE_SIZE, order = "recent" }: Omit<ChatListParams, "enabled"> = {},
+) {
+  return ["chats", scopeKind, accountKey, filter ?? null, listId ?? null, query ?? null, limit,
+    ...(order === "recent" ? [] : [order])] as const;
+}
+
 export function useChatList(params: ChatListParams = {}) {
   const { scope } = useScope();
   // "all" scope fans out across every session-bearing account.
@@ -607,12 +642,7 @@ export function useChatList(params: ChatListParams = {}) {
   // The key's scope prefix; `placeholderData` compares against it.
   const scopeKey = ["chats", scope.kind, accountKey] as const;
 
-  const queryKey = [
-    ...scopeKey,
-    filter ?? null, listId ?? null, query ?? null, limit,
-    // Only a non-default order extends the key, so every existing key (and test) stays as it was.
-    ...(order === "recent" ? [] : [order]),
-  ] as const;
+  const queryKey = chatsQueryKey(scope.kind, accountKey, { filter, listId, query, limit, order });
 
   // One-shot flag set by `refresh()` so the next queryFn invocation
   // forwards `?refresh=1` to the relay, bypassing the Stage C backend

@@ -9,8 +9,8 @@
        → {sequences: {...counts}, steps: {...}, tag_scripts: {...}, skipped: [names], failed: [...]}
 
 Bulk is an Infloww library (its sequences with their steps, its tags with their
-scripts) in JSON, as `scripts/import_infloww_scripts.py` posts it in chunks:
-see `bulk_import`.
+scripts, tag "" = its untagged loose scripts) in JSON, as `scripts/import_infloww_scripts.py`
+posts it in chunks: see `bulk_import`.
 
 Excel import is Infloww's (remote web bundle `FileUpload` / `ImportScript`, the
 help article H262073): every sheet is read, its name becomes the scripts' tag,
@@ -438,8 +438,8 @@ def _parse_sequence(q: _BulkSequence) -> tuple[str | None, list[tuple[int, _Bulk
 
 
 def _tag_script_reason(tag: str, name: str, raw: str, text: str, notes: str, price: float | None) -> str | None:
-    if not tag:
-        return "tag name is required"
+    """`tag` "" is the untagged group (Infloww's loose scripts, in no sequence and no tag), as the Excel import's
+    empty tag."""
     if len(tag) > TAG_MAX:
         return f"tag name longer than {TAG_MAX} characters"
     if not name and not text.strip():
@@ -457,7 +457,8 @@ async def bulk_import(account_id: str = Query(...), body: _BulkBody = Body(...))
     (some script carries it) is `skip`ped untouched, or with `replace` its scripts are deleted and the
     payload's put in their place (meta updated). A tag's script is matched on (name, case-blind; text): a
     script that exists already (a sequence step included) gets the tag added, else it is created; so a
-    re-run creates nothing. Media is not importable (never in the payload); price is kept. `dry_run` counts
+    re-run creates nothing. A tag named "" holds untagged scripts: created with no tag, an existing match is
+    skipped. Media is not importable (never in the payload); price is kept. `dry_run` counts
     and rolls back. Same Role gate as the Excel import (the Scripts page's `/admin/saved-replies/`); `replace`
     also needs the Delete scripts permission."""
     assert_account_owned(account_id)
@@ -547,7 +548,7 @@ async def _bulk_import(account_id: str, body: _BulkBody) -> dict[str, Any]:
                 row = index.get((_key(name), text))
                 if row is not None:
                     tags = json.loads(row.tags_json or "[]")
-                    if tag in tags:
+                    if not tag or tag in tags:
                         tagged["skipped"] += 1
                     else:
                         row.tags_json = json.dumps([*tags, tag])
@@ -555,7 +556,8 @@ async def _bulk_import(account_id: str, body: _BulkBody) -> dict[str, Any]:
                     continue
                 row = index[(_key(name), text)] = SavedReply(
                     account_id=account_id, title=name or None, text=text,
-                    price_cents=int(round((sc.price or 0) * 100)), tags_json=json.dumps([tag]), notes=notes or None)
+                    price_cents=int(round((sc.price or 0) * 100)), tags_json=json.dumps([tag] if tag else []),
+                    notes=notes or None)
                 s.add(row)
                 tagged["created"] += 1
         await sync_sequences(s, account_id)

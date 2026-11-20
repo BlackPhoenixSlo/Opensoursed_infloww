@@ -6,18 +6,29 @@ listed here and only the user retries it.
 
   GET  /admin/unconfirmed-sends?account_id=        pure read: the marked rows
        → {"rows": [{kind, fan_id, mass_run_id, step, step_label, since,
-                    last_error, state: UNCONFIRMED | IN_FLIGHT}]}
+                    last_error, state: UNCONFIRMED | IN_FLIGHT, hint}]}
+       hint: {message_id, at, text} of the first untagged outbound message to that
+       fan since the mark (local DB only; a hint for the user, never proof), else null.
   POST /admin/unconfirmed-sends/retry?account_id=  {kind, fan_id, mass_run_id?}
        no such row for this Creator → 404; else that sender's settle runs first,
        then: not marked (it landed) → {"status": "already_sent"}; IN_FLIGHT → 409;
        else the marker is cleared (funnel: pending, due now) → {"status": "retried"}
        and the next tick sends it once (normal lease / cooldown). A row that
        changed under the clear is re-read: unmarked → already_sent, else 409.
+  POST /admin/unconfirmed-sends/dismiss?account_id= {kind, fan_id, mass_run_id?,
+                                                      hint_message_id?, since?}
+       the user's "It went through": no such row → 404; not marked → already_sent;
+       IN_FLIGHT → 409; else the step is saved as sent exactly as a confirmed
+       landing (the settle's replay, no landed check) → {"status": "dismissed"}
+       and is never re-sent; the hint row the user saw (`hint_message_id`, still
+       untagged) gets the step's tags, as a confirmed send's row has them, so the
+       funnel's next step waits for a reply after it. A row the replay can't save (a shortened funnel, a bad
+       ctx) or that changed under it is re-read: unmarked → already_sent, else 409.
 
 Guards: the account's owner (`assert_account_owned`) and the Auto Funnel page
 (`require_opt_in_page`; follow-ups have no page of their own). The rows, the
 settle and the clear are each sender's (`marked_sends`, `read_marker`,
-`settle_landed`, `retry_clear`): house-funnel rows only, never a row without a funnel.
+`settle_landed`, `retry_clear`, `dismiss_sent`): house-funnel rows only, never a row without a funnel.
 """
 from __future__ import annotations
 
@@ -31,6 +42,7 @@ from auth import assert_account_owned
 from automations import reply_mass_funnel as rmf
 from automations import send_followup as sf
 from automations import send_marker_decide as smd
+from automations import send_marker_store as smst
 from isotime import iso_z
 from permissions import require_opt_in_page
 
@@ -52,6 +64,14 @@ def _row_state(marker, now: datetime) -> str:
     return smd.marker_state(marker.sending_at, marker.unconfirmed_at, smd.BOOT_TS, now)
 
 
+async def _hint(account_id: str, m: dict) -> dict | None:
+    if m["sending_at"] is None:
+        return None
+    hit = await smst.untagged_out(account_id, m["fan_id"], smd.lookup_since(m["sending_at"]))
+    return None if hit is None else {"message_id": str(hit[0]), "at": iso_z(hit[1]),
+                                     "text": (hit[2] or "")[:60]}
+
+
 @router.get("/admin/unconfirmed-sends")
 async def list_unconfirmed_sends(account_id: str = Query(...)) -> dict[str, Any]:
     await _guard(account_id)
@@ -60,7 +80,8 @@ async def list_unconfirmed_sends(account_id: str = Query(...)) -> dict[str, Any]
         {"kind": kind, "fan_id": str(m["fan_id"]), "mass_run_id": m["mass_run_id"],
          "step": m["step"], "step_label": f"STEP {m['step']}", "since": iso_z(m["sending_at"]),
          "last_error": m["last_error"],
-         "state": smd.marker_state(m["sending_at"], m["unconfirmed_at"], smd.BOOT_TS, now)}
+         "state": smd.marker_state(m["sending_at"], m["unconfirmed_at"], smd.BOOT_TS, now),
+         "hint": await _hint(account_id, m)}
         for kind, sender in _SENDERS.items() for m in await sender.marked_sends(account_id)
     ]}
 
@@ -71,15 +92,26 @@ class RetryBody(BaseModel):
     mass_run_id: int | None = None
 
 
-@router.post("/admin/unconfirmed-sends/retry")
-async def retry_unconfirmed_send(account_id: str = Query(...),
-                                 body: RetryBody = Body(...)) -> dict[str, Any]:
+class DismissBody(RetryBody):
+    hint_message_id: int | None = None
+    since: str | None = None   # the listed row's `since`: a newer attempt on the row is not this one
+
+
+async def _row_of(account_id: str, body: RetryBody):
+    """Guarded: (sender, key) of this Creator's row; 422 / 404 otherwise."""
     await _guard(account_id)
     if body.kind == "funnel" and body.mass_run_id is None:
         raise HTTPException(422, "mass_run_id is required for a funnel row")
     sender, key = _SENDERS[body.kind], (account_id, body.fan_id, body.mass_run_id)
     if await sender.read_marker(*key) is None:
         raise HTTPException(404, "no such row for this Creator")
+    return sender, key
+
+
+@router.post("/admin/unconfirmed-sends/retry")
+async def retry_unconfirmed_send(account_id: str = Query(...),
+                                 body: RetryBody = Body(...)) -> dict[str, Any]:
+    sender, key = await _row_of(account_id, body)
     now = datetime.utcnow()
     # The tick's own settle first: a step that landed is saved as sent, not re-sent.
     await sender.settle_landed(account_id, smd.BOOT_TS, now)
@@ -89,6 +121,27 @@ async def retry_unconfirmed_send(account_id: str = Query(...),
         return {"status": "retried"}
     if state == smd.UNCONFIRMED:   # changed under the clear (a settle, a Retry, an attempt)
         state = _row_state(await sender.read_marker(*key), now)
+    if state == smd.NONE:
+        return {"status": "already_sent"}
+    raise HTTPException(409, "still sending")
+
+
+@router.post("/admin/unconfirmed-sends/dismiss")
+async def dismiss_unconfirmed_send(account_id: str = Query(...),
+                                   body: DismissBody = Body(...)) -> dict[str, Any]:
+    sender, key = await _row_of(account_id, body)
+    now = datetime.utcnow()
+    marker = await sender.read_marker(*key)
+    state = _row_state(marker, now)
+    if state == smd.UNCONFIRMED and body.since is not None and body.since != iso_z(marker.sending_at):
+        raise HTTPException(409, "this row changed since it was listed: refresh")
+    if state == smd.UNCONFIRMED and await sender.dismiss_sent(
+            *key, marker.sending_at, now, body.hint_message_id):
+        return {"status": "dismissed"}
+    if state == smd.UNCONFIRMED:   # changed under it, or a step it can't save as sent
+        state = _row_state(await sender.read_marker(*key), now)
+        if state == smd.UNCONFIRMED:
+            raise HTTPException(409, "this step can't be saved as sent (its funnel changed): use Retry")
     if state == smd.NONE:
         return {"status": "already_sent"}
     raise HTTPException(409, "still sending")

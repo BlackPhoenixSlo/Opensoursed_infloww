@@ -31,9 +31,18 @@
  * green button, the same panel and filters opened inside the Fan List pane,
  * and as its badge the scoped Creator's OnlyFans count (`all` from
  * `/api/of/v2/users/notifications/count`, messages.js:2931-2944) in place of
- * the arrival counter. The badge is hidden at zero, on a failed read and
- * under All Models (not read there), and is read again when the scope
- * changes and when the panel closes. The default `"topbar"` is unchanged.
+ * the arrival counter. The badge is hidden at zero and on a failed read, and
+ * is read again when the scope changes and when the panel closes. Under All
+ * Models it is the live Creators' counts already cached (no read), and the
+ * panel has "Mark all read" (`useMarkAllOfNotifsRead`; opening sends nothing).
+ * The default `"topbar"` is unchanged.
+ *
+ * Both variants, scoped to one live Creator: the OnlyFans list first coming on
+ * screen in an open sends OF's mark-read once (`useMarkOfNotifsRead`, as OF
+ * web on opening its notifications), so OF's count (this button's badge, the
+ * Creator tab's) drops to what OF answers; a failed write leaves it. Any
+ * viewer of the list sends it, chatters too: it reaches no fan, like a chat's
+ * mark-read.
  * The top bar reaches this module on every route, so the variant's Geometry
  * comes from its Messages-Pro-only caller through `classNames`
  * (docs/spec/phase-06-geometry-pass.md, Interfaces, Shared modules).
@@ -62,7 +71,7 @@ import { Bell, Settings2 } from "lucide-react";
 import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
-import { useOfNotifCount } from "@/hooks/useOfNotifCount";
+import { useCachedOfNotifSum, useMarkAllOfNotifsRead, useMarkOfNotifsRead, useOfNotifCount } from "@/hooks/useOfNotifCount";
 import { useOfReadGate } from "@/hooks/useOfReadGate";
 import { gateOptions, onScreenGate } from "@/lib/ofReadGate";
 import { MoneyRailRestoreButton } from "@/components/MoneyRail";
@@ -405,7 +414,23 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   // bar, nor under All Models (the count is per Creator).
   // A Dead-session Creator's count is not read.
   const countAccountId = pro && !activeAccounts.some((a) => a.id === accountId && a.session_dead_at) ? accountId : null;
-  const { count: proCount, refetch: refetchCount } = useOfNotifCount(countAccountId);
+  const { count: scopedCount, refetch: refetchCount } = useOfNotifCount(countAccountId);
+  const allModels = pro && !accountId;
+  const liveIds = useMemo(
+    () => activeAccounts.filter((a) => !a.session_dead_at).map((a) => a.id), [activeAccounts]);
+  const allModelsCount = useCachedOfNotifSum(allModels ? liveIds : NO_IDS);
+  const proCount = allModels ? allModelsCount : scopedCount;
+  const { marking, markAll } = useMarkAllOfNotifsRead();
+
+  // OF's mark-read, once per open (the reducer's `markRead`), for a scoped live Creator.
+  const markAccountId = accountId && !activeAccounts.some((a) => a.id === accountId && a.session_dead_at)
+    ? accountId : null;
+  const markOfNotifsRead = useMarkOfNotifsRead();
+  useEffect(() => {
+    if (bell.markRead !== "due") return;
+    dispatch({ type: "markReadSent" });
+    if (markAccountId) void markOfNotifsRead(markAccountId);
+  }, [bell.markRead, markAccountId, markOfNotifsRead]);
 
   // Opening the bell counts as "seen everything" (the reducer zeroes this
   // bell; the event, any other one).
@@ -585,6 +610,17 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                     </button>
                   ))}
                 </div>
+                {allModels && (
+                  <button
+                    type="button"
+                    disabled={marking || liveIds.length === 0}
+                    aria-busy={marking}
+                    onClick={() => void markAll(liveIds)}
+                    className="shrink-0 px-2 py-0.5 text-[11px] font-semibold text-accent hover:underline disabled:opacity-50 disabled:no-underline"
+                  >
+                    {marking ? "Marking…" : "Mark all read"}
+                  </button>
+                )}
               </div>
               {/* Money-rail rescue hatch — the bell is mounted everywhere, so
                   it hosts the rail's un-hide control. Renders null when the

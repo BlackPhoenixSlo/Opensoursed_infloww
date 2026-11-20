@@ -38,6 +38,7 @@ import {
 
 import { clearIdentityMemory, wipeIdentityStorage } from "@/contexts/UserContext";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
+import type { Freshness } from "@/lib/creatorFreshness";
 import { takeInline } from "@/lib/inlineBoot";
 import { forgetPush } from "@/lib/webPush";
 import { isTwoFactorChallenge, postAuthJSON, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
@@ -79,6 +80,9 @@ export interface ChatterFlatAccountDTO {
   is_active: boolean;
   /** "watcher" on a watcher account: useAccounts lists it under `watchers` (OF Manager only), never as a Creator. */
   role?: "watcher" | null;
+  /** The Shared refresher's snapshot of this Creator (lib/creatorFreshness), with its Knob on; absent off or on a
+   *  watcher. useAccounts keeps it on the normalized row. */
+  freshness?: Freshness;
 }
 
 interface ChatterContextValue {

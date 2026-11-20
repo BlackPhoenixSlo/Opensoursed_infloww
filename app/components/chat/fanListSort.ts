@@ -5,6 +5,7 @@
  */
 
 import { isUnreadChat } from "@/lib/chatUnread";
+import { readElsewhere, unreadOutsideView, type UnreadView } from "@/lib/chatsCache";
 import type { OFChatItem } from "@/lib/relay";
 import {
   hybridScore,
@@ -116,4 +117,22 @@ export function chipCounts(
     unreadCount: counted.filter((c) => c.hasUnread).length,
     oweReplyCount: counted.filter((c) => isOwed(c)).length,
   };
+}
+
+/** `chipCounts` over the All set, with the Unread chip's complete live view
+ *  (`UnreadView`, or null) as the truth for the Unread badge alone: the
+ *  view's rows plus All's chats that turned unread after the view was read
+ *  (or carry no date). A chat read elsewhere drops out of the badge; All's
+ *  own rows and the other counts are left as they are. */
+export function chipCountsWithUnreadView(
+  allRows: OFChatItem[],
+  view: UnreadView | null,
+  deps: Pick<FanSortDeps, "isOwed">,
+): { allCount: number; unreadCount: number; oweReplyCount: number } {
+  const counts = chipCounts(allRows, deps);
+  if (!view) return counts;
+  const outside = unreadOutsideView(view);
+  const stale = readElsewhere(view);
+  const later = allRows.filter((c) => outside(c) && !stale(c));
+  return { ...counts, unreadCount: chipCounts([...view.rows, ...later], deps).unreadCount };
 }

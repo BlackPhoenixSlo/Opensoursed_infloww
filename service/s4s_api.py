@@ -68,6 +68,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
+import account_health
+import admission
 import automation_executor as ax
 import relay_cache
 from db.engine import get_session
@@ -124,11 +126,25 @@ async def _of_me(account_id: str) -> dict[str, Any] | None:
     the `GET /api/of/v2/users/me` route's own cache entry (namespace, key and
     TTL as server.py's `users_me`), so the S4S rail's avatar read and this
     one cost one OnlyFans call between them. None when it cannot be read
-    (no session, a proxy refusal, a timeout)."""
+    (no session, a proxy refusal, a timeout).
+
+    Only a cache miss takes an `admission.OF_ME_READ` slot, and its timeout
+    starts once it holds one, so a queued Creator waits rather than drops. The
+    slot stays held until the thread returns, also past the timeout (a hung
+    proxy must not admit more calls beside the ones still running)."""
+    async def fetch():
+        held = asyncio.Event()
+
+        async def call():
+            async with admission.OF_ME_READ:
+                held.set()
+                return await asyncio.to_thread(lambda: ax._make_client(account_id).me())
+        task = asyncio.ensure_future(call())
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # a late failure is nobody's
+        await held.wait()
+        return await asyncio.wait_for(asyncio.shield(task), OF_IDENTITY_TIMEOUT_S)
     try:
-        me = await asyncio.wait_for(relay_cache.get_or_fetch(
-            "users_me", account_id, ("users_me",), 60, lambda: ax._make_client(account_id).me(),
-        ), OF_IDENTITY_TIMEOUT_S)
+        me = await relay_cache.get_or_fetch("users_me", account_id, ("users_me",), 60, fetch)
     except Exception:  # noqa: BLE001 — any failure keeps the stored copy
         log.info("s4s: OnlyFans profile of %s unreadable; keeping the stored one", account_id, exc_info=True)
         return None
@@ -248,8 +264,13 @@ async def list_profiles() -> dict[str, Any]:
             .where(UserAccount.user_id == ctx.agency_user_id)
             .order_by(func.lower(func.coalesce(Account.nickname, Account.id)), Account.id)
         )).scalars().all()
-    # Read outside the session: no database transaction waits on OnlyFans.
-    mes = await asyncio.gather(*(_of_me(a) for a in ids))
+    # Read outside the session: no database transaction waits on OnlyFans. A
+    # dead session gets no OF call (its read can only fail): stored copy kept.
+    dead = await account_health.dead_session_map()
+
+    async def me_of(aid: str) -> dict[str, Any] | None:
+        return None if aid in dead else await _of_me(aid)
+    mes = await asyncio.gather(*(me_of(a) for a in ids))
     async with get_session() as s:
         await _fill_primary(s)
         accounts = {a.id: a for a in (await s.execute(select(Account).where(Account.id.in_(ids)))).scalars()}

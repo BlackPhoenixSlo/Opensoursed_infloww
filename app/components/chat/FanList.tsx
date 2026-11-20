@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { chatListAccountKey, chatRowKey, useChatList, listPaintKey } from "@/hooks/useChatList";
+import { cachedUnreadView, chatListAccountKey, chatRowKey, chatsQueryKey, useChatList, listPaintKey } from "@/hooks/useChatList";
 import { useUnreadMessagesPrefetch } from "@/hooks/useUnreadMessagesPrefetch";
 import { useTrailingDebounce } from "@/hooks/useTrailingDebounce";
 import { prefetchChatMessages } from "@/hooks/useChatMessages";
@@ -23,7 +23,9 @@ import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
 import { ofUserNameKey, useOFUserNameMap, type OFUserName } from "@/hooks/useOFUser";
 import { useRecentChatsLocal } from "@/hooks/useRecentChatsLocal";
 import { perfPaintOnce } from "@/lib/perfLog";
-import { useAccountLabel, usePlatformAccounts } from "@/hooks/useAccounts";
+import { fromThisPage, useAccountLabel, useAccounts, usePlatformAccounts } from "@/hooks/useAccounts";
+import { useCreatorFreshnessState } from "@/hooks/useCreatorFreshness";
+import { useUnreadBadgeAge } from "@/hooks/useDataAge";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useFanSpend } from "@/hooks/useFanSpend";
 import { useFanDrawerDefault } from "@/hooks/useFanDrawerDefault";
@@ -38,10 +40,12 @@ import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import { MP } from "@/lib/messagesPro";
 import { ofMeQuery } from "@/lib/ofMe";
 import { cn } from "@/lib/utils";
+import { badgeUnreadView, UNREAD_VIEW_MAX_AGE_MS, type UnreadView } from "@/lib/chatsCache";
 import { describeLoadError, relay, setRelayFocus, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, lastMessageFromFan } from "@/lib/fanId";
 import { isUnreadChat } from "@/lib/chatUnread";
+import { sessionConnectivity } from "@/lib/sessionConnectivity";
 import { FanListBulkBar } from "./FanListBulkBar";
 import { FanListFilters, type ActiveChip } from "./FanListFilters";
 import { FanListHeader } from "./FanListHeader";
@@ -50,13 +54,14 @@ import { FanRow, fanNameOf } from "./FanRow";
 import {
   canAutofill, initialPaging, isCapped, pagingReducer, pagingView,
 } from "./fanListPaging";
-import { attentionCount, chipCounts, notRestricted, sortFanRows } from "./fanListSort";
+import { attentionCount, chipCountsWithUnreadView, notRestricted, sortFanRows } from "./fanListSort";
 import { FolderPicker } from "./FolderPicker";
 import { SplitInbox } from "./SplitInbox";
 import { isFanOnline } from "./isFanOnline";
 import { totalSpendOf } from "./totalSpend";
 import { useFanListMarkRead } from "./useFanListMarkRead";
 import { useInboxGroup } from "./useInboxGroup";
+import { badgeReady, badgeUnread, todaysUnread, totalsOn, unreadBadgeSources, type AccountsAnswer } from "./unreadBadge";
 import { BRAND_NAME } from "@/lib/brand";
 
 /** Owe reply auto-paginates until OWE_REPLY_TARGET rows are filled or
@@ -398,9 +403,8 @@ export function FanList({
   // (useInboxRealtime patches EVERY ["chats", ...] cache, including the
   // active one we subscribe to), so reading qc.getQueryData at render
   // time picks up fresh values without an extra subscription.
-  // 25 = useChatList's PAGE_SIZE default; mirror it so the cache key matches.
   const allFilterKey = useMemo(
-    () => ["chats", scope.kind, accountKey, null, null, query || null, 25] as const,
+    () => chatsQueryKey(scope.kind, accountKey, { query: query || null }),
     [scope.kind, accountKey, query],
   );
   const allChipBase = useMemo<OFChatItem[]>(() => {
@@ -423,10 +427,69 @@ export function FanList({
     () => attentionCount(chipRows, isUnresponded),
     [chipRows, isUnresponded],
   );
-  const { allCount, unreadCount, oweReplyCount } = useMemo(
-    () => chipCounts(allChipBase, { isOwed: isUnresponded }),
-    [allChipBase, isUnresponded],
+  // The Unread chip's own list, once it is the whole truth (read from OF in
+  // this page load, no page left, no Creator missing): a chat read elsewhere
+  // (OF itself, another chatter, an automation) leaves it, while the All set
+  // can keep it unread (the relay's cached window; frozen while Unread shows).
+  // Remembered for this scope on the other chips (its cache entry outlives the
+  // chip; live patches and read flips keep it current) while young; none under
+  // a search. Only the Unread badge follows it: All's cache is never rewritten
+  // from it (a relay-cached Unread page could hide a chat that is still unread).
+  const unreadFilterKey = useMemo(
+    () => chatsQueryKey(scope.kind, accountKey, { filter: "unread" }),
+    [scope.kind, accountKey],
   );
+  // Off the Unread chip nothing re-reads that list: its view counts only while
+  // young (badgeUnreadView); `viewExpired` re-renders when it ages out.
+  const onUnreadChip = active.kind === "builtin" && active.key === "unread";
+  const [viewExpired, expireView] = useReducer((n: number) => n + 1, 0);
+  // `allRows` only cues the re-read, as for allChipBase: a live patch moves both lists.
+  const unreadView = useMemo<UnreadView | null>(
+    () => (query ? null : badgeUnreadView(cachedUnreadView(qc, unreadFilterKey), onUnreadChip, Date.now())),
+    [query, allRows, qc, unreadFilterKey, onUnreadChip, viewExpired], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  useEffect(() => {
+    if (!unreadView || onUnreadChip) return;
+    const t = setTimeout(expireView, Math.max(0, unreadView.asOf + UNREAD_VIEW_MAX_AGE_MS - Date.now()));
+    return () => clearTimeout(t);
+  }, [unreadView, onUnreadChip]);
+  const { allCount, oweReplyCount } = useMemo(
+    () => chipCountsWithUnreadView(allChipBase, unreadView, { isOwed: isUnresponded }),
+    [allChipBase, unreadView, isUnresponded],
+  );
+  // The Unread badge (unreadBadge.ts): each shown Creator's held Unread total, today's rule for the rest; under a
+  // search today's rule; no number until the network accounts answer when the accounts copy says totals are on or
+  // nothing is known yet (a fresh session).
+  const accountsQ = useAccounts();
+  const freshness = useCreatorFreshnessState();
+  const accountsAnswer: AccountsAnswer = accountsQ.isError ? "error"
+    : fromThisPage(accountsQ.dataUpdatedAt) ? "network" : "none";
+  const badgeIsReady = badgeReady(totalsOn(accountsQ.data?.accounts), accountsAnswer, Object.keys(freshness).length > 0);
+  // A persisted copy still fresh (inside its staleTime) is not refetched on mount: ask the network answer once.
+  const { refetch: refetchAccounts, isFetching: accountsFetching } = accountsQ;
+  const holdsCopyOnly = accountsAnswer === "none" && !!accountsQ.data;
+  useEffect(() => {
+    if (!badgeIsReady && holdsCopyOnly && !accountsFetching) void refetchAccounts({ cancelRefetch: false });
+  }, [badgeIsReady, holdsCopyOnly, accountsFetching, refetchAccounts]);
+  const shownCreators = useMemo(
+    () => (scope.kind === "model" ? [scope.accountId] : accounts.map((a) => a.id)),
+    [scope, accounts],
+  );
+  const unreadBadge = useMemo(() => {
+    const accountOf = (c: OFChatItem) => c.__accountId ?? (scope.kind === "model" ? scope.accountId : "");
+    const fallback = (creators: ReadonlySet<string> | null) =>
+      todaysUnread(allChipBase, unreadView, { isOwed: isUnresponded }, creators, accountOf);
+    return badgeUnread(freshness, shownCreators, fallback, { ready: badgeIsReady, search: !!query });
+  }, [freshness, shownCreators, allChipBase, unreadView, isUnresponded, scope, badgeIsReady, query]);
+  const unreadCount = unreadBadge.n;
+  // Its "as of" (dataAge `badgeAge`): only the Creators counted from a held total, none under a search or before a
+  // number; a Dead-session Creator is left out.
+  const badgeSources = useMemo(() => unreadBadgeSources(freshness, unreadBadge.fromTotal), [freshness, unreadBadge]);
+  const deadCreators = useMemo(
+    () => new Set((accountsQ.data?.accounts ?? []).filter((a) => sessionConnectivity(a)?.dead).map((a) => a.id)),
+    [accountsQ.data],
+  );
+  const unreadAge = useUnreadBadgeAge(badgeSources, deadCreators);
 
   const inboxTabTitle = allCount > 0
     ? `(${allCount}) Inbox · ${BRAND_NAME}`
@@ -529,8 +592,9 @@ export function FanList({
     // Use `refresh()` (not `refetch()`) so the next /chats
     // call carries `?refresh=1` and bypasses the Stage C
     // backend `list_chats` cache. Without this, a recently-
-    // cached inbox would survive the button press.
-    q.refresh();
+    // cached inbox would survive the button press. Then the Creator tab badge
+    // and sidebar unread count re-read, so they follow the refreshed list.
+    void q.refresh().then(() => qc.invalidateQueries({ queryKey: ["roster-counts"] }));
   }
 
   // The Creator whose every unread chat is loaded: one Creator in scope, no
@@ -725,7 +789,8 @@ export function FanList({
           onSortModeChange={setSortMode}
           active={active}
           onActiveChange={setActive}
-          unreadCount={unreadCount}
+          unreadCount={unreadCount ?? 0}
+          unreadAge={unreadAge}
           activeCount={activeCount}
           oweReplyCount={oweReplyCount}
           pinnedFolders={pinnedFolders}

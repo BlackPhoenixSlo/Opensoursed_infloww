@@ -117,7 +117,7 @@ describe("FanListBulkBar", () => {
 
   it("Add to lists offers only lists that take users and adds every pick in one POST", async () => {
     const user = userEvent.setup();
-    renderBar();
+    const cb = renderBar();
     await user.click(bar().getByRole("button", { name: /Add to lists/ }));
     const menu = within(screen.getByRole("region", { name: "Add to lists" }));
     expect(menu.queryByRole("button", { name: "Fixture Built-in" })).toBeNull();
@@ -125,6 +125,8 @@ describe("FanListBulkBar", () => {
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith(
       "/api/of/v2/lists/users", { "900000001": [READ.withUser.id, UNREAD.withUser.id] }, { accountId: ACCOUNT_ID }));
     expect(await bar().findByText(/Added 2 Fans to "Fixture VIPs"/)).toBeInTheDocument();
+    // The mass composer's list counts (the shared fan-lists cache) go stale too.
+    expect(invalidatedKeys(cb.invalidate)).toContainEqual(["fan-lists", ACCOUNT_ID]);
   });
 
   it("All Models (no scoped Creator) does not offer Add to lists", () => {

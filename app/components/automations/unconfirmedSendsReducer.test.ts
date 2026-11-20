@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildRetryPayload, canRetry, initialOverlay, retryOutcome, rowKey, settleRows, unconfirmedSendsReducer as reduce,
+  buildDismissPayload, buildRetryPayload, canAct, dismissQuestion, hintLine, initialOverlay, retryOutcome, rowKey, settleRows, unconfirmedSendsReducer as reduce,
   viewRows, type Overlay, type UnconfirmedRow,
 } from "@/components/automations/unconfirmedSendsReducer";
 
@@ -41,20 +41,20 @@ describe("viewRows", () => {
     expect(viewRows(undefined, initialOverlay)).toEqual([]);
   });
   it("UNCONFIRMED rows retryable, IN_FLIGHT not", () => {
-    expect(viewRows(ROWS, initialOverlay).map((r) => [r.key, canRetry(r)])).toEqual([
+    expect(viewRows(ROWS, initialOverlay).map((r) => [r.key, canAct(r)])).toEqual([
       ["funnel:1:7", true], ["followup:2:", true], ["funnel:3:7", false],
     ]);
   });
   it("the server state wins; the overlay keeps pending / error", () => {
-    let o = reduce(initialOverlay, { type: "retryStart", key: rowKey(A) });
-    o = reduce(o, { type: "retryDone", key: rowKey(B), result: { status: 500, message: "boom" } });
+    let o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "retry" });
+    o = reduce(o, { type: "done", op: "retry", key: rowKey(B), result: { status: 500, message: "boom" } });
     const rows = [A, B, { ...C, state: "UNCONFIRMED" as const }];
-    expect(find(o, A, rows)!.pending).toBe(true);
+    expect(find(o, A, rows)!.pending).toBe("retry");
     expect(find(o, B, rows)!.error).toBe("boom");
-    expect(canRetry(find(o, C, rows)!)).toBe(true);
+    expect(canAct(find(o, C, rows)!)).toBe(true);
   });
   it("rows the server no longer lists are gone", () => {
-    const o = reduce(initialOverlay, { type: "retryStart", key: rowKey(A) });
+    const o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "retry" });
     expect(viewRows([B], o).map((r) => r.key)).toEqual([rowKey(B)]);
   });
 });
@@ -81,17 +81,17 @@ describe("unconfirmedSendsReducer (the overlay)", () => {
     ["404 gone", 404, "not found"],
     ["409 in flight", 409, "in flight"],
   ])("retry %s → overlay cleared (the rows: settleRows)", (_n, status, message) => {
-    let o = reduce(initialOverlay, { type: "retryStart", key: rowKey(A) });
-    o = reduce(o, { type: "retryDone", key: rowKey(A), result: { status, message } });
+    let o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "retry" });
+    o = reduce(o, { type: "done", op: "retry", key: rowKey(A), result: { status, message } });
     expect(o).toEqual({});
   });
 
   it("409 → Sending, no Retry", () => {
-    let o = reduce(initialOverlay, { type: "retryStart", key: rowKey(A) });
-    o = reduce(o, { type: "retryDone", key: rowKey(A), result: { status: 409, message: "in flight" } });
+    let o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "retry" });
+    o = reduce(o, { type: "done", op: "retry", key: rowKey(A), result: { status: 409, message: "in flight" } });
     const v = find(o, A, settleRows(ROWS, rowKey(A), "sending"));
-    expect(v).toMatchObject({ state: "IN_FLIGHT", pending: false, error: null });
-    expect(canRetry(v!)).toBe(false);
+    expect(v).toMatchObject({ state: "IN_FLIGHT", pending: null, error: null });
+    expect(canAct(v!)).toBe(false);
   });
 
   it.each([
@@ -99,28 +99,79 @@ describe("unconfirmedSendsReducer (the overlay)", () => {
     [403, undefined, "Retry failed (HTTP 403)"],
     [0, "Failed to fetch", "Failed to fetch"],
   ])("retry error %i → row error, Retry re-enabled", (status, message, shown) => {
-    let o = reduce(initialOverlay, { type: "retryStart", key: rowKey(A) });
-    o = reduce(o, { type: "retryDone", key: rowKey(A), result: { status, message } });
-    expect(find(o, A)).toMatchObject({ state: "UNCONFIRMED", pending: false, error: shown });
-    expect(canRetry(find(o, A)!)).toBe(true);
+    let o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "retry" });
+    o = reduce(o, { type: "done", op: "retry", key: rowKey(A), result: { status, message } });
+    expect(find(o, A)).toMatchObject({ state: "UNCONFIRMED", pending: null, error: shown });
+    expect(canAct(find(o, A)!)).toBe(true);
   });
 
   it("per-row pending: one row's Retry leaves the others retryable", () => {
-    const o = reduce(initialOverlay, { type: "retryStart", key: rowKey(A) });
-    expect(find(o, A)!.pending).toBe(true);
-    expect(canRetry(find(o, A)!)).toBe(false);
-    expect(canRetry(find(o, B)!)).toBe(true);
+    const o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "retry" });
+    expect(find(o, A)!.pending).toBe("retry");
+    expect(canAct(find(o, A)!)).toBe(false);
+    expect(canAct(find(o, B)!)).toBe(true);
   });
 
   it("retryStart on a pending row is a no-op; a new Retry clears the old error", () => {
-    const o = reduce(initialOverlay, { type: "retryStart", key: rowKey(A) });
-    expect(reduce(o, { type: "retryStart", key: rowKey(A) })).toBe(o);
-    let e = reduce(o, { type: "retryDone", key: rowKey(A), result: { status: 500, message: "boom" } });
-    e = reduce(e, { type: "retryStart", key: rowKey(A) });
-    expect(e[rowKey(A)]).toEqual({ pending: true, error: null });
+    const o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "retry" });
+    expect(reduce(o, { type: "start", key: rowKey(A), op: "retry" })).toBe(o);
+    let e = reduce(o, { type: "done", op: "retry", key: rowKey(A), result: { status: 500, message: "boom" } });
+    e = reduce(e, { type: "start", key: rowKey(A), op: "retry" });
+    expect(e[rowKey(A)]).toEqual({ pending: "retry", error: null });
   });
 
   it("retryDone drop on an unknown key is a no-op", () => {
-    expect(reduce(initialOverlay, { type: "retryDone", key: "funnel:9:7", result: { status: 200 } })).toBe(initialOverlay);
+    expect(reduce(initialOverlay, { type: "done", op: "retry", key: "funnel:9:7", result: { status: 200 } })).toBe(initialOverlay);
+  });
+});
+
+describe("It went through (dismiss)", () => {
+  const H = { ...A, hint: { message_id: "555", at: "2026-11-03T10:02:00Z", text: "hey you" } };
+
+  it.each([
+    [200, "drop"], [404, "drop"], [409, "error"], [403, "error"], [500, "error"], [0, "error"],
+  ] as const)("HTTP %i → %s (409 keeps the row: still sending or not savable)", (status, out) => {
+    expect(retryOutcome(status, "dismiss")).toBe(out);
+  });
+
+  it("body: Retry's + the hint the user saw", () => {
+    expect(buildDismissPayload(A)).toEqual({ kind: "funnel", fan_id: "1", mass_run_id: 7, since: A.since });
+    expect(buildDismissPayload(H)).toEqual({ kind: "funnel", fan_id: "1", mass_run_id: 7, since: H.since, hint_message_id: "555" });
+    expect(buildDismissPayload({ ...B, hint: null })).toEqual({ kind: "followup", fan_id: "2", since: B.since });
+  });
+
+  it("the confirm says it is treated as sent and not sent again", () => {
+    expect(dismissQuestion(A)).toMatch(/STEP 2 to fan 1 as sent/);
+    expect(dismissQuestion(A)).toMatch(/treated as sent.*not sent again/);
+  });
+
+  it.each([
+    [A, null],
+    [H, "Sent to this fan at T(2026-11-03T10:02:00Z): hey you"],
+    [{ ...A, hint: { ...H.hint, text: "x".repeat(60) } }, `Sent to this fan at T(2026-11-03T10:02:00Z): ${"x".repeat(60)}…`],
+    [{ ...A, hint: { ...H.hint, text: "" } }, "Sent to this fan at T(2026-11-03T10:02:00Z): (no text)"],
+  ])("hint line %#", (r, line) => {
+    expect(hintLine(r, (iso) => `T(${iso})`)).toBe(line);
+  });
+
+  it("pending dismiss disables both ops on that row only; an error keeps the row with its text", () => {
+    let o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "dismiss" });
+    expect(find(o, A)!.pending).toBe("dismiss");
+    expect(canAct(find(o, A)!)).toBe(false);
+    expect(canAct(find(o, B)!)).toBe(true);
+    expect(reduce(o, { type: "start", key: rowKey(A), op: "retry" })).toBe(o);
+    o = reduce(o, { type: "done", op: "dismiss", key: rowKey(A), result: { status: 409, message: "still sending" } });
+    expect(find(o, A)).toMatchObject({ state: "UNCONFIRMED", pending: null, error: "still sending" });
+    expect(settleRows(ROWS, rowKey(A), retryOutcome(409, "dismiss"))).toBe(ROWS);
+    const e = reduce(reduce(initialOverlay, { type: "start", key: rowKey(A), op: "dismiss" }),
+      { type: "done", op: "dismiss", key: rowKey(A), result: { status: 500 } });
+    expect(e[rowKey(A)].error).toBe("Couldn't mark it as sent (HTTP 500)");
+  });
+
+  it("200 → overlay cleared, row dropped", () => {
+    let o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "dismiss" });
+    o = reduce(o, { type: "done", op: "dismiss", key: rowKey(A), result: { status: 200 } });
+    expect(o).toEqual({});
+    expect(settleRows(ROWS, rowKey(A), "drop")!.map(rowKey)).toEqual([rowKey(B), rowKey(C)]);
   });
 });

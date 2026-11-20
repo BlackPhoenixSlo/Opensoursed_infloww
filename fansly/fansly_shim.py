@@ -2138,6 +2138,30 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                 buckets[key] += 1
         return buckets
 
+    def notifications_read(self, **_ignored: Any) -> dict:
+        """OF `POST /users/notifications/read` -> Fansly `POST /notifications/ack`.
+
+        From the saved web bundle `main.14d24b3e179efdb7.js` (NOT a live
+        capture): `NotificationApiService.acknowledgeAllNotifications(type,
+        beforeAnd)` posts `{beforeAnd, type}`; its caller (the notifications
+        page's `checkUnacknowledged`) passes the NEWEST notification's id and
+        the selected type codes joined with "," — "" when no filter, which the
+        WS echo (`serviceId 9 type 2`, no `type`) reads as "clear all". It
+        skips the write when nothing is unread, and so do we.
+
+        The answer is OF's `{counters}` (`notifications_count`'s keys): all
+        zero when nothing was unread, else the feed RE-READ after the ack, so
+        an ack Fansly accepted but ignored (the body is bundle-derived) leaves
+        the badge up instead of reading 0 until the next poll. A non-2xx
+        raises FanslyAPIError (the app's handler answers 502)."""
+        rows = [r for r in self._notification_rows() if isinstance(r, dict)]
+        newest = str(rows[0].get("id") or "") if rows else ""
+        if not (newest and any(not r.get("acknowledgedAt") for r in rows)):
+            return {"counters": {"subscribes": 0, "tips": 0, "comments": 0, "mentions": 0,
+                                 "hearts": 0, "gifts": 0, "all": 0}}
+        self._request("POST", "/notifications/ack", json_body={"beforeAnd": newest, "type": ""})
+        return {"counters": self.notifications_count()}
+
     # -- Posts / timeline (real: GET /timelinenew/<accountId>) ---------------
     # Fansly's timeline returns {posts, accountMedia, accountMediaBundles,
     # accounts, tips} — the same media plumbing as /message. These back OF's
@@ -2445,16 +2469,18 @@ class FanslyShimClient(VaultMixin, FanslyClient):
             return {"success": False, "reason": "ack_rejected"}
         return {"success": True}
 
-    def mark_chat_unread(self, chat_id: str | int) -> dict:
-        # Deliberate no-op, now with evidence (2026-09-02). Fansly web's
-        # "Mark as Unread" sends `POST /message/ack {messageIds:[<oldest
-        # unread-able fan message>], type: 4}` and flips the envelope badge to
-        # 1 — CLIENT-SIDE ONLY. A reload clears the badge, `/messaging/groups`
-        # keeps `unreadCount: 0`, and `/message/unread.total` stays 0; a type-4
-        # ack sent from this shim changes nothing observable either. There is
-        # no server-side unread state to set, so success-without-effect is the
-        # honest answer (OF's semantics can't be reproduced here).
-        return {"success": True}
+    # Deliberate no-op, now with evidence (2026-09-02). Fansly web's "Mark as
+    # Unread" sends `POST /message/ack {messageIds:[<oldest unread-able fan
+    # message>], type: 4}` and flips the envelope badge to 1 — CLIENT-SIDE
+    # ONLY. A reload clears the badge, `/messaging/groups` keeps
+    # `unreadCount: 0`, and `/message/unread.total` stays 0; a type-4 ack sent
+    # from this shim changes nothing observable either. There is no
+    # server-side unread state to set. The marker makes the Relay's
+    # mark-unread route answer 501 (server.py `_platform_write`): a success
+    # would show an unread dot the next read takes back.
+    @fansly_unsupported("Fansly has no server-side unread state",
+                        returns=lambda: {"success": True})
+    def mark_chat_unread(self, *_a: Any, **_k: Any) -> dict: ...
 
     # Bound on how many THREADS one mark-all may ack. Unread is per-message, so
     # each unread thread costs one /message scan to collect its ids; the ack
@@ -2854,7 +2880,8 @@ class FanslyShimClient(VaultMixin, FanslyClient):
     # the thread menu has no pin. The automation caller (_pins in ai_chatter)
     # is retired, but these stay: the chat's Pin action
     # (POST/DELETE /api/of/v2/messages/{id}/pin/user/{fan}) reaches them on a
-    # Fansly account, and without them that click would AttributeError.
+    # Fansly account, where the marker makes the route answer 501 (server.py
+    # `_platform_write`) instead of a success the next read takes back.
     @fansly_unsupported("Fansly has no message pinning",
                         returns=lambda: {"success": True})
     def pin_message(self, *_a: Any, **_k: Any) -> dict: ...

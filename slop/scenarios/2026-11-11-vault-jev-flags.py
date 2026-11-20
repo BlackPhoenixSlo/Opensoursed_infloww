@@ -87,7 +87,7 @@ Bypasses (declared; the describe sweep's DeepInfra / stills / SQL-vault ones app
     storage are the product's). Answers by item profile and question set; `--set jev_latency_s=` (0.1 s) per call.
     "Jev unavailable" is planted as TypeSafe's 400 per photo; no NudeNet / no key are not run here (the product's
     preflight; unit-tested in service/tests/test_vault_jev.py).
-  - NudeNet's weights are read from `NUDENET_640M_PATH` (default /tmp/nn-weights/640m.onnx, md5 checked by the
+  - NudeNet's weights are read from `NUDENET_640M_PATH` (default ~/.cache/slop/nudenet-640m.onnx, fetched once by slop/lib/nudenet_weights.py, md5 checked by the
     product); the stills are synthetic, so NudeNet's veto / promote never fire here (blind spot, declared).
   - Photo sizes are the scenario's (above), not the seeder's; a clip's row width / height are its scrub frames'.
   - OF's CDN is lib/img_relay.py's loopback fake (curl_cffi re-routed at its wire; Policy expiry checked, Signature
@@ -112,12 +112,14 @@ JEV_VIDEO_SCRUB; `video-describe-falls-back-to-v2` (a Jev-down clip gets the V2 
 # No `from __future__ import annotations` (lib/cli.py loads a scenario outside sys.modules; see the describe sweep).
 import importlib.util
 import json
+import asyncio
 import os
 import re
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from slop.lib import nudenet_weights
 from slop.lib.img_relay import arm_run as arm_cdn
 from slop.lib.vault_describe_relay import (
     FAKE_KEY, PROSE_CLAIMS, PROSE_GARMENTS, arm_run, clip_key, clip_rgb, describe_text,
@@ -145,7 +147,7 @@ S = _load_sweep()
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "photo-still-calls-qwen-flags"
-NUDENET = os.environ.get("NUDENET_640M_PATH") or "/tmp/nn-weights/640m.onnx"
+NUDENET = nudenet_weights.PATH
 RELAY_ENV = {"NUDENET_640M_PATH": NUDENET}
 P95_VS_LAST = S.P95_VS_LAST
 P95_VS_LAST_MIN_N = S.P95_VS_LAST_MIN_N
@@ -388,8 +390,7 @@ async def run(ctx) -> None:
         for c in CHECKS:
             ctx.skip(c, "SLOP_LIVE=1: this scenario runs on the TypeSafe / DeepInfra fakes only")
         return
-    if not Path(NUDENET).is_file():
-        raise RuntimeError(f"slop: NudeNet weights not at {NUDENET} (set NUDENET_640M_PATH): Jev refuses without them")
+    await asyncio.to_thread(nudenet_weights.ensure)
     w = await ctx.build(PROFILE)
     creators = w.data["creators"]
     aids = [c["id"] for c in creators]
@@ -697,7 +698,7 @@ async def run(ctx) -> None:
                                  "jev_billed": want_jev[aid], "total_reported": p.reported(aid),
                                  "total_billed": di[aid] + want_jev[aid]} for aid in aids}
     rows = {a: [int(c or 0), int(n or 0)] for a, c, n in _sql(
-        ctx, "SELECT account_id, SUM(cost_cents), SUM(call_count) FROM grok_daily_cost WHERE provider = 'typesafe' "
+        ctx, "SELECT account_id, SUM(cost_cents), SUM(call_count) FROM grok_daily_cost WHERE provider = 'describe' "
              "GROUP BY account_id")}
     audit = {a: [int(c or 0), int(t or 0), int(n)] for a, c, t, n in _sql(
         ctx, "SELECT account_id, SUM(cost_cents), SUM(tokens_in), COUNT(*) FROM grok_calls WHERE provider = "
@@ -707,12 +708,15 @@ async def run(ctx) -> None:
         if _key(c):
             tokens[c["account_id"]] += c["tokens_in"]
     paid_items = Counter(by_key[k]["account_id"] for k in own)
-    spend = {aid: {"billed": total[aid], "daily_row": rows.get(aid, [0, 0])[0],
+    # Since #785 vault prep (DeepInfra describe/flags + Jev) rolls up on ONE `describe` daily row, not per provider:
+    # that row == every sweep's DeepInfra billed + Jev billed; the Jev share stays proven by the grok_calls audit.
+    vault_billed = {aid: sum(s[aid]["total_billed"] for s in sweeps.values()) for aid in aids}
+    spend = {aid: {"billed": total[aid], "daily_row": rows.get(aid, [0, 0])[0], "daily_want": vault_billed[aid],
                    "audit": audit.get(aid, [0, 0, 0]), "tokens": tokens[aid], "photos_paid": paid_items[aid]}
              for aid in aids}
     ok_sweeps = all(v["jev_reported"] == v["jev_billed"] and v["total_reported"] == v["total_billed"]
                     for s in sweeps.values() for v in s.values())
-    ok_spend = all(s["daily_row"] == s["billed"] and s["audit"] == [s["billed"], s["tokens"], s["photos_paid"]]
+    ok_spend = all(s["daily_row"] == s["daily_want"] and s["audit"] == [s["billed"], s["tokens"], s["photos_paid"]]
                    for s in spend.values())
     ctx.check(JEV_COST, all(total[a] > 0 for a in aids) and ok_sweeps and ok_spend, sweeps=sweeps, spend=spend,
               billed_mc=sum(total.values()))

@@ -48,6 +48,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
 import dm_rate
+import read_flip
 import run_slot
 from env_knob import env_float
 from attribution import write_outbound_attribution
@@ -625,10 +626,14 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
         row["status"] = ("sent" if landed else "unconfirmed" if unknown
                          else "no_send" if stop is not None else "failed")
         if landed:                             # clear his unread badge; never undoes the send
+            read_at = read_flip.now_ms()       # before the write: a fan message during it stays unread
+            await read_flip.set_local_unread(aid, fan_id=fan, value=0)
             try:
-                await asyncio.to_thread(client.mark_chat_read, fan)
+                read = await asyncio.to_thread(client.mark_chat_read, fan)
             except Exception:  # noqa: BLE001
                 log.warning("full_ai_live mark_chat_read failed account=%s fan=%s", aid, fan, exc_info=True)
+            else:                              # as a chatter's read: local badge, cached lists, other tabs
+                await read_flip.after_write(aid, fan, 0, read, set_local=False, at=read_at)
 
     async def record(row: dict) -> int:
         async with get_session() as s:

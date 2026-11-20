@@ -224,3 +224,42 @@ def apply_word_restriction(text, lang="en") -> str:
     if _es(lang):
         return _ES_RESTRICTED_RE.sub(lambda m: _common._double_first_vowel(m), text)
     return _common.apply_word_restriction(text)
+
+
+# ── Text language detection (scraped caption texts) ──
+# The German and Spanish sets hold function words only, and only those no other
+# of these languages uses as a common word: "die", "was", "so", "will", "hat",
+# "das" (es), "mal" (es), "ja", "ya", "yo", "me", "no", "mas", "nada" are out, as
+# are endearments, greetings and loanwords an English caption borrows ("danke",
+# "schatz", "geil", "hola", "amor", "bebé") and place-name parts ("la", "las",
+# "los", "el", "con": Las Vegas, LA). The English set is the counterweight a
+# mixed text is held to, OF English included ("u", "ur", "babe"); it may hold
+# shared words ("me", "in"), which only ever pull a text towards 'en'.
+_WORD = re.compile(r"[^\W\d_]+")
+_STOPWORDS = {
+    "en": frozenset(
+        "the you your and to my i is it for with this that are be have just what of on at all but can "
+        "get if want we me in u ur im new babe baby wanna gonna tonight now vid pic pics dm dms".split()),
+    "de": frozenset(
+        "und ich du nicht für mein meine meinen meinem meiner dich dir ist bist bin mit auf heute schon "
+        "noch willst kannst der ein eine einen einem wir uns sind habe hab hast mich mir wie auch aber oder "
+        "nur jetzt sehr wenn dass ganz gerade gleich doch kein keine nichts etwas dein deine deinen deinem "
+        "euch nach vom zum zur beim über mehr viel gerne endlich nochmal".split()),
+    "es": frozenset(
+        "que por para mi tu te lo una pero muy más estoy eres quiero tengo hoy qué cómo aquí ahora del "
+        "mis tus está esta este eso también todo".split()),
+}
+
+
+def detect_text_lang(text) -> str:
+    """'de' or 'es' when that language's function words clearly lead (at least
+    three, at least a quarter of the text's words, and more than English's and
+    the other one's), else 'en'. Conservative on purpose: an English text with
+    stray German or Spanish words, a short greeting, or a tie stays 'en' (a
+    short German caption may too; the owner relabels it). Pure; codes are
+    `KNOWN_LANGS`'."""
+    words = _WORD.findall((text or "").lower())
+    hits = {k: sum(w in v for w in words) for k, v in _STOPWORDS.items()}
+    de, es = hits["de"], hits["es"]
+    best, n, other = ("de", de, es) if de >= es else ("es", es, de)
+    return best if n >= 3 and 4 * n >= len(words) and n > hits["en"] and n > other else "en"

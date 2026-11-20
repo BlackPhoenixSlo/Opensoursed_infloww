@@ -20,6 +20,7 @@ import { appliedQuery, type AppliedSettings } from "@/lib/appliedSettings";
 import { fmtCents } from "@/lib/format";
 import { fanDeepLinkHref } from "@/lib/nav";
 import { relay } from "@/lib/relay";
+import { CREATOR_POOL, settlePool } from "@/lib/settlePool";
 import {
   METRIC_LABEL, metricPath, WINDOW_LABEL, windowRange,
   type ChatMarker, type DataMarker, type Marker,
@@ -45,10 +46,10 @@ const SHOWN = 5;
 async function read(m: DataMarker, account: string | null, accounts: string[], tz: string | null): Promise<Reading> {
   if (m.metric === "unread") {
     const ids = account ? [account] : accounts;
-    const got = await Promise.all(
-      ids.map((id) => relay.get<{ chatMessagesCount?: number | null }>("/api/of/v2/users/me", { accountId: id, ...BG })),
-    );
-    const counts = got.map((r) => r?.chatMessagesCount);
+    // One OnlyFans read per Creator: pooled, never every Creator at once (lib/settlePool).
+    const got = await settlePool(ids, CREATOR_POOL, (id) =>
+      relay.get<{ chatMessagesCount?: number | null }>("/api/of/v2/users/me", { accountId: id, ...BG }));
+    const counts = got.map((r) => (r.status === "fulfilled" ? r.value?.chatMessagesCount : undefined));
     if (counts.some((c) => typeof c !== "number")) throw new Error("no unread count");
     return { total: (counts as number[]).reduce((a, b) => a + b, 0).toLocaleString("en-US") };
   }

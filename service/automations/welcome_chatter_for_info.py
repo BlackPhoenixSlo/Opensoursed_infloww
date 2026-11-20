@@ -88,6 +88,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import dm_rate
+import read_flip
 import run_slot
 import llm_client                  # call .chat at runtime so tests can patch it
 from . import _daylog  # what SHE did today — the creator-side twin of recent_events
@@ -1919,11 +1920,16 @@ async def _turn_bookkeep(t: _Turn, parts: list[str], presented, asked: set,
 async def _turn_mark_read(t: _Turn) -> None:
     """We just replied → clear the unread badge. A mark-read failure must never
     break the (already-persisted) send."""
+    at = read_flip.now_ms()                    # before the write: a fan message during it stays unread
+    await read_flip.set_local_unread(t.cfg.account_id, fan_id=t.c.fan_id, value=0)
     try:
-        await asyncio.to_thread(t.client.mark_chat_read, t.c.fan_id)
+        read = await asyncio.to_thread(t.client.mark_chat_read, t.c.fan_id)
     except Exception:
         log.warning("welcome_chatter_for_info mark_chat_read failed account=%s fan=%s",
                     t.cfg.account_id, t.c.fan_id, exc_info=True)
+        return
+    # As a chatter's read: local badge, cached lists, other tabs (read_flip).
+    await read_flip.after_write(t.cfg.account_id, t.c.fan_id, 0, read, set_local=False, at=at)
 
 
 async def _turn_release(t: _Turn) -> None:

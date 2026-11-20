@@ -53,6 +53,10 @@ describe("applyRosterDelta", () => {
   it("clamps at zero — a stale/duplicate event can never drive a badge negative", () => {
     expect(applyRosterDelta({ unread: 0, owe_reply: 0 }, { dUnread: -1, dOwe: -1 })).toEqual({ unread: 0, owe_reply: 0 });
   });
+  it("keeps unread_capped: a local patch never learns what sits past the relay's window", () => {
+    expect(applyRosterDelta({ unread: 25, owe_reply: 0, unread_capped: true }, { dUnread: -1, dOwe: 0 }))
+      .toEqual({ unread: 24, owe_reply: 0, unread_capped: true });
+  });
 });
 
 describe("rosterPriorFromRow", () => {

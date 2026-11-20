@@ -102,37 +102,53 @@ _lease_lock = threading.Lock()
 class BgLease:
     """A background slot the loop took for one flight or request (server._bg_admission).
     server._priority_lane borrows it in the worker instead of acquiring; one borrower at
-    a time (a second, e.g. a parallel child, acquires as usual). Freed when the
-    owner left AND no worker holds it: a cancelled request whose thread is still on
-    OF keeps the slot until that thread is done."""
+    a time. A parallel child of the same request (the money route's tip + purchases
+    gather) takes a free lane slot if there is one, else waits for THIS lease
+    (`borrow(wait=True)`), never queues on the lane: two requests each holding a slot
+    with a child queued for a third deadlocked the Creator's lane (cap 2) until restart.
+    Freed when the owner left AND no worker holds it: a cancelled request whose thread
+    is still on OF keeps the slot until that thread is done."""
 
-    __slots__ = ("aid", "lane", "waited", "in_use", "closed")
+    __slots__ = ("aid", "lane", "waited", "in_use", "closed", "owner", "_cond")
 
     def __init__(self, aid: str, lane: BgLane, waited: float) -> None:
         self.aid, self.lane, self.waited = aid, lane, waited
         self.in_use = self.closed = False
+        self.owner = 0
+        self._cond = threading.Condition(_lease_lock)
 
-    def borrow(self, aid: str) -> bool:
-        with _lease_lock:
-            if aid != self.aid or self.in_use or self.closed:
-                return False
-            self.in_use = True
-            return True
+    def borrow(self, aid: str, wait: bool = False) -> bool:
+        """Take the lease for `aid`'s read. `wait`: if a sibling holds it, wait until
+        it gives it back (it is on OF, so it ends). False when the lease is for another
+        Creator, closed (also while waiting), or held by this very thread (a nested lane)."""
+        me = threading.get_ident()
+        with self._cond:
+            while True:
+                if aid != self.aid or self.closed:
+                    return False
+                if not self.in_use:
+                    self.in_use, self.owner = True, me
+                    return True
+                if not wait or self.owner == me:
+                    return False
+                self._cond.wait()
 
     def take_wait(self) -> float:
         w, self.waited = self.waited, 0.0
         return w
 
     def give_back(self) -> None:
-        with _lease_lock:
-            self.in_use = False
+        with self._cond:
+            self.in_use, self.owner = False, 0
             free = self.closed
+            self._cond.notify()
         if free:
             self.lane.release()
 
     def close(self) -> None:
-        with _lease_lock:
+        with self._cond:
             self.closed = True
             free = not self.in_use
+            self._cond.notify_all()
         if free:
             self.lane.release()

@@ -28,7 +28,7 @@ vi.mock("@/contexts/ChatterContext", () => ({
   useChatter: () => ({ chatter: null }),
   useOptionalChatter: () => ({ chatter: null }),
 }));
-let counts: Record<string, { unread: number; owe_reply: number }> = {};
+let counts: Record<string, { unread: number; owe_reply: number; unread_capped?: boolean }> = {};
 vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCounts: () => counts }));
 vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => ({ data: undefined }) }));
 // ScopeProvider pushes its scope to the SSE bus.
@@ -131,6 +131,15 @@ describe("PlatformSwitcher", () => {
     expect(screen.getByRole("menu", { name: "Platform" })).toBeInTheDocument();
     expect(window.localStorage.getItem(PLATFORM_KEY)).toBeNull();
     expect(trigger()).toHaveTextContent("OnlyFans");
+  });
+
+  it("a Creator's count cut off at the relay's window makes its platform's sum \"N+\"", async () => {
+    counts = { "of-1": { unread: 25, owe_reply: 0, unread_capped: true }, "of-2": { unread: 2, owe_reply: 1 } };
+    render(<Providers><PlatformSwitcher /></Providers>);
+    await waitFor(() => expect(screen.getByTestId("platform-unread-dot")).toBeInTheDocument());
+    fireEvent.click(trigger());
+    expect(row("OnlyFans").textContent).toBe("OnlyFans27+");
+    expect(within(row("OnlyFans")).getByLabelText("27+ unread")).toBeInTheDocument();
   });
 
   it("no unread: no chip and no dot", async () => {

@@ -231,7 +231,7 @@ Source: `app.js` modules `565144` and `622365`. Body built in `streaming-create-
 | Notifications tab list | GET | `/users/notifications` | `limit, fromId, type, related_user, skip_users, format=infinite`; `type` is the tab's route name (`tip`, `purchases`, `favorited`, `message`, `deactivated_media`, ...; none on All) | `{list, hasMore}` | `202600` (`Tr`), types in `463670` | WIRED (all tabs) |
 | Notifications Tags tab | GET | `/release-forms/mentions` | `limit, offset, fromId, related_user, skip_users=all, format=infinite` | `{list, hasMore, lastId}` | `783434.OM` | WIRED |
 | Notification tab counts | GET | `/users/notifications/count` | none | `{all, <type>: n}` | `202600` (`Ge`) | WIRED (Tags uses `/users/me` `newTagsCount`) |
-| Mark notifications read (by type / by id) | POST | `/users/notifications/read[/{type}]`, `/users/notifications/{id}/read/` | none | `{counters}` / `{success, counters}` | `202600` (`B`, `F`) | MISSING (OF calls it on opening a tab; not mirrored) |
+| Mark notifications read (by type / by id) | POST | `/users/notifications/read[/{type}]`, `/users/notifications/{id}/read/` | none | `{counters}` / `{success, counters}` | `202600` (`B`, `F`) | WIRED for All (`service/of_sends.py` `notifications_read`, the bell's open and Notifications' Mark all read); by type / by id not used |
 | Start a live stream | POST | `/streams` | `{room, primaryPartnerId, isShowTips, canSendPrivateWithTip, includeUserListIds?, …}` | stream | `565144._` (`XI`) | out of scope (live video) |
 
 ## Counts

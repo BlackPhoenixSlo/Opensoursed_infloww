@@ -11,7 +11,7 @@ OF faked (`LiveOF` behind `ax._make_client`), Jev + Writers faked, the vision ca
   case_photo_read             describe_fan_photos on: the job's client reaches describe, image_desc stored,
                               Jev state has "[he sent: ...]", reply_json.fan_photo; off: no describe call
   case_describe_fails         the Turn still sends; fan_photo.outcome "failed"
-  case_mark_read              once after a sent Turn; not after no_send / stood down; its error leaves `sent`
+  case_mark_read              once after a sent Turn (then read_flip.after_write); not after no_send / stood down; its error leaves `sent`, no flip
   case_config_reference       none of the three live switches reads "Read by nothing yet"
 
 Run: ./venv/bin/python service/tests/test_full_ai_live_typing.py  (exit 0 = pass)
@@ -31,6 +31,7 @@ from sqlalchemy import update  # noqa: E402
 from _full_ai_fixtures import GIF_FITS, QUIET, _msg  # noqa: E402
 from _full_ai_live_fixtures import LiveOF, live_rows, out_rows, payload, seed_live, world  # noqa: E402
 import inbound_describe  # noqa: E402
+import read_flip  # noqa: E402
 from automations import cat_stickers, full_ai_config, full_ai_live  # noqa: E402
 from automations._typing_hold import typing_delay_seconds  # noqa: E402
 from db.engine import get_session  # noqa: E402
@@ -192,8 +193,17 @@ class ReadFailsOF(LiveOF):
 
 
 async def case_mark_read():
-    _res, w, row = await _turn("fa_rd_sent", 811, 10901)
-    assert row.status == "sent" and w.of.read == [811], w.of.read
+    flips = []
+
+    async def after_write(aid, fan, unread, result, **_kw):
+        flips.append((aid, fan, unread))
+        return True
+    with _patched(read_flip, "after_write", after_write):
+        _res, w, row = await _turn("fa_rd_sent", 811, 10901)
+        assert row.status == "sent" and w.of.read == [811], w.of.read
+        assert flips == [("fa_rd_sent", 811, 0)], flips   # as a chatter's read: badge, lists, other tabs
+        _res, w, row = await _turn("fa_rd_fail2", 815, 10941, of=ReadFailsOF())
+        assert row.status == "sent" and flips == [("fa_rd_sent", 811, 0)], flips   # a failed read: no flip
     _res, w, row = await _turn("fa_rd_nosend", 812, 10911, jev=({**QUIET, "promo": 0.99}, 1.0))
     assert row.status == "no_send" and w.of.read == [], w.of.read
     saved = list(full_ai_live.LAST_LOOK)

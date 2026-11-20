@@ -5,13 +5,25 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
 import type { SendStatus } from "@/hooks/useSendMessage";
+import { patchFanRows, type ChatPages } from "@/lib/chatsCache";
 import { relay, type OFChatItem } from "@/lib/relay";
 import { sameUserId, type FanId } from "@/lib/fanId";
+
+/** Patch the fan's row in every cached chat list (`["chats", …]`) at once. */
+export function patchCachedChat(
+  qc: ReturnType<typeof useQueryClient>, accountId: string, fanId: FanId, patch: Partial<OFChatItem>,
+) {
+  qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
+    const data = q.state.data as ChatPages | undefined;
+    const next = patchFanRows(data, accountId, fanId, patch);
+    if (next !== data) qc.setQueryData(q.queryKey, next);
+  });
+}
 
 /** Mark a chat read: our local marker (zeroes chats.unread_count; resolves
  *  whether it cleared one), OF's — a "seen" receipt — only when OF still shows
  *  it unread, and the blue dot off every cached chat list at once. */
-function markChatRead(
+async function markChatRead(
   qc: ReturnType<typeof useQueryClient>, accountId: string, fanId: FanId, ofUnread: boolean,
 ): Promise<boolean> {
   const local = relay
@@ -26,21 +38,17 @@ function markChatRead(
       .post(`/api/of/v2/chats/${fanId}/mark-as-read`, undefined, { accountId })
       .catch((err) => console.warn("[mark-as-read] failed", err));
   }
-  type Page = { rows: OFChatItem[]; hasMore: boolean };
-  type Infinite = { pages: Page[]; pageParams: unknown[] };
-  qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
-    const data = q.state.data as Infinite | undefined;
-    if (!data?.pages) return;
-    const newPages: Page[] = data.pages.map((p) => ({
-      ...p,
-      rows: p.rows.map((c) =>
-        (c.__accountId ?? "") === accountId && sameUserId(c.withUser.id, fanId)
-          ? { ...c, hasUnread: false, unreadMessagesCount: 0 }
-          : c,
-      ),
-    }));
-    qc.setQueryData(q.queryKey, { ...data, pages: newPages });
-  });
+  // A chat-list read in flight (a Refresh, a loadMore) predates this mark: drop
+  // it, or it lands after the patch and paints the dot back. Lists with no data
+  // yet keep theirs (cancelling would leave them empty until the next poll).
+  // Only when a cached row still shows the dot: an already-read chat changes
+  // nothing, and opening it must not cancel a Refresh or a loadMore.
+  const dotted = qc.getQueryCache().findAll({ queryKey: ["chats"] }).some((q) =>
+    (q.state.data as ChatPages | undefined)?.pages?.some((p) => p.rows.some((c) =>
+      (c.hasUnread || !!c.unreadMessagesCount) && (c.__accountId ?? "") === accountId && sameUserId(c.withUser.id, fanId))));
+  if (!dotted) return local;
+  await qc.cancelQueries({ queryKey: ["chats"], predicate: (q) => q.state.data !== undefined });
+  patchCachedChat(qc, accountId, fanId, { hasUnread: false, unreadMessagesCount: 0 });
   return local;
 }
 
@@ -81,6 +89,7 @@ export function useMarkChatRead({ accountId, fanId, hasUnread, markRead }: {
         // race OF's own read-processing and flicker the count back up. The 60s
         // poll (now reading a busted cache) reconciles to OF-truth cleanly.
         patchRosterLocal(accountId, (c) => ({
+          ...c, // keeps `unread_capped`: a "25+" badge stays "24+", not a plain 24
           unread: Math.max(0, c.unread - 1),
           owe_reply: c.owe_reply + 1,
         }));

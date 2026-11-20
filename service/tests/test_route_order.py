@@ -172,8 +172,20 @@ Golden refresh (2026-11-19, promo preempt 21): POST /admin/promotions' body gain
 row changes; diff = the sha (HEAD's tree green on the prior golden, measured).
 Golden refresh (2026-11-19, Money rail one read per Creator): adds GET /api/of/v2/users/notifications/money
 (of_notifications_money) right after /users/notifications/count; no existing row moves; diff = that row + the sha.
+Golden refresh (2026-11-20): one wired golden only: optional query params and body fields (caption language,
+kind / language narrowing, per-row tags); docstrings reworded. No route row changes; diff = the sha.
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
+Golden refresh (2026-11-20, main c0f0ef88a): adds POST /admin/unconfirmed-sends/dismiss (#882) and
+POST /api/of/v2/users/notifications/read (#866); no existing row moves. OpenAPI sha also carries this week's
+doc/param edits (#870-#882); route list diff inspected, intentional.
+Golden refresh (2026-11-20, recheck fixes): no route added or moved; OpenAPI sha only: dismiss body gains
+optional `since`, /admin/perflog/recent + dismiss docstrings; inspected, intentional.
+Golden refresh (2026-11-20, All Models open cost): GET /api/of/v2/users/me gains optional `max_age` and a
+docstring; no route row changes; diff = the sha.
+Golden refresh (2026-11-20, watched-creator-refresher 04): schema FlatAccountDTO (GET /chatter/me/accounts) gains
+optional `freshness` (absent unless SHARED_REFRESHER=1); no route row changes; diff = the sha (measured: sha1 with
+that field removed == the prior golden).
 """
 from __future__ import annotations
 

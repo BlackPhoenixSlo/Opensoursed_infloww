@@ -62,7 +62,6 @@ export default function FanReport() {
           accounts={accounts}
           value={accountId}
           onChange={setPicked}
-          noAll
           className="md:flex border-r border-border"
         />
         {/* From md the report scrolls on its own beside the column (`.h-chat`'s height; a plain class takes no `md:`). */}

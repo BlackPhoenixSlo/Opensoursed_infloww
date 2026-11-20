@@ -42,6 +42,7 @@ import _harness  # noqa: F401 — MUST be first (binds temp DB before engine imp
 _harness.bootstrap()
 
 import of_client  # noqa: E402
+import read_flip  # noqa: E402
 import server  # noqa: E402
 import img_api  # noqa: E402
 
@@ -278,15 +279,15 @@ def case_mark_read_is_unpaced():
     async def _no_local(*_a, **_k):
         return None
 
-    orig_local = server._set_local_unread
-    server._set_local_unread = _no_local
+    orig_local = read_flip.set_local_unread
+    read_flip.set_local_unread = _no_local
     try:
         c = _client()
         paced, _ = _with_paced_writes(c, lambda: asyncio.run(server.of_mark_chat_read(FAN)))
         assert paced == [], paced
         assert [(m, p) for m, p, _ in c.sent] == [("POST", f"{API}/chats/{FAN}/mark-as-read")], c.sent
     finally:
-        server._set_local_unread = orig_local
+        read_flip.set_local_unread = orig_local
 
 
 

@@ -21,7 +21,7 @@
  * Ticket 94: Restrict and Block are the first two rows and both ask
  * `window.confirm` first (declining makes no call). Restrict posts with
  * `?ack=false`, so the Fan is sent nothing. Block / Unblock →
- * POST/DELETE /users/{id}/block. A role denied "Block or restrict fans"
+ * POST/DELETE /users/{id}/block; its state is OF's `isBlocked`. A role denied "Block or restrict fans"
  * gets neither row.
  *
  * Ticket 95: "Add to list ▸" moved to the Avatar menu (`FanAvatarMenu`).
@@ -61,7 +61,7 @@ import { MP } from "@/lib/messagesPro";
 import { EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import { relay, type OFChatItem } from "@/lib/relay";
 import type { FanId } from "@/lib/fanId";
-import { ofUserFullKey, useOFUser } from "@/hooks/useOFUser";
+import { ofUserFullKey, useOFUser, type OFUser } from "@/hooks/useOFUser";
 import { ChatHeaderExtras } from "./ChatHeaderExtras";
 import { MENU_BOX, MENU_ITEM, MenuStatusLine, NotWiredMenuRow, useMenuStatus } from "./MenuParts";
 import { MessageStatsRows } from "./MessageStatsLink";
@@ -192,21 +192,23 @@ export function ChatActionsMenu({
     onError: (e: Error) => flash(false, e.message),
   });
 
-  // Block / Unblock on OnlyFans. Our OF user types carry no blocked field, so
-  // the row's state is a session flag in the query cache (it survives the
-  // menu closing; the cache is cleared on sign-out).
-  const blockedKey = ["of-blocked", accountId, fanId];
-  const blocked = useQuery({
-    queryKey: blockedKey, queryFn: () => false, initialData: false, enabled: false, gcTime: Infinity,
-  }).data;
+  // Block / Unblock on OnlyFans. The state is OF's own `isBlocked`: the full
+  // OF user's when it carries one (fresh after every toggle), else the chat
+  // row's `withUser.isBlocked` (OF sends it on /chats rows), so a Fan blocked
+  // elsewhere, or before a reload, reads "Unblock".
+  const blocked = typeof ofUser.data?.isBlocked === "boolean"
+    ? ofUser.data.isBlocked
+    : !!chat.withUser?.isBlocked;
   const toggleBlock = useMutation({
     mutationFn: () =>
       blocked
         ? relay.delete(`/api/of/v2/users/${fanId}/block`, { accountId })
         : relay.post(`/api/of/v2/users/${fanId}/block`, undefined, { accountId }),
     onSuccess: () => {
-      qc.setQueryData(blockedKey, !blocked);
-      qc.invalidateQueries({ queryKey: ofUserFullKey(accountId, fanId), exact: true });
+      // Flip the cached OF user now, then refetch it for OF's true state.
+      const key = ofUserFullKey(accountId, fanId);
+      qc.setQueryData<OFUser>(key, (old) => (old ? { ...old, isBlocked: !blocked } : old));
+      qc.invalidateQueries({ queryKey: key, exact: true });
       flash(true, blocked ? "Unblocked on OnlyFans" : "Blocked on OnlyFans");
     },
     onError: (e: Error) => flash(false, e.message),

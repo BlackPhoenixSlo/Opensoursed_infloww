@@ -326,6 +326,28 @@ describe("FanListFilters", () => {
     expect(screen.getByRole("button", { name: "Priority 7" })).toBeInTheDocument();
   });
 
+  it("with an age the Unread chip reads \"Unread 12 as of 4 min\", its title the long form, and no live region on it or around it; without one, today's chip", () => {
+    const title = "As of 4 min ago: 1 of 10 Creators not refreshed within its Cycle";
+    renderFilters({ unreadCount: 12, unreadAge: { text: "as of 4 min", title } });
+    const chip = screen.getByRole("button", { name: "Unread 12 as of 4 min" });
+    expect(chip).toHaveAttribute("title", title);
+    expect(chip.textContent).toContain("as of 4 min");
+    expect(chip.closest("[aria-live]")).toBeNull();
+    expect(chip.querySelector("[aria-live]")).toBeNull();
+    expect(screen.getByRole("button", { name: "Pinned" })).not.toHaveAttribute("title");
+
+    // A zero count still carries its age (a stale 0 can be wrong too).
+    cleanup();
+    renderFilters({ unreadCount: 0, unreadAge: { text: "as of 2 min", title } });
+    expect(screen.getByRole("button", { name: "Unread as of 2 min" })).toHaveAttribute("title", title);
+
+    cleanup();
+    renderFilters({ unreadCount: 12, unreadAge: null });
+    const plain = screen.getByRole("button", { name: "Unread 12" });
+    expect(plain).not.toHaveAttribute("title");
+    expect(plain.textContent).not.toContain("as of");
+  });
+
   it("the Owe reply chip follows All with its count always in the amber badge and the Inflowwww extra tooltip, and reports Owe reply", async () => {
     const cb = renderFilters({ oweReplyCount: 3 });
     const chipRow = screen.getByRole("group", { name: "Fan List filters" });

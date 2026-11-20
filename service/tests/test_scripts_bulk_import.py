@@ -254,7 +254,47 @@ def case_cli_plan_maps_an_infloww_dump_to_one_row_per_script():
     assert rb["got"]["rows"] == 5 and rb["got"]["untagged"] == 2
     # A dump whose views disagree with the plan is a problem the CLI exits 1 on.
     tags[2]["scripts"] = every[1:2]
-    assert cli.plan(seqs, tags)["problems"] == ["dump 'Uncategorized' 1 != planned untagged 2"]
+    assert cli.plan(seqs, tags)["problems"] == [
+        "dump 'Uncategorized' 1 unique != planned 2; only in dump [], only planned ['a3']"]
+
+
+def case_untagged_group_creates_scripts_with_no_tag_and_a_rerun_skips():
+    _wipe()
+    assert _bulk({"sequences": [_seq("U", 1, n=1)]}).status_code == 200
+    body = {"tags": [{"name": " ", "scripts": [{"name": "loose", "text": "no tag here"},
+                                               {"name": "U s1", "text": "U text 1"}]}]}  # 2nd == step 1 of U
+    r = _bulk(body)
+    assert r.json()["tag_scripts"] == {"total": 2, "created": 1, "tagged": 0, "skipped": 1, "failed": 0}, r.json()
+    rows = {(x["title"], x["script_id"]): x["tags"] for x in _list()}
+    assert rows == {("loose", None): [], ("U s1", "U"): []}, rows
+    assert _bulk(body).json()["tag_scripts"]["skipped"] == 2 and len(_list()) == 2
+
+
+def case_cli_plan_imports_loose_and_shared_scripts_with_no_problems():
+    """Infloww scripts shared by sequences (same name + text; one script in its views, one row per step here),
+    a step whose every candidate is taken (reuses the first), and a loose script in no sequence and no tag
+    (only in the views: imported untagged)."""
+    _wipe()
+    cli = _cli()
+    dup = {"step": "2", "text": "dup", "script_name_candidates": ["d1", "d2"]}
+    seqs = [{"order": 0, "name": "S1", "steps": [{"step": "1", "text": "hey", "script_name": "h"}, dup]},
+            {"order": 1, "name": "S2", "steps": [{"step": "1", "text": "hey", "script_name": "h"}, dup]},
+            {"order": 2, "name": "S3", "steps": [{**dup, "step": "1"}]}]
+    every = [{"name": n, "text": t} for n, t in (("h", "hey"), ("d1", "dup"), ("d2", "dup"), ("lone", "solo"))]
+    tags = [{"name": "All scripts", "scripts": every}, {"name": "VIP", "scripts": [every[0]]},
+            {"name": "Uncategorized", "scripts": every[1:]}]
+    p = cli.plan(seqs, tags)
+    assert p["problems"] == [], p["problems"]
+    assert [[s["name"] for s in q["steps"]] for q in p["sequences"]] == [["h", "d1"], ["h", "d2"], ["d1"]]
+    assert p["tags"] == [{"name": "", "scripts": [every[3]]}], p["tags"]
+    assert p["expected"] == {"sequences": 3, "steps": 5, "standalone": 1, "rows": 6, "per_tag": {"VIP": 2},
+                             "untagged": 4}, p["expected"]
+    for body in cli.chunks(p["sequences"], p["tags"], 1000):
+        r = _bulk({**body, "mode": "skip"})
+        assert r.status_code == 200 and not r.json()["failed"], r.text
+    rb = cli.read_back(_list(), list(_metas().values()), p)
+    assert (rb["mismatches"], rb["step_diffs"], rb["meta_diffs"]) == ([], [], []), rb
+    assert rb["got"]["untagged"] == 4 and rb["got"]["rows"] == 6, rb["got"]
 
 
 def case_cli_reads_back_what_the_relay_stores_and_reports_instead_of_crashing():

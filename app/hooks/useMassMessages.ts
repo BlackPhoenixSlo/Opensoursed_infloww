@@ -27,6 +27,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { relay, type VaultFiles } from "@/lib/relay";
+import { CREATOR_POOL, settlePool } from "@/lib/settlePool";
 
 const KEY_PREFIX = "mass-messages";
 
@@ -146,7 +147,8 @@ async function refreshAccount(accountId: string, daysBack: number, limit: number
 
 /** Hit OF + upsert into the cache for every account, then invalidate
  *  the read queries so they pick up the fresh rows. One mutation call
- *  fans out to N accounts. */
+ *  fans out to N accounts, `CREATOR_POOL` at a time (never every Creator's
+ *  OF read at once); any failure fails the call once all have settled. */
 export function useRefreshMassMessages() {
   const qc = useQueryClient();
   return useMutation<
@@ -155,13 +157,13 @@ export function useRefreshMassMessages() {
     { accountIds: string[]; daysBack: number; limit?: number }
   >({
     mutationFn: async ({ accountIds, daysBack, limit = 100 }) => {
-      const results = await Promise.all(
-        accountIds.map(async (accountId) => ({
-          accountId,
-          written: await refreshAccount(accountId, daysBack, limit),
-        })),
-      );
-      return results;
+      const res = await settlePool(accountIds, CREATOR_POOL, async (accountId) => ({
+        accountId,
+        written: await refreshAccount(accountId, daysBack, limit),
+      }));
+      const failed = res.find((r) => r.status === "rejected");
+      if (failed) throw failed.reason;
+      return res.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
     },
     onSuccess: (_data, vars) => {
       // Invalidate every per-account list query; React Query will

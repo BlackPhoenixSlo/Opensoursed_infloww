@@ -14,11 +14,13 @@
 
 In Infloww a sequence step IS a script, and that script may also sit in tags: each becomes ONE row. `plan()` maps
 the dump that way: a step's script name is its `script_name` (or `name`); a step whose name was ambiguous at capture
-(`script_name_candidates`) gets the first candidate no other step uses, in dump order, so each name is used once.
+(`script_name_candidates`) gets the first candidate no other step uses, in dump order, else (all taken: a script
+shared across sequences) the first. A script in several sequences is one row per step (the relay's one script_id).
 A tag's scripts are joined to steps by script name (case-blind) and text, as the relay matches a tag script
 (`_script_key`), and go on the step as its `tags`; only tag scripts matching no step are sent as tag scripts
-(standalone rows). "All scripts" and "Uncategorized" are Infloww's fixed views,
-not tags: never created, used only to reconcile (All scripts == every row, Uncategorized == the untagged ones).
+(standalone rows). "All scripts" and "Uncategorized" are Infloww's fixed views, not tags: never created; a script
+only there (no sequence, no tag) is sent untagged (tag ""); else used to reconcile by unique (name, text): All
+scripts == every script, Uncategorized == the untagged ones, a tag == its scripts.
 
 Sign-in is the owner's, as scripts/lane-stats.sh does: `POST /auth/login` with RELAY_USER / RELAY_PASS (prompted
 on a terminal when unset), the session cookie kept for the run; SHARE_TOKEN is appended as ?t= when set.
@@ -97,9 +99,9 @@ def _script_key(name: str | None, text: str | None) -> tuple[str, str]:
     return (name or "").strip().lower(), _of_text(text or "")
 
 
-def _step_names(sequences: list[dict], problems: list[str]) -> list[list[str]]:
+def _step_names(sequences: list[dict]) -> list[list[str]]:
     """Each step's script name: its `script_name` / `name`, else the first of its `script_name_candidates` no other
-    step uses (dump order)."""
+    step uses (dump order), else (all taken: a script shared across sequences) the first candidate."""
     used = {(st.get("script_name") or st.get("name") or "").strip() for q in sequences for st in q.get("steps") or []}
     used.discard("")
     out: list[list[str]] = []
@@ -108,12 +110,9 @@ def _step_names(sequences: list[dict], problems: list[str]) -> list[list[str]]:
         for st in q.get("steps") or []:
             name = (st.get("script_name") or st.get("name") or "").strip()
             if not name and st.get("script_name_candidates"):
-                free = [c.strip() for c in st["script_name_candidates"] if c.strip() not in used]
-                if free:
-                    name = free[0]
-                    used.add(name)
-                else:
-                    problems.append(f"{q['name'].strip()!r} step {st['step']}: every candidate name taken")
+                cands = [c.strip() for c in st["script_name_candidates"] if c.strip()]
+                name = next((c for c in cands if c not in used), cands[0] if cands else "")
+                used.add(name)
             names.append(name)
         out.append(names)
     return out
@@ -121,7 +120,8 @@ def _step_names(sequences: list[dict], problems: list[str]) -> list[list[str]]:
 
 def plan(sequences: list[dict], tags: list[dict]) -> dict:
     """The dump as the endpoint's payload, one row per script: {"sequences", "tags" (scripts in no sequence
-    only), "expected" (rows, per tag, untagged, steps, sequences), "problems" (unmappable bits)}."""
+    only; tag "" = the untagged ones), "expected" (rows, per tag, untagged, steps, sequences), "problems"
+    (unmappable bits)}."""
     real = [t for t in tags if t["name"].strip().lower() not in VIEWS]
     tags_of: dict[tuple[str, str], list[str]] = {}
     for t in real:
@@ -133,7 +133,7 @@ def plan(sequences: list[dict], tags: list[dict]) -> dict:
                 got.append(t["name"].strip())
     problems: list[str] = []
     out: list[dict] = []
-    for q, names in zip(sequences, _step_names(sequences, problems)):
+    for q, names in zip(sequences, _step_names(sequences)):
         steps = []
         for st, name in zip(q.get("steps") or [], names):
             row = {k: st[k] for k in ("step", "text", "notes", "conditional", "price") if st.get(k) is not None}
@@ -148,12 +148,17 @@ def plan(sequences: list[dict], tags: list[dict]) -> dict:
             loose.append({**{k: v for k, v in t.items() if k != "scripts"}, "scripts": scripts})
     standalone = {_script_key(sc.get("name"), sc.get("text")): tags_of.get(
         _script_key(sc.get("name"), sc.get("text")), [t["name"].strip()]) for t in loose for sc in t["scripts"]}
+    # Infloww's loose scripts in no sequence and no tag: only in the views; one untagged ("") group.
+    in_tags = {_script_key(sc.get("name"), sc.get("text")) for t in real for sc in t.get("scripts") or []}
     all_view, uncategorized = _view(tags, "all scripts"), _view(tags, "uncategorized")
+    untagged_loose: dict[tuple[str, str], dict] = {}
     for sc in (all_view or []) + (uncategorized or []):
         key = _script_key(sc.get("name"), sc.get("text"))
-        if key not in in_seq and key not in tags_of:
-            problems.append(f"{(sc.get('name') or '').strip()!r}: in no sequence and no tag (an untagged loose "
-                            "script is not importable)")
+        if key not in in_seq and key not in in_tags:
+            untagged_loose.setdefault(key, sc)
+    if untagged_loose:
+        loose.append({"name": "", "scripts": list(untagged_loose.values())})
+        standalone.update({k: [] for k in untagged_loose})
     n_steps = sum(len(q["steps"]) for q in out)
     per_tag: Counter = Counter()
     for q in out:
@@ -161,20 +166,29 @@ def plan(sequences: list[dict], tags: list[dict]) -> dict:
             per_tag.update(st["tags"])
     for tl in standalone.values():
         per_tag.update(tl)
-    untagged = sum(1 for q in out for st in q["steps"] if not st["tags"])
+    untagged = sum(1 for q in out for st in q["steps"] if not st["tags"]) + len(untagged_loose)
     expected = {"sequences": len(out), "steps": n_steps, "standalone": len(standalone),
                 "rows": n_steps + len(standalone), "per_tag": dict(per_tag), "untagged": untagged}
-    # The dump's own views must agree with the plan (All scripts == every row, Uncategorized == untagged).
+    # The dump's own views must agree with the plan (All scripts == every script, Uncategorized == the untagged
+    # ones, a tag == its scripts), by unique (name, text): a script shared by several sequences is one script in
+    # Infloww's views but one row per step here.
+    planned = {_script_key(st["name"], st.get("text")): st["tags"] for q in out for st in q["steps"]}
+    planned.update(standalone)
     views = {"all_scripts": len(all_view) if all_view is not None else None,
              "uncategorized": len(uncategorized) if uncategorized is not None else None,
              "per_tag": {t["name"].strip(): len(t.get("scripts") or []) for t in real}}
-    if views["all_scripts"] is not None and views["all_scripts"] != expected["rows"]:
-        problems.append(f"dump 'All scripts' {views['all_scripts']} != planned rows {expected['rows']}")
-    if views["uncategorized"] is not None and views["uncategorized"] != untagged:
-        problems.append(f"dump 'Uncategorized' {views['uncategorized']} != planned untagged {untagged}")
-    for tag, k in views["per_tag"].items():
-        if per_tag.get(tag, 0) != k:
-            problems.append(f"dump tag {tag!r} {k} != planned {per_tag.get(tag, 0)}")
+    checks = [("'All scripts'", all_view, set(planned)),
+              ("'Uncategorized'", uncategorized, {k for k, tl in planned.items() if not tl})]
+    checks += [(f"tag {t['name'].strip()!r}", t.get("scripts") or [],
+                {k for k, tl in planned.items() if t["name"].strip() in tl}) for t in real]
+    for label, view, want in checks:
+        if view is None:
+            continue
+        have = {_script_key(sc.get("name"), sc.get("text")) for sc in view}
+        if have != want:
+            extra, missing = sorted(k[0] for k in have - want)[:5], sorted(k[0] for k in want - have)[:5]
+            problems.append(f"dump {label} {len(have)} unique != planned {len(want)}; only in dump {extra}, "
+                            f"only planned {missing}")
     return {"sequences": out, "tags": loose, "expected": expected, "dump_views": views, "problems": problems}
 
 
@@ -238,11 +252,12 @@ def read_back(rows: list[dict], metas: list[dict], p: dict) -> dict:
                     diffs.append({"sequence": name, "step": st["step"], "field": field, "want": w, "got": h})
     loose = {((r.get("title") or "").strip().lower(), r["text"]): r for r in rows if not r.get("script_id")}
     for t in p["tags"]:
+        tag = t["name"].strip()
         for sc in t["scripts"]:
             r = loose.get(_script_key(sc.get("name"), sc.get("text")))
-            if r is None or t["name"].strip() not in (r.get("tags") or []):
-                diffs.append({"tag": t["name"].strip(), "script": sc.get("name"), "field": "standalone",
-                              "want": "present + tagged", "got": r and r.get("tags")})
+            if r is None or (tag not in (r.get("tags") or []) if tag else bool(r.get("tags"))):
+                diffs.append({"tag": tag, "script": sc.get("name"), "field": "standalone",
+                              "want": "present + tagged" if tag else "present + untagged", "got": r and r.get("tags")})
     by_name = {m["name"]: m for m in metas}
     want_order = [q["name"].strip() for q in sorted(p["sequences"], key=lambda q: q.get("order") or 0)]
     order = [m["name"] for m in sorted((m for m in metas if m["name"] in set(want_order)),

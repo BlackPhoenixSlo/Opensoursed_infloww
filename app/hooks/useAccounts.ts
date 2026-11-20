@@ -15,16 +15,36 @@
  * The `{accounts, active_account_id}` envelope is preserved either way so
  * downstream consumers (chat fan-out, mass composer, sidebar) don't need
  * to know which principal is driving the request.
+ *
+ * Each row's `freshness` (the Shared refresher's snapshot, with the Knob on) is
+ * kept on both lists and seeds the tab's Freshness store
+ * (hooks/useCreatorFreshness.ts) from network answers only: an answer is
+ * seeded when its `dataUpdatedAt` is from this page's life, so the persisted
+ * copy restored at boot never seeds it. Each such answer also evicts held
+ * Creators its rows no longer carry `freshness` for (a switch-off empties the
+ * store), and a principal change clears the previous principal's store. Such an
+ * answer's latest `freshness.now` also sets the tab's Relay-clock offset
+ * (lib/ageClock), which the live mark's age reads.
  */
 
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type AccountMeta, type WatcherAccount } from "@/lib/relay";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
 import { accountPlatform, usePlatform } from "@/lib/platform";
+import type { SeedRow } from "@/lib/creatorFreshness";
+import { dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
+import { setRelayOffset } from "@/lib/ageClock";
+import { serverOffset } from "@/components/chat/dataAge";
+
+/** Answers updated before this (the persisted copy, restored at boot) are not network answers of this page. */
+const PAGE_LOADED_AT = Date.now();
+
+/** An accounts answer updated at `dataUpdatedAt` came from the network in this page's life (not the persisted copy). */
+export const fromThisPage = (dataUpdatedAt: number): boolean => dataUpdatedAt >= PAGE_LOADED_AT;
 
 export interface AccountsResp {
   accounts: AccountMeta[];
@@ -110,8 +130,37 @@ export function useAccounts() {
       session_dead_reason: r.session_dead_reason,
       is_active: r.is_active,
       role: r.role ?? undefined,
+      ...(r.freshness ? { freshness: r.freshness } : {}),
     } as AccountMeta));
   }, [chatterQ.data]);
+
+  // Seed the Freshness store from each network answer (the reducer drops a repeat, so every caller may seed). With
+  // the Knob on each answer is new data (`now` moves); `dataUpdatedAt` is read from the cache, not the result, so
+  // an unchanged refetch re-renders nothing.
+  const qc = useQueryClient();
+  const userId = user?.user_id;
+  const principalId = userId ?? chatter?.chatter_id ?? "anon";
+  const seedRows: SeedRow[] | null = useMemo(() => {
+    if (isChatterOnly) return chatterQ.data?.map((r) => ({ id: r.account_id, freshness: r.freshness })) ?? null;
+    return ownerQ.data?.accounts ?? null;
+  }, [isChatterOnly, chatterQ.data, ownerQ.data]);
+  useEffect(() => {
+    const key = isChatterOnly ? chatterAccountsQuery.queryKey : ownerAccountsQuery(userId).queryKey;
+    const at = qc.getQueryState(key)?.dataUpdatedAt ?? 0;
+    if (!seedRows || !fromThisPage(at)) return;
+    // The offset first, so the store's subscribers read the seed on the Relay's clock.
+    const relayNow = Math.max(...seedRows.map((r) => r.freshness?.now ?? -Infinity));
+    if (Number.isFinite(relayNow)) setRelayOffset(serverOffset(relayNow, at));
+    dispatchCreatorFreshness(qc, principalId, { type: "seeded", rows: seedRows, receivedAt: at });
+  }, [qc, principalId, seedRows, isChatterOnly, userId]);
+  // An identity change (the principal moved without a cache wipe, e.g. a revalidation adopting another user) clears
+  // the previous principal's store: nothing it held is the new one's.
+  const seenPrincipal = useRef(principalId);
+  useEffect(() => {
+    if (seenPrincipal.current === principalId) return;
+    dispatchCreatorFreshness(qc, seenPrincipal.current, { type: "identityChanged" });
+    seenPrincipal.current = principalId;
+  }, [qc, principalId]);
 
   // Synthesize an AccountsResp envelope so consumers see the same shape
   // either way. active_account_id is owner-only — no equivalent in
@@ -133,7 +182,7 @@ export function useAccounts() {
       return { ...chatterQ, data: chatterData };
     }
     return ownerQ;
-  }, [isChatterOnly, chatterQ.status, chatterData, ownerQ]);
+  }, [isChatterOnly, chatterQ.status, chatterQ.dataUpdatedAt, chatterData, ownerQ]);
 }
 
 /** Human name for a model account — its nickname ("JadeFree") when the owner

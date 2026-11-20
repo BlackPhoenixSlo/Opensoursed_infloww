@@ -1476,6 +1476,24 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   `employee_no_token`, `errors_are_plain`, `report_file_owner_only`, `no_stuck_plans`, `cases_answer_as_specified`.
   Fault `mcp-anon-sees-token-builtins` (`anonymous_only_three_tools` alone). Evidence `mcp-wild.json` (every case
   redacted: status, rpc code/message, tool outcome, ms; mix p50/p95 + status histogram).
+- `2026-11-20-all-models-shared-inbox` (`OF_WIRE`, UI, desktop 1440x900, a measurement): Messages Pro under All
+  Models shared by three chatters (own logins, every Creator), `all_models_creators` Creators (10 small). OF's chat
+  list at its wire (`lib/all_models_wire.py`: `filter=unread` honoured, OF's 10-row cap, mark-as-read modelled,
+  `mark_read_out_of_band` for a read on OF's own site). Phases, each OF's calls by route and per Creator plus the
+  relay's counter by Caller kind (`of-budget.json`): A opens cold, B while A's App-open warm still runs (B's calls:
+  the counter's non-warm, non-refresher rows over its open; `warm: reused` expected), C past the reuse window; 120 s idle with the purchases loop on; 6 plain DMs, a new fan and 2 tips (row lag per tab); A opens an unread
+  chat (B's and C's dot and Unread chip: metric, the cross-chatter read event is a sibling PR's check); A replies
+  (B's row lag); a chat read on OF (any tab clears? then `unread-parity.json`: All vs the `filter=unread` list);
+  then B and C close (120 s, A alone) and A closes (30 s, no tab). The Shared refresher runs (`RELAY_ENV`
+  `SHARED_REFRESHER=1`, both Cycles 60 s): `idle_refresher_per_creator_min {n3, n1}`, `refresh_staleness` (from
+  `/admin/accounts` `freshness` every 5 s in both idle phases), `refresher_calls_no_tab` (`lib/all_models_refresher.py`).
+  Checks (`lib/all_models_faults.py`): `SECOND_OPEN_SHARED`, `IDLE_BUDGET`, `DM_NO_LIST_REREAD`, `DM_ROW_LAG`,
+  `REFRESHER_FLAT_IN_N`, `REFRESH_WITHIN_CYCLE`, `REFRESHER_STOPS_WITHOUT_TABS`.
+  Fault `warm-ignores-reuse` (`app_open_warm.start` forgets every warm: `SECOND_OPEN_SHARED` alone);
+  `refresher-per-subscriber` (one refresher job per tab subscriber per Creator, each its own exit-queue entry:
+  `REFRESHER_FLAT_IN_N` alone). Metric
+  `bg_lane_wedge` (lane waiters from `/admin/priority-lanes/stats` + tab reads stuck > 30 s). Budgets and their
+  product sources: the scenario's docstring.
 
 ## Fake servers: thread budget
 

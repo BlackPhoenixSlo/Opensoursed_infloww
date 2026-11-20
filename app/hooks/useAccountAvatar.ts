@@ -31,13 +31,19 @@ export interface AccountAvatar {
   avatarThumbs?: { c50?: string | null; c144?: string | null } | null;
 }
 
+/** How old a relay-cached `/users/me` these readers take (s): useAccountProfile's staleTime. Identity only
+ *  (avatar, name, paid/free), so a new tab's per-Creator reads (the Messages Pro strip, All Models) hit the relay's
+ *  entry, not OnlyFans, for that long; the relay serves its plain 60 s entry first when fresh. */
+export const PROFILE_MAX_AGE_S = 1800;
+
 /** One Creator's own `/users/me`, or null (failed read, or a body for
  *  anyone else). The queryFn of `["of-profile", accountId]`. */
 export async function fetchOwnProfile<T extends { id?: number | string }>(
   accountId: string, signal?: AbortSignal,
 ): Promise<T | null> {
   try {
-    const me = await relay.get<T>("/api/of/v2/users/me", { accountId, priority: "background" }, signal);
+    const me = await relay.get<T>("/api/of/v2/users/me",
+      { accountId, priority: "background", maxAge: PROFILE_MAX_AGE_S }, signal);
     return me?.id != null && String(me.id) === accountId ? me : null;
   } catch {
     return null;

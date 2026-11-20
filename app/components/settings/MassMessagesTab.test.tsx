@@ -144,6 +144,92 @@ describe("bulk unsend on the Mass messages tab", () => {
     await waitFor(() => expect(cancels()).toEqual(["acc-b:203"]));
   });
 
+  it("the button counts follow the clock: a row crossing 4h joins \"(N)\" within a minute", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      await mount();
+      expect(button(/^Unsend free text >4h/).textContent).toContain("(3)");
+      // 105 was sent 1h ago: 3h01m later it is past the 4h gate, and the label says so without a click.
+      await act(async () => { vi.advanceTimersByTime(3 * H + 60_000); });
+      expect(button(/^Unsend free text >4h/).textContent).toContain("(4)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Unsend all with no chip deletes one at a time, Creator by Creator", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    relayDelete.mockImplementation(async () => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+      return { success: true };
+    });
+    await mount();
+    await act(async () => { fireEvent.click(button(/^Unsend all/)); });
+    await answer("Unsend");
+    await waitFor(() => expect(cancels()).toHaveLength(9));
+    expect(peak).toBe(1);
+    // Each Creator's deletes run as one block: the Creator changes once.
+    const creators = cancels().map((c) => c.split(":")[0]);
+    expect(creators.filter((c, i) => i === 0 || c !== creators[i - 1])).toHaveLength(2);
+  });
+
+  /** Holds each DELETE until the test releases it; returns the release fn. */
+  function heldDeletes() {
+    const waiting: (() => void)[] = [];
+    relayDelete.mockImplementation(() => new Promise((res) => waiting.push(() => res({ success: true }))));
+    return async () => {
+      await waitFor(() => expect(waiting.length).toBeGreaterThan(0));
+      await act(async () => { waiting.shift()!(); });
+    };
+  }
+  /** True when a closing tab would be asked to stay (a beforeunload listener cancels it). */
+  const closeIsWarned = () => {
+    const e = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(e);
+    return e.defaultPrevented;
+  };
+
+  it("shows \"Unsending N of M…\" while it runs and warns before the tab closes until it ends", async () => {
+    const release = heldDeletes();
+    await mount();
+    expect(closeIsWarned()).toBe(false);
+    await act(async () => { fireEvent.click(button(/^Unsend free text >4h/)); });
+    await answer("Unsend");
+    expect(await screen.findByRole("status")).toHaveTextContent("Unsending 0 of 3…");
+    expect(closeIsWarned()).toBe(true);
+    await release();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Unsending 1 of 3…"));
+    expect(relayDelete).toHaveBeenCalledTimes(2);
+    await release();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Unsending 2 of 3…"));
+    await release();
+    await waitFor(() => expect(screen.queryByText(/^Unsending \d+ of/)).toBeNull());
+    expect(closeIsWarned()).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a run whose deletes fail still ends the warning and leaves the failed note", async () => {
+    relayDelete.mockRejectedValue(new Error("OF said no"));
+    await mount();
+    await act(async () => { fireEvent.click(button(/^Unsend free text >4h/)); });
+    await answer("Unsend");
+    expect(await screen.findByRole("alert")).toHaveTextContent("3 of 3 unsends failed.");
+    expect(closeIsWarned()).toBe(false);
+  });
+
+  it("leaving the tab mid-run drops the close warning", async () => {
+    heldDeletes();
+    await mount();
+    await act(async () => { fireEvent.click(button(/^Unsend all/)); });
+    await answer("Unsend");
+    await waitFor(() => expect(closeIsWarned()).toBe(true));
+    cleanup();
+    expect(closeIsWarned()).toBe(false);
+  });
+
   it("some unsends failing says so under the bar, not in a browser alert", async () => {
     relayDelete.mockRejectedValueOnce(new Error("OF said no"));
     await mount();

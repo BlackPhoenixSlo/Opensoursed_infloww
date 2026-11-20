@@ -23,6 +23,10 @@
  *     shows the note until the next row opened, or the next open.
  *   • `cleared` (`chatterly:notif-cleared` — another bell opened, a row or a
  *     toast clicked) zeroes the count.
+ *   • `markRead`: the OnlyFans mark-read write, once per open, when the
+ *     OnlyFans list first comes on screen in it (as OF web does on opening
+ *     its notifications): "due" then, "sent" once the bell sent it
+ *     (`markReadSent`); "none" until the list is shown.
  */
 
 export const BADGE_MAX = 999;
@@ -38,7 +42,10 @@ export interface BellState {
   /** OnlyFans arrivals not yet seen. */
   arrivals: number;
   tabsFull: boolean;
+  markRead: MarkRead;
 }
+
+export type MarkRead = "none" | "due" | "sent";
 
 export type BellAction =
   /** `agencyUnread`: the Agency tab's unread count, 0 when there is no tab. */
@@ -48,9 +55,10 @@ export type BellAction =
   | { type: "pane"; pane: BellPane }
   | { type: "tabsFull"; full: boolean }
   | { type: "arrived" }
-  | { type: "cleared" };
+  | { type: "cleared" }
+  | { type: "markReadSent" };
 
-export const initialBellState: BellState = { open: false, pane: "of", arrivals: 0, tabsFull: false };
+export const initialBellState: BellState = { open: false, pane: "of", arrivals: 0, tabsFull: false, markRead: "none" };
 
 /** The OnlyFans list is what the panel shows: arrivals are seen as they land. */
 export function ofListOnScreen(s: BellState): boolean {
@@ -62,22 +70,41 @@ export function notificationBellReducer(state: BellState, action: BellAction): B
     case "open": {
       if (state.open) return state;
       const pane: BellPane = state.arrivals === 0 && action.agencyUnread > 0 ? "agency" : "of";
-      return { open: true, pane, arrivals: 0, tabsFull: false };
+      return { open: true, pane, arrivals: 0, tabsFull: false, markRead: pane === "of" ? "due" : "none" };
     }
     case "openAgency":
-      return state.open && state.pane === "agency" ? state : { ...state, open: true, pane: "agency", tabsFull: false };
+      if (state.open) return state.pane === "agency" ? state : { ...state, pane: "agency", tabsFull: false };
+      return { ...state, open: true, pane: "agency", tabsFull: false, markRead: "none" };
     case "close":
       return state.open ? { ...state, open: false } : state;
-    case "pane":
+    case "pane": {
+      const ofShown = state.open && action.pane === "of";
       return {
         ...state, pane: action.pane,
-        arrivals: state.open && action.pane === "of" ? 0 : state.arrivals,
+        arrivals: ofShown ? 0 : state.arrivals,
+        markRead: ofShown && state.markRead === "none" ? "due" : state.markRead,
       };
+    }
     case "tabsFull":
       return state.tabsFull === action.full ? state : { ...state, tabsFull: action.full };
     case "arrived":
       return ofListOnScreen(state) ? state : { ...state, arrivals: Math.min(BADGE_MAX, state.arrivals + 1) };
     case "cleared":
       return state.arrivals === 0 ? state : { ...state, arrivals: 0 };
+    case "markReadSent":
+      return state.markRead === "due" ? { ...state, markRead: "sent" } : state;
   }
+}
+
+/** A Creator's cached OnlyFans count (`["of-notif-count", id]`), undefined when never read. */
+export type CachedCount = (accountId: string) => number | undefined;
+
+/** Messages Pro's badge under All Models: the cached counts summed, an unknown one as 0. */
+export function cachedCountSum(ids: readonly string[], countOf: CachedCount): number {
+  return ids.reduce((sum, id) => sum + (countOf(id) ?? 0), 0);
+}
+
+/** "Mark all read"'s Creators: every one not known to be at 0 (no OF write for nothing). */
+export function markAllTargets(ids: readonly string[], countOf: CachedCount): string[] {
+  return ids.filter((id) => countOf(id) !== 0);
 }

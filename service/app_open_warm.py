@@ -20,14 +20,29 @@ cache, only the rail and bell entries it read before the warm.
   pace(account_ids, poll): the view-lease route's other lease gains, `poll`ed through the gate, feed only: never
       one read each at once (a restart or a tab back from hidden re-leases many). At its turn a Creator polled
       within PURCHASES_POLL_FAST_S, or no longer leased (`view_lease.is_leased`), is skipped.
+  refresh(account_id, run, *, wanted) -> bool: a Shared refresher job (docs/spec/watched-creator-refresher
+      phase-01) through the gate; False when the Creator's entry is already held. A warm takes a queued refresh's
+      place; a refresh never displaces a warm. At its turn `wanted(aid)` False drops it unread (no GAP_S); else
+      `run(aid)` runs as its own task, the exit waiting at most JOB_DEADLINE_S: past it the exit is freed
+      (`shared_refresher_job_timeout`), the walk never cancelled, its result still landing.
+  hold(account_id, wait_s): a refresher read's terminal 429: the Creator's whole exit reads nothing, for any caller,
+      before now + wait_s (a GAP_S after a read never shortens it).
+  pending(account_id) -> bool: queued or reading in a warm now.
   start(principal, account_ids, leased_first, *, refreshed=()) -> {Creator: "started" | "reused"}
       Schedules the warm and returns at once. `account_ids` are the principal's (the route drops
       watchers); dead-session, deactivated and no-session Creators are skipped (absent from the
-      answer; `transaction_ingest.live_account_ids`). A Creator warmed within REUSE_S, or queued or
-      reading in a warm now, is `reused` (one whose warm ended publishes `creator_warmed` at once: its
-      entries are still served), `refreshed` or not: many Employees, or many tabs opening on one
-      selection, cost one warm per Creator. One whose warm failed within REUSE_S is skipped (absent: the
-      tab's own read covers it). The rest are `started` into the gate: `refreshed` (the route's Select
+      answer; `transaction_ingest.live_account_ids`). `reuse_decision` per Creator: one queued or
+      reading in a warm now, warmed within REUSE_S, or warmed within FRESH_S while its OF WebSocket has
+      stayed connected since that warm landed (`of_ws.connected_since`: its frames keep the warmed
+      window current, as roster-counts' `ws_kept`) is `reused` (one whose warm ended publishes
+      `creator_warmed` at once: its entries are still served), `refreshed` or not: many Employees, or
+      many tabs opening on one selection, cost one warm per Creator. With the Shared refresher on
+      (Netting, ADR-0044) `warmed_age` is the age of the Creator's one Last refresh
+      (`shared_refresher.last_refresh`, written by whichever of the refresher or a warm landed), `fresh_s`
+      its Cycle (`shared_refresher.cycle_for`) and `ws_kept` True (the window invariant replaces the
+      socket test): `reused` within its Cycle, socket up or down alike. One whose warm failed within
+      REUSE_S is skipped (absent: the tab's own read covers it). The rest are `started` into the gate:
+      `refreshed` (the route's Select
       refreshes, already running and `note_read`) at the front of their exit, their feed never read again
       here; then Creators in `leased_first`, then in `account_ids` order.
       Per Creator, one background walk (`of_pacing.walk`, Caller kind `walk:app_open_warm`, its pages
@@ -37,13 +52,19 @@ cache, only the rail and bell entries it read before the warm.
            current); a Creator it flags a Dead session reads nothing more;
         2-4. the server's `app_open_warm_reads` (looked up at call time): the chats window (roster-counts'
            recompute with bypass, rewarming the Fan List's page 0), the rail's tip and purchases lists
-           and the notifications count, into the entries the pass-through routes serve.
-      At most 5 reads per Creator per REUSE_S. Then `creator_warmed` (house envelope); a Creator whose
-      reads failed publishes nothing and is never `reused` (the tab's own read covers it).
+           and the notifications count, into the entries the pass-through routes serve; with the Shared
+           refresher on, first `/users/me` bypassing the cache, and when it was kept and every read landed,
+           the Creator's Last refresh (`shared_refresher.note_refresh`).
+      At most 5 reads per Creator per REUSE_S (6 with the Shared refresher on). Then `creator_warmed`
+      (house envelope); a Creator whose reads failed publishes nothing and is never `reused` (the tab's own read covers it).
       The warm only reads: no send, fan write or automation run waits on it.
 
 Knobs, read here only: APP_OPEN_WARM_GAP_S (default 1.0, of_pacing.PAGE_GAP_S: OF's "Please allow
-1 seconds"), APP_OPEN_WARM_REUSE_S (default 30, the notifications pass-through's cache TTL). State is
+1 seconds"), APP_OPEN_WARM_REUSE_S (default 30, the notifications pass-through's cache TTL),
+APP_OPEN_WARM_FRESH_S (default and cap FRESH_MAX_S 300, the roster count's TTL, the one entry the warm
+re-reads past its cache; also at most PURCHASES_POLL_SLOW_S: a skipped warm skips its feed poll, so the
+feed is never older than an Idle Creator's tier; under REUSE_S it adds nothing). The 30 s entries (money
+lists, count) are not held past their TTL: a tab re-reads an expired one through the same cache. State is
 in Relay memory by design: a restart's first open warms everything.
 """
 from __future__ import annotations
@@ -71,6 +92,9 @@ log = logging.getLogger("of-relay.app_open_warm")
 
 GAP_S = env_float("APP_OPEN_WARM_GAP_S", 1.0, 0.0)
 REUSE_S = env_float("APP_OPEN_WARM_REUSE_S", 30.0, 0.0)
+FRESH_MAX_S = 300.0                     # accounts_admin_api.ROSTER_COUNT_TTL_S (a test pins them equal)
+FRESH_S = min(env_float("APP_OPEN_WARM_FRESH_S", FRESH_MAX_S, 0.0), FRESH_MAX_S, poll_decide.SLOW_S)
+JOB_DEADLINE_S = 30.0                   # a refresh job's hold on its exit (phase-01 shared refresher, Pacing)
 
 DIRECT = "direct"                       # proxies.egress_identity's key (and the label) without a proxy
 _clock = time.monotonic                 # the reuse memo's clock (tests inject one)
@@ -81,11 +105,18 @@ _tasks: set[asyncio.Task] = set()       # the running exit workers (held: a bare
 
 
 class _Job:
-    """One queued read on an exit: the warm (`poll` None; `feed`: read its feed too) or a lease gain's `poll`."""
-    __slots__ = ("feed", "poll")
+    """One queued read on an exit: the warm (`poll` and `run` None; `feed`: read its feed too), a lease gain's `poll`
+    or a Shared refresher job's `run` (re-checked by `wanted` at its turn)."""
+    __slots__ = ("feed", "poll", "run", "wanted")
 
-    def __init__(self, feed: bool, poll: Callable[[str], Awaitable[Any]] | None) -> None:
-        self.feed, self.poll = feed, poll
+    def __init__(self, feed: bool, poll: Callable[[str], Awaitable[Any]] | None,
+                 run: Callable[[str], Awaitable[Any]] | None = None,
+                 wanted: Callable[[str], Awaitable[bool]] | None = None) -> None:
+        self.feed, self.poll, self.run, self.wanted = feed, poll, run, wanted
+
+    @property
+    def warm(self) -> bool:
+        return self.poll is None and self.run is None
 
 
 class _Exit:
@@ -145,6 +176,41 @@ def current(account_id: str) -> bool:
     return _current(account_id) or account_id in _pending or (at is not None and _clock() - at < REUSE_S)
 
 
+def _ws_since(account_id: str) -> float | None:
+    """time.monotonic() when the Creator's OF WebSocket connected, None while down (of_ws.connected_since)."""
+    import of_ws
+    return of_ws.connected_since(account_id)
+
+
+def reuse_decision(*, pending: bool, warmed_age: float | None, failed_age: float | None, ws_kept: bool,
+                   reuse_s: float = REUSE_S, fresh_s: float = FRESH_S) -> str:
+    """`start`'s call for one Creator: "reused" (queued or reading in a warm now: concurrent opens coalesce;
+    warmed under `reuse_s` ago; or under `fresh_s` ago with `ws_kept`, its WebSocket connected since that warm
+    landed), "skip" (its last warm failed under `reuse_s` ago), else "start". Ages in seconds, None: never."""
+    if pending:
+        return "reused"
+    if warmed_age is not None and (warmed_age < reuse_s or (ws_kept and warmed_age < fresh_s)):
+        return "reused"
+    if failed_age is not None and failed_age < reuse_s:
+        return "skip"
+    return "start"
+
+
+def _decide(account_id: str, now: float) -> str:
+    import shared_refresher              # here: it imports this module
+    at, failed = _warmed_at.get(account_id), _failed_at.get(account_id)
+    failed_age = None if failed is None else now - failed
+    if shared_refresher.ENABLED:         # Netting (ADR-0044): the shared Last refresh within the Creator's Cycle; the
+        last = shared_refresher.last_refresh(account_id)   # window invariant stands for the socket test (same clock)
+        return reuse_decision(pending=account_id in _pending, warmed_age=None if last is None else now - last,
+                              failed_age=failed_age, ws_kept=True, fresh_s=shared_refresher.cycle_for(account_id))
+    since = _ws_since(account_id) if at is not None else None
+    return reuse_decision(pending=account_id in _pending,
+                          warmed_age=None if at is None else now - at,
+                          failed_age=failed_age,
+                          ws_kept=since is not None and at >= since)
+
+
 def _publish(account_id: str) -> None:
     """`creator_warmed`, with what the warmed entries serve now (server.app_open_warm_values: the roster count and
     the notifications count, when held) and `now` (epoch ms, the tab's clock-skew reference): the tab writes those
@@ -173,8 +239,24 @@ async def _warm_one(account_id: str, feed: bool) -> bool:
     return await of_pacing.walk(account_id, "app_open_warm", run)
 
 
+def _walk_done(t: asyncio.Task) -> None:
+    _tasks.discard(t)
+    if not t.cancelled() and t.exception() is not None:
+        log.warning("shared_refresher_job_failed task=%s", t.get_name(), exc_info=t.exception())
+
+
 async def _run(aid: str, job: _Job, label: str) -> bool:
     """One queued job; True when it read (the exit then waits GAP_S)."""
+    if job.run is not None:                  # a Shared refresher job: still wanted? then its walk, JOB_DEADLINE_S
+        if not await job.wanted(aid):
+            return False
+        t = asyncio.create_task(job.run(aid), name=f"shared-refresher:{aid}")
+        _tasks.add(t)                        # held; never cancelled here: past the deadline its result still lands
+        t.add_done_callback(_walk_done)
+        done, _ = await asyncio.wait({t}, timeout=JOB_DEADLINE_S)
+        if not done:
+            log.warning("shared_refresher_job_timeout account=%s proxy=%s", aid, label)
+        return True
     if job.poll is not None:                 # a lease gain: feed only, still wanted?
         if _current(aid) or not view_lease.is_leased(aid):
             return False
@@ -216,11 +298,11 @@ async def _work(key: str, ex: _Exit) -> None:
                 log.warning("app_open_warm_gate_failed account=%s proxy=%s", aid, ex.label, exc_info=True)
                 read = True
             if read:
-                ex.free_at = time.monotonic() + GAP_S
+                ex.free_at = max(ex.free_at, time.monotonic() + GAP_S)   # a `hold` set meanwhile stands
     finally:
         ex.task = None
         for aid, job in ex.jobs.items():     # cancelled: nothing left queued may look pending
-            if job.poll is None:
+            if job.warm:
                 _pending.discard(aid)
         ex.jobs.clear()
 
@@ -236,14 +318,16 @@ def _gate(account_id: str) -> tuple[str, _Exit]:
     return key, ex
 
 
-def _enqueue(account_id: str, job: _Job, *, front: bool = False) -> None:
-    """Queue `job` on the Creator's exit (one entry per Creator: a queued lease gain becomes the warm; a queued
-    warm absorbs a lease gain) and make sure the exit's worker runs."""
+def _enqueue(account_id: str, job: _Job, *, front: bool = False) -> bool:
+    """Queue `job` on the Creator's exit (one entry per Creator: a queued lease gain or refresh becomes the warm; a
+    queued job absorbs any other) and make sure the exit's worker runs. True when `job` took the entry."""
     key, ex = _gate(account_id)
     have = ex.jobs.get(account_id)
+    took = have is None
     if have is not None:
-        if job.poll is None and have.poll is not None:
+        if job.warm and not have.warm:
             ex.jobs[account_id] = job        # the warm reads more: it takes the place
+            took = True
         if front:
             ex.jobs = {account_id: ex.jobs.pop(account_id), **ex.jobs}
     elif front:
@@ -254,6 +338,7 @@ def _enqueue(account_id: str, job: _Job, *, front: bool = False) -> None:
         t = ex.task = asyncio.create_task(_work(key, ex), name=f"app-open-warm:{ex.label}")
         _tasks.add(t)
         t.add_done_callback(_tasks.discard)
+    return took
 
 
 def note_read(account_id: str) -> None:
@@ -263,6 +348,17 @@ def note_read(account_id: str) -> None:
     ex.free_at = max(ex.free_at, time.monotonic() + GAP_S)
 
 
+HOLD_MAX_S = 900.0   # the longest one 429 holds an exit (OF may ask any number, `inf` included)
+
+
+def hold(account_id: str, wait_s: float) -> None:
+    """A Shared refresher read on the Creator's exit met a terminal 429 (429s follow the proxy IP): no read there,
+    by any caller, before `wait_s` from now (OF's asked wait)."""
+    _, ex = _gate(account_id)
+    wait_s = wait_s if 0.0 <= wait_s <= HOLD_MAX_S else HOLD_MAX_S   # also inf / nan: never an endless hold
+    ex.free_at = max(ex.free_at, time.monotonic() + wait_s)
+
+
 async def start(principal: tuple[str, str], account_ids: Iterable[str], leased_first: Iterable[str] = (), *,
                 refreshed: Iterable[str] = ()) -> dict[str, str]:
     now = _clock()
@@ -270,12 +366,12 @@ async def start(principal: tuple[str, str], account_ids: Iterable[str], leased_f
     out: dict[str, str] = {}
     fresh: list[str] = []
     for aid in await _eligible(account_ids):
-        at, failed = _warmed_at.get(aid), _failed_at.get(aid)
-        if aid in _pending or (at is not None and now - at < REUSE_S):
+        call = _decide(aid, now)
+        if call == "reused":
             out[aid] = "reused"
             if aid not in _pending:
                 _publish(aid)                 # its entries are still served: this open's tabs read them now
-        elif failed is not None and now - failed < REUSE_S:
+        elif call == "skip":
             continue                          # failed just now: not again (the tab's own read covers it)
         else:
             out[aid] = "started"
@@ -301,6 +397,19 @@ def pace(account_ids: Iterable[str], poll: Callable[[str], Awaitable[Any]]) -> N
     at once; no event, no reuse memo. `poll` never raises."""
     for aid in dict.fromkeys(account_ids):
         _enqueue(aid, _Job(True, poll))
+
+
+def refresh(account_id: str, run: Callable[[str], Awaitable[Any]], *,
+            wanted: Callable[[str], Awaitable[bool]]) -> bool:
+    """A Shared refresher job through the gate (module docstring). Returns at once: True when queued, False when
+    the Creator already holds its exit's entry (a queued warm, lease gain or refresh absorbs it; a warm arriving
+    later takes a queued refresh's place, which then never runs)."""
+    return _enqueue(account_id, _Job(False, None, run, wanted))
+
+
+def pending(account_id: str) -> bool:
+    """Queued or reading in a warm now."""
+    return account_id in _pending
 
 
 def summary(result: dict[str, Any]) -> str:

@@ -6,6 +6,9 @@
  *
  * Events we care about (matching service/event_transcoder.py):
  *   • api2_chat_message       — a new message in some chat
+ *   • chat_responded          — a person's DM through the relay, from any
+ *     tab (any-scope): the fan's row in every cached chat list takes it
+ *     (`applyCachedReply`), no read
  *   • chat_messages           — a chat preview update (OF push)
  *   • transaction_recorded    — a revenue row landed in our ledger (PPV
  *     unlock / tip / sub), emitted post-commit by transaction_ingest.py
@@ -32,6 +35,7 @@ import {
   rosterPriorFromRow,
   rosterDelta,
   applyRosterDelta,
+  type RosterCount,
   type RosterDelta,
 } from "@/hooks/useRosterCounts";
 import { ofUserFullKey } from "@/hooks/useOFUser";
@@ -39,7 +43,9 @@ import { patchQueryData } from "@/lib/cacheWrite";
 import { scheduledSendsKey } from "@/hooks/useServerScheduledSends";
 import type { OFChatItem, OFMessage } from "@/lib/relay";
 import { isValidFanId, sameUserId, type FanId } from "@/lib/fanId";
-import { bumpChatPages, fanRowMatcher, freshestFanRow, mayAddRow, type ChatPages } from "@/lib/chatsCache";
+import {
+  applyReply, bumpChatPages, fanRowMatcher, freshestFanRow, mayAddRow, parseReply, type ChatPages, type Reply,
+} from "@/lib/chatsCache";
 import { insertByCreatedAt, insertMsg, toUtcIso } from "@/lib/threadCache";
 
 interface ChatMessagePayload {
@@ -174,6 +180,25 @@ function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: FanId) 
     queryKey: ["fan-spend", accountId],
     predicate: (q) => String(q.queryKey[2] ?? "").split(",").includes(String(fanId)),
   });
+}
+
+/** A person's reply (`chat_responded`) written into every cached chat list holding `accountId` (lib/chatsCache
+ *  `applyReply`: preview, read, order; a page read after it untouched), and the roster badge moved from the
+ *  fan's prior row as for a live outbound message. No read: a fan in no cached list waits for the list's own
+ *  next read. Idempotent with this tab's own send (`useSendMessage` bumped the row and the badge first). */
+export function applyCachedReply(
+  qc: QueryClient, accountId: string, reply: Reply,
+  patchRoster?: (accountId: string, fn: (cur: RosterCount) => RosterCount) => void,
+): void {
+  const qs = qc.getQueryCache().findAll({ queryKey: ["chats"] });
+  const prior = findFanChatRow(qc, accountId, reply.fanId);
+  for (const q of qs) {
+    const data = q.state.data as ChatPages | undefined;
+    const next = applyReply(q.queryKey, data, accountId, reply);
+    if (next !== data) qc.setQueryData(q.queryKey, next);
+  }
+  const delta = patchRoster && rosterDeltaForEvent({ isOutbound: true, existing: prior, eventCreatedAt: reply.createdAt });
+  if (delta && (delta.dUnread !== 0 || delta.dOwe !== 0)) patchRoster!(accountId, (cur) => applyRosterDelta(cur, delta));
 }
 
 // Moved to lib/threadCache; re-exported for the modules and tests that import them here.
@@ -385,6 +410,16 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
       });
     });
 
+    // A person answered a fan through the relay, in this tab or another (any-scope): the row moves with no read.
+    const offReply = eventBus.on("chat_responded", (env: EventEnvelope) => {
+      const accountId = env.__account_id ?? null;
+      const reply = parseReply(env.chat_responded);
+      if (!accountId || !reply) return;
+      const allowed = allowedRef.current;
+      if (allowed.size > 0 && !allowed.has(accountId)) return;
+      applyCachedReply(qc, accountId, reply, allowed.has(accountId) ? patchLocalRef.current : undefined);
+    });
+
     // A revenue row landed in the local transactions ledger (PPV unlock seen
     // by the payouts ingest, tip promote, status flip). Emitted post-commit
     // server-side, so refetching here always reads the new row.
@@ -412,6 +447,6 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
     // that slipped through near the top. Deep rows keep moving on this handler
     // alone, which is exactly why the poll no longer needs to re-walk them.
 
-    return () => { offMsg(); offTx(); };
+    return () => { offMsg(); offReply(); offTx(); };
   }, [qc]);
 }

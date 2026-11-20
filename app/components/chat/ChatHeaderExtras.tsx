@@ -24,7 +24,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { openGroupTab } from "@/lib/groupChannel";
 import { useMassExclude } from "@/hooks/useMassExclude";
-import { relay, type OFChatItem } from "@/lib/relay";
+import { relay } from "@/lib/relay";
+import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
 import type { FanId } from "@/lib/fanId";
 import { MP } from "@/lib/messagesPro";
 
@@ -45,27 +46,16 @@ export function ChatHeaderExtras({ id, accountId, fanId }: Props) {
   const qc = useQueryClient();
   const { status, flash } = useMenuStatus();
 
-  // Moved from the Kebab menu unchanged: DELETE mark-as-read, then patch the
-  // chats cache so the row's blue dot returns in the list immediately.
+  // DELETE mark-as-read, then the same cache write as the relay's
+  // `chat_read_changed` event (flipCachedReadState): the blue dot returns in
+  // every list and the row enters the cached Unread lists, whichever of this
+  // answer and the event lands first. Stamped now: a list read after the
+  // answer already holds it.
   const markUnread = useMutation({
     mutationFn: () =>
       relay.delete(`/api/of/v2/chats/${fanId}/mark-as-read`, { accountId }),
     onSuccess: () => {
-      type Page = { rows: OFChatItem[]; hasMore: boolean };
-      type Infinite = { pages: Page[]; pageParams: unknown[] };
-      qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
-        const data = q.state.data as Infinite | undefined;
-        if (!data?.pages) return;
-        const newPages: Page[] = data.pages.map((p) => ({
-          ...p,
-          rows: p.rows.map((c) =>
-            (c.__accountId ?? "") === accountId && c.withUser.id === fanId
-              ? { ...c, hasUnread: true, unreadMessagesCount: Math.max(1, c.unreadMessagesCount ?? 1) }
-              : c,
-          ),
-        }));
-        qc.setQueryData(q.queryKey, { ...data, pages: newPages });
-      });
+      flipCachedReadState(qc, accountId, { fanId, unread: true, at: Date.now() });
       flash(true, "Marked unread");
     },
     onError: (e: Error) => flash(false, e.message),

@@ -199,7 +199,7 @@ screens (posts, vault, stats, promos) — real, but not "chat works the same."
 | tracking links | `tracking_links` `create_tracking_link` | `/trackinglinks` (`/claim` `/stats`) | 🟢 |
 | templates | `message_templates` `create_template` | 🔴 **no server-side template store found** | 🔴 |
 | media upload | `upload_media` `request_signed_upload` `convert_register` | signed-upload chain via `/media` (not reversed) | 🟠 |
-| notifications feed | `notifications()` `notifications_count()` | `GET /notifications` `/notifications/ack` `/unack` | 🟢 |
+| notifications feed | `notifications()` `notifications_count()` `notifications_read()` | `GET /notifications` `/notifications/ack` (bundle-derived) `/unack` | 🟢 |
 
 🔴 **Templates**: OF stores message templates server-side; Fansly's bundle shows
 no equivalent endpoint. If templates matter cross-platform, store them **in our

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatSortMode } from "@/hooks/useChatSortMode";
 import { lastMessageFromFan } from "@/lib/fanId";
 import type { OFChatItem } from "@/lib/relay";
-import { attentionCount, attentionOf, chipCounts, sortFanRows } from "./fanListSort";
+import { attentionCount, attentionOf, chipCounts, chipCountsWithUnreadView, sortFanRows } from "./fanListSort";
 
 const CREATOR = "100000001";
 const NOW = Date.parse("2026-11-02T12:00:00Z");
@@ -156,5 +156,34 @@ describe("chipCounts", () => {
     expect(chipCounts(rows, { isOwed })).toEqual(want);
     // The active chip's count is All's rule alone.
     expect(attentionCount(rows, isOwed)).toBe(want.allCount);
+  });
+});
+
+describe("chipCountsWithUnreadView", () => {
+  // The Unread view was read from OF half an hour ago (`asOf`); ages are hours.
+  const asOf = NOW - 0.5 * 3_600_000;
+  const read = (c: OFChatItem) => ({ ...c, hasUnread: false, unreadMessagesCount: 0 });
+  it.each([
+    { case: "no view: All's counts as before", all: [chat("U", 0, "unread", 1)], view: null,
+      want: { allCount: 1, unreadCount: 1, oweReplyCount: 1 } },
+    { case: "read elsewhere: unread in All, not in the complete view → no Unread badge, still owed",
+      all: [chat("U", 0, "unread", 1)], view: [],
+      want: { allCount: 1, unreadCount: 0, oweReplyCount: 1 } },
+    { case: "still unread: in the view", all: [chat("U", 0, "unread", 1)], view: [chat("U", 0, "unread", 1)],
+      want: { allCount: 1, unreadCount: 1, oweReplyCount: 1 } },
+    { case: "turned unread after the view's read (live message): kept and counted",
+      all: [chat("N", 0, "unread", 0)], view: [],
+      want: { allCount: 1, unreadCount: 1, oweReplyCount: 1 } },
+    { case: "the view holds chats beyond All's loaded pages: Unread counts them",
+      all: [chat("I", 0, "idle", 2)], view: [chat("D", 0, "unread", 5), chat("E", 0, "unread", 6)],
+      want: { allCount: 0, unreadCount: 2, oweReplyCount: 0 } },
+    { case: "restricted in the view never counted",
+      all: [], view: [chat("R", 0, "unread", 1, true)],
+      want: { allCount: 0, unreadCount: 0, oweReplyCount: 0 } },
+    { case: "a view row this browser marked read is not counted",
+      all: [], view: [read(chat("U", 0, "unread", 1))],
+      want: { allCount: 0, unreadCount: 0, oweReplyCount: 0 } },
+  ])("$case", ({ all, view, want }) => {
+    expect(chipCountsWithUnreadView(all, view && { rows: view, asOf }, { isOwed })).toEqual(want);
   });
 });

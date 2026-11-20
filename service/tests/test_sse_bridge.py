@@ -158,27 +158,38 @@ async def case_outbound_send_advances_chat_preview():
 
 
 async def case_human_send_announces_chat_responded():
-    """A person's DM is announced as `chat_responded` (who answered which fan),
-    to that Creator's sessions only — never as a second chat message."""
+    """A person's DM is announced as `chat_responded` (who answered which fan, when, and OF's
+    answer cut to the row's preview), to the sessions that can see that Creator — never as a
+    second chat message. Any-scope: a tab scoped to another Creator of the same clamp gets it."""
     async with get_session() as s:
         e = Employee(display_name="Kingsley", user_id="owner-1")
         s.add(e)
         await s.flush()
         emp_id = e.id
-    mine, other = await events.subscribe("model:610"), await events.subscribe("model:611")
+    mine = await events.subscribe("model:610")
+    sibling = await events.subscribe("model:611", accounts=frozenset({"610", "611"}))
+    other = await events.subscribe("model:611", accounts=frozenset({"611"}))
+    sent = {"id": 9400, "text": "<p>hey</p>", "createdAt": "2026-06-04T12:00:00+00:00",
+            "media": [{"id": 1}], "price": 5, "fromUser": {"id": 610}, "isFree": False}
     try:
-        await events.publish_chat_responded(account_id="610", fan_id=901, employee_id=emp_id)
+        await events.publish_chat_responded(account_id="610", fan_id=901, employee_id=emp_id,
+                                            message=sent, at=1_780_000_000_000)
         await events.publish_chat_responded(account_id="610", fan_id=902, employee_id=None)
-        evs, leaked = await _drain(mine), await _drain(other)
+        evs, sib, leaked = await _drain(mine), await _drain(sibling), await _drain(other)
     finally:
         await events.unsubscribe("model:610", mine)
+        await events.unsubscribe("model:611", sibling)
         await events.unsubscribe("model:611", other)
 
-    assert leaked == [], f"another Creator's session got {leaked}"
-    assert [(e["__account_id"], e["chat_responded"]) for e in evs] == [
-        ("610", {"fan_id": 901, "by": "Kingsley"}),
-        ("610", {"fan_id": 902, "by": ""}),
-    ], evs
+    assert leaked == [], f"a session without the Creator got {leaked}"
+    assert sib == evs, (sib, evs)
+    first, second = (e["chat_responded"] for e in evs)
+    assert [e["__account_id"] for e in evs] == ["610", "610"], evs
+    assert first == {"fan_id": 901, "by": "Kingsley", "at": 1_780_000_000_000, "message": {
+        "id": 9400, "text": "<p>hey</p>", "createdAt": "2026-06-04T12:00:00+00:00", "mediaCount": 1, "price": 5.0,
+    }}, first
+    assert second["fan_id"] == 902 and second["by"] == "" and "message" not in second, second
+    assert isinstance(second["at"], int) and second["at"] > 1_700_000_000_000, second
 
 
 _harness.run(

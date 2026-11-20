@@ -98,6 +98,7 @@ export function FanListBulkBar({
     try {
       await relay.post("/api/of/v2/lists/users", { [listId]: picked.map((c) => c.withUser.id) }, { accountId: listsAccountId });
       qc.invalidateQueries({ queryKey: ["chat-folders", listsAccountId] });
+      qc.invalidateQueries({ queryKey: ["fan-lists", listsAccountId] }); // the composers' list counts
       qc.invalidateQueries({ queryKey: ["chats"] });
       flash(true, `Added ${plural(count, "Fan")} to "${name}"`);
     } catch (e) {

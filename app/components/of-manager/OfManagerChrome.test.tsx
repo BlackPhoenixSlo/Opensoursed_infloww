@@ -136,6 +136,7 @@ describe("OfManagerChrome", () => {
       { id: "3", nickname: "kim", has_session: true },
       { id: "4", nickname: "lu", has_session: true },
     ];
+    localStorage.setItem("chatterly:scope", "model:3");
     ui();
     const meFor = (id: string) => get.mock.calls.some((c) => c[0] === "/api/of/v2/users/me" && (c[1] as { accountId: string }).accountId === id);
     fireEvent.mouseEnter(screen.getByTitle("asdf"));
@@ -175,16 +176,40 @@ describe("OfManagerChrome", () => {
     expect(search).toHaveFocus();
   });
 
-  it("offers each Tag as a creator group that narrows the rows", async () => {
+  it("offers each Tag as a creator group that narrows the rows; no All creators pick", async () => {
     accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }];
     ui();
-    fireEvent.click(screen.getByRole("button", { name: "All creators" }));
+    fireEvent.click(await screen.findByRole("button", { name: "All tags" }));
+    expect(screen.queryByText("All creators")).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "VIP" }));
     expect(screen.getAllByTestId("of-creator-row")).toHaveLength(1);
     expect(screen.getByTitle("jade")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "VIP" }));
-    fireEvent.click(screen.getByRole("button", { name: "All creators" }));
+    fireEvent.click(screen.getByRole("button", { name: "All tags" }));
     expect(screen.getAllByTestId("of-creator-row")).toHaveLength(2);
+    // Clearing the Tag filter changes no scope.
+    expect(localStorage.getItem("chatterly:scope")).toBeNull();
+  });
+
+  it("with no Tags there is no menu", async () => {
+    get.mockImplementation(async (path: string) => (path === "/admin/settings/account" ? { tab: "account", config: {} } : { all: 250 }));
+    accounts = [{ id: "1", nickname: "asdf", has_session: true }];
+    ui();
+    await waitFor(() => expect(get.mock.calls.some((c) => c[0] === "/admin/settings/account")).toBe(true));
+    await new Promise((r) => setTimeout(r, 50));
+    get.mockImplementation(async (path: string) => (path === "/admin/settings/account" ? TAGS : { all: 250 }));
+    expect(screen.queryByRole("button", { name: "All tags" })).toBeNull();
+    expect(screen.queryByText("All creators")).toBeNull();
+  });
+
+  it("a saved All creators scope (Messages Pro's) shows the first live creator here, not saved", () => {
+    accounts = [{ id: "1", nickname: "dead", has_session: true, session_dead_at: "x" }, { id: "2", nickname: "jade", has_session: true }];
+    localStorage.setItem("chatterly:scope", "all");
+    ui();
+    expect(screen.getByTitle("jade")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Creator" })).toHaveTextContent("jade");
+    expect(localStorage.getItem("chatterly:scope")).toBe("all");
   });
 
   it("lists a watcher after the creators as a pickable row with a watcher badge; its pick stays OF Manager's", async () => {
@@ -209,7 +234,7 @@ describe("OfManagerChrome", () => {
     expect(localStorage.getItem("chatterly:scope")).toBe("model:2");
     expect(localStorage.getItem("chatterly:ofm-watcher")).toBeNull();
     // A Tag group hides it, as an untagged creator.
-    fireEvent.click(screen.getByRole("button", { name: "All creators" }));
+    fireEvent.click(await screen.findByRole("button", { name: "All tags" }));
     fireEvent.click(await screen.findByRole("button", { name: "VIP" }));
     expect(screen.getAllByTestId("of-creator-row")).toHaveLength(1);
   });
@@ -339,8 +364,7 @@ describe("OfManagerChrome", () => {
   it("a creator with session_dead_at shows the expired state, not the mirror", () => {
     accounts = [{ id: "1", nickname: "asdf", has_session: true, session_dead_at: "2026-10-19T00:00:00Z" }];
     ui();
-    expect(screen.getByText("OF view")).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle("asdf · Disconnected"));
+    // Its only creator, picked: the expired state.
     expect(screen.queryByText("OF view")).not.toBeInTheDocument();
     expect(screen.getByTestId("of-session-gone")).toHaveTextContent("This creator's OnlyFans connection has expired.");
     expect(screen.getByRole("link", { name: "Go To Creators Management" })).toHaveAttribute("href", "/creators");
@@ -352,6 +376,7 @@ describe("OfManagerChrome", () => {
       { id: "2", nickname: "dead", has_session: true, session_dead_at: "2026-10-19T00:00:00Z" },
       { id: "3", nickname: "none", has_session: false },
     ];
+    localStorage.setItem("chatterly:scope", "model:2");
     ui();
     expect(screen.queryByLabelText("Fullscreen")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Reload")).not.toBeInTheDocument();
@@ -395,7 +420,6 @@ describe("OfManagerChrome", () => {
     accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }];
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     ui();
-    expect(screen.queryByRole("button", { name: "Pop out" })).toBeNull(); // All creators: no view tools
     fireEvent.click(screen.getByTitle("jade"));
     fireEvent.click(screen.getByRole("button", { name: "Pop out" }));
     expect(open).toHaveBeenLastCalledWith("/of-manager/home?account=2", "_blank", "popup");
@@ -445,7 +469,7 @@ describe("OfManagerChrome Fan insights", () => {
     expect(screen.getByRole("complementary", { name: "Fan insights" })).toHaveTextContent("Fan Forty-Two");
   });
 
-  it("shows no Fan insights without ?chat=, off the chat page, or in All creators", () => {
+  it("shows no Fan insights without ?chat= or off the chat page", () => {
     chatPage("");
     localStorage.setItem("chatterly:scope", "model:1");
     ui();
@@ -453,11 +477,6 @@ describe("OfManagerChrome Fan insights", () => {
     expect(screen.queryByLabelText("Fan insights")).toBeNull();
     cleanup();
     nav.path = "/of-manager/messages"; nav.search = "?chat=42";
-    ui();
-    expect(screen.queryByLabelText("Fan insights")).toBeNull();
-    cleanup();
-    chatPage();
-    localStorage.setItem("chatterly:scope", "all");
     ui();
     expect(screen.queryByLabelText("Fan insights")).toBeNull();
   });

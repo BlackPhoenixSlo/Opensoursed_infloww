@@ -23,7 +23,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-from typing import AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from fastapi import Request
 
@@ -107,16 +107,18 @@ class _Sub:
     `batching` is set for sse_stream's subscribers (a bare `subscribe()`
     queue always gets single frames); `st` is its decaying events/s
     (ed.Stream), `open` the batch still taking events, `batches`/`coalesced`
-    counters for /admin/events/stats."""
+    counters for /admin/events/stats. `tab`: an app tab's stream
+    (`is_app_tab`), whose clamp is Open-tab (`open_tab_accounts`)."""
     __slots__ = ("q", "scope", "accounts", "agencies", "lost", "batching",
-                 "st", "open", "batches", "coalesced")
+                 "st", "open", "batches", "coalesced", "tab")
 
     def __init__(self, scope: str, accounts: frozenset[str] | None,
-                 agencies: frozenset[str]):
+                 agencies: frozenset[str], tab: bool = False):
         self.q: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAX)
         self.scope = scope
         self.accounts = accounts
         self.agencies = agencies
+        self.tab = tab
         self.lost = False
         self.batching = False
         self.st = ed.Stream(rate_at=time.monotonic())
@@ -190,7 +192,7 @@ async def _forward_typing(account_id: object, payload: object) -> None:
 
 async def subscribe(
     scope: str, *, accounts: frozenset[str] | None = None,
-    agencies: frozenset[str] = frozenset(),
+    agencies: frozenset[str] = frozenset(), tab: bool = False,
 ) -> asyncio.Queue:
     """Return a fresh queue subscribed to `scope`. Caller MUST unsubscribe.
 
@@ -199,21 +201,47 @@ async def subscribe(
       • "model:<account_id>" — events tagged with that __account_id
 
     `accounts` are the Creators the session may see (None: unclamped) and
-    `agencies` the owner user ids whose Agency-wide events it gets.
+    `agencies` the owner user ids whose Agency-wide events it gets; `tab`:
+    an app tab's stream (`is_app_tab`).
 
     Unknown scopes are accepted (registered but never matched), so the
     browser doesn't 500 on a typo — it just sees no traffic and reconnects.
     """
-    return _register(scope, accounts, agencies).q
+    return _register(scope, accounts, agencies, tab).q
 
 
 def _register(scope: str, accounts: frozenset[str] | None,
-              agencies: frozenset[str]) -> _Sub:
+              agencies: frozenset[str], tab: bool = False) -> _Sub:
     global _loop
     _loop = asyncio.get_running_loop()
-    sub = _Sub(scope, accounts, agencies)
+    sub = _Sub(scope, accounts, agencies, tab)
     _subs[sub.q] = sub
     return sub
+
+
+def is_app_tab(lease: str | None, referer: str | None) -> bool:
+    """An `/events` stream an app tab opened: marked `lease=1` (the app), or unmarked from a browser page (a
+    Referer, view_lease.legacy_stream_ids' test). The desktop notifier's (unmarked, no Referer) is not."""
+    return lease is not None or bool(referer)
+
+
+def open_tab_accounts() -> frozenset[str]:
+    """The Open-tab Creators (Shared refresher, phase-01): the union of the clamps of live app-tab subscribers,
+    minus watchers. An unclamped subscriber adds none."""
+    import accounts
+    return frozenset(a for a in _tab_clamps() if not accounts.is_watcher(a))
+
+
+def _tab_clamps() -> set[str]:
+    return {a for s in list(_subs.values()) if s.tab and s.accounts is not None for a in s.accounts}
+
+
+def _fresh(sub: _Sub, shared_refresher) -> dict[str, int]:
+    """The ping's `fresh` for one subscriber (P1 Contract 7): the Last refresh of each Open-tab Creator in its clamp
+    that has one. Watchers are not filtered here (no file read per ping): the refresher never reads one, so none
+    has a Last refresh."""
+    ids = _tab_clamps()
+    return shared_refresher.fresh_at(frozenset(ids if sub.accounts is None else ids & sub.accounts))
 
 
 async def unsubscribe(scope: str, q: asyncio.Queue) -> None:
@@ -521,12 +549,17 @@ async def publish_db_message(
 
 async def publish_chat_responded(
     *, account_id: str, fan_id: int, employee_id: int | None,
+    message: Any = None, at: int | None = None,
 ) -> None:
-    """`chat_responded {fan_id, by}` for `account_id`'s sessions once a person
-    sends a fan a DM through the relay (server._record_fan_send), so a
-    teammate's bell shows "<by> has responded" on that fan's message rows.
-    Its own type, not an `api2_chat_message`: the sender's tab already holds
-    the bubble (see test_sse_bridge's human path). Best-effort."""
+    """`chat_responded {fan_id, by, at, message?}` for every session that can see `account_id`
+    (any-scope, events_decide.ANY_SCOPE_TYPES) once a person sends a fan a DM through the relay
+    (server._record_fan_send): a teammate's bell shows "<by> has responded" on that fan's message
+    rows, and every other tab moves the fan's row in its cached chat lists (preview, owe-reply,
+    order; app hooks/useInboxRealtime) without a read. `message` is OF's send answer, cut to
+    `{id, text, createdAt, mediaCount, price}` (absent when it was not a dict); `at` epoch ms
+    (default now), so a list page read after it is left alone. Its own type, not an
+    `api2_chat_message`: the sender's tab already holds the bubble (see test_sse_bridge's human
+    path). Best-effort."""
     try:
         by = ""
         if employee_id is not None:
@@ -535,8 +568,17 @@ async def publish_chat_responded(
             async with get_session() as s:
                 e = await s.get(Employee, int(employee_id))
             by = e.display_name if e is not None else ""
-        publish({"chat_responded": {"fan_id": int(fan_id), "by": by},
-                 "__account_id": str(account_id)})
+        body: dict[str, Any] = {"fan_id": int(fan_id), "by": by,
+                                "at": at if at is not None else int(time.time() * 1000)}
+        if isinstance(message, dict) and message.get("id") is not None:
+            body["message"] = {
+                "id": message.get("id"),
+                "text": str(message.get("text") or ""),
+                "createdAt": message.get("createdAt"),
+                "mediaCount": int(message.get("mediaCount") or len(message.get("media") or [])),
+                "price": float(message.get("price") or 0),
+            }
+        publish({"chat_responded": body, "__account_id": str(account_id)})
     except Exception:
         log.exception("publish_chat_responded failed (account=%s fan=%s)", account_id, fan_id)
 
@@ -585,7 +627,7 @@ def sse_stats() -> dict:
 
 async def sse_stream(
     request: Request, scope: str, *, accounts: frozenset[str] | None = None,
-    agencies: frozenset[str] = frozenset(), last_event_id: str | None = None,
+    agencies: frozenset[str] = frozenset(), last_event_id: str | None = None, tab: bool = False,
 ) -> AsyncIterator[bytes]:
     """Yield SSE-formatted bytes for one subscriber. Handles:
       • Initial `: connected` comment so the browser's onopen fires.
@@ -593,7 +635,9 @@ async def sse_stream(
         this subscriber, oldest first, after a `resync` frame when they no
         longer reach back that far; then an id-only frame naming the head
         at connect, so a drop before the next event resumes from there.
-      • Heartbeat comments every _HEARTBEAT_S seconds.
+      • Heartbeat comments every _HEARTBEAT_S seconds: after that long with
+        no frame; with the Shared refresher's Knob on, on their own timer
+        whatever flows, each carrying `fresh` (`_fresh`, P1 Contract 7).
       • JSON-encoded events with `event:` line set to the OF event type, or
         grouped into `event: batch` frames while the stream runs hot (see
         "Load-adaptive batching").
@@ -603,11 +647,13 @@ async def sse_stream(
         same after a `sessions_revoked`: a revoked cookie's reconnect is 401.
       • Graceful unsubscribe when the client disconnects.
 
-    `accounts` / `agencies`: see `subscribe`. The bytes: events_wire.
+    `accounts` / `agencies` / `tab`: see `subscribe`. The bytes: events_wire.
     """
+    import shared_refresher
+    fresh_on = shared_refresher.ENABLED
     # Register and read the rings in one synchronous step: every event up to
     # the head is in the rings, every later one lands in the queue.
-    sub = _register(scope, accounts, agencies)
+    sub = _register(scope, accounts, agencies, tab)
     sub.batching = True
     # A replay is a burst by definition: batched whenever batching is on,
     # so a tab waking from idle applies it in one pass, not hundreds.
@@ -631,10 +677,13 @@ async def sse_stream(
             if sub.lost:
                 sub.lost = False
                 yield ew.RESYNC
+            if fresh_on and time.monotonic() - last_beat >= _HEARTBEAT_S:
+                yield ew.ping(time.time(), _fresh(sub, shared_refresher))
+                last_beat = time.monotonic()
             try:
                 event = await asyncio.wait_for(q.get(), timeout=1.0)
             except asyncio.TimeoutError:
-                if time.monotonic() - last_beat >= _HEARTBEAT_S:
+                if not fresh_on and time.monotonic() - last_beat >= _HEARTBEAT_S:
                     yield ew.ping(time.time())
                     last_beat = time.monotonic()
                 continue
@@ -652,11 +701,13 @@ async def sse_stream(
             else:
                 frames = [event]
             yield ew.sse_out(frames)
-            last_beat = time.monotonic()
+            sent = time.monotonic()
+            if not fresh_on:
+                last_beat = sent
             if write_telemetry.ENABLED:
                 for f in frames:
                     if "api2_chat_message" in f:
-                        write_telemetry.sse_sent((last_beat - getattr(f, "t", last_beat)) * 1000)
+                        write_telemetry.sse_sent((sent - getattr(f, "t", sent)) * 1000)
             if ed.first_key(frames[-1]) in ed.ENDS_STREAM:
                 return
     finally:

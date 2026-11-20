@@ -20,6 +20,9 @@ import { relay } from "@/lib/relay";
 import { fmtRelTime, cn } from "@/lib/utils";
 import { useDeferredMount } from "@/hooks/useDeferredMount";
 import { HEADER_TILE } from "@/components/shell/headerTile";
+import { useOptionalUser } from "@/contexts/UserContext";
+import { useOptionalChatter } from "@/contexts/ChatterContext";
+import { isChatterOnly } from "@/lib/session";
 
 interface ErrorRow {
   id: number;
@@ -53,12 +56,13 @@ export function useRecentErrors(enabled = true) {
   return { q, count: q.data?.count ?? 0 };
 }
 
-/** The error popover's panel: header with the count and Clear, then the
- *  recent rows. `className` places and sizes it; `onCleared` runs after a
- *  successful Clear. */
+/** The error popover's panel: header with the count and Clear (owners only:
+ *  the Relay refuses a chatter session's Clear), then the recent rows.
+ *  `className` places and sizes it; `onCleared` runs after a successful Clear. */
 export function ErrorPanel({ className, onCleared }: { className?: string; onCleared?: () => void }) {
   const qc = useQueryClient();
   const { q, count } = useRecentErrors();
+  const chatterOnly = isChatterOnly(useOptionalUser()?.user, useOptionalChatter()?.chatter);
   const clear = useMutation({
     mutationFn: () => relay.delete<{ ok: boolean; deleted: number }>("/admin/errors?since_hours=24"),
     onSuccess: () => {
@@ -76,7 +80,7 @@ export function ErrorPanel({ className, onCleared }: { className?: string; onCle
           <span className="text-[11px] text-fg-dim">
             {count} in {q.data?.since_hours ?? 24}h
           </span>
-          {count > 0 && (
+          {count > 0 && !chatterOnly && (
             <button
               type="button"
               onClick={() => clear.mutate(undefined, { onSuccess: () => onCleared?.() })}

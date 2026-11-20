@@ -17,7 +17,7 @@
 import type { InfiniteData } from "@tanstack/react-query";
 
 import type { OFChatItem } from "@/lib/relay";
-import { sameUserId, type FanId } from "@/lib/fanId";
+import { compareFanIds, sameUserId, type FanId } from "@/lib/fanId";
 
 export interface ChatPage { rows: OFChatItem[]; hasMore: boolean }
 export type ChatPages = InfiniteData<ChatPage>;
@@ -135,6 +135,26 @@ export interface SentMessage {
   price: number;
 }
 
+/** The fan's row once we sent `msg` (`id`, `createdAt` the message's): it is the preview, unread cleared. A
+ *  fresh message, not the old one spread: the fan's previous `lockedText` / `isTip` used to ride on and mark
+ *  our free text 🔒/💰. */
+function repliedRow(target: OFChatItem, msg: SentMessage, id: number | string, createdAt: string): OFChatItem {
+  return {
+    ...target,
+    hasUnread: false,
+    unreadMessagesCount: 0,
+    lastMessage: {
+      id: id as number,
+      text: msg.text,
+      fromUser: { id: msg.fromUserId, name: msg.fromUserName },
+      createdAt,
+      mediaCount: msg.mediaCount,
+      isFree: msg.price === 0,
+      price: msg.price,
+    },
+  };
+}
+
 /** One chats cache after a manual send to `fanId`: the row (only a row
  *  already there, never a new one) gets the message as its preview with
  *  unread cleared; the unfiltered list lifts it to the top, a filtered /
@@ -151,23 +171,250 @@ export function bumpAfterSend(
   const pages = bumpChatPages(
     data.pages,
     fanRowMatcher(accountId, fanId),
-    (target) => target && {
-      ...target,
-      hasUnread: false,
-      unreadMessagesCount: 0,
-      // A fresh message, not the old one spread: the fan's previous
-      // `lockedText` / `isTip` used to ride on and mark our free text 🔒/💰.
-      lastMessage: {
-        id: target.lastMessage?.id ?? 0,
-        text: msg.text,
-        fromUser: { id: msg.fromUserId, name: msg.fromUserName },
-        createdAt: nowIso,
-        mediaCount: msg.mediaCount,
-        isFree: msg.price === 0,
-        price: msg.price,
-      },
-    },
+    (target) => target && repliedRow(target, msg, target.lastMessage?.id ?? 0, nowIso),
     { inPlace: !decodeChatsKey(key).unfiltered },
   );
   return pages === data.pages ? data : { ...data, pages };
+}
+
+/** A person's DM through the relay (`chat_responded`, from any tab): the fan, OF's message, and when the
+ *  relay announced it (epoch ms; null when unknown). */
+export interface Reply {
+  fanId: FanId;
+  /** OF's message id. */
+  id: number | string;
+  createdAt: string;
+  text: string;
+  mediaCount: number;
+  price: number;
+  at: number | null;
+}
+
+/** `chat_responded`'s body (service events.publish_chat_responded: `{fan_id, by, at, message?: {id, text,
+ *  createdAt, mediaCount, price}}`) as a `Reply`, or null when it carries no usable message (an older relay,
+ *  a send answer that was not a message). */
+export function parseReply(body: unknown): Reply | null {
+  const b = (body ?? {}) as { fan_id?: unknown; at?: unknown; message?: unknown };
+  const m = (b.message ?? null) as Record<string, unknown> | null;
+  const fanId = b.fan_id;
+  if (!(typeof fanId === "number" || (typeof fanId === "string" && fanId !== ""))) return null;
+  if (!m || !(typeof m.id === "number" || (typeof m.id === "string" && m.id !== ""))) return null;
+  const createdAt = typeof m.createdAt === "string" ? m.createdAt : "";
+  if (!Number.isFinite(Date.parse(createdAt))) return null;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    fanId, id: m.id, createdAt,
+    text: typeof m.text === "string" ? m.text : "",
+    mediaCount: num(m.mediaCount), price: num(m.price),
+    at: typeof b.at === "number" && Number.isFinite(b.at) ? b.at : null,
+  };
+}
+
+/** One chats cache after another tab's (or this tab's) reply to the fan on `accountId`: as `bumpAfterSend`
+ *  (the row gets the message, read; lifted in the unfiltered list, in place elsewhere; never a new row).
+ *  The SAME `data`, untouched, when the fan isn't in it, or a page holding him was read after the reply
+ *  (`askedAt` > `reply.at`: it already shows it), or his row already shows this message or a newer one (a
+ *  repeat, a replay, the fan wrote since). So the sender's own optimistic bump and the event, either first,
+ *  leave one row. */
+export function applyReply<T extends ChatPages | undefined>(
+  key: readonly unknown[], data: T, accountId: string, reply: Reply,
+): T {
+  if (!data?.pages?.length) return data;
+  const pages = data.pages as StampedPage[];
+  const isRow = fanRowMatcher(accountId, reply.fanId);
+  const holders = pages.filter((p) => p.rows.some(isRow));
+  if (!holders.length) return data;
+  if (reply.at != null && holders.some((p) => p.askedAt != null && p.askedAt > reply.at!)) return data;
+  const sent = Date.parse(reply.createdAt);
+  const msg: SentMessage = {
+    fromUserId: accountId, fromUserName: "", text: reply.text, mediaCount: reply.mediaCount, price: reply.price,
+  };
+  const next = bumpChatPages(
+    data.pages, isRow,
+    (target) => {
+      const last = target?.lastMessage;
+      if (!target || (last?.id != null && String(last.id) === String(reply.id))) return null;
+      if (Date.parse(last?.createdAt ?? "") > sent) return null;
+      return repliedRow(target, msg, reply.id, reply.createdAt);
+    },
+    { inPlace: !decodeChatsKey(key).unfiltered },
+  );
+  return next === data.pages ? data : { ...data, pages: next };
+}
+
+/** The Unread chip's view when it is the whole truth: read from OF in this
+ *  page load, no search, no page left. `asOf` is when OF was asked for its
+ *  oldest page (ms). */
+export interface UnreadView { rows: OFChatItem[]; asOf: number }
+
+function chatId(c: OFChatItem): string {
+  return `${c.__accountId ?? ""}:${String(c.withUser?.id)}`;
+}
+
+/** The predicate "unread here, not in the complete Unread view". */
+export function unreadOutsideView(view: UnreadView): (c: OFChatItem) => boolean {
+  const inView = new Set(view.rows.map(chatId));
+  return (c) => (c.hasUnread || (c.unreadMessagesCount ?? 0) > 0) && !inView.has(chatId(c));
+}
+
+/** The predicate "read elsewhere": unread here, not in the complete Unread
+ *  view, and its last message older than the view's read. A chat that turned
+ *  unread after it (a live message: a filtered list never gains rows) or
+ *  carries no date stays as it is. */
+export function readElsewhere(view: UnreadView): (c: OFChatItem) => boolean {
+  const outside = unreadOutsideView(view);
+  return (c) => {
+    if (!outside(c)) return false;
+    const at = Date.parse(c.lastMessage?.createdAt ?? "");
+    return Number.isFinite(at) && at < view.asOf;
+  };
+}
+
+/** A chats page as useChatList stamps it. */
+interface StampedPage extends ChatPage {
+  /** The page load that read it from OF. */
+  session?: string;
+  /** When OF was asked for it (ms). */
+  askedAt?: number;
+  /** All Models: a Creator's call failed, its rows are missing. */
+  partial?: boolean;
+}
+
+/** The cached Unread list (`data`) as an `UnreadView` while it is the whole
+ *  truth: every page read from OF in this page load (`session`), stamped, no
+ *  Creator missing, none left to load. Null otherwise. Remembered for its
+ *  scope while another chip shows (the cache entry outlives its observer),
+ *  kept current by every live patch of the caches (a message, a read flip),
+ *  and replaced by the next read of it; the caller passes none under a search. */
+export function completeUnreadView(
+  data: InfiniteData<StampedPage> | undefined, session: string,
+): UnreadView | null {
+  const pages = data?.pages ?? [];
+  if (!pages.length || pages[pages.length - 1].hasMore) return null;
+  if (pages.some((p) => p.session !== session || p.askedAt == null || p.partial)) return null;
+  const rows: OFChatItem[] = [];
+  const seen = new Set<string>();
+  for (const p of pages) for (const c of p.rows) {
+    const k = chatId(c);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    rows.push(c);
+  }
+  return { rows, asOf: Math.min(...pages.map((p) => p.askedAt as number)) };
+}
+
+/** Off the Unread chip nothing re-reads the cached Unread list (no observer;
+ *  the head poll writes only the active list), so its view counts for the
+ *  badge only this long after its read (`asOf`). */
+export const UNREAD_VIEW_MAX_AGE_MS = 5 * 60_000;
+
+/** The Unread view the badge may use: on the Unread chip (its own live list)
+ *  as is; on any other chip only while younger than UNREAD_VIEW_MAX_AGE_MS,
+ *  else null (the badge falls back to the All set's flags). */
+export function badgeUnreadView(view: UnreadView | null, onUnreadChip: boolean, now: number): UnreadView | null {
+  if (!view || onUnreadChip) return view;
+  return now - view.asOf < UNREAD_VIEW_MAX_AGE_MS ? view : null;
+}
+
+/** The chats list order (newest last message first; ties by fan id, newest
+ *  first, via compareFanIds: never `b.id - a.id`, NaN on a Fansly string snowflake). */
+export function compareChats(a: OFChatItem, b: OFChatItem): number {
+  const ta = a.lastMessage?.createdAt ?? "";
+  const tb = b.lastMessage?.createdAt ?? "";
+  if (ta && tb && ta !== tb) return tb.localeCompare(ta);
+  return compareFanIds(b.withUser?.id, a.withUser?.id);
+}
+
+/** A chatter's read flip through the relay (`chat_read_changed`): one fan's
+ *  chat, or every chat of the account (`fanId` null), turned read or unread,
+ *  at `at` (epoch ms; null when unknown). */
+export interface ReadFlip { fanId: FanId | null; unread: boolean; at: number | null }
+
+/** `chat_read_changed`'s body (service server._publish_read_flip:
+ *  `{fan_id: id | "all", unread: 0 | 1, at}`), or null when malformed. */
+export function parseReadFlip(body: unknown): ReadFlip | null {
+  const b = (body ?? {}) as { fan_id?: unknown; unread?: unknown; at?: unknown };
+  if (b.unread !== 0 && b.unread !== 1) return null;
+  const fanId = b.fan_id === "all" ? null
+    : typeof b.fan_id === "number" || (typeof b.fan_id === "string" && b.fan_id !== "") ? b.fan_id : undefined;
+  const at = typeof b.at === "number" && Number.isFinite(b.at) ? b.at : null;
+  return fanId === undefined ? null : { fanId, unread: b.unread === 1, at };
+}
+
+/** Is this cache a plain Unread-filter list (no folder, no search, default
+ *  order)? A read flip adds or drops rows there; elsewhere it flips flags. */
+export function isUnreadList(key: readonly unknown[]): boolean {
+  const k = decodeChatsKey(key);
+  return k.filter === "unread" && k.listId === null && k.query === null && (key[7] ?? "recent") === "recent";
+}
+
+const isUnreadRow = (c: OFChatItem) => !!c.hasUnread || (c.unreadMessagesCount ?? 0) > 0;
+
+/** One chats cache after a read flip on `accountId`. A page read after the
+ *  flip (`askedAt` > `flip.at`) already holds it and is left alone (a replayed
+ *  event never undoes newer data).
+ *  A read flip leaves a row whose last message is newer than it (`flip.at` is
+ *  taken before the platform write) unread.
+ *  - Any list: the fan's every row (every row of the account for a mark-all)
+ *    takes the flags, in place.
+ *  - An Unread list (`unreadList`), so the cached Unread view stays the truth
+ *    with no stamp: turned unread, the fan's row (`source`, a copy from any
+ *    cached list) enters at its place when absent; turned read, its rows
+ *    leave, unless `keepRows` (the list on screen: the open chat stays put).
+ *  The SAME `data` when nothing changes, so a repeated flip (the HTTP answer
+ *  and the event, either first) is a no-op. */
+export function applyReadFlip<T extends ChatPages | undefined>(
+  data: T, accountId: string, flip: ReadFlip,
+  opts: { unreadList?: boolean; keepRows?: boolean; source?: OFChatItem | null } = {},
+): T {
+  if (!data?.pages) return data;
+  const pages = data.pages as StampedPage[];
+  const fresh = (p: StampedPage) => flip.at == null || p.askedAt == null || flip.at >= p.askedAt;
+  const ofFlip = flip.fanId === null
+    ? (c: OFChatItem) => (c.__accountId ?? "") === accountId
+    : fanRowMatcher(accountId, flip.fanId);
+  // A read flip never clears a message newer than it (a fan wrote while the write was in flight).
+  const newer = (c: OFChatItem) => !flip.unread && flip.at != null && Date.parse(c.lastMessage?.createdAt ?? "") > flip.at;
+  const isRow = (c: OFChatItem) => ofFlip(c) && !newer(c);
+  const drop = !!opts.unreadList && !flip.unread && !opts.keepRows;
+  const flipped = (c: OFChatItem): OFChatItem | null => {
+    if (!flip.unread) return isUnreadRow(c) ? { ...c, hasUnread: false, unreadMessagesCount: 0 } : null;
+    return c.hasUnread ? null : { ...c, hasUnread: true, unreadMessagesCount: Math.max(1, c.unreadMessagesCount ?? 0) };
+  };
+  let changed = false;
+  const next = pages.map((p) => {
+    if (!fresh(p) || !p.rows.some(isRow)) return p;
+    const rows = drop ? p.rows.filter((c) => !isRow(c)) : p.rows.map((c) => (isRow(c) && flipped(c)) || c);
+    if (rows.length === p.rows.length && rows.every((c, i) => c === p.rows[i])) return p;
+    changed = true;
+    return { ...p, rows };
+  });
+  const src = opts.source;
+  if (opts.unreadList && flip.unread && flip.fanId !== null && src && !pages.some((p) => p.rows.some(isRow))) {
+    const row = { ...src, hasUnread: true, unreadMessagesCount: Math.max(1, src.unreadMessagesCount ?? 0) };
+    // Before the first row it sorts ahead of; after the last only when no page is left to load.
+    let at = next.findIndex((p) => p.rows.some((c) => compareChats(row, c) < 0));
+    let idx = at < 0 ? -1 : next[at].rows.findIndex((c) => compareChats(row, c) < 0);
+    if (at < 0 && !next[next.length - 1].hasMore) { at = next.length - 1; idx = next[at].rows.length; }
+    if (at >= 0 && fresh(next[at])) {
+      const p = next[at];
+      next[at] = { ...p, rows: [...p.rows.slice(0, idx), row, ...p.rows.slice(idx)] };
+      changed = true;
+    }
+  }
+  return changed ? { ...data, pages: next } : data;
+}
+
+/** `data` (one chats cache) with `patch` on every copy of the fan's row (a
+ *  mark-read, a mute); the SAME `data` when the fan isn't in it. */
+export function patchFanRows<T extends ChatPages | undefined>(
+  data: T, accountId: string, fanId: FanId, patch: Partial<OFChatItem>,
+): T {
+  if (!data?.pages) return data;
+  const isRow = fanRowMatcher(accountId, fanId);
+  if (!data.pages.some((p) => p.rows.some(isRow))) return data;
+  return {
+    ...data,
+    pages: data.pages.map((p) => ({ ...p, rows: p.rows.map((c) => (isRow(c) ? { ...c, ...patch } : c)) })),
+  };
 }

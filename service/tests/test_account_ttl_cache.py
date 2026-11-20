@@ -12,6 +12,8 @@ the socket call is replaced, so no request leaves the process):
   • every parameter is in the key (limit=10 and limit=20 are two entries);
   • concurrent misses on one key share ONE upstream call;
   • an upstream error is not cached;
+  • `/users/me?max_age=` (the app's identity reads): the plain 60 s entry while fresh, else its own entry of
+    the clamped age; the plain read keeps 60 s; a write clears both; the ledger page holds 900 s;
   • write-through: an accepted OF write clears the reads it changes, for
     every caller of the client (a route, or code holding the client the way
     promotions_api and the promo re-arm automation do), and only for that
@@ -245,6 +247,51 @@ def case_a_failing_cache_bust_never_fails_the_accepted_write():
     finally:
         relay_cache.invalidate = original
     assert out == {"account": A, "n": 1}, out
+
+
+# ── Long-lived reads (All Models open cost) ─────────────────────────────────
+
+def _expire(account: str, extras: tuple) -> None:
+    key = ("users_me", account, extras)
+    relay_cache._cache[key] = (relay_cache._cache[key][0], 0.0)
+
+
+def _ttl_left(namespace: str, account: str) -> list[float]:
+    now = time.monotonic()
+    return [exp - now for (ns, aid, _x), (_v, exp) in relay_cache._cache.items() if ns == namespace and aid == account]
+
+
+def case_users_me_max_age_serves_identity_reads_long_and_keeps_the_plain_read_at_60s():
+    _fresh()
+    me = "/api2/v2/users/me"
+    plain = _get(MASTER, "/api/of/v2/users/me", A)
+    assert _get(MASTER, "/api/of/v2/users/me?max_age=1800", A) == plain, "the fresh plain entry answers"
+    assert FAKES[A].gets(me) == 1
+    _expire(A, ("users_me",))                                     # 61 s later
+    long1 = _get(MASTER, "/api/of/v2/users/me?max_age=1800", A)
+    assert FAKES[A].gets(me) == 2 and long1 != plain
+    assert _get(MASTER, "/api/of/v2/users/me?max_age=1800", A) == long1 and FAKES[A].gets(me) == 2
+    assert ("users_me", A, ("users_me", "max_age", 1800)) in relay_cache._cache
+    assert 1790 < max(_ttl_left("users_me", A)) <= 1800, _ttl_left("users_me", A)
+    _get(MASTER, "/api/of/v2/users/me", A)
+    assert FAKES[A].gets(me) == 3, "the plain read (mirror counters) still re-reads past 60 s"
+    assert 50 < relay_cache._cache[("users_me", A, ("users_me",))][1] - time.monotonic() <= 60
+    for asked, held in ((99999, 1800), (10, 60)):                 # clamped to [60, 1800]
+        _expire(A, ("users_me",))
+        _get(MASTER, f"/api/of/v2/users/me?max_age={asked}", A)
+        assert ("users_me", A, ("users_me", "max_age", held)) in relay_cache._cache, (asked, held)
+    assert relay_cache.invalidate("users_me", A) >= 2, "a users/me write (namespace users_me) clears both entries"
+
+
+def case_the_ledger_page_holds_for_the_ingest_cadence():
+    _fresh()
+    path = "/api/of/v2/payouts/transactions?limit=50&offset=0"
+    first = _get(MASTER, path, A)
+    assert _get(MASTER, path, A) == first and FAKES[A].gets("/api2/v2/payouts/transactions") == 1
+    left = _ttl_left("payouts", A)
+    assert len(left) == 1 and 890 < left[0] <= 900, left
+    _get(MASTER, "/api/of/v2/payouts/stats", A)
+    assert sorted(round(x, -1) for x in _ttl_left("payouts", A)) == [60.0, 900.0], "stats keep 60 s"
 
 
 _harness.run()

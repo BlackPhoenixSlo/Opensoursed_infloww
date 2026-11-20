@@ -13,8 +13,10 @@
  * server-side chat window, and the unified list fans out per-Creator page-0
  * reads against those exact keys, so the one invalidation refetches the All
  * tab as warm hits of the same rows the badges counted. Each `refreshOne` is
- * cooldown-guarded per Creator, so repeated picks cannot storm OnlyFans.
- * allSettled: one bad Creator must not keep the rest of the tab stale.
+ * cooldown-guarded per Creator, so repeated picks cannot storm OnlyFans, and
+ * the busts run `CREATOR_POOL` at a time (each is an uncached OF chat read;
+ * 5-10 Creators share a proxy). Settled: one bad Creator must not keep the
+ * rest of the tab stale.
  */
 
 import { useCallback } from "react";
@@ -23,6 +25,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
 import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
+import { CREATOR_POOL, settlePool } from "@/lib/settlePool";
 
 export function usePickAllModels() {
   const accounts = usePlatformAccounts();
@@ -31,7 +34,7 @@ export function usePickAllModels() {
   const qc = useQueryClient();
 
   const warmAll = useCallback(() => {
-    void Promise.allSettled(accounts.map((a) => refreshOne(a.id))).then(() =>
+    void settlePool(accounts, CREATOR_POOL, (a) => refreshOne(a.id)).then(() =>
       qc.invalidateQueries({ queryKey: ["chats", "all"] }),
     );
   }, [accounts, refreshOne, qc]);

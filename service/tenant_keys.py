@@ -479,3 +479,10 @@ async def typesafe_key_for(account_id: str | None) -> str:
         if key:
             return key
     return llm_providers.typesafe_key()
+
+
+async def typesafe_key_of(user_id: str) -> str:
+    """The TypeSafe (Jev) key for an agency's own calls, not tied to one
+    account: its saved key, else the deployment's (`typesafe_key_for`'s
+    fallback, "" if none)."""
+    return await get_key(user_id, TYPESAFE) or llm_providers.typesafe_key()

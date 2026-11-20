@@ -15,6 +15,7 @@ docstring is its spec (phases, load, bypasses).
 | `scenarios/2026-11-01-notifications-feed-volume.py` | The scenario; its `_State` (the seeded feed and every session's plan). |
 | `lib/consent_faults.py` | The consent scenario's check names and faults. |
 | `lib/scen_pool.py` | Shared owner actor pool used by the consent and rich-text scenarios. |
+| `scenarios/2026-11-20-notifications-mark-read.py`, `lib/notifications_read_faults.py` | OF's own notification count (Messages Pro's green "Notifications" badge) cleared by OF's mark-read on panel open: the wire's `notif_counts` / `notif_reads` (lib/of_wire.py); checks `WIRE_ONE`, `BADGE`, `RELAY_ZERO`, `API_BUST`; fault `notif-read-not-sent` (all four). |
 | `scenarios/2026-11-08-consent-required-notice.py` | The pinned `consent_required` row (`service/consent_notices.py`, `notifications_api.PINNED_KIND`) and the shell's ConsentBanner. |
 
 ## Scenarios

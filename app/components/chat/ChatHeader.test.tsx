@@ -52,7 +52,7 @@ vi.mock("@/contexts/EmployeeContext", async (importOriginal) => {
 });
 
 import type { ComponentProps } from "react";
-import type { QueryClient } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import type { OFChatItem } from "@/lib/relay";
 import { applyTypingEvent } from "@/lib/fanTyping";
 import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
@@ -271,12 +271,13 @@ describe("ChatHeader", () => {
       mediaCount: 0, media: [], userIds: [FAN_ID], userLists: [], groups: [], __accountId: ACCOUNT_ID,
     }));
     const ROW = { ...CHAT, __accountId: ACCOUNT_ID } as unknown as OFChatItem;
+    const CHATS_KEY = ["chats", "model", ACCOUNT_ID, null, null, null, 25];
     const seeded = () => {
       const client = makeTestQueryClient();
       // The house client collects unobserved data at once; these seeds must outlive the render.
       client.setDefaultOptions({ queries: { retry: false, gcTime: Infinity, staleTime: 0 } });
       client.setQueryData(["scheduled", ACCOUNT_ID], SCHEDULED);
-      client.setQueryData(["chats", "fixture"], { pages: [{ rows: [ROW], hasMore: false }], pageParams: [null] });
+      client.setQueryData(CHATS_KEY, { pages: [{ rows: [ROW], hasMore: false }], pageParams: [null] });
       return client;
     };
     const EXTRA_ROWS = ["Scheduled 2", "Group chat", "Mark as unread", "Add to MASSdmEXCLUDE"];
@@ -361,8 +362,21 @@ describe("ChatHeader", () => {
       await waitFor(() => expect(relayDelete).toHaveBeenCalledWith(
         `/api/of/v2/chats/${FAN_ID}/mark-as-read`, { accountId: ACCOUNT_ID }));
       expect(await screen.findByText(/Marked unread/)).toBeInTheDocument();
-      const chats = client.getQueryData<{ pages: { rows: OFChatItem[] }[] }>(["chats", "fixture"]);
+      const chats = client.getQueryData<{ pages: { rows: OFChatItem[] }[] }>(CHATS_KEY);
       expect(chats?.pages[0].rows[0]).toMatchObject({ hasUnread: true, unreadMessagesCount: 1 });
+    });
+
+    it("Mark as unread on a Fansly account (the relay's 501) shows the error and leaves the row read", async () => {
+      const user = userEvent.setup();
+      const client = seeded();
+      const before = client.getQueryData<{ pages: { rows: OFChatItem[] }[] }>(CHATS_KEY)?.pages[0].rows[0];
+      relayDelete.mockRejectedValueOnce(new Error("mark as unread: not on this platform"));
+      renderHeader({}, client);
+      const box = await openExtras(user);
+      await user.click(within(box).getByRole("button", { name: "Mark as unread" }));
+      expect(await within(box).findByText(/mark as unread: not on this platform/)).toBeInTheDocument();
+      expect(within(box).queryByText(/Marked unread/)).toBeNull();
+      expect(client.getQueryData<{ pages: { rows: OFChatItem[] }[] }>(CHATS_KEY)?.pages[0].rows[0]).toEqual(before);
     });
   });
 
@@ -675,6 +689,21 @@ describe("ChatHeader", () => {
       await waitFor(() => expect(succeeded).toEqual([[CHAT_MUTE, ACCOUNT_ID, String(FAN_ID)]]));
     });
 
+    it("a mute that succeeds lands on every cached chat-list row, so the header remounts muted", async () => {
+      const user = userEvent.setup();
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const ROW = { ...CHAT, __accountId: ACCOUNT_ID } as unknown as OFChatItem;
+    const CHATS_KEY = ["chats", "model", ACCOUNT_ID, null, null, null, 25];
+      const key = ["chats", "model", ACCOUNT_ID, null, null, null, 25];
+      client.setQueryData(key, { pages: [{ rows: [ROW], hasMore: false }], pageParams: [0] });
+      renderHeader({}, client);
+      await user.click(screen.getByRole("button", { name: "Mute notifications" }));
+      const cached = () => client.getQueryData<{ pages: { rows: OFChatItem[] }[] }>(key)!.pages[0].rows[0];
+      await waitFor(() => expect(cached().isMutedNotifications).toBe(true));
+      await user.click(screen.getByRole("button", { name: "Unmute notifications" }));
+      await waitFor(() => expect(cached().isMutedNotifications).toBe(false));
+    });
+
     it("mute: the icon and the Kebab row share one state; a click on either POSTs, the next DELETEs, and both flip", async () => {
       const user = userEvent.setup();
       renderHeader();
@@ -777,7 +806,11 @@ describe("ChatHeader", () => {
 
     it("Block asks first, POSTs the block route and refreshes the Fan's OF user, then reads \"Unblock\", which asks and DELETEs; a declined confirm makes no call; a rejected call shows the relay's error in the menu", async () => {
       const user = userEvent.setup();
-      relayWith({ id: FAN_ID });
+      // OF's state: blocked once the POST lands.
+      let isBlocked = false;
+      relayGet.mockImplementation(async (path: string) =>
+        path === `/api/of/v2/users/${FAN_ID}` ? { id: FAN_ID, isBlocked } : path === "/admin/accounts" ? { accounts: [] } : {});
+      relayPost.mockImplementation(async (path: string) => { if (path === BLOCK) isBlocked = true; return {}; });
       renderHeader();
       const menu = await openKebab(user);
       const block = within(menu).getByRole("button", { name: /Block$/ });
@@ -809,6 +842,27 @@ describe("ChatHeader", () => {
       expect(within(again).getByRole("button", { name: /Unblock$/ })).toBeInTheDocument();
       expect(confirm).toHaveBeenCalledTimes(3);
       expect(relayPost).toHaveBeenCalledTimes(1);
+    });
+    it("a Fan OF already reports blocked reads \"Unblock\" on open, from the OF user or, before it loads, the chat row; Unblock DELETEs, and the refetched OF state flips the row back to \"Block\"", async () => {
+      const user = userEvent.setup();
+      let isBlocked = true;
+      relayGet.mockImplementation(async (path: string) =>
+        path === `/api/of/v2/users/${FAN_ID}` ? { id: FAN_ID, isBlocked } : path === "/admin/accounts" ? { accounts: [] } : {});
+      relayDelete.mockImplementation(async (path: string) => { if (path === BLOCK) isBlocked = false; return {}; });
+      confirm.mockReturnValue(true);
+      renderHeader();
+      const menu = await openKebab(user);
+      const unblock = await within(menu).findByRole("button", { name: /Unblock$/ });
+      await user.click(unblock);
+      await waitFor(() => expect(relayDelete).toHaveBeenCalledWith(BLOCK, { accountId: ACCOUNT_ID }));
+      expect(await within(menu).findByRole("button", { name: /\bBlock$/ })).toBeInTheDocument();
+      expect(relayPost).not.toHaveBeenCalled();
+
+      // Only the chat row says so (the OF user carries no flag): still "Unblock".
+      cleanup();
+      relayWith({ id: FAN_ID });
+      renderHeader({ chat: { ...CHAT, withUser: { ...CHAT.withUser, isBlocked: true } } as OFChatItem });
+      expect(within(await openKebab(user)).getByRole("button", { name: /Unblock$/ })).toBeInTheDocument();
     });
   });
 

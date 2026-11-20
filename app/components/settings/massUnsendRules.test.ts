@@ -9,6 +9,8 @@ import {
   isFreeTextOld,
   olderThanHours,
   visibleMassRows,
+  unsendByCreator,
+  type ActionableRow,
   type BulkAction,
 } from "./massUnsendRules";
 
@@ -131,5 +133,50 @@ describe("visibleMassRows", () => {
     ["chip b, unsent shown", ["b"], false, [21, 22, 23, 24]],
   ])("%s", (_label, chips, hide, want) => {
     expect(ids(visibleMassRows(ROWS, new Set(chips), hide))).toEqual(want);
+  });
+});
+
+describe("unsendByCreator", () => {
+  const row = (id: number, acc: string) => ({ id, __accountId: acc } as unknown as ActionableRow);
+
+  it("runs one delete at a time, each Creator's as a block in first-listed order, and counts failures", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const order: number[] = [];
+    const failed = await unsendByCreator(
+      [row(1, "a"), row(2, "b"), row(3, "a"), row(4, "c"), row(5, "b")],
+      async (r) => {
+        peak = Math.max(peak, ++inFlight);
+        order.push(r.id);
+        await new Promise((res) => setTimeout(res, 1));
+        inFlight -= 1;
+        if (r.id === 3 || r.id === 4) throw new Error("OF said no");
+      },
+    );
+    expect(peak).toBe(1);
+    expect(order).toEqual([1, 3, 2, 5, 4]);
+    expect(failed).toBe(2);
+  });
+
+  it("reports progress after each delete, failures included", async () => {
+    const ticks: string[] = [];
+    let inFlight = 0;
+    await unsendByCreator(
+      [row(1, "a"), row(2, "b"), row(3, "a")],
+      async (r) => {
+        inFlight += 1;
+        await new Promise((res) => setTimeout(res, 1));
+        inFlight -= 1;
+        if (r.id === 2) throw new Error("OF said no");
+      },
+      (done, total) => ticks.push(`${done}/${total}:${inFlight}`),
+    );
+    expect(ticks).toEqual(["1/3:0", "2/3:0", "3/3:0"]);
+  });
+
+  it("nothing to unsend: no calls, no failures", async () => {
+    let calls = 0;
+    expect(await unsendByCreator([], async () => { calls += 1; })).toBe(0);
+    expect(calls).toBe(0);
   });
 });

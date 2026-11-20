@@ -4,6 +4,7 @@
 
 import { useEffect, useRef } from "react";
 import { infiniteQueryOptions, useQueries, useQueryClient } from "@tanstack/react-query";
+import { cacheMark, cacheMovedSince } from "@/lib/queryCacheMark";
 import { relay, type OFChatItem, type OFUserMini, type VaultMedia, type VaultMediaResp } from "@/lib/relay";
 import { vaultMediaPath, viewOf } from "@/lib/ofMirrorVault";
 import { message } from "@/lib/ofMirrorWrites";
@@ -48,8 +49,11 @@ export function useRevalidate(accountId: string | null, path: string | null, cac
     const at = `${accountId}|${path}`;
     if (!ready || done.current === at) return;
     done.current = at;
+    const key = mirrorQuery(accountId, path, true).queryKey;
+    // A write meanwhile (a vault folder write's refetch) is newer than this read.
+    const before = cacheMark(qc, key);
     relay.get(path!, { accountId }, undefined, { refresh: true }).then(
-      (fresh) => qc.setQueryData(mirrorQuery(accountId, path, true).queryKey, fresh),
+      (fresh) => { if (!cacheMovedSince(before, cacheMark(qc, key))) qc.setQueryData(key, fresh); },
       () => {},
     );
   }, [ready, accountId, path, qc]);

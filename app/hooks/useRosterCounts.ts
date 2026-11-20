@@ -27,6 +27,9 @@ import { usePrincipalId } from "@/hooks/useEmployeeKey";
 export interface RosterCount {
   unread: number;
   owe_reply: number;
+  /** The relay's 25-chat window was full and all unread: more unread chats may sit past it, so the badge says
+   *  "N+". Absent: `unread` is the whole count. `unread` stays the number (it sorts the tabs). */
+  unread_capped?: boolean;
   /** Epoch ms of the chats window the server folded this from (0: unknown). An Idle Creator's count can be old
    *  (ADR-0031: no OF read unless leased), so a local patch newer than it wins. */
   as_of?: number;
@@ -164,6 +167,8 @@ export function applyRosterDelta(cur: RosterCount, d: RosterDelta): RosterCount 
   return {
     unread: Math.max(0, cur.unread + d.dUnread),
     owe_reply: Math.max(0, cur.owe_reply + d.dOwe),
+    // A local patch never learns what sits past the window: the "may be more" stays.
+    ...(cur.unread_capped ? { unread_capped: true } : {}),
   };
 }
 

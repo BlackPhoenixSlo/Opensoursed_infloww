@@ -29,6 +29,7 @@ import { Check, ChevronDown, ChevronUp } from "lucide-react";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useRosterCounts } from "@/hooks/useRosterCounts";
+import { rosterUnreadText } from "@/lib/format";
 import { PLATFORMS, PLATFORM_NAME, accountPlatform, setPlatform, usePlatform, type Platform } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 
@@ -86,16 +87,28 @@ const COMING_SOON = [
   },
 ] as const;
 
-/** HBChip's count: "99+" past 99. */
-export const unreadLabel = (n: number) => (n > 99 ? "99+" : String(n));
+/** A platform's unread: the sum, and whether any Creator's count in it may be cut off (`unread_capped`). */
+export interface PlatformUnread { count: number; capped: boolean }
+
+/** HBChip's count: "99+" past 99, "N+" when it may be cut off. */
+export const unreadLabel = ({ count, capped }: PlatformUnread) =>
+  count > 99 ? "99+" : rosterUnreadText(count, capped);
 
 /** Unread per platform: the roster's unread summed over that platform's accounts with a session. */
-export function usePlatformUnread(): Record<Platform, number> {
+export function usePlatformUnread(): Record<Platform, PlatformUnread> {
   const accounts = useAccounts().data?.accounts;
   const counts = useRosterCounts();
   return useMemo(() => {
-    const out: Record<Platform, number> = { onlyfans: 0, fansly: 0 };
-    for (const a of accounts ?? []) if (a.has_session) out[accountPlatform(a)] += counts[a.id]?.unread ?? 0;
+    const out: Record<Platform, PlatformUnread> = {
+      onlyfans: { count: 0, capped: false }, fansly: { count: 0, capped: false },
+    };
+    for (const a of accounts ?? []) {
+      const c = counts[a.id];
+      if (!a.has_session || !c) continue;
+      const p = out[accountPlatform(a)];
+      p.count += c.unread;
+      p.capped ||= c.unread > 0 && c.unread_capped === true;
+    }
     return out;
   }, [accounts, counts]);
 }
@@ -104,7 +117,7 @@ export default function PlatformSwitcher({ collapsed = false }: { collapsed?: bo
   const platform = usePlatform();
   const unread = usePlatformUnread();
   const { open, setOpen, ref } = useOutsideClose();
-  const anyUnread = PLATFORMS.some((p) => unread[p] > 0);
+  const anyUnread = PLATFORMS.some((p) => unread[p].count > 0);
   const name = PLATFORM_NAME[platform];
 
   const pick = (p: Platform) => {
@@ -164,9 +177,9 @@ export default function PlatformSwitcher({ collapsed = false }: { collapsed?: bo
               <Check aria-hidden className={cn("w-4 h-4 shrink-0", p !== platform && "invisible")} />
               <PlatformLogo platform={p} className="w-6 h-6" />
               <span className="flex-1 text-left">{PLATFORM_NAME[p]}</span>
-              {unread[p] > 0 && (
+              {unread[p].count > 0 && (
                 <span
-                  aria-label={`${unread[p]} unread`}
+                  aria-label={`${rosterUnreadText(unread[p].count, unread[p].capped)} unread`}
                   className="min-w-5 h-5 px-1.5 rounded-full bg-pink text-white text-[12px] leading-5 text-center"
                 >
                   {unreadLabel(unread[p])}

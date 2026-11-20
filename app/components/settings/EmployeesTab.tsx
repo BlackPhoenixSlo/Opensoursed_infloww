@@ -328,7 +328,9 @@ export default function EmployeesTab() {
   const activateError = isEmployeeLimit(activateM.error) ? null : activateM.error;
   const saveError = (activateError || disableM.error || resendM.error || revokeM.error) as Error | null;
 
-  const active = logins.filter((e) => e.is_active).length;
+  // The header counts what the table lists (group + filters), not the whole roster; the owner row is not a login.
+  const shownLogins = shown.filter((e) => !isOwner(e));
+  const active = shownLogins.filter((e) => e.is_active).length;
   const creatorOptions: IfOption[] = [
     { value: "", label: "All Creators" },
     ...creators.map((c) => ({ value: c.id, label: c.nickname || c.name || c.id })),
@@ -476,7 +478,7 @@ export default function EmployeesTab() {
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pt-5 pr-[5px]">
           <h2 className="max-w-[300px] truncate text-[16px] font-semibold text-fg">{picked ? picked.name : agencyName}</h2>
           <span className="text-[12px] text-muted whitespace-nowrap">
-            {active} active · {logins.length} total{targets.length > 0 && ` · ${targets.length} selected`}
+            {active} active · {shownLogins.length} total{targets.length > 0 && ` · ${targets.length} selected`}
           </span>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2.5">
             <ManageRolesLink className="mr-1.5 text-[14px]" />

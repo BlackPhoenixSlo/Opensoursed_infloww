@@ -138,6 +138,20 @@ describe("request › cache mode", () => {
   });
 });
 
+describe("request › maxAge", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each<[string, string, number | undefined, string]>([
+    ["appended", "/api/of/v2/users/me", 1800, "/api/of/v2/users/me?max_age=1800"],
+    ["absent", "/api/of/v2/users/me", undefined, "/api/of/v2/users/me"],
+    ["a caller's own wins", "/api/of/v2/users/me?max_age=60", 1800, "/api/of/v2/users/me?max_age=60"],
+  ])("%s", async (_name, path, maxAge, want) => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    await request(path, { method: "GET" }, { accountId: "123", maxAge });
+    expect((f.mock.calls[0] as unknown as [string])[0]).toMatch(new RegExp(`${want.replace("?", "\\?")}$`));
+  });
+});
+
 describe("request › a failed screen bundle's reads keep a slot (slop fan-list-chips 2026-11-07)", () => {
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); resetScreenBundles(); });
 

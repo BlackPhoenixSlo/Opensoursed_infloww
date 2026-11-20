@@ -121,6 +121,9 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     "consent_sends": (120, 2_000, 5_000),
     # ws-pump-evict: Creators (each its real WS pump) when one proxy edit evicts every pooled client
     "ws_pump_evict_creators": (5, 50, 50),
+    # all-models-shared-inbox: Creators (at least 10: 6 DMs, 2 tips, X, Y), OF chats per Creator (small within the
+    # 25-row page 0), unread among them
+    "all_models_creators": (10, 30, 50), "all_models_chats": (20, 40, 60), "all_models_unread": (6, 8, 10),
 }
 
 

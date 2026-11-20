@@ -17,6 +17,11 @@ transaction_ingest.live_account_ids), the reuse clock (`app_open_warm._clock`), 
   • case_reuse: a second start inside APP_OPEN_WARM_REUSE_S answers `reused` and reads nothing, also while the
     first is still running; a reused Creator whose warm ended publishes `creator_warmed` at once (one still queued
     publishes when its reads land); past the window it reads again.
+  • case_reuse_decision_table: `reuse_decision` (pure): queued/reading → reused (concurrent opens: one warm); fresh
+    + WS kept → reused; fresh + WS down or reconnected since → start; stale → start; failed just now → skip.
+  • case_ws_kept_reuse: past REUSE_S, a Creator whose WebSocket stayed connected since its warm landed is `reused`
+    (no read, `creator_warmed` at once) until FRESH_S; one whose socket is down, or reconnected after the warm,
+    warms; FRESH_S is held to the roster count's TTL and the Idle tier.
   • case_recently_polled_no_read: a Creator whose last purchases poll started under PURCHASES_POLL_FAST_S ago
     gets no feed read, still steps 2-4 and its event.
   • case_refreshed_first: a Creator the route Select-refreshes is `started`, gets no feed read here, its steps 2-4
@@ -32,6 +37,16 @@ transaction_ingest.live_account_ids), the reuse clock (`app_open_warm._clock`), 
   • case_failed_poll_counts_as_attempt: a feed poll with no ok answer (error, no outcome) still counts for the
     selection floor and the warm's feed skip: a failing exit is not read again at once.
   • case_dead_after_feed_read: a Creator its feed read flags a Dead session reads nothing more and publishes nothing.
+  • case_refresh_job_on_exit_gate: a Shared refresher job (`refresh`) runs on its Creator's exit GAP_S after the
+    last read there, exits in parallel; no warm read, event or `pending`.
+  • case_warm_absorbs_refresh: a warm takes a queued refresh's place; a refresh for a queued warm is not queued.
+  • case_refresh_recheck_at_turn: the job's re-check runs at its turn; unwanted, it is dropped unread, no GAP.
+  • case_refresh_deadline_frees_exit: a job hung past the 30 s deadline frees the exit for the next Creator; its walk
+    is not cancelled and its late result lands; `shared_refresher_job_timeout` logged.
+  • case_refresh_429_holds_the_exit: a refresh job's `hold` (a terminal 429) holds its whole exit for OF's wait: the
+    next refresh or warm there starts no earlier, another exit at once; a hold under GAP keeps GAP.
+  • case_refresh_dropped_at_turn_when_no_longer_wanted: the Shared refresher's own queued jobs are dropped unread at
+    their turn when the Creator left `tracked`, went dead or got a Last refresh meanwhile; a still-wanted one reads.
   • case_read_set_on_the_real_routes: the real server helper and roster-counts recompute over a fake OF client:
     the four steps in order, at most 5 reads, the money lists at the rail's page size, `creator_warmed` in the house
     envelope carrying the roster count and the notifications count (an expired entry is left out); the entries are the pass-through's (`of_notifications`, `of_notifications_count`, roster-counts,
@@ -74,6 +89,7 @@ STEPS: list[tuple[str, float, str]] = []   # (Creator, start, Caller kind) per s
 PUBLISHED: list[dict] = []
 CLOCK = [1000.0]
 FLAG_DEAD: set[str] = set()                # Creators whose feed read flags them dead
+WS_SINCE: dict[str, float] = {}            # Creator -> when its OF WebSocket connected (absent: down)
 
 
 REFUSED: set[str] = set()                  # Creators whose reads the Relay refuses (bad session, 503)
@@ -126,7 +142,8 @@ def _patched():
              (account_health, "deactivated_ids", _off), (account_health, "dead_session_map", _dead),
              (client_pool, "get", lambda a: types.SimpleNamespace(proxy_url=PROXY.get(a), proxy_label=None)),
              (events, "publish", PUBLISHED.append),
-             (aow, "GAP_S", GAP), (aow, "_clock", lambda: CLOCK[0]), (aow, "_server", lambda: SERVER)]
+             (aow, "GAP_S", GAP), (aow, "_clock", lambda: CLOCK[0]), (aow, "_server", lambda: SERVER),
+             (aow, "_ws_since", WS_SINCE.get)]
     old = [(m, k, getattr(m, k)) for m, k, _ in saved]
     for m, k, v in saved:
         setattr(m, k, v)
@@ -135,6 +152,7 @@ def _patched():
     PUBLISHED.clear()
     FLAG_DEAD.clear()
     DEAD_NOW.clear()
+    WS_SINCE.clear()
     aow._warmed_at.clear()
     aow._failed_at.clear()
     aow._pending.clear()
@@ -223,6 +241,51 @@ async def case_reuse():
         assert await aow.start(("user", "u2"), LIVE, leased_first=()) == {a: "started" for a in LIVE}
         await _drain()
         assert len(READS) == 2 * n, READS
+
+
+def case_reuse_decision_table():
+    R, F = 30.0, 300.0
+    rows = [  # pending, warmed_age, failed_age, ws_kept -> call
+        ("queued or reading (concurrent opens)", True, None, None, False, "reused"),
+        ("queued, an old failure too", True, None, 5.0, False, "reused"),
+        ("inside REUSE_S, WS down", False, 10.0, None, False, "reused"),
+        ("fresh + WS kept", False, 120.0, None, True, "reused"),
+        ("fresh + WS down / reconnected", False, 120.0, None, False, "start"),
+        ("stale, WS kept", False, F + 1, None, True, "start"),
+        ("stale", False, F + 1, None, False, "start"),
+        ("never warmed, WS up", False, None, None, True, "start"),
+        ("failed just now, WS up", False, None, 5.0, True, "skip"),
+        ("failed past REUSE_S", False, None, R + 1, True, "start"),
+    ]
+    for name, pending, wa, fa, kept, want in rows:
+        got = aow.reuse_decision(pending=pending, warmed_age=wa, failed_age=fa, ws_kept=kept, reuse_s=R, fresh_s=F)
+        assert got == want, (name, got, want)
+
+
+async def case_ws_kept_reuse():
+    import server  # noqa: F401 — first: accounts_admin_api is imported by server.py, never first
+    import accounts_admin_api
+    assert aow.FRESH_MAX_S == accounts_admin_api.ROSTER_COUNT_TTL_S, "FRESH_S never outlives the roster count's TTL"
+    assert aow.REUSE_S <= aow.FRESH_S <= min(aow.FRESH_MAX_S, decide.SLOW_S), aow.FRESH_S
+    with _patched():
+        CLOCK[0] = 5000.0
+        WS_SINCE.update({P1A: 4000.0, P1B: 4000.0})          # P1A, P1B: connected before the warm; the rest down
+        assert set((await aow.start(("user", "u1"), LIVE, leased_first=())).values()) == {"started"}
+        await _drain()
+        n = len(READS)
+        PUBLISHED.clear()
+        WS_SINCE[P1B] = 5000.0 + 1                           # P1B's socket reconnected after its warm landed
+        CLOCK[0] = 5000.0 + aow.REUSE_S + 1
+        pp._poll_state.clear()
+        got = await aow.start(("chatter", "c1"), LIVE, leased_first=())
+        assert got == {a: ("reused" if a == P1A else "started") for a in LIVE}, got
+        await _drain()
+        assert sorted(a for a, _, _ in READS[n:]) == sorted(a for a in LIVE if a != P1A), READS[n:]
+        assert P1A in _warmed_ids(), f"a reused Creator publishes at once: {PUBLISHED}"
+        CLOCK[0] = 5000.0 + aow.FRESH_S + 1                  # P1A's warm now older than FRESH_S
+        pp._poll_state.clear()
+        assert (await aow.start(("user", "u2"), [P1A], leased_first=())) == {P1A: "started"}
+        await _drain()
 
 
 async def case_recently_polled_no_read():
@@ -369,6 +432,194 @@ async def case_dead_after_feed_read():
     assert _warmed_ids() == [P1B], PUBLISHED
 
 
+def _refresher(log: list, hold_s: float = READ_S, landed: list | None = None):
+    """A Shared refresher job's walk: records (Creator, start), reads for `hold_s`, then applies its result."""
+    async def run(aid):
+        log.append((aid, time.monotonic()))
+        await asyncio.sleep(hold_s)
+        if landed is not None:
+            landed.append(aid)
+    return run
+
+
+async def _yes(_aid):
+    return True
+
+
+async def case_refresh_job_on_exit_gate():
+    """A refresh job runs on its Creator's exit, APP_OPEN_WARM_GAP_S after the last read there, exits in parallel; it
+    reads none of the warm's set, publishes nothing, and is not warm-pending."""
+    ran: list[tuple[str, float]] = []
+    with _patched():
+        t0 = time.monotonic()
+        await aow.start(("user", "u1"), [P1A], leased_first=())
+        assert aow.refresh(P1B, _refresher(ran), wanted=_yes) is True
+        assert aow.refresh(P2A, _refresher(ran), wanted=_yes) is True
+        assert aow.pending(P1A) and not aow.pending(P1B) and not aow.pending(P2A), aow._pending
+        await _drain()
+        assert not aow.pending(P1A), "pending ends with the warm"
+    at = {a: t - t0 for a, t in ran}
+    assert set(at) == {P1B, P2A} and len(ran) == 2, ran
+    steps_end = STEPS[0][1] - t0 + STEP_S
+    assert at[P1B] >= steps_end + GAP, f"same exit: one GAP after the warm's reads ended: {at} {steps_end}"
+    assert at[P2A] < GAP / 2, f"another exit: at once: {at}"
+    assert [a for a, _, _ in READS] == [P1A] and [a for a, _, _ in STEPS] == [P1A], (READS, STEPS)
+    assert _warmed_ids() == [P1A], PUBLISHED
+
+
+async def case_warm_absorbs_refresh():
+    """One entry per Creator: a warm arriving for a queued refresh takes its place (the refresh never runs); a refresh
+    arriving for a queued warm is not queued; either way one warm, read once."""
+    ran: list[tuple[str, float]] = []
+    with _patched():
+        await aow.start(("user", "u1"), [P1A], leased_first=())    # holds the exit: the rest stay queued
+        assert aow.refresh(P1B, _refresher(ran), wanted=_yes) is True
+        got = await aow.start(("user", "u2"), [P1B, P1C], leased_first=())
+        assert got == {P1B: "started", P1C: "started"}, got
+        assert aow.refresh(P1C, _refresher(ran), wanted=_yes) is False, "a queued warm absorbs the refresh"
+        await _drain()
+    assert ran == [], f"no refresh ran: the warms read more: {ran}"
+    assert [a for a, _, _ in STEPS] == [P1A, P1B, P1C], f"each Creator one warm, in order: {STEPS}"
+    assert sorted(_warmed_ids()) == [P1A, P1B, P1C], PUBLISHED
+
+
+async def case_refresh_recheck_at_turn():
+    """At its turn a refresh job re-checks (`wanted`, asked then, not at enqueue): unwanted, it is dropped unread and
+    the exit does not wait a GAP for it."""
+    ran: list[tuple[str, float]] = []
+    asked: list[tuple[str, float]] = []
+    gone: set[str] = set()
+
+    async def wanted(aid):
+        asked.append((aid, time.monotonic()))
+        return aid not in gone
+
+    with _patched():
+        t0 = time.monotonic()
+        assert aow.refresh(P1A, _refresher(ran), wanted=wanted)
+        assert aow.refresh(P1B, _refresher(ran), wanted=wanted)
+        assert aow.refresh(P1C, _refresher(ran), wanted=wanted)
+        assert asked == [], "not asked at enqueue"
+        gone.add(P1B)                        # e.g. its last tab closed after it was planned
+        await _drain()
+    at = {a: t - t0 for a, t in ran}
+    assert set(at) == {P1A, P1C} and len(ran) == 2, f"P1B dropped unread: {ran}"
+    assert [a for a, _ in asked] == [P1A, P1B, P1C], asked
+    assert dict(asked)[P1B] - t0 >= READ_S + GAP, f"P1B asked at its turn: {asked}"
+    assert GAP <= at[P1C] - (at[P1A] + READ_S) < 2 * GAP, f"no GAP for the dropped job: {at}"
+
+
+async def case_refresh_deadline_frees_exit():
+    """A refresh job hung past the job deadline (30 s) frees its exit: the next Creator there reads (one GAP later)
+    while the hung walk runs on, never cancelled; its late result lands; logged `shared_refresher_job_timeout`."""
+    assert aow.JOB_DEADLINE_S == 30.0, aow.JOB_DEADLINE_S
+    deadline, hang = 0.2, 0.8
+    ran: list[tuple[str, float]] = []
+    landed: list[str] = []
+    records: list[logging.LogRecord] = []
+    h = logging.Handler(); h.emit = records.append
+    lg = logging.getLogger("of-relay.app_open_warm"); lg.addHandler(h)
+    old = aow.JOB_DEADLINE_S
+    aow.JOB_DEADLINE_S = deadline
+    try:
+        with _patched():
+            t0 = time.monotonic()
+            aow.refresh(P1A, _refresher(ran, hang, landed), wanted=_yes)
+            aow.refresh(P1B, _refresher(ran, READ_S, landed), wanted=_yes)
+            await _drain()
+    finally:
+        aow.JOB_DEADLINE_S = old
+        lg.removeHandler(h)
+    at = {a: t - t0 for a, t in ran}
+    assert deadline + GAP <= at[P1B] < hang, f"the exit serves P1B after the deadline, before P1A's walk ends: {at}"
+    assert landed == [P1B, P1A], f"the hung walk was not cancelled: its late result landed: {landed}"
+    msgs = [r.getMessage() for r in records]
+    assert any(m.startswith("shared_refresher_job_timeout account=%s" % P1A) for m in msgs), msgs
+    assert not any(P1B in m for m in msgs if "timeout" in m), msgs
+
+
+async def case_refresh_429_holds_the_exit():
+    """A refresh job whose read met a terminal 429 holds its whole exit for OF's asked wait (`hold`, 429s follow the
+    proxy IP): the next Creator there, a refresh or a warm, starts no earlier; another exit at once. A hold shorter
+    than GAP keeps GAP."""
+    wait = 0.5
+    ran: list[tuple[str, float]] = []
+
+    def hot(hold_s):
+        async def run(aid):
+            ran.append((aid, time.monotonic()))
+            await asyncio.sleep(READ_S)
+            aow.hold(aid, hold_s)             # the shell's terminal-429 branch
+        return run
+
+    with _patched():
+        t0 = time.monotonic()
+        aow.refresh(P1A, hot(wait), wanted=_yes)
+        aow.refresh(P1B, _refresher(ran), wanted=_yes)
+        aow.refresh(P2A, _refresher(ran), wanted=_yes)
+        await _drain()
+        at = {a: t - t0 for a, t in ran}
+        assert at[P2A] < GAP / 2, f"another exit: at once: {at}"
+        assert wait + READ_S <= at[P1B] < wait + READ_S + GAP, f"same exit: held OF's wait, not GAP: {at}"
+        aow.refresh(P1B, hot(wait), wanted=_yes)
+        await _drain()
+        t1 = time.monotonic()
+        await aow.start(("user", "u1"), [P1C], leased_first=())  # a warm on the held, now idle, exit waits too
+        await _drain()
+        assert wait - 0.05 <= STEPS[-1][1] - t1, f"the warm waits out the hold: {STEPS[-1][1] - t1}"
+        ran.clear()
+        t2 = time.monotonic()
+        aow.refresh(P2A, hot(GAP / 3), wanted=_yes)
+        aow.refresh(P2B, _refresher(ran), wanted=_yes)
+        await _drain()
+    at = {a: t - t2 for a, t in ran}
+    assert READ_S + GAP <= at[P2B] < READ_S + 2 * GAP, f"a hold under GAP keeps GAP: {at}"
+
+
+async def case_refresh_dropped_at_turn_when_no_longer_wanted():
+    """The Shared refresher's own jobs (its `tick`, the real `wanted`): queued behind a held exit, each re-checks at
+    its turn and is dropped unread when its Creator left `tracked` (its last tab closed), went dead, or got a Last
+    refresh meanwhile; a still-wanted one reads. A dropped job marks nothing in flight."""
+    import shared_refresher as sr
+    import shared_refresher_decide as srd
+    clock = [1000.0]
+    read: list[str] = []
+
+    async def _reads(aid, window=None):
+        read.append(aid)
+        return True
+
+    saved = (sr._state, sr._clock, sr._server, dict(sr._at_ms), dict(sr._seq), dict(sr._live_since_ms),
+             accounts.is_watcher, accounts.get_platform)
+    sr._state, sr._clock = srd.State(), (lambda: clock[0])
+    sr._server = lambda: types.SimpleNamespace(shared_refresher_reads=_reads)
+    accounts.is_watcher, accounts.get_platform = (lambda _a: False), (lambda _a: "onlyfans")
+    tab_a = await events.subscribe("all", accounts=frozenset({P1A}), tab=True)
+    tab_rest = await events.subscribe("all", accounts=frozenset({P1B, P1C, P2A}), tab=True)
+    try:
+        with _patched():
+            await sr.tick()                          # first seen: published, nothing due yet
+            aow.hold(P1A, 0.3)                       # both exits busy: the jobs queue
+            aow.hold(P2A, 0.3)
+            clock[0] += 61.0                         # past every first slot
+            await sr.tick()
+            queued = sorted(a for ex in aow._exits.values() for a in ex.jobs)
+            assert queued == [P1A, P1B, P1C, P2A], queued
+            await events.unsubscribe("all", tab_a)   # P1A's last tab closed
+            DEAD_NOW.add(P1B)                        # P1B went dead
+            sr._state = srd.after_read(sr._state, P1C, True, clock[0])   # P1C got a Last refresh meanwhile
+            await _drain()
+            assert read == [P2A], f"only the still-wanted job read: {read}"
+            assert sr._in_flight == set(), sr._in_flight
+    finally:
+        await events.unsubscribe("all", tab_a)
+        await events.unsubscribe("all", tab_rest)
+        (sr._state, sr._clock, sr._server, at_ms, seq, live_since, accounts.is_watcher, accounts.get_platform) = saved
+        for d, v in ((sr._at_ms, at_ms), (sr._seq, seq), (sr._live_since_ms, live_since)):
+            d.clear()
+            d.update(v)
+
+
 class _OF:
     """A Creator's OF reads, counted: the chats window, the notifications lists and the count."""
 
@@ -456,6 +707,17 @@ async def case_read_set_on_the_real_routes():
                 setattr(m, k, v)
             for ns in ("notifications", "notifications_count", "roster_count", "list_chats"):
                 relay_cache.invalidate(ns, P1A)
+
+
+def case_hold_is_capped():
+    """A 429's asked wait never holds an exit past HOLD_MAX_S (`Retry-After: inf`, a day, nan)."""
+    for asked, lo, hi in ((float("inf"), 899.0, 900.0), (86400.0, 899.0, 900.0), (float("nan"), 899.0, 900.0),
+                          (-5.0, 899.0, 900.0), (30.0, 29.0, 30.0)):
+        aow.hold("hold-cap", asked)
+        ex = aow._gate("hold-cap")[1]
+        left = ex.free_at - time.monotonic()
+        assert lo < left <= hi, (asked, left)
+        ex.free_at = 0.0
 
 
 _harness.run()

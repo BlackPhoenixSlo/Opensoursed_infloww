@@ -4,12 +4,15 @@
  * useToggleMessageFlag — the shared body of useLikeMessage and
  * useTogglePinMessage: flip a boolean on a chat message optimistically in the
  * ["messages", accountId, fanId] cache, POST (on) or DELETE (off) the wire
- * path, and revert the flip if the request fails.
+ * path, and revert the flip if the request fails, telling the operator why
+ * (a Fansly account answers 501: it has no message pinning).
  */
 
 import { useCallback } from "react";
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 
+import { ifAlert } from "@/components/ui/ifConfirm";
+import { errText } from "@/lib/errText";
 import { relay, type OFMessage } from "@/lib/relay";
 import { isValidFanId, type FanId } from "@/lib/fanId";
 
@@ -61,6 +64,7 @@ export function useToggleMessageFlag(
       } catch (err) {
         console.warn(`[${label}] failed — reverting`, err);
         patchLocal(id, !next);
+        void ifAlert(`Couldn't ${next ? label : `un${label}`}: ${errText(err)}`);
       }
     },
     [accountId, fanId, field, label, path, invalidates, patchLocal, qc],

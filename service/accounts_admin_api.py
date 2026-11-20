@@ -39,6 +39,7 @@ import notifications_api
 import proxies as proxy_registry
 import proxy_health
 import relay_cache
+import shared_refresher
 import sign_rules
 import vault_cache
 from auth import assert_account_owned, require_actor_account_ids
@@ -292,6 +293,10 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
         a["proxy_down"] = reason is not None
         if reason:
             a["proxy_bad_reason"] = reason
+    # First paint of each Creator's Freshness (Shared refresher, P1 Contract 4): Relay memory, 0 OF calls. Off: none.
+    if shared_refresher.ENABLED:
+        for a in all_accounts:
+            a["freshness"] = shared_refresher.snapshot(a["id"])
     active = account_registry.get_active_account_id()
     if active not in {a.get("id") for a in all_accounts}:
         active = all_accounts[0]["id"] if all_accounts else None
@@ -320,6 +325,7 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
 # badge and the visible list can never disagree.
 _ROSTER_SCAN_MAX = 25
 _ROSTER_WINDOW_KEY = (_ROSTER_SCAN_MAX, 0, "recent", None, None, None)
+ROSTER_COUNT_TTL_S = 300.0   # the `roster_count` entry's TTL (app_open_warm.FRESH_MAX_S is held to it)
 # Per Creator, its last computed count (with `as_of`): what roster-counts serves an unleased Creator
 # whose chats window is no longer held. Bounded by Creator count; a restart forgets it.
 _roster_last: dict[str, dict[str, int]] = {}
@@ -353,8 +359,11 @@ def _roster_counts_from_rows(
     threads are not backlog. They still occupy a window slot (the list shows
     their row), which is what keeps the badge≡first-page parity intact — the
     frontend chips apply the SAME exclusion off the rows' `withUser.isRestricted`
-    stamp (see the /chats serve-time annotation)."""
-    blue = owe = 0
+    stamp (see the /chats serve-time annotation).
+
+    `unread_capped` (set only when true): the window is full and every chat in it that counts is unread, so more
+    unread chats may sit past it; the tab shows "N+". `unread` itself stays the window's count (it sorts the tabs)."""
+    blue = owe = counted = 0
     seen: set[Any] = set()
     for ch in rows:
         wu = ch.get("withUser") or {}
@@ -366,6 +375,7 @@ def _roster_counts_from_rows(
         seen.add(fid)
         if fid in exclude or wu.get("isRestricted"):
             continue
+        counted += 1
         if int(ch.get("unreadMessagesCount") or 0) > 0:
             blue += 1
             continue
@@ -373,7 +383,10 @@ def _roster_counts_from_rows(
         from_id = (lm.get("fromUser") or {}).get("id")
         if from_id is not None and str(from_id) != me:
             owe += 1
-    return {"unread": blue, "owe_reply": owe}
+    out = {"unread": blue, "owe_reply": owe}
+    if len(seen) >= _ROSTER_SCAN_MAX and blue > 0 and blue == counted:
+        out["unread_capped"] = True
+    return out
 
 
 async def _compute_roster_count_of(account_id: str, *, bypass: bool = False) -> dict[str, int]:
@@ -526,7 +539,7 @@ async def admin_accounts_roster_counts(
                 return await _compute_roster_count_of(aid, bypass=bypass)
             value = await relay_cache.get_or_fetch(
                 "roster_count", aid, (),
-                ttl_seconds=300.0,
+                ttl_seconds=ROSTER_COUNT_TTL_S,
                 fetcher=_fetch,
             )
             return aid, value
@@ -593,7 +606,8 @@ async def rewarm_roster_count(account_id: str) -> dict[str, int]:
 
     async def _fetch() -> dict[str, int]:
         return await _compute_roster_count_of(account_id, bypass=True)
-    return await relay_cache.get_or_fetch("roster_count", account_id, (), ttl_seconds=300.0, fetcher=_fetch)
+    return await relay_cache.get_or_fetch("roster_count", account_id, (), ttl_seconds=ROSTER_COUNT_TTL_S,
+                                          fetcher=_fetch)
 
 
 # View lease (ADR-0031, phase-01 1a): the Creators a tab has on screen.

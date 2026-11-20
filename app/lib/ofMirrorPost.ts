@@ -1071,7 +1071,10 @@ function bindFeedSearch(doc: Document, ctx: PostContext): () => void {
   };
   const run = (q: string) => {
     const { handlers } = ctx;
-    if (!q) return results()?.remove();
+    if (!q) {
+      asked = ""; // a search still in flight must not redraw under the cleared input
+      return results()?.remove();
+    }
     if (!handlers) return note(doc, input, SELECT_MODEL);
     if (!handlers.searchUsers || !handlers.searchPosts) return note(doc, input, READ_ONLY);
     asked = q;

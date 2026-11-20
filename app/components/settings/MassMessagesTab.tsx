@@ -43,18 +43,14 @@ import { cn } from "@/lib/utils";
 import { RefreshButton } from "./RefreshButton";
 import { MassMessageRowItem } from "./MassMessageRow";
 import { filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, narrowedBy, RANGE_DAYS } from "./massFilterBar";
-import { BULK_ACTIONS, bulkCounts, bulkTargets, visibleMassRows, type BulkAction } from "./massUnsendRules";
+import { BULK_ACTIONS, bulkCounts, bulkTargets, unsendByCreator, visibleMassRows, type BulkAction } from "./massUnsendRules";
+import { bulkRunReducer, bulkStatusLine, INITIAL_BULK_RUN } from "./bulkUnsendRun";
 
 const RANGE_OPTIONS = RANGE_DAYS.map((days) => ({ label: `Last ${days} days`, days }));
 
 /** What the page shows for a failed refresh / load; the raw error stays in the tooltip and the console. */
 const REFRESH_FAILED = "Couldn't refresh from OnlyFans. Check the creator's connection.";
 const LOAD_FAILED = "Couldn't load sent mass messages.";
-
-/** Concurrency cap for bulk cancels. Each cancel is one OF request +
- *  one DB update — small enough to run a few in parallel, large
- *  enough to be polite. */
-const BULK_CHUNK = 4;
 
 export default function MassMessagesTab() {
   const accounts = useActiveAccounts();
@@ -65,9 +61,25 @@ export default function MassMessagesTab() {
   // Multi-select model filter. Empty set = no filter (show all). Otherwise
   // restrict to the accounts in the set. Bulk actions inherit this scope.
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
-  const [bulkRunning, setBulkRunning] = useState<string | null>(null);
-  /** The last bulk unsend's problem (nothing matched, or some failed); cleared by the next one. */
-  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  // The bulk unsend run: its action, "N of M" progress and the note it left (bulkUnsendRun.ts).
+  const [bulk, bulkDispatch] = useReducer(bulkRunReducer, INITIAL_BULK_RUN);
+  const bulkRunning = bulk.running;
+  const bulkLine = bulkStatusLine(bulk);
+  // A run is one delete at a time and lives in this tab: warn before the tab closes mid-run.
+  useEffect(() => {
+    if (!bulkRunning) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [bulkRunning]);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
   const { ask, modal: confirmModal } = useIfConfirm();
 
   const { rows: loaded, isLoading, isFetching, error, queries } = useMassMessages(accountIds, { daysBack });
@@ -123,13 +135,14 @@ export default function MassMessagesTab() {
     [rows, selectedModels, hideUnsent],
   );
 
-  /** Run cancel mutations across a target subset of rows, in small
-   *  parallel batches, with one combined confirmation up front. */
+  /** Run cancel mutations across a target subset of rows, Creator by
+   *  Creator, one at a time (`unsendByCreator`), with one combined
+   *  confirmation up front. */
   async function bulkCancel(actionKey: BulkAction, label: string) {
-    setBulkNote(null);
+    bulkDispatch({ type: "clear" });
     const targets = bulkTargets(rows, selectedModels, actionKey, Date.now());
     if (targets.length === 0) {
-      setBulkNote("Nothing to unsend matches that filter.");
+      bulkDispatch({ type: "nothing" });
       return;
     }
     const ok = await ask(
@@ -138,33 +151,25 @@ export default function MassMessagesTab() {
       "Unsend",
     );
     if (!ok) return;
-    setBulkRunning(actionKey);
+    bulkDispatch({ type: "start", action: actionKey, total: targets.length });
     let failed = 0;
     try {
-      for (let i = 0; i < targets.length; i += BULK_CHUNK) {
-        const chunk = targets.slice(i, i + BULK_CHUNK);
-        const results = await Promise.allSettled(
-          chunk.map((r) =>
-            cancelM.mutateAsync({ id: r.id, accountId: r.__accountId }),
-          ),
-        );
-        failed += results.filter((res) => res.status === "rejected").length;
-      }
-    } finally {
-      setBulkRunning(null);
-    }
-    if (failed > 0) {
-      setBulkNote(
-        `${failed} of ${targets.length} unsend${targets.length === 1 ? "" : "s"} failed. Those broadcasts may still be live — refresh and retry.`,
+      failed = await unsendByCreator(
+        targets,
+        (r) => cancelM.mutateAsync({ id: r.id, accountId: r.__accountId }),
+        (done) => bulkDispatch({ type: "progress", done }),
       );
+    } finally {
+      bulkDispatch({ type: "finish", failed });
     }
   }
 
   // Counters for the button labels — shows up-front whether each action
-  // will do anything before the user clicks.
+  // will do anything before the user clicks. The age gates move with the
+  // clock, so a one-minute tick keeps "(N)" in step with the click's count.
   const counts = useMemo(
-    () => bulkCounts(rows, selectedModels, Date.now()),
-    [rows, selectedModels],
+    () => bulkCounts(rows, selectedModels, now),
+    [rows, selectedModels, now],
   );
 
   return (
@@ -295,7 +300,8 @@ export default function MassMessagesTab() {
           ))}
         </div>
 
-        {bulkNote && <div role="alert" className="text-[14px] text-err mb-3">{bulkNote}</div>}
+        {bulkLine && <div role="status" className="text-[14px] text-fg-dim mb-3">{bulkLine}</div>}
+        {bulk.note && <div role="alert" className="text-[14px] text-err mb-3">{bulk.note}</div>}
         {error && (
           <FailLine text={LOAD_FAILED} detail={error.message} onRetry={() => queries.forEach((q) => q.refetch())} />
         )}

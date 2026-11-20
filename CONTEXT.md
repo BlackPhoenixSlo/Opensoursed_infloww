@@ -368,6 +368,56 @@ A chat holding only our mass messages and no fan reply; its deep history backfil
 _Avoid_: dead chat, cold chat, empty chat
 
 
+### Shared Creator freshness
+
+**Open-tab Creator**:
+A Creator that at least one Employee holding a live Event stream can access. Wider than Viewing demand: a View lease says a Creator is on screen, an Open-tab Creator only that someone could look.
+_Avoid_: watched Creator (a Watcher subscribes to Creators, and "watching" is Viewing demand's rejected word), Streamed Creator (Stream is taken), leased Creator (narrower), active Creator, online
+ASSUMPTION: coined instead of the plan's "watched Creator" (rung 1: `accounts.py` ROLE_WATCHER, View lease's _Avoid_); overturned if the owner keeps "watched".
+
+**Event stream**:
+A tab's one `/events` connection to the Relay, over which Relay events (`creator_warmed`, `chat_read_changed`, …) reach every tab that can access their Creator.
+_Avoid_: SSE sub (a View lease input), Stream (taken: a sender's word), websocket (that is the Live connection), subscription
+
+**Live connection**:
+The Relay's one OnlyFans websocket per Creator (`service/of_ws.py`), bringing DMs and counter frames at no OF call.
+_Avoid_: WS pump, socket, stream, Event stream (Relay to tab)
+
+**Shared refresher**:
+The Relay loop that reads each Open-tab Creator that is no Dead session at most once per Cycle on behalf of every Employee and tab, and publishes only what changed on the Event stream (ADR-0042).
+_Avoid_: watched-Creator refresher, variant C (the study's label), poller, warm loop, App-open warm (one refresh per open, not a loop)
+
+**Cycle**:
+How often the Shared refresher reads one Open-tab Creator: the lease cycle (~120 s) while it holds a View lease, else the tab cycle (~10 min), never under a 60 s floor whatever the Knobs say.
+_Avoid_: tick, interval, period, fast/slow tier (the Purchases poll's)
+
+**Last refresh**:
+A Creator's one freshness clock: when the Shared refresher or the App-open warm last read it. Within its Cycle it counts as fresh for both, so neither re-reads it (ADR-0044).
+_Avoid_: reuse window (the warm's old 30 s), as_of (a Roster count's own stamp), freshness on its own, two clocks
+
+**Unread total**:
+The Relay's one count per Creator of chats OnlyFans holds unread across the whole inbox, pushed to tabs on change; the Unread badge's first-paint truth (ADR-0043).
+_Avoid_: Roster count (a 25-chat window), unread count (one chat's `unreadMessagesCount`), Unread badge (what a tab shows), unread flags
+ASSUMPTION: whole inbox, not the Roster count's 25-chat window (rung 2 reading of the plan's "true unread total", live 12 vs 1); overturned if Q1 or the Phase 2 spec settles on the window.
+
+**Roster count**:
+A Creator tab's two counts from `/admin/accounts/roster-counts`, unread (blue) and owe reply (orange), folded from the first 25 chats of the Creator's inbox; a full window reads "N+".
+_Avoid_: Unread total, badge count, tab total
+
+**Unread badge**:
+The count on the Fan List's Unread chip: unread chats among the Creators the Fan List shows.
+_Avoid_: Unread total (the Relay number it is seeded from), Notifications badge (the bell's count), Roster count, chip count
+
+**Data age**:
+How old a Creator's Unread total or other Relay truth a tab shows is: now minus when the Relay last confirmed it. Past one Cycle the badge shows it as "as of".
+_Avoid_: staleness, last updated, freshness, as_of on its own (the field)
+
+**No-live-connection mark**:
+The per-Creator mark a tab shows while the Relay has no Live connection for that Creator: its websocket is down or it is a Dead session.
+_Avoid_: offline, disconnected badge, no connection, Dead session (one of its two causes)
+
+- **Watcher** (a fan account the Agency subscribes to its Creators to read what they send; no Creator, never leased, warmed or refreshed): `service/accounts.py` `ROLE_WATCHER`
+
 ### Slop feedback
 
 **Run identity**:

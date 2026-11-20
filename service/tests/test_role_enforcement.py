@@ -488,6 +488,45 @@ def case_funnel_writes_are_auto_funnels_and_the_list_stays_open():
         _reset()
 
 
+def case_unconfirmed_send_dismiss_is_auto_funnels_like_retry_and_agency_scoped():
+    # "It went through" (POST /admin/unconfirmed-sends/dismiss) has Retry's guard: the Creator's
+    # owner, or a chatter whose role ticks Auto Funnel; never another Agency's Creator.
+    import json
+    from datetime import timedelta
+    from db.models import FollowupState
+    denied = {"detail": "Your role does not allow Auto Funnel"}
+    q = f"?account_id={IDS['creator_a']}"
+    body = {"kind": "followup", "fan_id": 424242}
+    marked_at = datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)   # past the lease
+
+    async def _seed():
+        async with get_session() as s:
+            s.add(FollowupState(account_id=IDS["creator_a"], fan_id=424242, phase="tracking", cycle=1,
+                                messages_sent="{}", sending_at=marked_at,
+                                sending_ctx=json.dumps({"step": 1})))
+
+    async def _marker():
+        async with get_session() as s:
+            return (await s.get(FollowupState, (IDS["creator_a"], 424242))).sending_at
+    asyncio.run(_seed())
+    try:
+        _reset()
+        for path in ("retry", "dismiss"):
+            r = CHATTER_A.post(f"/admin/unconfirmed-sends/{path}{q}", json=body)
+            assert r.status_code == 403 and r.json() == denied, (path, r.text)
+        r = OWNER_B.post(f"/admin/unconfirmed-sends/dismiss{q}", json=body)
+        assert r.status_code == 403, ("another Agency's Creator", r.text)
+        assert asyncio.run(_marker()) == marked_at, "refused: the row untouched"
+        _roles(OWNER_A, True, {EMP_A: "role-af"}, _role("role-af", _only("/growth/auto-funnel")))
+        r = CHATTER_A.post(f"/admin/unconfirmed-sends/dismiss{q}", json=body)
+        assert (r.status_code, r.json()) == (200, {"status": "dismissed"}), r.text
+        assert asyncio.run(_marker()) is None
+        r = OWNER_A.post(f"/admin/unconfirmed-sends/dismiss{q}", json=body)
+        assert (r.status_code, r.json()) == (200, {"status": "already_sent"}), r.text
+    finally:
+        _reset()
+
+
 def case_a_two_agency_chatter_is_granted_an_opt_in_page_by_the_enforcing_agency_beside_one_that_is_off():
     # Agency A enforces and ticks Auto Mass and Auto Post for chatter_ab; Agency B does not enforce. With no
     # Creator named the chatter is checked in both, and the enforcing grant suffices.

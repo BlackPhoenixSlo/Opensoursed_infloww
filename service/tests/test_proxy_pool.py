@@ -612,7 +612,7 @@ def case_scrub_pool_secrets():
         assert secret not in out, (secret, out)
     assert proxy_registry.POOL_PLACEHOLDER in out and "custom.invalid" == proxy_registry.scrub_pool_secrets("custom.invalid")
 
-    # POST /admin/errors and the unhandled-error middleware feed GET /admin/errors (not tenant-filtered).
+    # POST /admin/errors and the unhandled-error middleware feed GET /admin/errors (the Master reads every row).
     r = OWNER_A.post("/admin/errors", json={"message": text, "stack": text, "url": "http://x/", "context": {"e": text}})
     assert r.status_code == 200 and r.json()["ok"], r.text
 
@@ -634,7 +634,7 @@ def case_scrub_pool_secrets():
     from db.models import AppError as _AE
     async def _legacy_row():
         async with get_session() as s:
-            s.add(_AE(source="browser", kind="error", message="legacy-cut-context",
+            s.add(_AE(source="browser", kind="error", message="legacy-cut-context", account_id=CREATOR_A,
                       context_json=json.dumps({"stack": "z" * 100})[:40]))
     asyncio.run(_legacy_row())
     got = OWNER_A.get("/admin/errors", params={"limit": 50})

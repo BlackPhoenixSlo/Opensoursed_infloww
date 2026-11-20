@@ -5,11 +5,14 @@
  * OF routes `/api/of/v2/users/notifications` and `/count`, which the Fansly shim answers from Fansly's
  * `GET /notifications` in OF's shapes (fansly_shim.notifications / notifications_count). A tab filters on the OF type
  * the shim maps each Fansly code to; Fansly answers one page, so the feed is its first 50 rows.
+ * Opening it marks the Creator's notifications read once, after the All feed answers, the way Fansly web acks on its
+ * notifications page (`POST /users/notifications/read` → fansly_shim.notifications_read → `/notifications/ack`).
  */
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { useMarkNotifsReadOnce } from "@/hooks/useOfNotifCount";
 import { EmptyState, IfBody, IfTabs, type IfOption } from "@/components/ui/infloww";
 import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
@@ -44,8 +47,9 @@ const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "")
 
 export function FanslyNotifications({ accountId }: { accountId: string }) {
   const [tab, setTab] = useState<Tab>("all");
+  const countKey = ["fansly-manager", "notifications-count", accountId];
   const countQ = useQuery<Counts>({
-    queryKey: ["fansly-manager", "notifications-count", accountId],
+    queryKey: countKey,
     queryFn: () => relay.get<Counts>("/api/of/v2/users/notifications/count", { accountId }),
     staleTime: 30_000,
   });
@@ -54,6 +58,7 @@ export function FanslyNotifications({ accountId }: { accountId: string }) {
     queryFn: () => relay.get(`/api/of/v2/users/notifications?limit=50${tab === "all" ? "" : `&type=${tab}`}`, { accountId }),
     staleTime: 30_000,
   });
+  useMarkNotifsReadOnce(accountId, tab === "all" && feedQ.isSuccess, countKey);
   const tabs: IfOption<Tab>[] = TABS.map((t) => {
     const key = COUNT_KEY[t.value];
     const n = key ? countQ.data?.[key] ?? 0 : 0;

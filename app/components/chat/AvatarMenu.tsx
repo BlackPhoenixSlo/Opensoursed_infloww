@@ -170,8 +170,9 @@ function ToggleListsSubmenu({
       }
       setOverride((prev) => new Map(prev).set(idStr, !currentlyIn));
       // Membership changed → refresh the folder chips/counts + roster so the
-      // VIP/list view reflects it immediately.
+      // VIP/list view reflects it immediately, and the composers' list counts.
       qc.invalidateQueries({ queryKey: ["chat-folders", accountId] });
+      qc.invalidateQueries({ queryKey: ["fan-lists", accountId] });
       qc.invalidateQueries({ queryKey: ["chats"] });
     } catch (e) {
       onFlash(false, (e as Error).message || "Couldn't update that list");

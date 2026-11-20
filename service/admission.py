@@ -408,6 +408,12 @@ HEALTH_PROBE = LoopLane("health_probe", "HEALTH_ALL_CONCURRENCY", 24)
 # one dead proxy (10 stuck slots, 6 walking the other 40 in ~7 s).
 REFERRALS_READ = LoopLane("referrals_read", "REFERRALS_CONCURRENCY", 16)
 
+# S4S `/profiles`: one OF `/users/me` per Creator on a cache miss (`s4s_api._of_me`), the same one-call-on-each-of-N
+# shape as REFERRALS_READ. Unlaned it fired every Creator's read at once, 5-10 of them through each shared proxy, on
+# one page open. 4: a page of 50 cold Creators at ~0.6 s a read (a /health probe's, a guess for /users/me) is ~8 s;
+# each read's own timeout starts once it holds a slot, so a queued Creator is slower, never dropped to its stored copy.
+OF_ME_READ = LoopLane("of_me_read", "OF_ME_CONCURRENCY", 4)
+
 # Vault Pro's download through the relay (`vault_download_api`): a slot per file for its WHOLE stream, which for a
 # source video can be minutes. Queued for at most `vault_download_api.SLOT_WAIT_S` (`enter_within`), then a 503 the
 # browser lists as a failed item (Retry failed): the browser runs 3 at a time per tab, so a waiter is another tab's
@@ -425,7 +431,7 @@ TRACKING_STATS_READ = LoopLane("tracking_stats_read", "TRACKING_STATS_CONCURRENC
 # merges `all_stats()`; adding a lane above and forgetting it here is the only
 # way it can go unreported, which is one place to look instead of two files.
 LANES = (VIDEO_STREAM, IMG_FETCH, STORYBOARD_BUILD, JEV_VIDEO)
-LOOP_LANES = (VAULT_MEDIA_READ, HEALTH_PROBE, REFERRALS_READ, VAULT_DOWNLOAD, TRACKING_STATS_READ)
+LOOP_LANES = (VAULT_MEDIA_READ, HEALTH_PROBE, REFERRALS_READ, OF_ME_READ, VAULT_DOWNLOAD, TRACKING_STATS_READ)
 
 
 def describe() -> list[dict[str, Any]]:

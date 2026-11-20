@@ -858,6 +858,13 @@ describe("the Messages Pro page", () => {
   /** Each Creator's OnlyFans notification count, `all` first. */
   const serveCounts = (all: Record<string, number>) =>
     routeRelay(NOTIF_COUNT, (_path, ctx) => ({ all: all[ctx?.accountId ?? ""] ?? 0, subscribed: 1, purchases: 0, tip: 0 }));
+  /** OF's mark-read (sent once per panel open) answers its counters at `all`. */
+  const NOTIF_READ = "/api/of/v2/users/notifications/read";
+  const answerMarkRead = (all: number) => {
+    relayPost.mockImplementation((path: string) => Promise.resolve(path === NOTIF_READ ? { counters: { all } } : {}));
+    onTestFinished(() => { relayPost.mockReset(); relayPost.mockImplementation(() => Promise.resolve({})); });
+  };
+  const markReads = () => relayPost.mock.calls.filter(([path]) => path === NOTIF_READ);
 
   it("\"Notifications\" sits beside Online Fans, and its badge shows `all` from the count route for the scoped Creator, following a scope change; each Creator tab shows its own count in teal (page-parity 07 SH6)", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
@@ -879,10 +886,11 @@ describe("the Messages Pro page", () => {
     expect(countReadsFor(OTHER_ACCOUNT_ID)).toHaveLength(1);
   });
 
-  it("\"Notifications\" hides its badge at zero, on a failed read and under All Models, where the count is not read", async () => {
+  it("\"Notifications\" hides its badge at zero and on a failed read; under All Models it sums the Creator tabs' cached counts", async () => {
     // One route whose reply each window below swaps.
     let reply: () => unknown = () => ({ all: 0, subscribed: 0, purchases: 0, tip: 0 });
     routeRelay(NOTIF_COUNT, () => reply());
+    answerMarkRead(0);
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
     const zero = renderPage("/messages-pro");
     await vi.waitFor(() => expect(countReadsFor(ACCOUNT_ID)).toHaveLength(1));
@@ -908,14 +916,15 @@ describe("the Messages Pro page", () => {
     renderPage("/messages-pro");
     expect(await screen.findByRole("heading", { level: 2, name: "All Models" })).toBeInTheDocument();
     await vi.waitFor(() => expect(listedFans()).toContain("Fixture Fan Four"));
-    // The Creator tabs read their own counts; the button shows none of them.
+    // The Creator tabs read their own counts; the button sums what they cached and reads nothing itself (#879).
     await vi.waitFor(() => expect(within(screen.getByRole("tablist", { name: "Creator tabs" })).getAllByText("notifications").length).toBeGreaterThan(0));
-    expect(notifications()).toHaveAccessibleName("Notifications");
+    await vi.waitFor(() => expect(notifications()).toHaveAccessibleName("Notifications 14"));
   });
 
   it("clicking \"Notifications\" opens the bell's panel and filters for the scoped Creator; closing it reads the count again", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
     serveCounts({ [ACCOUNT_ID]: 3 });
+    answerMarkRead(0);
     routeRelay("/api/of/v2/users/notifications?", (_path, ctx) => ctx?.accountId === ACCOUNT_ID
       ? [{ id: 900000001, type: "subscribed", text: "subscribed to your profile", createdAt: ago(3), user: fanUser(FANS[1]) }]
       : []);
@@ -925,6 +934,9 @@ describe("the Messages Pro page", () => {
 
     await userEvent.click(notifications());
     expect(await screen.findByText("subscribed to your profile")).toBeInTheDocument();
+    // Opening sent OF's mark-read once for the scoped Creator; its counters cleared the badge.
+    expect(markReads().map(([, , ctx]) => ctx?.accountId)).toEqual([ACCOUNT_ID]);
+    await vi.waitFor(() => expect(notifications()).toHaveAccessibleName("Notifications"));
     // The bell's own filters ("All" is the Fan List's chip too) and its settings.
     for (const name of ["Subscriptions", "Purchases", "Tips", "Comments", "Likes"]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();

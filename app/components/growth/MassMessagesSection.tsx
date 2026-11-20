@@ -95,7 +95,7 @@ export function MassAutoUnsendSection() {
   const [picked, setPicked] = useState<string | null>(null);
   const accountId = accounts.some((a) => a.id === picked) ? picked : accounts[0]?.id ?? null;
   return (
-    <CreatorRail creators={{ accounts, value: accountId, onChange: setPicked, noAll: true }} top="96px">
+    <CreatorRail creators={{ accounts, value: accountId, onChange: setPicked }} top="96px">
       <IfBody className="pb-6"><AutoUnsendCard accountId={accountId} /></IfBody>
     </CreatorRail>
   );

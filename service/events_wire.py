@@ -7,7 +7,8 @@ The SSE wire encoding of service/events.py: the bytes a browser tab's `/events` 
     CONNECTED          first bytes of every stream (a comment line)
     RESYNC             the tab may have missed what the rings cannot replay: refetch
     head(eid)          an id-only frame: a drop before the next event resumes from there
-    ping(ts)           heartbeat: `: ping` (proxies' idle timers) + `event: ping` (the browser's lastEventAt)
+    ping(ts, fresh)    heartbeat: `: ping` (proxies' idle timers) + `event: ping` (the browser's lastEventAt);
+                       `fresh` ({aid: at}, the Shared refresher's Last refresh) only with its Knob on (None: today's)
 
 `Frame` is an event as fanned out; `frame_json` encodes it once however many tabs get it (a
 serialize failure becomes `{"error": "serialize_failed", "type": ...}`).
@@ -76,5 +77,6 @@ def head(eid: str) -> bytes:
     return f"{_id_line(eid)}\n".encode("utf-8")
 
 
-def ping(ts: float) -> bytes:
-    return b": ping\n\n" + f"event: ping\ndata: {json.dumps({'ts': ts})}\n\n".encode("utf-8")
+def ping(ts: float, fresh: dict[str, int] | None = None) -> bytes:
+    data = {"ts": ts} if fresh is None else {"ts": ts, "fresh": fresh}
+    return b": ping\n\n" + f"event: ping\ndata: {json.dumps(data)}\n\n".encode("utf-8")

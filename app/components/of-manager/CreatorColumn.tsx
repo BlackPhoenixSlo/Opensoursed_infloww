@@ -5,11 +5,12 @@
  * Its own module, apart from OfManagerChrome: CreatorRail and the pages that list creators the same way import it,
  * and OfManagerChrome's Fan insights (FanDrawer, the Scripts picker, the OF mirror's chat and data modules) must not
  * ride along into theirs. Its route test (hasCreatorColumn) is in lib/nav, so the app shell imports nothing from here.
- * OF Manager's "All creators" select is Infloww's GroupSelect: All creators, then each Tag (a Tag is Infloww's creator
- * group, useCreatorProfiles), which narrows the rows to the creators holding it. A chatter is refused the Tags' blob,
- * so it offers All creators alone.
+ * OF Manager's column has no "All creators" pick (owner 2026-11-20: the OF view is always one creator). Its Tag menu
+ * (a Tag is Infloww's creator group, useCreatorProfiles) narrows the rows to the creators holding it: "All tags", then
+ * each Tag; with no Tags (a chatter is refused the Tags' blob) there is no menu.
  */
 
+import { rosterUnreadText } from "@/lib/format";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, RotateCw, Search, Users } from "lucide-react";
@@ -61,7 +62,7 @@ export type S4SMark = { optedIn: boolean; pending: number };
 
 /** The 192px creator column; exported for Profile promotion and Smart lists, which list creators the same way. OF
  *  Manager's picks the scope (ScopeContext); with `onChange` the column is controlled instead (`value` is the picked
- *  creator; `all` adds the "All creators" pick, else that menu only closes) and carries its own palette, for pages
+ *  creator; `all` adds the "All creators" pick, else there is none) and carries its own palette, for pages
  *  outside the OF Manager chrome (`CreatorRail` lays it out beside a page's content). `className`
  *  sizes it. `variant="s4s"` is Share for Share's rail (`pageScene:"s4s"`): 300px, no "All creators" row, 30px
  *  avatars with the S4S tag and the request count from `marks` in place of the online dot and the OF count.
@@ -75,10 +76,8 @@ export function CreatorColumn(props: {
   value?: string | null;
   onChange?: (accountId: string) => void;
   /** A controlled column's "All creators" pick; `on` while it is the pick. `label` relabels the row (Scripts'
-   *  "All models"), default "All creators". */
+   *  "All models"), default "All creators". Without it the column has no "All creators" row. */
   all?: { on: boolean; pick: () => void; label?: string };
-  /** A controlled column with no "All creators" row at all (pages that always work on one creator). */
-  noAll?: boolean;
   /** "All creators" as a creator row (rainbow tile) that picks it in one click, in place of the menu. */
   allRow?: boolean;
   /** Watcher accounts: dimmed rows after the creators, never picked (a page that passes them). OF Manager's
@@ -108,27 +107,24 @@ function ScopedColumn({ accounts, onPicked, className }: {
       className={className}
       value={scope.kind === "model" ? scope.accountId : null}
       onChange={(id) => { setScope({ kind: "model", accountId: id }); onPicked?.(); }}
-      all={{ on: !group && scope.kind === "all", pick: () => { setPicked(""); setScope({ kind: "all" }); onPicked?.(); } }}
       groups={{ tags: profiles.tags, value: group, pick: setPicked }}
       ofManager
     />
   );
 }
 
-function ColumnBody({ accounts, value, onChange, all, noAll = false, allRow = false, watchers, groups, ofManager = false, className, variant, marks }: {
+function ColumnBody({ accounts, value, onChange, all, allRow = false, watchers, groups, ofManager = false, className, variant, marks }: {
   accounts: AccountMeta[];
   value?: string | null;
   onChange: (accountId: string) => void;
-  /** The "All creators" pick (OF Manager's, or a controlled column's); without it the menu only closes. `label`
-   *  relabels the row, default "All creators". */
+  /** A controlled column's "All creators" pick; without it (and with no Tags) there is no menu. `label` relabels the
+   *  row, default "All creators". */
   all?: { on: boolean; pick: () => void; label?: string };
-  /** No "All creators" row. */
-  noAll?: boolean;
   /** "All creators" as a one-click creator row, no menu. */
   allRow?: boolean;
   /** Watcher accounts after the creators, not pickable. */
   watchers?: WatcherAccount[];
-  /** OF Manager's creator groups (the Tags) under All creators; `value` "" is none picked. */
+  /** OF Manager's creator groups (the Tags) under "All tags"; `value` "" is none picked. */
   groups?: { tags: string[]; value: string; pick: (tag: string) => void };
   /** OF Manager's own column: it collapses, warms the hovered creator's OF view and owns the `/` key. */
   ofManager?: boolean;
@@ -193,6 +189,10 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, allRow = fa
     else if (i === 0) searchRef.current?.focus();
   };
   const allLabel = all?.label || "All creators";
+  // The menu's first row: the "All creators" pick, else OF Manager's "All tags" (no Tag filter); neither, no menu.
+  const reset = all ? { on: all.on, pick: all.pick, label: allLabel }
+    : groups?.tags.length ? { on: !groups.value, pick: () => groups.pick(""), label: "All tags" } : null;
+  const menu = s4s || collapsed ? null : reset;
   const q = filter.trim().toLowerCase();
   const shown = q ? accounts.filter((a) => (a.nickname || a.id).toLowerCase().includes(q)) : accounts;
   const shownWatchers = (watchers ?? []).filter((w) => !q || (w.nickname || w.name || w.id).toLowerCase().includes(q));
@@ -255,9 +255,9 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, allRow = fa
           <RotateCw aria-hidden className="w-4 h-4" />
         </button>
       </div>}
-      {(s4s || collapsed || noAll) && <div className="h-4 shrink-0" />}
+      {!menu && <div className="h-4 shrink-0" />}
       {/* `allRow`: "All creators" is one more creator row (rainbow tile, name, count); one click picks it. */}
-      {allRow && !s4s && !collapsed && !noAll && (
+      {allRow && menu && (
         <button
           type="button"
           onClick={() => all?.pick()}
@@ -278,24 +278,24 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, allRow = fa
           </span>
         </button>
       )}
-      {!allRow && !s4s && !collapsed && !noAll && <div className="relative" ref={menuRef}>
+      {!allRow && menu && <div className="relative" ref={menuRef}>
         <button
           type="button"
           onClick={() => setMenuOpen((v) => !v)}
           aria-expanded={menuOpen}
           className="w-full h-16 flex items-center justify-between px-4 text-sm text-[var(--ofm-blue)]"
         >
-          <span className="truncate">{groups?.value || all?.label || "All creators"}</span>
+          <span className="truncate">{groups?.value || menu.label}</span>
           <ChevronDown aria-hidden className="w-3 h-3 shrink-0 text-[#8c8c8c]" />
         </button>
         {menuOpen && (
           <div className="absolute left-4 right-4 top-14 z-10 max-h-72 overflow-y-auto rounded border border-[var(--ofm-line)] bg-[var(--ofm-col)] shadow-lg py-1">
             <button
               type="button"
-              className={cn("w-full text-left px-3 h-9 text-sm hover:bg-[var(--ofm-hover)]", (!all || all.on) && "text-[var(--ofm-blue)]")}
-              onClick={() => { setMenuOpen(false); all?.pick(); }}
+              className={cn("w-full text-left px-3 h-9 text-sm hover:bg-[var(--ofm-hover)]", menu.on && "text-[var(--ofm-blue)]")}
+              onClick={() => { setMenuOpen(false); menu.pick(); }}
             >
-              {all?.label || "All creators"}
+              {menu.label}
             </button>
             {groups?.tags.map((t) => (
               <button
@@ -322,6 +322,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, allRow = fa
               account={a}
               active={value === a.id}
               unread={rosterCounts[a.id]?.unread ?? 0}
+              unreadCapped={rosterCounts[a.id]?.unread_capped}
               onPick={() => onChange(a.id)}
               collapsed={collapsed}
               prefetch={ofManager}
@@ -364,11 +365,13 @@ function AllCreatorsTile({ small = false }: { small?: boolean }) {
   );
 }
 
-function CreatorRow({ account, active, unread, onPick, collapsed = false, prefetch = false, leaseRef }: {
+function CreatorRow({ account, active, unread, unreadCapped, onPick, collapsed = false, prefetch = false, leaseRef }: {
   account: AccountMeta;
   active: boolean;
   /** Chats with unread messages (the roster counts). */
   unread: number;
+  /** The count may be cut off at the relay's chats window: shown as "N+". */
+  unreadCapped?: boolean;
   onPick: () => void;
   /** The 70px strip: the avatar and its dot only. */
   collapsed?: boolean;
@@ -438,7 +441,7 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
                 aria-label={`${unread} unread chats`}
                 className="px-1 py-px rounded-[22px] bg-[#FF7C71] text-white text-[10px] font-medium leading-none tabular-nums"
               >
-                {unread > 99 ? "99+" : unread}
+                {unread > 99 ? "99+" : rosterUnreadText(unread, unreadCapped)}
               </span>
             )}
           </span>

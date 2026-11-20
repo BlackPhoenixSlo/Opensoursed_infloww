@@ -9,6 +9,9 @@ and the unconfirmed-sends API's entries; this holds the shared SQL.
   unconfirm(model, keys, marked_at, **v)  may have sent: only while that mark still stands
   clear(model, keys, if_sending_at=, **v) the marker off (+ v), only while that mark stands
   landed(account_id, fan_id, since, kind, **tags)  an outbound `messages` row of the step?
+  untagged_out(account_id, fan_id, since)  the first untagged outbound row since (a hint)
+  tag_out(account_id, fan_id, since, message_id, kind, **tags)  the user-confirmed hint row tagged
+  untag_out(account_id, message_id, kind)  tag_out undone
   settle(rows, replay, boot_ts, now)   replay(row) for each UNCONFIRMED row, try/log/skip
 
 `keys` = {column: value} naming one row. Every conditional write matches the mark
@@ -19,7 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Awaitable, Callable
 
 from sqlalchemy import select, update
@@ -104,6 +107,54 @@ async def landed(account_id: str, fan_id: int, since: datetime, kind: str, **tag
                 *(getattr(Message, k) == v for k, v in tags.items()),
             ).limit(1)
         )).first() is not None
+
+
+def _untagged_out(account_id: str, fan_id: int, since: datetime) -> list:
+    """An outbound row that can be the id-less send's live-feed copy: untagged, not
+    stamped with an employee (a chatter's CRM send is a human's, never the step's)
+    and inside the attempt's window (`since` + the in-flight lease)."""
+    return [Message.account_id == str(account_id), Message.fan_id == int(fan_id),
+            Message.direction == "out", Message.created_at >= since,
+            Message.created_at <= since + timedelta(seconds=smd.LOOKUP_SLACK_S + smd.IN_FLIGHT_MAX_S),
+            Message.automation_kind.is_(None), Message.mass_run_id.is_(None),
+            Message.sent_by_employee_id.is_(None)]
+
+
+async def untagged_out(account_id: str, fan_id: int, since: datetime) -> tuple | None:
+    """(message_id, created_at, body) of the first outbound `messages` row at/after
+    `since` with no automation tag (the live feed's copy of a send that never got its
+    id): only a hint for the user's "It went through", never proof (a human's message
+    looks the same)."""
+    async with get_session() as s:
+        return (await s.execute(
+            select(Message.message_id, Message.created_at, Message.body)
+            .where(*_untagged_out(account_id, fan_id, since))
+            .order_by(Message.created_at).limit(1)
+        )).first()
+
+
+async def tag_out(account_id: str, fan_id: int, since: datetime, message_id: int,
+                  kind: str, **tags) -> bool:
+    """The hint row the user confirmed as the send gets the step's tags (what the
+    sender writes on a confirmed send), so the funnel's "replied since our last
+    message" baseline moves past it; only while it is still an untagged outbound
+    row of that fan since `since`. True iff tagged."""
+    async with get_session() as s:
+        res = await s.execute(
+            update(Message).where(Message.message_id == int(message_id),
+                                  *_untagged_out(account_id, fan_id, since))
+            .values(automation_kind=kind, **tags))
+    return (res.rowcount or 0) > 0
+
+
+async def untag_out(account_id: str, message_id: int, kind: str) -> None:
+    """`tag_out` undone (the step it was tagged for could not be saved as sent)."""
+    async with get_session() as s:
+        await s.execute(
+            update(Message).where(Message.account_id == str(account_id),
+                                  Message.message_id == int(message_id),
+                                  Message.direction == "out", Message.automation_kind == kind)
+            .values(automation_kind=None, mass_run_id=None, funnel_step=None))
 
 
 async def settle(rows: list, replay: Callable[[object], Awaitable[None]],

@@ -1,6 +1,6 @@
 /**
  * ScopeSelect — the below-lg creator picker (OF Manager, Messages Pro) now that the top bar has no model filter:
- * "All creators" then each creator, reading and writing ScopeContext; `pickAll` stands in for the plain All pick.
+ * each creator, reading and writing ScopeContext; "All creators" only with `pickAll` (Messages Pro), none in OF Manager.
  */
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -16,20 +16,18 @@ import type { AccountMeta } from "@/lib/relay";
 const accounts = [{ id: "a1", nickname: "isa" }, { id: "a2", nickname: "" }] as AccountMeta[];
 
 describe("ScopeSelect", () => {
-  it("shows the scope and picks a creator, then All creators", () => {
-    state.scope = { kind: "all" };
+  it("without pickAll offers no All creators and picks a creator", () => {
+    state.scope = { kind: "model", accountId: "a1" };
     state.setScope.mockReset();
     const onPicked = vi.fn();
     render(<ScopeSelect accounts={accounts} onPicked={onPicked} />);
     const trigger = screen.getByRole("combobox", { name: "Creator" });
-    expect(trigger).toHaveTextContent("All creators");
+    expect(trigger).toHaveTextContent("isa");
     fireEvent.click(trigger);
+    expect(screen.queryByRole("option", { name: "All creators" })).toBeNull();
     fireEvent.click(screen.getByRole("option", { name: "a2" }));
     expect(state.setScope).toHaveBeenLastCalledWith({ kind: "model", accountId: "a2" });
-    fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("option", { name: "All creators" }));
-    expect(state.setScope).toHaveBeenLastCalledWith({ kind: "all" });
-    expect(onPicked).toHaveBeenCalledTimes(2);
+    expect(onPicked).toHaveBeenCalledOnce();
   });
 
   it("names the scoped creator, and All creators goes through pickAll when given", () => {

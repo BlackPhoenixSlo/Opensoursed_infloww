@@ -4,14 +4,22 @@
  * (docs/spec/phase-05-remaining-parity-gaps.md, stories 44, Testing Decisions).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, screen } from "@testing-library/react";
+import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const { relayGet } = vi.hoisted(() => ({ relayGet: vi.fn() }));
+const { relayGet, relayPost } = vi.hoisted(() => ({
+  relayGet: vi.fn(),
+  relayPost: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ counters: { all: 0 } })),
+}));
 
-vi.mock("@/lib/relay", () => ({ relay: { get: (...args: unknown[]) => relayGet(...args) } }));
-vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => [{ id: "acc-1", nickname: "Creator One" }] }));
-vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: "acc-1" }) }));
+vi.mock("@/lib/relay", () => ({
+  relay: { get: (...args: unknown[]) => relayGet(...args), post: (...args: unknown[]) => relayPost(...args) },
+}));
+type Acc = { id: string; nickname: string; session_dead_at?: string };
+const ONE: Acc[] = [{ id: "acc-1", nickname: "Creator One" }];
+const scope = vi.hoisted(() => ({ accountId: "acc-1" as string | null, accounts: [] as Acc[] }));
+vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => scope.accounts }));
+vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: scope.accountId }) }));
 // lib/webPush at its interface (its HTTP is webPush.test.ts's).
 const wp = vi.hoisted(() => {
   const state = { id: null as string | null, failed: null as string | null };
@@ -46,7 +54,7 @@ vi.mock("@/lib/webPush", () => ({
   why: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
 
-import { renderWithProviders } from "@/test-utils";
+import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
 import { NOTIF_CLEARED_EVENT, appendNotifHistory, dispatchNotifArrived, markNotifHistoryResponded } from "@/lib/notifSettings";
 import { armRead, resetReadGate } from "@/lib/ofReadGate";
 import { NotificationBell, Row } from "./NotificationBell";
@@ -54,6 +62,8 @@ import { DENIED_MSG, IOS_TAB_MSG } from "./OsPingSettings";
 
 // acc-1 is armed (lib/ofReadGate: its `creator_warmed` came), so the bell reads it; "not armed yet" has its own case.
 beforeEach(() => {
+  scope.accountId = "acc-1";
+  scope.accounts = ONE;
   resetReadGate();
   armRead("acc-1");
 });
@@ -159,6 +169,136 @@ describe("NotificationBell (Messages Pro)", () => {
 
     expect(await screen.findByText("No notifications.")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "See all" })).toBeNull();
+  });
+});
+
+describe("NotificationBell (OF mark-read)", () => {
+  const PRO = { button: "", icon: "", badge: "", panel: "" };
+  const READ = "/api/of/v2/users/notifications/read";
+  /** OF's count says 7 until the mark-read answers. */
+  const countSeven = () => relayGet.mockImplementation(async (path: string) =>
+    String(path).startsWith("/api/of/v2/users/notifications/count") ? { all: 7 } : { list: [] });
+  const posts = () => relayPost.mock.calls.filter(([p]) => p === READ);
+  const button = () => screen.getByRole("button", { name: /^Notifications/ });
+
+  it("open sends exactly one mark-read for the scoped Creator; the badge drops to OF's counters", async () => {
+    countSeven();
+    relayPost.mockResolvedValueOnce({ counters: { all: 2, tip: 2 } });
+    renderWithProviders(<NotificationBell variant="messages-pro" classNames={PRO} />);
+    expect(await screen.findByText("7")).toBeInTheDocument();
+
+    await userEvent.click(button());
+    await screen.findByText("No notifications.");
+    await userEvent.click(screen.getByRole("button", { name: "Tips" }));   // a chip switch sends nothing more
+
+    expect(posts()).toEqual([[READ, undefined, { accountId: "acc-1" }]]);
+    expect(await screen.findByText("2")).toBeInTheDocument();
+    expect(screen.queryByText("7")).toBeNull();
+  });
+
+  it("each open sends one more; none while closed", async () => {
+    countSeven();
+    renderWithProviders(<NotificationBell variant="messages-pro" classNames={PRO} />);
+    await userEvent.click(button());
+    await userEvent.keyboard("{Escape}");
+    expect(posts()).toHaveLength(1);
+    await userEvent.click(button());
+    expect(posts()).toHaveLength(2);
+  });
+
+  it("a failed mark-read leaves the badge", async () => {
+    countSeven();
+    relayPost.mockRejectedValueOnce(new Error("502"));
+    renderWithProviders(<NotificationBell variant="messages-pro" classNames={PRO} />);
+    expect(await screen.findByText("7")).toBeInTheDocument();
+    await userEvent.click(button());
+    await screen.findByText("No notifications.");
+    expect(posts()).toHaveLength(1);
+    expect(screen.getByText("7")).toBeInTheDocument();
+  });
+
+  it("the top bar opening on Agency sends nothing until the OnlyFans tab shows", async () => {
+    relayGet.mockResolvedValue({ list: [] });
+    renderWithProviders(<NotificationBell agency={{ unread: 2, settings: null, panel: <p>Agency feed</p> }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
+    await screen.findByText("Agency feed");
+    expect(posts()).toHaveLength(0);
+    await userEvent.click(screen.getByRole("tab", { name: "OnlyFans" }));
+    expect(posts()).toHaveLength(1);
+  });
+});
+
+describe("NotificationBell (Messages Pro, All Models)", () => {
+  const PRO = { button: "", icon: "", badge: "", panel: "" };
+  const READ = "/api/of/v2/users/notifications/read";
+  const posted = () => relayPost.mock.calls.filter(([p]) => p === READ)
+    .map(([, , ctx]) => (ctx as { accountId: string }).accountId);
+  const button = () => screen.getByRole("button", { name: /^Notifications/ });
+  const badge = () => button().querySelector("span")?.textContent ?? null;
+
+  /** acc-1 at 3, acc-2 at 0, acc-3 at 4, acc-4 never read, acc-dead (dead session) at 9. */
+  function setup() {
+    scope.accountId = null;
+    scope.accounts = [
+      { id: "acc-1", nickname: "One" }, { id: "acc-2", nickname: "Two" }, { id: "acc-3", nickname: "Three" },
+      { id: "acc-4", nickname: "Four" }, { id: "acc-dead", nickname: "Dead", session_dead_at: "2026-11-01" },
+    ];
+    relayGet.mockResolvedValue({ list: [] });
+    const client = makeTestQueryClient();
+    for (const [id, n] of [["acc-1", 3], ["acc-2", 0], ["acc-3", 4], ["acc-dead", 9]] as const) {
+      client.setQueryData(["of-notif-count", id], n);
+    }
+    return renderWithProviders(<NotificationBell variant="messages-pro" classNames={PRO} />, client);
+  }
+
+  it("badge = the live Creators' cached counts; follows the cache; opening sends no write", async () => {
+    const { queryClient } = setup();
+    expect(badge()).toBe("7");
+    act(() => { queryClient.setQueryData(["of-notif-count", "acc-4"], 5); });
+    await waitFor(() => expect(badge()).toBe("12"));
+
+    await userEvent.click(button());
+    await screen.findByText("No notifications.");
+    expect(posted()).toEqual([]);
+    expect(relayGet.mock.calls.some(([p]) => String(p).includes("/notifications/count"))).toBe(false);
+  });
+
+  it("Mark all read: one write per live Creator not at 0, serially; busy meanwhile; the badge drops per write", async () => {
+    setup();
+    const pending: (() => void)[] = [];
+    relayPost.mockImplementation(() => new Promise((res) => pending.push(() => res({ counters: { all: 0 } }))));
+    await userEvent.click(button());
+    await userEvent.click(await screen.findByRole("button", { name: "Mark all read" }));
+
+    const busy = screen.getByRole("button", { name: "Marking…" });
+    expect(busy).toBeDisabled();
+    await userEvent.click(busy);
+    expect(posted()).toEqual(["acc-1"]);
+
+    await act(async () => { pending.shift()!(); });
+    expect(posted()).toEqual(["acc-1", "acc-3"]);
+    await waitFor(() => expect(badge()).toBe("4"));
+    await act(async () => { pending.shift()!(); });
+    expect(posted()).toEqual(["acc-1", "acc-3", "acc-4"]);
+    await act(async () => { pending.shift()!(); });
+
+    await waitFor(() => expect(badge()).toBeNull());
+    expect(posted()).toEqual(["acc-1", "acc-3", "acc-4"]);
+    expect(await screen.findByRole("button", { name: "Mark all read" })).toBeEnabled();
+  });
+
+  it("a failed write leaves that Creator's count and the run goes on", async () => {
+    setup();
+    relayPost.mockImplementation(async (_p, _b, ctx) => {
+      if ((ctx as { accountId: string }).accountId === "acc-3") throw new Error("502");
+      return { counters: { all: 0 } };
+    });
+    await userEvent.click(button());
+    await userEvent.click(await screen.findByRole("button", { name: "Mark all read" }));
+
+    expect(await screen.findByRole("button", { name: "Mark all read" })).toBeEnabled();
+    expect(posted()).toEqual(["acc-1", "acc-3", "acc-4"]);
+    await waitFor(() => expect(badge()).toBe("4"));
   });
 });
 

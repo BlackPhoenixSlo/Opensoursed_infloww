@@ -134,7 +134,8 @@ def case_unhandled_error_logs_500_and_reraises():
     assert r.status_code == 500, r.status_code
     assert " path=/__reqlog_boom status=500 " in lines[0][1], lines
     rid = lines[0][1].split()[1].removeprefix("id=")
-    errs = OWNER_A.get("/admin/errors").json()
+    # No session: the row names no Agency, so only the Master (instance owner) reads it.
+    errs = fx.login_owner("agency_master").get("/admin/errors").json()
     mine = [e for e in errs["list"] if "reqlog-boom" in (e.get("message") or "")]
     assert mine and mine[0]["context"] == {"request_id": rid}, (rid, mine)
 

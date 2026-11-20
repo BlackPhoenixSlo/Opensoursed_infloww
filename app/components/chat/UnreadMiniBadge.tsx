@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 
 const PILL = cn(MP.creatorTabs.badge, "inline-flex flex-none items-center justify-center text-white");
 
-export function UnreadMiniBadge({ count }: { count: number | null }) {
+export function UnreadMiniBadge({ count }: { count: number | string | null }) {
   return (
     <>
       {" "}

@@ -69,6 +69,19 @@ describe("useRevalidate", () => {
     expect(again.result.current.data).toEqual(CACHED);
   });
 
+  it("a folder write's refetch landing while the recheck is out wins: the older recheck does not overwrite it", async () => {
+    let answer!: (v: unknown) => void;
+    get.mockImplementation((_p: string, _c?: unknown, _s?: unknown, opts?: { refresh?: boolean }) =>
+      opts?.refresh ? new Promise((r) => { answer = r; }) : Promise.resolve(CACHED));
+    renderHook(() => useRead(VAULT_LISTS), { wrapper });
+    await waitFor(() => expect(refreshes()).toHaveLength(1));
+    const WRITTEN = { ...CACHED, list: [...CACHED.list, { id: 9, name: "New folder" }] };
+    client.setQueryData(mirrorQuery("1", VAULT_LISTS, true).queryKey, WRITTEN);
+    answer(FRESH);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(client.getQueryData(mirrorQuery("1", VAULT_LISTS, true).queryKey)).toEqual(WRITTEN);
+  });
+
   it("a vault dialog's first 24: cached, then one recheck; none for no path or before the cached answer", async () => {
     const { result } = renderHook(() => useRead(DIALOG), { wrapper });
     await waitFor(() => expect(refreshes()).toEqual([[DIALOG, { accountId: "1" }, undefined, { refresh: true }]]));

@@ -14,6 +14,18 @@
  * not re-read; the rail and bell lists re-read only when what is cached was
  * read before the warm (`warmMark`).
  *
+ * `chat_read_changed` (a chatter or an automation marked a chat read / unread,
+ * or every chat read, through the relay; any-scope) flips the row's unread
+ * flags in every cached chat list holding the Creator, All Models lists
+ * included, and adds / drops it in the cached Unread lists: no read. A list
+ * page read after the event's `at` already reflects it and is left alone.
+ *
+ * `creator_refreshed` (the Shared refresher's snapshot of a Creator changed; any-scope) goes into the tab's
+ * Freshness store (hooks/useCreatorFreshness.ts) and nowhere else: it arms no read and re-reads no money list,
+ * so the event adds no OF call. A stream ping's `fresh` (`{aid: at}`, the Knob on) dispatches `confirmed` there:
+ * a quiet Creator's confirmation, with no event. A reconnect's replayed `creator_refreshed` goes the same way, and
+ * `resync`'s refetch of everything re-reads the accounts lists, whose answers reseed it (useAccounts).
+ *
  * `transaction_recorded` (a sale landed in the ledger, sent after its commit by
  * the OF ingest, the WS pump and the Fansly lane) refetches the open reports
  * and dashboard, so they are live without a poll: at once, then at most once
@@ -22,19 +34,25 @@
  */
 
 import { useEffect } from "react";
-import { useQueryClient, type Query, type QueryKey } from "@tanstack/react-query";
+import { useQueryClient, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import {
+  applyReadFlip, decodeChatsKey, freshestFanRow, isUnreadList, keyHoldsAccount, parseReadFlip, type ChatPages, type ReadFlip,
+} from "@/lib/chatsCache";
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { APPLIED_SETTINGS_KEY } from "@/lib/appliedSettings";
 import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 import { armRead } from "@/lib/ofReadGate";
 import { writeWarmedRosterCount, type RosterCount } from "@/hooks/useRosterCounts";
+import { dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
+import { usePrincipalId } from "@/hooks/useEmployeeKey";
 
 type Body = Record<string, unknown>;
 
 const byAccount = (key: string, aid: string | undefined): QueryKey => (aid ? [key, aid] : [key]);
 
 const KEYS: Record<string, (aid: string | undefined, body: Body) => QueryKey[]> = {
-  session_dead: () => [["accounts"], ["app-errors", "recent"]],
+  // The chatter's own roster too (lib/chatterAccounts): a chatter's tabs show the Disconnected mark from it.
+  session_dead: () => [["accounts"], ["chatter", "self", "accounts"], ["app-errors", "recent"]],
   agency_notifications: () => [["agency-notifications"]],  // the owner's centre (AgencyNotifications.tsx)
   account_active: () => [["accounts"], ["chatter"]],
   proxy_switched: () => [["proxies"], ["accounts"]],
@@ -96,6 +114,26 @@ export function warmMark(
   return s.dataUpdatedAt > 0 || s.errorUpdatedAt > 0 ? "unless" : "skip";
 }
 
+/** A read flip on `accountId` written into every cached chat list holding it
+ *  (lib/chatsCache applyReadFlip): flags everywhere; in an Unread list the row
+ *  enters (copied from any cached list holding it) or leaves (not from the
+ *  list on screen). The one path for the SSE event and this tab's own write,
+ *  idempotent whichever lands first. */
+export function flipCachedReadState(qc: QueryClient, accountId: string, flip: ReadFlip): void {
+  const qs = qc.getQueryCache().findAll({ queryKey: ["chats"] })
+    .filter((q) => keyHoldsAccount(decodeChatsKey(q.queryKey), accountId));
+  const source = flip.unread && flip.fanId !== null
+    ? freshestFanRow(qs.map((q) => q.state.data as ChatPages | undefined), accountId, flip.fanId)
+    : null;
+  for (const q of qs) {
+    const data = q.state.data as ChatPages | undefined;
+    const next = applyReadFlip(data, accountId, flip, {
+      unreadList: isUnreadList(q.queryKey), keepRows: q.getObserversCount() > 0, source,
+    });
+    if (next !== data) qc.setQueryData(q.queryKey, next);
+  }
+}
+
 /** The SSE-relaxed polls (`ssePoll`). When the stream drops, one refetch
  *  re-arms each at its offline rate instead of waiting out the live one. */
 const SSE_POLLED: QueryKey[] = [
@@ -105,6 +143,20 @@ const SSE_POLLED: QueryKey[] = [
 
 export function useAccountStateEvents(): void {
   const qc = useQueryClient();
+  const principalId = usePrincipalId();
+  useEffect(() => {
+    const offs = [
+      eventBus.on("creator_refreshed", (e: EventEnvelope) => {
+        dispatchCreatorFreshness(qc, principalId, { type: "refreshed", body: e.creator_refreshed, receivedAt: Date.now() });
+      }),
+      eventBus.on("ping", (e: EventEnvelope) => {
+        const fresh = e.fresh as Record<string, number>;
+        const now = typeof e.ts === "number" ? Math.round(e.ts * 1000) : NaN;
+        dispatchCreatorFreshness(qc, principalId, { type: "confirmed", fresh, now, receivedAt: Date.now() });
+      }),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [qc, principalId]);
   useEffect(() => {
     const invalidate = (keys: QueryKey[]) => {
       for (const queryKey of keys) void qc.invalidateQueries({ queryKey });
@@ -177,6 +229,11 @@ export function useAccountStateEvents(): void {
     };
     // Written, then armed: a count written into an unarmed reader's empty entry is that reader's first read.
     offs.push(eventBus.on("creator_warmed", (e: EventEnvelope) => { onWarmed(e); armRead(e.__account_id); }));
+
+    offs.push(eventBus.on("chat_read_changed", (e: EventEnvelope) => {
+      const flip = parseReadFlip(e.chat_read_changed);
+      if (e.__account_id && flip) flipCachedReadState(qc, e.__account_id, flip);
+    }));
 
     // The relay could not replay what this tab missed: refetch everything.
     // Leading refetch, then at most one trailing one per window, so a resync

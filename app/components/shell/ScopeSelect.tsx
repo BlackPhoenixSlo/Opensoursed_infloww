@@ -2,9 +2,9 @@
 
 /**
  * ScopeSelect — the creator picker below lg, where a page's own picker hides (OF Manager's creator column, Messages
- * Pro's Creator tabs): "All creators", then each creator, read from and written to ScopeContext. The top bar has no
- * model filter, so this is the only switch there. `pickAll` replaces the plain "All creators" scope change (Messages
- * Pro's warms every creator); `onPicked` runs after any pick.
+ * Pro's Creator tabs): each creator, read from and written to ScopeContext. The top bar has no model filter, so this is
+ * the only switch there. `pickAll` adds "All creators" first and runs on it (Messages Pro's unified inbox warms every
+ * creator); without it there is none (OF Manager: always one creator, owner 2026-11-20). `onPicked` runs after any pick.
  */
 
 import { useScope } from "@/contexts/ScopeContext";
@@ -22,7 +22,7 @@ export function ScopeSelect({ accounts, pickAll, onPicked, className }: {
 }) {
   const { scope, setScope } = useScope();
   const options: IfOption[] = [
-    { value: ALL, label: "All creators" },
+    ...(pickAll ? [{ value: ALL, label: "All creators" }] : []),
     // OF Manager's list carries its watchers (useOfManagerAccounts), named so they are not taken for Creators.
     ...accounts.map((a) => ({ value: a.id, label: `${a.nickname || a.name || a.id}${a.role === "watcher" ? " (watcher)" : ""}` })),
   ];
@@ -34,8 +34,7 @@ export function ScopeSelect({ accounts, pickAll, onPicked, className }: {
       searchable={accounts.length > 8}
       onChange={(v) => {
         if (v !== ALL) setScope({ kind: "model", accountId: v });
-        else if (pickAll) pickAll();
-        else setScope({ kind: "all" });
+        else pickAll?.();
         onPicked?.();
       }}
       className={cn("w-[180px]", className)}

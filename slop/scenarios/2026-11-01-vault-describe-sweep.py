@@ -95,6 +95,7 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from slop.actors import ui
+from slop.lib import nudenet_weights
 from slop.lib.img_relay import arm_run as arm_cdn
 from slop.lib.procmon import pct
 from slop.lib.vault_describe_faults import (
@@ -138,7 +139,7 @@ JEV_PROFILE = "none"
 CLIP_FRAMES = 12
 CLIP_W, CLIP_H0, CLIP_SPAN, TINTS = 800, 480, 120, 8
 CLIP_OF_S = 10
-NUDENET = os.environ.get("NUDENET_640M_PATH") or "/tmp/nn-weights/640m.onnx"
+NUDENET = nudenet_weights.PATH
 RELAY_ENV = {"NUDENET_640M_PATH": NUDENET}
 JEV_COUNT, JEV_CALLS = "/__slop/vault-jev/count", "/__slop/vault-jev/calls"
 DUPES = "/admin/vault-ai/duplicates"
@@ -714,8 +715,7 @@ async def run(ctx) -> None:
         for c in (EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, COST_INCL_FLAGS, FLAGS, REUSE, ONE_SWEEP, UI_SETTLED):
             ctx.skip(c, "SLOP_LIVE=1: this scenario runs on the DeepInfra fake only, never the paid API")
         return
-    if not Path(NUDENET).is_file():
-        raise RuntimeError(f"slop: NudeNet weights not at {NUDENET} (set NUDENET_640M_PATH): Jev refuses without them")
+    await asyncio.to_thread(nudenet_weights.ensure)
     w = await ctx.build(PROFILE)
     creators = w.data["creators"]
     aids = [c["id"] for c in creators]

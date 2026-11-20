@@ -89,6 +89,8 @@ export interface RelayContext {
    *  relay, whose route bounds its own OnlyFans work (the Creator's lane, one coalesced read per Creator), so
    *  a browser slot would only add a wait behind slow OnlyFans feeds holding that Creator's slots. */
   unqueued?: boolean;
+  /** Sent as `?max_age=<s>`: a relay cache entry this old will do (only `GET /api/of/v2/users/me` honours it). */
+  maxAge?: number;
 }
 
 
@@ -102,6 +104,7 @@ function buildUrl(path: string, ctx?: RelayContext, opts?: { refresh?: boolean }
   if (opts?.refresh && !url.searchParams.has("refresh")) {
     url.searchParams.set("refresh", "1");
   }
+  if (ctx?.maxAge && !url.searchParams.has("max_age")) url.searchParams.set("max_age", String(ctx.maxAge));
   return url.pathname + url.search;
 }
 

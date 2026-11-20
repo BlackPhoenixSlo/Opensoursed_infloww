@@ -29,6 +29,7 @@ beforeEach(() => {
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (url === "/api/of/v2/users/notifications/count") return jsonRes({ all: 3, tips: 1 });
+    if (method === "POST" && url === "/api/of/v2/users/notifications/read") return jsonRes({ counters: { all: 0, tips: 0 } });
     if (url.startsWith("/api/of/v2/users/notifications?")) {
       return jsonRes({ list: [{ id: "n1", type: "tip", text: "Fixture Fan tipped $5", createdAt: null, isRead: false, user: { name: "Fixture Fan" } }] });
     }
@@ -72,6 +73,28 @@ describe("FanslyManagerPage", () => {
     const feed = fetchMock.mock.calls.find(([u]) => String(u).startsWith("/api/of/v2/users/notifications?"))!;
     expect(header(feed, "X-Account-Id")).toBe("fy-1");
     expect(screen.getByLabelText("Unread")).toBeInTheDocument();
+  });
+
+  it("Notifications marks the Creator's Fansly notifications read once per open, after the feed answers, then re-reads its counts", async () => {
+    const reads = () => fetchMock.mock.calls.filter(([u, i]) =>
+      u === "/api/of/v2/users/notifications/read" && (i as RequestInit | undefined)?.method === "POST");
+    const counts = () => fetchMock.mock.calls.filter(([u]) => u === "/api/of/v2/users/notifications/count");
+    const { unmount } = renderWithProviders(<FanslyManagerPage link={findNavLink("/fansly-manager/notifications")!} />);
+    await waitFor(() => expect(reads()).toHaveLength(1));
+    expect(header(reads()[0], "X-Account-Id")).toBe("fy-1");
+    const feedAt = fetchMock.mock.calls.findIndex(([u]) => String(u).startsWith("/api/of/v2/users/notifications?"));
+    expect(feedAt).toBeLessThan(fetchMock.mock.calls.indexOf(reads()[0]));
+    await waitFor(() => expect(counts()).toHaveLength(2)); // the tab counts, re-read after the write
+    expect(screen.getByLabelText("Unread")).toBeInTheDocument(); // this open still draws what was unread
+
+    fireEvent.click(screen.getByRole("tab", { name: /Tips/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /All/ }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(reads()).toHaveLength(1);
+    unmount();
+
+    renderWithProviders(<FanslyManagerPage link={findNavLink("/fansly-manager/notifications")!} />);
+    await waitFor(() => expect(reads()).toHaveLength(2));
   });
 
   it("Lists shows the names and Create list posts the name", async () => {

@@ -5,6 +5,7 @@
  * Import from "@/lib/relay" as before; it re-exports everything here.
  */
 
+import type { Freshness } from "@/lib/creatorFreshness";
 import type { FanId } from "@/lib/fanId";
 
 // ── Relay payloads ──────────────────────────────────────────────────
@@ -72,6 +73,8 @@ export interface AccountMeta {
   /** "watcher" on a watcher account (GET /admin/accounts' `watchers`, a chatter's roster row): a fan account that
    *  reads what the Creators send, no Creator. Absent on a Creator. */
   role?: "watcher";
+  /** The Shared refresher's snapshot of this Creator (lib/creatorFreshness), with its Knob on; absent off. */
+  freshness?: Freshness;
 }
 
 /** A watcher account as GET /admin/accounts lists it (`watchers`): a Creator's fields, so Manage creators edits it
@@ -228,6 +231,8 @@ export interface OFUserMini {
    *  rows never carry OF's own flag. Restricted creators are excluded from
    *  every unread / owe-reply count (server badge fold + inbox chips). */
   isRestricted?: boolean;
+  /** OF's own block flag (`withUser.isBlocked` on /chats rows and /users/{id}). */
+  isBlocked?: boolean;
   /** Stamped by the relay on /chats rows (`_annotate_chat_rows`): a custom
    *  is owed, so a human has to record and send it. Absent means no. */
   needsHuman?: boolean;

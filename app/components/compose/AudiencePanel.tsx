@@ -15,6 +15,7 @@ import { ListColumn, SYSTEM_AUDIENCES, SysChip, type FanList } from "@/component
 import type { SmartList } from "@/hooks/useSmartLists";
 import { IfHelp, IfLabel } from "@/components/ui/infloww";
 
+import { reachHint } from "./audienceReach";
 import type { MassAction, MassForm } from "./massMessageReducer";
 
 /** A list column's heading (under the Audience label). */
@@ -30,13 +31,7 @@ export function AudiencePanel({
   smartLists: SmartList[];
 }) {
   const { allModels, includes, excludes, smartInclude, smartExclude } = form;
-  // Reach preview — sum the user-count of the custom lists we're including
-  // (system audiences don't expose counts, so we hint them separately).
-  const includeReach = Array.from(includes).reduce((sum, id) => {
-    const l = customLists.find((x) => String(x.id) === id);
-    return sum + (l?.usersCount ?? 0);
-  }, 0);
-  const hasSystem = Array.from(includes).some((id) => SYSTEM_AUDIENCES.some((b) => b.id === id));
+  const reach = reachHint(form, customLists);
 
   return (
     <div className="space-y-3">
@@ -99,13 +94,7 @@ export function AudiencePanel({
           />
         </div>
       )}
-      {!allModels && (includes.size > 0 || excludes.size > 0) && (
-        <div className="text-[12px] text-muted">
-          Reach: {includeReach} fan{includeReach === 1 ? "" : "s"} from custom
-          {hasSystem ? " + system audience" : ""}
-          {excludes.size > 0 && ` — minus ${excludes.size} list${excludes.size === 1 ? "" : "s"}`}
-        </div>
-      )}
+      {reach && <div className="text-[12px] text-muted">{reach}</div>}
     </div>
   );
 }

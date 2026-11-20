@@ -38,6 +38,11 @@
  * - The tabs on screen hold a View lease (`useOnScreenLease`, ADR-0031): only
  *   those the strip shows, found by an IntersectionObserver, never every
  *   open tab, so scrolling the strip moves the lease.
+ * - A small dot at the foot of a Creator's avatar, on its tab and its picker
+ *   row (`useLiveMark`, watched-creator-refresher Phase 3): amber "No live
+ *   connection" once the Relay's socket for it has been down 60 s, red
+ *   "Disconnected" at once for a Dead session. Its tooltip ends the tab's (is
+ *   the row's), its words end the accessible name. No dot when healthy.
  */
 
 import { useLayoutEffect, useRef, type HTMLAttributes, type RefObject } from "react";
@@ -46,12 +51,15 @@ import { ArrowUpDown, Plus } from "lucide-react";
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { useScope } from "@/contexts/ScopeContext";
 import { useCreatorWarmUp } from "@/hooks/useCreatorWarmUp";
+import { useLiveMark } from "@/hooks/useDataAge";
 import { useOfNotifCount } from "@/hooks/useOfNotifCount";
 import { useReorder } from "@/hooks/useReorder";
 import { useOnScreenLease } from "@/hooks/useViewLease";
+import { rosterUnreadText } from "@/lib/format";
 import { MP } from "@/lib/messagesPro";
 import type { AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import type { LiveMark } from "./dataAge";
 import { MENU, MENU_ITEM } from "./MenuParts";
 import { OpenInNewWindowMenu } from "./OpenInNewWindowMenu";
 import { NotifMiniBadge, UnreadMiniBadge } from "./UnreadMiniBadge";
@@ -67,6 +75,22 @@ const DROP_MARK = { before: O.dropMarkBefore, after: O.dropMarkAfter } as const;
  *  Pro on that Creator, which the `account` parameter scopes to. */
 function creatorWindowHref(accountId: string): string {
   return `/messages-pro?account=${encodeURIComponent(accountId)}`;
+}
+
+/** The live mark's dot at the avatar's foot (amber down, red dead), ringed in
+ *  the tab's background. Decorative: its words are `MarkWords`. */
+function MarkDot({ mark }: { mark: LiveMark }) {
+  return (
+    <span
+      data-live-mark={mark.kind}
+      className={cn(O.liveMark, "ring-[var(--inf-tab,var(--color-panel))]", mark.kind === "dead" ? "bg-err" : "bg-warn")}
+    />
+  );
+}
+
+/** The mark's words for the accessible name, after a space (see `UnreadMiniBadge`). */
+function MarkWords({ mark }: { mark: LiveMark | null }) {
+  return mark && <>{" "}<span className="sr-only">{mark.srText}</span></>;
 }
 
 /** Where focus goes once the strip has re-rendered: a Creator's tab, or
@@ -138,6 +162,7 @@ export function CreatorTabs() {
               key={a.id}
               account={a}
               unread={counted ? counted.unread : 0}
+              unreadCapped={counted?.unread_capped}
               active={a.id === activeId}
               dragging={from === idx}
               dropMark={dropMark}
@@ -178,10 +203,12 @@ export function CreatorTabs() {
 }
 
 function CreatorTab({
-  account, unread, active, dragging, dropMark, dragProps, onMove, tabRef, leaseRef, onPick, onClose, onHover, onHoverEnd,
+  account, unread, unreadCapped, active, dragging, dropMark, dragProps, onMove, tabRef, leaseRef, onPick, onClose, onHover, onHoverEnd,
 }: {
   account: AccountMeta;
   unread: number;
+  /** The count may be cut off at the relay's window: shown as "N+". */
+  unreadCapped?: boolean;
   active: boolean;
   dragging: boolean;
   /** The drop marker's side, while another tab is dragged over this one. */
@@ -203,6 +230,7 @@ function CreatorTab({
   // the same read (and cache entry) as the Notifications button; none for a
   // Dead-session Creator.
   const { count: notifs } = useOfNotifCount(account.session_dead_at ? null : account.id);
+  const mark = useLiveMark(account);
   return (
     <OpenInNewWindowMenu href={creatorWindowHref(account.id)}>
       <div
@@ -235,16 +263,20 @@ function CreatorTab({
           onFocus={onHover}
           onBlur={onHoverEnd}
           // The Clone's tooltip (messages.js:268-269): the whole name, which the
-          // tab may cut short, and the unread total.
-          title={`${name} — ${unread} unread`}
+          // tab may cut short, and the unread total; then the live mark's.
+          title={`${name} — ${rosterUnreadText(unread, unreadCapped)} unread${mark ? ` — ${mark.title}` : ""}`}
           className={cn(O.tabPick, "flex min-w-0 h-full items-center")}
         >
-          <span aria-hidden className={cn(G.avatar, "overflow-hidden flex-none")}>
-            <AccountAvatarPicture account={account} letters={2} initialClassName="" />
+          <span aria-hidden className="relative flex flex-none">
+            <span className={cn(G.avatar, "overflow-hidden flex-none")}>
+              <AccountAvatarPicture account={account} letters={2} initialClassName="" />
+            </span>
+            {mark && <MarkDot mark={mark} />}
           </span>
           <span className={cn(G.name, "min-w-0 truncate")}>{name}</span>
-          {unread > 0 && <UnreadMiniBadge count={unread} />}
+          {unread > 0 && <UnreadMiniBadge count={rosterUnreadText(unread, unreadCapped)} />}
           {notifs > 0 && <NotifMiniBadge count={notifs} />}
+          <MarkWords mark={mark} />
         </button>
         {/* The ✕ is the tab's sibling inside the tablist, not inside the tab:
          *  a button cannot nest in a button, and inside the tab it would join
@@ -294,24 +326,31 @@ function AddCreator({
           {/* The Clone's heading (messages.js:380). */}
           <div className={cn(MP.menu.head, "uppercase text-fg-dim")}>Creators on this relay ({rows.length})</div>
           {rows.map(({ account, meta }) => (
-            <button
-              key={account.id}
-              type="button"
-              onClick={() => { setOpen(false); onPick(account.id); }}
-              className={MENU_ITEM}
-            >
-              <span aria-hidden className={cn(MP.menu.avatar, "overflow-hidden flex-none")}>
-                <AccountAvatarPicture account={account} letters={2} initialClassName="" />
-              </span>
-              <span className="min-w-0 truncate">{account.nickname || account.id}</span>
-              {/* A space for the accessible name ("Name add"); see the tab's. */}
-              {" "}
-              <span className={cn(MP.menu.meta, "ml-auto flex-none text-fg-dim")}>{meta}</span>
-            </button>
+            <PickerRow key={account.id} account={account} meta={meta} onPick={() => { setOpen(false); onPick(account.id); }} />
           ))}
         </section>
       )}
     </div>
+  );
+}
+
+/** One Creator in the picker: avatar (with the live mark's dot), name, "open" or "add". */
+function PickerRow({ account, meta, onPick }: { account: AccountMeta; meta: string; onPick: () => void }) {
+  const mark = useLiveMark(account);
+  return (
+    <button type="button" onClick={onPick} title={mark?.title} className={MENU_ITEM}>
+      <span aria-hidden className="relative flex flex-none">
+        <span className={cn(MP.menu.avatar, "overflow-hidden flex-none")}>
+          <AccountAvatarPicture account={account} letters={2} initialClassName="" />
+        </span>
+        {mark && <MarkDot mark={mark} />}
+      </span>
+      <span className="min-w-0 truncate">{account.nickname || account.id}</span>
+      {/* A space for the accessible name ("Name add"); see the tab's. */}
+      {" "}
+      <span className={cn(MP.menu.meta, "ml-auto flex-none text-fg-dim")}>{meta}</span>
+      <MarkWords mark={mark} />
+    </button>
   );
 }
 

@@ -1,6 +1,6 @@
 {
   "ok": false,
-  "startedAt": 1792434161,
+  "startedAt": 1795203692,
   "shots": [
     {
       "name": "messages-pro-desktop",
@@ -16,42 +16,46 @@
       "offHostRequests": [],
       "stubbedRequests": [],
       "unmatchedRequests": [
-        "GET /chatter/me",
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
         "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
         "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
         "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/screens/chat?account=424242&fan=1002&lacks=savedReplies%2CsensitiveWords&focus=424242",
+        "GET /admin/fans/424242/1002/insights",
+        "POST /admin/messages/424242/1002/mark-read",
+        "POST /api/of/v2/chats/1002/mark-as-read",
+        "GET /api/of/v2/chats/1002/pinned",
+        "POST /admin/messages/424242/1002/mark-read",
+        "POST /api/of/v2/chats/1002/mark-as-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1002",
+        "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
         "GET /admin/messages/424242/1002?limit=30",
-        "POST /admin/messages/424242/1002/mark-read",
-        "POST /api/of/v2/chats/1002/mark-as-read",
         "GET /api/of/v2/scheduled-sends?fan_id=1002",
-        "GET /api/of/v2/chats/1002/pinned",
         "GET /admin/messages/424242/1002/attribution",
-        "POST /admin/messages/424242/1002/mark-read",
-        "POST /api/of/v2/chats/1002/mark-as-read",
+        "GET /admin/do-not-mass?account_id=424242&fan_id=1002&kind=dm",
+        "GET /admin/screens/chat?account=424242&fan=1001&focus=424242",
+        "GET /admin/fans/424242/1001/insights",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/chats/1001/pinned",
+        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
         "GET /admin/messages/424242/1001?limit=30",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
-        "GET /api/of/v2/chats/1001/pinned",
         "GET /admin/messages/424242/1001/attribution",
-        "POST /admin/messages/424242/1001/mark-read",
+        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm",
         "GET /admin/messages/424242/1001/attribution?since_id=50001",
+        "POST /admin/view-lease",
         "POST /admin/perflog/ingest",
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
-        "GET /admin/messages/424242/1001?limit=30&before_id=50001",
-        "POST /admin/perflog/ingest",
-        "GET /api/of/v2/scheduled-sends?fan_id=1001",
-        "GET /api/of/v2/scheduled-sends?fan_id=1001",
-        "GET /api/of/v2/scheduled-sends?fan_id=1001",
-        "GET /admin/shifts/clock-status",
-        "GET /api/of/v2/scheduled-sends?fan_id=1001"
+        "POST /admin/view-lease",
+        "POST /admin/view-lease",
+        "POST /admin/view-lease",
+        "GET /admin/shifts/clock-status"
       ],
+      "heldRequests": [],
       "checks": [
         {
           "name": "state reached",
@@ -103,7 +107,7 @@
         },
         {
           "name": "Thread shows the $15 PPV",
-          "ok": true
+          "ok": false
         },
         {
           "name": "Fan insights pane visible, naming 'Bella Hart'",
@@ -206,7 +210,7 @@
         },
         {
           "name": "the fixture PPV reads '\u00b7 not paid' once, inside its card",
-          "ok": true
+          "ok": false
         },
         {
           "name": "the fixture PPV shows no 'UNLOCK FOR' bar",
@@ -256,7 +260,7 @@
               36
             ],
             "gap": 8.0,
-            "bottomBelowBubble": 20.0
+            "bottomBelowBubble": 21.0
           }
         },
         {
@@ -319,8 +323,8 @@
         },
         {
           "name": "CO4 the PPV's 'not paid' price line #8a8a8a",
-          "ok": true,
-          "got": "#8a8a8a"
+          "ok": false,
+          "got": null
         },
         {
           "name": "CO5 the Window header #0d0d0d",
@@ -395,7 +399,7 @@
         {
           "name": "same colours under data-theme=light: CO4 the PPV's 'not paid' price line #8a8a8a",
           "ok": false,
-          "got": "#999999"
+          "got": null
         },
         {
           "name": "same colours under data-theme=light: CO5 the Window header #0d0d0d",
@@ -479,24 +483,27 @@
       "offHostRequests": [],
       "stubbedRequests": [],
       "unmatchedRequests": [
-        "GET /chatter/me",
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
         "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
         "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
         "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/screens/chat?account=424242&fan=1001&lacks=savedReplies%2CsensitiveWords&focus=424242",
+        "GET /admin/fans/424242/1001/insights",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/chats/1001/pinned",
+        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
+        "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
         "GET /admin/messages/424242/1001?limit=30",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
-        "GET /api/of/v2/chats/1001/pinned",
         "GET /admin/messages/424242/1001/attribution",
-        "POST /admin/messages/424242/1001/mark-read",
-        "GET /admin/messages/424242/1001/attribution?since_id=50001"
+        "GET /admin/messages/424242/1001/attribution?since_id=50001",
+        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm"
       ],
+      "heldRequests": [],
       "checks": [
         {
           "name": "state reached",
@@ -588,24 +595,27 @@
       "offHostRequests": [],
       "stubbedRequests": [],
       "unmatchedRequests": [
-        "GET /chatter/me",
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
         "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
         "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
         "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/screens/chat?account=424242&fan=1001&lacks=savedReplies%2CsensitiveWords&focus=424242",
+        "GET /admin/fans/424242/1001/insights",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/chats/1001/pinned",
+        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
+        "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
         "GET /admin/messages/424242/1001?limit=30",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
-        "GET /api/of/v2/chats/1001/pinned",
         "GET /admin/messages/424242/1001/attribution",
-        "POST /admin/messages/424242/1001/mark-read",
-        "GET /admin/messages/424242/1001/attribution?since_id=50001"
+        "GET /admin/messages/424242/1001/attribution?since_id=50001",
+        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm"
       ],
+      "heldRequests": [],
       "checks": [
         {
           "name": "state reached",
@@ -631,12 +641,10 @@
       "offHostRequests": [],
       "stubbedRequests": [],
       "unmatchedRequests": [
-        "GET /chatter/me",
         "GET /admin/shifts/clock-status",
-        "GET /admin/settings/applied",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip"
+        "GET /admin/settings/applied"
       ],
+      "heldRequests": [],
       "checks": [
         {
           "name": "state reached",
@@ -690,23 +698,24 @@
       "offHostRequests": [],
       "stubbedRequests": [],
       "unmatchedRequests": [
-        "GET /chatter/me",
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
         "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
         "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/screens/chat?account=424242&fan=1001&lacks=savedReplies%2CsensitiveWords&focus=424242",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/chats/1001/pinned",
+        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
+        "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
         "GET /admin/messages/424242/1001?limit=30",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
-        "GET /api/of/v2/chats/1001/pinned",
         "GET /admin/messages/424242/1001/attribution",
-        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
         "GET /admin/messages/424242/1001/attribution?since_id=50001"
       ],
+      "heldRequests": [],
       "checks": [
         {
           "name": "state reached",
@@ -764,6 +773,26 @@
               24
             ]
           ]
+        },
+        {
+          "name": "keyboard pan keeps chat inside visual viewport",
+          "ok": true
+        },
+        {
+          "name": "keyboard keeps composer visible",
+          "ok": true
+        },
+        {
+          "name": "no help chatbot in Messages Pro",
+          "ok": true
+        },
+        {
+          "name": "keyboard dismissal restores chat",
+          "ok": true
+        },
+        {
+          "name": "authenticated API remains available",
+          "ok": true
         }
       ]
     },
@@ -781,24 +810,27 @@
       "offHostRequests": [],
       "stubbedRequests": [],
       "unmatchedRequests": [
-        "GET /chatter/me",
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
-        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
         "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
         "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
         "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/screens/chat?account=424242&fan=1001&lacks=savedReplies%2CsensitiveWords&focus=424242",
+        "GET /admin/fans/424242/1001/insights",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/chats/1001/pinned",
+        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
+        "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
         "GET /admin/messages/424242/1001?limit=30",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
-        "GET /api/of/v2/chats/1001/pinned",
         "GET /admin/messages/424242/1001/attribution",
-        "POST /admin/messages/424242/1001/mark-read",
-        "GET /admin/messages/424242/1001/attribution?since_id=50001"
+        "GET /admin/messages/424242/1001/attribution?since_id=50001",
+        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm"
       ],
+      "heldRequests": [],
       "checks": [
         {
           "name": "state reached",
@@ -836,6 +868,487 @@
           ]
         }
       ]
+    },
+    {
+      "name": "unread-badge-trigger",
+      "file": "docs/screenshots/unread-badge-trigger.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied"
+      ],
+      "heldRequests": [
+        "/admin/accounts"
+      ],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Unread chip shows no number before the accounts answer",
+          "ok": true,
+          "chipText": "Unread"
+        }
+      ],
+      "fixtures": {
+        "/admin/accounts": {
+          "accounts": [
+            {
+              "id": "424242",
+              "nickname": "Ella",
+              "name": "Ella",
+              "platform": "onlyfans",
+              "color": "#e8618c",
+              "has_session": true,
+              "session_dead_at": null,
+              "created_at": "2026-10-21T19:41:38Z",
+              "last_used_at": "2026-11-20T19:36:38Z",
+              "freshness": {
+                "account_id": "424242",
+                "boot": 1795200098496,
+                "seq": 1,
+                "now": 1795203698496,
+                "at": 1795203668496,
+                "cycle_s": 120,
+                "live": "up",
+                "live_since": 1795203098496,
+                "values": {
+                  "unread_total": {
+                    "n": 7,
+                    "at": 1795203668496
+                  }
+                }
+              }
+            }
+          ],
+          "active_account_id": "424242"
+        }
+      }
+    },
+    {
+      "name": "unread-badge-settled",
+      "file": "docs/screenshots/unread-badge-settled.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+      ],
+      "heldRequests": [],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Unread chip reads \u03a3 unread_total.n (7) over 1 flagged row(s)",
+          "ok": true,
+          "chipText": "Unread 7",
+          "unreadTotalSum": 7,
+          "rowsFlaggedUnread": 1
+        }
+      ],
+      "fixtures": {
+        "/admin/accounts": {
+          "accounts": [
+            {
+              "id": "424242",
+              "nickname": "Ella",
+              "name": "Ella",
+              "platform": "onlyfans",
+              "color": "#e8618c",
+              "has_session": true,
+              "session_dead_at": null,
+              "created_at": "2026-10-21T19:41:38Z",
+              "last_used_at": "2026-11-20T19:36:38Z",
+              "freshness": {
+                "account_id": "424242",
+                "boot": 1795200098496,
+                "seq": 1,
+                "now": 1795203698496,
+                "at": 1795203668496,
+                "cycle_s": 120,
+                "live": "up",
+                "live_since": 1795203098496,
+                "values": {
+                  "unread_total": {
+                    "n": 7,
+                    "at": 1795203668496
+                  }
+                }
+              }
+            }
+          ],
+          "active_account_id": "424242"
+        }
+      }
+    },
+    {
+      "name": "live-mark-on",
+      "file": "docs/screenshots/live-mark-on.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+      ],
+      "heldRequests": [],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Creator tab: amber dot, title ends 'No live connection for 3 min: new messages may arrive late', name ends 'no live connection'",
+          "ok": true,
+          "dot": "down",
+          "dotColour": "rgb(255, 161, 95)",
+          "title": "Ella \u2014 1 unread \u2014 No live connection for 3 min: new messages may arrive late",
+          "accessibleName": "Ella 1 unread no live connection"
+        }
+      ],
+      "fixtures": {
+        "/admin/accounts": {
+          "accounts": [
+            {
+              "id": "424242",
+              "nickname": "Ella",
+              "name": "Ella",
+              "platform": "onlyfans",
+              "color": "#e8618c",
+              "has_session": true,
+              "session_dead_at": null,
+              "created_at": "2026-10-21T19:41:38Z",
+              "last_used_at": "2026-11-20T19:36:38Z",
+              "freshness": {
+                "account_id": "424242",
+                "boot": 1795200098496,
+                "seq": 1,
+                "now": 1795203698496,
+                "at": 1795203668496,
+                "cycle_s": 120,
+                "live": "down",
+                "live_since": 1795203488496,
+                "values": {}
+              }
+            }
+          ],
+          "active_account_id": "424242"
+        }
+      }
+    },
+    {
+      "name": "live-mark-cleared",
+      "file": "docs/screenshots/live-mark-cleared.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied"
+      ],
+      "heldRequests": [],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Creator tab back up (re-captured): no dot, no mark words",
+          "ok": true,
+          "dot": null,
+          "dotColour": null,
+          "title": "Ella \u2014 1 unread",
+          "accessibleName": "Ella 1 unread"
+        }
+      ],
+      "fixtures": {
+        "/admin/accounts": {
+          "accounts": [
+            {
+              "id": "424242",
+              "nickname": "Ella",
+              "name": "Ella",
+              "platform": "onlyfans",
+              "color": "#e8618c",
+              "has_session": true,
+              "session_dead_at": "2026-11-20T19:31:38Z",
+              "created_at": "2026-10-21T19:41:38Z",
+              "last_used_at": "2026-11-20T19:36:38Z",
+              "freshness": {
+                "account_id": "424242",
+                "boot": 1795200098496,
+                "seq": 1,
+                "now": 1795203698496,
+                "at": 1795203668496,
+                "cycle_s": 120,
+                "live": "up",
+                "live_since": 1795203693496,
+                "values": {}
+              }
+            }
+          ],
+          "active_account_id": "424242"
+        }
+      }
+    },
+    {
+      "name": "live-mark-dead",
+      "file": "docs/screenshots/live-mark-dead.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+      ],
+      "heldRequests": [],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Creator tab: red dot, title ends 'Disconnected', name ends 'disconnected'",
+          "ok": true,
+          "dot": "dead",
+          "dotColour": "rgb(255, 124, 113)",
+          "title": "Ella \u2014 1 unread \u2014 Disconnected",
+          "accessibleName": "Ella 1 unread disconnected"
+        },
+        {
+          "name": "'+ Add a Creator' row: red dot, title 'Disconnected', name ends 'disconnected'",
+          "ok": true,
+          "dot": "dead",
+          "dotColour": "rgb(255, 124, 113)",
+          "title": "Disconnected",
+          "accessibleName": "Ella open disconnected"
+        }
+      ],
+      "fixtures": {
+        "/admin/accounts": {
+          "accounts": [
+            {
+              "id": "424242",
+              "nickname": "Ella",
+              "name": "Ella",
+              "platform": "onlyfans",
+              "color": "#e8618c",
+              "has_session": true,
+              "session_dead_at": null,
+              "created_at": "2026-10-21T19:41:38Z",
+              "last_used_at": "2026-11-20T19:36:38Z",
+              "freshness": {
+                "account_id": "424242",
+                "boot": 1795200098496,
+                "seq": 1,
+                "now": 1795203698496,
+                "at": 1795203668496,
+                "cycle_s": 120,
+                "live": "dead",
+                "live_since": 1795203697496,
+                "values": {}
+              }
+            }
+          ],
+          "active_account_id": "424242"
+        }
+      }
+    },
+    {
+      "name": "data-age-fresh",
+      "file": "docs/screenshots/data-age-fresh.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+      ],
+      "heldRequests": [],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Unread chip within its Cycle: 'Unread 7', no 'as of', no title, no tab dot",
+          "ok": true,
+          "chipText": "Unread 7",
+          "title": null,
+          "accessibleName": "Unread 7",
+          "ariaLive": false,
+          "tabDot": null
+        }
+      ],
+      "fixtures": {
+        "/admin/accounts": {
+          "accounts": [
+            {
+              "id": "424242",
+              "nickname": "Ella",
+              "name": "Ella",
+              "platform": "onlyfans",
+              "color": "#e8618c",
+              "has_session": true,
+              "session_dead_at": null,
+              "created_at": "2026-10-21T19:41:38Z",
+              "last_used_at": "2026-11-20T19:36:38Z",
+              "freshness": {
+                "account_id": "424242",
+                "boot": 1795200098496,
+                "seq": 1,
+                "now": 1795203698496,
+                "at": 1795203668496,
+                "cycle_s": 120,
+                "live": "up",
+                "live_since": 1795203098496,
+                "values": {
+                  "unread_total": {
+                    "n": 7,
+                    "at": 1795203668496
+                  }
+                }
+              }
+            }
+          ],
+          "active_account_id": "424242"
+        }
+      }
+    },
+    {
+      "name": "data-age-stale",
+      "file": "docs/screenshots/data-age-stale.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+      ],
+      "heldRequests": [],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Unread chip one Creator's total 335 s old (Cycle 120 s): 'Unread 7 as of 5 min'",
+          "ok": true,
+          "chipText": "Unread 7 as of 5 min",
+          "title": "As of 5 min ago: not refreshed within its 2 min Cycle",
+          "accessibleName": "Unread 7 as of 5 min",
+          "ariaLive": false,
+          "tabDot": null
+        },
+        {
+          "name": "Unread chip: title 'As of 5 min ago: not refreshed within its 2 min Cycle', accessible name 'Unread 7 as of 5 min', no aria-live",
+          "ok": true,
+          "chipText": "Unread 7 as of 5 min",
+          "title": "As of 5 min ago: not refreshed within its 2 min Cycle",
+          "accessibleName": "Unread 7 as of 5 min",
+          "ariaLive": false,
+          "tabDot": null
+        }
+      ],
+      "fixtures": {
+        "/admin/accounts": {
+          "accounts": [
+            {
+              "id": "424242",
+              "nickname": "Ella",
+              "name": "Ella",
+              "platform": "onlyfans",
+              "color": "#e8618c",
+              "has_session": true,
+              "session_dead_at": null,
+              "created_at": "2026-10-21T19:41:38Z",
+              "last_used_at": "2026-11-20T19:36:38Z",
+              "freshness": {
+                "account_id": "424242",
+                "boot": 1795200098496,
+                "seq": 1,
+                "now": 1795203698496,
+                "at": 1795203363496,
+                "cycle_s": 120,
+                "live": "up",
+                "live_since": 1795203098496,
+                "values": {
+                  "unread_total": {
+                    "n": 7,
+                    "at": 1795203363496
+                  }
+                }
+              }
+            }
+          ],
+          "active_account_id": "424242"
+        }
+      }
     }
   ],
   "flows": [
@@ -968,9 +1481,9 @@
           "name": "\u23f1 panel in viewport",
           "ok": true,
           "got": [
-            140,
-            378,
-            457.0
+            151.9,
+            366.1,
+            492.8
           ]
         },
         {
@@ -989,8 +1502,8 @@
           "ok": true,
           "got": [
             43,
-            281,
-            74.8
+            257.2,
+            135.6
           ]
         },
         {
@@ -1004,19 +1517,19 @@
         {
           "name": "Send unmoved by PPV",
           "ok": true,
-          "got": 0.0
+          "got": 0
         },
         {
           "name": "slide-over in viewport",
-          "ok": true,
+          "ok": false,
           "got": [
-            56,
-            390
+            344.1,
+            678.1
           ]
         },
         {
           "name": "slide-over no overflow",
-          "ok": true
+          "ok": false
         },
         {
           "name": "slide-over padding visible",

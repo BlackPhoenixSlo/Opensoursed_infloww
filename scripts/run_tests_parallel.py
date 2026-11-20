@@ -13,6 +13,9 @@ while the machine sleeps): a closed laptop lid froze scripts for ~900 s per
 Maintenance Sleep (pmset log, 11-16) and read as a test stall. Sleep never
 trips the timeout; the summary names how long the machine slept.
 
+`--pytest` runs each test_*.py as `python -m pytest -q <file>` instead (pytest
+suites like slop/lib, scripts/proxy-health: one file per process, same tests).
+
 Exit 0 only if every script passed.
 """
 from __future__ import annotations
@@ -36,10 +39,11 @@ SERIAL: dict[str, str] = {}
 _LIVE: set[subprocess.Popen] = set()
 
 
-def _run(py: str, path: Path, timeout: float) -> tuple[int, float, bytes, bool]:
+def _run(py: str, path: Path, timeout: float, pytest: bool = False) -> tuple[int, float, bytes, bool]:
     env = {**os.environ, "PYTHONFAULTHANDLER": "1", "PYTHONUNBUFFERED": "1"}
     t0 = time.monotonic()
-    p = subprocess.Popen([py, str(path)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    cmd = [py, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(path)] if pytest else [py, str(path)]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          env=env, start_new_session=True)
     _LIVE.add(p)
     out: list[bytes] = []
@@ -73,6 +77,7 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=600.0)
     ap.add_argument("--slowest", type=int, default=10)
     ap.add_argument("--times", type=Path, help="write `seconds<TAB>status<TAB>name` per script")
+    ap.add_argument("--pytest", action="store_true", help="run each file under pytest")
     a = ap.parse_args()
 
     pat = a.pattern
@@ -80,7 +85,7 @@ def main() -> int:
         pat = f"*{pat}*"
     scripts = sorted(p for p in a.tests_dir.glob("test_*.py") if not pat or fnmatch.fnmatch(p.name, pat))
     if not scripts:
-        print(f"✗ no service/tests/test_*.py matches {a.pattern!r}")
+        print(f"✗ no {a.tests_dir}/test_*.py matches {a.pattern!r}")
         return 1
     py = sys.executable
     par = [s for s in scripts if s.name not in SERIAL]
@@ -91,7 +96,7 @@ def main() -> int:
     done = threading.Condition()
 
     def job(s: Path) -> None:
-        r = _run(py, s, a.timeout)
+        r = _run(py, s, a.timeout, a.pytest)
         with done:
             results[s] = r
             done.notify_all()
@@ -145,7 +150,7 @@ def main() -> int:
         a.times.write_text("".join(
             f"{results[s][1]:.1f}\t{'TIMEOUT' if results[s][3] else 'PASS' if results[s][0] == 0 else 'FAIL'}\t{s.name}\n"
             for s in order))
-    print(f"backend: {len(order) - len(failed) - len(timed)} passed, {len(failed)} failed, "
+    print(f"{'pytest' if a.pytest else 'backend'}: {len(order) - len(failed) - len(timed)} passed, {len(failed)} failed, "
           f"{len(timed)} timed out, wall {wall:.0f} s awake"
           + (f" (+{slept:.0f} s machine asleep)" if slept > 30 else ""))
     for n in failed:

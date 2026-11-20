@@ -3,7 +3,7 @@
 /**
  * OF Manager's chrome around the mirrored page, as Infloww's (docs/infloww-of-manager-rea.md §1.5, §1.7): a 48px page
  * header ("Home  UTC+02:00 (i)", fullscreen and reload on the right) over a 192px creator column (Search, refresh,
- * "All creators", one row per creator with its avatar, online dot, OF notification count and unread chats) and the OF view.
+ * the Tag menu, one row per creator with its avatar, online dot, OF notification count and unread chats) and the OF view.
  * A row picks that creator (ScopeContext) and reloads the OF view for it; below lg the column hides and a creator
  * select in the page header picks instead (the top bar has no creator filter). With no
  * creators the view gives way to Infloww's `OfNotHaveModel`; a picked creator whose OF session is dead or missing
@@ -35,8 +35,8 @@ import { ScopeSelect } from "@/components/shell/ScopeSelect";
 import { useGrantedPages } from "@/components/shell/useGrantedPages";
 import { EmptyState } from "@/components/ui/infloww";
 import { usePageCreator } from "@/contexts/PageCreatorContext";
-import { useScope, WatcherScope } from "@/contexts/ScopeContext";
-import { ofManagerWatcher, useAccounts, useOfManagerAccounts, useWatcherAccounts } from "@/hooks/useAccounts";
+import { ScopeOverride, useScope, WatcherScope } from "@/contexts/ScopeContext";
+import { ofManagerWatcher, useAccounts, useActiveAccounts, useOfManagerAccounts, useWatcherAccounts } from "@/hooks/useAccounts";
 import { findFanChatRow } from "@/hooks/useInboxRealtime";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { fanIdFromParam, type FanId } from "@/lib/fanId";
@@ -95,9 +95,21 @@ export function OfManagerChrome({ children }: { children: React.ReactNode }) {
   const pickable = useMemo(() => watchers.filter(ofManagerWatcher).map((w) => w.id), [watchers]);
   return (
     <WatcherScope watcherIds={watcherIds} pickable={pickable} loaded={accountsQ.isSuccess}>
-      <Chrome>{children}</Chrome>
+      <OneCreator>
+        <Chrome>{children}</Chrome>
+      </OneCreator>
     </WatcherScope>
   );
+}
+
+/** OF Manager has no "All creators" (owner 2026-11-20: the OF view is one creator's): a saved "all" scope (Messages
+ *  Pro's unified inbox) shows the first creator with a live session, else the first, here alone; the saved scope stays,
+ *  so leaving finds it. A pick sets the real scope. */
+function OneCreator({ children }: { children: React.ReactNode }) {
+  const { accountId } = useScope();
+  const creators = useActiveAccounts();
+  const first = (creators.find(liveSession) ?? creators[0])?.id ?? null;
+  return <ScopeOverride accountId={accountId ? null : first}>{children}</ScopeOverride>;
 }
 
 function Chrome({ children }: { children: React.ReactNode }) {
@@ -139,7 +151,7 @@ function Chrome({ children }: { children: React.ReactNode }) {
     setViewKey((k) => k + 1);
   }, []);
   const viewRef = useRef<HTMLDivElement>(null);
-  // Fan insights: an open chat of one creator with a live session (no chat, All creators: none).
+  // Fan insights: an open chat of one creator with a live session (no chat: none).
   const fan = useSearchParams()?.get("chat") ?? null;
   const fanId = fanIdFromParam(fan);
   // A watcher's chats are with Creators, not fans: no Fan insights.

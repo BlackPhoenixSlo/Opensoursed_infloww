@@ -336,6 +336,12 @@ class SendsMixin:
         """POST /api2/v2/chats/mark-as-read → {success:true}. Marks every chat as read."""
         return self.post_json(f"{API_BASE}/chats/mark-as-read")
 
+    def notifications_read(self) -> Any:
+        """POST /api2/v2/users/notifications/read, no body → `{counters: {all, <type>: n}}` (the `/count` shape).
+        OF web's `setNotificationsReadByType` (bundle module 202600 `B`) sends it when its All tab opens
+        (a `/{type}` suffix marks one tab; not used here)."""
+        return self.post_json(f"{API_BASE}/users/notifications/read")
+
     def mute_chat(self, chat_id: str | int) -> Any:
         """POST /api2/v2/chats/{chat_id}/mute."""
         return self.post_json(f"{API_BASE}/chats/{chat_id}/mute")

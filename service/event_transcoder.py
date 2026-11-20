@@ -308,13 +308,22 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # We persist the full payload as raw_json so future migrations can
     # backfill new columns without re-fetching from OF. 64 KB cap keeps
     # one rogue media-array from blowing up disk usage.
-    await of_writer.write(_write_dms, (plan, dump_capped(m)), key=(aid_s, fan_id))
+    is_new = await of_writer.write(_write_dms, (plan, dump_capped(m)), key=(aid_s, fan_id))
 
     log.info(
         "chat_message persisted: account=%s fan=%s msg=%s direction=in price=%s tip=%s",
         account_id, fan_id, message_id, plan.msg["price_cents"], plan.tip_cents,
     )
 
+    # The Unread total moves by the chat's prior state, peeked from the held
+    # window row: before the patch below flags it unread (Knob off: no-op).
+    # A re-delivered frame (WS replay) is already counted: new rows only.
+    try:
+        import unread_total
+        if is_new is not False:     # False: the row was already stored
+            unread_total.on_dm_in(aid_s, fan_id)
+    except Exception:
+        log.debug("unread total hook failed", exc_info=True)
     # Cache invalidation — must run AFTER the write above has committed
     # (of_writer.write returns once its batch has) so a concurrent reader
     # that re-fetches doesn't cache the pre-commit upstream state.
@@ -393,9 +402,11 @@ async def _write_dms(conn, items: list) -> list:
     aid, fan_id = first["account_id"], first["fan_id"]
     pk = ["account_id", "fan_id", "message_id"]
     n_new = 0
+    new: list[bool] = []       # per item: a new row (the caller's Unread total hook counts those only)
     for p, raw_json in items:
         row = sqlite_insert(Message).values(**p.msg, raw_json=raw_json)
         res = await conn.execute(row.on_conflict_do_nothing(index_elements=pk))
+        new.append(bool(res.rowcount))
         if res.rowcount:
             n_new += 1
             continue
@@ -457,7 +468,7 @@ async def _write_dms(conn, items: list) -> list:
             await _record_inbound_payment(
                 conn, account_id=aid, fan_id=fan_id, message_id=p.msg["message_id"],
                 kind="tip", amount_cents=p.tip_cents, occurred_at=p.msg["created_at"])
-    return [None] * len(items)
+    return new
 
 
 def _inbox_patcher(fan_id: int, m: dict):

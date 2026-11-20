@@ -33,6 +33,7 @@ import { createPortal } from "react-dom";
 import { ChevronDown } from "lucide-react";
 
 import PlatformSwitcher, { unreadLabel, usePlatformUnread } from "@/components/shell/PlatformSwitcher";
+import { rosterUnreadText } from "@/lib/format";
 import { Share04Line } from "@/components/shell/inflowwIcons";
 import { useGrantedPages } from "@/components/shell/useGrantedPages";
 import { useFlags } from "@/components/shell/useFlags";
@@ -152,7 +153,7 @@ export default function Sidebar({
         {row}
         <div className="absolute right-3 inset-y-0 flex items-center gap-2 pointer-events-none">
           <span
-            aria-label={`${unread} unread`}
+            aria-label={`${rosterUnreadText(unread.count, unread.capped)} unread`}
             className="min-w-4 h-4 px-1 rounded-full bg-pink text-white text-[12px] leading-4 text-center"
           >
             {unreadLabel(unread)}

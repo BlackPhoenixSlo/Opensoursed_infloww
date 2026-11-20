@@ -6,7 +6,7 @@
  * wrapper's request (method, URL, body, opts) and invalidation are pinned so
  * they cannot drift apart while sharing one body.
  */
-import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -49,7 +49,10 @@ beforeEach(() => {
   relayPost.mockReset();
   relayDelete.mockReset();
   vi.spyOn(console, "warn").mockImplementation(() => {});
+  alert = vi.spyOn(window, "alert").mockClear().mockImplementation(() => {});
 });
+// No IfConfirmHost mounted: ifAlert falls back to window.alert.
+let alert: MockInstance<typeof window.alert>;
 
 describe("useToggleMessageFlag", () => {
   it.each([
@@ -149,5 +152,19 @@ describe("wrapper request shapes", () => {
     await act(async () => { await result.current.toggle(msg(5)); });
     expect(flagOf(5, "isPinned")).toBe(false);
     expect(inval).not.toHaveBeenCalled();
+  });
+
+  it("useTogglePinMessage: a Fansly 501 (no message pinning) rolls the pin or unpin back and tells the operator why", async () => {
+    client.setQueryData(KEY, [msg(5), msg(6, { isPinned: true })]);
+    relayPost.mockRejectedValue(new Error("pin message: not on this platform"));
+    relayDelete.mockRejectedValue(new Error("unpin message: not on this platform"));
+    const { result } = renderHook(() => useTogglePinMessage(ACCT, FAN), { wrapper });
+    await act(async () => { await result.current.toggle(msg(5)); });
+    expect(flagOf(5, "isPinned")).toBe(false);
+    expect(alert).toHaveBeenLastCalledWith("Couldn't pin: pin message: not on this platform");
+    await act(async () => { await result.current.toggle(msg(6, { isPinned: true })); });
+    expect(flagOf(6, "isPinned")).toBe(true);
+    expect(alert).toHaveBeenLastCalledWith("Couldn't unpin: unpin message: not on this platform");
+    expect(alert).toHaveBeenCalledTimes(2);
   });
 });

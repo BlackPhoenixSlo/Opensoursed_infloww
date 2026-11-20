@@ -72,6 +72,7 @@ vi.mock("@/hooks/useServerScheduledSends", () => ({
 
 import { shareChatPages, useChatList } from "@/hooks/useChatList";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
+import { patchCachedChat } from "@/components/chat/useMarkChatRead";
 import { relay, type OFChatItem } from "@/lib/relay";
 const relayGet = relay.get as unknown as Mock;
 
@@ -678,5 +679,33 @@ describe("unenriched", () => {
     const out = await enrichWithUsers(chats, "switch-acct", qc);
     expect(byIds()).toBe(2);
     expect(out[0].withUser.name).toBe("fan-1");
+  });
+});
+
+describe("useChatList head poll x a write during its read", () => {
+  it("a row patched while the head read is out (mark-read, send, SSE) is not overwritten by that older head", async () => {
+    const h = await renderThreePages();
+    let answer!: (page: { list: OFChatItem[]; hasMore: boolean }) => void;
+    serve = (_aid, offset) => {
+      if (offset !== 0) throw new Error(`poll must not read offset ${offset}`);
+      return new Promise((r) => { answer = r; }) as unknown as { list: OFChatItem[]; hasMore: boolean };
+    };
+    await settle(POLL_MS);
+    expect(chatCalls().map((c) => c.offset)).toEqual([0]);
+
+    // The chatter opens fan 10 meanwhile: its row goes read in the cache.
+    patchCachedChat(client, "acct-a", 10, { hasUnread: false });
+    await settle();
+    // OF's head, read before the mark, still shows it unread.
+    answer({ list: [{ ...row(10, "2026-08-25T10:00:00Z"), hasUnread: true }, row(9, "2026-08-25T09:00:00Z")], hasMore: true });
+    await settle();
+    await settle();
+
+    expect(h.result.current.data[0].withUser.id).toBe(10);
+    expect(h.result.current.data[0].hasUnread).toBe(false);
+
+    // The dropped head is re-read soon, not a full poll later.
+    await settle(15_000);
+    expect(chatCalls().map((c) => c.offset)).toEqual([0, 0]);
   });
 });

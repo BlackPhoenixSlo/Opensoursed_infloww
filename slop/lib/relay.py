@@ -753,6 +753,14 @@ def _wire(app) -> None:
         setattr(mod, attr, offline_fallback(getattr(mod, attr), translates=translates))
     app.on_event("startup")(events.start_persist_worker)
 
+    async def start_shared_refresher() -> None:
+        # The product starts it in `_start_event_pumps`, which CHATTERLY_TEST_MODE=1 skips here; `start()` is a
+        # no-op unless the scenario's RELAY_ENV sets SHARED_REFRESHER=1.
+        import shared_refresher
+        shared_refresher.start()
+
+    app.on_event("startup")(start_shared_refresher)
+
     def _loopback(request: Request) -> None:
         if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
             raise HTTPException(status_code=403, detail="slop hooks are loopback-only")

@@ -62,6 +62,7 @@ import { applyColumnPosts, applyFeedStatus, applyHome, applyPosts, applyProfileM
 import { applyPromotions, applyStories } from "@/lib/ofMirrorFeedsStrip";
 import { applyEvents, applyQueue, eventsRoute, QUEUE_CHANGE, queueMonth } from "@/lib/ofMirrorFeedsSchedule";
 import { applyNotificationCounts, applyNotifications, applyNotificationsStatus, NOTIFICATION_COUNTS, NOTIFICATIONS } from "@/lib/ofMirrorFeedsNotifications";
+import { useMarkNotifsReadOnOpen } from "@/lib/ofMirrorNotifsRead";
 import { applyPastStreams, applyPayouts, applyStatementsStatus, applyTransactions } from "@/lib/ofMirrorFeedsStatements";
 // Re-exported: what was cut from here (into ofMirrorPaging and the leaves), so its importers still read it from here.
 export { nextFeedOffset, nextMarker, nextOffset, pageRows, POSTS_PAGE, rowsOf, uniqueRows } from "@/lib/ofMirrorPaging";
@@ -291,6 +292,8 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const relatedUser = page === "notifications/commented" ? params.get("related_user") : null;
   const notifications = useQuery(q("notifications", Object.hasOwn(NOTIFICATIONS, page) ? `${NOTIFICATIONS[page]}${relatedUser ? `&related_user=${encodeURIComponent(relatedUser)}` : ""}` : null));
   const notificationCounts = useQuery(q("notificationCounts", NOTIFICATION_COUNTS));
+  // The All tab's open sends OF's mark-read once, as OF web does; then its counts are re-read.
+  useMarkNotifsReadOnOpen(accountId, page, notifications);
   const newTags = ofMe?.newTagsCount;
   const pastStreams = useQuery(q("pastStreams", me && `${me}/streams?limit=8`));
   // Statements' Earnings: OF's pages of 10 (app.js), each next one when OF's loading row scrolls into view (MorePages).

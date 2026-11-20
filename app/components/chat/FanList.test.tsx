@@ -16,7 +16,8 @@ import { QueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { relay, type AccountMeta, type OFChatItem } from "@/lib/relay";
-import { renderWithProviders } from "@/test-utils";
+import { UNREAD_VIEW_MAX_AGE_MS } from "@/lib/chatsCache";
+import { renderWithProviders, settled } from "@/test-utils";
 import { useChatMessages } from "@/hooks/useChatMessages";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { PREFETCH_IDLE_TIMEOUT_MS, PREFETCH_QUIET_MS } from "@/hooks/useUnreadMessagesPrefetch";
@@ -252,8 +253,11 @@ const pageUrl = (offset: number) => `/api/of/v2/chats?limit=25&offset=${offset}&
 /** Every relay URL the Fan List asked for while rendering CHATS with a
  *  spend-batch entry, recorded before the Phase 2 row restyle (ticket 137):
  *  the row restyle adds none. users/me came later, with the deferred folders
- *  (its tipsEnabled gates "Unread with tips"). */
+ *  (its tipsEnabled gates "Unread with tips"). /admin/accounts came with the
+ *  Unread badge's first-paint rule (unreadBadge.ts); in the app it is the entry
+ *  usePlatformAccounts (mocked here) already reads, no new request. */
 const PRE_RESTYLE_URLS = [
+  "/admin/accounts",
   "/admin/chats/recent?limit=25&account_id=100000001",
   "/admin/fans/100000001/by-ids?ids=200000001%2C200000002%2C200000003",
   "/admin/fans/100000001/spend-batch?ids=200000001%2C200000002%2C200000003",
@@ -359,6 +363,204 @@ describe("FanList", () => {
     await user.click(screen.getByRole("button", { name: "Pinned" }));
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Unread 1" })).toBeInTheDocument();
+  });
+
+  it("a chat read elsewhere leaves the Unread badge once the Unread list, read live and complete, no longer holds it, on every chip after; All's cache is left alone", async () => {
+    // All (cached): Fan One unread. Unread (live, complete): empty — OF, another
+    // chatter or an automation read it; the All set (the relay's cached window) still says unread.
+    routeRelay("filter=unread", () => ({ list: [], hasMore: false }));
+    routeRelay("filter=pinned", () => ({ list: [], hasMore: false }));
+    serveChats([CHATS[0], { ...CHATS[1], hasUnread: false, unreadMessagesCount: 0 }, CHATS[2]]);
+    const user = userEvent.setup();
+    // The app's cache lifetime: All's entry outlives its observer under Unread.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, qc);
+    await rowOf("Fixture Fan Three");
+    expect(screen.getByRole("button", { name: "Unread 1" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Unread 1" }));
+    expect(await screen.findByRole("button", { name: "Unread" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Fixture Fan/ })).not.toBeInTheDocument();
+
+    // Back on All: the badge keeps the Unread view's truth; All's rows are its own.
+    await user.click(screen.getByRole("button", { name: "All" }));
+    await rowOf("Fixture Fan One");
+    const allKey = ["chats", "model", ACCOUNT_ID, null, null, null, 25];
+    const fanOne = () => (qc.getQueryData(allKey) as { pages: { rows: OFChatItem[] }[] }).pages[0].rows
+      .find((c) => c.withUser.id === FANS[0].id);
+    expect(fanOne()?.hasUnread).toBe(true);
+    expect(screen.getByRole("button", { name: "Unread" })).toBeInTheDocument();
+    // And on another chip.
+    await user.click(screen.getByRole("button", { name: "Pinned" }));
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Unread" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "All" }));
+    await rowOf("Fixture Fan One");
+
+    // Another Creator: none of this Creator's view, its own All set counts; back, the view is still this scope's.
+    scopeCreator = OTHER_ACCOUNT.id;
+    rerender(<FanList selected={null} onSelect={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Unread 1" })).toBeInTheDocument();
+    scopeCreator = ACCOUNT_ID;
+    rerender(<FanList selected={null} onSelect={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Unread" })).toBeInTheDocument();
+
+    // A chat that turns unread after the view's read (a live message) counts.
+    act(() => {
+      qc.setQueryData(allKey, (d: { pages: { rows: OFChatItem[] }[] }) => ({
+        ...d,
+        pages: d.pages.map((pg) => ({ ...pg, rows: pg.rows.map((c) => c.withUser.id === FANS[1].id
+          ? { ...c, hasUnread: true, unreadMessagesCount: 1, lastMessage: { ...c.lastMessage!, createdAt: new Date().toISOString() } }
+          : c) })),
+      }));
+    });
+    expect(await screen.findByRole("button", { name: "Unread 1" })).toBeInTheDocument();
+
+    // Nothing re-reads the Unread list off its chip: past UNREAD_VIEW_MAX_AGE_MS the badge is All's flags again.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      // Any patch of All re-arms the expiry under the fake clock.
+      act(() => {
+        qc.setQueryData(allKey, (d: { pages: { rows: OFChatItem[] }[] }) => ({
+          ...d,
+          pages: d.pages.map((pg) => ({ ...pg, rows: pg.rows.map((c) => c.withUser.id === FANS[2].id
+            ? { ...c, isMutedNotifications: !c.isMutedNotifications } : c) })),
+        }));
+      });
+      act(() => { vi.advanceTimersByTime(UNREAD_VIEW_MAX_AGE_MS - 1_000); });
+      expect(screen.getByRole("button", { name: "Unread 1" })).toBeInTheDocument();
+      act(() => { vi.advanceTimersByTime(1_000); });
+      expect(screen.getByRole("button", { name: "Unread 2" })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a search drops the remembered Unread view: the badge counts the searched All set", async () => {
+    routeRelay("filter=unread", () => ({ list: [], hasMore: false }));
+    serveChats([CHATS[0], { ...CHATS[1], hasUnread: false, unreadMessagesCount: 0 }, CHATS[2]]);
+    const user = userEvent.setup();
+    renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+    await rowOf("Fixture Fan Three");
+    await user.click(screen.getByRole("button", { name: "Unread 1" }));
+    expect(await screen.findByRole("button", { name: "Unread" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "All" }));
+    await rowOf("Fixture Fan One");
+    expect(screen.getByRole("button", { name: "Unread" })).toBeInTheDocument();
+
+    await user.click(within(header()).getByRole("button", { name: "Search" }));
+    fireEvent.change(screen.getByPlaceholderText("Search…"), { target: { value: "Fixture" } });
+    expect(await screen.findByRole("button", { name: "Unread 1" })).toBeInTheDocument();
+  });
+
+  it("an Unread list with pages left keeps the badge on the All set", async () => {
+    routeRelay("filter=unread", () => ({ list: [], hasMore: true }));
+    serveChats([CHATS[0], { ...CHATS[1], hasUnread: false, unreadMessagesCount: 0 }, CHATS[2]]);
+    const user = userEvent.setup();
+    renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+    await rowOf("Fixture Fan Three");
+
+    await user.click(screen.getByRole("button", { name: "Unread 1" }));
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Unread 1" })).toBeInTheDocument();
+  });
+
+  describe("the Relay's Unread totals (watched-creator-refresher Phase 2)", () => {
+    /** A Creator's Freshness as the accounts rows carry it; `n` undefined: no `unread_total` key (the Knob off).
+     *  Confirmed `ago` ms before now (Last refresh and the total alike), on a 120 s Cycle. */
+    const freshness = (aid: string, n?: number, ago = 30_000) => ({
+      account_id: aid, boot: 1000, seq: 1, now: Date.now(), at: Date.now() - ago, cycle_s: 120, live: "up",
+      live_since: Date.now() - 60_000, values: n === undefined ? {} : { unread_total: { n, at: Date.now() - ago } },
+    });
+    const accountsAnswer = (totals: Record<string, number | undefined>, ago?: Record<string, number>) => ({
+      accounts: ACCOUNTS.map((a) => ({ ...a, has_session: true, freshness: freshness(a.id, totals[a.id], ago?.[a.id]) })),
+      active_account_id: null,
+    });
+    /** Each Creator's page 0: both of Test Creator's flagged Fans are stale (OF holds 7 unread); Other Creator's
+     *  Fan Five is flagged (OF holds 3). Today's rule counts 3. */
+    function serveBothCreators() {
+      routeRelay("/api/of/v2/chats?", (path, ctx) => {
+        if ((new URLSearchParams(path.split("?")[1]).get("offset") ?? "0") !== "0") return { list: [], hasMore: false };
+        if (path.includes("filter=unread")) return { list: ctx?.accountId === ACCOUNT_ID ? [CHATS[0]] : [], hasMore: false };
+        return ctx?.accountId === ACCOUNT_ID
+          ? { list: CHATS, hasMore: false }
+          : { list: [{ ...CHATS[0], withUser: { ...FAN_FIVE, avatar: null } }], hasMore: false };
+      });
+    }
+    /** A client holding a persisted accounts copy (restored at boot: updated before this page loaded). */
+    function persistedClient(totals: Record<string, number | undefined>) {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      qc.setQueryData(["accounts", "anon"], accountsAnswer(totals), { updatedAt: 1 });
+      return qc;
+    }
+    /** The network accounts answer, held until `release`. */
+    function holdAccounts(totals: Record<string, number | undefined>) {
+      let release!: () => void;
+      const answered = new Promise<void>((r) => { release = r; });
+      routeRelay("/admin/accounts", () => answered.then(() => accountsAnswer(totals)));
+      return () => act(() => release());
+    }
+
+    beforeEach(() => {
+      scopeKind = "all";
+      ACCOUNTS = [CREATOR_ACCOUNT, OTHER_ACCOUNT];
+    });
+
+    it("the badge is Σ the held totals over the stale All flags; the Unread chip's rows stay #881's live list", async () => {
+      routeRelay("/admin/accounts", () => accountsAnswer({ [ACCOUNT_ID]: 7, [OTHER_ACCOUNT.id]: 3 }));
+      serveBothCreators();
+      const user = userEvent.setup();
+      renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+      await rowOf("Fixture Fan Five");
+
+      expect(await screen.findByRole("button", { name: "Unread 10" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Unread 10" }));
+      // The rows are OF's filter=unread answer (Fan One alone); the number stays the Relay's.
+      await vi.waitFor(() => expect(shownFans()).toEqual(["Fixture Fan One"]));
+      expect(screen.getByRole("button", { name: "Unread 10" })).toBeInTheDocument();
+    });
+
+    it("a Creator without a total counts by today's rule over its own rows", async () => {
+      routeRelay("/admin/accounts", () => accountsAnswer({ [ACCOUNT_ID]: 7 }));
+      serveBothCreators();
+      renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+      await rowOf("Fixture Fan Five");
+
+      // 7 (held) + Fan Five's flag.
+      expect(await screen.findByRole("button", { name: "Unread 8" })).toBeInTheDocument();
+    });
+
+    it("totals on in the persisted copy: no number over the rows' flags until the network answer is seeded", async () => {
+      const release = holdAccounts({ [ACCOUNT_ID]: 7, [OTHER_ACCOUNT.id]: 3 });
+      serveBothCreators();
+      renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, persistedClient({ [ACCOUNT_ID]: 2, [OTHER_ACCOUNT.id]: 2 }));
+      await rowOf("Fixture Fan Five");
+      await settled();
+
+      expect(screen.getByRole("button", { name: "Unread" })).toBeInTheDocument();
+      await release();
+      expect(await screen.findByRole("button", { name: "Unread 10" })).toBeInTheDocument();
+    });
+
+    it("single-Creator scope with a late source: the chip carries the age and its one-Creator title (Phase 3 story 5)", async () => {
+      scopeKind = "model";
+      // 5.5 min old on a 120 s Cycle; the tab's 15 s tick floors it to 5 min 15 s at most.
+      routeRelay("/admin/accounts", () => accountsAnswer({ [ACCOUNT_ID]: 7, [OTHER_ACCOUNT.id]: 3 }, { [ACCOUNT_ID]: 330_000 }));
+      serveChats(CHATS);
+      renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+
+      const chip = await screen.findByRole("button", { name: "Unread 7 as of 5 min" });
+      expect(chip).toHaveAttribute("title", "As of 5 min ago: not refreshed within its 2 min Cycle");
+    });
+
+    it("totals off in the persisted copy: today's number at once, before the network answer", async () => {
+      holdAccounts({});
+      serveBothCreators();
+      renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, persistedClient({}));
+      await rowOf("Fixture Fan Five");
+
+      expect(await screen.findByRole("button", { name: "Unread 3" })).toBeInTheDocument();
+    });
   });
 
   it("leaves the tab title alone with setTabTitle off", async () => {
@@ -524,6 +726,20 @@ describe("FanList", () => {
     await vi.waitFor(() => expect(chatRequests()).toEqual([
       ["/api/of/v2/chats?limit=25&offset=0&order=recent&query=Two", { refresh: false }],
     ]));
+  });
+
+  it("the refresh icon re-reads the roster counts once the refreshed list is in, so the badges follow it", async () => {
+    const user = userEvent.setup();
+    serveChats(CHATS);
+    renderFanList();
+    await rowOf("Fixture Fan Three");
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      await user.click(within(filterRow()).getByRole("button", { name: "Refresh inbox" }));
+      await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["roster-counts"] }));
+    } finally {
+      invalidate.mockRestore();
+    }
   });
 
   it("a chip asks the relay for its filter, and the filter row's pencil opens the folder picker until Done", async () => {

@@ -29,6 +29,19 @@ unconfirmed_sends_api — the Creator's maybe-sent funnel / follow-up steps and 
       the clear lost a race: re-read → `already_sent` when unmarked, else 409.
   case_retry_followup_row_is_retried:
       a follow-up row past the lease → `retried`, the three columns cleared.
+  case_dismiss_saves_the_step_sent_like_the_settle_and_never_resends:
+      "It went through": the step saved exactly as the settle saves a landed one
+      (same columns), `dismissed`, the confirmed hint row tagged as a sent step's;
+      the next tick sends nothing; again → `already_sent`.
+  case_dismiss_followup_saves_the_nudge_sent:
+      a follow-up row → `dismissed`, its step in messages_sent at the mark, never resent.
+  case_dismiss_refusals:
+      fresh IN_FLIGHT → 409, a step the funnel no longer has → 409, unknown → 404,
+      another Creator's → 403; each row untouched.
+  case_get_hint_is_the_first_untagged_send_since_the_mark:
+      an untagged outbound row after the mark → hint {message_id, at, first 60 chars};
+      tagged, inbound or older rows → none; a dismiss naming a row that is not an
+      untagged outbound of that fan since the mark tags nothing.
   case_http_wiring:
       GET + POST through the app: JSON shape and status codes.
 
@@ -41,6 +54,7 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 _harness.bootstrap()
 
 import json  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 import automation_executor as ax  # noqa: E402
@@ -51,7 +65,9 @@ from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, FollowupState, FunnelState, MassMessageFunnel, MassRun, Message,
 )
-from test_send_once import _get, _retry, _status  # noqa: E402 — the shared owner/GET/Retry
+import auth  # noqa: E402
+import unconfirmed_sends_api as usa  # noqa: E402
+from test_send_once import _get, _owner, _retry, _status  # noqa: E402 — the shared owner/GET/Retry
 
 a11._STEP_GAP_S = 0
 T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=1)
@@ -286,6 +302,138 @@ async def case_retry_followup_row_is_retried():
     assert json.loads(r.messages_sent) == {"1": "2026-10-01T00:00:00"}, r.messages_sent
 
 
+async def _dismiss(aid: str, *, as_=None, **body) -> dict:
+    tok = _owner(*(as_ or (aid,)))
+    try:
+        return await usa.dismiss_unconfirmed_send(account_id=aid, body=usa.DismissBody(**body))
+    finally:
+        auth._request_user.reset(tok)
+
+
+_SAVED = ("current_step", "last_sent_step", "status", "check_count", "sending_at",
+          "sending_ctx", "unconfirmed_at", "last_error")
+
+
+async def case_dismiss_saves_the_step_sent_like_the_settle_and_never_resends():
+    aid = "acc_us_dismiss"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 111, aid=aid, unconfirmed_at=OLD + timedelta(seconds=5))
+    await _marked(mr, 112, aid=aid, unconfirmed_at=OLD + timedelta(seconds=5))
+    async with get_session() as s:   # 112's step landed with its tag: the settle saves it
+        s.add(Message(account_id=aid, fan_id=112, message_id=4_200_112, direction="out",
+                      body="m1", automation_kind="reply_mass_funnel", mass_run_id=mr,
+                      funnel_step=1, created_at=OLD + timedelta(seconds=1)))
+        # 111's step reached OF without an id: the live feed's untagged copy only
+        s.add(Message(account_id=aid, fan_id=111, message_id=4_200_111, direction="out",
+                      body="m1", created_at=OLD + timedelta(seconds=1)))
+    hint = next(r["hint"] for r in await _get(aid) if r["fan_id"] == "111")
+    assert hint and hint["message_id"] == "4200111", hint
+    fake = _fake()
+    assert await _dismiss(aid, kind="funnel", fan_id=111, mass_run_id=mr,
+                          hint_message_id=hint["message_id"]) == {"status": "dismissed"}
+    assert await _retry(aid, kind="funnel", fan_id=112, mass_run_id=mr) == {"status": "already_sent"}
+    async with get_session() as s:
+        m = await s.get(Message, (aid, 111, 4_200_111))
+    assert (m.automation_kind, m.mass_run_id, m.funnel_step) == ("reply_mass_funnel", mr, 1), \
+        ("the confirmed copy carries the step's tags, as a confirmed send's row", m.__dict__)
+    got, settled = await _row(mr, 111), await _row(mr, 112)
+    assert [getattr(got, c) for c in _SAVED] == [getattr(settled, c) for c in _SAVED], \
+        ("saved as the settle saves a landed step", got.__dict__, settled.__dict__)
+    assert (got.sending_at, got.unconfirmed_at, got.current_step, got.last_sent_step) == \
+        (None, None, 1, 0), got.__dict__
+    await run_once(aid, "reply_mass_funnel", payload={})
+    assert fake.sent == [], ("dismissed: never re-sent, the next step waits for a reply", fake.sent)
+    assert await _dismiss(aid, kind="funnel", fan_id=111, mass_run_id=mr) == \
+        {"status": "already_sent"}, "idempotent"
+    assert await _get(aid) == []
+
+
+async def case_dismiss_followup_saves_the_nudge_sent():
+    aid = "acc_us_dismiss_fu"
+    await _seed_followup(aid, 121)
+    # A dialog opened on an older attempt of this row (its `since`) is refused; the listed one goes through.
+    try:
+        await _dismiss(aid, kind="followup", fan_id=121, since="2020-01-01T00:00:00Z")
+        raise AssertionError("a stale since dismissed the row")
+    except HTTPException as e:
+        assert e.status_code == 409, e
+    listed = next(r["since"] for r in await _get(aid) if r["fan_id"] == "121")
+    assert await _dismiss(aid, kind="followup", fan_id=121, since=listed) == {"status": "dismissed"}
+    async with get_session() as s:
+        r = await s.get(FollowupState, (aid, 121))
+    assert (r.sending_at, r.sending_ctx, r.unconfirmed_at) == (None, None, None), r.__dict__
+    sent = json.loads(r.messages_sent)
+    assert sent["1"] == "2026-10-01T00:00:00" and sent["2"].startswith(OLD.isoformat()), sent
+    assert await _dismiss(aid, kind="followup", fan_id=121) == {"status": "already_sent"}
+
+
+async def case_dismiss_refusals():
+    aid = "acc_us_dismiss_no"
+    mr = await _funnel_run(aid)
+    now = datetime.utcnow()
+    await _marked(mr, 131, sending_at=now)
+    assert await _status(_dismiss(aid, kind="funnel", fan_id=131, mass_run_id=mr)) == 409
+    assert (await _row(mr, 131)).sending_at == now
+    short_aid = "acc_us_dismiss_short"
+    short = await _funnel_run(short_aid, [{"step": 1, "messages": ["m1"]}])
+    await _marked(short, 132, step=3, unconfirmed_at=OLD)
+    assert await _status(_dismiss(short_aid, kind="funnel", fan_id=132, mass_run_id=short)) == 409
+    assert (await _row(short, 132)).sending_at == OLD, "a step it can't save stays listed"
+    assert await _status(_dismiss(aid, kind="funnel", fan_id=133, mass_run_id=mr)) == 404
+    assert await _status(_dismiss(aid, kind="funnel", fan_id=133)) == 422
+    other = await _funnel_run("acc_us_dismiss_other")
+    await _marked(other, 134, unconfirmed_at=OLD)
+    assert await _status(_dismiss("acc_us_dismiss_other", as_=(aid,), kind="funnel",
+                                  fan_id=134, mass_run_id=other)) == 403
+    assert await _status(_dismiss(aid, kind="funnel", fan_id=134, mass_run_id=other)) == 404, \
+        "another Creator's run is not this Creator's row"
+    assert (await _row(other, 134)).sending_at == OLD
+
+
+async def case_get_hint_is_the_first_untagged_send_since_the_mark():
+    aid = "acc_us_hint"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 141, aid=aid, unconfirmed_at=OLD)
+    await _marked(mr, 142, aid=aid, unconfirmed_at=OLD)
+    long = "x" * 80
+    from db.models import Employee
+    async with get_session() as s:
+        s.add(Employee(id=7707, display_name="Chatter"))
+    async with get_session() as s:
+        s.add_all([
+            Message(account_id=aid, fan_id=141, message_id=4_300_001, direction="out",
+                    body=long, created_at=OLD + timedelta(seconds=30)),
+            Message(account_id=aid, fan_id=141, message_id=4_300_002, direction="out",
+                    body="later", created_at=OLD + timedelta(seconds=90)),
+            Message(account_id=aid, fan_id=142, message_id=4_300_003, direction="out", body="tagged",
+                    automation_kind="reply_mass_funnel", created_at=OLD + timedelta(seconds=30)),
+            Message(account_id=aid, fan_id=142, message_id=4_300_004, direction="in",
+                    body="fan", created_at=OLD + timedelta(seconds=30)),
+            Message(account_id=aid, fan_id=142, message_id=4_300_005, direction="out",
+                    body="before", created_at=OLD - timedelta(hours=1)),
+            # A chatter's CRM send (employee-stamped) and one past the attempt's window: never the step's.
+            Message(account_id=aid, fan_id=142, message_id=4_300_006, direction="out", body="chatter",
+                    sent_by_employee_id=7707, created_at=OLD + timedelta(seconds=40)),
+            Message(account_id=aid, fan_id=142, message_id=4_300_007, direction="out",
+                    body="much later", created_at=OLD + timedelta(hours=1)),
+        ])
+    hints = {r["fan_id"]: r["hint"] for r in await _get(aid)}
+    assert hints == {"141": {"message_id": "4300001", "at": (OLD + timedelta(seconds=30)).isoformat()
+                             + "Z", "text": "x" * 60},
+                     "142": None}, hints
+    # A hint id that is not an untagged outbound row of that fan since the mark is never tagged.
+    for bad in (4_300_006, 4_300_007, 4_300_001, 4_300_003, 4_300_004, 4_300_005):   # the first one dismisses
+        got = await _dismiss(aid, kind="funnel", fan_id=142, mass_run_id=mr, hint_message_id=bad)
+        assert got["status"] in ("dismissed", "already_sent"), got
+    async with get_session() as s:
+        tags = {m.message_id: (m.automation_kind, m.mass_run_id) for m in (await s.execute(
+            Message.__table__.select().where(Message.account_id == aid,
+                                             Message.message_id >= 4_300_001))).all()}
+    assert tags == {4_300_001: (None, None), 4_300_002: (None, None),
+                    4_300_003: ("reply_mass_funnel", None), 4_300_004: (None, None),
+                    4_300_005: (None, None), 4_300_006: (None, None), 4_300_007: (None, None)}, tags
+
+
 def case_http_wiring():
     import os
     os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -299,11 +447,18 @@ def case_http_wiring():
         assert r.status_code == 200, r.text
         row = r.json()["rows"][0]
         assert set(row) == {"kind", "fan_id", "mass_run_id", "step", "step_label", "since",
-                            "last_error", "state"}, row
+                            "last_error", "state", "hint"}, row
         r = c.post("/admin/unconfirmed-sends/retry", params={"account_id": aid},
                    json={"kind": "funnel", "fan_id": "99", "mass_run_id": mr})
         assert (r.status_code, r.json()) == (200, {"status": "retried"}), r.text
         r = c.post("/admin/unconfirmed-sends/retry", params={"account_id": aid},
+                   json={"kind": "funnel", "fan_id": "98", "mass_run_id": mr})
+        assert r.status_code == 404, r.text
+        asyncio.run(_marked(mr, 97, unconfirmed_at=OLD))
+        r = c.post("/admin/unconfirmed-sends/dismiss", params={"account_id": aid},
+                   json={"kind": "funnel", "fan_id": "97", "mass_run_id": mr})
+        assert (r.status_code, r.json()) == (200, {"status": "dismissed"}), r.text
+        r = c.post("/admin/unconfirmed-sends/dismiss", params={"account_id": aid},
                    json={"kind": "funnel", "fan_id": "98", "mass_run_id": mr})
         assert r.status_code == 404, r.text
     finally:

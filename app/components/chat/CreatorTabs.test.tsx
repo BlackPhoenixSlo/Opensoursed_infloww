@@ -54,7 +54,7 @@ vi.mock("@/contexts/EmployeeContext", async (orig) => ({
 }));
 
 import { ScopeProvider, useScope } from "@/contexts/ScopeContext";
-import { resetRosterCountsModuleState } from "@/hooks/useRosterCounts";
+import { resetRosterCountsModuleState, type RosterCount } from "@/hooks/useRosterCounts";
 import { renderWithProviders } from "@/test-utils";
 import { expectDomOrder, relayGet, resetComposerHarness, routeRelay } from "./composerTestHarness";
 import { CreatorTabs } from "./CreatorTabs";
@@ -72,7 +72,7 @@ const NIA = "100000014";
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
 const account = (id: string, name: string, usedMinAgo: number, hasSession = true) => ({
   id, nickname: name, name, platform: "onlyfans", color: "#4a90d9",
-  has_session: hasSession, session_dead_at: null, created_at: ago(43_200), last_used_at: ago(usedMinAgo),
+  has_session: hasSession, session_dead_at: null as string | null, created_at: ago(43_200), last_used_at: ago(usedMinAgo),
 });
 const ACCOUNTS = [
   account(ZED, "Zed Creator", 90),
@@ -81,7 +81,7 @@ const ACCOUNTS = [
   account(MAX, "Max Creator", 30),
 ];
 // Unread conversations per Creator: distinct, and Max has none (no badge).
-const COUNTS = {
+const COUNTS: Record<string, RosterCount> = {
   [ZED]: { unread: 3, owe_reply: 1 },
   [AMY]: { unread: 12, owe_reply: 0 },
   [MAX]: { unread: 0, owe_reply: 4 },
@@ -90,7 +90,7 @@ const COUNTS = {
 /** The roster counts' read waits on this when a case sets it. */
 let countsGate: Promise<void> | null = null;
 /** What the relay's accounts read answers; a case may change the roster. */
-let relayAccounts: ReturnType<typeof account>[] = ACCOUNTS;
+let relayAccounts: Array<ReturnType<typeof account> & { freshness?: object }> = ACCOUNTS;
 
 // Two Employees; the first is at the keyboard unless a case says otherwise.
 const EMP_A: FixtureEmployee = { id: 300000001, display_name: "Fixture Employee A", color: null, is_active: true };
@@ -163,6 +163,20 @@ describe("CreatorTabs", () => {
     // The avatar falls back to the Creator's first two letters, as the Clone's.
     expect(within(zed).getByText("ZE")).toBeInTheDocument();
     expect(within(zed).getByText("3")).toBeInTheDocument();
+  });
+
+  it("a count the relay cut off at its window (unread_capped) reads \"25+\"", async () => {
+    const amyCount = COUNTS[AMY];
+    COUNTS[AMY] = { unread: 25, owe_reply: 0, unread_capped: true };
+    try {
+      renderStrip();
+      const amy = await screen.findByRole("tab", { name: "Amy Creator 25+ unread" });
+      expect(within(amy).getByText("25+")).toBeInTheDocument();
+      expect(amy).toHaveAttribute("title", "Amy Creator — 25+ unread");
+      expect(strip().getByRole("tab", { name: "Zed Creator 3 unread" })).toBeInTheDocument();
+    } finally {
+      COUNTS[AMY] = amyCount;
+    }
   });
 
   it("clicking a tab sets the active Creator and marks it selected; Enter and Space do too", async () => {
@@ -672,5 +686,92 @@ describe("CreatorTabs", () => {
 
     await userEvent.click(closeButton("Max Creator"));
     expect(window.localStorage.getItem(tabsKey(EMP_A.id))).toBe(JSON.stringify({ order: [], closed: [MAX] }));
+  });
+});
+
+/* ── The No-live-connection / Disconnected mark (watched-creator-refresher tickets 17, 18) ── */
+
+describe("CreatorTabs: the live mark", () => {
+  /** The Shared refresher's snapshot on an accounts row (P1 C1), `live` for `sinceMs` on the Relay's clock. */
+  const fresh = (id: string, live: "up" | "down" | "dead" | null, sinceMs: number | null) => {
+    const now = Date.now();
+    return { account_id: id, boot: now - 3_600_000, seq: 1, now, at: now - 30_000, cycle_s: 120, live,
+             live_since: sinceMs === null ? null : now - sinceMs, values: {} };
+  };
+  const row = (a: ReturnType<typeof account>, f: ReturnType<typeof fresh> | null, deadAt: string | null = null) =>
+    ({ ...a, session_dead_at: deadAt, ...(f ? { freshness: f } : {}) });
+  const [zed, amy, nia, max] = ACCOUNTS;
+  const mark = (el: HTMLElement) => el.querySelector("[data-live-mark]")?.getAttribute("data-live-mark") ?? null;
+  const DOWN_3 = "No live connection for 3 min: new messages may arrive late";
+
+  it("down past the 60 s grace: amber dot, the tooltip and \"no live connection\" ending the name; up or within grace: nothing", async () => {
+    relayAccounts = [row(zed, fresh(ZED, "down", 210_000)), row(amy, fresh(AMY, "up", 600_000)), nia,
+                     row(max, fresh(MAX, "down", 30_000))];
+    renderStrip();
+    const z = await screen.findByRole("tab", { name: "Zed Creator 3 unread no live connection" });
+    expect(mark(z)).toBe("down");
+    expect(z.querySelector("[data-live-mark]")).toHaveClass("bg-warn");
+    expect(z).toHaveAttribute("title", `Zed Creator — 3 unread — ${DOWN_3}`);
+    // The tab's unread number is today's DOM.
+    expect(within(z).getByText("3")).toBeInTheDocument();
+    const a = strip().getByRole("tab", { name: "Amy Creator 12 unread" });
+    expect(mark(a)).toBeNull();
+    expect(a).toHaveAttribute("title", "Amy Creator — 12 unread");
+    // A routine reconnect (down 30 s): no dot.
+    expect(mark(strip().getByRole("tab", { name: "Max Creator" }))).toBeNull();
+    // No live region anywhere in the strip.
+    expect(document.querySelector("[aria-live]")).toBeNull();
+  });
+
+  it("ages on the Relay's clock: a tab clock 5 min ahead of the seed's `now` marks nothing early", async () => {
+    // The Relay's clock reads 5 min behind this tab's: Zed down 30 s, Amy down 3.5 min, on the Relay's clock.
+    const skewed = (id: string, sinceMs: number) => {
+      const f = fresh(id, "down", sinceMs);
+      return { ...f, now: f.now - 300_000, live_since: f.live_since! - 300_000 };
+    };
+    relayAccounts = [row(zed, skewed(ZED, 30_000)), row(amy, skewed(AMY, 210_000)), nia, max];
+    renderStrip();
+    const a = await screen.findByRole("tab", { name: "Amy Creator 12 unread no live connection" });
+    expect(a).toHaveAttribute("title", `Amy Creator — 12 unread — ${DOWN_3}`);
+    expect(mark(strip().getByRole("tab", { name: "Zed Creator 3 unread" }))).toBeNull();
+  });
+
+  it("a Dead session shows red \"Disconnected\" at once, from the snapshot first, else the account's session_dead_at", async () => {
+    relayAccounts = [
+      // Re-captured: the snapshot reads up beside a stale session_dead_at.
+      row(zed, fresh(ZED, "up", 3_000), ago(10)),
+      // The snapshot says dead before the accounts row does.
+      row(amy, fresh(AMY, "dead", 1_000)),
+      nia,
+      // No snapshot (the refresher off): the account's flag.
+      row(max, null, ago(5)),
+    ];
+    renderStrip();
+    const a = await screen.findByRole("tab", { name: "Amy Creator 12 unread disconnected" });
+    expect(mark(a)).toBe("dead");
+    expect(a.querySelector("[data-live-mark]")).toHaveClass("bg-err");
+    expect(a).toHaveAttribute("title", "Amy Creator — 12 unread — Disconnected");
+    const m = strip().getByRole("tab", { name: "Max Creator disconnected" });
+    expect(mark(m)).toBe("dead");
+    expect(mark(strip().getByRole("tab", { name: "Zed Creator 3 unread" }))).toBeNull();
+  });
+
+  it("\"+ Add a Creator\" shows the same dot and word on each Creator's row, open or closed", async () => {
+    window.localStorage.setItem(tabsKey(EMP_A.id), JSON.stringify({ order: [], closed: [AMY] }));
+    relayAccounts = [row(zed, fresh(ZED, "down", 210_000)), row(amy, fresh(AMY, "dead", 1_000)), nia,
+                     row(max, fresh(MAX, "up", 600_000))];
+    renderStrip();
+    await screen.findByRole("tab", { name: "Zed Creator 3 unread no live connection" });
+    await userEvent.click(screen.getByRole("button", { name: "Add a Creator" }));
+    const picker = within(screen.getByRole("region", { name: "Creator picker" }));
+    const z = picker.getByRole("button", { name: "Zed Creator open no live connection" });
+    expect(mark(z)).toBe("down");
+    expect(z).toHaveAttribute("title", DOWN_3);
+    const a = picker.getByRole("button", { name: "Amy Creator add disconnected" });
+    expect(mark(a)).toBe("dead");
+    expect(a).toHaveAttribute("title", "Disconnected");
+    const m = picker.getByRole("button", { name: "Max Creator open" });
+    expect(mark(m)).toBeNull();
+    expect(m).not.toHaveAttribute("title");
   });
 });

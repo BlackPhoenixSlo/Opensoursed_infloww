@@ -125,3 +125,31 @@ The history view tracks `stats_total`, `stats_read`, `stats_sales`.
 4. **Idempotency is unknown.** Whether re-POSTing the same broadcast re-sends to
    everyone is not knowable without trying it. That makes a careless retry
    potentially a duplicate mass-send.
+
+---
+
+## Mark notifications read (`notifications_read`)
+
+Recovered 2026-11-20 from `main.14d24b3e179efdb7.js` (the copy saved in the
+capture rig's `out/*/http.jsonl`, sha1 prefix `9c37fcda83`). Wired in
+`fansly_shim.notifications_read`; never sent from the shim against Fansly yet.
+
+```js
+// NotificationApiService (BJ)
+acknowledgeAllNotifications(e,t,r){ new z("POST", apiBaseUri_+"/notifications/ack", {beforeAnd:t, type:e}) }
+// NotificationService
+acknowledgeAllNotifications(e,t){
+  r = newNotifications_.length>0 ? newNotifications_[0].id : notifications_[0].id;   // the NEWEST row
+  if (!(r.length>0 && r!==lastAcknowledgeAllHash_[e])) return;
+  notificationApiService_.acknowledgeAllNotifications(e, r, ...) }
+// notifications page
+checkUnacknowledged(){ ...; if (t<=0) return;                       // nothing unread: no write
+  notificationService_.acknowledgeAllNotifications(selectedTypes.join(","), null); ... }
+// WS echo serviceId 9 type 2: data.type ? clear those codes : clear ALL
+```
+
+Derived body: `{"beforeAnd": "<newest notification id>", "type": ""}` (`""` =
+no filter = all, per the WS branch). Unverified: that the server reads
+`beforeAnd` as "this id and older", and how fast `acknowledgedAt` shows on a
+re-read. Promote to RECIPES after one live pair: notifications page open with
+an unread row → copy the `POST /api/v1/notifications/ack` request + response.

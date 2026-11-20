@@ -46,6 +46,7 @@ describe("EmployeesTab paging", () => {
     renderWithProviders(<UserProvider><ChatterProvider><EmployeesTab /></ChatterProvider></UserProvider>);
     await waitFor(() => expect(names()).toHaveLength(10));
     expect(pager()).toHaveTextContent("Total: 24 employees");
+    expect(screen.getByText(/active · \d+ total/)).toHaveTextContent("12 active · 24 total");
 
     fireEvent.click(within(pager()).getByRole("button", { name: "Page 2" }));
     expect(currentPage()).toBe("2");
@@ -57,6 +58,8 @@ describe("EmployeesTab paging", () => {
     fireEvent.click(within(document.getElementById(status.getAttribute("aria-controls")!)!).getByRole("option", { name: "Activated" }));
 
     expect(pager()).toHaveTextContent("Total: 12 employees");
+    // The header counts the filtered list too, not the whole roster.
+    expect(screen.getByText(/active · \d+ total/)).toHaveTextContent("12 active · 12 total");
     expect(currentPage()).toBe("1");
     expect(names()).toEqual(Array.from({ length: 10 }, (_, k) => `Staff ${String(k).padStart(2, "0")}`));
   });

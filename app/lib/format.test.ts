@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { dollarsToCents, fmtAgo, fmtCents, fmtDuration, fmtPrice, parseUtc } from "./format";
+import { dollarsToCents, fmtAgo, fmtCents, fmtDuration, fmtPrice, parseUtc, rosterUnreadText } from "./format";
 
 describe("fmtDuration", () => {
   it("renders m:ss", () => {
@@ -123,5 +123,16 @@ describe("fmtCents stands in for CustomsTab's `money`", () => {
   const rows: (number | null | undefined)[] = [null, undefined, Number.NaN, 0, -1, -49, -51, -1250, 49, 50, 150, 123456, 0.4];
   it.each(rows)("%s", (c) => {
     expect(fmtCents(c)).toBe(legacyMoney(c));
+  });
+});
+
+describe("rosterUnreadText", () => {
+  it.each<[number, boolean | undefined, string]>([
+    [3, undefined, "3"],
+    [3, false, "3"],
+    [25, true, "25+"],
+    [24, true, "24+"],
+  ])("%i, capped %s → %s", (n, capped, want) => {
+    expect(rosterUnreadText(n, capped)).toBe(want);
   });
 });

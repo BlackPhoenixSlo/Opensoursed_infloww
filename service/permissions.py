@@ -496,7 +496,8 @@ UNMAPPED: dict[str, str] = {
     "/admin/ai-key-status": "the AI-key notice on every automation page (key presence only)",
     "/admin/errors": "client error reports from every page",
     "/admin/perflog": "client timing reports from every page",
-    "/api/of/v2/users/notifications": "the top bar's notification bell and the Money rail (its /money read)",
+    "/api/of/v2/users/notifications": "the top bar's notification bell (its reads and its mark-read, which every"
+                                      " bell viewer sends as OF web does on open) and the Money rail (its /money read)",
     "/api/of/v2/giphy": "GIF search for every composer, no Creator data",
     "/admin/sensitive-words": "the Agency's Sensitive words list every composer warns on;"
                               " its writes are owner-only (chatters.py)",

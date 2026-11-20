@@ -259,7 +259,9 @@ describe("ChatHeader", () => {
         { id: 31, name: "Fixture List A", canAddUsers: true, users: [] },
         { id: 32, name: "Fixture List B", canAddUsers: true, users: [{ id: FAN_ID }] },
       ]);
-      renderHeader();
+      const client = makeTestQueryClient();
+      const invalidate = vi.spyOn(client, "invalidateQueries");
+      renderHeader({}, client);
       const menu = await openAvatarMenu(user);
       await user.click(within(menu).getByRole("button", { name: "Add to lists ▸" }));
       const listA = await within(menu).findByRole("button", { name: /Fixture List A/ });
@@ -272,6 +274,8 @@ describe("ChatHeader", () => {
       await waitFor(() => expect(relayPost).toHaveBeenCalledWith(
         `/api/of/v2/lists/31/users/${FAN_ID}`, undefined, { accountId: ACCOUNT_ID }));
       await waitFor(() => expect(listA).toHaveAttribute("aria-pressed", "true"));
+      // The mass composer's list counts (the shared fan-lists cache) go stale too.
+      expect(invalidate.mock.calls.map(([f]) => f?.queryKey)).toContainEqual(["fan-lists", ACCOUNT_ID]);
       await user.click(listB);
       await waitFor(() => expect(relayDelete).toHaveBeenCalledWith(
         `/api/of/v2/lists/32/users/${FAN_ID}`, { accountId: ACCOUNT_ID }));

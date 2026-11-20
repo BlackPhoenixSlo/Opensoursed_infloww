@@ -19,6 +19,8 @@ const BELL = "/api/of/v2/users/notifications/count";
 describe("classify", () => {
   it.each<[string, string, string | null, Screen, Partial<Read> | null]>([
     ["profile joins only", "/api/of/v2/users/me", "1", DASH, { field: "profile", starter: false, bundle: DASH }],
+    ["profile with max_age joins", "/api/of/v2/users/me?max_age=1800", "1", DASH, { field: "profile", starter: false, bundle: DASH }],
+    ["profile with another param", "/api/of/v2/users/me?max_age=1800&x=1", "1", DASH, null],
     ["fan counts start", "/api/of/v2/subscriptions/count/all", "1", DASH, { field: "subscriberCounts", starter: true }],
     ["new fans, the screen's window", `/api/of/v2/subscriptions/subscribers/chart?${q({ start: DASH.from!, end: DASH.to! })}`,
       "1", DASH, { field: "newFans", starter: true }],

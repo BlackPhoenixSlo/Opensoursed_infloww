@@ -252,6 +252,18 @@ def _observe_consent(account_id: str, method: str, url: str, json_body: dict | N
         log_of.warning("consent_observe_failed account=%s", account_id, exc_info=True)
 
 
+def _observe_unread_total(account_id: str, method: str, url: str, r, asked_at: int) -> None:
+    """unread_total.observe_response (a `/users/me` OF returned confirms the Unread total; off: returns at once);
+    never raises (lazy: keeps the client importable on its own)."""
+    if not os.environ.get("UNREAD_TOTAL"):   # knob unset: no import (unread_total pulls in the relay's modules)
+        return
+    try:
+        import unread_total
+        unread_total.observe_response(account_id, method, url, r, asked_at)
+    except Exception:  # noqa: BLE001
+        log_of.warning("unread_total_observe_failed account=%s", account_id, exc_info=True)
+
+
 def _err_kind(e: BaseException) -> str:
     """`type=<class> curl=<code>` for a failed call's log line. curl_cffi's
     errors carry libcurl's code (`curl=56` CONNECT refused, `28` timeout, `7`
@@ -771,6 +783,7 @@ class _Transport:
                     raise OFDispatchRefused(why)
                 # The OF call counter: one count per request sent, its answer's status or `error`
                 # when none came back (CONNECT retries inside _proxy_retry are one request).
+                asked_at = int(time.time() * 1000)      # the read's ask time (the Unread total's `at`)
                 try:
                     r = self._proxy_retry(_do, what=f"{method} {_short_path(url)}", policy=policy)
                 except Exception:
@@ -796,6 +809,8 @@ class _Transport:
             proxy_health.record(self.proxy_label, True)
             # OF's consent-form demand (NC/AL law): a pinned agency notification while it lasts.
             _observe_consent(self.account_id, method, url, json_body, r)
+            # The Unread total (UNREAD_TOTAL): every `/users/me` OF returned, whoever asked.
+            _observe_unread_total(self.account_id, method, url, r, asked_at)
             return r
         except requests.exceptions.ProxyError as e:
             log_of.warning(

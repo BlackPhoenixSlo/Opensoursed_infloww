@@ -116,6 +116,22 @@ async def case_roster_count_caps_at_window():
     assert _bare(out) == {"unread": 0, "owe_reply": cap}, out
 
 
+def case_unread_capped_when_full_window_all_unread():
+    """A full window of unread chats may hide more past it: the fold flags it (the tab shows "25+"), keeping
+    `unread` the window's count. One read chat in the window, or a window not full, is the whole story: no flag."""
+    me = "5"
+    cap = server._ROSTER_SCAN_MAX
+    fold = accounts_admin_api._roster_counts_from_rows
+    all_unread = [_chat(2000 + i, unread=1) for i in range(cap + 5)]
+    assert fold(all_unread, me) == {"unread": cap, "owe_reply": 0, "unread_capped": True}, fold(all_unread, me)
+    # A restricted fan keeps its window slot but never counts: the rest all unread still flags.
+    assert fold(all_unread, me, {2000}) == {"unread": cap - 1, "owe_reply": 0, "unread_capped": True}
+    one_read = [_chat(3000, unread=0, last_from=int(me))] + all_unread[: cap - 1]
+    assert fold(one_read, me) == {"unread": cap - 1, "owe_reply": 0}, fold(one_read, me)
+    short = all_unread[: cap - 1]
+    assert fold(short, me) == {"unread": cap - 1, "owe_reply": 0}, fold(short, me)
+
+
 async def case_reconcile_pulls_of_read_state_into_local():
     from messages import reconcile_chats_from_of
 
@@ -653,6 +669,7 @@ _harness.run(
     case_ws_kept_window_is_folded_past_300s_within_its_list_ttl,
     case_compute_roster_count_from_of,
     case_roster_count_caps_at_window,
+    case_unread_capped_when_full_window_all_unread,
     case_reconcile_pulls_of_read_state_into_local,
     case_reconcile_runs_in_the_of_writer_never_backwards,
     case_roster_bust_recomputes_only_target,
