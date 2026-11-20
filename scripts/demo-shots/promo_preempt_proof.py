@@ -82,7 +82,7 @@ EXPECT = {
     "mn12-takeover": E("A", 1, "create with Keep running + expect_taken_from=C1 moves the tick (notice); a "
                        "stale expectation 409s before any POST", second_status=409, taken_notice=True),
     "mn13": E("A", 1, "preempt off, claims 99: one near_cap re-check (one slot), it re-creates past the cap",
-              recheck_jobs=1, keep_running=True),
+              recheck_jobs=2, keep_running=True),      # near_cap, then the new promo's first read
     "mn14": E("A", 1, "OF flips finished on the last claim; its toast lands under the poke floor: deferred, "
               "fires after the floor (real time)", keep_running=True),
     "fence-unset": E("A", 0, "relay rebooted with PROMO_CREATE_HOST_ID unset: boot notice; run fenced "
@@ -91,6 +91,9 @@ EXPECT = {
     # Slice B
     "fill-90": E("B", 1, "cap 100, Trusted count 90: one Fill while old claims < cap; OF ends the old at "
                  "the create", sources=["auto_fill"], claims_lt_cap=True, gap_s=0),
+    "fill-twice": E("B", 2, "the promo Keep running made itself: its first read (~10 s after the create) "
+                    "sees 0 claims, so 90 more claims Fill it again", sources=["auto_fill", "auto_fill"],
+                    gap_s=0),
     "timed": E("B", 1, "finishedAt 200 s out, skew 0 (seeded): the Timed re-check ~115 s before the end "
                "creates once", sources=["auto_timed"]),
     "burst-past-cap": E("B", 1, "100 claims inside the poke floor: Fill window passed; After-end on the "
@@ -745,6 +748,17 @@ def sc_fill_90(s):
     s.tick(s.campaign(p0), preempt=True)
     s.toasts(90, 0.05)                  # the gate pokes at 89; under the floor: deferred
     s.shift(61)                         # seeded: the floor passes
+
+
+def sc_fill_twice(s):
+    sc_fill_90(s)
+    first = s.keep_state().get("kept_of_promo_id")
+    # real time: the first read is due ~10 s after the create and folds the new promo in at 0
+    s.extra["first_read_after_s"] = s.wait_for(
+        lambda: (s.wake() or True) and (k := s.keep_state()).get("kept_of_promo_id") not in (None, first)
+        and k.get("first_claims") == 0, 60)
+    s.toasts(90, 0.05)                  # claims on the new promo; the gate pokes at 89
+    s.shift(125)                        # seeded: the poke floor and the 2 min Cooldown pass
 
 
 def _seed_skew(s, skew):

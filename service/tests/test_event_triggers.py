@@ -22,7 +22,8 @@ else. Pinned here against the real materializer and a temp DB:
   • the toast gate (`promo_reactivate.should_poke`): with a fresh read of the live Kept
     promo, promo_reactivate is poked only when its Claims plus the toasts since that read
     reach one short of the trigger (the Fill threshold, else the cap), or its end is near;
-    no read, or one older than 600 s, pokes. send_welcome is always poked.
+    no read, or one older than 600 s, pokes and keeps no toast history (F15). send_welcome
+    is always poked.
 
 No network: no OF client is built, nothing runs a job.
 
@@ -323,6 +324,21 @@ async def case_toast_no_or_stale_read_pokes():
         await _toast("gate_none")
         await _toast("gate_stale")
         assert ("gate_none", PROMO) in p.seen and ("gate_stale", PROMO) in p.seen, p.seen
+
+
+async def case_f15_stale_gate_keeps_no_toast_history():
+    """F15: with no gate, or a stale one (rule off / fenced after a read), every toast pokes
+    and nothing is kept: the history never grows in the transcoder's hot path."""
+    _gate("gate_stale_many", 2, age_s=601)
+    pr._gate.pop("gate_gone", None)
+    with _Pokes() as p:
+        for _ in range(20):
+            await _toast("gate_stale_many", 3)
+            await _toast("gate_gone", 3)
+        assert p.seen.count(("gate_stale_many", PROMO)) == 20, p.seen
+        assert p.seen.count(("gate_gone", PROMO)) == 20, p.seen
+    assert not pr._toasts.get("gate_stale_many") and not pr._toasts.get("gate_gone"), \
+        (len(pr._toasts.get("gate_stale_many", ())), len(pr._toasts.get("gate_gone", ())))
 
 
 async def case_toast_end_near_pokes():

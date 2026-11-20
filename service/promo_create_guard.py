@@ -7,8 +7,11 @@ duplicate:
 
   reserve       re-read the campaign and insert `pending`, one transaction; the partial
                 unique index allows one open row per Creator (`create_open`).
-  mark_sending  in the sending thread right before the POST: pending → sending (CAS) plus
-                the same re-read; a miss → failed `not_sent`, no POST.
+  mark_sending  in the sending thread before the POST: pending → sending (CAS) plus the
+                same re-read; a miss → failed `not_sent`, no POST.
+  dispatch      the same re-read again inside the transport, right before the request leaves
+                (after the signed-slot wait and warm-up, of_client.PRE_DISPATCH); a miss →
+                failed `not_sent`, no POST.
   settle        one transaction: the state CAS (open states, or the caller's), the campaign
                 repoint, the old id kept under the campaign (link_metrics), the owner notice.
   reconcile     a `pending` row past SETTLE_GRACE_S never reached OF: failed `not_sent` by a
@@ -28,7 +31,7 @@ gets its mirror row from `terms["mirror"]`.
 An automatic create's decision holds only while nothing else touched OF since its read
 (DECISION_MAX_AGE_S, no create sent or settled after it, no fresh manual id missing from
 it), its rule and tick are unchanged and the back-off and Create budget still allow it
-(`_recheck`, at reserve and at the sending CAS).
+(`_recheck`, at reserve, at the sending CAS and right before the request leaves).
 
 A negative read never settles a sent row `failed`: OF may list a create late. An error
 that provably fired before the request left the box is failed `not_sent` (`_pre_send`).
@@ -58,10 +61,11 @@ from automations._knobs import bool_knob
 from db.engine import get_session
 from db.models import AutomationRule, PromoCampaign, PromoCreateReservation, PromoKeepState
 from isotime import parse_iso
-from of_client import OFAPIError, OFDeactivatedError, OFDeniedError, proxy_refused
+from of_client import (PRE_DISPATCH, OFAPIError, OFDeactivatedError, OFDeniedError, OFDispatchRefused,
+                       proxy_refused)
 from of_promos import extract_created_promo, normalise_of_promo, promo_expires_at
-from promo_keep_decide import (BREAKER_N, TIMED_LEAD_S, backoff_until, create_hold, failure_turns_off,
-                               preempt_failure, recovery_slot)
+from promo_keep_decide import (BREAKER_N, TIMED_LEAD_S, backoff_until, create_hold,  # noqa: F401
+                               failure_turns_off, in_timed_window, preempt_failure, recovery_slot)
 
 log = logging.getLogger("of-relay.promo_create_guard")
 
@@ -202,10 +206,23 @@ def fenced(stamp: str | None) -> str | None:
     return None if here and here == stamp else "fence"
 
 
+def trial_gap(discount: int | None, cap: int | None, limit: int | None) -> str | None:
+    """Why a Free trial (discount 100) may not keep running: "trial_unlimited" (no Claim cap)
+    or "recreate_limit_required" (no Re-create limit); None otherwise. The one rule the
+    run and the API's 422 read."""
+    if int(discount or 0) != 100:
+        return None
+    if not cap:
+        return "trial_unlimited"
+    if limit is None:
+        return "recreate_limit_required"
+    return None
+
+
 def trial_unlimited(c: PromoCampaign) -> bool:
-    """A Free trial (discount 100) with no Re-create limit or no Claim cap: an automatic
-    create could hand out free subs without end."""
-    return int(c.discount_percent or 0) == 100 and (c.recreates_left is None or not c.subscribe_counts)
+    """A Free trial with no Re-create limit or no Claim cap: an automatic create could hand
+    out free subs without end."""
+    return trial_gap(c.discount_percent, c.subscribe_counts, c.recreates_left) is not None
 
 
 def _live_rule(steps_json: str | None) -> bool:
@@ -270,13 +287,10 @@ async def _recheck(s, res: Reservation, want: Mapping[str, Any], now: datetime) 
     if newer is not None:
         return "newer_create"
     if res.source == "auto_timed" and (
-            res.timed_end is None or not 0 < (res.timed_end - now).total_seconds() <= TIMED_LEAD_S):
+            res.timed_end is None or not in_timed_window((res.timed_end - now).total_seconds())):
         return "timed_window"
     # The run decided on its own budget read; a racing run may have spent it since.
-    mine = (R.account_id == res.account_id, R.source.in_(AUTO_SOURCES), R.id != res.id)
-    times = (await s.execute(select(R.created_at).where(
-        *mine, R.created_at > now - timedelta(days=1)))).scalars().all()
-    not_before = (await s.execute(select(func.max(R.not_before)).where(*mine))).scalar_one_or_none()
+    times, not_before = await _budget_facts(s, res.account_id, now, exclude_id=res.id)
     hold = create_hold(times, not_before, now)
     if hold:
         return hold[0]
@@ -327,25 +341,40 @@ async def reserve(account_id: str, campaign_id: int | None, source: str, terms: 
     return res
 
 
+async def _guard(res: Reservation, recheck: Mapping[str, Any], frm: str) -> str | None:
+    """One guard for both moments: the row must still be `frm` (the write first: SQLite's lock,
+    and the row still ours), it becomes sending with sent_at now, then the pre-POST re-read.
+    A decision that no longer holds settles the row failed `not_sent` (never sent, so no
+    back-off). Returns why there is no POST, or None to send."""
+    now = datetime.utcnow()
+    R = PromoCreateReservation
+    async with get_session() as s:
+        if (await s.execute(update(R).where(R.id == res.id, R.state == frm)
+                            .values(state="sending", sent_at=now))).rowcount != 1:
+            return f"not_{frm}"
+        why = await _recheck(s, res, recheck, now)
+        if why:
+            await s.execute(update(R).where(R.id == res.id)
+                            .values(state="failed", error_class="not_sent", sent_at=None, settled_at=now))
+            log.info("promo_create not sent account=%s reservation=%s reason=%s at=%s",
+                     res.account_id, res.id, why, "cas" if frm == "pending" else "dispatch")
+    return why
+
+
 async def mark_sending(res: Reservation, recheck: Mapping[str, Any]) -> str | None:
     """pending → sending right before the POST, plus the pre-POST re-read. Returns why there
     is no POST (already sending/settled: "not_pending"; the decision no longer holds: the
     row is failed `not_sent`), or None to send."""
-    now = datetime.utcnow()
-    async with get_session() as s:
-        moved = (await s.execute(update(PromoCreateReservation).where(
-            PromoCreateReservation.id == res.id, PromoCreateReservation.state == "pending")
-            .values(state="sending", sent_at=now))).rowcount
-        if moved != 1:
-            return "not_pending"
-        why = await _recheck(s, res, recheck, now)
-        if why:
-            await s.execute(update(PromoCreateReservation).where(PromoCreateReservation.id == res.id)
-                            .values(state="failed", error_class="not_sent", sent_at=None, settled_at=now))
-            log.info("promo_create not sent account=%s reservation=%s reason=%s",
-                     res.account_id, res.id, why)
-            return why
-    return None
+    return await _guard(res, recheck, "pending")
+
+
+async def _dispatch_check(res: Reservation, recheck: Mapping[str, Any]) -> str | None:
+    """The last guard, right before the request leaves the box (of_client.PRE_DISPATCH): the
+    sending CAS's re-read again, after the signed-slot wait (up to SIGNED_WAIT_S) and the
+    warm-up, so an untick, a moved Keep running or a stale decision meanwhile sends nothing.
+    sent_at moves to now (the request's real start). "not_sending": the row was cleared
+    meanwhile."""
+    return await _guard(res, recheck, "sending")
 
 
 def _create_notice(res: Reservation, campaign: str, new_id: int | None):
@@ -399,6 +428,22 @@ async def _repoint(s, res: Reservation, item: dict, now: datetime) -> list[str]:
     return filed
 
 
+async def seed_memo(s, account_id: str, item: dict) -> None:
+    """A Kept create's answer with Claims above 0: the claim memo (promo_keep_state) holds
+    the new id untrusted (first_claims None), so no later read makes its count Trusted. An
+    answer at 0 seeds nothing: OF may still show the old promo's count on the first read
+    (claims lag), so the first_read Re-check's read decides. A memo already on the id stays."""
+    pid = item.get("of_promo_id")
+    if pid is None or not item.get("claims_present") or int(item.get("subscriber_count") or 0) <= 0:
+        return
+    vals = {"kept_of_promo_id": pid, "first_claims": None,
+            "last_claims": int(item.get("subscriber_count") or 0), "read_at": datetime.utcnow(),
+            "finished_at": item.get("finished_at")}
+    await s.execute(sqlite_insert(PromoKeepState).values(account_id=str(account_id), **vals)
+                    .on_conflict_do_update(index_elements=["account_id"], set_=vals,
+                                           where=PromoKeepState.kept_of_promo_id.is_distinct_from(pid)))
+
+
 async def _stamp_skew(s, res: Reservation, item: dict, answer_at: datetime) -> None:
     """Our clock against OF's, from our own create: when its answer arrived minus OF's
     createdAt (Timed needs it known and small). Not the sending stamp: the POST may wait
@@ -409,11 +454,13 @@ async def _stamp_skew(s, res: Reservation, item: dict, answer_at: datetime) -> N
                     .on_conflict_do_update(index_elements=["account_id"], set_={"skew_s": skew}))
 
 
-async def _preempt_failed(s, res: Reservation, *, kept_off: bool, untick: bool) -> list[str]:
+async def _preempt_failed(s, res: Reservation, *, kept_off: bool, untick: bool,
+                         recover: bool) -> list[str]:
     """A failed Pre-emption may still have ended the live promo on OF: say so. After-end
     recovers it once the back-off passes (the recovery slot keeps a create for it), so the
-    short wait is promised only when nothing was turned off. `untick`: its early tick goes
-    off (an OF refusal: early creates would keep failing), Keep running stays on."""
+    short wait is promised only when a recovery is queued (`recover`, preempt_failure's); a
+    dead session resumes once logged in again. `untick`: its early tick goes off (an OF
+    refusal: early creates would keep failing), Keep running stays on."""
     c = await s.get(PromoCampaign, res.campaign_id)
     log.warning("promo_preempt_failed account=%s campaign=%s reservation=%s",
                 res.account_id, res.campaign_id, res.id)
@@ -424,7 +471,9 @@ async def _preempt_failed(s, res: Reservation, *, kept_off: bool, untick: bool) 
     name = c.name if c is not None else f"#{res.campaign_id}"
     tail = ("" if kept_off else
             " Re-create at 90% filled is off for it now (tick it again to retry); Keep running still "
-            "re-creates it after the promo ends." if untick else " It re-creates after a short wait.")
+            "re-creates it after the promo ends." if untick else
+            " It re-creates after a short wait." if recover else
+            " It re-creates once the Creator is logged in again.")
     return await notifications_api.file_for_creator_owners(s, res.account_id, lambda nick: notifications_api.Notice(
         NOTICE_KIND, f"{nick}: Keep running's early re-create of “{name}” failed — OnlyFans may have "
         f"ended the old promo, so no promo may be live.{tail}",
@@ -532,18 +581,20 @@ async def settle(res: Reservation, outcome: Outcome, *, only: Sequence[str] = OP
             await _stamp_skew(s, res, outcome.item, answer_at)
         if outcome.state == "created" and auto and res.campaign_id is not None:
             filed = await _repoint(s, res, outcome.item, now)
+            await seed_memo(s, res.account_id, outcome.item)
         elif outcome.state == "created" and res.source == "manual":
             await _adopt_manual(s, res, outcome.item, now)
         elif outcome.state == "lost" and res.campaign_id is not None:
             filed = await turn_off(s, res.account_id, res.campaign_id, "create_unknown", now)
         elif outcome.state == "failed" and auto and res.campaign_id is not None:
             pre = res.source in PREEMPT_SOURCES
-            off, untick = preempt_failure(outcome.error_class, prev) if pre else \
-                (failure_turns_off(outcome.error_class, prev), False)
+            off, untick, recover = preempt_failure(outcome.error_class, prev) if pre else \
+                (failure_turns_off(outcome.error_class, prev), False, False)
             if off:
                 filed = await turn_off(s, res.account_id, res.campaign_id, off, now)
             if pre and outcome.error_class != "not_sent":
-                filed += await _preempt_failed(s, res, kept_off=bool(off), untick=untick)
+                filed += await _preempt_failed(s, res, kept_off=bool(off), untick=untick,
+                                               recover=recover)
     log.info("promo_create settled account=%s reservation=%s state=%s of_promo_id=%s",
              res.account_id, res.id, outcome.state, new_id)
     await notifications_api.push_unread(filed)
@@ -622,8 +673,12 @@ async def reconcile(account_id: str, items: Sequence[dict] | None) -> int:
 
 async def _stamp_listed(aid: str, items: Sequence[dict], now: datetime) -> None:
     """listed_at = the first read showing the id live, on the breaker's last N automatic
-    creates (older rows no longer count)."""
-    live = {p.get("of_promo_id") for p in items if not p.get("is_finished")}
+    creates (older rows no longer count). A finished id with claims went live too (it sold
+    out before a read saw it): only a sighting with neither leaves it unlisted."""
+    def went_live(p: dict) -> bool:
+        return not p.get("is_finished") or (bool(p.get("claims_present"))
+                                            and int(p.get("subscriber_count") or 0) > 0)
+    live = {p.get("of_promo_id") for p in items if went_live(p)}
     R = PromoCreateReservation
     async with get_session() as s:
         recent = (await s.execute(select(R.id, R.of_promo_id, R.listed_at).where(
@@ -725,15 +780,21 @@ class Budget:
     not_before: datetime | None = None
 
 
-async def budget_state(account_id: str, now: datetime) -> Budget:
+async def _budget_facts(s, account_id: str, now: datetime,
+                        exclude_id: int | None = None) -> tuple[tuple[datetime, ...], datetime | None]:
+    """Budget's facts in session `s`; `exclude_id`: a reservation left out (`_recheck`'s own)."""
     R = PromoCreateReservation
+    mine = (R.account_id == str(account_id), R.source.in_(AUTO_SOURCES),
+            *(() if exclude_id is None else (R.id != exclude_id,)))
+    times = (await s.execute(select(R.created_at).where(
+        *mine, R.created_at > now - timedelta(days=1)))).scalars().all()
+    not_before = (await s.execute(select(func.max(R.not_before)).where(*mine))).scalar_one_or_none()
+    return tuple(times), not_before
+
+
+async def budget_state(account_id: str, now: datetime) -> Budget:
     async with get_session() as s:
-        times = (await s.execute(select(R.created_at).where(
-            R.account_id == str(account_id), R.source.in_(AUTO_SOURCES),
-            R.created_at > now - timedelta(days=1)))).scalars().all()
-        not_before = (await s.execute(select(func.max(R.not_before)).where(
-            R.account_id == str(account_id), R.source.in_(AUTO_SOURCES)))).scalar_one_or_none()
-    return Budget(tuple(times), not_before)
+        return Budget(*await _budget_facts(s, account_id, now))
 
 
 @dataclass(frozen=True)
@@ -748,10 +809,12 @@ class Sent:
 
 async def send(res: Reservation, recheck: Mapping[str, Any], client: Callable[[], Any],
                terms: Mapping[str, Any], *, wrap: Callable[[Callable[[], Any]], Any] | None = None) -> Sent:
-    """Load the client, flip to sending and POST, in one thread (nothing may change between
-    the CAS and the POST), then settle. `wrap`: server._proxy for the raw route, so its lane
-    and error translation run around the POST. A BaseException (a crash) leaves the row
-    open for the reconcile."""
+    """Load the client, flip to sending and POST, in one thread, then settle. The POST may wait
+    after the CAS (the signed slot, the warm-up), so the guard runs again inside the transport
+    right before the request leaves (`_dispatch_check` via of_client.PRE_DISPATCH, once); its
+    refusal is like the CAS's: no POST, `refused` says why. `wrap`: server._proxy for the raw
+    route, so its lane and error translation run around the POST. A BaseException (a crash)
+    leaves the row open for the reconcile."""
     loop = asyncio.get_running_loop()
     kwargs = {k: v for k, v in terms.items() if k != "mirror"}
     reached, refused, answer_at = False, None, None
@@ -763,12 +826,34 @@ async def send(res: Reservation, recheck: Mapping[str, Any], client: Callable[[]
         if refused:
             return None
         reached = True
-        got = c.create_promo(**kwargs)
+        checked = False
+
+        def last_check() -> str | None:
+            nonlocal refused, checked, reached
+            if checked:
+                return None
+            checked = True
+            try:
+                refused = asyncio.run_coroutine_threadsafe(_dispatch_check(res, recheck), loop).result()
+            except Exception as e:
+                # The guard itself failed (a locked DB): nothing left the box, so this is
+                # `not_sent` like a failed CAS, never "may have reached OF".
+                reached = False
+                raise OFDispatchRefused("dispatch_check_failed") from e
+            return refused
+        token = PRE_DISPATCH.set(last_check)
+        try:
+            got = c.create_promo(**kwargs)
+        finally:
+            PRE_DISPATCH.reset(token)
         answer_at = datetime.utcnow()
         return got
     try:
         got = await asyncio.to_thread(wrap, post) if wrap else await asyncio.to_thread(post)
     except Exception as e:
+        if refused:
+            # The last guard refused it inside the transport and settled it: nothing was sent.
+            return Sent(None, error=e, refused=refused)
         log.warning("promo_create failed account=%s reservation=%s", res.account_id, res.id,
                     exc_info=True)
         outcome = outcome_of(error=e) if reached else Outcome("failed", error_class="not_sent")

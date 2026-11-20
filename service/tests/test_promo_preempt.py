@@ -36,10 +36,20 @@ against a fake OF whose live promo is re-created before it ends. No network.
   case_rvb_c5_failed_fill_queues_one_recovery  a 429 on a Fill drops the toast gate's entry and
                                  queues one recovery Re-check at the back-off's end; a run
                                  inside the back-off stacks none.
+  case_f4_recovery_moves_a_distant_recheck_earlier  the Re-check slot held by a job +40 min
+                                 out: a failed Fill's recovery moves that one job to the
+                                 back-off's end; a later deadline never pushes it back.
+  case_f5_dead_session_fill_promises_no_wait  a Fill refused for a dead session queues no
+                                 recovery and its notice says it resumes once logged in again.
+  case_f7_early_returns_clear_wait_reason  fenced, OF unreachable or nothing managed: the
+                                 waiting line is cleared (not in a dry run).
   case_rvb_c6_racing_observe_keeps_drop  two racing folds of one memo: the drop wins, each run
                                  decides on the committed memo.
   case_rvb_r3_timed_in_of_time   130 s left on our clock but 105 s on OF's (OF 25 s ahead):
                                  auto_timed, its window re-checked at the reservation.
+  case_f1_fill_fires_on_own_create  a promo Keep running made itself gets one first_read
+                                 Re-check FIRST_READ_S out: its first count is 0, so Fill fires
+                                 at the threshold later; an answer above 0 never trusts it.
 
 Run: ./venv/bin/python service/tests/test_promo_preempt.py
 """
@@ -593,6 +603,92 @@ async def case_rvb_c5_failed_fill_queues_one_recovery():
     assert [j.get("_recheck") for j in jobs] == ["recovery"], jobs
 
 
+async def case_f4_recovery_moves_a_distant_recheck_earlier():
+    """F4: the Re-check slot held by a job far out (a Timed/expiry look at +40 min) never
+    delays a failed Fill's recovery: that same job moves to the back-off's end (one job,
+    one slot); a later deadline never pushes it back out."""
+    from automations import promo_reactivate as pr
+    aid = "pp_f4"
+    await _seed(aid, of_id=1611)
+    f = _use_fake(); f.seed(1611, claims=0)
+    f.ends_old_on_failed_create = True
+    await run_once(aid, KIND, payload=GO)
+    far = datetime.utcnow() + timedelta(seconds=2400)
+    held = await pr._queue_recheck(aid, GO, "timed", far)
+    assert held is not None and held["reason"] == "timed", held
+    jid = (await _state(aid)).recheck_job_id
+    f.claims(1611, 9)
+    f.fail_with = OFAPIError("429 for /promotions\n", response=_Resp(429))
+    res = await run_once(aid, KIND, payload=GO)
+    assert res["create"] == "failed" and (res.get("recheck") or {}).get("reason") == "recovery", res
+    (r,) = await _reservations(aid)
+    want = r.not_before + timedelta(seconds=5)
+    async with get_session() as s:
+        jobs = list((await s.execute(select(ScheduledJob).where(
+            ScheduledJob.account_id == aid, ScheduledJob.kind == KIND,
+            ScheduledJob.status == "pending"))).scalars())
+    assert [j.id for j in jobs] == [jid], jobs
+    assert abs((jobs[0].run_at - want).total_seconds()) < 1, (jobs[0].run_at, want)
+    body = json.loads(jobs[0].payload_json)
+    assert (body.get("_recheck"), body.get("dry_run")) == ("recovery", False), body
+    st = await _state(aid)
+    assert (st.recheck_job_id, st.recheck_at) == (jid, jobs[0].run_at), (st.recheck_job_id, st.recheck_at)
+    assert await pr._queue_recheck(aid, GO, "expiry", far) is None   # later: never pushed back
+    assert (await _state(aid)).recheck_at == jobs[0].run_at
+
+
+async def case_f5_dead_session_fill_promises_no_wait():
+    """F5: a Fill refused for a dead session queues no recovery (run_once skips the account
+    until it is logged in again), so its notice never promises a short wait."""
+    aid = "pp_f5"
+    await _seed(aid, of_id=1621)
+    f = _use_fake(); f.seed(1621, claims=0)
+    f.ends_old_on_failed_create = True
+    await run_once(aid, KIND, payload=GO)
+    f.claims(1621, 9)
+    f.fail_with = OFAPIError('400 for /promotions\n{"error":{"code":301,"message":"Wrong user."}}',
+                             response=_Resp(400, '{"error":{"code":301,"message":"Wrong user."}}'))
+    res = await run_once(aid, KIND, payload=GO)
+    assert (res["create"], res["error_class"]) == ("failed", "session_dead") and "recheck" not in res, res
+    assert await _pending_rechecks(aid) == []
+    (text,) = [t for t in await _notices(aid) if "early re-create" in t]
+    assert "short wait" not in text and "logged in again" in text, text
+
+
+async def case_f7_early_returns_clear_wait_reason():
+    """F7: a run that stops before deciding (fenced, OF unreachable, nothing managed) clears
+    the card's waiting line: a stale reason never stays up."""
+    aid = "pp_f7_clear"
+    cid = await _seed(aid, of_id=1631)
+    f = _use_fake(); f.seed(1631, claims=0)
+
+    async def stale():
+        async with get_session() as s:
+            await s.merge(PromoKeepState(account_id=aid, wait_reason="count_untrusted"))
+
+    async def fence(host):
+        async with get_session() as s:
+            (await s.get(PromoCampaign, cid)).keep_host_id = host
+    await stale(); await fence("box-elsewhere")
+    res = await run_once(aid, KIND, payload=GO)
+    assert res["skipped"] == "fence" and (await _state(aid)).wait_reason is None, res
+    await stale(); await fence(BOX)
+
+    def down(**kw):
+        raise OFAPIError("500 for /promotions\n", response=_Resp(500))
+    f.promotions = down
+    res = await run_once(aid, KIND, payload=GO)
+    assert res["skipped"] == "of_unreachable" and (await _state(aid)).wait_reason is None, res
+    await stale()
+    async with get_session() as s:
+        (await s.get(PromoCampaign, cid)).auto_reactivate = False
+    res = await run_once(aid, KIND, payload=GO)
+    assert res["managed"] == 0 and (await _state(aid)).wait_reason is None, res
+    await stale()
+    res = await run_once(aid, KIND, payload={})                  # a dry run writes nothing
+    assert (await _state(aid)).wait_reason == "count_untrusted", res
+
+
 async def case_rvb_c6_racing_observe_keeps_drop():
     from automations import promo_reactivate as pr
     aid = "pp_c6"
@@ -624,6 +720,57 @@ async def case_rvb_r3_timed_in_of_time():
     assert res["wait_reason"] == "end_unconfirmed", res
     res = await run_once(aid, KIND, payload=GO)
     assert res["reactivated"] == 1 and res["source"] == "auto_timed", res
+
+
+# ── rwl fixes ───────────────────────────────────────────────────────────────
+
+async def _run_due(aid, within_s=30) -> list[dict]:
+    """Run the Creator's pending jobs due within `within_s` (the supervisor would, that soon);
+    a job they queue is left for later."""
+    async with get_session() as s:
+        await s.execute(update(ScheduledJob).where(
+            ScheduledJob.account_id == aid, ScheduledJob.kind == KIND, ScheduledJob.status == "pending",
+            ScheduledJob.run_at <= datetime.utcnow() + timedelta(seconds=within_s))
+            .values(run_at=datetime.utcnow()))
+    out = []
+    for _ in range(5):
+        res = await run_once(aid, KIND)
+        if res.get("reason") == "no_job":
+            break
+        out.append(res)
+    return out
+
+
+async def case_f1_fill_fires_on_own_create():
+    aid = "pp_f1_own"
+    cid = await _seed(aid, of_id=1801)
+    f = _use_fake(); f.seed(1801, finished=True)
+    res = await run_once(aid, KIND, payload=GO)
+    assert res["reactivated"] == 1, res                  # After-end: Keep running's own promo
+    new_id = (await _campaign(cid)).of_promo_id
+    ran = await _run_due(aid)                            # its first read, before any claim
+    assert [r.get("skipped") for r in ran] == ["promo_already_live"], ran
+    f.claims(new_id, 5)
+    res = await run_once(aid, KIND, payload=GO)          # a toast's run
+    assert res["skipped"] == "promo_already_live" and "wait_reason" not in res, res
+    f.claims(new_id, 9)
+    await _age_all(aid, 121)
+    res = await run_once(aid, KIND, payload=GO)
+    assert res["reactivated"] == 1 and res["source"] == "auto_fill", res
+    # an answer above 0 is never trusted, whatever the first read says
+    aid = "pp_f1_answer"
+    cid = await _seed(aid, of_id=1802)
+    f = _use_fake(); f.seed(1802, finished=True)
+    f.new_starts_at = 3
+    res = await run_once(aid, KIND, payload=GO)
+    assert res["reactivated"] == 1, res
+    new_id = (await _campaign(cid)).of_promo_id
+    f.claims(new_id, 0)
+    await _run_due(aid)
+    f.claims(new_id, 9)
+    await _age_all(aid, 121)
+    res = await run_once(aid, KIND, payload=GO)
+    assert res["wait_reason"] == "count_untrusted" and len(f.created) == 1, res
 
 
 _harness.run()

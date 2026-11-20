@@ -1629,8 +1629,10 @@ if Keep running moved meanwhile ("check the form and create again"), and says
 notification), a short re-check when the claim cap is nearly full, a re-check
 about 30 seconds after the offer's expiration (up to 3 more a minute apart if
 OnlyFans still shows it live), one just before OnlyFans' own end time when Re-create
-at 90% filled can act, one when the wait after a failed early re-create ends, and
-an hourly backstop. It never polls OnlyFans faster than that.
+at 90% filled can act, one when the wait after a failed early re-create ends, one
+about 10 seconds after it re-creates (or after you create a campaign with Keep
+running ticked) to read the new promo's first claim count, and an hourly backstop.
+It never polls OnlyFans faster than that.
 
 **Key knobs:** none on any page. Cooldown 2 minutes between re-creates of the
 same campaign · no cap on re-arms. Through the raw rule only: dry run (TRUE
@@ -1657,8 +1659,13 @@ cooldown, max re-arms.
 - **An early re-create failed:** the owner gets a notice that no promo may be
   live. If OnlyFans refused it, Re-create at 90% filled turns off for that
   campaign (tick it again to retry); Keep running stays on and re-creates after
-  the promo ends. Otherwise it re-creates after a short wait. Only a captcha, a
-  deactivated Creator or a free page turn Keep running itself off.
+  the promo ends. If the Creator's login has expired, it re-creates once the
+  Creator is logged in again. Otherwise it re-creates after a short wait. Only a
+  captcha, a deactivated Creator or a free page turn Keep running itself off.
+- **"Sent, but OnlyFans hasn't confirmed it":** OnlyFans answered a Create
+  promotion without the new promo. It shows in the table once OnlyFans lists it.
+  With Keep running ticked the card says whether you can tick it there then; if
+  not, it shows only as an OnlyFans promo and Keep running can't go on it.
 - **"Re-create at 90% filled is off on this server — ask the owner":** the owner
   switched early re-creates off on this server; Keep running still re-creates
   after the promo ends.

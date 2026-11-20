@@ -23,7 +23,8 @@ subscribe toast (event_transcoder pokes this kind; a poke under the floor is
 deferred, not dropped), and on the bounded re-checks a run queues for itself
 (`_recheck` follow-ups; one Re-check slot per Creator, `promo_keep_state.recheck_at` +
 `recheck_job_id`, claimed by compare-and-set while no owning job is pending or running,
-freed only by its own job, so never two pending):
+freed only by its own job, so never two pending; a pending owner due later than a new
+look is moved earlier, never later):
   near_cap  the live kept promo is one claim from its cap: look again in 90 s
             (OF may count the claim after the toast). Not from a re-check run.
   expiry    the live kept promo's expires_at falls before the next backstop:
@@ -37,6 +38,10 @@ freed only by its own job, so never two pending):
             check. One-shot: never from a timed re-check.
   recovery  a sent Pre-emption failed (OF may have ended the live promo): look when
             its back-off ends, so After-end recovers before the backstop.
+  first_read  a Kept create landed (automatic, or a Growth create with Keep running
+            ticked): look FIRST_READ_S later, so the claim memo's first count of the new
+            promo is taken before its claims arrive (a Trusted count needs a first read at
+            0). One per create, never from its own run's plan.
 None in dry run (it never acts, so nothing is owed a timely look).
 
 Pre-emption (Slice B; PROMO_PREEMPT_ENABLED, the server's kill switch, and the campaign's
@@ -121,8 +126,10 @@ from isotime import parse_iso
 from notifications_api import push_unread
 from of_promos import fetch_of_promos, promo_type_body
 from promo_create_guard import PREEMPT_SWITCH, Refused
-from promo_keep_decide import (NOT_LISTED_S, SKEW_MAX_S, TIMED_LEAD_S, AfterEnd, Created, Fill, Inputs,
-                               Kept, Memo, Tally, Timed, TurnOff, Wait, decide, observe, threshold)
+from promo_keep_decide import (HOLD_REASONS, NOT_LISTED_S, TIMED_LEAD_S, AfterEnd, Created, Fill,
+                               Inputs, Kept, Memo, Tally, Timed, TurnOff, Wait, decide,
+                               end_on_our_clock, observe, preempt_applies, preempt_failure,
+                               threshold)
 
 log = logging.getLogger("of-relay.automation.promo_reactivate")
 
@@ -138,12 +145,13 @@ EXPIRY_MAX_RETRIES = 3
 COOLDOWN_GRACE_S = 5
 TIMED_GRACE_S = 5                   # timed: land inside the lead, not on its edge
 GATE_STALE_S = 600                  # toast gate: an older read, or an end this near, pokes
+FIRST_READ_S = 10                   # first_read: the new Kept promo's first count, before claims
+MOVE_MIN_S = 30                     # a held Re-check slot's job moves earlier only by more than this
 
 
 def _preempts(r: PromoCampaign | None, cap: int) -> bool:
     """Pre-emption applies to this Kept campaign's promo of this cap."""
-    return (r is not None and bool(r.preempt) and runtime_switches.on(PREEMPT_SWITCH)
-            and threshold(cap) is not None)
+    return r is not None and preempt_applies(runtime_switches.on(PREEMPT_SWITCH), bool(r.preempt), cap)
 
 
 @dataclass(frozen=True)
@@ -176,14 +184,16 @@ def should_poke(account_id: str, n_toasts: int) -> bool:
     """Do `n_toasts` subscribe toasts owe this kind a run? Sync and in-memory (the
     transcoder's hot path). Yes with no fresh read of the live Kept promo, when its end is
     near, or when its last Claims plus the toasts since that read reach one short of the
-    trigger (OF may count a claim after its toast, like near_cap)."""
+    trigger (OF may count a claim after its toast, like near_cap). With no fresh read the
+    Creator's toasts are dropped, not kept: only toasts after the next read count, so the
+    history never grows while the gate is stale (rule off, fenced)."""
     aid, now = str(account_id), time.monotonic()
     g = _gate.get(aid)
-    since = g.read_mono if g is not None else now - GATE_STALE_S
-    seen = [t for t in _toasts.get(aid, ()) if t >= since] + [now] * max(int(n_toasts), 0)
-    _toasts[aid] = seen
     if g is None or now - g.read_mono > GATE_STALE_S:
+        _toasts.pop(aid, None)
         return True
+    seen = [t for t in _toasts.get(aid, ()) if t >= g.read_mono] + [now] * max(int(n_toasts), 0)
+    _toasts[aid] = seen
     if g.ends_at is not None and g.ends_at - datetime.utcnow() <= timedelta(seconds=GATE_STALE_S):
         return True
     return g.trigger is not None and g.claims + len(seen) >= g.trigger - 1
@@ -203,18 +213,23 @@ def _kept(value: int | None, default: int) -> int:
 
 
 async def _queue_recheck(account_id: str, payload: dict, reason: str, at: datetime,
-                         retries: int = 0) -> dict | None:
+                         retries: int = 0, *, rule_id: int | None = None) -> dict | None:
     """Queue ONE re-check run at `at`, unless the Creator's Re-check slot is taken.
 
     The slot is `promo_keep_state.recheck_at` + `recheck_job_id`, claimed by a
     compare-and-set (racing runs: one wins) while its owning job is not pending or running
     (a done, failed or cancelled owner frees it at once; boot heals orphaned running jobs).
     The job is inserted in the same transaction, rule-bound like enqueue_followup: a rule
-    turned off mid-run rolls the claim back. The run's own knobs ride along."""
+    turned off mid-run rolls the claim back. The run's own knobs ride along. `rule_id`: the
+    rule to bind when queued outside a run (a manual create); else the run's own.
+    A slot whose owner is pending but due over MOVE_MIN_S after `at` is moved, not skipped: that same job
+    (its rule and knobs) runs at `at` for `reason` instead, so a far Timed/expiry look never
+    delays a recovery or first read. Still one job; never moved later. The run it makes
+    plans the next look again."""
     knobs = {k: v for k, v in payload.items()
              if k not in (RECHECK, _RETRIES, job_queue.FOLLOWUP_MARK)}
     body = {**knobs, RECHECK: reason, _RETRIES: retries}
-    rid = job_queue.current_rule_id()
+    rid = job_queue.current_rule_id() if rule_id is None else rule_id
     aid = str(account_id)
     async with get_session() as s:
         # Writes first: the transaction holds SQLite's write lock before it reads.
@@ -228,7 +243,7 @@ async def _queue_recheck(account_id: str, payload: dict, reason: str, at: dateti
                    or_(PromoKeepState.recheck_at.is_(None), ~owner_live))
             .values(recheck_at=at, recheck_job_id=None))).rowcount == 1
         if not claimed:
-            return None
+            return await _move_earlier(s, aid, reason, at, retries)
         if rid is not None:
             if not await job_queue.rule_is_live(s, rid):
                 await s.rollback()
@@ -241,6 +256,60 @@ async def _queue_recheck(account_id: str, payload: dict, reason: str, at: dateti
     log.info("promo_reactivate re-check queued account=%s reason=%s at=%s retries=%s",
              account_id, reason, at.isoformat(), retries)
     return {"reason": reason, "at": at.isoformat(), "retries": retries}
+
+
+async def _move_earlier(s, aid: str, reason: str, at: datetime, retries: int) -> dict | None:
+    """`_queue_recheck`'s taken slot, in its transaction (the write lock held): the owner job
+    still pending and due over MOVE_MIN_S after `at` becomes this re-check at `at` (racing
+    runs planning the same look a moment apart leave it alone). `at` is in the future, so
+    the job is not due and no worker holds it; the CAS on status/run_at settles any race."""
+    st = await s.get(PromoKeepState, aid)
+    job = None if st is None or st.recheck_job_id is None else await s.get(ScheduledJob, st.recheck_job_id)
+    if (job is None or job.status != "pending" or job.run_at is None
+            or job.run_at <= at + timedelta(seconds=MOVE_MIN_S)):
+        return None
+    try:
+        old = json.loads(job.payload_json or "{}")
+    except (TypeError, ValueError):
+        old = None
+    if not isinstance(old, dict):
+        return None
+    body = json.dumps({**old, RECHECK: reason, _RETRIES: retries}, default=str)
+    moved = (await s.execute(update(ScheduledJob)
+                             .where(ScheduledJob.id == job.id, ScheduledJob.status == "pending",
+                                    ScheduledJob.run_at == job.run_at)
+                             .values(run_at=at, payload_json=body))).rowcount == 1
+    if not moved:
+        return None
+    await s.execute(update(PromoKeepState).where(PromoKeepState.account_id == aid,
+                                                PromoKeepState.recheck_job_id == job.id)
+                    .values(recheck_at=at))
+    log.info("promo_reactivate re-check moved earlier account=%s job=%s reason=%s at=%s",
+             aid, job.id, reason, at.isoformat())
+    return {"reason": reason, "at": at.isoformat(), "retries": retries}
+
+
+async def queue_first_read(account_id: str, payload: dict | None = None) -> dict | None:
+    """A Kept create landed: one first_read Re-check FIRST_READ_S out. `payload` None (a
+    Growth create, outside any run): the Creator's enabled rule's knobs and id; none, or a
+    dry run, queues nothing (a dry run never writes the memo)."""
+    rid = None
+    if payload is None:
+        async with get_session() as s:
+            rule = (await s.execute(select(AutomationRule).where(
+                AutomationRule.account_id == str(account_id), AutomationRule.kind == KIND,
+                AutomationRule.is_enabled.is_(True)).order_by(AutomationRule.id).limit(1))).scalar_one_or_none()
+        if rule is None:
+            return None
+        try:
+            payload = json.loads(rule.steps_json or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        payload, rid = payload if isinstance(payload, dict) else {}, rule.id
+    if bool_knob(payload, "dry_run", True):
+        return None
+    return await _queue_recheck(account_id, payload, "first_read",
+                                datetime.utcnow() + timedelta(seconds=FIRST_READ_S), rule_id=rid)
 
 
 async def _observe(account_id: str, live: list[dict] | None, kept_ids: set[int],
@@ -364,10 +433,9 @@ async def _live_followup(account_id: str, payload: dict, kept: PromoCampaign | N
     exp = kept.expires_at
     # Only OF's own end time on a known clock can make a Timed create: a guessed expiry
     # keeps its one expiry check. OF's end reaches our clock at end + skew.
-    end = parse_iso(live.get("finished_at"))
-    if (again != "timed" and end is not None and skew is not None and abs(skew) <= SKEW_MAX_S
-            and _preempts(kept, cap)):
-        at = end + timedelta(seconds=skew - (TIMED_LEAD_S - TIMED_GRACE_S))
+    ours = end_on_our_clock(parse_iso(live.get("finished_at")), skew)
+    if again != "timed" and ours is not None and _preempts(kept, cap):
+        at = ours - timedelta(seconds=TIMED_LEAD_S - TIMED_GRACE_S)
         if now < at < now + timedelta(seconds=await _interval_s()):
             plans.append((at, "timed", 0))
     if exp is not None:
@@ -412,18 +480,26 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             .where(PromoKeepState.account_id == str(account_id),
                                    PromoKeepState.recheck_job_id == job_queue.current_job_id())
                             .values(recheck_at=None, recheck_job_id=None))
+    async def stood_down(out: dict) -> dict:
+        """A return before any verdict: the card's waiting line no longer holds (dry run: no write)."""
+        if not dry_run:
+            await _note_wait(account_id, None)
+        return out
+
     managed = await _managed(account_id)
     if not managed:
-        return {"managed": 0, "reactivated": 0, "dry_run": dry_run}
+        return await stood_down({"managed": 0, "reactivated": 0, "dry_run": dry_run})
     off = [] if dry_run else await _limit_needed(account_id, managed)
     if off:
         managed = [r for r in managed if r.id not in off]
         if not managed:
-            return {"managed": 0, "reactivated": 0, "skipped": "limit_needed", "dry_run": dry_run}
+            return await stood_down({"managed": 0, "reactivated": 0, "skipped": "limit_needed",
+                                     "dry_run": dry_run})
     if not _here(managed):
         # Before any OF read: a fenced box spends nothing on Keep running.
         log.info("promo_reactivate fenced account=%s campaigns=%s", account_id, [r.id for r in managed])
-        return {"managed": len(managed), "reactivated": 0, "skipped": "fence", "dry_run": dry_run}
+        return await stood_down({"managed": len(managed), "reactivated": 0, "skipped": "fence",
+                                 "dry_run": dry_run})
     managed = _here(managed)
 
     # Pass the ids we manage so paging stops as soon as they're all located:
@@ -443,15 +519,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         managed = _here(await _managed(account_id))
         managed_ids = {int(r.of_promo_id) for r in managed if r.of_promo_id is not None}
         if not managed:
-            return {"managed": 0, "reactivated": 0, "dry_run": dry_run}
+            return await stood_down({"managed": 0, "reactivated": 0, "dry_run": dry_run})
     shown = next((p for p in live or () if p.get("of_promo_id") in managed_ids and not p.get("is_finished")), None)
     _set_gate(account_id, shown, next((r for r in managed if shown and r.of_promo_id == shown["of_promo_id"]), None),
               read_mono)
     if await promo_create_guard.has_open(account_id):
         # Still open (no unique candidate yet): a second create could duplicate it. Natural
         # reads settle it; UNKNOWN_OFF_S after its send it is lost and Keep running stops.
-        return {"managed": len(managed), "reactivated": 0, "skipped": "create_open",
-                "dry_run": dry_run}
+        return await stood_down({"managed": len(managed), "reactivated": 0, "skipped": "create_open",
+                                 "dry_run": dry_run})
     now = datetime.utcnow()
     prior, memo, skew = await _observe(account_id, live, managed_ids, now, persist=not dry_run)
     budget = await promo_create_guard.budget_state(account_id, now)
@@ -471,8 +547,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     if isinstance(verdict, Wait) and verdict.reason == "of_unreachable":
         log.info("promo_reactivate: OF unreachable account=%s — standing down", account_id)
-        return {"managed": len(managed), "reactivated": 0,
-                "skipped": "of_unreachable", "dry_run": dry_run}
+        return await stood_down({"managed": len(managed), "reactivated": 0,
+                                 "skipped": "of_unreachable", "dry_run": dry_run})
     if not dry_run:
         await _note_wait(account_id, verdict.wait_reason if isinstance(verdict, Wait) else None)
     if isinstance(verdict, Wait) and verdict.reason == "promo_already_live":
@@ -527,7 +603,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     if isinstance(verdict, Wait):
         out = {**base, "reactivated": 0, "dry_run": dry_run}
-        held = verdict.reason in ("breaker_hold", "backoff", "budget")
+        held = verdict.reason in HOLD_REASONS
         if held:
             out["skipped"] = verdict.reason
         if verdict.cooldown_ends and not dry_run:
@@ -573,7 +649,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if pre:
         still["preempt"] = True     # the second tick, unticked since the read: no POST
     # Timed: OF's end on our clock, so the window is re-checked right before the POST.
-    timed_end = (parse_iso(verdict.live.get("finished_at")) + timedelta(seconds=skew)
+    timed_end = (end_on_our_clock(parse_iso(verdict.live.get("finished_at")), skew)
                  if isinstance(verdict, Timed) else None)
     res = await promo_create_guard.reserve(
         account_id, r.id, source, terms, still,
@@ -598,7 +674,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                "error_class": outcome.error_class}
         if pre and outcome.error_class != "not_sent":
             out["warning"] = "no_promo_may_be_live"     # OF may have ended the old one anyway
-            if outcome.state == "failed" and outcome.error_class != "session_dead":
+            # The notice's own rule (recover never depends on the previous class).
+            if outcome.state == "failed" and preempt_failure(outcome.error_class, None)[2]:
                 recheck = await _recovery(account_id, payload, r.id)
                 if recheck:
                     out["recheck"] = recheck
@@ -608,4 +685,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # The new promo is the live Kept one: its answer seeds the toast gate until the next read.
     _set_gate(account_id, None if outcome.item.get("is_finished") else outcome.item, r,
               time.monotonic())
-    return {**done, "reactivated": 1}
+    out = {**done, "reactivated": 1}
+    recheck = await queue_first_read(account_id, payload)
+    if recheck:
+        out["recheck"] = recheck
+    return out

@@ -221,15 +221,22 @@ describe("PromotionTab", () => {
     expect(screen.queryByRole("dialog", { name: "Create promotion" })).toBeNull();
   });
 
-  it("rv_c14 a create OnlyFans answered without the promo says unconfirmed, never Created", async () => {
+  it.each([
+    ["Keep running ticked, adoptable", "It shows here once OnlyFans lists it; tick Keep running then",
+     "Sent, but OnlyFans hasn't confirmed it. It shows here once OnlyFans lists it; tick Keep running then."],
+    ["Keep running ticked, not adoptable",
+     "It shows here once OnlyFans lists it, as an OnlyFans-only promo Keep running can't be ticked on",
+     "Sent, but OnlyFans hasn't confirmed it. It shows here once OnlyFans lists it, as an OnlyFans-only promo Keep running can't be ticked on."],
+    ["plain create: no tick promised", undefined, "Sent, but OnlyFans hasn't confirmed it. It shows here once OnlyFans lists it."],
+  ])("rv_c14 a create OnlyFans answered without the promo says unconfirmed, never Created (%s)", async (_, refused, line) => {
     post.mockResolvedValue({ id: null, of_promo_id: null, name: "Week", create: "unknown", auto_reactivate: false,
-      auto_reactivate_refused: "OnlyFans answered without the new promo, so it shows here once OnlyFans lists it — tick Keep running then" });
+      ...(refused ? { auto_reactivate_refused: refused } : {}) });
     mount(<PromotionTab accountId="a1" />);
     fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
     const dlg = screen.getByRole("dialog", { name: "Create promotion" });
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
-    expect(await screen.findByText("Sent, but OnlyFans hasn't confirmed it. It shows here once OnlyFans lists it; tick Keep running then.")).toBeTruthy();
+    expect(await screen.findByText(line)).toBeTruthy();
     expect(screen.queryByText(/^Created/)).toBeNull();
   });
 

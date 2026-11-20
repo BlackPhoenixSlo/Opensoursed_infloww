@@ -64,6 +64,11 @@
                                  notice that names it; a captcha still turns Keep running off.
   case_rvb_c5_unknown_preempt_notifies_now  a Pre-emption with no clear answer files the
                                  owner notice at once; the row stays open for the reconcile.
+  case_f2_untick_during_slot_wait_no_post  a real OFClient whose only signed slot is held: the
+                                 Employee unticks Keep running (or Keep running moves, for a
+                                 manual create) while the sender waits; the guard re-run right
+                                 before the request leaves refuses it: zero POSTs, failed
+                                 not_sent, no back-off. Nothing changed: one POST, created.
 
 Run: ./venv/bin/python service/tests/test_promo_create_guard.py   (exit 0 = pass)
 """
@@ -938,6 +943,120 @@ async def case_rvb_c5_unknown_preempt_notifies_now():
     res = await _sent(aid, cid)
     await g.settle(res, g.Outcome("unknown"))
     assert await _notices(aid) == []
+
+
+# ── rwl fixes ───────────────────────────────────────────────────────────────
+
+class _WireResp:
+    def __init__(self, body):
+        import json as _json
+        self.status_code, self.ok, self.headers, self.url = 200, True, {}, "https://onlyfans.com/x"
+        self._body = body
+        self.text = _json.dumps(body)
+
+    def json(self):
+        return self._body
+
+
+def _slot_client(aid, sent, answer_id):
+    """A real OFClient (no session) with ONE signed slot; its transport records each request
+    that would leave the box and answers OF's created LIST: every gate in _http_call runs."""
+    import threading
+    from _of_wire import fake_wire
+    from of_client import OFClient
+    c = object.__new__(OFClient)
+    c.account_id, c.proxy_label = aid, None
+    fake_wire(c, object())
+    c._signed_slots = threading.BoundedSemaphore(1)
+    c._ensure_x_hash = lambda **_k: "h"
+    c._persist_cf_cookies = lambda r: None
+    c._note_signed_ok = lambda url, r: None
+
+    def _transport(_fn, *, what="", **_k):
+        sent.append(what)
+        return _WireResp([{"id": answer_id, "subscribeCounts": 10, "subscribeDays": 30,
+                           "message": "Promo", "type": "all", "claimsCount": 0, "isFinished": False}])
+    c._proxy_retry = _transport
+    return c
+
+
+async def _send_while_held(res, recheck, c, change):
+    """send() while the slot is held; once the row is sending (the sender waits on the slot),
+    run `change`, then free the slot."""
+    c._signed_slots.acquire()          # another call holds the account's only signed slot
+    task = asyncio.create_task(g.send(res, recheck, lambda: c, TERMS))
+    try:
+        for _ in range(500):
+            if (await _row(res.id)).state != "pending":
+                break
+            await asyncio.sleep(0.01)
+        assert (await _row(res.id)).state == "sending"     # past the CAS, waiting on the slot
+        await change()
+    finally:
+        c._signed_slots.release()
+    return await asyncio.wait_for(task, 20)
+
+
+async def case_f2_untick_during_slot_wait_no_post():
+    aid = "gd_f2_slot"
+    cid = await _creator(aid)
+    sent: list[str] = []
+    c = _slot_client(aid, sent, 7001)
+    res = await _reserve(aid, cid)
+
+    async def untick():
+        async with get_session() as s:
+            (await s.get(PromoCampaign, cid)).auto_reactivate = False
+    out = await _send_while_held(res, {"auto_reactivate": True}, c, untick)
+    assert sent == [] and out.outcome is None and out.refused == "campaign_changed", (sent, out)
+    r = await _row(res.id)
+    assert (r.state, r.error_class, r.sent_at, r.not_before) == ("failed", "not_sent", None, None), \
+        (r.state, r.error_class, r.sent_at, r.not_before)
+    # nothing changed while it waited: one POST, created
+    async with get_session() as s:
+        (await s.get(PromoCampaign, cid)).auto_reactivate = True
+    res = await _reserve(aid, cid)
+
+    async def nothing():
+        return None
+    out = await _send_while_held(res, {"auto_reactivate": True}, c, nothing)
+    assert len(sent) == 1 and out.outcome.state == "created", (sent, out)
+    # a manual create: Keep running moved while it waited
+    aid = "gd_f2_manual"
+    kept = await _creator(aid)
+    sent = []
+    c = _slot_client(aid, sent, 7002)
+    res = await g.reserve(aid, None, "manual", TERMS, {}, None, None, expect_kept=kept)
+
+    async def move():
+        async with get_session() as s:
+            (await s.get(PromoCampaign, kept)).auto_reactivate = False
+    out = await _send_while_held(res, {}, c, move)
+    assert sent == [] and out.refused == "keep_running_moved", (sent, out)
+
+
+async def case_n1_failed_dispatch_check_is_not_sent():
+    """The last guard itself raising (a locked DB) sent nothing: failed `not_sent`, the row
+    closed, never `unknown` (which would block creates and end in create_unknown)."""
+    aid = "gd_n1_check_raises"
+    cid = await _creator(aid)
+    sent: list[str] = []
+    c = _slot_client(aid, sent, 7003)
+    res = await _reserve(aid, cid)
+    real = g._dispatch_check
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("database is locked")
+    g._dispatch_check = boom
+    try:
+        out = await g.send(res, {"auto_reactivate": True}, lambda: c, TERMS)
+    finally:
+        g._dispatch_check = real
+    assert sent == [], sent
+    assert out.outcome is not None and (out.outcome.state, out.outcome.error_class) == ("failed", "not_sent"), out
+    r = await _row(res.id)
+    assert (r.state, r.error_class) == ("failed", "not_sent"), (r.state, r.error_class)
+    assert not await g.has_open(aid)        # closed: the next create is not blocked
 
 
 _harness.run()

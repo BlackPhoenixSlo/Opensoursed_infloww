@@ -312,6 +312,14 @@ class OFDeactivatedError(OFDeniedError):
     Transient for every caller: the Creator may be activated again."""
 
 
+class OFDispatchRefused(OFDeniedError):
+    """A write PRE_DISPATCH refused right before its request left the box: the caller's
+    decision no longer holds (`reason`). Nothing was sent."""
+    def __init__(self, reason: str):
+        super().__init__(f"refused before dispatch: {reason}")
+        self.reason = reason
+
+
 class OFSessionRetired(OFDeniedError):
     """A signed request on an evicted client (client_pool.evict ran its
     close_signed_sessions): refused before THAT request leaves the box.
@@ -355,6 +363,11 @@ def _denied(method: str, url: str) -> str | None:
 # Set by remove_carrier for its one DELETE: the only write a deactivated
 # Creator still gets, because it takes something OFF its OnlyFans.
 _CARRIER_REMOVAL: ContextVar[bool] = ContextVar("of_carrier_removal", default=False)
+
+# Set around one guarded write (promo_create_guard.send): called on a write right before its
+# request leaves the box, after the signed-slot wait and the x-hash warm-up; a reason it
+# returns refuses the write (OFDispatchRefused), None sends it.
+PRE_DISPATCH: ContextVar[Callable[[], str | None] | None] = ContextVar("of_pre_dispatch", default=None)
 
 
 def _wrap_text_as_p(text: str) -> str:
@@ -753,6 +766,9 @@ class _Transport:
             with self._signed_slot():
                 # The x-hash warmup runs its own _proxy_retry here, never nested in the one below.
                 self._ensure_x_hash(policy=policy)
+                # A guarded write's last check, after every wait above: a refusal sends nothing.
+                if method != "GET" and (check := PRE_DISPATCH.get()) is not None and (why := check()):
+                    raise OFDispatchRefused(why)
                 # The OF call counter: one count per request sent, its answer's status or `error`
                 # when none came back (CONNECT retries inside _proxy_retry are one request).
                 try:

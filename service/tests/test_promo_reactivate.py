@@ -52,6 +52,9 @@
                                  SETTLE_GRACE_S waits; one POST in all.
   case_mn02_unparsed_never_listed_turns_off  no id, never listed: lost UNKNOWN_OFF_S after the
                                  send, Keep running off (create_unknown) + one notice.
+  case_f6_sold_out_before_any_read_never_trips_breaker  each new promo sells out before a
+                                 read sees it live: its sighting with claims counts; 4
+                                 cycles, Keep running stays on.
   case_mn02_listed_never_live_stops_after_three  listed but never live: held until
                                  NOT_LISTED_S after each settle, off (breaker) after 3 creates.
   case_owned_earlier_promo_full_never_blocks  the Kept promo ended while an earlier promo of
@@ -968,6 +971,27 @@ async def case_mn02_listed_never_live_stops_after_three():
     assert sum("re-created" in t for t in texts) == 3 and sum("3 promos in a row" in t for t in texts) == 1, texts
 
 
+async def case_f6_sold_out_before_any_read_never_trips_breaker():
+    """F6: each re-created promo sells out before a read sees it live (OF lists it finished
+    with its claims at the cap). A sighting with claims went live: 4 cycles, Keep running
+    stays on. (Listed but never live, 0 claims, still trips: case_mn02_listed_never_live.)"""
+    aid = "pr_f6_soldout"
+    cid = await _seed_campaign(aid, of_id=3511)
+    await _owner(aid)
+    f = _use_fake(); f.seed(3511, finished=True, claims=10)
+    f.new_live = False
+    for n in range(1, 5):
+        res = await run_once(aid, "promo_reactivate", payload=GO)
+        assert res.get("reactivated") == 1 and len(f.created) == n, (n, res)
+        f.store[f._id]["claimsCount"] = 10                 # sold out before the next read
+        await _age_all(aid, 1300)                          # past the hold and the Cooldown
+    row = await _campaign(cid)
+    assert (row.auto_reactivate, row.keep_warning) == (True, None), (row.auto_reactivate,
+                                                                      row.keep_warning)
+    rows = await _reservations(aid)                       # the 4th: no read since its create
+    assert sum(r.listed_at is not None for r in rows) == 3, [(r.of_promo_id, r.listed_at) for r in rows]
+
+
 async def case_owned_earlier_promo_full_never_blocks():
     aid = "pr_owned_earlier"
     cid = await _seed_campaign(aid, of_id=3602)
@@ -1314,6 +1338,7 @@ _harness.run(
     case_mn06_slow_send_past_grace_no_second_post,
     case_mn02_unparsed_never_listed_turns_off,
     case_mn02_listed_never_live_stops_after_three,
+    case_f6_sold_out_before_any_read_never_trips_breaker,
     case_owned_earlier_promo_full_never_blocks,
     case_mn03_429_backs_off_then_turns_off,
     case_mn03_single_403_backs_off_keeps_on,

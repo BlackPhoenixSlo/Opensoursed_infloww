@@ -63,6 +63,14 @@ Locks in the contract discovered by LIVE testing on 2026-07-22:
                                  it ticks): alone on another → 422, beside an untick ignored;
                                  GET shows it off on an unkept row; `keep_wait` only while
                                  Kept, ticked early and the server switch on.
+  case_f7_small_cap_no_switch_or_wait  cap 5: no keep_wait, no keep_blocked switch / clock.
+  case_f1_manual_kept_create_first_read  a create with Keep running ticked queues one first_read
+                                 Re-check on the rule (its knobs, its id): its first count is 0,
+                                 so Fill fires at the threshold later; an unticked create none.
+  case_f3_first_unknown_kept_create_adopted  a first create with Keep running ticked takes one
+                                 page-1 read before its reservation: OF answering without the
+                                 id, a later read adopts it (mirror row, tickable), as the reply
+                                 promised; without Keep running no extra read and no tick promised.
 
 Run: ./venv/bin/python service/tests/test_promotions.py
 """
@@ -85,7 +93,7 @@ import server  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from automation_executor import run_once  # noqa: E402
 from db.models import (Account, AgencyNotification, AutomationRule, PromoCampaign,  # noqa: E402
-                       PromoCreateReservation, PromoKeepState, UserAccount)
+                       PromoCreateReservation, PromoKeepState, ScheduledJob, UserAccount)
 
 import _agency_fixtures as fx  # noqa: E402
 
@@ -863,6 +871,112 @@ def case_rvb_r4_c8_preempt_only_on_kept():
         os.environ.pop("PROMO_PREEMPT_ENABLED")
 
 
+def case_f7_small_cap_no_switch_or_wait():
+    """F7: Re-create at 90% never applies under cap 10, so the card shows no waiting line
+    and no 'switch' block for it (ticked early or not, switch on or off)."""
+    aid = "pr_f7_small"
+    asyncio.run(_seed(aid))
+    _use_fake()
+    a = _create(aid, "Small", subscribe_counts=5, auto_reactivate=True)
+    assert a["preempt"] is True, a
+
+    def listed():
+        rows = _client.get(f"/admin/promotions?account_id={aid}").json()["campaigns"]
+        return next(x for x in rows if x["id"] == a["id"])
+
+    async def wait(reason):
+        async with get_session() as s:
+            await s.merge(PromoKeepState(account_id=aid, wait_reason=reason))
+    for reason in ("count_untrusted", "clock"):
+        asyncio.run(wait(reason))
+        row = listed()
+        assert (row["keep_wait"], row["keep_blocked"]) == (None, None), (reason, row)
+    os.environ["PROMO_PREEMPT_ENABLED"] = "0"
+    try:
+        row = listed()
+        assert (row["keep_wait"], row["keep_blocked"]) == (None, None), row
+    finally:
+        os.environ.pop("PROMO_PREEMPT_ENABLED")
+
+
+async def _pending_jobs(aid) -> list[ScheduledJob]:
+    async with get_session() as s:
+        return list((await s.execute(select(ScheduledJob).where(
+            ScheduledJob.account_id == aid, ScheduledJob.kind == "promo_reactivate",
+            ScheduledJob.status == "pending"))).scalars())
+
+
+async def _run_first_read(aid) -> dict:
+    async with get_session() as s:
+        for j in (await s.execute(select(ScheduledJob).where(
+                ScheduledJob.account_id == aid, ScheduledJob.status == "pending"))).scalars():
+            j.run_at = datetime.utcnow()
+    return await run_once(aid, "promo_reactivate")
+
+
+def case_f1_manual_kept_create_first_read():
+    aid = "pr_f1_manual"
+    asyncio.run(_seed(aid))
+    f = _use_fake()
+    plain = _create(aid, "Plain", subscribe_counts=10)
+    assert asyncio.run(_pending_jobs(aid)) == [], "no Keep running: no read owed"
+    f.store[plain["of_promo_id"]]["isFinished"] = True     # OF ends it at the next create
+    a = _create(aid, "A", subscribe_counts=10, auto_reactivate=True)
+    (job,) = asyncio.run(_pending_jobs(aid))
+    (rule,) = asyncio.run(_rules(aid))
+    body = json.loads(job.payload_json)
+    assert (body.get("_recheck"), job.rule_id, body.get("dry_run")) == ("first_read", rule.id, False), body
+    assert (job.run_at - datetime.utcnow()).total_seconds() < 30, job.run_at
+    res = asyncio.run(_run_first_read(aid))
+    assert res.get("skipped") == "promo_already_live", res
+
+    async def memo():
+        async with get_session() as s:
+            st = await s.get(PromoKeepState, aid)
+            return st.kept_of_promo_id, st.first_claims
+    assert asyncio.run(memo()) == (a["of_promo_id"], 0)
+    f.store[a["of_promo_id"]]["claimsCount"] = 9
+    res = asyncio.run(run_once(aid, "promo_reactivate", payload=KEEP))
+    assert res["reactivated"] == 1 and res["source"] == "auto_fill", res
+
+
+def _ghost(f: FakeOF):
+    """OF makes the promo (createdAt stamped, as OF lists it) but answers without it."""
+    real = f.create_promo
+
+    def create(**kw):
+        real(**kw)
+        f.store[f._id]["createdAt"] = datetime.utcnow().isoformat() + "+00:00"
+        return []
+    f.create_promo = create
+
+
+def case_f3_first_unknown_kept_create_adopted():
+    aid = "pr_f3_kept"
+    asyncio.run(_seed(aid))
+    f = _use_fake()
+    f.store[11] = {"id": 11, "message": "old", "subscribeCounts": 5, "subscribeDays": 30,
+                   "claimsCount": 5, "isFinished": True,
+                   "createdAt": (datetime.utcnow() - timedelta(days=3)).isoformat() + "+00:00"}
+    _ghost(f)
+    r = _create(aid, "Ghost", subscribe_counts=10, auto_reactivate=True)
+    assert (r["id"], r["create"]) == (None, "unknown"), r
+    rows = _client.get(f"/admin/promotions?account_id={aid}").json()["campaigns"]
+    row = next(c for c in rows if c["of_promo_id"] == f._id)
+    assert row["id"] is not None and row["name"] == "Ghost", row        # adopted: its mirror row
+    t = _client.patch(f"/admin/promotions/{row['id']}", json={"auto_reactivate": True})
+    assert t.status_code == 200 and t.json()["auto_reactivate"] is True, t.text
+    assert r["auto_reactivate_refused"] == "It shows here once OnlyFans lists it; tick Keep running then", r
+    # without Keep running: no extra read, no tick promised
+    aid = "pr_f3_plain"
+    asyncio.run(_seed(aid))
+    f = _use_fake()
+    _ghost(f)
+    r = _create(aid, "Plain")
+    assert r["create"] == "unknown" and f.reads == 0, (r, f.reads)
+    assert "tick Keep running" not in json.dumps(r), r
+
+
 _harness.run(
     case_offer_expiration_and_audience_reach_of,
     case_bad_audience_is_422,
@@ -895,4 +1009,7 @@ _harness.run(
     case_create_takeover_moved_409,
     case_preempt_second_tick,
     case_rvb_r4_c8_preempt_only_on_kept,
+    case_f1_manual_kept_create_first_read,
+    case_f3_first_unknown_kept_create_adopted,
+    case_f7_small_cap_no_switch_or_wait,
 )

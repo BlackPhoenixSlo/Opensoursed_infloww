@@ -31,12 +31,15 @@
   case_turn_off_classes          captcha, deactivated, free page, other 4xx turn off; a
                                  first 403/429 backs off only, a second in a row turns off;
                                  session_dead and not_sent never do.
+  case_f5_preempt_failure_one_result  a failed Fill/Timed: (keep_warning, untick, recover) in
+                                 one result; session_dead and an off class never recover.
   case_observe_table             the claim memo: a new Kept id starts it, a missing count
                                  never seeds a 0, a drop untrusts the id, other promos and
                                  a failed read leave it alone.
   case_rv_c10_lower_count_with_dead_flags_untrusts  a lower count with OF's flags dead still
                                  untrusts the id (0 -> 8 -> 2 -> 10 never trusts the 10).
 B (Pre-emption, behind PROMO_PREEMPT_ENABLED and the campaign's `preempt`):
+  case_f7_preempt_applies_table  Pre-emption applies: switch on, early tick, cap >= 10.
   case_threshold_caps            ceil(0.9 × cap): 10→9, 11→10, 50→45, 100→90; cap 9 and 0 never.
   case_fill_trust_rules          Fill only on a Trusted count: the Kept id, first read 0, never
                                  down, present, threshold ≤ Claims < cap; a miss waits with
@@ -68,7 +71,7 @@ from datetime import datetime, timedelta  # noqa: E402
 
 from promo_keep_decide import (AfterEnd, Created, Fill, Inputs, Kept, Memo, Tally, Timed,  # noqa: E402
                                TurnOff, Wait, backoff_until, decide, failure_turns_off, observe,
-                               threshold)
+                               preempt_applies, preempt_failure, threshold)
 
 NOW = datetime(2026, 11, 19, 12, 0, 0)
 
@@ -304,8 +307,35 @@ def case_turn_off_classes():
         assert failure_turns_off(cls, "http_429") is None
 
 
+def case_f5_preempt_failure_one_result():
+    # (error_class, prev) -> (keep_warning, untick, recover); the notice and the recovery
+    # Re-check both read this one result.
+    table = {
+        ("captcha", None): ("captcha", False, False),
+        ("deactivated", None): ("deactivated", False, False),
+        ("price_free", "http_429"): ("price_free", False, False),
+        ("http_400", None): (None, True, True),
+        ("http_429", None): (None, False, True),
+        ("http_429", "http_403"): (None, True, True),
+        ("http_500", None): (None, False, True),
+        ("session_dead", None): (None, False, False),
+        ("session_dead", "http_429"): (None, False, False),
+    }
+    for (cls, prev), want in table.items():
+        assert preempt_failure(cls, prev) == want, (cls, prev, preempt_failure(cls, prev))
+
+
 
 # ── B: Pre-emption ──────────────────────────────────────────────────────────
+
+def case_f7_preempt_applies_table():
+    # (switch, early tick, cap) -> applies; the one rule decide, the run and the API read.
+    table = {(True, True, 10): True, (True, True, 50): True, (True, True, 9): False,
+             (True, True, 0): False, (True, True, None): False, (False, True, 50): False,
+             (True, False, 50): False}
+    for (on, ticked, cap), want in table.items():
+        assert preempt_applies(on, ticked, cap) is want, (on, ticked, cap)
+
 
 def case_threshold_caps():
     for cap, want in ((9, None), (10, 9), (11, 10), (50, 45), (100, 90), (0, None), (1, None)):

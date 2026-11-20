@@ -155,10 +155,11 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
           <IfButton variant="primary" onClick={() => setCreating(true)} disabled={!accountId}>Create promotion</IfButton>
         </div>
         <Tips />
-        {/* OF answered without the new promo: nothing proves it exists yet, so never "Created". */}
+        {/* OF answered without the new promo: nothing proves it exists yet, so never "Created".
+            The relay says whether Keep running can go on it once listed (only when it was ticked). */}
         {created?.create === "unknown" && (
           <div role="status" className="break-words text-[14px] text-warn">
-            Sent, but OnlyFans hasn&apos;t confirmed it. It shows here once OnlyFans lists it; tick Keep running then.
+            Sent, but OnlyFans hasn&apos;t confirmed it. {created.auto_reactivate_refused || "It shows here once OnlyFans lists it"}.
           </div>
         )}
         {created?.create !== "unknown" && created?.auto_reactivate_refused && (

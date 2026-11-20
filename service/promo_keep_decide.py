@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import Sequence, Union
+from typing import Literal, Sequence, Union
 
 from isotime import parse_iso
 
@@ -85,13 +85,20 @@ class Tally:
     skipped_unverifiable: int = 0
 
 
+WaitReason = Literal["of_unreachable", "promo_already_live", "inferred_cap_untrusted",
+                     "breaker_hold", "backoff", "budget", "nothing_due"]
+# A Wait that holds a due create until `cooldown_ends` (the run reports it as skipped and
+# re-checks just past it); "nothing_due" with an end is the Cooldown's.
+HOLD_REASONS: frozenset[str] = frozenset({"breaker_hold", "backoff", "budget"})
+
+
 @dataclass(frozen=True)
 class Wait:
     """No create this run. `live`/`kept`: the Live promo shown and the Kept campaign it
     belongs to (None = another promo); `tally`: why nothing was due; `cooldown_ends`: when
     the hold ends (Cooldown, breaker_hold, backoff, budget); `wait_reason`: why a live Kept
     promo is not pre-empted though Pre-emption applies (the card's waiting line)."""
-    reason: str
+    reason: WaitReason
     live: dict | None = None
     kept: int | None = None
     tally: Tally | None = None
@@ -161,13 +168,25 @@ def failure_turns_off(error_class: str | None, prev_class: str | None) -> str | 
     return None
 
 
-def preempt_failure(error_class: str | None, prev_class: str | None) -> tuple[str | None, bool]:
+def preempt_failure(error_class: str | None,
+                    prev_class: str | None) -> tuple[str | None, bool, bool]:
     """A failed Fill or Timed: (the keep_warning Keep running turns off with, or None; whether
-    its early tick goes off). Only the page's own state stops Keep running: a refusal of an
-    early create says nothing about the After-end create that recovers it."""
+    its early tick goes off; whether a recovery Re-check is queued). Only the page's own state
+    stops Keep running: a refusal of an early create says nothing about the After-end create
+    that recovers it. A dead session recovers nothing (run_once skips the account until it is
+    logged in again). `recover` never depends on `prev_class`. The notice and the run's
+    recovery both read this one result."""
     if error_class in _OFF_AS_IS:
-        return error_class, False
-    return None, failure_turns_off(error_class, prev_class) is not None
+        return error_class, False, False
+    return (None, failure_turns_off(error_class, prev_class) is not None,
+            error_class != "session_dead")
+
+
+def preempt_applies(enabled: bool, ticked: bool, cap: int | None) -> bool:
+    """Re-create at 90% filled applies: the server switch on, the campaign's early tick, a
+    cap of at least PREEMPT_MIN_CAP (0 = unlimited never). The one rule decide, the run and
+    the card's API read."""
+    return bool(enabled and ticked and threshold(int(cap or 0)) is not None)
 
 
 def threshold(cap: int) -> int | None:
@@ -241,7 +260,7 @@ def _preempt(i: Inputs, c: Kept, p: dict, n_live: int) -> Verdict | str | None:
     waiting line). None: Pre-emption does not apply (switch, tick, cap < 10) or nothing is
     owed yet (a Trusted count under the threshold, the end not near)."""
     cap = int(p.get("subscribe_counts") or 0)
-    if not (i.preempt_enabled and c.preempt and threshold(cap) is not None):
+    if not preempt_applies(i.preempt_enabled, c.preempt, cap):
         return None
     if n_live > 1:
         return "second_live"      # not ours to end; the shell logs it for the 4 h sweep
@@ -252,12 +271,12 @@ def _preempt(i: Inputs, c: Kept, p: dict, n_live: int) -> Verdict | str | None:
     v: Fill | Timed | None = None
     end = parse_iso(p.get("finished_at"))
     left = timed_left(end, i.now, i.skew_s)
-    if left is not None and 0 < left <= TIMED_LEAD_S:
+    if in_timed_window(left):
         if i.prior.kept_of_promo_id != p.get("of_promo_id") or i.prior.finished_at != p.get("finished_at"):
             why = "end_unconfirmed"
         else:
             v = Timed(c.id, p)
-    elif left is None and end is not None and 0 < (end - i.now).total_seconds() <= TIMED_LEAD_S:
+    elif left is None and end is not None and in_timed_window((end - i.now).total_seconds()):
         why = "clock"
     if v is None:
         m = i.memo
@@ -285,12 +304,24 @@ def _preempt(i: Inputs, c: Kept, p: dict, n_live: int) -> Verdict | str | None:
     return v
 
 
-def timed_left(end: datetime | None, now: datetime, skew_s: int | None) -> float | None:
-    """Seconds left to OF's `end` on OF's clock (skew = ours minus OF's, so OF's now is ours
-    minus skew); None without an end or a known clock within SKEW_MAX_S."""
+def end_on_our_clock(end: datetime | None, skew_s: int | None) -> datetime | None:
+    """OF's `end` on our clock (skew = ours minus OF's, so OF's instant reads end + skew
+    here); None without an end or a known clock within SKEW_MAX_S. The one place the sign
+    and the limit live (decide, the run's Timed re-check and reservation, the guard)."""
     if end is None or skew_s is None or abs(skew_s) > SKEW_MAX_S:
         return None
-    return (end - now).total_seconds() + skew_s
+    return end + timedelta(seconds=skew_s)
+
+
+def timed_left(end: datetime | None, now: datetime, skew_s: int | None) -> float | None:
+    """Seconds left to OF's `end` on OF's clock; None as end_on_our_clock."""
+    ours = end_on_our_clock(end, skew_s)
+    return None if ours is None else (ours - now).total_seconds()
+
+
+def in_timed_window(left: float | None) -> bool:
+    """Timed's window: 0 < seconds left <= TIMED_LEAD_S (None: never)."""
+    return left is not None and 0 < left <= TIMED_LEAD_S
 
 
 def _recovery_slot(i: Inputs) -> bool:
@@ -329,7 +360,8 @@ def _breaker(i: Inputs, campaign_id: int, tally: Tally) -> Wait | TurnOff | None
     """The Zero-claim breaker, gating only a create (None: go). Hold: the newest automatic
     create's id not yet seen live, until NOT_LISTED_S after its settle. Trip: this campaign's
     last BREAKER_N creates since its tick all zero (replaced promo gained no Claims, or its
-    own id never seen live). A late first sighting still proves it went live."""
+    own id never seen live). A late first sighting still proves it went live, and so does a
+    finished one with claims (sold out before a read; `listed_at` is stamped on either)."""
     if i.creates:
         top = i.creates[0]
         ends = top.settled_at + timedelta(seconds=NOT_LISTED_S)

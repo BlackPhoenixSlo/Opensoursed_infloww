@@ -60,7 +60,7 @@ from of_mirror import delete_mirrored, merge_mirrors
 from of_promos import fetch_of_promos, promo_type_body, promo_type_store
 from permissions import require_opt_in_kind
 from promo_create_guard import NO_EXPECT, PREEMPT_SWITCH, Reservation
-from promo_keep_decide import create_hold
+from promo_keep_decide import create_hold, preempt_applies
 
 log = logging.getLogger("of-relay.promotions_api")
 
@@ -96,20 +96,24 @@ def _unarmable(discount: int | None, of_promo_id: int | None) -> str | None:
 
 IN_FLIGHT = ("A promotion create for this Creator is still waiting on OnlyFans — "
              "give it a minute, then try again.")
+# A create OF answered without its promo (auto_reactivate_refused; the card's "Sent, but
+# OnlyFans hasn't confirmed it." line goes before it).
+UNRESOLVED_TICK = "It shows here once OnlyFans lists it; tick Keep running then"
+UNRESOLVED_UNLINKED = ("It shows here once OnlyFans lists it, as an OnlyFans-only promo "
+                       "Keep running can't be ticked on")
+
+
+_TRIAL_TEXT = {
+    "trial_unlimited": "A free trial with unlimited claims can't keep running — set an Offer limit first.",
+    "recreate_limit_required": "A free trial needs a Re-create limit (1-10) to keep running.",
+}
 
 
 def _trial_refusal(discount: int | None, cap: int | None, limit: int | None) -> dict | None:
-    """Why a Free trial (discount 100) may not keep running, or None: an unlimited one could
-    hand out free subs without end, so it needs a Claim cap and a Re-create limit."""
-    if int(discount or 0) != 100:
-        return None
-    if not cap:
-        return {"error": "trial_unlimited",
-                "message": "A free trial with unlimited claims can't keep running — set an Offer limit first."}
-    if limit is None:
-        return {"error": "recreate_limit_required",
-                "message": "A free trial needs a Re-create limit (1-10) to keep running."}
-    return None
+    """Why a Free trial (discount 100) may not keep running, or None (promo_create_guard.
+    trial_gap): an unlimited one could hand out free subs without end."""
+    why = promo_create_guard.trial_gap(discount, cap, limit)
+    return None if why is None else {"error": why, "message": _TRIAL_TEXT[why]}
 
 
 async def _kept_now(s, account_id: str) -> PromoCampaign | None:
@@ -138,15 +142,15 @@ async def _moved_now(account_id: str) -> HTTPException:
 
 
 async def reserve_manual(account_id: str, source: str, terms: dict, resolve_open: int | None,
-                         expect_kept: Any = NO_EXPECT) -> Reservation:
+                         expect_kept: Any = NO_EXPECT, pre_ids: list[int] | None = None) -> Reservation:
     """The create reservation for an operator's create (Growth or the OF mirror). Never
     budget-refused, but never beside an open create either: one page-1 read settles a
     create that landed; one still open answers 409, and one whose send is past the grace
     can be cleared by the operator (`resolve_open`), so a manual create is never blocked
-    for good. Only a reservation made after that read knows the ids before its send (a
-    first-try one has none, so a read never adopts it). `expect_kept`: the Takeover the
-    form showed (409 keep_running_moved)."""
-    got = await promo_create_guard.reserve(account_id, None, source, terms, {}, None, None,
+    for good. Only a reservation that knows the ids before its send is ever adopted: the
+    caller's `pre_ids` (its own page-1 read; None: none) on the first try, that read's after
+    it. `expect_kept`: the Takeover the form showed (409 keep_running_moved)."""
+    got = await promo_create_guard.reserve(account_id, None, source, terms, {}, pre_ids, None,
                                            expect_kept=expect_kept)
     if isinstance(got, Reservation):
         return got
@@ -200,11 +204,16 @@ async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
     wait_reason = keep.wait_reason if keep else None
     preempt_on = runtime_switches.on(PREEMPT_SWITCH)
 
-    def _waits(m: PromoCampaign) -> bool:
-        """The run's waiting line applies: Kept, ticked early, the server switch on."""
-        return bool(m.auto_reactivate and m.preempt and preempt_on)
+    def _cap(m: PromoCampaign, live: dict | None) -> int | None:
+        """The cap the row shows (OF's when listed: 0 is unlimited, not unset)."""
+        got = (live or {}).get("subscribe_counts")
+        return m.subscribe_counts if got is None else got
 
-    def _blocked(m: PromoCampaign) -> tuple[str | None, datetime | None]:
+    def _waits(m: PromoCampaign, cap: int | None) -> bool:
+        """The run's waiting line applies: Kept and Re-create at 90% applies (preempt_applies)."""
+        return bool(m.auto_reactivate) and preempt_applies(preempt_on, bool(m.preempt), cap)
+
+    def _blocked(m: PromoCampaign, cap: int | None) -> tuple[str | None, datetime | None]:
         if m.id in unresolved:
             return "unknown", None
         if m.auto_reactivate and promo_create_guard.fenced(m.keep_host_id):
@@ -213,14 +222,15 @@ async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
             return "retick", None    # a Free trial ticked before the Re-create limit existed
         if m.auto_reactivate and hold:
             return hold     # back-off or Create budget: no automatic create until then
-        if m.auto_reactivate and m.preempt and not preempt_on:
+        if m.auto_reactivate and not preempt_on and preempt_applies(True, bool(m.preempt), cap):
             return "switch", None    # the second tick does nothing on this server
-        if _waits(m) and wait_reason == "clock":
+        if _waits(m, cap) and wait_reason == "clock":
             return "clock", None     # OF's clock too far off ours: Timed waits
         return None, None
 
     def _from_mirror(m: PromoCampaign, live: dict | None) -> dict:
-        blocked, until = _blocked(m)
+        cap = _cap(m, live)
+        blocked, until = _blocked(m, cap)
         return {
             "id": m.id,
             "of_promo_id": m.of_promo_id,
@@ -228,7 +238,7 @@ async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
             # OF never echoes the discount on list → the mirror is the record.
             "discount_percent": m.discount_percent,
             "price_cents": (live or {}).get("price_cents", m.price_cents),
-            "subscribe_counts": (live or {}).get("subscribe_counts") or m.subscribe_counts,
+            "subscribe_counts": cap,       # OF's when listed: its 0 is unlimited, not "unset"
             # `or` hid the truth here: OF stores subscribeDays=0 for a percent
             # discount, 0 is falsy, so the operator's typed duration won and the
             # row claimed "30d" for a promo with no end date at all.
@@ -249,7 +259,7 @@ async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
             # The second tick means nothing off a Kept campaign (stored for a later tick).
             "preempt": bool(m.preempt and m.auto_reactivate),
             # Why the last run did not re-create the live Kept promo early (None: not waiting).
-            "keep_wait": wait_reason if _waits(m) else None,
+            "keep_wait": wait_reason if _waits(m, cap) else None,
             "created_at": iso_plain(m.created_at),
             "source": "mirror",
         }
@@ -367,7 +377,13 @@ async def create_promotion(body: _CreateBody = Body(...)) -> dict[str, Any]:
              "message": body.message or "", "type": promo_type_body(promo_type),
              **({} if body.finish_days is None else {"finish_days": int(body.finish_days)}),
              "mirror": {"name": name, "promo_type": promo_type}}
-    res = await reserve_manual(body.account_id, "manual", terms, body.resolve_open, expect)
+    # With Keep running ticked, one page-1 read first: its ids let a later read adopt a create
+    # OF answers without an id (a mirror row the tick can go on). Without it, no extra read.
+    pre = None
+    if body.auto_reactivate:
+        items = await fetch_of_promos(body.account_id, need_ids=set(), max_pages=1)
+        pre = None if items is None else [p["of_promo_id"] for p in items if p.get("of_promo_id") is not None]
+    res = await reserve_manual(body.account_id, "manual", terms, body.resolve_open, expect, pre)
     # The client loads inside send, so a missing/expired session is a clean 502, not a 500.
     sent = await promo_create_guard.send(res, {}, lambda: ax._make_client(body.account_id), terms)
     if sent.refused == "keep_running_moved":
@@ -380,13 +396,17 @@ async def create_promotion(body: _CreateBody = Body(...)) -> dict[str, Any]:
                  if sent.outcome.state == "unknown" else "")
         raise HTTPException(502, f"OnlyFans promotion create failed (session/API){maybe}: "
                                  f"{repr(sent.error)[:200]}")
-    unresolved = {"id": None, "of_promo_id": None, "name": name, "create": "unknown",
-                  "auto_reactivate": False,
-                  "auto_reactivate_refused": "OnlyFans answered without the new promo, so it "
-                                             "shows here once OnlyFans lists it — tick Keep running then"}
+    def unresolved(adoptable: bool) -> dict:
+        """OF answered without the promo (or after a "create anyway"). Only a reservation
+        with the ids before its send is ever adopted as a campaign Keep running can go on."""
+        out = {"id": None, "of_promo_id": None, "name": name, "create": "unknown",
+               "auto_reactivate": False}
+        if body.auto_reactivate:
+            out["auto_reactivate_refused"] = UNRESOLVED_TICK if adoptable else UNRESOLVED_UNLINKED
+        return out
     if sent.outcome.state != "created":
         # OF answered without the promo's id: the reservation stays open for a read to adopt.
-        return unresolved
+        return unresolved(res.pre_ids is not None)
     # settle made the mirror row from what OF ACTUALLY did (OF stores subscribeDays 0
     # for a percent discount; echoing the typed duration promised an expiry that does
     # not exist).
@@ -396,7 +416,7 @@ async def create_promotion(body: _CreateBody = Body(...)) -> dict[str, Any]:
         if row is None:
             # The row was cleared ("create anyway" in another tab) before this answer: settle
             # kept OF's id on it but made no mirror row.
-            return {**unresolved, "of_promo_id": (sent.outcome.item or {}).get("of_promo_id")}
+            return {**unresolved(False), "of_promo_id": (sent.outcome.item or {}).get("of_promo_id")}
         of_id, effective_days, subs = row.of_promo_id, row.subscribe_days, row.subscriber_count
     log.info("promo_created id=%s account=%s of_id=%s discount=%s%%",
              mirror_id, body.account_id, of_id, discount)
@@ -414,6 +434,18 @@ async def create_promotion(body: _CreateBody = Body(...)) -> dict[str, Any]:
                 refused = e.detail["message"] if isinstance(e.detail, dict) else str(e.detail)
         if refused:
             log.info("promo_created_unarmed id=%s reason=%s", mirror_id, refused)
+    if armed:
+        # Keep running's claim memo must see the new promo's first count before claims arrive
+        # (a Trusted count for Re-create at 90% filled): one first_read Re-check. Best effort:
+        # the promo is live and armed; a missed read only leaves the count untrusted.
+        try:
+            from automations import promo_reactivate   # lazy: the plugin imports this module's peers
+            async with get_session() as s:
+                await promo_create_guard.seed_memo(s, body.account_id, sent.outcome.item or {})
+            await promo_reactivate.queue_first_read(body.account_id)
+        except Exception:
+            log.warning("promo_first_read_failed account=%s campaign=%s", body.account_id, mirror_id,
+                        exc_info=True)
     out = {"id": mirror_id, "of_promo_id": of_id, "name": name,
            "discount_percent": discount, "price_cents": 0, "subscribe_counts": counts,
            "subscribe_days": effective_days, "message": body.message or "",
