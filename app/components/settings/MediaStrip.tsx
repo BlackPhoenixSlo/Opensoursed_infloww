@@ -20,13 +20,18 @@ export function MediaStrip({
         const thumb = thumbSrc ? thumbSrc(m) : proxyImage(
           m.files?.thumb?.url || m.files?.squarePreview?.url || m.files?.preview?.url || null, accountId);
         return (
-          <div key={m.id} data-media-id={m.id} className="w-10 h-10 rounded border border-border overflow-hidden bg-bg-elev-1">
+          <div key={m.id} data-media-id={m.id} data-media-type={m.type ?? undefined}
+               className="relative w-10 h-10 rounded border border-border overflow-hidden bg-bg-elev-1">
             {thumb ? (
               <img src={thumb} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full grid place-items-center text-[9px] text-fg-dim">
                 {m.type ?? "?"}
               </div>
+            )}
+            {thumb && m.type === "video" && (
+              <span aria-label="Video" title="Video"
+                    className="absolute inset-0 grid place-items-center bg-black/30 text-white text-[13px] leading-none">▶</span>
             )}
           </div>
         );

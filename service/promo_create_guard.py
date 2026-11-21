@@ -98,8 +98,8 @@ OFF_TEXT = {
                       "running again",
     "limit_reached": "the free trial used up its Re-create limit — tick Keep running again "
                      "to set a new one",
-    "limit_needed": "this free trial was ticked before free trials needed an Offer limit and a "
-                    "Re-create limit — tick Keep running again to set them",
+    "limit_needed": "this free trial has no Offer limit (or was ticked under an older rule) — "
+                    "set an Offer limit if it has none, then tick Keep running again",
     "kept_duplicate": "another campaign of this Creator was also set to keep running, and only "
                       "one can be — tick Keep running again on the one you want",
 }
@@ -206,23 +206,21 @@ def fenced(stamp: str | None) -> str | None:
     return None if here and here == stamp else "fence"
 
 
-def trial_gap(discount: int | None, cap: int | None, limit: int | None) -> str | None:
-    """Why a Free trial (discount 100) may not keep running: "trial_unlimited" (no Claim cap)
-    or "recreate_limit_required" (no Re-create limit); None otherwise. The one rule the
-    run and the API's 422 read."""
+def trial_gap(discount: int | None, cap: int | None) -> str | None:
+    """Why a Free trial (discount 100) may not keep running: "trial_unlimited" (no Claim cap);
+    None otherwise. The one rule the run and the API's 422 read. The Re-create limit is
+    optional (owner 2026-11-21: Keep running is indefinite by default)."""
     if int(discount or 0) != 100:
         return None
     if not cap:
         return "trial_unlimited"
-    if limit is None:
-        return "recreate_limit_required"
     return None
 
 
 def trial_unlimited(c: PromoCampaign) -> bool:
-    """A Free trial with no Re-create limit or no Claim cap: an automatic create could hand
-    out free subs without end."""
-    return trial_gap(c.discount_percent, c.subscribe_counts, c.recreates_left) is not None
+    """A Free trial with no Claim cap: an automatic create could hand out free subs without
+    end, each promo unbounded."""
+    return trial_gap(c.discount_percent, c.subscribe_counts) is not None
 
 
 def _live_rule(steps_json: str | None) -> bool:

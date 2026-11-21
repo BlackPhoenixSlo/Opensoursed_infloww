@@ -536,6 +536,12 @@ async def init_db() -> None:
             import logging as _logging
             _logging.getLogger("of-relay.engine").exception("w7 rule backfill failed")
 
+        try:
+            heal_keep_running_rules_once(sync_engine)
+        except Exception:
+            import logging as _logging
+            _logging.getLogger("of-relay.engine").exception("keep running rules heal failed")
+
         # Planner statistics, once per boot after the schema catch-up. Without
         # them (no sqlite_stat1 existed on any DB we checked) the planner guesses
         # between our 160+ indexes. 0x10002 = analyze every table whose stats are
@@ -759,6 +765,36 @@ def backfill_w7_rules_once(sync_engine) -> int:
     log.info("w7_rule_backfill created=%d rule(s) for Reply-Instant accounts with no "
              "info-gather / funnel-walker rule", created)
     return created
+
+
+_KEEP_RULES_HEAL = "20261121_keep_running_rules_heal"
+# Its SQL lives in the migration (one definition), loaded like the attribution view.
+_KEEP_RULES_HEAL_MIGRATION = "20261121_0100_keep_running_rules_heal.py"
+
+
+def heal_keep_running_rules_once(sync_engine) -> int:
+    """ONE-TIME (2026-11-21, owner: Keep running is indefinite by default): each account
+    with a Kept campaign gets exactly one enabled, live `promo_reactivate` rule (migration
+    0129's `heal`: Kept campaigns ticked before PR #850 had none, or a disabled / dry-run
+    one). Guarded by a `data_migrations` marker, written in the same transaction (a fresh
+    box stamps it too). Returns rules created or changed."""
+    import importlib.util
+    import logging
+    from sqlalchemy import text
+
+    with sync_engine.begin() as conn:
+        conn.execute(text(_DATA_MIGRATIONS_DDL))
+        if conn.execute(text("SELECT 1 FROM data_migrations WHERE name = :n"),
+                        {"n": _KEEP_RULES_HEAL}).first() is not None:
+            return 0
+        path = HERE / "migrations" / "versions" / _KEEP_RULES_HEAL_MIGRATION
+        spec = importlib.util.spec_from_file_location("_keep_rules_heal", path)
+        mig = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mig)
+        n = mig.heal(conn)
+        conn.execute(text("INSERT INTO data_migrations (name) VALUES (:n)"), {"n": _KEEP_RULES_HEAL})
+    logging.getLogger("of-relay.engine").info("keep running rules heal: %d rule(s) created or fixed", n)
+    return n
 
 
 _VAULT_LIST_STATES_COMPACT = "20261117_vault_list_states_compact"

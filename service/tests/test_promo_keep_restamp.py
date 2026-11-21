@@ -5,8 +5,9 @@
   case_dry_run_then_apply        dry run prints each Kept campaign off this box's stamp and the
                                  count, writes nothing; --apply stamps only those (never an
                                  unticked campaign); a second --apply stamps 0.
-  case_rv_r1_restamp_reports_unlimited_trials  a Kept free trial with no Re-create limit is
-                                 reported (limit_needed) even when already stamped.
+  case_rv_r1_restamp_reports_unlimited_trials  a Kept free trial with no Offer limit is
+                                 reported (limit_needed) even when already stamped; a capped
+                                 one with no Re-create limit is not (owner 11-21: indefinite).
 
 Run: ./venv/bin/python service/tests/test_promo_keep_restamp.py   (exit 0 = pass)
 """
@@ -97,15 +98,19 @@ def case_rv_r1_restamp_reports_unlimited_trials():
         async with get_session() as s:
             s.add(Account(id="rs-trial"))
             await s.flush()
-            s.add(PromoCampaign(account_id="rs-trial", of_promo_id=7, name="trial", discount_percent=100,
-                                price_cents=0, subscribe_counts=5, subscribe_days=3, message="",
-                                promo_type="all", status="active", subscriber_count=0,
-                                auto_reactivate=True, reactivate_count=0, created_at=datetime.utcnow(),
-                                keep_host_id=BOX, recreates_left=None))
+            s.add(Account(id="rs-capped"))
+            await s.flush()
+            for aid, name, cap in (("rs-trial", "trial", 0), ("rs-capped", "capped", 5)):
+                s.add(PromoCampaign(account_id=aid, of_promo_id=7, name=name, discount_percent=100,
+                                    price_cents=0, subscribe_counts=cap, subscribe_days=3, message="",
+                                    promo_type="all", status="active", subscriber_count=0,
+                                    auto_reactivate=True, reactivate_count=0, created_at=datetime.utcnow(),
+                                    keep_host_id=BOX, recreates_left=None))
     asyncio.run(seed())
     os.environ["PROMO_CREATE_HOST_ID"] = BOX
     code, out = _main()
     assert code == 0 and "limit_needed" in out and "name='trial'" in out, out
+    assert "name='capped'" not in out, out
 
 
 _harness.run(case_refuses_empty_env, case_dry_run_then_apply, case_rv_r1_restamp_reports_unlimited_trials)

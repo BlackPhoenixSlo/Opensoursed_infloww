@@ -2,8 +2,8 @@
  * Create promotion's form state (CreatePromotionModal only dispatches): the Name, OF's fields (`PromotionForm`), Keep
  * running (the new campaign takes the flag from any other; null = not touched: off for a Free trial, on otherwise,
  * so a burst cannot hand out free subs by default), Re-create at 90% filled (`preempt`, the second tick: ticked by
- * default, sent only with Keep running on, and only an Offer limit of 10 or more pre-empts), the Free trial's Re-create
- * limit, the Kept campaign the dialog
+ * default, sent only with Keep running on, and only an Offer limit of 10 or more pre-empts), the Free trial's optional
+ * Re-create limit (null = No limit, the default: Keep running is indefinite, owner 2026-11-21), the Kept campaign the dialog
  * shows it takes over from (`takenFrom`, sent back so a change meanwhile is refused), the last error, and the
  * earlier create the relay could not settle (`unresolved`: its reservation id, which "It did not go through —
  * create anyway" clears). `canSubmit` gates the Create; `buildPayload` is the POST /admin/promotions body
@@ -23,7 +23,8 @@ export interface CreatePromotionState {
   form: PromotionForm;
   keepRunning: boolean | null;
   preempt: boolean;
-  recreateLimit: number;
+  /** null = No limit (the default): re-created until unticked. */
+  recreateLimit: number | null;
   takenFrom: TakenFrom | null;
   err: string | null;
   unresolved: number | null;
@@ -38,14 +39,14 @@ export type Action =
   | { type: "edit"; patch: Partial<PromotionForm> }
   | { type: "keepRunning"; on: boolean }
   | { type: "preempt"; on: boolean }
-  | { type: "recreateLimit"; value: number }
+  | { type: "recreateLimit"; value: number | null }
   | { type: "takenFromLoaded"; kept: TakenFrom | null }
   | { type: "failed"; err: string }
   | { type: "unresolved"; id: number; err: string }
   | { type: "clear" };
 
 export const INITIAL_CREATE: CreatePromotionState = {
-  name: "", form: PROMOTION_DEFAULTS, keepRunning: null, preempt: true, recreateLimit: 3, takenFrom: null, err: null, unresolved: null,
+  name: "", form: PROMOTION_DEFAULTS, keepRunning: null, preempt: true, recreateLimit: null, takenFrom: null, err: null, unresolved: null,
 };
 
 export function createPromotionReducer(state: CreatePromotionState, action: Action): CreatePromotionState {
@@ -90,15 +91,15 @@ export function preemptOn(s: CreatePromotionState): boolean {
   return s.preempt && keepRunningOn(s) && preemptUsable(s.form.limit);
 }
 
-/** A Free trial kept running carries a Re-create limit. */
+/** A Free trial kept running (it may carry a Re-create limit). */
 const trialKept = (s: CreatePromotionState) => s.form.kind === "trial" && keepRunningOn(s);
 
 /** Why Create is refused, or null: a name (the one field OF does not default); a Free trial kept running needs an
- *  Offer limit and a Re-create limit of 1-10 (the relay refuses it too). */
+ *  Offer limit, and a Re-create limit, when set, of 1-10 (the relay refuses both too). */
 export function blockReason(s: CreatePromotionState): string | null {
   if (s.name.trim() === "") return "Name is required.";
   if (trialKept(s) && s.form.limit < 1) return "A free trial with unlimited claims can't keep running — set an Offer limit first.";
-  if (trialKept(s) && !(s.recreateLimit >= RECREATE_MIN && s.recreateLimit <= RECREATE_MAX)) {
+  if (trialKept(s) && s.recreateLimit !== null && !(s.recreateLimit >= RECREATE_MIN && s.recreateLimit <= RECREATE_MAX)) {
     return `The Re-create limit is ${RECREATE_MIN}-${RECREATE_MAX}.`;
   }
   return null;
@@ -137,7 +138,7 @@ export function buildPayload(s: CreatePromotionState, resolve = false): CreatePr
     name: s.name.trim(), discount: body.discount, subscribe_counts: body.subscribe_counts,
     subscribe_days: body.subscribe_days, finish_days: body.finish_days, message: body.message.trim(),
     promo_type: [...body.type], auto_reactivate: keepRunningOn(s),
-    ...(trialKept(s) ? { recreate_limit: s.recreateLimit } : {}),
+    ...(trialKept(s) && s.recreateLimit !== null ? { recreate_limit: s.recreateLimit } : {}),
     ...(keepRunningOn(s) ? { expect_taken_from: s.takenFrom?.id ?? null, preempt: preemptOn(s) } : {}),
     ...(resolve && s.unresolved !== null ? { resolve_open: s.unresolved } : {}),
   };

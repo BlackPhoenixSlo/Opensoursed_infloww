@@ -466,7 +466,7 @@ def case_wording_in_catalog():
     for v in _price_jev.TEASE_PRICE.values():
         assert json.dumps(v) in doc, v[:40]
     text149 = doc.split("### NEW-149 ", 1)[1].split("### NEW-150 ", 1)[0].split("```text", 1)[1]
-    assert "next_chat_tease" not in text149 and "teases_sent" in text149      # the wording block is today's
+    assert "next_chat_tease" not in text149      # the wording block is today's
 
 
 # ── Through the Test chat API ─────────────────────────────────────────

@@ -23,7 +23,8 @@ is open, a create reconciles inline (one page-1 read) and else answers 409
 with `resolve_open` = that row's id, which clears it.
 
 A tick stamps this box's PROMO_CREATE_HOST_ID (Host fence, ADR-0041). A Free trial
-(discount 100) keeps running only with a Claim cap and a Re-create limit (1-10). A create
+(discount 100) keeps running only with a Claim cap; its Re-create limit (1-10) is optional,
+none = indefinite (owner 2026-11-21). A create
 that moves Keep running names the campaign it took it from; `expect_taken_from` (what the
 form showed) refuses with 409 `keep_running_moved` when that changed meanwhile, checked
 again at the sending CAS. Every tick (create or PATCH) goes through `_arm`, under the write
@@ -105,14 +106,14 @@ UNRESOLVED_UNLINKED = ("It shows here once OnlyFans lists it, as an OnlyFans-onl
 
 _TRIAL_TEXT = {
     "trial_unlimited": "A free trial with unlimited claims can't keep running — set an Offer limit first.",
-    "recreate_limit_required": "A free trial needs a Re-create limit (1-10) to keep running.",
 }
 
 
-def _trial_refusal(discount: int | None, cap: int | None, limit: int | None) -> dict | None:
+def _trial_refusal(discount: int | None, cap: int | None) -> dict | None:
     """Why a Free trial (discount 100) may not keep running, or None (promo_create_guard.
-    trial_gap): an unlimited one could hand out free subs without end."""
-    why = promo_create_guard.trial_gap(discount, cap, limit)
+    trial_gap): one with unlimited claims could hand out free subs without end. The
+    Re-create limit is optional (none = keeps running indefinitely)."""
+    why = promo_create_guard.trial_gap(discount, cap)
     return None if why is None else {"error": why, "message": _TRIAL_TEXT[why]}
 
 
@@ -219,7 +220,7 @@ async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
         if m.auto_reactivate and promo_create_guard.fenced(m.keep_host_id):
             return promo_create_guard.fenced(m.keep_host_id), None   # fence / retick: never on this box
         if m.auto_reactivate and promo_create_guard.trial_unlimited(m):
-            return "retick", None    # a Free trial ticked before the Re-create limit existed
+            return "retick", None    # a Free trial with no Claim cap: never re-created
         if m.auto_reactivate and hold:
             return hold     # back-off or Create budget: no automatic create until then
         if m.auto_reactivate and not preempt_on and preempt_applies(True, bool(m.preempt), cap):
@@ -329,7 +330,7 @@ class _CreateBody(BaseModel):
     # flag: any other armed campaign of the account is unticked. False (the API
     # default) creates it unarmed, as before.
     auto_reactivate: bool = False
-    # A Free trial's Re-create limit (required with auto_reactivate on discount 100).
+    # A Free trial's optional Re-create limit (discount 100 only; None = no limit).
     recreate_limit: int | None = Field(None, ge=1, le=10)
     # Re-create at 90% filled / shortly before it ends; stored only with auto_reactivate.
     preempt: bool = True
@@ -368,7 +369,7 @@ async def create_promotion(body: _CreateBody = Body(...)) -> dict[str, Any]:
     expect = (body.expect_taken_from if body.auto_reactivate
               and "expect_taken_from" in body.model_fields_set else NO_EXPECT)
     if body.auto_reactivate:
-        why = _trial_refusal(discount, counts, body.recreate_limit)
+        why = _trial_refusal(discount, counts)
         if why:
             raise HTTPException(422, why)
 
@@ -464,7 +465,8 @@ def _tick(row: PromoCampaign, recreate_limit: int | None, preempt: bool | None) 
     """Tick Keep running: the operator accepts it again, so Inflowwww's warning goes and
     the Zero-claim breaker counts only creates from now (keep_ticked_at). Stamps this box
     as the one that re-creates it (Host fence; unset env stamps "", fenced) and the Free
-    trial's Re-create limit (no limit on other discounts). `preempt` None keeps the second tick."""
+    trial's Re-create limit (None = no limit, the default; always none on other
+    discounts). `preempt` None keeps the second tick."""
     row.auto_reactivate = True
     if preempt is not None:
         row.preempt = preempt
@@ -531,7 +533,7 @@ async def _arm(account_id: str, mirror_id: int, recreate_limit: int | None,
 
 class _PatchBody(BaseModel):
     """The operator-toggleable fields: keep this promo permanently on offer, a Free
-    trial's Re-create limit (required to tick one), and Re-create at 90% filled. Omitted
+    trial's optional Re-create limit (omitted = no limit), and Re-create at 90% filled. Omitted
     = unchanged; at least one of the two ticks."""
     auto_reactivate: bool | None = None
     recreate_limit: int | None = Field(None, ge=1, le=10)
@@ -560,8 +562,7 @@ async def update_promotion(mirror_id: int, body: _PatchBody = Body(...)) -> dict
             # The automation fails closed on these (it can't look the promo up to
             # tell finished from live), so arming one would silently do nothing.
             raise HTTPException(422, _unarmable(row.discount_percent, row.of_promo_id))
-        why = body.auto_reactivate and _trial_refusal(row.discount_percent, row.subscribe_counts,
-                                                      body.recreate_limit)
+        why = body.auto_reactivate and _trial_refusal(row.discount_percent, row.subscribe_counts)
         if why:
             raise HTTPException(422, why)
         account_id = row.account_id

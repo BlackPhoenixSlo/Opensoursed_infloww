@@ -502,7 +502,7 @@ export function useCreatePromotion(accountId: string | null) {
       finish_days?: number;
       /** Keep running: moves the flag onto the new campaign; refused (created unarmed) says why. */
       auto_reactivate?: boolean;
-      /** A Free trial kept running: re-creates allowed (1-10) before Keep running turns off. */
+      /** A Free trial kept running: optional re-creates allowed (1-10) before Keep running turns off; omitted = no limit. */
       recreate_limit?: number;
       /** Re-create at 90% filled; only with Keep running on. */
       preempt?: boolean;
@@ -538,7 +538,7 @@ export function useSetPromoAutoReactivate(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<
     { id: number; auto_reactivate: boolean; preempt: boolean }, Error,
-    /** recreate_limit: a Free trial's tick needs it (1-10). */
+    /** recreate_limit: a Free trial's optional limit (1-10); omitted = no limit (indefinite). */
     { id: number; auto_reactivate?: boolean; recreate_limit?: number; preempt?: boolean }
   >({
     mutationFn: ({ id, ...body }) => relay.patch(`/admin/promotions/${id}`, body),

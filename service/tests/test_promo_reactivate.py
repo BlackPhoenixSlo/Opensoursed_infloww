@@ -80,8 +80,10 @@
                                  env moving between the read and the reserve refuses (fence).
   case_mn09_free_trial_stops_at_limit  a Free trial with Re-create limit 2: two creates, then
                                  Keep running off (limit_reached) with a notice; no third.
-  case_rv_r01_null_limit_trial_turned_off_before_read  a Kept Free trial with no limit or no
-                                 Claim cap: off once (limit_needed) + notice, no OF read.
+  case_free_trial_no_limit_keeps_running  owner 11-21: a capped Free trial with no Re-create
+                                 limit re-creates every time, never turned off.
+  case_rv_r01_uncapped_trial_turned_off_before_read  a Kept Free trial with no Claim cap: off
+                                 once (limit_needed) + notice, no OF read.
   case_rv_c11_dry_run_never_turns_off  a dry run leaves an aged unknown create and Keep
                                  running as they are.
 
@@ -1266,11 +1268,29 @@ async def case_mn09_free_trial_stops_at_limit():
     assert sum("Re-create limit" in t for t in texts) == 1, texts
 
 
-async def case_rv_r01_null_limit_trial_turned_off_before_read():
-    """r1: a Kept Free trial with no Re-create limit or no Claim cap (ticked before the limit
-    existed) is turned off once, limit_needed + one notice, before any OF read; a dry run
+async def case_free_trial_no_limit_keeps_running():
+    """Owner 2026-11-21: Keep running is indefinite by default. A Free trial with a Claim cap
+    and no Re-create limit re-creates on every finish: never limit_needed / limit_reached."""
+    aid = "pr_trial_no_limit"
+    cid = await _seed_campaign(aid, of_id=5251, discount=100, subscribe_days=3, recreates_left=None)
+    await _owner(aid)
+    f = _use_fake(); f.seed(5251, finished=True, claims=4)
+    for n in (1, 2, 3):
+        res = await run_once(aid, "promo_reactivate", payload=GO)
+        assert res["reactivated"] == 1 and _posts(f) == n, (n, res)
+        row = await _campaign(cid)
+        assert (row.auto_reactivate, row.recreates_left, row.keep_warning) == (True, None, None), n
+        f.store[row.of_promo_id].update(isFinished=True, claimsCount=4)
+        await _age_all(aid, 600)
+    texts = [n.text for n in await _keep_notices(aid)]
+    assert len(texts) == 3 and not any("Keep running is off" in x for x in texts), texts
+
+
+async def case_rv_r01_uncapped_trial_turned_off_before_read():
+    """r1: a Kept Free trial with no Claim cap (unlimited claims; a set Re-create limit does
+    not help) is turned off once, limit_needed + one notice, before any OF read; a dry run
     leaves it be."""
-    for i, (aid, kw) in enumerate((("pr_r01_null", {"recreates_left": None}),
+    for i, (aid, kw) in enumerate((("pr_r01_uncapped_nolimit", {"recreates_left": None, "subscribe_counts": 0}),
                                    ("pr_r01_uncapped", {"recreates_left": 3, "subscribe_counts": 0}))):
         cid = await _seed_campaign(aid, of_id=5301 + i, discount=100, subscribe_days=3, **kw)
         await _owner(aid)
@@ -1353,6 +1373,7 @@ _harness.run(
     case_mn10_manual_create_after_decision_read_no_post,
     case_mn07_host_mismatch_or_unset_no_create,
     case_mn09_free_trial_stops_at_limit,
-    case_rv_r01_null_limit_trial_turned_off_before_read,
+    case_free_trial_no_limit_keeps_running,
+    case_rv_r01_uncapped_trial_turned_off_before_read,
     case_rv_c11_dry_run_never_turns_off,
 )

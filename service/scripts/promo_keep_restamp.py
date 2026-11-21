@@ -7,7 +7,7 @@ box makes their automatic re-creates. Run on the box taking over, and at the dep
 first sets the env. Idempotent: an already-stamped campaign is left alone.
 
 Dry run by default: prints each campaign it would stamp and the count, and every Kept free
-trial with no Offer or Re-create limit (limit_needed). Refuses when the env is empty (a
+trial with no Offer limit (limit_needed). Refuses when the env is empty (a
 stamp of "" fences everything).
 
 USAGE (in the relay container, /app: its env and DB):
@@ -43,13 +43,13 @@ async def restamp(host: str, apply: bool) -> int:
             print(f"campaign={r.id} account={r.account_id} name={r.name!r} stamp={r.keep_host_id!r} -> {host!r}")
             if apply:
                 r.keep_host_id = host
-        # Stamped or not: a Kept free trial with no Offer or Re-create limit is turned off
+        # Stamped or not: a Kept free trial with no Offer limit (unlimited claims) is turned off
         # (limit_needed) at its next run, so the operator re-ticks it.
         for r in (await s.execute(select(PromoCampaign).where(PromoCampaign.auto_reactivate.is_(True))
                                   .order_by(PromoCampaign.id))).scalars().all():
             if promo_create_guard.trial_unlimited(r):
                 print(f"limit_needed campaign={r.id} account={r.account_id} name={r.name!r}: a free "
-                      f"trial with no Offer or Re-create limit — Keep running turns it off; re-tick it")
+                      f"trial with no Offer limit — Keep running turns it off; set one, re-tick it")
     print(f"{'stamped' if apply else 'would stamp (dry run, --apply to write)'} {len(rows)} Kept campaign(s)")
     return len(rows)
 

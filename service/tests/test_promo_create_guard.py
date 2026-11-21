@@ -21,6 +21,8 @@
   case_budget_windows_ignore_manual  budget_state counts automatic rows of the last 24 h only.
   case_rule_and_limit_rechecked  an automatic create refuses when the promo_reactivate rule is
                                  off or the Re-create limit is spent.
+  case_free_trial_limit_optional  owner 11-21: a capped Free trial with no Re-create limit
+                                 reserves (indefinite); a cap-0 one is refused (trial_unlimited).
   case_manual_adoption_makes_mirror  a manual create adopted by a read gets its mirror row,
                                  unarmed; a raw (OF mirror) one gets none.
   case_clear_open_row            the operator's "create anyway" settles the open row cleared.
@@ -410,6 +412,26 @@ async def case_rule_and_limit_rechecked():
         (await s.get(PromoCampaign, cid)).recreates_left = 0          # spent after the reserve
     assert await g.mark_sending(res, {"auto_reactivate": True}) == "limit_reached"
     assert (await _row(res.id)).error_class == "not_sent"
+
+
+
+async def case_free_trial_limit_optional():
+    assert [g.trial_gap(d, cap) for d, cap in ((100, 10), (100, 0), (100, None), (50, 0), (None, 0))] == [
+        None, "trial_unlimited", "trial_unlimited", None, None]
+    aid = "gd_trial_nolimit"
+    cid = await _creator(aid)
+    async with get_session() as s:
+        c = await s.get(PromoCampaign, cid)
+        c.discount_percent, c.recreates_left = 100, None
+    res = await _reserve(aid, cid)
+    assert isinstance(res, g.Reservation), res
+    assert await g.mark_sending(res, {"auto_reactivate": True}) is None
+    aid = "gd_trial_uncapped"
+    cid = await _creator(aid)
+    async with get_session() as s:
+        c = await s.get(PromoCampaign, cid)
+        c.discount_percent, c.subscribe_counts, c.recreates_left = 100, 0, 3
+    assert await _reserve(aid, cid) == g.Refused("trial_unlimited")
 
 
 MANUAL = {**TERMS, "mirror": {"name": "Spring", "promo_type": "all"}}

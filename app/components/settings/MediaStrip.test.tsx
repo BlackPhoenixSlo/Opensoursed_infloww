@@ -29,4 +29,10 @@ describe("MediaStrip", () => {
     const { container } = render(<MediaStrip media={media} accountId="acc-a" />);
     expect([...container.querySelectorAll("[data-media-id]")].map((e) => e.getAttribute("data-media-id"))).toEqual(["1", "2"]);
   });
+
+  it("a video tile with a thumb carries a Video play badge; a photo tile none", () => {
+    const { container } = render(<MediaStrip media={media} accountId="acc-a" thumbSrc={(m) => `/local/${m.id}`} />);
+    const tiles = [...container.querySelectorAll("[data-media-id]")];
+    expect(tiles.map((t) => !!t.querySelector('[aria-label="Video"]'))).toEqual([false, true]);
+  });
 });

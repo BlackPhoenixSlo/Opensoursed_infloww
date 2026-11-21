@@ -94,7 +94,7 @@ describe("PromoReactivateCard", () => {
     ["create_refused", /refused the promo create — check the offer/],
     ["deactivated", /this Creator is deactivated/],
     ["limit_reached", /the free trial used up its Re-create limit — tick Keep running again to set a new one/],
-    ["limit_needed", /ticked before free trials needed an Offer limit and a Re-create limit — tick Keep running again to set them/],
+    ["limit_needed", /this free trial has no Offer limit \(or was ticked under an older rule\) — set an Offer limit if it has none, then tick Keep running again/],
     ["kept_duplicate", /only one can be — tick Keep running again on the one you want/],
   ])("a campaign Inflowwww turned off (%s) stays listed with its reason and who fixes it", async (warning, text) => {
     campaigns = [promo({ name: "Week", auto_reactivate: false, keep_warning: warning })];

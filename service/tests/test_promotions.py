@@ -48,9 +48,10 @@ Locks in the contract discovered by LIVE testing on 2026-07-22:
   case_mn07_tick_on_unfenced_copy_stamps_empty  a tick on a box with PROMO_CREATE_HOST_ID unset
                                  stamps "", lists keep_blocked "fence" and never creates; a tick
                                  on a set box stamps its id, with no OF read.
-  case_mn09_unlimited_trial_refused  a Free trial keeps running only with a Claim cap and a
-                                 Re-create limit 1-10, on create and on PATCH; other discounts
-                                 store no limit.
+  case_mn09_unlimited_trial_refused  a Free trial keeps running only with a Claim cap, on
+                                 create and on PATCH; its Re-create limit is optional (none =
+                                 indefinite, owner 11-21), 1-10 when sent; other discounts
+                                 store no limit; a capped no-limit Kept trial is not blocked.
   case_create_takeover_names_previous  a create that moves Keep running returns the campaign it
                                  took it from and notifies the owner.
   case_create_takeover_moved_409  the Kept campaign changed since the form showed it: 409
@@ -631,8 +632,6 @@ def case_mn09_unlimited_trial_refused():
     trial = {"discount": 100, "subscribe_days": 3, "auto_reactivate": True}
     r = _client.post("/admin/promotions", json={"account_id": aid, "name": "T", **trial, "subscribe_counts": 0})
     assert r.status_code == 422 and r.json()["detail"]["error"] == "trial_unlimited", r.text
-    r = _client.post("/admin/promotions", json={"account_id": aid, "name": "T", **trial, "subscribe_counts": 5})
-    assert r.status_code == 422 and r.json()["detail"]["error"] == "recreate_limit_required", r.text
     for bad in (0, 11):
         assert _client.post("/admin/promotions", json={"account_id": aid, "name": "T", **trial, "subscribe_counts": 5,
                                                        "recreate_limit": bad}).status_code == 422
@@ -641,7 +640,8 @@ def case_mn09_unlimited_trial_refused():
     assert t["auto_reactivate"] is True and asyncio.run(_row(t["id"])).recreates_left == 3, t
     assert _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": False}).status_code == 200
     r = _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": True})
-    assert r.status_code == 422 and r.json()["detail"]["error"] == "recreate_limit_required", r.text
+    assert r.status_code == 200 and r.json()["recreates_left"] is None, r.text   # no limit: indefinite
+    assert _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": False}).status_code == 200
     assert _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": True,
                                                                "recreate_limit": 11}).status_code == 422
     r = _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": True, "recreate_limit": 4})
@@ -650,6 +650,11 @@ def case_mn09_unlimited_trial_refused():
     u = _create(aid, "Open trial", discount=100, subscribe_days=3, subscribe_counts=0)   # unticked: fine
     r = _client.patch(f"/admin/promotions/{u['id']}", json={"auto_reactivate": True, "recreate_limit": 3})
     assert r.status_code == 422 and r.json()["detail"]["error"] == "trial_unlimited", r.text
+    n = _create(aid, "No limit", **trial, subscribe_counts=10)
+    assert n["auto_reactivate"] is True and asyncio.run(_row(n["id"])).recreates_left is None, n
+    row = next(c for c in _client.get(f"/admin/promotions?account_id={aid}").json()["campaigns"]
+               if c["id"] == n["id"])
+    assert (row["keep_blocked"], row["keep_warning"]) == (None, None), row
     p = _create(aid, "Pct", auto_reactivate=True, recreate_limit=3)
     assert p["auto_reactivate"] is True and asyncio.run(_row(p["id"])).recreates_left is None, p
 

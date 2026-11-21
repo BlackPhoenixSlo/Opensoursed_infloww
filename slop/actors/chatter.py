@@ -109,6 +109,7 @@ class Member:
         self.url, self.shard, self.agency = rec["url"], rec["shard"], rec["owner"]
         self.assigned: frozenset[str] = frozenset(rec["account_ids"])
         self.chatter_id = rec.get("chatter_id")
+        self.rec = rec.get("rec")  # its calls' Recorder, when the scenario tags them (else the Crowd's)
         self.probes: list[dict] = list(rec.get("probes") or [])  # direct reads to be refused (the scenario's plan)
         self.probes_out: list[dict] = []
         self.stage: str | None = None
@@ -172,7 +173,7 @@ class Crowd:
         if await self._wait(delay):
             return
         # the client after the wait: each httpx client loads certifi's CA bundle (sync, ~3 ms)
-        m.http = self._Http(m.url, self.rec, limits=self.limits)
+        m.http = self._Http(m.url, m.rec or self.rec, limits=self.limits)
         t0 = time.time()
         try:
             r = await m.http.post("/chatter/login", json={"username": m.username, "password": m.password})

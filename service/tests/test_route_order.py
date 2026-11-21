@@ -191,6 +191,9 @@ that field removed == the prior golden).
 Golden refresh (2026-11-21, script fill 1b Fill routes): adds POST /admin/saved-replies/fill/plan, /fill/apply and
 /fill/undo (script_fill_api) after the bulk-import row; no existing row moves (measured: sha1 with those three
 routes removed == the prior golden).
+Golden refresh (2026-11-21, Keep running indefinite): schema _PatchBody (PATCH /admin/promotions/{id}) docstring
+says the Re-create limit is optional; no route row changes; diff = the sha (measured: the old promotions_api.py
+passes the prior golden).
 """
 from __future__ import annotations
 

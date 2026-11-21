@@ -9,9 +9,9 @@ import { unresolvedId } from "@/lib/ofMirrorWrites";
 const run = (actions: Action[], from: CreatePromotionState = INITIAL_CREATE) => actions.reduce(createPromotionReducer, from);
 
 describe("createPromotionReducer", () => {
-  it("starts with Keep running untouched, Re-create at 90% filled ticked, a Re-create limit of 3, OF's defaults, no name, no error", () => {
+  it("starts with Keep running untouched, Re-create at 90% filled ticked, No Re-create limit, OF's defaults, no name, no error", () => {
     expect(INITIAL_CREATE).toMatchObject({
-      name: "", keepRunning: null, preempt: true, recreateLimit: 3, takenFrom: null, err: null, form: { kind: "trial", limit: 10, expiration: 7 },
+      name: "", keepRunning: null, preempt: true, recreateLimit: null, takenFrom: null, err: null, form: { kind: "trial", limit: 10, expiration: 7 },
     });
   });
 
@@ -20,6 +20,8 @@ describe("createPromotionReducer", () => {
     ["keep running off", [{ type: "keepRunning", on: false }], { keepRunning: false }],
     ["keep running back on", [{ type: "keepRunning", on: false }, { type: "keepRunning", on: true }], { keepRunning: true }],
     ["recreate limit", [{ type: "recreateLimit", value: 7 }], { recreateLimit: 7 }],
+    ["recreate limit back to No limit", [{ type: "recreateLimit", value: 7 }, { type: "recreateLimit", value: null }],
+      { recreateLimit: null }],
     ["re-create at 90% filled off", [{ type: "preempt", on: false }], { preempt: false }],
     ["re-create at 90% filled back on", [{ type: "preempt", on: false }, { type: "preempt", on: true }], { preempt: true }],
     ["taken from loaded", [{ type: "takenFromLoaded", kept: { id: 4, name: "Old" } }], { takenFrom: { id: 4, name: "Old" } }],
@@ -101,7 +103,8 @@ describe("canSubmit", () => {
   const named: Action = { type: "name", value: "W" };
   const keep: Action = { type: "keepRunning", on: true };
   it.each<[string, Action[], string | null]>([
-    ["trial kept, cap 10, limit 3", [named, keep], null],
+    ["trial kept, cap 10, No limit (default)", [named, keep], null],
+    ["trial kept, cap 10, limit 3", [named, keep, { type: "recreateLimit", value: 3 }], null],
     ["trial kept, unlimited claims", [named, keep, { type: "edit", patch: { limit: 0 } }],
       "A free trial with unlimited claims can't keep running — set an Offer limit first."],
     ["trial kept, limit 0", [named, keep, { type: "recreateLimit", value: 0 }], "The Re-create limit is 1-10."],
@@ -135,6 +138,9 @@ describe("buildPayload", () => {
     ["keep running unticked", [{ type: "name", value: "W" }, { type: "keepRunning", on: false }], { auto_reactivate: false }],
     ["a discount keeps running by default", [{ type: "name", value: "W" }, { type: "edit", patch: { kind: "discount", percent: 30 } }],
       { auto_reactivate: true, expect_taken_from: null }],
+    ["a trial ticked, No limit: indefinite, sends the Kept campaign shown",
+      [{ type: "name", value: "W" }, { type: "keepRunning", on: true }, { type: "takenFromLoaded", kept: { id: 4, name: "Old" } }],
+      { auto_reactivate: true, expect_taken_from: 4 }],
     ["a trial ticked sends its Re-create limit and the Kept campaign shown",
       [{ type: "name", value: "W" }, { type: "keepRunning", on: true }, { type: "recreateLimit", value: 5 },
         { type: "takenFromLoaded", kept: { id: 4, name: "Old" } }],
@@ -158,8 +164,13 @@ describe("buildPayload", () => {
       ["recreate_limit", "expect_taken_from", "preempt"]],
     ["a discount unticked: no second tick",
       [{ type: "name", value: "W" }, { type: "edit", patch: { kind: "discount" } }, { type: "keepRunning", on: false }], ["preempt"]],
-    ["a discount kept: no Re-create limit", [{ type: "name", value: "W" }, { type: "edit", patch: { kind: "discount" } }],
+    ["a discount kept: no Re-create limit", [{ type: "name", value: "W" }, { type: "edit", patch: { kind: "discount" } },
+      { type: "recreateLimit", value: 5 }], ["recreate_limit"]],
+    ["a trial kept, No limit (default): no Re-create limit", [{ type: "name", value: "W" }, { type: "keepRunning", on: true }],
       ["recreate_limit"]],
+    ["a trial kept, limit picked then No limit again: no Re-create limit",
+      [{ type: "name", value: "W" }, { type: "keepRunning", on: true }, { type: "recreateLimit", value: 5 },
+        { type: "recreateLimit", value: null }], ["recreate_limit"]],
   ])("%s", (_name, actions, absent) => {
     const body = buildPayload(run(actions));
     for (const k of absent) expect(body).not.toHaveProperty(k);

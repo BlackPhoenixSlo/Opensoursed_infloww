@@ -32,8 +32,8 @@ const OFF_REASON: Record<string, string> = {
     "running again",
   create_refused: "OnlyFans refused the promo create — check the offer, then tick Keep running again",
   limit_reached: "the free trial used up its Re-create limit — tick Keep running again to set a new one",
-  limit_needed: "this free trial was ticked before free trials needed an Offer limit and a Re-create limit — tick " +
-    "Keep running again to set them",
+  limit_needed: "this free trial has no Offer limit (or was ticked under an older rule) — set an Offer limit if it " +
+    "has none, then tick Keep running again",
   kept_duplicate: "another campaign of this Creator was also set to keep running, and only one can be — tick Keep " +
     "running again on the one you want",
 };

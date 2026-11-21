@@ -552,7 +552,8 @@ their claims and revenue.
 To keep an offer alive, tick **Keep running** in Create promotion (on by
 default for a First-month discount, off for a Free trial) or on the campaign's
 row in Campaign insights — that one tick is the whole setup. A Free trial also
-needs an **Offer limit** and a **Re-create limit** (1-10, default 3). Under Keep
+needs an **Offer limit**; its **Re-create limit** is optional (default **No limit**:
+it keeps running until you untick it; or pick 1-10). Under Keep
 running sits a second tick, **Re-create at 90% filled** (ticked by default): the
 promo is re-made before it runs out, so the profile never shows a gap. It needs an
 Offer limit of 10 or more; under that it is greyed out. The **Auto-activate campaign** row under the table
@@ -707,7 +708,7 @@ online right now, use **Message online fans** instead.
    notification (free pages only; see `auto_follow`).
 2. **Growth → Profile promotion** → **Create promotion** with **User type** =
    **Expired subscribers** and a Free trial or First-month discount, with
-   **Keep running** ticked (a Free trial also asks its **Re-create limit**).
+   **Keep running** ticked (a Free trial also offers an optional **Re-create limit**).
 3. **A message to expired fans:** Messages Pro → **+** → **Message online
    fans**, untick **Only fans online right now**, and set **Expired over** to N
    days. That reaches fans whose subscription ended at least N days ago, sent as
@@ -1672,13 +1673,14 @@ cooldown, max re-arms.
 - If OnlyFans can't be reached, it re-creates nothing and tries again later.
 - At most one re-create per run; deleting the campaign stops it.
 - **Free trials:** Keep running needs an Offer limit (unlimited free trials are
-  refused) and a **Re-create limit** of 1-10. Each re-create uses one; at 0
+  refused). The **Re-create limit** is optional: **No limit** (the default) keeps
+  re-creating until you untick it; with 1-10 set, each re-create uses one, and at 0
   Keep running turns off and the card says to tick it again for a new limit.
 - **"This server is not set to create promos — ask the owner to set it up":**
   only the one server set up to create promos re-creates (the owner sets
   `PROMO_CREATE_HOST_ID` there, then ticks again or runs the restamp script).
-  **"Tick Keep running again"**: the campaign was ticked before that setup or
-  before the Free-trial limit existed.
+  **"Tick Keep running again"**: the campaign was ticked before that setup, or it
+  is a Free trial with no Offer limit.
 
 ## kind: gen_info — Generate fan profiles
 

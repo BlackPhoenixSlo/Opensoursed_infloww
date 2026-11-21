@@ -88,8 +88,9 @@ Safety — every unknown is read as "leave it alone", never as "re-create it":
   • Host fence (ADR-0041): only the box whose PROMO_CREATE_HOST_ID is stamped on the
     campaign (at tick) re-creates it; a fenced campaign costs no OF read, so a DB copy or
     a box with the env unset never creates.
-  • A Free trial ticked before the Offer/Re-create limit existed (trial_unlimited) costs no
-    OF read either: the run turns it off once (limit_needed), with a notice.
+  • A Kept Free trial with no Offer limit (unlimited claims, trial_unlimited) costs no OF
+    read either: the run turns it off once (limit_needed), with a notice. The Re-create
+    limit is optional: none = re-created indefinitely (owner 2026-11-21).
   • An operator stop wins: the decision read's start, the claimed rule and the campaign's
     tick ride on the reservation; a create sent or settled after the read (Growth, the OF
     mirror), a fresh manual promo missing from the read, the rule gone/off/dry run, a new
@@ -352,15 +353,15 @@ async def _managed(account_id: str) -> list[PromoCampaign]:
 
 
 def _here(managed: list[PromoCampaign]) -> list[PromoCampaign]:
-    """The Kept campaigns this box may re-create (Host fence; a Free trial with no Offer or
-    Re-create limit never is)."""
+    """The Kept campaigns this box may re-create (Host fence; a Free trial with no Offer
+    limit never is)."""
     return [r for r in managed if not promo_create_guard.fenced(r.keep_host_id)
             and not promo_create_guard.trial_unlimited(r)]
 
 
 async def _limit_needed(account_id: str, managed: list[PromoCampaign]) -> list[int]:
-    """Turn off, once, this box's Kept Free trials with no Offer or Re-create limit (ticked
-    before the limit existed): they would idle silently. Returns the campaign ids."""
+    """Turn off, once, this box's Kept Free trials with no Offer limit (unlimited claims):
+    they would idle silently. Returns the campaign ids."""
     bad = [r.id for r in managed if not promo_create_guard.fenced(r.keep_host_id)
            and promo_create_guard.trial_unlimited(r)]
     if bad:

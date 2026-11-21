@@ -304,12 +304,11 @@ TEST_NOULS: dict[str, dict[str, Any]] = {
         "They are chatting, not sexting, and he did not ask to see anything. Is this a good moment "
         "for her to slip a teasing photo of herself in with her normal reply?",
         "They are chatting back and forth and he is friendly or flirty, `his_lines_this_sitting` is "
-        "5 or more, `his_lines_since_last_piece` is 3 or more or says no piece yet, and nothing "
-        "shows he is upset or cannot pay",
-        "He is upset or complaining, says he cannot pay, asks something serious, "
+        "5 or more, `his_lines_since_last_piece` is 3 or more or says no piece yet, and he is not "
+        "upset",
+        "He is upset or complaining, asks something serious, "
         "`his_lines_this_sitting` is under 5, he has sent fewer than 3 lines since her last piece "
-        "(`his_lines_since_last_piece` is 0, 1 or 2), the last tease in `teases_sent` is one he did "
-        "not buy or said no to and the chat has not warmed up since, or she already sent 3 pieces "
+        "(`his_lines_since_last_piece` is 0, 1 or 2), or she already sent 3 pieces "
         "he did not ask for (`unasked_pieces_this_sitting` is 3 or more)"),
 }
 

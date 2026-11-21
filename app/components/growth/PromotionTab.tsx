@@ -9,7 +9,7 @@
  * Manager's own promotionBody), the tips box, then "Campaign insights": Show expired, the antd table (Promo / Claims /
  * Revenue / Actions) and its pager, 10 a page; then the settings rows, "Auto-activate campaign" (`PromoReactivateCard`,
  * a read-only status: the per-campaign Keep running tick is the one switch; in Create promotion it is on by default
- * for a discount and off for a Free trial, which needs a Re-create limit when ticked, and names the campaign it
+ * for a discount and off for a Free trial, whose Re-create limit is optional (default No limit), and names the campaign it
  * takes Keep running from; under it, on the dialog and a kept row, the second tick Re-create at 90% filled, ticked by
  * default and off under an Offer limit of 10)
  * and "Add fans to list" (`PromoListRow`, Infloww's account-level switch and list). Infloww puts the two rows above
@@ -66,11 +66,12 @@ const AUDIENCES: IfOption<Audience>[] = [
   { value: "both", label: "Both new and expired" },
 ];
 const MESSAGE_MAX = 500;
-/** A Free trial's Re-create limit choices (the relay's 1-10). */
-const RECREATE_LIMITS = Array.from({ length: RECREATE_MAX - RECREATE_MIN + 1 }, (_, i) => {
+/** A Free trial's Re-create limit choices: No limit (the default: indefinite, owner 2026-11-21), or the relay's 1-10. */
+const NO_LIMIT = "none";
+const RECREATE_LIMITS = [{ value: NO_LIMIT, label: "No limit" }, ...Array.from({ length: RECREATE_MAX - RECREATE_MIN + 1 }, (_, i) => {
   const n = RECREATE_MIN + i;
   return { value: String(n), label: `${n} re-create${n === 1 ? "" : "s"}` };
-});
+})];
 /** A Free trial campaign (OF's 100% off for its duration). */
 const isTrial = (c: PromoCampaign) => c.discount_percent === 100;
 const PAGE_SIZE = 10;
@@ -127,7 +128,7 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
   /** The create just made: why it could not keep running (it still went through), or the campaign it took Keep
    *  running from. */
   const [created, setCreated] = useState<PromoCreated | null>(null);
-  /** The Free trial row being ticked: it asks for its Re-create limit first. */
+  /** The Free trial row being ticked: it offers its optional Re-create limit first. */
   const [retick, setRetick] = useState<PromoCampaign | null>(null);
   const { showExpired, page, set, setPage } = usePagedFilters({ showExpired: false });
 
@@ -331,12 +332,16 @@ function Row({ label, htmlFor, children }: { label: string; htmlFor?: string; ch
   );
 }
 
-/** A Free trial's Re-create limit: full width, so it fits a 390 px phone. */
-function RecreateLimit({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+/** A Free trial's optional Re-create limit (null = No limit): full width, so it fits a 390 px phone. */
+function RecreateLimit({ value, onChange }: { value: number | null; onChange: (n: number | null) => void }) {
   return (
     <Row label="Re-create limit">
-      <NumSelect label="Re-create limit" value={value} options={RECREATE_LIMITS} onChange={onChange} />
-      <span className="text-[12px] text-fg-dim">Re-creates the free trial at most this many times, then Keep running turns off.</span>
+      <IfSelect aria-label="Re-create limit" value={value === null ? NO_LIMIT : String(value)} options={RECREATE_LIMITS}
+        onChange={(v) => onChange(v === NO_LIMIT ? null : Number(v))} className="w-full" />
+      <span className="text-[12px] text-fg-dim">
+        {value === null ? "Re-creates the free trial until you untick Keep running."
+          : "Re-creates the free trial at most this many times, then Keep running turns off."}
+      </span>
     </Row>
   );
 }
@@ -359,15 +364,15 @@ function PreemptTick({ checked, usable, disabled = false, onChange, className }:
   );
 }
 
-/** Ticking Keep running on a Free trial row: its Re-create limit first (the relay refuses the tick without one). */
+/** Ticking Keep running on a Free trial row: its optional Re-create limit first (No limit by default). */
 function TrialRetickModal({ accountId, campaign, onClose }: {
   accountId: string | null; campaign: PromoCampaign; onClose: () => void;
 }) {
   const reactM = useSetPromoAutoReactivate(accountId);
-  const [limit, setLimit] = useState(3);
+  const [limit, setLimit] = useState<number | null>(null);
   async function tick() {
     try {
-      await reactM.mutateAsync({ id: campaign.id!, auto_reactivate: true, recreate_limit: limit });
+      await reactM.mutateAsync({ id: campaign.id!, auto_reactivate: true, ...(limit === null ? {} : { recreate_limit: limit }) });
       onClose();
     } catch { /* reactM.error shows the relay's line */ }
   }
@@ -384,7 +389,7 @@ function TrialRetickModal({ accountId, campaign, onClose }: {
       )}
     >
       <div className="flex flex-col gap-4">
-        <p className="break-words text-[14px] text-fg">Keep “{campaign.name}” running: a free trial needs a Re-create limit.</p>
+        <p className="break-words text-[14px] text-fg">Keep “{campaign.name}” running. Optionally stop it after a set number of re-creates.</p>
         <RecreateLimit value={limit} onChange={setLimit} />
         {reactM.error && (
           <div className="text-err text-[12px]" role="alert">{ofErrorMessage(reactM.error) ?? reactM.error.message}</div>
