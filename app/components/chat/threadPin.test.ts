@@ -78,7 +78,7 @@ describe("rowsPrepended", () => {
     ["prepend and append together", ids(10, 11), ids(8, 9, 10, 11, 12), true],
     ["old top dropped, older ids came in", ids(10, 11, 12), ids(5, 6, 11, 12), true],
     ["old top dropped, nothing older", ids(10, 11, 12), ids(11, 12, 13), false],
-    ["snowflake string ids", ids("900000000000000001", "900000000000000002"), ids("899999999999999999", "900000000000000001", "900000000000000002"), true],
+    ["snowflake string ids", ids("900000000000000001", "900000000000000002"), ids("900000000000000000", "900000000000000001", "900000000000000002"), true],
     ["from empty (first paint)", [], ids(1, 2), false],
     ["to empty", ids(1, 2), [], false],
   ])("%s", (_, prev, next, out) => {

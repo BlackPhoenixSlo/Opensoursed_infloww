@@ -75,7 +75,7 @@ throughput. Two watch checks keep looking after the run.
   checks `script_fill_coverage` and `script_fill_readback`, their `WATCH_SQL` keys, README Watch rows and runbook
   lines in `docs/proxy-health/README.md`, rows in `test_watch.py`. Nothing in `service/`.
 - **Where watch.py lives** (3b). In this repo: `git ls-files scripts/proxy-health` lists `watch.py` and
-  `test_watch.py`. `/Users/founder/oi-proxy-health` is a detached worktree of this same repository (same git common
+  `test_watch.py`. `~/oi-proxy-health` is a detached worktree of this same repository (same git common
   dir); its `docs/proxy-health/WATCH.md` is a symlink into `~/proxy-health-data/ae/WATCH.md`, tracked in neither tree.
   The 4h sweep runs watch.py from that worktree, and a WATCH.md line naming a check it does not know is
   `broken -> drop` (`scripts/proxy-health/watch.py:1408`). So the execute stage moves that worktree to a main holding
