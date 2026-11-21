@@ -63,7 +63,10 @@ Creators' rings for their any-scope frames only; an evicted any-scope frame ther
 
 Persist. events_persist.py's worker drains its queue of PersistItems in batches and
 transcodes every item's `event`; `persist_plan` is the event_inbox rows one batch
-writes (`inbox_row`; none for UNPERSISTED_TYPES), in queue order.
+writes (`inbox_row`; none for UNPERSISTED_TYPES), in queue order. An item tagged `inbound_dm`
+(a Fan's DM) goes last: `overflow_victim` is the queued item a full queue displaces (the oldest
+non-DM; none when all are DMs, so the incoming frame is dropped), and `stop_order` is what a
+graceful stop transcodes (DMs first, each group in queue order).
 
 Importable without side effects (stdlib only).
 """
@@ -481,6 +484,7 @@ class PersistItem(NamedTuple):
     event_type: Optional[str]
     persistable: dict      # the frame minus its `__` sentinels: the event_inbox payload
     event: dict            # the frame as received: what the worker transcodes
+    inbound_dm: bool = False   # a Fan's DM (event_transcode_decide.is_inbound_dm): kept over the rest
 
 
 def persist_plan(batch: list[PersistItem]) -> list[dict]:
@@ -488,3 +492,15 @@ def persist_plan(batch: list[PersistItem]) -> list[dict]:
     gets none (it is still transcoded)."""
     return [inbox_row(it.account_id, it.event_type, it.persistable)
             for it in batch if it.event_type not in UNPERSISTED_TYPES]
+
+
+def overflow_victim(queued: list[PersistItem]) -> Optional[int]:
+    """Which queued item a full queue displaces for an incoming frame: the index of the
+    oldest that is not an Inbound DM; None when every one is (the incoming frame is dropped)."""
+    return next((i for i, it in enumerate(queued) if not it.inbound_dm), None)
+
+
+def stop_order(queued: list[PersistItem]) -> list[PersistItem]:
+    """What a graceful stop transcodes, in order: the Inbound DMs first, then the rest,
+    each group in queue order (a stable partition; `queued` is not mutated)."""
+    return [it for it in queued if it.inbound_dm] + [it for it in queued if not it.inbound_dm]

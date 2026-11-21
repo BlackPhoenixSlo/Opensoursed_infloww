@@ -9,7 +9,9 @@ import of `event_transcoder` (no cycle). Tables: tests/test_event_transcode_deci
   route(event)              which writer an OF WS frame goes to
   queue_fold / blasted      the "did this account just blast?" ring
   user_blob(payload)        the Fan touch a non-message frame carries
+  dm_key(aid, m)            Skip | Outbound | None: dm_plan's key/direction half
   dm_plan(aid, m, now)      Skip | Outbound | Inbound for a chat_message
+  is_inbound_dm(event)      would this frame's dm_plan be Inbound (the persist queue keeps it)
   money_bust(m)             does an inbound chat_message clear the money feeds' cache
   fan_upsert(plans)         the `fans` upsert of one chat's DM batch
   ppv_fields(payload, now)  the ledger row of a PPV-unlock frame
@@ -208,6 +210,21 @@ class Inbound:
 DmPlan = Union[Skip, Outbound, Inbound]
 
 
+def dm_key(account_id: Any, m: dict) -> Union[Skip, Outbound, None]:
+    """The key/direction half of `dm_plan`, its one owner: Skip (no message id, no
+    `fromUser.id` — a non-dict `fromUser` has none — or no account), Outbound (the Fan
+    is the account), None (a Fan's DM: `dm_plan` builds the Inbound). Reads only those
+    keys, never raises."""
+    message_id = m.get("id")
+    from_user = m.get("fromUser")
+    fan_id = from_user.get("id") if isinstance(from_user, dict) else None
+    if not message_id or not fan_id or not account_id:
+        return Skip(message_id, fan_id)
+    if str(fan_id) == str(account_id):
+        return Outbound(message_id)
+    return None
+
+
 def dm_plan(account_id: Any, m: dict, now: datetime) -> DmPlan:
     """What one `api2_chat_message` payload becomes. `now` stamps a frame
     without `createdAt`.
@@ -220,13 +237,11 @@ def dm_plan(account_id: Any, m: dict, now: datetime) -> DmPlan:
     for an isTip frame lacking tipAmount; price_cents stays separate so the PPV
     logic is untouched. ONE predicate picks the words-vs-image lane: a non-tip
     media/gif DM is the image hook's, which owns its words too."""
-    message_id = m.get("id")
-    from_user = m.get("fromUser") or {}
-    fan_id = from_user.get("id")
-    if not message_id or not fan_id or not account_id:
-        return Skip(message_id, fan_id)
-    if str(fan_id) == str(account_id):
-        return Outbound(message_id)
+    key = dm_key(account_id, m)
+    if key is not None:
+        return key
+    message_id, from_user = m["id"], m["fromUser"]
+    fan_id = from_user["id"]
 
     price_cents = to_cents(m.get("price"))
     is_tip = bool(m.get("isTip"))
@@ -247,6 +262,15 @@ def dm_plan(account_id: Any, m: dict, now: datetime) -> DmPlan:
     )
     return Inbound(msg, from_user, max(tip_cents, 0),
                    image=bool(mids or giphy_dm_id(m)) and not is_tip, has_media=bool(mids))
+
+
+def is_inbound_dm(event: Any) -> bool:
+    """Is this OF frame one the transcoder writes as a Fan's DM: the `chat_message`
+    lane (`route`) and a `dm_key` of None, i.e. `dm_plan` would be `Inbound`? Image,
+    gif and tip DMs are. Reads only those keys (no row, no clock), never raises. The
+    persist queue keeps these over every other frame (events_decide.overflow_victim)."""
+    r = route(event)
+    return r is not None and r[0] == "chat_message" and dm_key(event.get("__account_id"), r[2]) is None
 
 
 def money_bust(m: dict) -> bool:
@@ -272,14 +296,17 @@ def fan_upsert(plans: list[Inbound]) -> tuple[dict, dict, tuple[Any, Any]]:
     carries only `fromUser:{id}`, and writing `.get(...)` there used to null out
     names a toast/online frame had captured. `source` on insert reads OF's flags
     (`subscribedOn` = our fan, `subscribedBy` = a creator we follow) — the same
-    rule as _common.classify_source, which this module cannot import (SQLAlchemy)."""
-    first, last = plans[0].msg, plans[-1].msg
+    rule as _common.classify_source, which this module cannot import (SQLAlchemy).
+    `last_message_received_at` is the batch's latest `created_at`; the shell moves the
+    stored one only forward."""
+    first = plans[0].msg
     user: dict = {}
     for p in plans:
         for k, v in p.from_user.items():
             if v is not None and v != "":
                 user[k] = v
-    created_at = last["created_at"]
+    # The latest DM of the batch, not the last frame: a late older one never wins.
+    created_at = max(p.msg["created_at"] for p in plans)
     values = dict(
         account_id=first["account_id"],
         fan_id=first["fan_id"],

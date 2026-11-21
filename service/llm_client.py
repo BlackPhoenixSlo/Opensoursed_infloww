@@ -62,6 +62,7 @@ from sqlalchemy import select, update as sa_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import llm_anthropic
+import model_cap
 import tenant_keys
 from db.engine import get_session
 from db.models import AccountAiConfig, GrokCall, GrokDailyCost, GrokUserDailyCost
@@ -138,6 +139,16 @@ class LLMHTTPError(LLMError):
     def __init__(self, message: str, *, status: int | None = None):
         self.status = status
         super().__init__(message)
+
+
+class LLMModelCapTimeout(LLMHTTPError):
+    """No Model-call cap permit within the call's deadline (model_cap): nothing was
+    reserved, recorded or sent. `status` None, so every caller reads it as the model
+    timeout it already handles (Full AI Writer outcome `timeout`, a sender's provider error)."""
+
+    def __init__(self, waited_s: float, cap: int):
+        self.waited_s, self.cap = waited_s, cap
+        super().__init__(f"model-call cap: waited {waited_s:.1f}s (cap {cap})", status=None)
 
 
 class LLMKeyError(LLMConfigError, LLMHTTPError):
@@ -1066,6 +1077,8 @@ async def chat(
     Flow (19 §2):
       1. Resolve model -> provider -> base_url, then the KEY of the agency that
          owns `account_id` (fail-fast on any gap — see _tenant_api_key).
+     1b. An off-slot automation call waits for a Model-call cap permit
+         (model_cap; LLMModelCapTimeout past its deadline, before step 2).
       2. ATOMICALLY reserve the estimated cost against the daily soft cap
          (05 §7) BEFORE firing — raises LLMCapExceeded if it doesn't fit.
       3. Write a pending `grok_calls` row.
@@ -1112,6 +1125,7 @@ async def chat(
     Raises:
         LLMConfigError, LLMCapExceeded, LLMHTTPError — and LLMKeyError (a
         subclass of both) when the key is missing or the provider rejects it.
+        LLMModelCapTimeout (an LLMHTTPError, status None) when no cap permit came in time.
     """
     if user_id is not None and account_id is not None:
         raise LLMConfigError("chat() bills an account OR an agency, not both")
@@ -1140,8 +1154,6 @@ async def chat(
 
     url = prov.base_url.rstrip("/") + ("/messages" if native else "/chat/completions")
     endpoint = httpx.URL(url).path  # e.g. "/chat/completions" (deepseek), "/v1/messages"
-
-    now = datetime.utcnow()
 
     # ── Build the OpenAI-compatible body ────────────────────────────────
     body: dict[str, Any] = {
@@ -1182,32 +1194,42 @@ async def chat(
         except llm_anthropic.NativeShapeError as e:
             raise LLMConfigError(f"model {mdl.id!r}: {e}") from e
 
-    # ── 2. Atomic pre-flight cap reservation (in millicents) ────────────
-    hold = await _reserve_call(model, messages, account_id=account_id, user_id=user_id,
-                               provider=budget_key(purpose), now=now,
-                               tools=tools)  # raises LLMCapExceeded
+    # ── 1b. Model-call cap (model_cap): an off-slot automation call waits here for a
+    # permit, BEFORE the reservation, the audit row and the request, so a timeout or a
+    # cancel while queued costs none of them. One permit for the call and its retries.
+    try:
+        async with model_cap.call(_REQUEST_TIMEOUT_S if timeout_s is None else timeout_s,
+                                  purpose=purpose):
+            now = datetime.utcnow()   # after the wait: the reservation's day
 
-    # ── 3. Pending audit row ────────────────────────────────────────────
-    call_id = await _insert_pending_call(
-        purpose=purpose, provider=prov.name, account_id=account_id, fan_id=fan_id,
-        model=model, endpoint=endpoint, temperature=temperature,
-        request_body=body, now=now,
-    )
+            # ── 2. Atomic pre-flight cap reservation (in millicents) ────────
+            hold = await _reserve_call(model, messages, account_id=account_id, user_id=user_id,
+                                       provider=budget_key(purpose), now=now,
+                                       tools=tools)  # raises LLMCapExceeded
 
-    headers = llm_anthropic.headers(api_key) if native else {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+            # ── 3. Pending audit row ────────────────────────────────────────
+            call_id = await _insert_pending_call(
+                purpose=purpose, provider=prov.name, account_id=account_id, fan_id=fan_id,
+                model=model, endpoint=endpoint, temperature=temperature,
+                request_body=body, now=now,
+            )
 
-    data, latency_ms = await _fire(url, headers, body, call_id=call_id, hold=hold,
-                                   model=model, purpose=purpose,
-                                   timeout_s=timeout_s, max_attempts=max_attempts)
-    if native:
-        data = llm_anthropic.to_openai_response(data)
-    return await _finalize_ok(data, latency_ms, call_id=call_id, hold=hold,
-                              model=model, purpose=purpose,
-                              response_format=response_format)
+            headers = llm_anthropic.headers(api_key) if native else {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+
+            data, latency_ms = await _fire(url, headers, body, call_id=call_id, hold=hold,
+                                           model=model, purpose=purpose,
+                                           timeout_s=timeout_s, max_attempts=max_attempts)
+            if native:
+                data = llm_anthropic.to_openai_response(data)
+            return await _finalize_ok(data, latency_ms, call_id=call_id, hold=hold,
+                                      model=model, purpose=purpose,
+                                      response_format=response_format)
+    except model_cap.ModelCapTimeout as e:
+        raise LLMModelCapTimeout(e.waited_s, e.cap) from None
 
 
 # ── chat() steps: reserve → fire → finalize ────────────────────────────────

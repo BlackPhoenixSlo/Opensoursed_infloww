@@ -11,7 +11,8 @@ data.user; avatar > c144 > c50 > any str thumb; a non-int id or no field is None
 frame missing an id or the account, plans no row for our own echo, reads a tip's cents from
 tipAmount (price as fallback, a negative one is 0), keeps is_paid NULL when free, emits exact
 `messages` columns, gives a non-tip media/gif DM to the image hook (else words); a degenerate
-isTip + media + tipAmount 0 is words. fan_upsert: newest non-blank field wins, blanks never
+isTip + media + tipAmount 0 is words. is_inbound_dm is True exactly when dm_plan would be Inbound
+(never raises; any other frame kind is False). fan_upsert: newest non-blank field wins, last-received is the batch's latest created_at, blanks never
 clobber on conflict, source from subscribedOn/By on insert, the flags handed back for the heal. ppv_fields: message first, then the
 payload's fallbacks; None without an id, a fan or an amount.
 
@@ -289,6 +290,48 @@ def test_dm_plan_row():
     assert td.dm_plan(int(A), msg(), NOW).msg["account_id"] == A                 # str key for of_writer
 
 
+# ── is_inbound_dm ────────────────────────────────────────────────────
+
+def dm_frame(m, aid=A) -> dict:
+    f = {} if aid is ... else {"__account_id": aid}
+    f["api2_chat_message"] = m
+    return f
+
+
+@table("frame, want", [
+    (dm_frame(msg()), True),                                                      # text DM
+    (dm_frame(msg(isTip=True, price=0, tipAmount=10)), True),                     # tip DM
+    (dm_frame(msg(media=[{"id": 7}])), True),                                     # photo DM
+    (dm_frame(msg(media=[], giphyId="Q9WDZTdraX9E4")), True),                     # gif DM
+    (dm_frame(msg(), aid=int(A)), True),
+    (dm_frame(msg(fromUser={"id": int(A)})), False),                              # our own echo
+    (dm_frame(msg(fromUser={"id": A}), aid=int(A)), False),
+    (dm_frame(msg(id=None)), False),                                              # missing id
+    (dm_frame(msg(id=0)), False),
+    (dm_frame(msg(fromUser=None)), False),                                        # missing fromUser.id
+    (dm_frame(msg(fromUser={"name": "no id"})), False),
+    (dm_frame(msg(fromUser="garbage")), False),                                   # never raises
+    (dm_frame(msg(), aid=...), False),                                            # missing __account_id
+    (dm_frame(msg(), aid=None), False),
+    (dm_frame(msg(), aid=""), False),
+    ({"__account_id": A, "toasts": [{"type": "tip", "data": {"relatedUser": {"id": FAN}}}]}, False),
+    ({"__account_id": A, "paidMessage": {"id": 1, "fromUser": {"id": FAN}, "price": 5}}, False),
+    ({"__account_id": A, "chat_queue_finish": {"id": 1, "total": 23}}, False),
+    ({"__account_id": A, "typing": {"id": FAN}}, False),
+    ("not a dict", False),
+    (None, False),
+    (dm_frame("not a dict"), False),                                              # non-dict payload
+])
+def test_is_inbound_dm(frame, want):
+    assert td.is_inbound_dm(frame) is want
+    # The transcoder's own split: a chat_message frame it would write as a Fan's DM.
+    r = td.route(frame)
+    if r is not None and r[0] == "chat_message":
+        assert want == isinstance(td.dm_plan(frame.get("__account_id"), r[2], NOW), Inbound), frame
+    else:
+        assert want is False
+
+
 # ── fan_upsert ───────────────────────────────────────────────────────
 
 def item(created_at, **user) -> Inbound:
@@ -318,12 +361,14 @@ BLANK = dict(of_username=None, of_display_name=None, avatar_url=None)
      {"last_message_received_at": T}, (True, True)),
     ([item(T, subscribedOn=False)], dict(BLANK, source="unknown"),               # False is a value, not blank
      {"last_message_received_at": T}, (False, None)),
+    # out of order: the last plan is older than an earlier one — the latest created_at wins
+    ([item(T2), item(T)], dict(BLANK, source="unknown"), {"last_message_received_at": T2}, (None, None)),
 ])
 def test_fan_upsert(items, values, on_conflict, flags):
     before = copy.deepcopy(items)
     v, oc, fl = td.fan_upsert(items)
-    assert v == {"account_id": A, "fan_id": FAN, "last_message_received_at": items[-1].msg["created_at"],
-                 **values}
+    assert v == {"account_id": A, "fan_id": FAN,
+                 "last_message_received_at": on_conflict["last_message_received_at"], **values}
     assert (oc, fl) == (on_conflict, flags)
     assert items == before
 

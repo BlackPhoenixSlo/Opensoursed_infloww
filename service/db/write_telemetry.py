@@ -207,8 +207,9 @@ def enqueued(depth: int) -> None:
 
 
 def dequeued(n: int = 1) -> None:
-    """`n` items left the persist queue from its head (taken by the worker, or
-    displaced as the oldest)."""
+    """`n` items left the persist queue (taken by the worker from its head, or
+    displaced on overflow — the oldest non-DM, maybe mid-queue; the head's
+    timestamp is popped either way, so q.age_ms is approximate under overflow)."""
     global _enq_head
     if not ENABLED:
         return

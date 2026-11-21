@@ -34,7 +34,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy import case, func, insert, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db import of_writer, write_telemetry
@@ -396,9 +396,18 @@ async def _write_dms(conn, items: list) -> list:
 
     The chat's unread goes up by the DMs that were NEW rows only: a re-delivered
     frame (WS replay after a reconnect) is already counted, and adding it again
-    is how a badge used to read higher than the thread."""
+    is how a badge used to read higher than the thread.
+
+    Forward only: the chat's last message / time / preview follow the batch's
+    highest message id, and only when it is at least the stored one (a stored mass
+    placeholder id, >= attribution._MASS_PLACEHOLDER_BASE, yields to a DM at or after
+    its time, as _advance_chat_preview's rule); the Fan's
+    last-received time the batch's latest, only when it is at least the stored
+    one (a NULL takes any). A late or re-delivered older DM moves neither back
+    (forward by id like messages.py; unlike it, `<=` and the placeholder band)."""
     plans = [p for p, _raw in items]
-    first, last = plans[0].msg, plans[-1].msg
+    first = plans[0].msg
+    newest = max(plans, key=lambda p: p.msg["message_id"]).msg
     aid, fan_id = first["account_id"], first["fan_id"]
     pk = ["account_id", "fan_id", "message_id"]
     n_new = 0
@@ -434,28 +443,40 @@ async def _write_dms(conn, items: list) -> list:
     # Self-heals a weak/unknown source when a payload carries OF's
     # subscribedOn/subscribedBy. The rules: `td.fan_upsert`.
     values, on_conflict, flags = td.fan_upsert(plans)
+    received = on_conflict["last_message_received_at"]
+    on_conflict["last_message_received_at"] = case(
+        (or_(Fan.last_message_received_at.is_(None), Fan.last_message_received_at <= received), received),
+        else_=Fan.last_message_received_at)
     on_conflict.update(updated_at=datetime.utcnow(), **source_self_heal_set(*flags))
-    created_at = last["created_at"]
     await conn.execute(sqlite_insert(Fan).values(**values).on_conflict_do_update(
         index_elements=["account_id", "fan_id"], set_=on_conflict))
 
     # ── chats upsert ────────────────────────────────────────
     # The "preview" we show in the inbox is the first ~120 chars of body,
     # HTML-stripped just enough that it doesn't read raw <p> tags.
-    preview = td.strip_html(last["body"])[:120]
+    # Per-column CASE, not a statement-level WHERE: the unread bump must still land.
+    # `<=`: a same-id re-delivery still refreshes an edited preview.
+    preview = td.strip_html(newest["body"])[:120]
+    mid, created_at = newest["message_id"], newest["created_at"]
+    # A mass send's optimistic row (attribution._advance_chat_preview) stores a synthetic
+    # id above every real one: in that band time decides, as it does there.
+    from attribution import _MASS_PLACEHOLDER_BASE  # local, as messages.py
+    fwd = or_(Chat.last_message_id.is_(None), Chat.last_message_id <= mid,
+              (Chat.last_message_id >= _MASS_PLACEHOLDER_BASE)
+              & or_(Chat.last_message_at.is_(None), Chat.last_message_at <= created_at))
     await conn.execute(sqlite_insert(Chat).values(
         account_id=aid,
         fan_id=fan_id,
-        last_message_id=last["message_id"],
+        last_message_id=mid,
         last_message_at=created_at,
         last_message_preview=preview,
         unread_count=n_new,
     ).on_conflict_do_update(
         index_elements=["account_id", "fan_id"],
         set_={
-            "last_message_id": last["message_id"],
-            "last_message_at": created_at,
-            "last_message_preview": preview,
+            "last_message_id": case((fwd, mid), else_=Chat.last_message_id),
+            "last_message_at": case((fwd, created_at), else_=Chat.last_message_at),
+            "last_message_preview": case((fwd, preview), else_=Chat.last_message_preview),
             "unread_count": Chat.unread_count + n_new,
         },
     ))

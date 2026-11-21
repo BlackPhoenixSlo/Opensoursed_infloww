@@ -294,8 +294,8 @@ async def handle_event(event: dict) -> None:
     # from `account_id`, no need to duplicate.
     persistable = {k: v for k, v in event.items() if not k.startswith("__")} if isinstance(event, dict) else {}
 
-    # Enqueue for the persist worker (events_persist: bounded, drops the
-    # oldest on overflow; before the worker starts, the old fire-and-forget path).
+    # Enqueue for the persist worker (events_persist: bounded, displaces the
+    # oldest non-DM on overflow; before the worker starts, the old fire-and-forget path).
     events_persist.enqueue(account_id, event_type, persistable, event)
 
     # Update message readers before fan-out so a refetch sees the event.

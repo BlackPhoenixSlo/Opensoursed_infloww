@@ -130,15 +130,21 @@ class QuietHeatJev:
 
 class FakeWriterHTTP:
     """The Writers' wire (`llm_client.httpx.AsyncClient`): each request answers by its host
-    (`script`: host -> `ok:<text> | <HTTP status> | timeout | empty`, or a list of those taken
-    one per request), recorded as
-    {host, model, body, timeout}. No `llm_client.chat` patch, so its real error mapping runs."""
+    (`script`: host -> `ok:<text> | <HTTP status> | timeout | empty | park[:<how>]`, or a list of
+    those taken one per request), recorded as {host, model, body, timeout}. `park[:<how>]` waits
+    for `.go` (set on `on()`'s exit), then answers `<how>` (default `ok:ok`); `.parked` is set and
+    `.parking` counts the posts waiting now. `on_post(record)` runs at each post; `.clients` counts
+    clients made. No `llm_client.chat` patch, so its real error mapping runs."""
 
-    def __init__(self, script: dict[str, str | list[str]]):
+    def __init__(self, script: dict[str, str | list[str]], on_post=None):
         self.script = dict(script)
         self.requests: list[dict] = []
+        self.on_post = on_post
+        self.go, self.parked = asyncio.Event(), asyncio.Event()
+        self.parking = self.clients = 0
 
     def __call__(self, *_a, timeout=None, **_k):
+        self.clients += 1
         return _WriterConn(self, timeout)
 
     @contextlib.contextmanager
@@ -148,6 +154,7 @@ class FakeWriterHTTP:
         try:
             yield self
         finally:
+            self.go.set()
             llm_client.httpx.AsyncClient = saved  # type: ignore[assignment]
 
 
@@ -177,11 +184,21 @@ class _WriterConn:
 
     async def post(self, url, headers=None, json=None):
         host = httpx.URL(str(url)).host
-        self.fake.requests.append({"host": host, "model": (json or {}).get("model"),
-                                   "body": json, "timeout": self.timeout})
+        rec = {"host": host, "model": (json or {}).get("model"), "body": json, "timeout": self.timeout}
+        self.fake.requests.append(rec)
+        if self.fake.on_post:
+            self.fake.on_post(rec)
         how = self.fake.script[host]
         if isinstance(how, list):
             how = how.pop(0)
+        if how.startswith("park"):
+            self.fake.parking += 1
+            self.fake.parked.set()
+            try:
+                await self.fake.go.wait()
+            finally:
+                self.fake.parking -= 1
+            how = how.removeprefix("park").removeprefix(":") or "ok:ok"
         if how == "timeout":
             raise httpx.ReadTimeout("timed out")
         if how.isdigit():

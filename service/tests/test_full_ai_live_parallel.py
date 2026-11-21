@@ -22,6 +22,9 @@ Through the executor (`_drain_due_jobs_once` -> plan_dispatch -> run_once -> the
                                    on the DB keeps its `sending` row and lease
   case_crash_requeue_no_double_send  a `running` job left by a dead process: requeued, the rerun
                                    reaps the `sending` row and sends nothing
+  case_model_cap_timeout_sends_nothing  the Model-call cap saturated (1, held by a parked freed call):
+                                   every Writer try `timeout`, one decision row, no OF send, the Run
+                                   slot back, the cap's counts as before the Turn
 
 OF faked (`_full_ai_live_helpers.world`), Jevs / Writers faked. Temp DB only; no paid call.
 
@@ -35,6 +38,7 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import contextlib  # noqa: E402
+import json  # noqa: E402
 import os  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -43,16 +47,18 @@ from datetime import datetime, timedelta  # noqa: E402
 from sqlalchemy import select, update  # noqa: E402
 
 import automation_executor as ax  # noqa: E402
+import llm_client  # noqa: E402
+import model_cap  # noqa: E402
 import of_write  # noqa: E402
 import run_slot  # noqa: E402
 import webhook_dispatch as wd  # noqa: E402
 from _full_ai_fixtures import _msg  # noqa: E402
-from _full_ai_live_helpers import KIND, clear_pause, live_rows, seed_live, world  # noqa: E402
+from _full_ai_live_helpers import DEEPSEEK, KIND, LINE, clear_pause, live_rows, seed_live, world  # noqa: E402
 from _of_fixtures import FakeOF  # noqa: E402
 from automation_registry import _REGISTRY  # noqa: E402
 from automations import full_ai_live, full_ai_turn  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, AiDecision, FanLease, ScheduledJob  # noqa: E402
+from db.models import Account, AiDecision, AutomationRun, FanLease, ScheduledJob  # noqa: E402
 
 SERIAL = "zz_parallel_test_serial"   # a kind that is not per-fan
 CAP_ENV = "AUTOMATION_FULL_AI_PER_CREATOR"
@@ -440,6 +446,60 @@ async def case_crash_requeue_no_double_send():
     assert row.status == "unconfirmed" and fake2.sent == [], (row.status, fake2.sent)
     async with get_session() as s:
         assert (await s.get(ScheduledJob, job_id)).status == "done"
+
+
+async def case_model_cap_timeout_sends_nothing():
+    aid, fan = "fa_par_model_cap", 8361
+    rid = await seed_live(aid)
+    await _no_sweep(aid, rid)
+    await _dms(aid, [fan], 93610)
+    real_size, real_sem, real_wait = ax._size_run_slots, ax._run_sem, model_cap.WAIT_S
+    old_env = os.environ.get(model_cap.ENV)
+
+    async def keep(pool):
+        return None
+
+    async def blocker():                        # another automation run's freed call holds the one permit
+        async with run_slot.hold(run_slot.SlotPool(1)):
+            return await run_slot.freed(llm_client.chat(
+                model="deepseek-v4-flash", messages=[{"role": "user", "content": "x"}], purpose="model_cap_block",
+                account_id=aid), budget_s=120)
+    os.environ[model_cap.ENV] = "1"
+    model_cap.WAIT_S = 0.05
+    ax._size_run_slots, ax._run_sem = keep, run_slot.SlotPool(2)
+    held = None
+    try:
+        with world(writers={DEEPSEEK: ["park", *[LINE] * 9]}) as (fake, *_, fw):   # the blocker parks on its 1st post
+            held = asyncio.create_task(blocker())
+            await asyncio.wait_for(fw.parked.wait(), 5)
+            before = (model_cap.in_flight(), model_cap.queued())
+            assert before == (1, 0), before
+            await _drain_all(aid)
+            assert ax._run_sem.free == 2, ax._run_sem.free
+            assert (model_cap.in_flight(), model_cap.queued()) == before
+            assert not held.done(), "the blocker should still hold the permit"
+    finally:
+        if held is not None:                    # world()'s exit set fw.go: the blocker's post answers
+            await asyncio.wait_for(asyncio.gather(held, return_exceptions=True), 5)
+        ax._size_run_slots, ax._run_sem, model_cap.WAIT_S = real_size, real_sem, real_wait
+        if old_env is None:
+            os.environ.pop(model_cap.ENV, None)
+        else:
+            os.environ[model_cap.ENV] = old_env
+    (row,) = await live_rows(aid)              # exactly one decision row
+    assert row.fan_id == fan and row.status != "sent", (row.fan_id, row.status)
+    assert not any(s["fan_id"] == fan for s in fake.sent), fake.sent
+    attempts = json.loads(row.reply_json or "{}").get("attempts") or []
+    assert attempts and {a["outcome"] for a in attempts} == {"timeout"}, attempts
+    async with get_session() as s:             # the Run slot came back: no SlotLost, the run ended ok
+        runs = (await s.execute(select(AutomationRun.status, AutomationRun.error_text).where(
+            AutomationRun.account_id == aid, AutomationRun.kind == KIND))).all()
+        jobs = (await s.execute(select(ScheduledJob.status).where(
+            ScheduledJob.account_id == aid, ScheduledJob.kind == KIND))).scalars().all()
+    assert runs and {r.status for r in runs} == {"ok"}, runs
+    assert not any("SlotLost" in (r.error_text or "") for r in runs), runs
+    assert jobs and set(jobs) == {"done"}, jobs
+    assert (model_cap.in_flight(), model_cap.queued()) == (0, 0)
 
 
 _harness.run()

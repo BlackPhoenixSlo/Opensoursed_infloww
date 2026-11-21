@@ -10,7 +10,9 @@ unbounded create_task piling up.
 Solution: one bounded queue, one consumer task that drains it in order,
 one event_inbox commit per batch of whatever is queued.
 Producers (events.handle_event → `enqueue`) push and never block; on overflow
-we drop the oldest item so freshness wins over completeness. SSE fan-out stays
+we displace the oldest item that is not a Fan's DM (typing, toasts, echoes cost
+only freshness; a DM costs a reply), or drop the incoming one when every queued
+item is a DM (events_decide.overflow_victim). SSE fan-out stays
 inline in events.py so realtime UI is unaffected — only DB writes get queued.
 What one batch writes is events_decide.persist_plan (pure); this is the shell.
 
@@ -20,10 +22,10 @@ stats read `_persist_queue` / `_persist_drops` here.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 
+import event_transcode_decide as td
 import events_decide as ed
 from db import of_writer, write_telemetry
 from db.repo import insert_events
@@ -44,33 +46,52 @@ _persist_drops = 0
 _persist_inflight = 0   # events the worker has taken and not finished transcoding
 
 
+def _take_all() -> list[ed.PersistItem]:
+    """Everything queued, in queue order, off the queue (no telemetry: a reshuffle, not traffic)."""
+    items = []
+    while True:
+        try:
+            items.append(_persist_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            return items
+
+
+def _refill(items: list[ed.PersistItem]) -> None:
+    for it in items:
+        _persist_queue.put_nowait(it)
+
+
 def enqueue(account_id: str | None, event_type: str | None, persistable: dict, event: dict) -> None:
     """Hand one OF frame to the worker. Bounded queue gives backpressure;
-    on overflow we drop the oldest so a slow disk loses history, not
-    the freshest events. Before the worker is started (race at startup
-    between the first event and `start_persist_worker`), we fall back
-    to the old fire-and-forget create_task path so we don't lose data."""
+    on overflow we displace the oldest frame that is not a Fan's DM
+    (`ed.overflow_victim`), or drop the incoming one when every queued frame
+    is a DM. Never awaits, never writes. Before the worker is started (race
+    at startup between the first event and `start_persist_worker`), we fall
+    back to the old fire-and-forget create_task path so we don't lose data."""
     global _persist_drops
     if _persist_queue is not None:
-        item = ed.PersistItem(account_id, event_type, persistable, event)
+        item = ed.PersistItem(account_id, event_type, persistable, event, td.is_inbound_dm(event))
         try:
             _persist_queue.put_nowait(item)
         except asyncio.QueueFull:
             _persist_drops += 1
             write_telemetry.drop("queue_full")
-            with contextlib.suppress(asyncio.QueueEmpty):
-                _persist_queue.get_nowait()
-                write_telemetry.dequeued()
-            try:
-                _persist_queue.put_nowait(item)
-            except Exception:
-                pass
+            # asyncio.Queue has no remove: take all out, drop the victim, put back in order.
+            queued = _take_all()
+            victim = ed.overflow_victim(queued)
+            if victim is not None:
+                del queued[victim]
+                queued.append(item)
+            _refill(queued)   # same count as taken: cannot overflow (no await in between)
             if _persist_drops % 100 == 1:
                 log.warning(
                     "persist queue at capacity — %d events displaced so far "
                     "(SQLite writer can't keep up; check disk / batch size)",
                     _persist_drops,
                 )
+            if victim is None:
+                return   # the incoming frame was dropped: nothing went in or out
+            write_telemetry.dequeued()
         write_telemetry.enqueued(_persist_queue.qsize())
     else:
         # Pre-startup path: keep the old behavior so no event is lost.
@@ -180,10 +201,13 @@ async def stop_persist_worker() -> None:
     """Drain, then cancel the worker — call from shutdown only, after the OF
     pumps are cancelled (no live producer). Best-effort: what is queued gets
     up to _STOP_DRAIN_S to be written (the OF-cache writer then flushes what
-    it holds); whatever is left after that is lost and counted."""
+    it holds); whatever is left after that is lost and counted. Fans' DMs
+    go first (`ed.stop_order`); the batch the worker holds is not reordered."""
     global _persist_worker_task
     if _persist_worker_task is None:
         return
+    if _persist_queue is not None:
+        _refill(ed.stop_order(_take_all()))
     deadline = time.monotonic() + _STOP_DRAIN_S
     while ((_persist_queue is not None and _persist_queue.qsize()) or _persist_inflight) \
             and not _persist_worker_task.done() and time.monotonic() < deadline:

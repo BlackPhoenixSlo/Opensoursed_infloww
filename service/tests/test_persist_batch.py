@@ -8,6 +8,9 @@
   • `typing` frames are transcoded (Fan touch) but never written to event_inbox.
   • A provider id dedups instead of failing the insert (the partial index's
     WHERE must be in the ON CONFLICT target, or SQLite refuses it).
+  • A full queue displaces the oldest frame that is not a Fan's DM, or drops the
+    incoming one when all are DMs (one `queue_full` either way); a stop transcodes
+    the queued DMs first; `enqueue` never awaits or writes.
 
 Run:  ./venv/bin/python service/tests/test_persist_batch.py
 """
@@ -120,6 +123,139 @@ async def case_typing_transcoded_not_persisted():
     assert transcoded == items, "typing must still reach the transcoder"
     assert [r["event_type"] for c in calls for r in c] == ["api2_chat_message"], calls
     assert await _inbox(acct) == ["api2_chat_message"]
+
+
+# ── overflow and stop keep Inbound DM frames (phase-0A) ──
+FAN = 354841559
+
+
+def dm(n):
+    """An Inbound DM frame (a Fan's text DM to account A)."""
+    return {"__account_id": A, "api2_chat_message": {"id": n, "text": "hi", "fromUser": {"id": FAN}}}
+
+
+def other(kind, n=0):
+    """A frame that is not an Inbound DM: typing, toasts, ..."""
+    return {"__account_id": A, kind: {"id": FAN, "n": n}}
+
+
+class _Telemetry:
+    """Stands in for events_persist.write_telemetry: counts drops by reason and dequeues."""
+    def __init__(self):
+        self.drops: dict[str, int] = {}
+        self.dequeues = 0
+
+    def drop(self, reason, n=1):
+        self.drops[reason] = self.drops.get(reason, 0) + n
+
+    def dequeued(self, n=1):
+        self.dequeues += n
+
+    async def stop(self):
+        pass
+
+    def __getattr__(self, name):        # enqueued / batch / writer / ...: not counted here
+        import contextlib
+        return lambda *a, **k: contextlib.nullcontext()
+
+
+def _enqueue(ev):
+    events_persist.enqueue(ev["__account_id"], events.ed.first_key(ev),
+                           {k: v for k, v in ev.items() if not k.startswith("__")}, ev)
+
+
+async def _overflow(queued, incoming):
+    """Fill a maxsize-3 queue with `queued` through the real `enqueue`, then enqueue each of
+    `incoming`; return (the queued frames in order, drops added, telemetry recorder)."""
+    tel, real_tel = _Telemetry(), events_persist.write_telemetry
+    events_persist._persist_queue = asyncio.Queue(maxsize=3)
+    try:
+        for ev in queued:
+            _enqueue(ev)
+        events_persist.write_telemetry = tel
+        drops0 = events_persist._persist_drops
+        for ev in incoming:
+            _enqueue(ev)
+        out = []
+        while not events_persist._persist_queue.empty():
+            out.append(events_persist._persist_queue.get_nowait().event)
+        return out, events_persist._persist_drops - drops0, tel
+    finally:
+        events_persist.write_telemetry = real_tel
+        events_persist._persist_queue = None
+
+
+async def case_overflow_displaces_oldest_non_dm():
+    toast = other("toasts")
+    got, drops, tel = await _overflow([dm(1), other("typing"), dm(2)], [toast])
+    assert got == [dm(1), dm(2), toast], got
+    assert drops == 1 and tel.drops == {"queue_full": 1} and tel.dequeues == 1, (drops, tel.drops, tel.dequeues)
+
+
+async def case_overflow_keeps_queued_dms():
+    got, drops, tel = await _overflow([other("typing"), dm(1), dm(2)], [dm(3)])
+    assert got == [dm(1), dm(2), dm(3)], got
+    assert drops == 1 and tel.drops == {"queue_full": 1}
+
+
+async def case_overflow_all_dms_drops_incoming():
+    for incoming in (dm(4), other("typing")):
+        got, drops, tel = await _overflow([dm(1), dm(2), dm(3)], [incoming])
+        assert got == [dm(1), dm(2), dm(3)], (incoming, got)
+        assert drops == 1 and tel.drops == {"queue_full": 1}, (incoming, drops, tel.drops)
+        assert tel.dequeues == 0, (incoming, tel.dequeues)
+
+
+async def case_stop_transcodes_dms_first():
+    """A stop with the worker stuck on its first frame and a backlog of typing, DM, toast, DM
+    transcodes the DMs first, each group in queue order, and loses nothing."""
+    first, backlog = other("online"), [other("typing"), dm(1), other("toasts"), dm(2)]
+    transcoded: list[dict] = []
+    release = asyncio.Event()
+
+    async def _transcode(ev):
+        transcoded.append(ev)
+        if ev is first:
+            await release.wait()
+
+    tel, real_tel = _Telemetry(), events_persist.write_telemetry
+    orig_t = event_transcoder.transcode
+    event_transcoder.transcode, events_persist.write_telemetry = _transcode, tel
+    events_persist._persist_queue = asyncio.Queue()
+    try:
+        _enqueue(first)
+        events_persist._persist_worker_task = asyncio.create_task(events_persist._persist_worker_loop())
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if transcoded:
+                break
+        assert transcoded == [first], "the worker must hold the first frame"
+        for ev in backlog:
+            _enqueue(ev)
+        stop = asyncio.create_task(events_persist.stop_persist_worker())
+        await asyncio.sleep(0.01)
+        release.set()
+        await asyncio.wait_for(stop, 10)
+        assert transcoded[1:] == [dm(1), dm(2), other("typing"), other("toasts")], transcoded
+        assert tel.drops.get("shutdown_queued", 0) == 0 and tel.drops.get("shutdown_inflight", 0) == 0, tel.drops
+    finally:
+        event_transcoder.transcode, events_persist.write_telemetry = orig_t, real_tel
+        events_persist._persist_queue = None
+        if events_persist._persist_worker_task is not None:
+            events_persist._persist_worker_task.cancel()
+            events_persist._persist_worker_task = None
+
+
+async def case_enqueue_never_awaits():
+    """The WS pump never waits on enqueue: a plain function that queues no DB write, even on overflow."""
+    import inspect
+
+    from db import of_writer
+    assert not inspect.iscoroutinefunction(events_persist.enqueue)
+    queued0 = of_writer._queued
+    got, drops, _ = await _overflow([dm(1), other("typing"), dm(2)], [dm(3), other("toasts")])
+    assert got == [dm(1), dm(2), dm(3)] and drops == 2, (got, drops)
+    assert of_writer._queued == queued0 and not of_writer._pending, "enqueue must not queue a write"
 
 
 async def case_provider_id_dedups_instead_of_failing():

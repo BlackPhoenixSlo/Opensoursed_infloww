@@ -13,7 +13,8 @@ frames until it is full (BATCH_MAX) or its window ends; a stream-ending frame cl
 or goes alone (order across batches through the real shell: test_sse_batching.py); coalescing drops
 only superseded typing / queue-progress frames, order kept. decide_ring never mutates its input.
 persist_plan: one event_inbox row per item in queue order except `typing`; the dedup key is the
-first of id / messageId / eventId, typed. Routing (sees / wants): an Agency-wide event reaches only
+first of id / messageId / eventId, typed. A full queue displaces the oldest non-DM item
+(none when all are DMs); a stop takes DMs first, each group in queue order, input untouched. Routing (sees / wants): an Agency-wide event reaches only
 that audience whatever the scope; an untagged one only an unclamped "all"; an account event the
 scope that names it, then the clamp; ids compare as str. Classifiers: the account's own
 post_published is kept, other feed frames dropped; typing's fan id from id / user_id / fromUser /
@@ -320,6 +321,35 @@ def test_persist_plan(batch, rows):
 ])
 def test_inbox_row_dedup_key(persistable, want):
     assert pid("t", persistable) == want
+
+
+def q(kind, n=0):
+    """A queued item: kind "dm" is an Inbound DM frame; `n` tells two of a kind apart."""
+    return ed.PersistItem(A, kind, {"n": n}, {"__account_id": A, "n": n}, inbound_dm=kind == "dm")
+
+
+@table("queued, victim", [
+    ([], None),
+    ([q("dm", 1), q("dm", 2)], None),                                            # all DMs: drop the incoming
+    ([q("dm", 1), q("typing"), q("dm", 2), q("toasts")], 1),                     # oldest non-DM
+    ([q("typing"), q("dm")], 0),
+    ([q("dm", 1), q("dm", 2), q("echo")], 2),
+])
+def test_overflow_victim(queued, victim):
+    assert ed.overflow_victim(queued) == victim
+
+
+@table("queued, ordered", [
+    ([q("typing"), q("dm", 1), q("toasts"), q("dm", 2)], [q("dm", 1), q("dm", 2), q("typing"), q("toasts")]),
+    ([q("dm", 2), q("echo", 1), q("dm", 1), q("echo", 2)], [q("dm", 2), q("dm", 1), q("echo", 1), q("echo", 2)]),
+    ([q("dm", 1), q("dm", 2)], [q("dm", 1), q("dm", 2)]),                        # all DMs: unchanged
+    ([q("typing"), q("toasts")], [q("typing"), q("toasts")]),                    # no DMs: unchanged
+    ([], []),
+])
+def test_stop_order(queued, ordered):
+    before = list(queued)
+    assert ed.stop_order(queued) == ordered
+    assert queued == before, "the input is not mutated"
 
 
 # ── routing ──

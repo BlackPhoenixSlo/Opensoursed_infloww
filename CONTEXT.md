@@ -998,3 +998,24 @@ _Avoid_: approval, review (the owner judges taste on a sample, outside the gate)
 **Rollout journal**:
 The Rollout driver's host-side record of every row's values before and after a Fill, and the Undo lists it can replay through `fill/undo`.
 _Avoid_: log, backup (the DB backup taken before the apply wave), ledger (the **Decision ledger**, the spend ledger)
+
+### Persist queue priority
+
+**Inbound DM frame**:
+An OnlyFans websocket frame that the transcoder would write as a Fan's message to the Creator (an inbound `messages` row, which fires the inbound hooks); the persist queue keeps it last on overflow and transcodes it first on a graceful stop. Every other frame (typing, online, toasts, outbound echoes) only costs freshness when dropped.
+_Avoid_: actionable event, important event, inbound event (toasts and purchases are inbound too)
+
+### Model-call caps
+
+**Run slot**:
+One permit of the supervisor's shared automation run pool (`_run_sem`, `run_slot.SlotPool`); a run hands it back while it waits on a model or a typing hold, and runs of the operator kinds have reserved ones.
+_Avoid_: lane (the **Lane**), worker, Model-call cap
+
+**Model-call cap**:
+The one Relay-wide limit on `llm_client.chat` calls in flight at once from automation runs that have handed back their Run slot, set from the Concurrency panel (`lane_config`) like the other caps. A call waits for it outside its Run slot and only until a deadline; Employee model calls, operator-kind runs and calls that still hold their Run slot bypass it, and Jev requests are never in it.
+_Avoid_: run slot, per-Creator cap (`AUTOMATION_FULL_AI_PER_CREATOR`, Full AI Turns per Creator), rate limit
+
+**Employee model call**:
+A model call made because an Employee asked for it now (help assistant drafts, manual tools), never one an automation makes; it never queues behind automation on the Model-call cap.
+_Avoid_: operator call (**Employee** is the person; operator kinds are a Run slot rule), manual call, user call
+ASSUMPTION: "Employee" over the plan's "operator-initiated", by the glossary's existing Employee entry (rung 3); overturned if code naming (`operator=True`) must be mirrored in the spec.
