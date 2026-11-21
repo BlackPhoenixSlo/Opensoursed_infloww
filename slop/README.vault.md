@@ -25,6 +25,7 @@ oracles, bypasses).
 | `lib/picker_ts.mjs` | The same phase in node (`lib/app_ts.py`): `vaultPickerFolders.folderSelectItems` on the chatter's folder access and vault lists. |
 | `scenarios/2026-11-01-vault-pro-20k.py` | Vault Pro at 20k; its `_oracle` (what `GET /duplicates` must answer at a strictness, from the planted copies). |
 | `scenarios/2026-11-01-vault-describe-sweep.py` | The describe sweep. |
+| `scenarios/2026-11-21-script-fill.py`, `seed/script_fill_vault.py`, `lib/script_fill_faults.py` | Growth > Scripts' "Fill with content": the scenario, its vaults and Sequences (SQL), its check names and fault (below). |
 | `scenarios/2026-10-30-vault-import-reducer.py` | Add media's pick list and the restricted chatter's picker. |
 | `lib/vault_wire.py` | OnlyFans' vault at its wire for the vault flows (week cache, Refresh): `VaultWire(fake, seed, items, sizes=)` joins `of_wire.FakeOF.extra_routes`; per Creator (made on first sight of its User-ID) `items` media in 6 folders; `/vault/lists`, `/vault/media` (list / type / sort / offset / limit), `/vault/media/{id}` (re-signed); urls signed by `seed/chat_media.sign`; `assets()` for `img_relay.arm_run`, `rotate()`, `add(uid, name, k)` (a folder + k media made on OF now); records `fake.vault_calls`. |
 | `lib/vault_collect_relay.py` | With RELAY_ENV `SLOP_VAULT_STILLS=1`: vault_stills / storyboard dirs into `$DEMO_SHOTS_TMP/vault-stills/`, the collector's periodic started (test mode skips `_start_event_pumps`). |
@@ -159,7 +160,9 @@ oracles, bypasses).
   Extras, "Describe all (N)", screenshots `describe-trigger` / `describe-settled`), flags (`flags-all {force}` for
   every Creator), pass 2 (must retry only the blank ones), pass 3 (describe-all pressed by 3 tabs at once per
   Creator). Checks (`lib/vault_describe_faults.py`): `EXACTLY_ONCE`, `PLAN`, `CACHE`, `ESCALATE`, `COST`,
-  `COST_INCL_FLAGS`, `FLAGS`, `ONE_SWEEP`, `UI_SETTLED`; budgets
+  `COST_INCL_FLAGS`, `FLAGS`, `ONE_SWEEP`, `UI_SETTLED`, `TARGET` (after pass 3: describe-all `target` at 1000,
+  a met target, is zero work; 4 described photos of one Creator reset to undescribed by SQL, then target =
+  described + 2 walks exactly 2 of them; the met target again zero work); budgets
   (the status routes' p95 over pass 1, flags and pass 2, p95 vs the last green run) are the scenario's.
   `SLOP_LIVE=1`: every check SKIPs. Faults: `vault-describe-ignores-cache` (default; targets `CACHE`, `PLAN`),
   `vault-describe-cost-last-attempt` (`COST`, `COST_INCL_FLAGS`), `vault-describe-claim-after-budget` (the start
@@ -168,6 +171,28 @@ oracles, bypasses).
   each clip's mp4s (Jev v8 is their only flags source, D54). Knobs: `--items=` (SCALES `vault_describe_items`;
   <= 960 clips, so huge raises), `--llm_latency_s=` (0.05 per call), `--cdn_latency_s=` (0.02).
 - `2026-11-11-vault-jev-flags`: `agency_inbox` plus `seed/vault_items_describe` (`--items=`, SCALES `vault_jev_items` 90 / 600 / 2,000; photos resized to unique 280-448 px edges and given a Jev profile each: singles round robin over every profile incl. `down` (TypeSafe 400), a planted set one answering profile; clips get real 12 s flat-colour mp4s on OF's fake CDN (`img_relay` `mp4_frames`: 240p, 720p, `files.full`; frame size + tint per clip, colour per second), a recipe (`CLIPS`: free / max / top3 / down, a photo profile per frame) and a source (each Creator's first describable live single "no720" (no 720p and no `files.full`: the product would read a native `full` first), Creators 0-2's second a 720p padded past 50 MB "overcap", every other a 720p under the cap), no seeded storyboard), the three fakes armed. No setting: Jev runs on every Creator's photos and clips; the plan's `jev` ({ready, reason}) must say ready (NudeNet `NUDENET_640M_PATH`, default ~/.cache/slop/nudenet-640m.onnx, fetched once with the Dockerfile md5) or the run stops. Phases (the describe sweep's `_phase`, loaded from its file): describe-all, then flags-all {force}, for every Creator at once. UI last (changes no check above): Vault Pro on Creator 0, a prose-described photo's tile (screenshot `vault-jev-described-trigger`), one click, its panel's Description box settled on the stored text (`vault-jev-described-settled`), then the row's `_describe.path` prose / `_flags_model` jev and `/admin/vault-ai/items`' `_ai` (`JEV_UI_DESCRIBED`), then the same for a vid-described clip (`vault-jev-video-trigger` / `-settled`, `JEV_UI_VIDEO`; both SKIP with --no-ui). Planned lanes by profile (none free, pen $100, vulva $50, nipple $10, lower $50 via pass L, p2_clear $10 via pass 2, unsure free settled, pen_unsure $100 settled, down `_jev` error and skipped; NudeNet detects nothing on the flat stills: veto / promote never fire, declared). Checks (`lib/vault_jev_faults.py`): `JEV_DEFAULT_ON`, `JEV_PHOTO_NO_QWEN_FLAGS`, `JEV_PHOTO_NEVER_V2` (incl. down photos: no describe / flags call, status untouched, one Jev try per sweep), `JEV_LANES`, `JEV_BEFORE_DESCRIBE`, `JEV_COST` (sweep `jev_cost_millicents` and total, `typesafe` grok_daily_cost row, grok_calls rows vs the fake's tokens at $0.042/M rounded up per photo), `JEV_COPY`, `JEV_DESCRIBE_PROSE` / `JEV_DESCRIBE_REVIEW` (the Jev-fed describe, D51: coin flips get the v6 recipe @960 with the hedge, every other answered photo the prose recipe @640 whose hostile fake prose must be scrubbed to exactly the claims its answers spell; `_describe` stamps), clips (D54): `JEV_VIDEO_FRAMES` (pass 1 on exactly 12 frames, video blob), `JEV_VIDEO_TOP3` (pass 2 / L on min(3, asking) frames only), `JEV_VIDEO_LANE` (max frame's lane; a review clip's `read_lane5`), `JEV_VIDEO_NO_QWEN_FLAGS`, `JEV_VIDEO_OVER_CAP` / `JEV_VIDEO_NO_720` (240p + `review` + `lane5` review + `jev_review` on the flags-review route; never `files.full`; the no-720p `full`-first path is unit-tested only, `service/tests/test_vault_jev.py`), `JEV_VIDEO_SCRUB` (12 400 px scrub frames under the 240p hash, no extra 240p GET), `JEV_DESCRIBE_VIDEO` (vid recipe on 6 scrub frames, hedge iff `_jev.review`; Jev-down clips skipped), the describe sweep's status p95 budgets + p95 vs last green. Faults: `photo-still-calls-qwen-flags` (default; `JEV_PHOTO_NO_QWEN_FLAGS`), `photo-describe-falls-back-to-v2` (`JEV_PHOTO_NEVER_V2`), `vault-jev-no-settle` (`JEV_LANES`), `vault-jev-describe-ignores-review` (`JEV_DESCRIBE_REVIEW`), `video-still-calls-qwen-flags`, `video-jev-reads-9-frames`, `video-escalates-every-frame`, `video-lane-uses-first-frame`, `video-over-cap-auto-free`, `video-missing-720-auto-free`, `video-scrub-not-published`, `video-describe-falls-back-to-v2` (each its one video check). Knob `--set cdn_latency_s=` (0.02). Knobs: `--items=`, `--set jev_latency_s=` (0.1), `--set llm_latency_s=` (0.05).
+- `2026-11-21-script-fill` (UI 1440x900, `OF_WIRE`): Growth > Scripts' "Fill with content" on `agency_inbox` plus
+  `seed/script_fill_vault.py` (SQL, deterministic from `--seed`): Creator A's Sequence "Slop Fill S1" over one
+  WHITE Shoot of Fillable items (solo readings, Rungs, a $99 OF-list folder price, free-safe stills) plus three
+  decoys that rank first but are not Fillable (partner clip, Jev-held photo, REVIEW-folder photo); Creator B the
+  same-named Sequence (never written); Creator C a short vault of 2 described stills and 6 undescribed photos with
+  the describe and Jev fakes armed for them. Flow: A's one press (fill/apply, the notice, the cards' tiles), the
+  rows read back, steps 1 / 3 / 7 sent from a chat tab through the template picker (bodies read on
+  `lib/of_wire.py`), the notice's Undo; then C: the describe cap row (SQL) before the press, the cap row after the
+  offer renders, then Describe (target 1000), the dialog closed and reopened mid-sweep, "Ready to fill.", the
+  dialog's Fill. Checks (`lib/script_fill_faults.py`): `FILL_ONE_PRESS` (incl. each card's tiles and `fmtPrice`
+  price), `FILL_READ_BACK`, `FILL_SEND`, `FILL_ISOLATION` (A's apply 200 `ok` with writes, then B byte-equal),
+  `FILL_UNDO`, `DESCRIBE_OFFER` (the reopen's progress within the describe hold), `DESCRIBE_BLOCKED`,
+  `DESCRIBE_REFUSED`; budgets (fill/apply as the browser saw it, fill/plan p95 over 10 serial reads) in the
+  scenario. `--no-ui`: one `POST fill/apply` for A, then only `FILL_ISOLATION` and the plan budget, the rest SKIP;
+  `SLOP_LIVE=1`: all SKIP. Fault `script-fill-skips-eligibility` (relay: `script_fill_decide.fillable` /
+  `fillable_rows` pass every item; `FILL_READ_BACK`, `FILL_SEND`: the partner clip ties A's $99 clip on every sort
+  key but its higher media id, so it takes step 7; proven offline with `plan_from_vault`, scenario docstring):
+  `slop/run 2026-11-21-script-fill --break --baseline=slop/evidence/<green folder>`. Shots `fill-trigger`,
+  `fill-filled`, `send-free`, `send-paid-step3`, `send-paid-step7`, `fill-undo-restored`, `describe-blocked`,
+  `describe-refused`, `describe-offer`, `describe-progress`, `describe-ready`, `describe-filled`. Knobs: `--set
+  llm_latency_s=` (30, `DESCRIBE_HOLD_S`: no describe call answers sooner, so the sweep runs through the reopen),
+  `--set jev_latency_s=` (0.1).
 - `2026-10-30-vault-import-reducer`: Vault Pro > Add media's pick list
   (`app/components/vault/importPickReducer.ts`) on the real UI and relay route (one owner,
   1440x900, `agency_inbox`, Creator 0's vault mirror one SQL `vault_items` row): 4 tiny ffmpeg

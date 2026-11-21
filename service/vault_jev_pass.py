@@ -42,7 +42,7 @@ DOWN_AFTER = 3   # Jev call failures in a row that read as an outage
 # `_jev.retries`. The RETRY_MAXth such visit reads the frames it got (their `review` reading stands) or, with none,
 # stamps a terminal review reading, so a clip that always fails stops costing a download a sweep.
 RETRY_MAX = 3
-HELD = "fetch_failed"   # `_jev.review` of a held clip (`vault_ai_brief`: disputed, never in a free lane)
+HELD = vault_jev_rules.HELD
 
 
 class Sweep:

@@ -15,6 +15,10 @@ and test_vault_flags_sweep walk that on a DB).
   case_describe_answer_table:         headline fields of an answer.
   case_build_describe_update_table:   locks, carried flags, operator fixes, stamps.
   case_describe_tier_follows_locked_explicitness: tier column = Jev's column_tier.
+  case_is_terminal_table:             Terminal failure statuses + the terminal
+                                      held Jev blob; failed / fetch_failed retry.
+  case_coverage_table:                goal = min(target, describable − terminal),
+                                      remaining = max(0, goal − described).
 
 No DB of the app's, no OF, no LLM. Run: venv/bin/python service/tests/test_vault_ai_vision_decide.py
 """
@@ -201,6 +205,55 @@ def case_describe_tier_follows_locked_explicitness():
          "suggestive"),
         ("column locked: untouched", ({"_jev": jev}, [jf.TIER_COLUMN]), "<untouched>"),
     ], tier)
+
+
+def _held(terminal):
+    import vault_jev_pass
+    return vault_jev_pass.held_blob({"status": "ok", "lane5": "$10"}, 3, "no frames", "2026-11-21", terminal=terminal)
+
+
+def case_is_terminal_table():
+    """Terminal failure: not described and `refused` / `blocked_drm` / `gone`, or the terminal held Jev blob
+    (`held_blob(terminal=True)`). `failed` / `fetch_failed` and the non-terminal hold stay retryable."""
+    ok_jev = {"status": "ok", "lane5": "$10", "review": "ok"}
+    _table([
+        ("refused", ("refused", {}), True),
+        ("blocked_drm", ("blocked_drm", {}), True),
+        ("gone", ("gone", None), True),
+        ("failed: retryable", ("failed", {}), False),
+        ("fetch_failed: retryable", ("fetch_failed", {}), False),
+        ("never tried", (None, None), False),
+        ("never tried, terminal held clip", (None, {"_jev": _held(True)}), True),
+        ("failed status, terminal held clip", ("failed", {"_jev": _held(True)}), True),
+        ("held, not terminal yet: retried", (None, {"_jev": _held(False)}), False),
+        ("a good Jev reading", (None, {"_jev": ok_jev}), False),
+        ("described is never terminal", ("described", {"_jev": _held(True)}), False),
+        ("junk _jev", (None, {"_jev": "x"}), False),
+    ], d.is_terminal)
+
+
+def case_coverage_table():
+    """goal = min(target, describable − terminal); remaining = max(0, goal − described)."""
+    vault = ([("described", {})] * 4 + [("refused", {}), ("blocked_drm", None), (None, {"_jev": _held(True)})]
+             + [("failed", {}), (None, None), ("fetch_failed", {})])
+
+    def cov(rows, target):
+        return d.coverage(rows, target)
+    _table([
+        ("target above vault: goal = describable − terminal", (vault, 1000),
+         {"target": 1000, "describable": 10, "described": 4, "terminal": 3, "goal": 7, "remaining": 3}),
+        ("target below it", (vault, 5),
+         {"target": 5, "describable": 10, "described": 4, "terminal": 3, "goal": 5, "remaining": 1}),
+        ("met target", (vault, 4),
+         {"target": 4, "describable": 10, "described": 4, "terminal": 3, "goal": 4, "remaining": 0}),
+        ("described past the target", (vault, 2),
+         {"target": 2, "describable": 10, "described": 4, "terminal": 3, "goal": 2, "remaining": 0}),
+        ("empty vault", ([], 1000),
+         {"target": 1000, "describable": 0, "described": 0, "terminal": 0, "goal": 0, "remaining": 0}),
+        ("all terminal", ([("refused", {})] * 3, 1000),
+         {"target": 1000, "describable": 3, "described": 0, "terminal": 3, "goal": 0, "remaining": 0}),
+    ], cov)
+    assert d.DESCRIBE_TARGET == 1000
 
 
 _harness.run()

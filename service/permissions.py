@@ -26,6 +26,7 @@ and Role enforcement on the Relay:
   DASHBOARD_CARDS, CARD_KEYS  the Dashboard's cards a role can hide and the routes each reads
   ACTIONS, route_action(...)  the Function permissions and the one a request is
   require_permission(...)     403 "Your role does not allow <page label>"
+  route_refusal(...)          the middleware's decision for one route and its named Creators
   role_enforcement_middleware runs it for chatter sessions on mapped routes
 
 `ctx` is the request's AgencyContext (`employees.agency_context`) and `roles`
@@ -835,6 +836,52 @@ async def role_holders(role_id: str) -> set[int]:
     return out
 
 
+async def route_refusal(
+    pages: tuple[str, ...], method: str, path: str, account_ids: list[str | None],
+    query: Mapping[str, str] | None = None,
+) -> tuple[HTTPException | None, list[AgencyContext]]:
+    """role_enforcement_middleware's decision for this session on a route `pages` serve
+    (`route_pages(path, method)`), naming `account_ids` ([None]: none named): (the refusal it answers, as an
+    HTTPException, or None to pass; the Agency contexts it checked, [] when it checked none). Callers that
+    ask whether a route would refuse (`script_fill_api`'s Vault Pro sentence) call this too, so both follow
+    one rule."""
+    if not pages:
+        return None, []
+    if set(pages) <= OPT_IN_PAGES:
+        # Served only by My Automations pages: opt-in, whatever the switch.
+        try:
+            for one in account_ids:
+                if (detail := await opt_in_refusal(pages, one)) is not None:
+                    return HTTPException(status_code=403, detail=detail), []
+        except HTTPException as exc:
+            return exc, []
+        return None, []
+    try:
+        if agency_chatter() is None:
+            return None, []
+        # One fresh checkout for this request's roles, Agency mapping and
+        # existing Mirror Employee; release it before the route runs.
+        async with get_session() as s:
+            roles = await _enforcing_roles(db_session=s)
+            contexts = []
+            if roles is not None:
+                for one in account_ids:
+                    contexts.extend(await agency_contexts(account_id=one, db_session=s))
+    except HTTPException as exc:
+        return exc, []
+    if roles is None:
+        return None, []
+    try:
+        # Every context's Agency is one of the chatter's linked Agencies, so its
+        # blob was read above; a missing key raises (500) rather than allow.
+        action = route_action(method, path, query)
+        for ctx in contexts:
+            require_permission(ctx, roles[ctx.agency_user_id], pages, path, action)
+    except HTTPException as exc:
+        return exc, contexts
+    return None, contexts
+
+
 async def role_enforcement_middleware(request, call_next):
     """Refuse a chatter session a mapped route its Permission role denies,
     before the handler runs (docs/spec/phase-04 › Role enforcement).
@@ -866,38 +913,10 @@ async def role_enforcement_middleware(request, call_next):
     # repeated ?account_id= (a list Query such as sales-records reads them all).
     ids = split_account_ids(request.headers.get("x-account-id"),
                             *request.query_params.getlist("account_id")) or [None]
-    if set(pages) <= OPT_IN_PAGES:
-        # Served only by My Automations pages: opt-in, whatever the switch.
-        try:
-            for one in ids:
-                if (detail := await opt_in_refusal(pages, one)) is not None:
-                    return JSONResponse({"detail": detail}, status_code=403)
-        except HTTPException as exc:
-            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
-        return await call_next(request)
-    try:
-        if agency_chatter() is None:
-            return await call_next(request)
-        # One fresh checkout for this request's roles, Agency mapping and
-        # existing Mirror Employee; release it before the route runs.
-        async with get_session() as s:
-            roles = await _enforcing_roles(db_session=s)
-            contexts = []
-            if roles is not None:
-                for one in ids:
-                    contexts.extend(await agency_contexts(account_id=one, db_session=s))
-    except HTTPException as exc:
-        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
-    if roles is None:
-        return await call_next(request)
-    try:
-        # Every context's Agency is one of the chatter's linked Agencies, so its
-        # blob was read above; a missing key raises (500) rather than allow.
-        action = route_action(request.method, request.url.path, request.query_params)
-        for ctx in contexts:
-            require_permission(ctx, roles[ctx.agency_user_id], pages, request.url.path, action)
-    except HTTPException as exc:
-        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    refusal, contexts = await route_refusal(pages, request.method, request.url.path, ids,
+                                            request.query_params)
+    if refusal is not None:
+        return JSONResponse({"detail": refusal.detail}, status_code=refusal.status_code)
     chatter = agency_chatter()
     if (chatter is not None and len(chatter.owner_user_ids) == 1
             and len(ids) == len(contexts) == 1 and ids[0]

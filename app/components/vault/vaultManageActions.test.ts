@@ -41,7 +41,7 @@ describe("describe Max", () => {
       expect(cappedCount(n, limit)).toBe(want);
     });
   it("onDescribeAll posts the limit; 0 posts none", async () => {
-    const start = vi.fn(async () => {});
+    const start = vi.fn(async () => null);
     const base = { capReason: "", refetchPlan: vi.fn(), describeSweep: { busy: false, start }, capped: false,
       plan: undefined, promptVersion: "v2" as const };
     await onDescribeAll("new", { ...base, limit: 2000 });

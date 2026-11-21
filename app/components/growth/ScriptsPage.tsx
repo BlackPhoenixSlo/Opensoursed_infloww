@@ -27,20 +27,31 @@
  *   a time (`useRenderCap`); the Sequence sidebar sorts Custom (the import's order, `GET
  *   /admin/saved-replies/sequences`), Recent or Name; the sequence header adds Created by from the same read.
  *
+ * - Fill with content (docs/spec/phase-02-button-and-popup.md; an Inflowwww extra): the open sequence's header
+ *   fills it from the Creator's described vault in one press (`POST /admin/saved-replies/fill/apply`), then shows
+ *   the Fill notice with Undo; any other answer opens the Fill dialog (`ScriptFillDialog`). State:
+ *   `scriptFillState.ts`.
+ *
  * Tags, notes and sequences are stored on the saved reply: `tags`, `notes`, and `script_id` + `script_step` (the
  * pair the chat composer's next-step suggestion follows). A tag exists while a script carries it; a new empty tag
  * lives on this page until a script takes it. The list, the editor and their routes are the Templates tab's
  * (`useSavedReplyEditor`); renames, deletes and bulk tagging go through `POST /admin/saved-replies/relabel`.
  */
 
-import { useEffect, useMemo, useReducer, useState, type ComponentProps } from "react";
-import { ArrowLeft, BookOpen, List, MinusCircle, Plus, Search, Share2, Trash2, Workflow, X } from "lucide-react";
+import { useEffect, useMemo, useReducer, useRef, useState, type ComponentProps } from "react";
+import { ArrowLeft, BookOpen, ImagePlus, List, MinusCircle, Plus, Search, Share2, Trash2, Workflow, X } from "lucide-react";
 
 import { SCRIPT_NAME_MAX, SCRIPT_TAG_MAX, TemplateDraftEditor, extractError } from "@/components/settings/TemplateDraftEditor";
 import { useSavedReplyEditor, useScopedAccount } from "@/components/settings/TemplatesTab";
 import { AllModelsView } from "@/components/growth/AllModelsView";
 import { CopyScriptsDialog, ExcelImportDialog } from "@/components/growth/ScriptsImportDialogs";
 import { NameModal, ScriptEditModal } from "@/components/growth/ScriptModals";
+import { ScriptFillDialog } from "@/components/growth/ScriptFillDialog";
+import {
+  ASK_OWNER, SAVE_FIRST, fillKey, fillRefusalText, leftText, noticeText, undoPayload, type Action as FillAction,
+  type FillNotice,
+} from "@/components/growth/scriptFillState";
+import { dlAccess } from "@/components/vault/vaultDownloadReducer";
 import {
   MoreMenu, NOT_WIRED, ScriptRow, SequenceEmpty, ShowMore, Sidebar, type SidebarItem,
 } from "@/components/growth/ScriptsParts";
@@ -49,8 +60,10 @@ import { EmptyState, IfSelect, InflowwPageHeader } from "@/components/ui/infloww
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useRenderCap } from "@/hooks/useRenderCap";
 import {
-  useDeleteSavedReplies, useDeleteSavedReply, useRelabelSavedReplies, useSavedReplySequences,
+  stalePlan, useDeleteSavedReplies, useDeleteSavedReply, useFillApply, useFillUndo, useRelabelSavedReplies,
+  useSavedReplySequences,
 } from "@/hooks/useSavedReplies";
+import { useChatterFolderAccess } from "@/hooks/useVaultMedia";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import {
@@ -76,11 +89,21 @@ export default function ScriptsPage() {
   const deleteManyM = useDeleteSavedReplies(accountId);
   const relabelM = useRelabelSavedReplies(accountId);
   const metaQ = useSavedReplySequences(accountId);
+  const fillApplyM = useFillApply();
+  const fillUndoM = useFillUndo();
+  // Fill uses the whole vault: a folder-limited chatter (or one whose access is not read yet) cannot press it.
+  const access = dlAccess(useChatterFolderAccess(accountId));
+  const fillReq = useRef(0);
+  // The one in-flight guard: the `fillKey`s with a Fill or Undo out, checked and set before the POST (a second
+  // press in the same render, before `fill.inflight` re-renders, sends nothing).
+  const fillOut = useRef(new Set<string>());
 
   // The view, the open tag and sequence, the checked scripts, the page's new tags, the busy scripts and the last
-  // error, the open overlay, the search and the sort: `scriptsPageState.ts`.
+  // error, the open overlay, the search, the sort and the Fill state (requests in flight, the Fill dialog, each
+  // Sequence's Fill notice; `scriptFillState.ts`): `scriptsPageState.ts`.
   const [page, dispatch] = useReducer(scriptsPageReducer, INITIAL);
-  const { view, checked, busy, error, modal, search, sort, allModels } = page;
+  const { view, checked, busy, error, modal, search, sort, allModels, fill } = page;
+  const fillDispatch = (action: FillAction) => dispatch({ type: "fill", action });
   const [expanded, setExpanded] = useState(false);
   const namePrompt = modal?.kind === "name" ? modal.prompt : null;
   const openModal = (m: Modal) => dispatch({ type: "openModal", modal: m });
@@ -114,6 +137,9 @@ export default function ScriptsPage() {
   const orderOf = (kind: EntryKind) => (kind === "tag" ? tagOrder : seqNames);
   const activeSeq = activeEntry(page.open.sequence, seqNames);
   const activeTag = activeEntry(page.open.tag, tagOrder) ?? ALL;
+  // The Sequence a Fill answer may speak over: the open one, while the Sequence view shows it.
+  const fillOpen = !allModels && view === "sequences" ? activeSeq : null;
+  useEffect(() => dispatch({ type: "fill", action: { type: "show", sequence: fillOpen } }), [fillOpen]);
 
   // ── the list for the open view ──
   const rows = useMemo(
@@ -169,6 +195,56 @@ export default function ScriptsPage() {
     if (inTag) startNewReply({ tags: [inTag] });
     else if (inSeq) startNewReply({ scriptId: inSeq, scriptStep: String(nextStep(sequences.get(inSeq) ?? [])) });
     else startNewReply();
+  }
+
+  /** An edit draft opened on one of `ids` while a Fill or Undo ran holds the rows as they were: saving it (a
+   *  whole-row PUT) would wipe the write, so the answer closes it. */
+  const closeTouchedDraft = (ids: ReadonlySet<number>) =>
+    setDraft((d) => (d?.kind === "reply" && d.id != null && ids.has(Number(d.id)) ? null : d));
+
+  /** Fill with content: one press applies (no preview); `ok` leaves the notice, anything else opens the dialog. */
+  async function fillPress(sequence: string) {
+    const account = accountId;
+    const key = fillKey(account, sequence);
+    if (!account || fillOut.current.has(key)) return;
+    fillOut.current.add(key);
+    const pin = { account, sequence, req: ++fillReq.current };
+    const touched = new Set((sequences.get(sequence) ?? []).map((r) => r.id));
+    fillDispatch({ type: "press", ...pin });
+    try {
+      const r = await fillApplyM.mutateAsync({ account, sequence });
+      if (r.status === "ok") fillDispatch({ type: "applied", ...pin, result: r });
+      else fillDispatch({ type: "answered", ...pin, status: r.status });
+    } catch (e) {
+      // A 409 `stale` carries the fresh plan (`useFillApply` seeds the dialog's plan with it): shown and asked
+      // again, never applied silently.
+      const fresh = stalePlan(e);
+      if (fresh) fillDispatch({ type: "answered", ...pin, status: fresh.status });
+      else fillDispatch({ type: "failed", ...pin, message: fillRefusalText(e) });
+    } finally {
+      fillOut.current.delete(key);
+      closeTouchedDraft(touched);
+    }
+  }
+
+  /** The Fill notice's Undo: apply's Undo list, verbatim, to the Creator the notice was written on. */
+  async function fillUndo(notice: FillNotice) {
+    const { account, sequence } = notice;
+    const key = fillKey(account, sequence);
+    if (!account || fillOut.current.has(key)) return;
+    fillOut.current.add(key);
+    const pin = { account, sequence, req: ++fillReq.current };
+    const touched = new Set(notice.undo.map((u) => u.id));
+    fillDispatch({ type: "undoPress", ...pin });
+    try {
+      const result = await fillUndoM.mutateAsync({ account, ...undoPayload(notice) });
+      fillDispatch({ type: "undone", ...pin, result });
+    } catch (e) {
+      fillDispatch({ type: "failed", ...pin, message: fillRefusalText(e) });
+    } finally {
+      fillOut.current.delete(key);
+      closeTouchedDraft(touched);
+    }
   }
 
   /** A tag no script carries lives on this page only: renamed and deleted here, never on the server. */
@@ -247,6 +323,14 @@ export default function ScriptsPage() {
   const fmt = (iso?: string | null) =>
     iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "--";
   const { createdBy, created, modified } = sequenceHeader(activeSeq ? metas.get(activeSeq) : undefined, activeSeqRows);
+  // Fill's guards: whole-vault access, then no open edit of one of this Sequence's steps (its save is a whole-row
+  // PUT that would wipe the Fill); a new-step draft does not block.
+  const editingSeqRow = draft?.kind === "reply" && draft.id != null && activeSeqRows.some((r) => r.id === Number(draft.id));
+  const fillBlocked = access !== "all" ? ASK_OWNER : editingSeqRow ? SAVE_FIRST : null;
+  const activeKey = activeSeq != null ? fillKey(accountId, activeSeq) : null;
+  const fillBusy = activeKey != null && fill.inflight[activeKey] != null;
+  const fillNotice = activeKey ? fill.notices[activeKey] : undefined;
+  const fillLeft = activeKey ? fill.left[activeKey] : undefined;
 
   const list = (
     <div className="flex-1 min-w-0">
@@ -256,10 +340,23 @@ export default function ScriptsPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <Workflow size={20} aria-hidden />
             <h2 className="text-base font-semibold">{activeSeq}</h2>
+            {/* Fill with content (an Inflowwww extra), in Add step's pill; its title says why when it is off. */}
+            <span title={EXTRA_LABEL} className="ml-auto inline-flex">
+              <button
+                type="button"
+                disabled={fillBlocked != null || fillBusy}
+                aria-busy={fillBusy || undefined}
+                title={fillBlocked ?? undefined}
+                onClick={() => void fillPress(activeSeq)}
+                className="h-7 px-2 rounded text-sm text-accent bg-accent/15 inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <ImagePlus size={14} aria-hidden /> Fill with content
+              </button>
+            </span>
             <button
               type="button"
               onClick={() => startNewReply({ scriptId: activeSeq, scriptStep: String(nextStep(activeSeqRows)) })}
-              className="ml-auto h-7 px-2 rounded text-sm text-accent bg-accent/15 inline-flex items-center gap-1"
+              className="h-7 px-2 rounded text-sm text-accent bg-accent/15 inline-flex items-center gap-1"
             >
               <Plus size={14} aria-hidden /> Add step
             </button>
@@ -272,6 +369,39 @@ export default function ScriptsPage() {
           {gap != null && (
             <div className="mt-1 text-xs text-warn">
               No script at step {gap}: the chat&apos;s next-step suggestion stops before it.
+            </div>
+          )}
+          {fillNotice && (
+            // The Fill notice: until dismissed, undone or a reload; it comes back with the Creator + Sequence.
+            <div role="status" aria-label="Fill notice" title={EXTRA_LABEL}
+              className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded bg-accent/15 px-2 py-1 text-xs text-fg">
+              <span>{noticeText(fillNotice)}</span>
+              <span aria-hidden>·</span>
+              <button
+                type="button"
+                disabled={editingSeqRow || fillBusy}
+                title={editingSeqRow ? SAVE_FIRST : undefined}
+                onClick={() => void fillUndo(fillNotice)}
+                className="text-accent underline disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Undo
+              </button>
+              {gap != null && (
+                <span className="text-warn">No script at step {gap}: the chat&apos;s next-step suggestion stops before it.</span>
+              )}
+              <button type="button" aria-label="Dismiss Fill notice" onClick={() => fillDispatch({ type: "dismiss", account: accountId, sequence: activeSeq })}
+                className="ml-auto text-fg-dim hover:text-fg">
+                <X size={14} aria-hidden />
+              </button>
+            </div>
+          )}
+          {fillLeft && (
+            <div role="status" title={EXTRA_LABEL} className="mt-2 flex items-center gap-2 text-xs text-warn">
+              <span>{leftText(fillLeft)}</span>
+              <button type="button" aria-label="Dismiss Undo note" onClick={() => fillDispatch({ type: "dismiss", account: accountId, sequence: activeSeq })}
+                className="ml-auto text-fg-dim hover:text-fg">
+                <X size={14} aria-hidden />
+              </button>
             </div>
           )}
         </div>
@@ -555,6 +685,18 @@ export default function ScriptsPage() {
       )}
 
       {namePrompt && <NameModal {...promptProps(namePrompt)} onClose={closeModal} />}
+      {fill.dialog && (
+        <ScriptFillDialog
+          accountId={accountId}
+          dialog={fill.dialog}
+          busy={fill.inflight[fillKey(accountId, fill.dialog.sequence)] != null || fillBlocked != null}
+          onFill={(sequence) => void fillPress(sequence)}
+          onDescribeRefused={({ sequence, req }, message) => fillDispatch({
+            type: "describeRefused", account: accountId, sequence, req, message,
+          })}
+          onClose={() => fillDispatch({ type: "close" })}
+        />
+      )}
       {modal?.kind === "excel" && <ExcelImportDialog accountId={accountId} onClose={closeModal} />}
       {(modal?.kind === "import" || modal?.kind === "share") && (
         <CopyScriptsDialog

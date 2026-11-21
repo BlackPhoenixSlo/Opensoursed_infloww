@@ -811,3 +811,126 @@ _Avoid_: poll, tick, sweep
 **Re-check**:
 A `promo_reactivate` run the automation queues for itself (near_cap, expiry or cooldown), at most one pending per Creator.
 _Avoid_: follow-up on its own (any `enqueue_followup` job), retry, recheck
+
+### Script fill
+
+**Sequence**:
+A Growth > Scripts sequence: the saved replies of one Creator that share a `script_id`, run in `script_step` order. Fill works on one Sequence at a time.
+_Avoid_: script (one saved reply: the Scripts page's row and the Composer's **Script**), funnel, ladder, `vault_scripts`' "script" (that is a **Shoot**)
+
+**Step**:
+One `script_step` number in a Sequence, holding one or more Options; successive Steps are what the Escalation rule climbs along.
+_Avoid_: stage, rung, block (FM's word)
+
+**Option**:
+One saved reply inside a Step, shown "2.1", "2.2" when a Step holds several; Options of the same Step are alternatives, and a Fill writes per Option.
+_Avoid_: script, variant, step
+
+**Role**:
+What an Option is for, read from its saved price and deterministic text cues: `chat` (text only), `free_media` or `paid_media`, with the media it wants (photo, clip, any) and a count when the text promises one.
+_Avoid_: type, kind, purpose lane (`vault_scripts`' folders), Lane
+
+**Fill**:
+One write of a Creator's own vault media, and prices where none is saved, onto the empty Options of one Sequence, done by the "Fill with content" press or the Rollout driver. It sends nothing to Fans (ADR-0045, ADR-0046).
+_Avoid_: auto-fill, populate, attach, import (the bulk import keeps prices but never media)
+
+**Fill plan**:
+The read-only answer of `fill/plan` for one Sequence: a Fill status, each Option's Role, Slice, price and flags, the Describe target counts, and a fingerprint that `fill/apply` may hold it to.
+_Avoid_: preview, dry run (the Rollout driver's default mode), proposal (`plan_ai_folders`')
+
+**Fill status**:
+A Fill plan's one-word outcome: `ok`, `already_filled` (nothing to write), or a reason nothing is written: `no_paid_steps`, `not_enough_content`, `no_fit`, `price_conflict`, `price_out_of_range`, `reserved`. Only `not_enough_content` offers to describe.
+_Avoid_: error, partial
+
+**Slice**:
+The media a Fill puts on one Option: one clip alone, or one to four photos of the same Rung, plus at most one free preview from the same Shoot on a paid photo Slice. A Slice never mixes clips and photos.
+_Avoid_: Pick (the Sell executor's), Bundle (Full AI Chat's two-to-five-photo Offer), pack, set
+ASSUMPTION: "Slice" (the media-pick answer's word) is chosen over "pack" and "bundle" because both are taken or avoided elsewhere in this glossary; overturned if the specs need the Full AI word.
+
+**Shoot**:
+A group of one Creator's vault items from one outfit and room close in time (`vault_scripts.collect_outfit_scripts`), the unit a Fill draws a whole Sequence from.
+_Avoid_: folder (an OnlyFans vault folder), outfit (Jev's clothing state), set, album, script (`vault_scripts`' name for it)
+
+**Rung**:
+An item's place on a Shoot's dressed-to-explicit arc, the script rung of `vault_scripts._with_script_why`; send order and a Fill's "highest unused item last" read it.
+_Avoid_: tier (`explicitness_tier`, describe's own field), band (`ladder_bands`, not used by Fill), level
+
+**Fillable item**:
+A vault item a Fill may use, checked by Fill itself over effective metadata (`vault_ai_effective`): live, described, the same Creator's, solo, on a Rung, and not Jev review, held, rejected, in the REVIEW folder or under an unpriced dispute.
+_Avoid_: eligible item, sellable item, pool (`full_ai_sell.pool`, which Fill does not use)
+
+**Fixed price**:
+A saved price above 0 on an Option. A Fill never changes it; it bounds the prices Fill sets beside it (ADR-0046).
+_Avoid_: existing price, locked price, typed price
+
+**List price**:
+The house's price for one vault item, `full_ai_sell.list_price_cents`: its highest Folder price, else its Jev price lane (`lane5`), clamped to $10–$200. A Fill prices a photo Slice at its highest item and caps every Slice at $200.
+_Avoid_: suggested price, default price (columns Fill ignores), Quoted price, lane on its own (a **Lane** is an automation)
+
+**Escalation rule**:
+Along successive Steps, on every path through a Sequence's alternatives, paid prices never go down; ties allowed. Media order follows the Shoot's send order, never price.
+_Avoid_: ascending prices, ladder (the mass-send drop ladder, the **Backoff ladder**), price sort
+
+**Undo list**:
+What `fill/apply` returns: per written Option, the media ids, previews, the price after apply and whether Fill set it (`price_set`). `fill/undo` empties only rows still holding exactly those values in the same Sequence (ADR-0046).
+_Avoid_: receipt, rollback, restore (a DB restore is never the undo)
+
+**Reserved sequence**:
+A Sequence whose `script_id` is a generated FM script name (`automations/_reserved_scripts.py`). Fill refuses it with `reserved`; the Scripts page hides the button for it.
+_Avoid_: plugin source script (the UI's `isSourceScript`, the same set on this stack), FM script
+
+**Whole-vault access**:
+The right to act on a Creator's entire vault, which a folder-limited chatter lacks (`vault_ai_api.assert_owner_scope`). Fill and describe-all both need it.
+_Avoid_: owner scope (the function's name; not an **Owner session**), Data scope, gate (the FM off-script gate, a Capacity campaign **Gate**)
+ASSUMPTION: the plan's "whole-vault gate" is renamed because "gate" and "scope" are both taken in this glossary; overturned if the specs keep the plan's word.
+
+- **Fill with content** (the button, before "Add step" on the Sequence header), **Fill dialog** (opens only when a Fill cannot run), **Fill notice** ("Added {n} items to {m} steps · Undo"; gone on reload): `app/components/growth/ScriptsPage.tsx`, `ScriptFillDialog.tsx`, `scriptFillState.ts`
+
+### Describe coverage
+
+**Describe**:
+The vision pass that writes a vault item's description, tags and fields from the image and its Jev reading, and marks it `describe_status = described`.
+_Avoid_: tag, caption, analyse, AI describe
+
+**Describe sweep**:
+One describe-all run for one Creator under its sweep claim, walking rail folders, then newest, then oldest; its progress lives in memory, its rows in the DB.
+_Avoid_: batch, job, wave (the Rollout driver's run of sweeps across Creators)
+
+**Describable item**:
+A live vault item of a kind Describe reads, whether described yet or not.
+_Avoid_: undescribed item (a describable one not yet described), vault size
+
+**Terminal failure**:
+A describable item whose last Describe attempt ended in a state no retry fixes: `refused`, `blocked_drm`, `gone` or a terminal Jev hold. A target sweep walks past it; `failed` and `fetch_failed` stay retryable.
+_Avoid_: failed (the retryable status), error, skip
+
+**Describe target**:
+The described count a Creator is brought up to: 1,000, or all Describable items when the vault holds fewer. It is counted from the DB on every request (describe-all's `target`), never a lifetime counter and never "1,000 more per press".
+_Avoid_: limit (describe-all's per-sweep slice, where 0 means unlimited), quota, cap
+ASSUMPTION: Terminal failures come off the Describable items the target is capped by, as the rollout's done line says, though the write-path answer's formula leaves them in; overturned if the Phase 1 spec keeps that formula and accepts a sweep that can never reach its target.
+
+**Describe cap**:
+A Creator account's daily spend cap on the "describe" ledger row (`daily_cost_cap_cents`, default $1), which Describe and Jev share; it resets at 00:00 UTC.
+_Avoid_: budget (the **Create budget**), Fleet ceiling, limit
+
+### Script fill rollout
+
+**Rollout driver**:
+The resumable host-side script in `scripts/script-fill-rollout/` that runs Describe sweeps and Fills for every Eligible Creator through the product routes over loopback, with modes `measure | collect | describe | plan | apply | undo | report`; dry run unless told otherwise.
+_Avoid_: all-Creators endpoint (rejected), migration, job
+
+**Eligible Creator**:
+An active OnlyFans Creator with a captured session, no Dead session mark, and not a watcher account; the rest are skipped with a reason and never chased.
+_Avoid_: connected Creator, roster (the **Roster count**'s), live Creator
+
+**Fleet ceiling**:
+The Rollout driver's own spend stop for one run, $2 per Eligible Creator until the canary restates it, checked against the spend ledger before each Describe sweep. It never raises a Describe cap.
+_Avoid_: cap (the **Describe cap**), budget, limit
+
+**Apply gate**:
+The machine checks a Fill plan must pass before the Rollout driver applies it: status `ok`, every media id live in that Creator's vault, valid step order and previews, every price sendable ($3–$200) and the Escalation rule held.
+_Avoid_: approval, review (the owner judges taste on a sample, outside the gate)
+
+**Rollout journal**:
+The Rollout driver's host-side record of every row's values before and after a Fill, and the Undo lists it can replay through `fill/undo`.
+_Avoid_: log, backup (the DB backup taken before the apply wave), ledger (the **Decision ledger**, the spend ledger)

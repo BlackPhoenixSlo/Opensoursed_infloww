@@ -19,9 +19,11 @@ there and asks for a refund.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import re
-from typing import Any
+from typing import Any, Iterator
 
 import vault_jev_rules  # pure, no imports: no cycle
 
@@ -340,7 +342,43 @@ def genital_act_claimed(fields: dict[str, Any] | None) -> bool:
     return bool({a.lower() for a in _clean(fields.get("acts"))} & GENITAL_ACTS)
 
 
+_MEMO: contextvars.ContextVar[dict | None] = contextvars.ContextVar("vault_ai_brief_memo", default=None)
+
+
+@contextlib.contextmanager
+def reading_memo() -> Iterator[None]:
+    """Inside the block `contradictions` and `sellability` derive each (fields object, duration) once and
+    hand out copies. Opt-in, scoped to the current context (no other thread / task sees it), reentrant.
+    The caller promises no fields dict is edited inside the block (Fill's plan,
+    `script_fill_decide.plan_over_vault`). Values handed out: `payoff_acts` and the code list are copied;
+    every other `sellability` value is a scalar or `fields["sellable"]` itself (no memo-made object)."""
+    if _MEMO.get() is not None:
+        yield
+        return
+    token = _MEMO.set({})
+    try:
+        yield
+    finally:
+        _MEMO.reset(token)
+
+
+def _memo(name: str, fields: Any, extra: Any, derive: Any) -> Any:
+    memo = _MEMO.get()
+    if memo is None:
+        return derive()
+    key = (name, id(fields), extra)
+    hit = memo.get(key)
+    if hit is None or hit[0] is not fields:     # holding `fields` keeps its id from being reused
+        hit = memo[key] = (fields, derive())
+    return hit[1]
+
+
 def contradictions(fields: dict[str, Any] | None) -> list[str]:
+    """`_contradictions`, memoised inside `reading_memo`."""
+    return list(_memo("codes", fields, None, lambda: _contradictions(fields)))
+
+
+def _contradictions(fields: dict[str, Any] | None) -> list[str]:
     """Which stored facts about this item cannot all be true at once.
 
     Only fires where BOTH sides of the check were actually answered, so an
@@ -558,6 +596,13 @@ def _scalar(fields: dict, key: str) -> str:
 
 def sellability(fields: dict[str, Any], *, duration_seconds: int | None = None
                 ) -> dict[str, Any]:
+    """`_sellability`, memoised inside `reading_memo`."""
+    got = _memo("sell", fields, duration_seconds, lambda: _sellability(fields, duration_seconds=duration_seconds))
+    return {**got, "payoff_acts": list(got["payoff_acts"])}
+
+
+def _sellability(fields: dict[str, Any], *, duration_seconds: int | None = None
+                 ) -> dict[str, Any]:
     """What the stored facts support, as a decision aid for the seller.
 
     `stands_alone` — has a payoff act, so it can close a sale by itself rather

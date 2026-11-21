@@ -5,7 +5,7 @@
  * PPV line, stickers, avatar, time and status rows and its action row.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { User } from "lucide-react";
 
 import type { OFMessage } from "@/lib/relay";
@@ -13,7 +13,7 @@ import { type FanId } from "@/lib/fanId";
 import { cn } from "@/lib/utils";
 import { giphyUrl } from "@/lib/ofMedia";
 import { useCompactMedia } from "@/hooks/useCompactMedia";
-import { useTranslations } from "@/hooks/useTranslations";
+import { useTranslations, type BubbleTranslation } from "@/hooks/useTranslations";
 import { scriptDraftHasContent } from "@/lib/messageScripts";
 import { BubbleStatusRow, BubbleTimeRow, timeRowShows } from "@/components/chat/BubbleMeta";
 import { BubbleActions } from "@/components/chat/BubbleActions";
@@ -23,12 +23,15 @@ import { ofPlainText } from "@/lib/ofRichText";
 import { MediaStrip } from "./MessageMedia";
 import { QuoteCard, TranslatableText } from "./messageListParts";
 
-export function Bubble({
+/** Memoized: a thread update (a new message, a poll) re-renders only the
+ *  bubbles whose props changed, so MessageList keeps every prop stable
+ *  (stable handlers, per-bubble eager sets, cached quote cards). */
+export const Bubble = memo(function Bubble({
   msg, replyTo, isOutgoing, isOptimisticOutgoing, accountId, fanId, ownerUserId,
   onRetry, onDiscard, onCancelScheduled,
   onToggleLike, onQuoteReply, onTogglePin, onUnsend, onSaveAsScript, onJumpTo,
   highlighted, isRealOutgoing, seenByPeer,
-  eagerMediaIds, employeeLabel, threadTranslate, translateAllowed, runFirst, runLast, avatarUrl,
+  eagerMediaIds, employeeLabel, threadTranslate, threadTranslation, translateAllowed, runFirst, runLast, avatarUrl,
 }: {
   msg: OFMessage;
   replyTo: OFMessage["replyToMessage"] | null;
@@ -54,6 +57,10 @@ export function Bubble({
   /** The thread-wide translate mode is on. The bubble's own Translate toggle
    *  is OR-ed with it, and wins once pressed (Phase 4 spec F4). */
   threadTranslate: boolean;
+  /** The thread mode's cached translation of this text: undefined not asked
+   *  yet, null failed. A prop (not a cache read) so a landing batch re-renders
+   *  this memoized bubble. */
+  threadTranslation?: BubbleTranslation | null;
   /** The Agency's AI translation switch allows this session to translate; off,
    *  the bubble's own Translate is not offered and sends nothing.
    *
@@ -85,8 +92,12 @@ export function Bubble({
   const ownTexts = useMemo(() => (own && strippedText ? [strippedText] : []), [own, strippedText]);
   const translationCache = useTranslations(ownTexts, own === true, accountId);
   const translated = (own ?? threadTranslate) && !!strippedText;
-  const translation = translated ? translationCache.get(strippedText) ?? null : null;
-  const translateFailed = translated && translationCache.has(strippedText) && translation === null;
+  // undefined: not answered yet; null: tried and failed.
+  const entry = !translated ? undefined
+    : own === true ? (translationCache.has(strippedText) ? translationCache.get(strippedText) ?? null : undefined)
+    : threadTranslation;
+  const translation = entry ?? null;
+  const translateFailed = translated && entry === null;
   // Scroll into view when search picks this bubble. Defer to next tick so
   // the container's own scroll-restore effect doesn't fight us for the
   // scrollTop slot.
@@ -348,4 +359,4 @@ export function Bubble({
       {side === "right" && avatar}
     </div>
   );
-}
+});

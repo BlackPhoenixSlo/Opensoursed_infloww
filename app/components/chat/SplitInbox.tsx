@@ -17,8 +17,9 @@
 import { useId, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { IfButton } from "@/components/ui/infloww";
-import { useSplitInbox, type SplitInboxConfig } from "@/hooks/useSplitInbox";
+import { useSplitInbox } from "@/hooks/useSplitInbox";
 import type { FanId } from "@/lib/fanId";
+import { groupOf, type SplitInboxConfig } from "@/lib/splitInbox";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 import { useInflowwPalette } from "./InflowwPalette";
@@ -31,25 +32,6 @@ const SELECT_CLASS = cn(MP.fanList.splitSelect, "border-border bg-bg-elev-1 text
 export interface SplitInboxFan {
   id: FanId;
   name: string;
-}
-
-/** The Split Inbox group (1 to N) a Fan belongs to: the Fan's explicit move
- *  when it is within range, otherwise a stable hash (32-bit FNV-1a) of the
- *  Fan id taken as text, modulo N, plus 1. Every Fan is in exactly one group,
- *  and a new split divides the Fans at once, the same way on every device
- *  (story 51). The id is never turned into a number, so a 19-digit id keeps
- *  its precision. */
-export function groupOf(fanId: FanId, config: SplitInboxConfig): number {
-  const n = config.group_count;
-  const id = String(fanId);
-  const moved = config.assignments[id];
-  if (Number.isInteger(moved) && moved >= 1 && moved <= n) return moved;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < id.length; i++) {
-    hash ^= id.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return ((hash >>> 0) % n) + 1;
 }
 
 export function SplitInbox({

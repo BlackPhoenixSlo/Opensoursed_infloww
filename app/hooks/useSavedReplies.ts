@@ -13,7 +13,10 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { relay, type SavedReply, type SavedReplySequenceMeta } from "@/lib/relay";
+import {
+  relay, RelayError, type FillApplyResult, type FillPlan, type FillUndoEntry, type FillUndoResult, type SavedReply,
+  type SavedReplySequenceMeta,
+} from "@/lib/relay";
 
 const KEY = "saved-replies";
 
@@ -238,5 +241,71 @@ export function useCopySavedReplies() {
         ids,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY] }),
+  });
+}
+
+/* ── Fill with content (`service/script_fill_api.py`; docs/spec/phase-02-button-and-popup.md) ── */
+
+const fillUrl = (route: "plan" | "apply" | "undo", accountId: string | null) =>
+  `/admin/saved-replies/fill/${route}?account_id=${encodeURIComponent(accountId ?? "")}`;
+
+/** One Sequence's Fill plan, under the list's key: every saved-replies invalidation refetches it. */
+export function fillPlanKey(accountId: string | null, sequence: string | null) {
+  return [KEY, accountId, "fill-plan", sequence] as const;
+}
+
+/** The read-only Fill plan of one Sequence (`POST …/fill/plan`), read fresh on every mount (`staleTime` 0). */
+export function useFillPlan(accountId: string | null, sequence: string | null, enabled: boolean) {
+  return useQuery<FillPlan>({
+    queryKey: fillPlanKey(accountId, sequence),
+    enabled: enabled && !!accountId && !!sequence,
+    queryFn: () => relay.post<FillPlan>(fillUrl("plan", accountId), { sequence }),
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** A 409 `stale` from `fill/apply` carries the fresh plan: shown and asked again, never applied silently. */
+export function stalePlan(err: unknown): FillPlan | null {
+  if (!(err instanceof RelayError) || err.status !== 409) return null;
+  const detail = (err.body as { detail?: { error?: unknown; plan?: FillPlan } } | null)?.detail;
+  return detail?.error === "stale" && detail.plan ? detail.plan : null;
+}
+
+/** One press's Fill (`POST …/fill/apply {sequence}`, no fingerprint). A non-`ok` answer, and a 409 `stale`
+ *  (`stalePlan`, still thrown), seed the Sequence's Fill plan with their plan, so the dialog opens on it. The
+ *  list is refetched on success AND on error: a committed write whose answer was lost still reaches the cards.
+ *  `account`: the Creator the press went out on, passed with it (the hook's render may already show another). */
+export function useFillApply() {
+  const qc = useQueryClient();
+  return useMutation<FillApplyResult, Error, { account: string; sequence: string }>({
+    mutationFn: async ({ account, sequence }) => {
+      try {
+        const r = await relay.post<FillApplyResult>(fillUrl("apply", account), { sequence });
+        if (r.status !== "ok" && r.plan) qc.setQueryData(fillPlanKey(account, sequence), r.plan);
+        return r;
+      } catch (e) {
+        const fresh = stalePlan(e);
+        if (fresh) qc.setQueryData(fillPlanKey(account, sequence), fresh);
+        throw e;
+      } finally {
+        void qc.invalidateQueries({ queryKey: [KEY, account] });
+      }
+    },
+  });
+}
+
+/** A Fill notice's Undo (`POST …/fill/undo {sequence, undo}`), the Undo list passed verbatim; the list is
+ *  refetched on success and on error. `account`: the Creator the notice was written on (not always the one shown). */
+export function useFillUndo() {
+  const qc = useQueryClient();
+  return useMutation<FillUndoResult, Error, { account: string; sequence: string; undo: FillUndoEntry[] }>({
+    mutationFn: async ({ account, ...body }) => {
+      try {
+        return await relay.post<FillUndoResult>(fillUrl("undo", account), body);
+      } finally {
+        void qc.invalidateQueries({ queryKey: [KEY, account] });
+      }
+    },
   });
 }

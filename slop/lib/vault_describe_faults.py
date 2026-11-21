@@ -37,6 +37,9 @@ REUSE = ("duplicate reuse: the Duplicates route's sets at threshold 2 == the pla
 ONE_SWEEP = "describe-all pressed by several owners at once: one sweep per Creator (one 200, the rest 409)"
 UI_SETTLED = ("UI: Vault Pro's 'Describe all (N)' shows the plan's count, the click starts the sweep and the button "
               "settles on the plan's count after it; the Creator's rows are described in the DB")
+TARGET = ("describe-all `target`: a press at a met target is zero work (status done, target_remaining 0, no model "
+          "call, no sweep), before and after; a target K above the described count walks exactly K undescribed "
+          "items (progress total K, each described) and walks past the Terminal ones (no call for a refused blank)")
 
 
 def _ignores_cache() -> None:

@@ -26,10 +26,10 @@ import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, case, func, select, update
 
 import llm_client
 import vault_ai_brief
@@ -54,7 +54,7 @@ from vault_jev_rules import JEV_KINDS, ai_read as jev_ai_read
 from vault_ai_vision_decide import (
     DescribeMode, _frames_for_duration, _parse_describe,
     COPY_MARK, FLAGS_COPY_MARK, JEV_KEY, ReusePlan, build_copy_update, build_describe_update,
-    build_flags_copy, describe_answer, describe_selection, flags_current,
+    build_flags_copy, coverage, describe_answer, describe_selection, flags_current, is_terminal,
     live_describable, next_attempt, priority_order, prompt_variant, rail_folder_ids, reuse_plan,
     reuse_state,
 )
@@ -419,12 +419,14 @@ async def _copy_up_front(account_id: str, plan: ReusePlan, copy) -> list[dict[st
 
 
 def _propagation(index: dict[int, list[tuple[int, str]]], src: int,
-                 walked: set[int], *, flags_only: bool) -> list[tuple[int, str]]:
+                 walked: set[int], *, flags_only: bool,
+                 skip: Collection[int] = ()) -> list[tuple[int, str]]:
     """Earlier copies of `src` to refresh once it is re-answered: (copy, what to
-    copy). Rows this sweep walks itself are left to it."""
+    copy). Rows this sweep walks itself are left to it; `skip` (a target
+    sweep's Terminal failures) is never written."""
     out = []
     for mid, marker in index.get(src, ()):
-        if mid in walked:
+        if mid in walked or mid in skip:
             continue
         out.append((mid, "flags" if flags_only or marker == "_flags_copied_from"
                     else "describe"))
@@ -951,10 +953,13 @@ _DESCRIBE_CONCURRENCY = 8
 
 async def _run_describe_all(account_id: str, mode: DescribeMode,
                             prompt_version: str = "v2",
-                            model: str = "qwen3-vl-30b", limit: int = 0) -> None:
+                            model: str = "qwen3-vl-30b", limit: int = 0,
+                            target: int = 0) -> None:
     """Background describe sweep over the rows `describe_selection(mode)` picks
     (the modes are documented there); `limit` > 0 walks only the first `limit`
-    of them in priority order."""
+    of them in priority order. `target` > 0 (mode "undescribed"): the Describe
+    target — Terminal failures are skipped (walked and copied to never) and the
+    walk is cut to `coverage`'s remaining, then to `limit`."""
     try:
         async with get_session() as s:
             # The SAME clause the plan counts with, so the number on the button
@@ -964,10 +969,20 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
             rows = (await s.execute(
                 select(VaultItem.media_id, VaultItem.created_at, VaultItem.of_folder_ids)
                 .where(live_describable(account_id)))).all()
+        terminal: set[int] = set()
+        remaining = 0
+        if target > 0:
+            cov_rows = await _coverage_rows(account_id)
+            terminal = {mid for mid, st, f in cov_rows if is_terminal(st, f)}
+            remaining = coverage(((st, f) for _m, st, f in cov_rows), target)["remaining"]
         # `priority_order`, the same walk as `_flags_todo`. Order decides what
         # `limit` keeps, and what finishes early when the cap trips or the relay
         # restarts — all three cut the tail.
-        ids = [m for m in priority_order(rows, await _rail_order(account_id)) if m in walked]
+        ids = [m for m in priority_order(rows, await _rail_order(account_id))
+               if m in walked and m not in terminal]
+        if target > 0:
+            ids = ids[:remaining]
+            walked = set(ids)   # past the cut is not this sweep's, as past `limit`
         if limit > 0:
             ids = ids[:limit]
             walked = set(ids)   # past the limit is not this sweep's: its copies get refreshed
@@ -982,7 +997,7 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
                 _describe_and_flag(account_id, mid, model=model,
                                    prompt_version=prompt_version, jev_sweep=jev_sweep),
                 plan.followers.get(mid, []), _copy_describe,
-                _propagation(index, mid, walked, flags_only=False))
+                _propagation(index, mid, walked, flags_only=False, skip=terminal))
 
         skip = plan.riders() | set(plan.copy_now)
         c = await vault_sweep.run(
@@ -1067,6 +1082,36 @@ async def _claim_describe(account_id: str, model: str) -> dict[str, Any]:
     return budget
 
 
+def _target_of(raw: Any) -> int:
+    """describe-all's Describe `target`: 0 when absent (None), else a positive
+    int, or 400 `bad_target`."""
+    if raw is None:
+        return 0
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1:
+        return raw
+    raise HTTPException(status_code=400, detail={"error": "bad_target"})
+
+
+async def _coverage_rows(account_id: str) -> list[tuple[int, str | None, dict[str, Any] | None]]:
+    """(media_id, describe_status, ai_fields) of every Describable item, for
+    `coverage` / `is_terminal`. Fields are read only where a terminal held
+    `_jev` can be (not described, the hold's marker in the blob), so a big
+    vault does not ship every blob for a count."""
+    held = and_(VaultItem.describe_status.isnot("described"),
+                VaultItem.ai_fields_json.like(f'%{vault_jev_pass.HELD}%'))
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.describe_status,
+                   case((held, VaultItem.ai_fields_json), else_=None))
+            .where(live_describable(account_id)))).all()
+    return [(int(m), st, load_json(fj, {}) if fj else None) for m, st, fj in rows]
+
+
+async def describe_coverage(account_id: str, target: int) -> dict[str, int]:
+    """`vault_ai_vision_decide.coverage` of `account_id`'s vault, read from the DB now."""
+    return coverage(((st, f) for _m, st, f in await _coverage_rows(account_id)), target)
+
+
 @describe_router.post("/admin/vault-ai/describe-all")
 async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     account_id = str(payload.get("account_id") or "")
@@ -1074,9 +1119,20 @@ async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     from vault_ai_api import assert_owner_scope
     await assert_owner_scope(account_id)
     model = str(payload.get("model") or "qwen3-vl-30b")
-    await _claim_describe(account_id, model)
     force = bool(payload.get("force"))
     restage = bool(payload.get("restage"))
+    target = _target_of(payload.get("target"))
+    if target and (force or restage):
+        raise HTTPException(status_code=400, detail={"error": "target_needs_undescribed"})
+    _assert_vision_model(model)  # a bad request is a 400 whatever the key/budget
+    if target:
+        # Read before the claim (a side-effect-free count): a met target needs no
+        # budget, starts nothing and takes no claim, so it never 409s.
+        remaining = (await describe_coverage(account_id, target))["remaining"]
+        if remaining == 0:
+            return {"account_id": account_id, "status": "done",
+                    "target": target, "target_remaining": 0}
+    await _claim_describe(account_id, model)
     mode: DescribeMode = "force" if force else ("restage" if restage else "undescribed")
     prompt_version = prompt_variant(payload.get("prompt_version"))
     try:   # 0 / absent / junk = no limit
@@ -1085,22 +1141,29 @@ async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
         limit = 0
     asyncio.create_task(_run_describe_all(account_id, mode,
                                           prompt_version=prompt_version,
-                                          model=model, limit=limit))
-    return {"account_id": account_id, "status": "running",
-            "prompt_version": prompt_version, "model": model,
-            "force": force, "restage": restage, "limit": limit}
+                                          model=model, limit=limit, target=target))
+    out = {"account_id": account_id, "status": "running",
+           "prompt_version": prompt_version, "model": model,
+           "force": force, "restage": restage, "limit": limit}
+    if target:
+        out.update(target=target, target_remaining=remaining)
+    return out
 
 
 @describe_router.get("/admin/vault-ai/describe-all/plan")
 async def describe_all_plan(
     account_id: str = Query(...),
     prompt_version: str = Query("v2"),
+    target: str | None = None,
 ) -> dict[str, Any]:
     """What each sweep mode WOULD do, so the UI can show real counts (and a cost
-    estimate) before the operator commits to a re-scan of the whole vault."""
+    estimate) before the operator commits to a re-scan of the whole vault.
+    `?target=` adds `target_remaining` (what a target sweep walks) and the
+    `coverage` counts."""
     assert_account_owned(account_id)
     from vault_ai_api import assert_owner_scope
     await assert_owner_scope(account_id)
+    goal = _target_of(int(target) if target is not None and target.strip().isdecimal() else target)
     pv = prompt_variant(prompt_version)
     async with get_session() as s:
         def _count(mode: DescribeMode):
@@ -1114,12 +1177,16 @@ async def describe_all_plan(
     # button that says why is the difference between "out of budget until
     # midnight" and "broken".
     budget = await _vision_budget(account_id)
-    return {"account_id": account_id, "prompt_version": pv,
-            "total": int(total or 0),
-            "undescribed": int(undescribed or 0),
-            "restage": int(stale or 0),
-            "cap": budget,
-            "jev": await vault_jev_pass.plan(account_id)}
+    out = {"account_id": account_id, "prompt_version": pv,
+           "total": int(total or 0),
+           "undescribed": int(undescribed or 0),
+           "restage": int(stale or 0),
+           "cap": budget,
+           "jev": await vault_jev_pass.plan(account_id)}
+    if goal:
+        cov = await describe_coverage(account_id, goal)
+        out.update(target=goal, target_remaining=cov["remaining"], coverage=cov)
+    return out
 
 
 @describe_router.get("/admin/vault-ai/describe-all/status")

@@ -183,9 +183,14 @@ Golden refresh (2026-11-20, recheck fixes): no route added or moved; OpenAPI sha
 optional `since`, /admin/perflog/recent + dismiss docstrings; inspected, intentional.
 Golden refresh (2026-11-20, All Models open cost): GET /api/of/v2/users/me gains optional `max_age` and a
 docstring; no route row changes; diff = the sha.
+Golden refresh (2026-11-21, script fill 1a Describe target): GET /admin/vault-ai/describe-all/plan gains optional
+`target` and its docstring; no route row changes; diff = the sha (HEAD's tree green on the prior golden, measured).
 Golden refresh (2026-11-20, watched-creator-refresher 04): schema FlatAccountDTO (GET /chatter/me/accounts) gains
 optional `freshness` (absent unless SHARED_REFRESHER=1); no route row changes; diff = the sha (measured: sha1 with
 that field removed == the prior golden).
+Golden refresh (2026-11-21, script fill 1b Fill routes): adds POST /admin/saved-replies/fill/plan, /fill/apply and
+/fill/undo (script_fill_api) after the bulk-import row; no existing row moves (measured: sha1 with those three
+routes removed == the prior golden).
 """
 from __future__ import annotations
 

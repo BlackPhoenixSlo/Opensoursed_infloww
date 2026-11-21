@@ -21,6 +21,14 @@ fake `fetch(offset)` -> (rows, truncated, fetch offsets).
   case_same_objects:           audiences' old private names ARE of_paging's objects.
   case_patch_reaches_callers:  patching of_paging.page_all_checked reaches page_all,
                                ids_from_pages and audiences.roster_audience_blocking.
+  case_schedule_chunks_cover:  /schedules date chunks span today-1 .. today+days+2,
+                               gap-free, each at most SCHEDULE_CHUNK_DAYS.
+  case_schedules_full_day:     a full chunk re-read by day; a FULL single day is
+                               incomplete (maybe truncated by an unseen cap).
+  case_schedules_full_chunk_reread: a full chunk whose days are each under the
+                               page lists everything via one-day reads, complete.
+  case_schedules_bad_replies:  string / bare list / no list / list not a list /
+                               syncInProcess -> incomplete, never an empty range.
 
 Run: ./venv/bin/python service/tests/test_of_paging.py   (exit 0 = pass)
 """
@@ -232,6 +240,79 @@ def case_patch_reaches_callers():
         def subscribers(self, **kw):
             return [{"id": 3}] if kw.get("offset") == 0 else []
     assert audiences.roster_audience_blocking(C2(), user_lists=["fans"]) == [3]
+
+
+
+# ── GET /schedules window walk (schedules_in_window) ────────────────────────
+from datetime import date, timedelta  # noqa: E402
+
+_TODAY = date(2026, 11, 21)
+
+
+def _srow(rid, days):
+    """A /schedules row dated `days` after _TODAY (captured row shape)."""
+    at = (_TODAY + timedelta(days=days)).isoformat() + "T12:00:00+00:00"
+    return {"id": 900 + rid, "type": "post", "publishDateTime": at,
+            "createdDateTime": "2026-11-01T00:00:00+00:00",
+            "entity": {"id": rid, "text": f"post {rid}"}}
+
+
+class _Cal:
+    """Like OF (measured 2026-11-21): range honoured (inclusive here), limit
+    and offset IGNORED (no `offset` parameter at all), no hasMore. `reply`
+    replaces every answer when set."""
+    def __init__(self, rows, reply=None):
+        self.rows, self.reply, self.windows = rows, reply, []
+
+    def schedules(self, *, publish_date=None, publish_date_end=None,
+                  time_zone="Europe/Ljubljana", limit=20):
+        self.windows.append((publish_date, publish_date_end))
+        if self.reply is not None:
+            return self.reply
+        return {"list": [r for r in self.rows
+                         if publish_date <= r["publishDateTime"][:10] <= publish_date_end],
+                "syncInProcess": False}
+
+
+def case_schedule_chunks_cover():
+    ch = of_paging.schedule_chunks(30, today=_TODAY)
+    assert ch[0][0] == _TODAY - timedelta(days=of_paging.SCHEDULE_PAD_BEFORE_DAYS), ch
+    assert ch[-1][1] == _TODAY + timedelta(days=30 + of_paging.SCHEDULE_PAD_AFTER_DAYS), ch
+    assert all(b[0] <= a[1] for a, b in zip(ch, ch[1:])), ch            # gap-free
+    assert max((h - lo).days for lo, h in ch) == of_paging.SCHEDULE_CHUNK_DAYS, ch
+    rows, why = of_paging.schedules_in_window(_Cal([_srow(1, 29), _srow(2, 30)]), 30,
+                                              today=_TODAY)
+    assert why is None and sorted(r["entity"]["id"] for r in rows) == [1, 2], (rows, why)
+
+
+def case_schedules_full_day():
+    cal = _Cal([_srow(1, 10), _srow(2, 10), _srow(3, 10), _srow(4, 25)])
+    rows, why = of_paging.schedules_in_window(cal, 30, page=3, today=_TODAY)
+    assert why and "one day" in why, why
+    assert any(_span(w) == 1 for w in cal.windows), cal.windows          # re-read by day
+
+
+def case_schedules_full_chunk_reread():
+    cal = _Cal([_srow(1, 8), _srow(2, 8), _srow(3, 11), _srow(4, 11), _srow(5, 20)])
+    rows, why = of_paging.schedules_in_window(cal, 30, page=3, today=_TODAY)
+    assert why is None, why
+    assert sorted(r["entity"]["id"] for r in rows) == [1, 2, 3, 4, 5], rows   # deduped
+    assert any(_span(w) == 1 for w in cal.windows), cal.windows
+
+
+def case_schedules_bad_replies():
+    for label, reply in [("string", "<html>oops</html>"),
+                         ("bare list", [_srow(1, 5)]),
+                         ("no list", {"error": {"code": 0, "message": "x"}}),
+                         ("list not a list", {"list": "nope"}),
+                         ("syncInProcess", {"list": [_srow(1, 5)], "syncInProcess": True})]:
+        rows, why = of_paging.schedules_in_window(_Cal([], reply=reply), 30, today=_TODAY)
+        assert why, (label, rows)
+        assert rows == [], (label, rows)
+
+
+def _span(w) -> int:
+    return (date.fromisoformat(w[1]) - date.fromisoformat(w[0])).days
 
 
 _harness.run()

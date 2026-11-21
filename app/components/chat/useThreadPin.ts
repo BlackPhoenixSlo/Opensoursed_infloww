@@ -12,7 +12,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { OFMessage } from "@/lib/relay";
 import {
   afterRender, AUTO_PIN_BACKSTOP_MS, distanceFromBottom, mayLoadOlder, onScrollDecision,
-  PIN_POLL_MS, SENTINEL_MARGIN_PX, touchReleases, type Point, type Scroll,
+  PIN_POLL_MS, rowsPrepended, SENTINEL_MARGIN_PX, touchReleases, type Point, type Scroll,
 } from "./threadPin";
 
 export function useThreadPin({
@@ -48,10 +48,20 @@ export function useThreadPin({
   // The "Jumping to latest…" label: true while the first load's auto-pin
   // holds, false once releasePin lets go.
   const [autoPinActive, setAutoPinActive] = useState(true);
-  // The container's geometry snapshot (scrollHeight, scrollTop,
-  // clientHeight): afterRender reads at-bottom and the load-older anchor
-  // off it. Null until the first commit with a container.
-  const scrollSnapshotRef = useRef<Scroll | null>(null);
+  // The last COMMITTED messages (set in the layout effect, never in render,
+  // so a discarded concurrent render can't desync it) and the container's
+  // geometry read while rendering a different list: like
+  // getSnapshotBeforeUpdate, the DOM then still shows the old rows, so
+  // afterRender sees the pre-insert scrollHeight and at-bottom state.
+  const committedRef = useRef<OFMessage[] | null>(null);
+  const snapshotRef = useRef<{ for: OFMessage[]; pre: Scroll | null } | null>(null);
+  if (messages !== committedRef.current && snapshotRef.current?.for !== messages) {
+    const c = containerRef.current;
+    snapshotRef.current = {
+      for: messages,
+      pre: c ? { scrollHeight: c.scrollHeight, scrollTop: c.scrollTop, clientHeight: c.clientHeight } : null,
+    };
+  }
   // Set true immediately before every programmatic `scrollTop = scrollHeight`
   // write (the 60Hz pin poll + the media-load RAF repin). The `scroll` event
   // those writes emit is indistinguishable from a user scroll, so the scroll
@@ -69,27 +79,19 @@ export function useThreadPin({
     setAutoPinActive(false);
   }, []);
 
-  // Snapshot the container's geometry. Deps-less, so this runs after EVERY
-  // commit, including the one that inserted new messages, and before that
-  // commit's [messages] effect below. So the snapshot (and the at-bottom
-  // read off it) is taken AFTER the insert, not before it: by the time the
-  // effect below compares, scrollHeight has usually not moved since, the
-  // anchor delta is ~0 and the anchor branch rarely fires. Kept as-is on
-  // purpose (behaviour-neutral split); fixing it is a separate change.
+  // After the commit, before paint (a layout effect, so the anchor never
+  // flashes the shifted view): "stick to bottom" (initial / new message at
+  // the bottom) or "preserve anchor" (older rows came in at the top).
   useLayoutEffect(() => {
-    const c = containerRef.current;
-    if (!c) return;
-    scrollSnapshotRef.current = { scrollHeight: c.scrollHeight, scrollTop: c.scrollTop, clientHeight: c.clientHeight };
-  });
-
-  // After render: decide between "stick to bottom" (initial / new message)
-  // and "preserve anchor" (older page loaded at top).
-  useEffect(() => {
+    const prev = committedRef.current ?? [];
+    committedRef.current = messages;
+    const pre = snapshotRef.current?.for === messages ? snapshotRef.current.pre : null;
+    snapshotRef.current = null;
     const c = containerRef.current;
     if (!c) return;
     const d = afterRender({
       prevLen: lastLenRef.current, len: messages.length,
-      pre: scrollSnapshotRef.current, scrollHeight: c.scrollHeight,
+      pre, scrollHeight: c.scrollHeight, prepended: rowsPrepended(prev, messages),
     });
     lastLenRef.current = messages.length;
     if (d.kind === "initial") {
@@ -278,12 +280,12 @@ export function useThreadPin({
 
   /** A quote card's tap: smooth-scroll the quoted message into view. The id
    *  is matched as a string against `data-msg-id`, never Number()'d. */
-  const jumpToMessage = (id: number | string) => {
+  const jumpToMessage = useCallback((id: number | string) => {
     const el = containerRef.current?.querySelector(
       `[data-msg-id="${CSS.escape(String(id))}"]`,
     );
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
-  };
+  }, []); // stable: it is a memoized Bubble's prop
 
   return { containerRef, topSentinelRef, showJumpLatest, autoPinActive, jumpToLatest, jumpToMessage };
 }

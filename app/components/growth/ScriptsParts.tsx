@@ -450,7 +450,7 @@ export function ScriptRow({
         {media.length > 0 && <MediaStrip media={media} accountId={accountId} />}
         <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-fg-dim">
           {/* #44: the price, when the media is priced (`fmtPrice`, not the bundle's "$ 10.00"). */}
-          {r.price > 0 && <span className="text-warn">{fmtPrice(Math.round(r.price * 100))}</span>}
+          {r.price > 0 && <span aria-label="Price" className="text-warn">{fmtPrice(Math.round(r.price * 100))}</span>}
           {/* #45: sent, purchases and sales. Sent: the chat sends that rode this script (`POST
               /admin/saved-replies/sent`); purchases and sales are not kept. */}
           {r.sent_count != null && (

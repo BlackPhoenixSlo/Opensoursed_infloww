@@ -39,7 +39,7 @@ import {
 } from "@tanstack/react-query";
 
 import { fmtAgo } from "@/lib/format";
-import { announceApiKeyError, relay, type ApiKeyErrorPayload } from "@/lib/relay";
+import { announceApiKeyError, ApiKeyError, relay, RelayError, type ApiKeyErrorPayload } from "@/lib/relay";
 
 /** The sweeps that share the `{running, progress}` contract. This is also the
  *  URL segment: start is POST `/admin/vault-ai/<kind>`, status is GET
@@ -150,8 +150,10 @@ export interface VaultSweep {
   /** Running, OR a start this tab fired that the server has not confirmed yet.
    *  This is the one to disable a button on. */
   busy: boolean;
-  /** POST the start. Extra body fields are merged over `{account_id}`. */
-  start: (body?: Record<string, unknown>) => Promise<void>;
+  /** POST the start. Extra body fields are merged over `{account_id}`. Resolves null when the sweep started, a
+   *  met target answered zero work, or a 409 says one is already running; else the refusal's sentence
+   *  (`refusalText`). Callers that only start may ignore it. */
+  start: (body?: Record<string, unknown>) => Promise<string | null>;
 }
 
 export function useVaultSweep(opts: VaultSweepOptions): VaultSweep {
@@ -201,25 +203,28 @@ export function useVaultSweep(opts: VaultSweepOptions): VaultSweep {
   }, [accountId, running, status, refresh]);
 
   const start = useCallback(
-    async (body?: Record<string, unknown>) => {
-      if (!accountId) return;
+    async (body?: Record<string, unknown>): Promise<string | null> => {
+      if (!accountId) return null;
       setStarting(true);
+      let refusal: string | null = null;
       try {
-        // Errors are deliberately swallowed. The ordinary one is a 409
-        // `*_already_running`, which means the sweep the operator is asking for
+        // A 409 `*_already_running` means the sweep the operator is asking for
         // is already in flight — clearing the label on that is what used to put
-        // "Describe all" back over a running sweep. Every other failure is
-        // equally uninteresting here, because the refetch below asks the server
-        // what is actually true and the UI renders that instead of a guess.
+        // "Describe all" back over a running sweep — so it is no refusal. Any
+        // other failure is handed back as its sentence; either way the refetch
+        // below asks the server what is actually true and the UI renders that.
         await relay
           .post(`/admin/vault-ai/${kind}`, { account_id: accountId, ...body }, { accountId })
-          .catch(() => {});
+          .catch((e: unknown) => {
+            if (!(e instanceof RelayError && e.status === 409)) refusal = refusalText(e);
+          });
         await qc
           .refetchQueries({ queryKey: sweepStatusKey(kind, accountId) })
           .catch(() => {});
       } finally {
         setStarting(false);
       }
+      return refusal;
     },
     [accountId, kind, qc],
   );
@@ -231,6 +236,48 @@ export function useVaultSweep(opts: VaultSweepOptions): VaultSweep {
     busy: running || starting,
     start,
   };
+}
+
+// ── Refusals (pure) ────────────────────────────────────────────────
+
+/** A whole-vault refusal (`folder_not_allowed`). */
+export const WHOLE_VAULT = "Ask the owner: this needs access to the whole vault.";
+/** Any refusal the relay gave no sentence for (an object detail without one, a bare or non-JSON body). */
+export const GENERIC_REFUSAL = "The relay could not do that. Try again in a minute.";
+
+/** A refused relay call's object `detail`, when it has one. */
+function objectDetail(err: unknown): Record<string, unknown> | null {
+  if (!(err instanceof RelayError)) return null;
+  const body = err.body as { detail?: unknown } | null | undefined;
+  const detail = body && typeof body === "object" ? body.detail : undefined;
+  return detail && typeof detail === "object" && !Array.isArray(detail) ? (detail as Record<string, unknown>) : null;
+}
+
+/** A refused relay call's `detail.error` code (`{"error": "inventory_unknown"}` → "inventory_unknown"). */
+export function errorCode(err: unknown): string | null {
+  const code = objectDetail(err)?.error;
+  return typeof code === "string" ? code : null;
+}
+
+/** The sentence to show for a refused relay call: the key payload's message and fix, the server's own sentence
+ *  (a string `detail`, the Describe cap's `blocked_reason`, a typed refusal's `message`), the whole-vault
+ *  refusal, else one generic sentence; never an "HTTP n" prefix or JSON. Anything not from the relay is a
+ *  network failure. */
+export function refusalText(err: unknown): string {
+  if (err instanceof ApiKeyError) return `${err.payload.message} ${err.payload.fix}`;
+  if (err instanceof RelayError) {
+    const body = err.body as { detail?: unknown } | null | undefined;
+    const raw = body && typeof body === "object" ? body.detail : undefined;
+    if (typeof raw === "string" && raw.trim()) return raw;
+    const d = objectDetail(err);
+    if (d) {
+      if (typeof d.blocked_reason === "string" && d.blocked_reason.trim()) return d.blocked_reason;
+      if (d.error === "folder_not_allowed") return WHOLE_VAULT;
+      if (typeof d.message === "string" && d.message.trim()) return d.message;
+    }
+    return GENERIC_REFUSAL;
+  }
+  return "Could not reach the relay.";
 }
 
 // ── Label formatters (pure) ────────────────────────────────────────

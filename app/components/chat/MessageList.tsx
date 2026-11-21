@@ -19,13 +19,13 @@
  * MessageMedia.tsx, the small parts messageListParts.tsx.
  */
 
-import { useMemo, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 
 import { describeLoadError, type OFMessage } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import { cn } from "@/lib/utils";
 import { useEffectiveTranslateMode } from "@/hooks/useTranslateMode";
-import { useTranslations } from "@/hooks/useTranslations";
+import { useTranslations, type BubbleTranslation } from "@/hooks/useTranslations";
 import { pickEagerMediaIds } from "@/components/chat/MediaTile";
 import { automationLabel } from "@/components/messages/MessageRowGeneric";
 import type { AttributionEntry } from "@/hooks/useChatAttribution";
@@ -52,6 +52,29 @@ export function newestReadPointer(a?: number | null, b?: number | null): number 
   return Math.max(a, b);
 }
 
+
+/** Every bubble without an eager tile shares this one set, so its prop never changes. */
+const NO_EAGER: Set<string> = new Set();
+
+type ReplyTo = NonNullable<OFMessage["replyToMessage"]>;
+/** The quote card built off a quoted row, one per row object: a cache row
+ *  keeps its identity across updates (structural sharing), so the memoized
+ *  Bubble's `replyTo` does too. */
+const replyCards = new WeakMap<OFMessage, ReplyTo>();
+function replyCard(found: OFMessage): ReplyTo {
+  let card = replyCards.get(found);
+  if (!card) {
+    card = {
+      id: Number(found.id),
+      text: found.text,
+      fromUser: found.fromUser,
+      createdAt: found.createdAt,
+      mediaCount: found.mediaCount,
+    };
+    replyCards.set(found, card);
+  }
+  return card;
+}
 
 export interface MessageListProps {
   messages: OFMessage[];
@@ -122,7 +145,7 @@ export interface MessageListProps {
 export function MessageList(props: MessageListProps) {
   const {
     messages, ownerUserId, accountId, fanId, isLoading, isError, error,
-    hasOlder, loadingOlder, olderFailed = false, headSettled = false, onLoadOlder, onRetry, onDiscard, onCancelScheduled,
+    hasOlder, loadingOlder, olderFailed = false, headSettled = false, onLoadOlder, onDiscard, onCancelScheduled,
     onToggleLike, onQuoteReply, onTogglePin, onUnsend, onSaveAsScript,
     highlightId, lastReadByPeerId,
     attribution, currentEmployeeName, fanAvatar, creatorAvatar,
@@ -130,18 +153,35 @@ export function MessageList(props: MessageListProps) {
 
   // 🌐 translate-to-English mode: batch-fetch translations for every loaded
   // text (keyed by stripped text, so optimistic-id churn is free); each Bubble
-  // reads its entry from the same module cache, and the re-render this hook
-  // makes when a batch lands repaints them. Off (default) costs nothing.
+  // gets its entry as `threadTranslation`, so the re-render this hook makes
+  // when a batch lands repaints just those (memoized) bubbles. Off (default)
+  // costs nothing.
   // The effective mode holds the Agency's AI translation gate (spec phase-04).
   const { on: translateOn, allowed: translateAllowed } = useEffectiveTranslateMode(accountId);
   const translatableTexts = useMemo(
     () => (translateOn ? messages.filter((m) => m.text).map((m) => ofPlainText(m.text)) : []),
     [messages, translateOn],
   );
-  useTranslations(translatableTexts, translateOn, accountId);
+  const translationCache = useTranslations(translatableTexts, translateOn, accountId);
 
   const { containerRef, topSentinelRef, showJumpLatest, autoPinActive, jumpToLatest, jumpToMessage } =
     useThreadPin({ messages, hasOlder, loadingOlder, olderFailed, headSettled, onLoadOlder });
+
+  // Bubble is memoized, and the parent passes fresh arrows every render: the
+  // bubbles get these stable wrappers that call the latest handler instead.
+  // An absent handler stays absent (the bubble hides its control off it).
+  const handlersRef = useRef(props);
+  useLayoutEffect(() => { handlersRef.current = props; });
+  const stable = useMemo(() => ({
+    onRetry: (tempId: number) => handlersRef.current.onRetry(tempId),
+    onDiscard: (tempId: number) => handlersRef.current.onDiscard?.(tempId),
+    onCancelScheduled: (jobId: number) => handlersRef.current.onCancelScheduled?.(jobId),
+    onToggleLike: (m: OFMessage) => handlersRef.current.onToggleLike?.(m),
+    onQuoteReply: (m: OFMessage) => handlersRef.current.onQuoteReply?.(m),
+    onTogglePin: (m: OFMessage) => handlersRef.current.onTogglePin?.(m),
+    onUnsend: (m: OFMessage) => handlersRef.current.onUnsend?.(m),
+    onSaveAsScript: (m: OFMessage) => handlersRef.current.onSaveAsScript?.(m),
+  }), []);
 
   // Eager-set: the two media tiles (most recent inbound + most recent
   // outbound) that fetch immediately on chat open. Everything else
@@ -152,6 +192,25 @@ export function MessageList(props: MessageListProps) {
     () => pickEagerMediaIds(messages, ownerUserId),
     [messages, ownerUserId],
   );
+  // Each bubble gets only its own eager ids, as a set that keeps its identity
+  // while the eager pick stays the same (the pick is rebuilt every update):
+  // NO_EAGER for all but the ≤2 bubbles holding an eager tile.
+  const eagerKey = [...eagerMediaIds].sort().join(",");
+  const eagerSets = useMemo(() => {
+    // Every non-empty subset of the (≤2, pickEagerMediaIds) ids, keyed in eagerKey's sorted order.
+    const ids = eagerKey ? eagerKey.split(",") : [];
+    const sets = new Map<string, Set<string>>();
+    for (let mask = 1; mask < 1 << ids.length; mask++) {
+      const sub = ids.filter((_, i) => mask & (1 << i));
+      sets.set(sub.join(","), new Set(sub));
+    }
+    return sets;
+  }, [eagerKey]);
+  const eagerFor = (m: OFMessage): Set<string> => {
+    if (eagerSets.size === 0 || !m.media?.length) return NO_EAGER;
+    const own = [...new Set(m.media.map((x) => String(x.id)))].filter((id) => eagerMediaIds.has(id)).sort();
+    return own.length ? eagerSets.get(own.join(",")) ?? NO_EAGER : NO_EAGER;
+  };
 
   // id → message lookup for resolving `replyToMessageId` in O(1). Built once
   // per messages change instead of an O(n) `all.find` inside the render
@@ -368,16 +427,12 @@ export function MessageList(props: MessageListProps) {
         let replyTo = m.replyToMessage ?? null;
         if (!replyTo && m.replyToMessageId) {
           const found = byId.get(String(m.replyToMessageId));
-          if (found) {
-            replyTo = {
-              id: Number(found.id),
-              text: found.text,
-              fromUser: found.fromUser,
-              createdAt: found.createdAt,
-              mediaCount: found.mediaCount,
-            };
-          }
+          if (found) replyTo = replyCard(found);
         }
+        // The thread mode's translation for this text, so a landing batch
+        // re-renders exactly the bubbles it translated (undefined: not yet asked).
+        const threadTranslation: BubbleTranslation | null | undefined =
+          translateOn && m.text ? translationCache.get(ofPlainText(m.text)) : undefined;
         const bubble = (
           <Bubble
             key={String(m.id)}
@@ -388,21 +443,22 @@ export function MessageList(props: MessageListProps) {
             accountId={accountId}
             fanId={fanId ?? null}
             ownerUserId={ownerUserId}
-            onRetry={onRetry}
-            onDiscard={onDiscard}
-            onCancelScheduled={onCancelScheduled}
-            onToggleLike={onToggleLike}
-            onQuoteReply={onQuoteReply}
-            onTogglePin={onTogglePin}
-            onUnsend={onUnsend}
-            onSaveAsScript={onSaveAsScript}
+            onRetry={stable.onRetry}
+            onDiscard={onDiscard && stable.onDiscard}
+            onCancelScheduled={onCancelScheduled && stable.onCancelScheduled}
+            onToggleLike={onToggleLike && stable.onToggleLike}
+            onQuoteReply={onQuoteReply && stable.onQuoteReply}
+            onTogglePin={onTogglePin && stable.onTogglePin}
+            onUnsend={onUnsend && stable.onUnsend}
+            onSaveAsScript={onSaveAsScript && stable.onSaveAsScript}
             onJumpTo={jumpToMessage}
             highlighted={highlightId != null && String(highlightId) === String(m.id)}
             isRealOutgoing={isRealOutgoing}
             seenByPeer={seenByPeer}
-            eagerMediaIds={eagerMediaIds}
+            eagerMediaIds={eagerFor(m)}
             employeeLabel={employeeLabel}
             threadTranslate={translateOn}
+            threadTranslation={threadTranslation}
             translateAllowed={translateAllowed}
             runFirst={runFirst.has(m)}
             runLast={runLast.has(m)}

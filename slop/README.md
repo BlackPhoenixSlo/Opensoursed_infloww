@@ -29,7 +29,7 @@ slop/run inbox --no-wait                         # INFRA at once if no gate slot
 SLOP_MAX_LOAD=6 SLOP_LOCK_WAIT_S=600 slop/run inbox   # the machine gate's load cap (default 12) and overall wait (3600 s)
 python3 ~/.slop/gate.py status                   # slot holders, who queues, load, machine threads, would admission pass
 python3 ~/.slop/gate.py run -- venv/bin/python -m pytest tests/test_webhook_dispatch.py   # any other heavy work, same gate
-slop/run nightly --detach                        # the daily full sweep in the background (below: Nightly)
+slop/run nightly --detach                        # the daily relevant-only sweep in the background (below: Nightly)
 ```
 
 One machine gate: every `slop/run` from any checkout, worktree or repo takes one of
@@ -100,8 +100,8 @@ slop/run --changed                # run those picks (own/flow always, the shared
 slop/run <pick> --break --baseline=slop/evidence/<its green folder>   # each pick whose FAULT/targets this diff adds or changes
 ```
 
-`--changed` is for development. `slop/run all` and `slop/run nightly` stay the complete sweep: deploys,
-harness-wide changes, the daily run.
+`--changed` is for development. `slop/run all` stays the complete sweep (deploys, harness-wide changes);
+the daily `slop/run nightly` runs the relevant subset (below: Nightly).
 
 `--baseline` reuses a green folder only at the same Run identity: same knobs, same source (HEAD, the
 tracked diff, every untracked non-ignored file, `app/.env*`, `app/node_modules/.slop-lock-sha`, the venv's
@@ -231,9 +231,9 @@ built: no list to curate. `all` stays for deploys and harness-wide changes.
   seconds and sha (or `unmapped`).
 
 **Nightly.** `slop/run nightly [--dry] [--phases=all,volume,map] [--smoke] [--detach]`
-(`lib/nightly.py`, tables in `lib/test_nightly.py`) is the daily full sweep, notifications
-and Electron included: phase `volume` first (3 of the scenarios declaring a volume gate at `--scale=medium --users=120 --no-ui`, a dated rotation over the sorted list so each runs every ceil(n/3) nights: owner 2026-11-12 cut volume ~95% after 54 exclusive medium runs could not finish in a night; `VOLUME_PER_NIGHT`), `all` (every scenario, small, UI on), `map` (`--map` for each unmapped scenario and each
-entry whose sha is > 200 commits behind HEAD or not an ancestor of HEAD (fresh entries are not re-mapped: same bound, ~2.5 h less a night when a few entries never re-map); every scenario on Sunday). Each scenario is its own
+(`lib/nightly.py`, tables in `lib/test_nightly.py`) is the daily sweep, notifications
+and Electron included: phase `volume` first (3 of the scenarios declaring a volume gate at `--scale=medium --users=120 --no-ui`, a dated rotation over the sorted list so each runs every ceil(n/3) nights: owner 2026-11-12 cut volume ~95% after 54 exclusive medium runs could not finish in a night; `VOLUME_PER_NIGHT`), `all` (small, UI on; relevant only, owner 2026-11-21 after a night under load 25-30 hit the 8 h wall with its map phase unrun: the union, in scenario order, of `changed` = what `--changed` would pick since the previous nightly's sha (newest earlier non-smoke `*-nightly-*` folder that ran `all` and wrote summary.json; same `covmap.pick_changed`, `own` and `flow` tiers only (`NIGHTLY_TIERS`), no budget: a `shared`/`layout` pick, e.g. a module-level import every scenario loads, would make each night a full sweep, so those scenarios are left out and counted as such), `carry-over` = that night's `all`/`volume` rows not OK (FAIL, FLAKY, INFRA, SKIP incl. 8 h cuts; a volume row re-runs here at small), `unmapped`, and the `canary` set `SMOKE["all"]` (os-ping-push + inbox-unread-fan-burst, which drives the Electron notification click); no map, no previous nightly or a failed pick = every scenario, the reason in plan.txt), `map` (`--map` for at most 10 (`MAP_PER_NIGHT`) of the unmapped scenarios and the
+entries whose sha is > 200 commits behind HEAD or not an ancestor of HEAD: unmapped first, then no / unknown / divergent sha, then most behind; a re-mapped entry is fresh the next night, so the cap rotates through the stale list over nights; no Sunday full refresh). plan.txt lists each `all` scenario with its source(s) and how many were left out as unaffected; summary.md the same per source. Each scenario is its own
 `slop/run <name> <knobs>`, its verdict that run's exit code (0 OK, 1 FAIL, 3 INFRA, 2 refused = INFRA
 with its printed reason, 1 without invariants.json = INFRA; invariants.json only names the failed checks); a FAIL in `all` or `volume`
 re-runs once (green = `FLAKY`, INFRA stays INFRA); a `--map` run red only on budgets is `RED (coverage)` (counted as ok).
@@ -670,7 +670,9 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
 - Vault Refresh (`2026-11-05-vault-refresh`, Refresh shows what was made on OF, the picker reloads broken thumbs,
   concurrent syncs): `README.vault.md`.
 - Vault Pro's AI describe sweep (`2026-11-01-vault-describe-sweep`, describe-all, flags-all, cache, escalation,
-  cost): `README.vault.md`.
+  cost, target): `README.vault.md`.
+- Growth > Scripts' Fill with content (`2026-11-21-script-fill`, one press, read back, send, undo, describe
+  offer / blocked / refused): `README.vault.md`.
 - Vault Jev v8 flags (`2026-11-11-vault-jev-flags`, default on for every photo, no qwen flags / V2 describe for
   photos, lanes, Jev before describe, cost, re-upload copies): `README.vault.md`.
 - The fan-info sweep at volume (`2026-11-02-fan-info-sweep`, Run now on every Creator, pinned language, kept

@@ -702,9 +702,7 @@ def _changed(all_s: dict[str, Path], args, params: dict) -> tuple[dict[str, Path
         print(f"slop: --changed needs {covmap.MAP.relative_to(SLOP.parent)} (missing or empty): build it with "
               "slop/run all --map")
         return None
-    g = covmap.gather(doc, args.since)
-    picks, warns = selection.pick(doc, g["hunks"], g["app_edges"], g["changed"], g["untracked"], g["deleted"],
-                                   g["map_missing"])
+    g, picks, warns = covmap.pick_changed(doc, args.since)
     picks = {n: r for n, r in picks.items() if n in all_s}
     no_ui = sorted(n for n, r in picks.items() if args.no_ui and selection.needs_ui(r))
     secs, est_src = _estimates(picks, doc, args, all_s, params)

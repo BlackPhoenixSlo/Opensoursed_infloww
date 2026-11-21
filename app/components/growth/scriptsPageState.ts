@@ -1,7 +1,8 @@
 /**
  * Growth > Scripts' page state as a pure reducer: the open view, the open tag and sequence, the checked scripts, the
  * tags added on this page before any script carries them, the scripts a remove / delete is still running on (`busy`)
- * and its last failure (`error`), the open overlay (`modal`), the search and Manage scripts' sort. Below it, the
+ * and its last failure (`error`), the open overlay (`modal`), the search, Manage scripts' sort and the Fill state
+ * (`fill`, `scriptFillState.ts`, held here so its dialog and `modal` stay one overlay). Below it, the
  * page's pure derivations: tag counts, sequences, the open list's rows and the selection over them.
  *
  *   • Moving to another list (`view`, `open`, `addTag`) clears the checked scripts.
@@ -14,7 +15,9 @@
  *   • A run (a remove, a delete, a tag or sequence delete) marks its ids busy and clears the last error; its one
  *     `runEnd` frees its own ids only (an overlapping run's stay busy), then sets its error if it failed, else
  *     unchecks its ids (the server took them; a failed run keeps the ticks for a retry).
- *   • The name prompt and the Excel / Import / Share dialogs are one overlay (`modal`): opening one replaces another.
+ *   • The name prompt, the Excel / Import / Share dialogs (`modal`) and the Fill dialog (`fill.dialog`) are one
+ *     overlay: opening one replaces another. An answer that opens the Fill dialog closes `modal`; `openModal`,
+ *     All models and another Creator close the Fill dialog.
  *   • Closing the search clears its text.
  *   • The All models matrix (`allModels`, CreatorRail's All pick) shows no Creator: no overlay and no checked scripts
  *     stay open on the hidden one, and the page's write actions are hidden while it shows. Picking a Creator
@@ -26,6 +29,9 @@
  */
 
 import type { SavedReply, SavedReplySequenceMeta } from "@/lib/relay";
+import {
+  INITIAL_FILL, scriptFillReducer, type Action as FillAction, type ScriptFillState,
+} from "@/components/growth/scriptFillState";
 import { ofPlainText } from "@/lib/ofRichText";
 
 export type View = "tags" | "sequences" | "manage";
@@ -51,7 +57,7 @@ export type NamePrompt =
   | { kind: "tag"; ids?: number[] }
   | { kind: "rename"; entry: EntryKind; from: string };
 
-/** The page's one overlay: the name prompt, or an Import / Share dialog. */
+/** The page's own overlay: the name prompt, or an Import / Share dialog (the Fill dialog is `fill.dialog`). */
 export type Modal =
   | { kind: "name"; prompt: NamePrompt }
   | { kind: "excel" }
@@ -94,6 +100,8 @@ export interface ScriptsPageState {
   account: string | null;
   /** The All models matrix shows in place of the Creator (`allModels`); a Creator's pick (`reset`) leaves it. */
   allModels: boolean;
+  /** Fill with content: requests, the Fill dialog, notices (`scriptFillReducer`). */
+  fill: ScriptFillState;
 }
 
 export type Action =
@@ -127,7 +135,9 @@ export type Action =
   /** Another Creator (`account`): nothing of this one's carries over but the view, the sorts and the busy ids. */
   | { type: "reset"; account: string | null }
   /** The All models matrix: the Creator's overlay closes and its checked scripts go. */
-  | { type: "allModels" };
+  | { type: "allModels" }
+  /** A Fill action, run by `scriptFillReducer`. */
+  | { type: "fill"; action: FillAction };
 
 export const INITIAL: ScriptsPageState = {
   view: "tags",
@@ -142,6 +152,7 @@ export const INITIAL: ScriptsPageState = {
   seqSort: { by: "custom", order: "asc" },
   account: null,
   allModels: false,
+  fill: INITIAL_FILL,
 };
 
 /** The open entry: `sel` while `order` lists it, else the first entry, else none. */
@@ -163,6 +174,8 @@ export function livePending(
 ): string[] {
   return pendingTags.filter((t) => !replies.some((r) => (r.tags ?? []).includes(t)));
 }
+
+const closeFill = (f: ScriptFillState) => scriptFillReducer(f, { type: "close" });
 
 /** An answer to what was asked on `account` while the page shows another Creator: dropped. */
 const otherCreator = (s: ScriptsPageState, account: string | null) => account !== s.account;
@@ -209,7 +222,7 @@ export function scriptsPageReducer(s: ScriptsPageState, a: Action): ScriptsPageS
       return scriptsPageReducer(freed, { type: "check", ids: a.ids, on: false });
     }
     case "openModal":
-      return { ...s, modal: a.modal };
+      return { ...s, modal: a.modal, fill: closeFill(s.fill) };
     case "closeModal":
       return { ...s, modal: null };
     case "searchToggle":
@@ -228,9 +241,18 @@ export function scriptsPageReducer(s: ScriptsPageState, a: Action): ScriptsPageS
     case "reset":
       // `busy` stays: script ids are global DB ids, so the last Creator's never show on this one, and a run still
       // out on them keeps their rows waiting if the user comes back (no second POST); its `runEnd` frees them.
-      return { ...INITIAL, view: s.view, sort: s.sort, seqSort: s.seqSort, busy: s.busy, account: a.account };
+      return {
+        ...INITIAL, view: s.view, sort: s.sort, seqSort: s.seqSort, busy: s.busy, account: a.account,
+        fill: scriptFillReducer(s.fill, { type: "reset", account: a.account }),
+      };
     case "allModels":
-      return { ...s, allModels: true, modal: null, checked: new Set() };
+      return { ...s, allModels: true, modal: null, checked: new Set(), fill: closeFill(s.fill) };
+    case "fill": {
+      const fill = scriptFillReducer(s.fill, a.action);
+      if (fill === s.fill) return s;
+      // One overlay: the Fill dialog and `modal` are never both open, so a dialog now open replaces `modal`.
+      return { ...s, fill, modal: fill.dialog ? null : s.modal };
+    }
   }
 }
 

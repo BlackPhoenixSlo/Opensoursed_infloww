@@ -508,7 +508,12 @@ class ReadsMixin:
                   time_zone: str = "Europe/Ljubljana",
                   limit: int = 20) -> dict:
         """GET /api2/v2/schedules — calendar view of scheduled chats + posts.
-        Dates are ISO yyyy-mm-dd. OF wraps filters as `filter[publishDate]=...`."""
+        Dates are ISO yyyy-mm-dd. OF wraps filters as `filter[publishDate]=...`.
+
+        The only list of DATED scheduled posts (live reads 2026-11-21, capture
+        queue--scheduled-post-endpoint). OF honours the date range but IGNORES
+        `limit` (and `offset`), with no hasMore: one read returns the whole
+        range. To walk a window use of_paging.schedules_in_window."""
         params: dict[str, Any] = {"limit": limit}
         if publish_date:     params["filter[publishDate]"] = publish_date
         if publish_date_end: params["filter[publishDateEnd]"] = publish_date_end
@@ -522,11 +527,12 @@ class ReadsMixin:
         return self.get_json(f"{API_BASE}/schedules/later/chat", params={"limit": limit})
 
     def schedules_later_post(self, *, limit: int = 10, offset: int = 0) -> dict:
-        """GET /api2/v2/schedules/later/post — posts scheduled for the future.
+        """GET /api2/v2/schedules/later/post — OF's undated "saved for later"
+        posts (`publishDateTime` null), paged with `offset` + `hasMore`.
 
-        Paged: `offset` walks past the first page. A creator with a queue longer
-        than `limit` otherwise never shows the far-future entries, and the vault
-        sweep's whole job is finding a carrier scheduled 30 days out.
+        NOT the dated schedule: a post with a publish date is absent here and
+        listed only by `schedules()` (live read 2026-11-21, capture
+        queue--scheduled-post-endpoint).
         """
         return self.get_json(f"{API_BASE}/schedules/later/post",
                              params={"limit": limit, "offset": offset})

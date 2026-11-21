@@ -80,6 +80,7 @@ import atomic_json
 import gdrive
 import media_prep
 import of_client
+import of_paging
 import vault_carrier
 # The pure half (limits, wire parsing, caps, item schema): what this module
 # uses, plus names re-exported for callers that use `vault_upload.<name>`.
@@ -1781,10 +1782,6 @@ def _known_carriers(account_id: str) -> set[str]:
     return out
 
 
-_SCHEDULE_PAGE = 100
-_SCHEDULE_MAX_PAGES = 50
-
-
 def _sweep_scheduled(client, account_id: str,
                      recheck: Callable[[], set | None]) -> tuple[int, int, bool]:
     """Reconcile against OnlyFans' OWN list of scheduled posts, DELETING the
@@ -1797,19 +1794,29 @@ def _sweep_scheduled(client, account_id: str,
     writer on the account ever produces that text, so a scheduled post carrying
     it belongs to an import, and one whose id no live run owns is deletable.
 
-    PAGED to exhaustion, and the third return value says whether the listing
-    actually completed. A single page of 100 never reached a carrier scheduled
-    30 days out on a creator with a long queue, and a listing that FAILED
-    returned the same `(0, 0)` as a listing that found nothing — "we looked and
-    it is clean" and "we could not look" reported identically, on the only
-    recovery path an unrecorded carrier has.
+    The listing is GET /schedules over the carrier window, NOT
+    /schedules/later/post: a carrier is always dated (CARRIER_DAYS out), and a
+    dated post appears only in the calendar — later/post is OF's undated "saved
+    for later" list (live read 2026-11-21, capture
+    queue--scheduled-post-endpoint). Only `type == "post"` rows are candidates;
+    the calendar lists chats too.
+
+    The third return value says whether the listing actually completed. OF
+    ignores `offset` and `limit` on /schedules and sends no hasMore, so the
+    window is read in date chunks (of_paging.schedules_in_window). An error, a
+    reply that is not `{list: [...]}`, `syncInProcess`, or a single day of
+    of_paging.SCHEDULE_PAGE rows or more (maybe truncated) is an INCOMPLETE listing and
+    nothing is deleted that run. A listing that FAILED once returned the same
+    `(0, 0)` as a listing that found nothing — "we looked and it is clean" and
+    "we could not look" reported identically, on the only recovery path an
+    unrecorded carrier has.
 
     `recheck()` returns the account's carrier ids as they are AT THAT MOMENT, or
     None if an import has started since. Both matter, and a frozen snapshot of
-    either is the bug this walk keeps re-growing: paging a long queue is up to
-    fifty sequential round trips, tens of seconds, and an import that begins
-    inside that window creates a carrier which is (a) genuinely live and (b) not
-    in any set taken before it existed. So it is asked again before the listing
+    either is the bug this walk keeps re-growing: the listing is several
+    sequential round trips, and an import that begins inside that window
+    creates a carrier which is (a) genuinely live and (b) not in any set taken
+    before it existed. So it is asked again before the listing
     and again before every single delete.
 
     Returns `(deleted, still_live, listed_completely)`. Abandoning because the
@@ -1820,30 +1827,39 @@ def _sweep_scheduled(client, account_id: str,
         log.info("vault sweep: account %s started importing — leaving its "
                  "scheduled posts alone", account_id)
         return 0, 0, False
-    rows: list = []
-    for page in range(_SCHEDULE_MAX_PAGES):
-        try:
-            resp = client.schedules_later_post(limit=_SCHEDULE_PAGE,
-                                               offset=page * _SCHEDULE_PAGE)
-        except Exception as e:  # noqa: BLE001 — a listing failure is not a run failure
-            log.error("vault sweep: could NOT list scheduled posts for account "
-                      "%s — an unrecorded carrier may be live: %s", account_id, e)
-            return 0, 1, False
-        batch = resp.get("list") if isinstance(resp, dict) else resp
-        batch = list(batch or [])
-        rows.extend(batch)
-        more = resp.get("hasMore") if isinstance(resp, dict) else None
-        if not batch or len(batch) < _SCHEDULE_PAGE or more is False:
-            break
-    else:
-        log.error("vault sweep: scheduled-post listing for account %s did not "
-                  "end after %d pages — treating the scan as incomplete",
-                  account_id, _SCHEDULE_MAX_PAGES)
+    try:
+        # Shared listing contract (date chunks, day-by-day re-read of a full
+        # chunk, fail closed), also used by scripts/throughput.
+        rows, why = of_paging.schedules_in_window(client, of_client.CARRIER_DAYS)
+    except Exception as e:  # noqa: BLE001 — a listing failure is not a run failure
+        log.error("vault sweep: could NOT list scheduled posts for account "
+                  "%s — an unrecorded carrier may be live: %s", account_id, e)
+        return 0, 1, False
+    if why:
+        log.error("vault sweep: scheduled-post listing for account %s is "
+                  "INCOMPLETE (%s) — nothing retired this run", account_id, why)
         return 0, 1, False
 
     deleted = failed = 0
-    for post in rows:
-        pid = post.get("id") if isinstance(post, dict) else None
+    for row in rows:
+        # Each row is a QUEUE entry wrapping the post in `entity`; the row's own
+        # `id` is the queue id (app/lib/__fixtures__/of/queue-schedules-2026-11.json).
+        # No entity = no post we can identify: skip it, never delete.
+        post = row.get("entity") if isinstance(row, dict) else None
+        if not isinstance(post, dict):
+            log.warning("vault sweep: account %s scheduled row %s has no entity "
+                        "— skipped, not deleted", account_id,
+                        row.get("id") if isinstance(row, dict) else row)
+            continue
+        # The calendar lists scheduled chats too; only a post can be a carrier.
+        kind = row.get("type")
+        if kind != "post":
+            if kind != "chat":
+                log.warning("vault sweep: account %s scheduled row %s has type "
+                            "%r — skipped, not deleted", account_id,
+                            row.get("id"), kind)
+            continue
+        pid = post.get("id")
         if pid is None or str(pid) in known:
             continue
         if of_client.VAULT_MARKER not in _marker_text(post):

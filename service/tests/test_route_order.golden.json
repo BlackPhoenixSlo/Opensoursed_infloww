@@ -1,4 +1,4 @@
-{"openapi_sha1": "ce18b95826a9149677bac786e3f4a523a27534cd",
+{"openapi_sha1": "72b43abb6b216aac0fc4df4431b361832b4779cb",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -229,6 +229,9 @@
   ["POST", "/admin/saved-replies/copy", "copy_scripts"],
   ["GET", "/admin/saved-replies/overview", "saved_replies_overview"],
   ["POST", "/admin/saved-replies/bulk", "bulk_import"],
+  ["POST", "/admin/saved-replies/fill/plan", "fill_plan"],
+  ["POST", "/admin/saved-replies/fill/apply", "fill_apply"],
+  ["POST", "/admin/saved-replies/fill/undo", "fill_undo"],
   ["GET", "/admin/shifts", "list_occurrences"],
   ["POST", "/admin/shifts", "create_shift"],
   ["PATCH", "/admin/shifts/{shift_id}", "edit_shift"],

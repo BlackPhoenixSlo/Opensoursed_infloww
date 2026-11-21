@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { appendMsg, dropMsg, failMsg, insertByCreatedAt, insertMsg, reconcileMsg } from "@/lib/threadCache";
+import { appendMsg, dropMsg, failMsg, insertByCreatedAt, insertMsg, reconcileMsg, trimThread } from "@/lib/threadCache";
 import type { OFMessage } from "@/lib/relay";
 
 const msg = (id: number, extra: Partial<OFMessage> = {}): OFMessage =>
@@ -89,5 +89,40 @@ describe("insertMsg", () => {
     const out = insertMsg(p, m);
     expect(idsOf(out)).toEqual(want);
     expect(out === p).toBe(same);
+  });
+});
+
+describe("trimThread", () => {
+  const ids = (...xs: number[]) => xs.map((id) => (id <= 0 ? opt(id) : msg(id)));
+  it.each<[string, OFMessage[], number, number[]]>([
+    ["under the cap: untouched", ids(1, 2, 3), 5, [1, 2, 3]],
+    ["exactly the cap: untouched", ids(1, 2, 3), 3, [1, 2, 3]],
+    ["over the cap: keeps the newest", ids(1, 2, 3, 4, 5), 2, [4, 5]],
+    ["optimistic tail rows ride along, not counted", ids(1, 2, 3, -1, -2), 2, [2, 3, -1, -2]],
+    ["an optimistic row inside the cut is kept", ids(1, -3, 2, 3, 4), 2, [-3, 3, 4]],
+    ["keep 0 leaves only optimistic rows", ids(1, 2, -1), 0, [-1]],
+    ["empty", [], 3, []],
+  ])("%s", (_n, list, keep, want) => {
+    expect(idsOf(trimThread(list, keep))).toEqual(want);
+  });
+
+  it("returns the same reference when nothing is cut", () => {
+    const list = ids(1, 2, 3);
+    expect(trimThread(list, 3)).toBe(list);
+  });
+
+  it("keeps row identity (structural sharing)", () => {
+    const list = ids(1, 2, 3);
+    expect(trimThread(list, 2)[0]).toBe(list[1]);
+  });
+
+  it("a reconciled send (real id, _tempId kept) counts as real and can be cut", () => {
+    const list = [msg(1, { _tempId: -9 }), msg(2), msg(3)];
+    expect(idsOf(trimThread(list, 2))).toEqual([2, 3]);
+  });
+
+  it("snowflake string ids count as real", () => {
+    const list = [{ ...msg(1), id: "900000000000000001" }, { ...msg(2), id: "900000000000000002" }] as unknown as OFMessage[];
+    expect(trimThread(list, 1).map((m) => String(m.id))).toEqual(["900000000000000002"]);
   });
 });

@@ -6,8 +6,9 @@ import {
   ALL, INITIAL, UNCATEGORIZED, activeEntry, byName, entryIds, firstGap, kindOf, livePending, matchesSearch, neighbour,
   nextStep, scriptRows, scriptsPageReducer, selectionOf, sequenceDates, sequenceHeader, sequenceOrder,
   sequenceSteps, sequencesOf, tagCountsOf,
-  type Action, type ScriptsPageState, type SeqSort, type SeqSortBy, type SortBy, type SortOrder, type View,
+  type Action, type Modal, type ScriptsPageState, type SeqSort, type SeqSortBy, type SortBy, type SortOrder, type View,
 } from "./scriptsPageState";
+import { INITIAL_FILL, fillKey } from "./scriptFillState";
 
 const TAGS = [ALL, "Night", "Opener", "VIP", UNCATEGORIZED];
 const SEQS = ["A", "B", "C"];
@@ -163,7 +164,8 @@ describe("renameEntry keeps the checked scripts", () => {
 describe("reset (another Creator)", () => {
   it("drops the picks, checked scripts and pending tags, keeps the view and takes the Creator", () => {
     const s = st({ view: "sequences", ...opened("VIP", "B"), checked: new Set([1]), pendingTags: ["N"], account: "a" });
-    expect(scriptsPageReducer(s, { type: "reset", account: "b" })).toEqual({ ...INITIAL, view: "sequences", account: "b" });
+    expect(scriptsPageReducer(s, { type: "reset", account: "b" }))
+      .toEqual({ ...INITIAL, view: "sequences", account: "b", fill: { ...INITIAL_FILL, account: "b" } });
   });
 
   it("keeps the busy ids: a run still out on the last Creator's scripts keeps their rows waiting on return", () => {
@@ -206,9 +208,9 @@ describe("All models", () => {
       { account: "a", view: "sequences", ...opened("VIP", "B") }, { type: "allModels" },
       { account: "a", allModels: true, view: "sequences", ...opened("VIP", "B") }],
     ["a Creator's pick leaves it", { account: "a", allModels: true }, { type: "reset", account: "b" },
-      { account: "b", allModels: false }],
+      { account: "b", allModels: false, fill: { ...INITIAL_FILL, account: "b" } }],
     ["the same Creator's pick leaves it too", { account: "a", allModels: true }, { type: "reset", account: "a" },
-      { account: "a", allModels: false }],
+      { account: "a", allModels: false, fill: { ...INITIAL_FILL, account: "a" } }],
   ])("%s", (_n, start, action, want) => {
     expect(scriptsPageReducer(st(start), action)).toEqual(st(want));
   });
@@ -304,6 +306,36 @@ describe("the overlay and the search", () => {
       { sort: { by: "name", order: "asc" } }],
   ])("%s", (_n, start, action, want) => {
     expect(scriptsPageReducer(st(start), action)).toMatchObject(want);
+  });
+
+  // The Fill dialog (`fill.dialog`) and `modal` are one overlay, kept exclusive in one step.
+  const PRESSED = { ...INITIAL_FILL, account: "a", open: "New Sub", inflight: { [fillKey("a", "New Sub")]: 1 } };
+  const FILL_OPEN = { ...INITIAL_FILL, account: "a", open: "New Sub", dialog: { sequence: "New Sub", req: 1, status: "no_fit" as const, refusal: null } };
+  const answer: Action = { type: "fill", action: { type: "answered", account: "a", sequence: "New Sub", req: 1, status: "no_fit" } };
+  it.each<[string, Partial<ScriptsPageState>, Action, { modal: Modal | null; dialog: boolean }]>([
+    ["a Fill answer that opens the dialog replaces an open Share", { account: "a", modal: { kind: "share" }, fill: PRESSED },
+      answer, { modal: null, dialog: true }],
+    ["a dropped Fill answer keeps the open Share", { account: "a", modal: { kind: "share" }, fill: { ...PRESSED, open: "Old Sub" } },
+      answer, { modal: { kind: "share" }, dialog: false }],
+    ["an ok (no dialog) keeps the open Share", { account: "a", modal: { kind: "share" }, fill: PRESSED },
+      { type: "fill", action: { type: "applied", account: "a", sequence: "New Sub", req: 1, result: { applied: [], undo: [] } } },
+      { modal: { kind: "share" }, dialog: false }],
+    ["opening Share replaces the Fill dialog", { account: "a", fill: FILL_OPEN },
+      { type: "openModal", modal: { kind: "share" } }, { modal: { kind: "share" }, dialog: false }],
+    ["closing the Fill dialog", { account: "a", fill: FILL_OPEN }, { type: "fill", action: { type: "close" } },
+      { modal: null, dialog: false }],
+    ["another Creator closes the Fill dialog", { account: "a", fill: FILL_OPEN }, { type: "reset", account: "b" },
+      { modal: null, dialog: false }],
+    ["All creators closes the Fill dialog", { account: "a", fill: FILL_OPEN }, { type: "allModels" },
+      { modal: null, dialog: false }],
+  ])("%s", (_n, start, action, want) => {
+    const next = scriptsPageReducer(st(start), action);
+    expect({ modal: next.modal, dialog: next.fill.dialog != null }).toEqual(want);
+  });
+
+  it("a Fill action that changes nothing returns the same state", () => {
+    const s = st({ account: "a", fill: PRESSED });
+    expect(scriptsPageReducer(s, { type: "fill", action: { type: "close" } })).toBe(s);
   });
 
   it("a search and an overlay keep the checked scripts", () => {

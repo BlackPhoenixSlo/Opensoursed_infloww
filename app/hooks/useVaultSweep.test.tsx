@@ -16,7 +16,10 @@ import type { ReactNode } from "react";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), post: vi.fn() } }));
+vi.mock("@/lib/relay", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/relay")>()),
+  relay: { get: vi.fn(), post: vi.fn() },
+}));
 
 import {
   describeSweepText,
@@ -27,7 +30,7 @@ import {
   useVaultSweep,
   type SweepStatus,
 } from "@/hooks/useVaultSweep";
-import { relay } from "@/lib/relay";
+import { ApiKeyError, relay, RelayError } from "@/lib/relay";
 
 const relayGet = relay.get as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
@@ -89,6 +92,38 @@ describe("a sweep this tab did not start", () => {
     expect(result.current.busy).toBe(true);
     expect(result.current.progress).toMatchObject({ done: 232 });
     expect(relayPost).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("start's answer (the Scripts page's Fill dialog shows the refusal)", () => {
+  const KEY = {
+    error: "api_key_missing" as const, feature: "describe_media", provider: "typesafe", fix_url: "/settings",
+    message: "No vision key is set.", fix: "Paste one in Settings › AI keys.",
+  };
+  const CAP = "Today's AI budget for this account is spent — $1.00. It resets at 00:00 UTC.";
+  it.each<[string, () => Promise<unknown>, string | null]>([
+    ["200 running → null", async () => ({ status: "running" }), null],
+    ["200 zero-work done → null", async () => ({ status: "done", target: 1000, target_remaining: 0 }), null],
+    ["409 already running → null", async () => {
+      throw new RelayError(409, { detail: { error: "describe_already_running" } }, "{\"error\":\"describe_already_running\"}");
+    }, null],
+    ["429 cap → its blocked_reason", async () => {
+      throw new RelayError(429, { detail: { error: "daily_cap_reached", capped: true, blocked_reason: CAP } }, "{json}");
+    }, CAP],
+    ["424 key → message and fix", async () => {
+      throw new ApiKeyError(424, { detail: KEY }, KEY);
+    }, "No vision key is set. Paste one in Settings › AI keys."],
+    ["403 role string → that sentence", async () => {
+      throw new RelayError(403, { detail: "Your role does not allow Vault Pro" }, "Your role does not allow Vault Pro");
+    }, "Your role does not allow Vault Pro"],
+  ])("%s", async (_n, answer, want) => {
+    relayPost.mockImplementation(answer);
+    const { result } = mountSweep(AID);
+    await waitFor(() => expect(relayGet).toHaveBeenCalled());
+    expect(await result.current.start({ target: 1000 })).toBe(want);
+    expect(relayPost).toHaveBeenCalledWith(
+      "/admin/vault-ai/describe-all", { account_id: AID, target: 1000 }, { accountId: AID },
+    );
   });
 });
 

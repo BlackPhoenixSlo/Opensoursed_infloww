@@ -24,4 +24,9 @@ describe("MediaStrip", () => {
     const { container } = render(<MediaStrip media={media} accountId="acc-a" thumbSrc={(m) => `/local/${m.id}`} />);
     expect(srcs(container)).toEqual(["/local/1", "/local/2"]);
   });
+
+  it("each tile carries its media id (data-media-id), a stable hook for UI tests", () => {
+    const { container } = render(<MediaStrip media={media} accountId="acc-a" />);
+    expect([...container.querySelectorAll("[data-media-id]")].map((e) => e.getAttribute("data-media-id"))).toEqual(["1", "2"]);
+  });
 });

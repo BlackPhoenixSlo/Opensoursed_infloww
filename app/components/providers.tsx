@@ -53,6 +53,8 @@ import { registerImageSW } from "@/lib/registerImageSW";
 import { listenNotificationClicks } from "@/lib/webPush";
 import { createIdbPersister, LEGACY_LOCALSTORAGE_KEY, persistQueryClientLazily } from "@/lib/rqPersister";
 import { onScreenRefreshed } from "@/lib/screenBundle";
+import { THREAD_KEEP, trimThread } from "@/lib/threadCache";
+import type { OFMessage } from "@/lib/relay";
 
 // Bump when the persisted cache shape changes (added/removed fields on
 // OFChatItem, etc.) so old persisted snapshots get nuked on read instead
@@ -215,7 +217,11 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     for (const q of queryCache.getAll()) {
       lastUsed.set(q.queryHash, q.state.dataUpdatedAt || Date.now());
     }
+    // The restore's thread trim is not a use: it must not reorder the
+    // most-recently-used ranking that picks the persisted threads.
+    let trimming = false;
     const unsubLastUsed = queryCache.subscribe((event) => {
+      if (trimming) return;
       // `observerAdded` fires when a component mounts and starts reading
       // the query — that's our "used" signal for infinite-staleTime
       // queries. `updated` fires on every state change (fetch lands,
@@ -268,7 +274,28 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     // Both arms: a failed restore (no IndexedDB, corrupt snapshot) just boots
     // cold, and must not surface as an unhandled rejection.
     const restored = () => setIsRestoring(false);
-    restorePromise.then(restored, restored);
+    // Threads persisted before trimming existed (or by a tab that crashed
+    // before its trim-on-leave) come back whole: one deep scroll-up reopened
+    // as a ~5,000-row thread. Trim them once, before any observer is told
+    // (Query notifies on a later tick). `dataUpdatedAt` is kept, so a trimmed
+    // thread still refetches when stale.
+    const trimRestored = () => {
+      trimming = true;
+      try {
+        for (const q of queryCache.findAll({ queryKey: ["messages"] })) {
+          const list = q.state.data;
+          if (!Array.isArray(list)) continue;
+          const next = trimThread(list as OFMessage[], THREAD_KEEP);
+          if (next !== list) queryClient.setQueryData(q.queryKey, next, { updatedAt: q.state.dataUpdatedAt });
+        }
+      } finally {
+        trimming = false;
+      }
+    };
+    restorePromise.then(() => {
+      try { trimRestored(); } catch { /* a malformed thread only costs its trim */ }
+      restored();
+    }, restored);
     return () => {
       unsubLastUsed();
       unsubscribe();

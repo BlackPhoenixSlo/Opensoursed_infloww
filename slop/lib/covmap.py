@@ -313,3 +313,12 @@ def gather(doc: dict, since: str | None = None) -> dict:
     return {"hunks": hunks, "changed": changed, "untracked": untracked, "map_missing": map_missing,
             "map_age": ages, "app_edges": app_edges(),
             "deleted": deleted, "base": base, "base_how": how}
+
+
+def pick_changed(doc: dict, since: str | None = None) -> tuple[dict, dict, list[str]]:
+    """selection.pick over gather(doc, since): what --changed and the nightly's `all` phase pick.
+    -> (gather's dict, {scenario: [(tier, reason)]}, [warnings])."""
+    g = gather(doc, since)
+    picks, warns = selection.pick(doc, g["hunks"], g["app_edges"], g["changed"], g["untracked"], g["deleted"],
+                                  g["map_missing"])
+    return g, picks, warns

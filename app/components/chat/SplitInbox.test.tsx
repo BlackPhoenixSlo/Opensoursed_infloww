@@ -13,7 +13,7 @@ import userEvent from "@testing-library/user-event";
 
 import { RelayError } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
-import { SplitInbox, groupOf } from "./SplitInbox";
+import { SplitInbox } from "./SplitInbox";
 
 const relayMock = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn() }));
 vi.mock("@/lib/relay", async (orig) => ({
@@ -155,50 +155,5 @@ describe("SplitInbox", () => {
       account_id: ACCOUNT_ID,
       config: { group_count: 2, assignments: { "200000001": 2 } },
     });
-  });
-});
-
-describe("groupOf", () => {
-  /** Sixty invented Fan ids, as OF sends them (numbers). */
-  const FAN_IDS = Array.from({ length: 60 }, (_, i) => 200000001 + i);
-  const split = (group_count: number, assignments: Record<string, number> = {}) => ({ group_count, assignments });
-
-  it("is stable for the same id and always within 1..N, and a new split spreads the Fans over every group", () => {
-    for (let n = 1; n <= 9; n++) {
-      for (const id of FAN_IDS) {
-        const group = groupOf(id, split(n));
-        expect(group).toBe(groupOf(id, split(n)));
-        // The id as text names the same Fan, so the same group.
-        expect(groupOf(String(id), split(n))).toBe(group);
-        expect(Number.isInteger(group) && group >= 1 && group <= n).toBe(true);
-      }
-    }
-    // Every Fan belongs to one group at once, and no group of three is left empty (story 51).
-    expect(new Set(FAN_IDS.map((id) => groupOf(id, split(3))))).toEqual(new Set([1, 2, 3]));
-  });
-
-  it("honours an explicit assignment within range, and ignores one out of range", () => {
-    const id = FAN_IDS[0];
-    expect([1, 2, 3].map((g) => groupOf(id, split(3, { [String(id)]: g })))).toEqual([1, 2, 3]);
-    // Out of range: the Fan falls back to the group the split alone gives.
-    const unassigned = groupOf(id, split(3));
-    expect(groupOf(id, split(3, { [String(id)]: 4 }))).toBe(unassigned);
-    expect(groupOf(id, split(3, { [String(id)]: 0 }))).toBe(unassigned);
-    // Another Fan's move does not touch this one.
-    expect(groupOf(id, split(3, { [String(FAN_IDS[1])]: 2 }))).toBe(unassigned);
-  });
-
-  it("hashes a 19-digit string id without losing precision", () => {
-    // Ten ids that differ only in their last digits: as JavaScript numbers
-    // they are all the same double, so only their text tells them apart.
-    const ids = Array.from({ length: 10 }, (_, i) => `123456789012345670${i}`);
-    expect(new Set(ids.map(Number)).size).toBe(1);
-
-    expect(new Set(ids.map((id) => groupOf(id, split(9)))).size).toBeGreaterThan(1);
-    // An explicit move is found by the id's exact text.
-    const moved = split(9, { [ids[3]]: 7 });
-    expect(groupOf(ids[3], moved)).toBe(7);
-    expect(ids.filter((id) => id !== ids[3]).map((id) => groupOf(id, moved)))
-      .toEqual(ids.filter((id) => id !== ids[3]).map((id) => groupOf(id, split(9))));
   });
 });

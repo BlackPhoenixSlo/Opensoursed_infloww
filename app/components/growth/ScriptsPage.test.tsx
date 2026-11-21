@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
@@ -26,6 +26,12 @@ vi.mock("@/lib/relay", async (importOriginal) => {
     },
   };
 });
+// The caller's folder access (Fill needs Whole-vault access): an owner's (disabled query) unless a test says so.
+const access = vi.hoisted(() => ({ q: { isLoading: false, isError: false, data: undefined as { restricted?: boolean } | undefined } }));
+vi.mock("@/hooks/useVaultMedia", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/useVaultMedia")>()),
+  useChatterFolderAccess: () => access.q,
+}));
 // The Vault picker is a portal modal with its own reads; closed it renders nothing, so it is stubbed out here.
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
 vi.mock("@/hooks/useAccounts", () => ({
@@ -39,7 +45,7 @@ vi.mock("@/hooks/useAccounts", () => ({
 
 import ScriptsPage from "@/components/growth/ScriptsPage";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
-import { relay } from "@/lib/relay";
+import { relay, RelayError } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
 
 const get = relay.get as unknown as Mock;
@@ -104,6 +110,7 @@ function serve() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  access.q = { isLoading: false, isError: false, data: undefined };
   serve();
   vi.stubGlobal("confirm", () => true);
   // Desktop width: the phone-only scroll-into-view of an opened editor stays off.
@@ -325,6 +332,10 @@ describe("the saved replies are the scripts", () => {
     expect(within(first).queryByText(/^\$\d/)).toBeNull();
     expect(within(second).getByText("Unlock this one")).toBeInTheDocument();
     expect(within(second).getByText("$12.50")).toBeInTheDocument();
+    // Stable hooks for UI tests: the price span's label, each media tile's id.
+    expect(within(second).getByLabelText("Price")).toHaveTextContent("$12.50");
+    expect(within(first).queryByLabelText("Price")).toBeNull();
+    expect(first.querySelectorAll("[data-media-id]").length).toBeGreaterThan(0);
     expect(get.mock.calls.map(([p]) => p)).toContain(LIST_A);
   });
 
@@ -1173,5 +1184,353 @@ describe("an imported library", () => {
     fireEvent.change(screen.getByRole("searchbox", { name: "Search scripts" }), { target: { value: "body 10000" } });
     expect(rows()).toHaveLength(1);
     expect(screen.getByText("body 10000")).toBeInTheDocument();
+  });
+});
+
+/* ── Fill with content (docs/spec/phase-02-button-and-popup.md, Seam 2) ─────────────────────────────────────── */
+
+describe("Fill with content", () => {
+  const APPLY_A = "/admin/saved-replies/fill/apply?account_id=acc-a";
+  const PLAN_A = "/admin/saved-replies/fill/plan?account_id=acc-a";
+  const UNDO_A = "/admin/saved-replies/fill/undo?account_id=acc-a";
+  const DESCRIBE = "/admin/vault-ai/describe-all";
+  const SWEEP_A = "/admin/vault-ai/describe-all/status?account_id=acc-a";
+  const row = (id: number, account: string, seq: string, step: number, title: string, price = 0) => ({
+    id, account_id: account, title, text: `${title} text`, price, locked_text: false, media: [], script_id: seq,
+    script_step: step, updated_at: "2026-11-01T00:00:00",
+  });
+  // "New Sub" skips step 2 (the gap sentence); "Old Sub" is a second Sequence; Creator B holds a same-named one.
+  const A_ROWS = [row(21, "acc-a", "New Sub", 1, "say hi"), row(22, "acc-a", "New Sub", 3, "sell set", 0),
+    row(23, "acc-a", "New Sub", 3, "sell set alt", 0), row(24, "acc-a", "Old Sub", 1, "old one")];
+  const B_ROWS = [row(31, "acc-b", "New Sub", 1, "b hi")];
+  const opt = (id: number, step: number, media: number[], previews: number[] = []) => ({
+    id, step, option: 1, role: "paid_media", wants: "photo", keep: false, media, previews, price_cents: 1500,
+    price_fixed: false, flags: [],
+  });
+  const plan = (status: string, describe = { described: 120, target: 1000, remaining: 880, can_describe: true, blocked_reason: null as string | null }) => ({
+    status, options: [], flags: ["gap"], conflict: null, describe, fingerprint: "fp",
+  });
+  const UNDO = [
+    { id: 22, media_ids: [701, 702], previews: [701], price_cents: 1500, price_set: true },
+    { id: 23, media_ids: [701, 702], previews: [701], price_cents: 900, price_set: false },
+    { id: 21, media_ids: [703], previews: [], price_cents: 0, price_set: false },
+  ];
+  const OK = { status: "ok", plan: plan("ok"), undo: UNDO,
+    applied: [opt(22, 3, [701, 702], [701]), opt(23, 3, [701, 702], [701]), opt(21, 1, [703])] };
+
+  /** A promise the test settles by hand (the relay's answer arrives when the test says). */
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  let sweepStatus: { running: boolean; progress: unknown };
+  /** The relay for these tests: `routes` answers POSTs by path; everything else as `serve`. */
+  function mountFill(routes: Record<string, (body: unknown) => Promise<unknown>>) {
+    sweepStatus = { running: false, progress: null };
+    const reads = get.getMockImplementation()!;
+    get.mockImplementation((path: string, ctx?: { accountId?: string }) =>
+      path === LIST_A ? Promise.resolve({ list: A_ROWS })
+        : path === LIST_B ? Promise.resolve({ list: B_ROWS })
+          : path === SWEEP_A ? Promise.resolve(sweepStatus) : reads(path, ctx));
+    post.mockImplementation((path: string, body: unknown) =>
+      routes[path] ? routes[path](body) : Promise.reject(new Error(`unmocked POST ${path}`)));
+    renderWithProviders(<ScriptsPage />);
+  }
+  async function openSequence(name = "New Sub") {
+    await screen.findByText("say hi text");
+    fireEvent.click(screen.getByRole("tab", { name: "Sequence" }));
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Sequences" })).getByText(name));
+    await screen.findByRole("heading", { name });
+  }
+  const fillButton = () => screen.getByRole("button", { name: "Fill with content" });
+  const applyCalls = () => post.mock.calls.filter(([p]) => p === APPLY_A);
+  const listReads = () => get.mock.calls.filter(([p]) => p === LIST_A).length;
+
+  it("sits before Add step, titled EXTRA_LABEL; a double press while apply is pending sends one POST", async () => {
+    const answer = deferred<unknown>();
+    mountFill({ [APPLY_A]: () => answer.promise });
+    await openSequence();
+    const btn = fillButton();
+    expectInOrder([btn, screen.getByRole("button", { name: "Add step" })]);
+    expect(btn.closest(`[title="${EXTRA_LABEL}"]`)).toBeTruthy();
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    await waitFor(() => expect(fillButton()).toBeDisabled());
+    fireEvent.click(fillButton());
+    expect(applyCalls()).toEqual([[APPLY_A, { sequence: "New Sub" }]]);
+    const reads = listReads();
+    answer.resolve(OK);
+    // Distinct media ids (previews included, two Options sharing a Slice once); distinct Steps; then the gap.
+    const notice = await screen.findByRole("status", { name: "Fill notice" });
+    expect(notice).toHaveTextContent("Added 3 items to 2 steps");
+    expect(within(notice).getByRole("button", { name: "Undo" })).toBeEnabled();
+    expect(notice).toHaveTextContent("No script at step 2");
+    expect(notice).toHaveAttribute("title", EXTRA_LABEL);
+    await waitFor(() => expect(listReads()).toBeGreaterThan(reads));
+    expect(fillButton()).toBeEnabled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Another Sequence and back: the notice (and its Undo) is still there.
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Sequences" })).getByText("Old Sub"));
+    await screen.findByRole("heading", { name: "Old Sub" });
+    expect(screen.queryByRole("status", { name: "Fill notice" })).toBeNull();
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Sequences" })).getByText("New Sub"));
+    expect(await screen.findByRole("status", { name: "Fill notice" })).toHaveTextContent("Added 3 items to 2 steps");
+  });
+
+  it("two presses in one render (before React re-renders) send exactly one apply", async () => {
+    const answer = deferred<unknown>();
+    mountFill({ [APPLY_A]: () => answer.promise });
+    await openSequence();
+    const btn = fillButton();
+    act(() => {
+      btn.click();
+      btn.click();
+    });
+    await waitFor(() => expect(applyCalls()).not.toHaveLength(0));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(applyCalls()).toEqual([[APPLY_A, { sequence: "New Sub" }]]);
+    answer.resolve(OK);
+    await screen.findByRole("status", { name: "Fill notice" });
+    expect(applyCalls()).toHaveLength(1);
+  });
+
+  it("a second ok on the Sequence adds its write to the notice: one Undo posts both lists", async () => {
+    const SECOND = { status: "ok", plan: plan("ok"), applied: [opt(24, 4, [704])],
+      undo: [{ id: 24, media_ids: [704], previews: [], price_cents: 1500, price_set: true }] };
+    let answer: unknown = OK;
+    mountFill({ [APPLY_A]: async () => answer, [UNDO_A]: async () => ({ undone: [], kept: [] }) });
+    await openSequence();
+    fireEvent.click(fillButton());
+    expect(await screen.findByRole("status", { name: "Fill notice" })).toHaveTextContent("Added 3 items to 2 steps");
+    answer = SECOND;
+    fireEvent.click(fillButton());
+    await waitFor(() => expect(screen.getByRole("status", { name: "Fill notice" })).toHaveTextContent("Added 4 items to 3 steps"));
+    // A zero-write ok leaves it as it was.
+    answer = { status: "ok", plan: plan("ok"), applied: [], undo: [] };
+    fireEvent.click(fillButton());
+    await waitFor(() => expect(applyCalls()).toHaveLength(3));
+    await waitFor(() => expect(fillButton()).toBeEnabled());
+    expect(screen.getByRole("status", { name: "Fill notice" })).toHaveTextContent("Added 4 items to 3 steps");
+    fireEvent.click(within(screen.getByRole("status", { name: "Fill notice" })).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(post.mock.calls.some(([p]) => p === UNDO_A)).toBe(true));
+    expect(post.mock.calls.find(([p]) => p === UNDO_A)).toEqual([UNDO_A, { sequence: "New Sub", undo: [...UNDO, ...SECOND.undo] }]);
+  });
+
+  it("an ok answered after switching Creator waits on that Creator's Sequence, and its Undo goes to that Creator", async () => {
+    const ok = deferred<unknown>();
+    mountFill({ [APPLY_A]: () => ok.promise, [UNDO_A]: async () => ({ undone: [21, 22, 23], kept: [] }) });
+    await openSequence();
+    fireEvent.click(fillButton());
+    pickCreator("Creator B");
+    await screen.findByText("b hi text");
+    ok.resolve(OK);
+    await screen.findByRole("heading", { name: "New Sub" });
+    await waitFor(() => expect(fillButton()).toBeEnabled());
+    // B's same-named Sequence shows nothing of A's write.
+    expect(screen.queryByRole("status", { name: "Fill notice" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    pickCreator("Creator A");
+    await openSequence();
+    const notice = await screen.findByRole("status", { name: "Fill notice" });
+    expect(notice).toHaveTextContent("Added 3 items to 2 steps");
+    fireEvent.click(within(notice).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(post.mock.calls.some(([p]) => p === UNDO_A)).toBe(true));
+    expect(post.mock.calls.find(([p]) => p === UNDO_A)).toEqual([UNDO_A, { sequence: "New Sub", undo: UNDO }]);
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Fill notice" })).toBeNull());
+  });
+
+  // ASSUMPTION (coordinator override of phase-02:112,156): the write happened, so its notice and Undo are kept.
+  it("an ok answered after switching Sequence opens no dialog, refetches the list, and its notice waits on that Sequence", async () => {
+    const ok = deferred<unknown>();
+    mountFill({ [APPLY_A]: () => ok.promise });
+    await openSequence();
+    fireEvent.click(fillButton());
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Sequences" })).getByText("Old Sub"));
+    await screen.findByRole("heading", { name: "Old Sub" });
+    const reads = listReads();
+    ok.resolve(OK);
+    await waitFor(() => expect(listReads()).toBeGreaterThan(reads));
+    expect(screen.queryByRole("status", { name: "Fill notice" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Sequences" })).getByText("New Sub"));
+    await screen.findByRole("heading", { name: "New Sub" });
+    const notice = await screen.findByRole("status", { name: "Fill notice" });
+    expect(notice).toHaveTextContent("Added 3 items to 2 steps");
+    expect(within(notice).getByRole("button", { name: "Undo" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss Fill notice" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // A non-ok answer that lands on another Sequence opens no dialog either.
+    const late = deferred<unknown>();
+    post.mockImplementation((path: string) => (path === APPLY_A ? late.promise : Promise.reject(new Error(path))));
+    fireEvent.click(fillButton());
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Sequences" })).getByText("Old Sub"));
+    await screen.findByRole("heading", { name: "Old Sub" });
+    late.resolve({ status: "no_fit", plan: plan("no_fit"), applied: [], undo: [] });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Fill with content" })).toBeEnabled());
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("Undo posts apply's list verbatim and shows what it left, by reason", async () => {
+    mountFill({
+      [APPLY_A]: async () => OK,
+      [UNDO_A]: async () => ({ undone: [21], kept: [{ id: 22, reason: "edited" }, { id: 23, reason: "missing" }] }),
+    });
+    await openSequence();
+    fireEvent.click(fillButton());
+    const notice = await screen.findByRole("status", { name: "Fill notice" });
+    fireEvent.click(within(notice).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(post.mock.calls.some(([p]) => p === UNDO_A)).toBe(true));
+    expect(post.mock.calls.find(([p]) => p === UNDO_A)).toEqual([UNDO_A, { sequence: "New Sub", undo: UNDO }]);
+    expect(await screen.findByText("Undo left 2 steps: 1 changed since the Fill, 1 moved or deleted.")).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Fill notice" })).toBeNull();
+  });
+
+  it("Undo on a reserved Sequence says so for every entry it kept", async () => {
+    mountFill({
+      [APPLY_A]: async () => OK,
+      [UNDO_A]: async () => ({ undone: [], kept: UNDO.map((u) => ({ id: u.id, reason: "reserved" })) }),
+    });
+    await openSequence();
+    fireEvent.click(fillButton());
+    fireEvent.click(within(await screen.findByRole("status", { name: "Fill notice" })).getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Undo left 3 steps: 3 in a sequence generated by a script source.")).toBeInTheDocument();
+  });
+
+  it.each<[string, () => Error, string]>([
+    ["404 sequence_not_found", () => new RelayError(404, { detail: { error: "sequence_not_found" } }, '{"error":"sequence_not_found"}'),
+      "This sequence has no steps any more. It was renamed or deleted: reload the page."],
+    ["503 inventory_unknown", () => new RelayError(503, { detail: { error: "inventory_unknown" } }, '{"error":"inventory_unknown"}'),
+      "The vault list could not be read just now. Try again in a minute."],
+    ["a bare HTTP 500", () => new RelayError(500, "", "HTTP 500"), "The relay could not do that. Try again in a minute."],
+  ])("a refused apply (%s) shows its sentence, never JSON or HTTP n", async (_n, refusal, sentence) => {
+    mountFill({ [APPLY_A]: async () => { throw refusal(); } });
+    await openSequence();
+    fireEvent.click(fillButton());
+    const shown = await screen.findByRole("dialog", { name: "Fill with content" });
+    expect(shown).toHaveTextContent(sentence);
+    expect(shown).not.toHaveTextContent(/[{}]|HTTP \d/);
+  });
+
+  it("Ready to fill.'s press fills: the dialog closes and the notice shows; Close and a new press reopen it", async () => {
+    let answer: unknown = { status: "no_fit", plan: plan("no_fit"), applied: [], undo: [] };
+    let fresh = plan("no_fit");
+    mountFill({ [APPLY_A]: async () => answer, [PLAN_A]: async () => fresh });
+    await openSequence();
+    fireEvent.click(fillButton());
+    const first = await screen.findByRole("dialog", { name: "Fill with content" });
+    fireEvent.click(within(first).getAllByRole("button", { name: "Close" }).at(-1)!);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // A fresh plan says ok: the dialog offers the press, never fills by itself.
+    answer = { status: "not_enough_content", plan: plan("not_enough_content"), applied: [], undo: [] };
+    fresh = plan("ok");
+    fireEvent.click(fillButton());
+    const ready = await screen.findByRole("dialog", { name: "Fill with content" });
+    await within(ready).findByText("Ready to fill.");
+    expect(applyCalls()).toHaveLength(2);
+    answer = OK;
+    fireEvent.click(within(ready).getByRole("button", { name: "Fill with content" }));
+    expect(await screen.findByRole("status", { name: "Fill notice" })).toHaveTextContent("Added 3 items to 2 steps");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(applyCalls()).toEqual([[APPLY_A, { sequence: "New Sub" }], [APPLY_A, { sequence: "New Sub" }], [APPLY_A, { sequence: "New Sub" }]]);
+  });
+
+  it("not_enough_content offers to describe; Describe content starts describe-all with target 1000", async () => {
+    const short = plan("not_enough_content");
+    mountFill({
+      [APPLY_A]: async () => ({ status: "not_enough_content", plan: short, applied: [], undo: [] }),
+      [PLAN_A]: async () => short,
+      [DESCRIBE]: async () => { sweepStatus = { running: true, progress: { total: 880, done: 12 } }; return { status: "running" }; },
+    });
+    await openSequence();
+    fireEvent.click(fillButton());
+    const dialog = await screen.findByRole("dialog", { name: "Describe content first?" });
+    expect(dialog).toHaveTextContent(
+      "This sequence needs more described vault content. Describe up to 1,000 items for this Creator? 120 of 1000 done.");
+    expect(dialog).not.toHaveTextContent("$");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Describe content" }));
+    await waitFor(() => expect(post.mock.calls.some(([p]) => p === DESCRIBE)).toBe(true));
+    expect(post.mock.calls.find(([p]) => p === DESCRIBE)).toEqual([DESCRIBE, { account_id: "acc-a", target: 1000 }, { accountId: "acc-a" }]);
+    expect(await screen.findByText("Checked 12 of 880. Keeps going if you close this.")).toBeInTheDocument();
+    // Nothing fills itself.
+    expect(applyCalls()).toHaveLength(1);
+  });
+
+  it.each<[string, () => Error, string]>([
+    ["429 with blocked_reason shows that sentence, not JSON", () => new RelayError(429,
+      { detail: { error: "daily_cap_reached", capped: true, blocked_reason: "Today's AI budget for this account is spent." } },
+      '{"error":"daily_cap_reached","capped":true}'), "Today's AI budget for this account is spent."],
+    ["403 role string shows that sentence", () => new RelayError(403, { detail: "Your role does not allow Vault Pro" },
+      "Your role does not allow Vault Pro"), "Your role does not allow Vault Pro"],
+  ])("a refused describe start: %s", async (_n, refusal, sentence) => {
+    const short = plan("not_enough_content");
+    mountFill({
+      [APPLY_A]: async () => ({ status: "not_enough_content", plan: short, applied: [], undo: [] }),
+      [PLAN_A]: async () => short,
+      [DESCRIBE]: async () => { throw refusal(); },
+    });
+    await openSequence();
+    fireEvent.click(fillButton());
+    const dialog = await screen.findByRole("dialog", { name: "Describe content first?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Describe content" }));
+    const shown = await screen.findByRole("dialog", { name: "Fill with content" });
+    expect(shown).toHaveTextContent(sentence);
+    expect(shown).not.toHaveTextContent(/[{}]|HTTP \d/);
+    expect(within(shown).queryByRole("button", { name: "Describe content" })).toBeNull();
+  });
+
+  it("a reserved answer gets its own line", async () => {
+    mountFill({
+      [APPLY_A]: async () => ({ status: "reserved", plan: plan("reserved"), applied: [], undo: [] }),
+      [PLAN_A]: async () => plan("reserved"),
+    });
+    await openSequence();
+    fireEvent.click(fillButton());
+    expect(await screen.findByRole("dialog", { name: "Fill with content" }))
+      .toHaveTextContent("This sequence is generated by a script source and is not filled.");
+  });
+
+  it("an open edit of one of the Sequence's steps disables Fill with \"Save or close the open step first\"", async () => {
+    mountFill({});
+    await openSequence();
+    expect(fillButton()).toBeEnabled();
+    fireEvent.click(within(rows()[0]).getByRole("button", { name: "Edit" }));
+    await screen.findByRole("dialog", { name: "Edit script" });
+    expect(fillButton()).toBeDisabled();
+    expect(fillButton()).toHaveAttribute("title", "Save or close the open step first");
+    expect(applyCalls()).toHaveLength(0);
+  });
+
+  it.each<[string, { isLoading: boolean; isError: boolean; data?: { restricted?: boolean } }]>([
+    ["folder-limited", { isLoading: false, isError: false, data: { restricted: true } }],
+    ["access unknown", { isLoading: true, isError: false }],
+  ])("a %s chatter sees Fill disabled with the Ask the owner title", async (_n, q) => {
+    access.q = { data: undefined, ...q };
+    mountFill({});
+    await openSequence();
+    expect(fillButton()).toBeDisabled();
+    expect(fillButton()).toHaveAttribute("title", "Ask the owner: filling uses the whole vault");
+  });
+
+  it("All creators shows no Fill button", async () => {
+    mountFill({});
+    await openSequence();
+    fireEvent.click(screen.getByRole("button", { name: /All creators/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: /All creators/ }).at(-1)!);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "More" })).toBeNull());
+    expect(screen.queryByRole("button", { name: "Fill with content" })).toBeNull();
+  });
+
+  it("another Creator's same-named Sequence shows no notice of the first's Fill", async () => {
+    mountFill({ [APPLY_A]: async () => OK });
+    await openSequence();
+    fireEvent.click(fillButton());
+    await screen.findByRole("status", { name: "Fill notice" });
+    pickCreator("Creator B");
+    await screen.findByText("b hi text");
+    await screen.findByRole("heading", { name: "New Sub" });
+    expect(screen.queryByRole("status", { name: "Fill notice" })).toBeNull();
   });
 });

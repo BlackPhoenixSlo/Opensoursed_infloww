@@ -30,8 +30,8 @@ export function atBottom(distance: number): boolean {
 
 /** What a render does to the scroll position. `initial`: the first non-empty
  *  paint, hard-pinned and auto-pinned until released. `pin`: stick to the
- *  bottom (the snapshot was at the bottom, or there is none yet). `anchor`: an
- *  older page came in at the top, keep the same message in view at `top`.
+ *  bottom (the snapshot was at the bottom, or there is none yet). `anchor`:
+ *  older rows came in at the top, keep the same message in view at `top`.
  *  `none`: leave it. */
 export type AfterRender =
   | { kind: "initial" }
@@ -39,19 +39,48 @@ export type AfterRender =
   | { kind: "anchor"; top: number }
   | { kind: "none" };
 
-export function afterRender({ prevLen, len, pre, scrollHeight }: {
+/** `pre` is the geometry before the commit (the DOM still showed the old
+ *  list), `scrollHeight` after it. Only a prepend (`prepended`) anchors: an
+ *  append while scrolled up also grows scrollHeight, and anchoring it would
+ *  push the view down one bubble per incoming message. */
+export function afterRender({ prevLen, len, pre, scrollHeight, prepended }: {
   prevLen: number;
   len: number;
   pre: Scroll | null;
   scrollHeight: number;
+  prepended: boolean;
 }): AfterRender {
   if (prevLen === 0 && len > 0) return { kind: "initial" };
   if (!pre || atBottom(distanceFromBottom(pre))) return { kind: "pin" };
-  if (len > prevLen) {
+  if (prepended) {
     const delta = scrollHeight - pre.scrollHeight;
     if (delta > 0) return { kind: "anchor", top: pre.scrollTop + delta };
   }
   return { kind: "none" };
+}
+
+/** The oldest real (positive) id, or null. */
+function firstPositiveId(list: readonly { id: number | string }[]): number | null {
+  for (const m of list) {
+    const n = Number(m.id);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+/** Rows came in above the old top row (an older page, a seed page): the old
+ *  first row now sits lower, or (it was dropped) the oldest real id went
+ *  down. An append, an in-place patch or a removal at the tail is not one. */
+export function rowsPrepended(
+  prev: readonly { id: number | string }[],
+  next: readonly { id: number | string }[],
+): boolean {
+  if (prev.length === 0 || next.length === 0) return false;
+  const top = String(prev[0].id);
+  if (String(next[0].id) === top) return false;
+  if (next.some((m) => String(m.id) === top)) return true;
+  const a = firstPositiveId(prev), b = firstPositiveId(next);
+  return a != null && b != null && b < a;
 }
 
 export interface Point { x: number; y: number }

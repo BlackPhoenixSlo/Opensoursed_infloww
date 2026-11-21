@@ -41,9 +41,14 @@ A planted copy (no call of its own, `_copied_from` / `_flags_copied_from` a memb
 model and flags) passes EXACTLY_ONCE, PLAN, ESCALATE and FLAGS as well as a paid item would, so turning reuse off
 reds REUSE alone.
 
+Then the Describe target (`_check_target`, stage "target"), on the Creator with the most plain ok photos: a press of
+describe-all with `target` 1000 (the Fill dialog's) must be zero work, every item being described or Terminal (its
+blank ones refused); TARGET_RESET of its ok photos are put back to undescribed and a press at described +
+TARGET_WALK must walk exactly TARGET_WALK of them and past the refused blanks; a press at the new count is zero work.
+
 Checks (names in lib/vault_describe_faults.py): EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, COST_INCL_FLAGS, FLAGS,
-REUSE, ONE_SWEEP, UI_SETTLED (with UI), budgets on the status routes' p95 (`STATUS_P95_MS`) and p95 vs the last green
-run, plus the stock no 5xx / no unexpected Traceback.
+REUSE, ONE_SWEEP, UI_SETTLED (with UI), TARGET, budgets on the status routes' p95 (`STATUS_P95_MS`) and p95 vs the
+last green run, plus the stock no 5xx / no unexpected Traceback.
 
 Bypasses (declared):
   - TypeSafe is lib/vault_jev_relay.py's fake at its System One wire, as in 2026-11-11-vault-jev-flags (the
@@ -69,6 +74,8 @@ Bypasses (declared):
   - The vault rows are SQL (only columns a collect / an earlier sweep writes); the key is a dummy, never a real
     one, and SLOP_LIVE=1 is refused (every check SKIPs).
   - Owner tabs are one owner session's connection pool, not browsers (the UI run has one browser besides).
+  - TARGET puts its TARGET_RESET photos back to undescribed by SQL (`describe_status` NULL, the rest of the row
+    as pass 1 left it), standing in for newly collected items whose stills and fake answers are already armed.
 
 Break-it-once: `vault-describe-ignores-cache` (the scenario's FAULT: the 'undescribed' selection loses its
 `describe_status` filter) turns only CACHE, PLAN and REUSE red (the plan then counts the cached rows too, != the
@@ -99,7 +106,7 @@ from slop.lib import nudenet_weights
 from slop.lib.img_relay import arm_run as arm_cdn
 from slop.lib.procmon import pct
 from slop.lib.vault_describe_faults import (
-    CACHE, COST, COST_INCL_FLAGS, ESCALATE, EXACTLY_ONCE, FLAGS, ONE_SWEEP, PLAN, REUSE, UI_SETTLED,
+    CACHE, COST, COST_INCL_FLAGS, ESCALATE, EXACTLY_ONCE, FLAGS, ONE_SWEEP, PLAN, REUSE, TARGET, UI_SETTLED,
 )
 from slop.lib.vault_describe_relay import (
     FAKE_KEY, HOSTILE_DESC, HOSTILE_TAG, M30, M235, arm_run, clip_rgb, describe_text,
@@ -155,6 +162,9 @@ STATUS_P95_MS = {f"GET {STATUS}": 2500, f"GET {FLAGS_STATUS}": 5000}
 BUDGET_STAGES = ("pass1", "flags", "pass2")
 P95_VS_LAST = (1.5, 2000)
 P95_VS_LAST_MIN_N = 20
+# TARGET (after the phases): ok photos of one Creator put back to undescribed, and the target press walks fewer.
+DESCRIBE_TARGET = 1000  # service/vault_ai_vision_decide.DESCRIBE_TARGET, the Fill dialog's press
+TARGET_RESET, TARGET_WALK = 4, 2
 IMG = re.compile(r"/img(/scrub)?\?")
 TOURS_SEEN = ("localStorage.setItem('vaultProOnboarding', JSON.stringify({batchUploadEntry: '1', "
               "uploadPageStep: '1', batchEdit: '1', uploadBtn: '1'}));")
@@ -668,6 +678,68 @@ def _check_ui(ctx, r: Run) -> None:
               db_not_described=not_desc[:5])
 
 
+async def _check_target(ctx, r: Run) -> None:
+    """After the phases, on one Creator (stage "target", out of BUDGET_STAGES): every photo/clip is described or
+    Terminal (its blank ones end refused), so a press at DESCRIBE_TARGET is zero work. Then TARGET_RESET of its ok,
+    uncached, unset photos are put back to undescribed (declared bypass: SQL `describe_status` NULL, as a collect
+    leaves a new item; their stills and fake answers stay armed) and a press at described + TARGET_WALK must call
+    the model for exactly TARGET_WALK of them, none of the refused blanks the walk passes, and settle described;
+    then a press at the new described count is zero work again."""
+    def resettable(aid):
+        return [i for i in r.targets if i["account_id"] == aid and i["kind"] == "photo" and i["outcome"] == "ok"
+                and not i["dupe_set"] and r.p3.rows[i["key"]]["status"] == "described"]
+
+    aid = max(r.aids, key=lambda a: len(resettable(a)))
+    pick = resettable(aid)[:TARGET_RESET]
+    blank = {i["key"] for i in r.of("blank") if i["account_id"] == aid}
+
+    async def coverage() -> dict:
+        p = (await ctx.owner.get(f"{DESCRIBE}/plan?account_id={aid}&target=1")).json()
+        return p.get("coverage") or {}
+
+    async def zero(target: int) -> dict:
+        n0 = await _count(ctx)
+        res = await ctx.owner.post(DESCRIBE, json={"account_id": aid, "target": target})
+        calls = await _settle(ctx, n0)
+        st = (await ctx.owner.get(f"{STATUS}?account_id={aid}")).json()
+        body = res.json() if res.status_code == 200 else res.text[:200]
+        good = (res.status_code == 200 and body.get("status") == "done" and body.get("target_remaining") == 0
+                and not calls and not st.get("running"))
+        return {"ok": good, "target": target, "status": res.status_code, "body": body, "calls": len(calls),
+                "running": st.get("running")}
+
+    ctx.rec.stage = "target"
+    before = await zero(DESCRIBE_TARGET)
+    con = ctx.world.sql()
+    with con:
+        con.executemany("UPDATE vault_items SET describe_status = NULL WHERE account_id = ? AND media_id = ?",
+                        [(aid, i["media_id"]) for i in pick])
+    con.close()
+    cov0 = await coverage()
+    want = int(cov0.get("described") or 0) + TARGET_WALK
+    n0 = await _count(ctx)
+    res = await ctx.owner.post(DESCRIBE, json={"account_id": aid, "target": want})
+    st = (await _wait_done(ctx, STATUS, {aid: TARGET_WALK}))[aid]
+    calls = await _settle(ctx, n0)
+    called = {vault_items_describe.key(c["account_id"], c["media_id"]) for c in calls
+              if c["purpose"] == "describe" and c["account_id"] is not None}
+    rows = _rows(ctx)
+    cov1 = await coverage()
+    after = await zero(int(cov1.get("described") or 0))
+    ctx.rec.stage = None
+    keys = {i["key"] for i in pick}
+    start = res.json() if res.status_code == 200 else res.text[:200]
+    walked_ok = (res.status_code == 200 and start.get("target_remaining") == TARGET_WALK
+                 and not st.get("timed_out") and len(called) == TARGET_WALK and called <= keys
+                 and all(rows[k]["status"] == "described" for k in called)
+                 and int(cov1.get("described") or 0) == want)
+    ctx.check(TARGET, len(pick) == TARGET_RESET and bool(blank) and before["ok"] and walked_ok and after["ok"]
+              and not (called & blank), account_id=aid, reset=sorted(keys), blank=len(blank), zero_before=before,
+              start=start, progress=_prog(st), called=sorted(called), called_blank=sorted(called & blank),
+              stray=[c for c in calls if c["purpose"] == "other" or c["answer"] == "unknown"][:5],
+              coverage_before=cov0, coverage_after=cov1, zero_after=after)
+
+
 def _check_budgets(ctx) -> None:
     """The status routes (polled by --users tabs while the sweeps write) over BUDGET_STAGES, and vs the last green
     run (stock, from the metrics)."""
@@ -712,7 +784,8 @@ def _cdn_plan(items) -> tuple[dict, dict]:
 
 async def run(ctx) -> None:
     if os.environ.get("SLOP_LIVE") == "1":
-        for c in (EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, COST_INCL_FLAGS, FLAGS, REUSE, ONE_SWEEP, UI_SETTLED):
+        for c in (EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, COST_INCL_FLAGS, FLAGS, REUSE, ONE_SWEEP, UI_SETTLED,
+                  TARGET):
             ctx.skip(c, "SLOP_LIVE=1: this scenario runs on the DeepInfra fake only, never the paid API")
         return
     await asyncio.to_thread(nudenet_weights.ensure)
@@ -796,6 +869,7 @@ async def run(ctx) -> None:
     for check in (_check_exactly_once, _check_plan, _check_cache, _check_escalate, _check_cost, _check_flags,
                   _check_reuse, _check_one_sweep, _check_ui):
         check(ctx, run_)
+    await _check_target(ctx, run_)
     _check_budgets(ctx)
 
     ctx.metric("phases", {f"{p.stage}_s": p.seconds for p in phases})

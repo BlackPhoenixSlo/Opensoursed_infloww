@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   afterRender, AT_BOTTOM_PX, atBottom, AUTO_PIN_BACKSTOP_MS, distanceFromBottom, MAX_FILL_PAGES, mayLoadOlder,
-  onScrollDecision, SENTINEL_MARGIN_PX, touchReleases, type AfterRender, type Point, type Scroll,
+  onScrollDecision, rowsPrepended, SENTINEL_MARGIN_PX, touchReleases, type AfterRender, type Point, type Scroll,
 } from "./threadPin";
 
 describe("threadPin constants", () => {
@@ -37,27 +37,52 @@ describe("atBottom", () => {
 });
 
 describe("afterRender", () => {
-  // Snapshots at 0 / 79 / 80 / 600 px from the bottom (scrollHeight 1000, clientHeight 400).
+  // Snapshots at 0 / 79 / 80 / 600 px from the bottom (scrollHeight 1000, clientHeight 400),
+  // taken before the commit; `scrollHeight` is after it.
   const at = (distance: number): Scroll => ({ scrollHeight: 1000, scrollTop: 600 - distance, clientHeight: 400 });
   const bottom = at(0), up = at(600);
-  it.each<[string, Parameters<typeof afterRender>[0], AfterRender]>([
-    ["first non-empty render pins (even scrolled up)", { prevLen: 0, len: 5, pre: up, scrollHeight: 1500 }, { kind: "initial" }],
-    ["still empty does nothing", { prevLen: 0, len: 0, pre: up, scrollHeight: 0 }, { kind: "none" }],
-    ["still empty at the bottom pins", { prevLen: 0, len: 0, pre: bottom, scrollHeight: 0 }, { kind: "pin" }],
-    ["no snapshot yet counts as at the bottom", { prevLen: 5, len: 6, pre: null, scrollHeight: 1800 }, { kind: "pin" }],
-    ["new message at the bottom sticks", { prevLen: 5, len: 6, pre: bottom, scrollHeight: 1100 }, { kind: "pin" }],
-    ["79px up still pins", { prevLen: 5, len: 6, pre: at(79), scrollHeight: 1000 }, { kind: "pin" }],
-    ["80px up is not pinned", { prevLen: 5, len: 6, pre: at(80), scrollHeight: 1000 }, { kind: "none" }],
-    ["same length at the bottom re-pins", { prevLen: 5, len: 5, pre: bottom, scrollHeight: 1000 }, { kind: "pin" }],
-    // Pure-seam row: in the hook the snapshot is taken after the insert's commit, so scrollHeight
-    // rarely differs from pre.scrollHeight there (see useThreadPin's layout effect).
-    ["pure seam: older page while scrolled up anchors by the delta", { prevLen: 5, len: 25, pre: up, scrollHeight: 1800 }, { kind: "anchor", top: 800 }],
-    ["grew but no taller: leave it", { prevLen: 5, len: 6, pre: up, scrollHeight: 1000 }, { kind: "none" }],
-    ["grew but shorter: leave it", { prevLen: 5, len: 6, pre: up, scrollHeight: 900 }, { kind: "none" }],
-    ["shrank while scrolled up: leave it", { prevLen: 6, len: 5, pre: up, scrollHeight: 1800 }, { kind: "none" }],
-    ["same length while scrolled up: leave it", { prevLen: 5, len: 5, pre: up, scrollHeight: 1800 }, { kind: "none" }],
+  type In = Parameters<typeof afterRender>[0];
+  const r = (over: Partial<In>): In => ({ prevLen: 5, len: 6, pre: up, scrollHeight: 1000, prepended: false, ...over });
+  it.each<[string, In, AfterRender]>([
+    ["first non-empty render pins (even scrolled up)", r({ prevLen: 0, len: 5, scrollHeight: 1500 }), { kind: "initial" }],
+    ["first render that is a prepend is still initial", r({ prevLen: 0, len: 5, prepended: true, scrollHeight: 1500 }), { kind: "initial" }],
+    ["still empty does nothing", r({ prevLen: 0, len: 0, scrollHeight: 0 }), { kind: "none" }],
+    ["still empty at the bottom pins", r({ prevLen: 0, len: 0, pre: bottom, scrollHeight: 0 }), { kind: "pin" }],
+    ["no snapshot yet counts as at the bottom", r({ pre: null, scrollHeight: 1800 }), { kind: "pin" }],
+    ["append at the bottom sticks", r({ pre: bottom, scrollHeight: 1100 }), { kind: "pin" }],
+    ["79px up still pins", r({ pre: at(79), scrollHeight: 1100 }), { kind: "pin" }],
+    ["80px up is not pinned", r({ pre: at(80), scrollHeight: 1100 }), { kind: "none" }],
+    ["same length at the bottom re-pins", r({ len: 5, pre: bottom }), { kind: "pin" }],
+    ["append while scrolled up: leave the view where it is", r({ scrollHeight: 1100 }), { kind: "none" }],
+    ["append of many while scrolled up: still none", r({ len: 40, scrollHeight: 4000 }), { kind: "none" }],
+    ["prepend while scrolled up anchors by the delta", r({ len: 25, prepended: true, scrollHeight: 1800 }), { kind: "anchor", top: 800 }],
+    ["prepend at the very top (scrollTop 0) anchors", r({ len: 35, prepended: true, pre: { scrollHeight: 1000, scrollTop: 0, clientHeight: 400 }, scrollHeight: 3000 }), { kind: "anchor", top: 2000 }],
+    ["prepend at the bottom pins (a short chat)", r({ len: 25, prepended: true, pre: bottom, scrollHeight: 1800 }), { kind: "pin" }],
+    ["prepend that rendered no taller: leave it", r({ prepended: true, scrollHeight: 1000 }), { kind: "none" }],
+    ["prepend but shorter: leave it", r({ prepended: true, scrollHeight: 900 }), { kind: "none" }],
+    ["shrank while scrolled up: leave it", r({ prevLen: 6, len: 5, scrollHeight: 800 }), { kind: "none" }],
+    ["same length while scrolled up: leave it", r({ len: 5, scrollHeight: 1800 }), { kind: "none" }],
   ])("%s", (_, input, out) => {
     expect(afterRender(input)).toEqual(out);
+  });
+});
+
+describe("rowsPrepended", () => {
+  const ids = (...xs: (number | string)[]) => xs.map((id) => ({ id }));
+  it.each<[string, { id: number | string }[], { id: number | string }[], boolean]>([
+    ["older page above the old top", ids(10, 11, 12), ids(7, 8, 9, 10, 11, 12), true],
+    ["append at the tail", ids(10, 11, 12), ids(10, 11, 12, 13), false],
+    ["optimistic append", ids(10, 11), ids(10, 11, -1), false],
+    ["in-place patch (same ids)", ids(10, 11), ids(10, 11), false],
+    ["tail removal", ids(10, 11, 12), ids(10, 11), false],
+    ["prepend and append together", ids(10, 11), ids(8, 9, 10, 11, 12), true],
+    ["old top dropped, older ids came in", ids(10, 11, 12), ids(5, 6, 11, 12), true],
+    ["old top dropped, nothing older", ids(10, 11, 12), ids(11, 12, 13), false],
+    ["snowflake string ids", ids("900000000000000001", "900000000000000002"), ids("899999999999999999", "900000000000000001", "900000000000000002"), true],
+    ["from empty (first paint)", [], ids(1, 2), false],
+    ["to empty", ids(1, 2), [], false],
+  ])("%s", (_, prev, next, out) => {
+    expect(rowsPrepended(prev, next)).toBe(out);
   });
 });
 

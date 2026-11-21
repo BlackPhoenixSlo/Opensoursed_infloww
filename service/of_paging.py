@@ -165,3 +165,107 @@ def find_list_id(client, name: str) -> int | None:
         raise ListLookupIncomplete(
             f"OF lists read incomplete ({len(rows)} read), no {name!r} among them")
     return None
+
+
+# ── GET /schedules (the dated calendar) ───────────────────────────────────
+# Measured live 2026-11-21 (capture queue--scheduled-post-endpoint + paging
+# read): dated scheduled posts are ONLY here (/schedules/later/post is the
+# undated "saved for later" list). OF honours the publishDate range, IGNORES
+# `offset` and `limit`, and sends no hasMore/total/cursor: one read returns the
+# whole range. So a window is walked in date chunks, never in offset pages.
+# ASSUMPTION: a read of >= SCHEDULE_PAGE rows may be cut short by a server cap
+# nobody has seen (none seen at 100) — such a 7-day chunk is re-read one day at
+# a time, and only a full single day makes the listing incomplete.
+SCHEDULE_PAGE = 100
+# ASSUMPTION: 7-day chunks keep most chunks under SCHEDULE_PAGE in one read.
+SCHEDULE_CHUNK_DAYS = 7
+# ASSUMPTION: 1 day before and 2 after cover any time-zone skew between the
+# UTC dates used here and OF's filter[timeZone], plus a post minted near midnight.
+SCHEDULE_PAD_BEFORE_DAYS = 1
+SCHEDULE_PAD_AFTER_DAYS = 2
+
+
+def schedule_chunks(days: int, *, chunk_days: int = SCHEDULE_CHUNK_DAYS,
+                    today=None) -> list[tuple]:
+    """Date ranges (date objects) spanning today-pad .. today+days+pad (UTC).
+    Neighbouring ranges share their boundary day, so the walk is gap-free
+    whether OF treats publishDateEnd as inclusive or not; rows read twice are
+    deduped by the caller."""
+    from datetime import datetime, timedelta, timezone
+    today = today or datetime.now(timezone.utc).date()
+    lo = today - timedelta(days=SCHEDULE_PAD_BEFORE_DAYS)
+    hi = today + timedelta(days=days + SCHEDULE_PAD_AFTER_DAYS)
+    out, start = [], lo
+    while True:
+        end = min(start + timedelta(days=chunk_days), hi)
+        out.append((start, end))
+        if end >= hi:
+            return out
+        start = end
+
+
+def schedule_row_key(row) -> str:
+    """Identity of a /schedules row, for deduping overlapping ranges."""
+    if not isinstance(row, dict):
+        return repr(row)
+    ent = row.get("entity")
+    eid = ent.get("id") if isinstance(ent, dict) else None
+    return f"{row.get('type')}:{row.get('id')}:{eid}"
+
+
+def _schedule_read(client, lo, hi, page: int) -> tuple[list, str | None]:
+    """One /schedules read for lo..hi: (rows, why it cannot be trusted | None).
+    A reply that is not `{list: [...]}`, or says OF is still syncing, is NOT
+    an empty range — reading it as one is how an orphan goes unlisted."""
+    resp = client.schedules(publish_date=lo.isoformat(),
+                            publish_date_end=hi.isoformat(), limit=page)
+    if not isinstance(resp, dict):
+        return [], f"reply is {type(resp).__name__}, not an object"
+    batch = resp.get("list")
+    if not isinstance(batch, list):
+        return [], "reply has no list" if "list" not in resp else "list is not a list"
+    if resp.get("syncInProcess"):
+        return [], "OF says syncInProcess"
+    return batch, None
+
+
+def schedules_in_window(client, days: int, *, page: int = SCHEDULE_PAGE,
+                        chunk_days: int = SCHEDULE_CHUNK_DAYS,
+                        today=None) -> tuple[list, str | None]:
+    """Every /schedules row (posts AND chats) from today-pad to
+    today+days+pad: (deduped rows, why the listing is INCOMPLETE | None).
+    Blocking; a client exception propagates. Callers that delete what they do
+    not find recorded must act on nothing when the second value is set."""
+    from datetime import timedelta
+    rows: list = []
+    seen: set[str] = set()
+
+    def add(batch):
+        for r in batch:
+            k = schedule_row_key(r)
+            if k not in seen:
+                seen.add(k)
+                rows.append(r)
+
+    for lo, hi in schedule_chunks(days, chunk_days=chunk_days, today=today):
+        batch, why = _schedule_read(client, lo, hi, page)
+        if why:
+            return rows, f"{lo}..{hi}: {why}"
+        if len(batch) < page:
+            add(batch)
+            continue
+        # Maybe truncated: re-read the chunk a day at a time. Each day range
+        # (d, d+1) overlaps the next, so it is gap-free either way publishDateEnd
+        # is read, exactly like the chunks.
+        log.warning("schedules_in_window: %s..%s returned %d rows — re-reading "
+                    "it day by day", lo, hi, len(batch))
+        d = lo
+        while d < hi:
+            day, why = _schedule_read(client, d, d + timedelta(days=1), page)
+            if why:
+                return rows, f"{d}: {why}"
+            if len(day) >= page:
+                return rows, f"{d}: {len(day)} rows in one day (maybe truncated)"
+            add(day)
+            d += timedelta(days=1)
+    return rows, None

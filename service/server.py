@@ -174,6 +174,7 @@ from shifts_api import router as _shifts_router  # noqa: E402
 from employee_groups_api import router as _employee_groups_router  # noqa: E402
 from sensitive_words_api import router as _sensitive_words_router  # noqa: E402
 from scripts_import_api import router as _scripts_import_router  # noqa: E402
+from script_fill_api import router as _script_fill_router  # noqa: E402
 from clock_api import router as _clock_router, _sweep_callers_agencies  # noqa: E402
 from sales_amend import router as _sales_amend_router  # noqa: E402
 from s4s_api import router as _s4s_router  # noqa: E402
@@ -447,6 +448,8 @@ app.include_router(push_api.router)
 app.include_router(_employee_groups_router)
 app.include_router(_sensitive_words_router)
 app.include_router(_scripts_import_router)
+# Fill a Sequence with the Creator's vault media (/admin/saved-replies/fill/*, script_fill_api).
+app.include_router(_script_fill_router)
 # Both /admin/shifts routers run the lazy Auto clock-out first (clock_api).
 app.include_router(_shifts_router, dependencies=[Depends(_sweep_callers_agencies)])
 app.include_router(_clock_router, dependencies=[Depends(_sweep_callers_agencies)])

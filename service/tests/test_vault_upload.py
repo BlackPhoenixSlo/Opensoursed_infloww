@@ -40,12 +40,14 @@ import os
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import gdrive              # noqa: E402
 import of_client           # noqa: E402
+import of_paging           # noqa: E402
 import vault_carrier      # noqa: E402
 import vault_upload        # noqa: E402
 
@@ -284,23 +286,43 @@ class _Scheduled:
         self.rows = rows
         self.deleted: list = []
         self.fail = fail
-        self.offsets: list[int] = []
+        self.windows: list[tuple] = []
 
-    def schedules_later_post(self, limit=10, offset=0):
+    def schedules(self, *, publish_date=None, publish_date_end=None,
+                  time_zone="Europe/Ljubljana", limit=20):
+        """GET /schedules (the dated calendar), like OF (measured live
+        2026-11-21): dated carriers live here, NOT in /schedules/later/post;
+        honours the date range, IGNORES offset and limit, no hasMore. An
+        undated row (publishDateTime null) is answered in every range, so
+        dedupe is exercised too."""
         if self.fail:
             raise RuntimeError("session went stale")
-        self.offsets.append(offset)
-        return {"list": self.rows[offset:offset + limit]}
+        self.windows.append((publish_date, publish_date_end))
+        hit = [r for r in self.rows
+               if not (isinstance(r, dict) and r.get("publishDateTime"))
+               or publish_date <= r["publishDateTime"][:10] <= publish_date_end]
+        return {"list": hit, "syncInProcess": False}
 
     def delete_post(self, pid):
         self.deleted.append(pid)
         return {}
 
 
+def _in_days(days: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+
+def _row(pid, *, days=5, **post):
+    """A listing row as OF sends it: a queue entry (its own id) wrapping the
+    post, dated `days` out (GET /schedules row shape)."""
+    return {"id": 900_000 + pid, "type": "post", "publishDateTime": _in_days(days),
+            "createdDateTime": _in_days(-1), "entity": {"id": pid, **post}}
+
+
 sched = _Scheduled([
-    {"id": 1, "rawText": f"<p>{of_client.VAULT_MARKER}</p>"},
-    {"id": 2, "rawText": "a real scheduled post the creator wrote"},
-    {"id": 3, "text": of_client.VAULT_MARKER},
+    _row(1, rawText=f"<p>{of_client.VAULT_MARKER}</p>"),
+    _row(2, rawText="a real scheduled post the creator wrote"),
+    _row(3, text=of_client.VAULT_MARKER),
 ])
 got, lost_count, complete = vault_upload._sweep_scheduled(sched, "42", lambda: {"3"})
 check("deletes the unrecorded carrier, markup and all", sched.deleted, [1])
@@ -309,20 +331,18 @@ check("leaves a carrier a run already tracks to that run", 3 in sched.deleted, F
 check("reports what it deleted", (got, lost_count), (1, 0))
 check("a listing that ran to the end is a COMPLETE scan", complete, True)
 
-# A queue longer than one page: the carrier is 30 days out, so it is on the
-# LAST page. Truncating at page 1 reported "clean" and let it publish.
-long_queue = ([{"id": 1000 + n, "rawText": "a real post"} for n in range(250)]
-              + [{"id": 7, "rawText": of_client.VAULT_MARKER}])
+# A queue longer than one read: OF ignores offset/limit on /schedules, so the
+# window is walked in date chunks. 250 posts spread over the month, the
+# carrier 30 days out on the far end — reached, and complete.
+long_queue = ([_row(1000 + n, days=n * 30 / 250, rawText="a real post")
+               for n in range(250)]
+              + [_row(7, days=of_client.CARRIER_DAYS, rawText=of_client.VAULT_MARKER)])
 paged = _Scheduled(long_queue)
-_page_orig = vault_upload._SCHEDULE_PAGE
-vault_upload._SCHEDULE_PAGE = 100
-try:
-    got, _, complete = vault_upload._sweep_scheduled(paged, "42", lambda: set())
-finally:
-    vault_upload._SCHEDULE_PAGE = _page_orig
-check("pages past the first 100 to reach a far-future carrier", paged.deleted, [7])
+got, _, complete = vault_upload._sweep_scheduled(paged, "42", lambda: set())
+check("walks date chunks past one read to reach a far-future carrier",
+      paged.deleted, [7])
 check("and says so", (got, complete), (1, True))
-check("walking the pages means walking the offsets", paged.offsets, [0, 100, 200])
+check("more than one read", len(paged.windows) > 1, True)
 
 # "Could not list" must NEVER read the same as "listed, found nothing" — this
 # is the only recovery path an unrecorded carrier has.
@@ -330,6 +350,145 @@ broke = _Scheduled([], fail=True)
 got, lost_count, complete = vault_upload._sweep_scheduled(broke, "42", lambda: set())
 check("a failed listing is an incomplete scan", complete, False)
 check("and is COUNTED as a failure, so the relay shouts", lost_count, 1)
+
+# The queue-row WRAPPER (app/lib/__fixtures__/of/queue-saved-post-item.json, a
+# live later/post capture; /schedules rows wrap the same `entity` — see
+# queue-schedules-2026-11.json below): each row is a queue entry wrapping the
+# post in `entity`, and the
+# row's own `id` is the QUEUE id. Reading the row as the post never found the
+# marker — and had it matched, would have deleted the queue id, not the post.
+_fx = json.loads((Path(__file__).resolve().parents[2] / "app" / "lib"
+                  / "__fixtures__" / "of" / "queue-saved-post-item.json").read_text())
+_wrapped = json.loads(json.dumps(_fx["list"][0]))
+_wrapped["entity"]["rawText"] = of_client.VAULT_MARKER
+_wrapped["entity"]["text"] = f"<p>{of_client.VAULT_MARKER}</p>"
+_queue_id, _post_id = _wrapped["id"], _wrapped["entity"]["id"]
+assert _queue_id != _post_id
+real = _Scheduled([_wrapped])
+got, lost_count, complete = vault_upload._sweep_scheduled(real, "42", lambda: set())
+check("captured shape: retires the POST id (entity.id), and only that",
+      real.deleted, [_post_id])
+check("captured shape: never the queue-row id", _queue_id in real.deleted, False)
+check("captured shape: counted, complete", (got, lost_count, complete), (1, 0, True))
+
+real = _Scheduled([json.loads(json.dumps(_wrapped))])
+vault_upload._sweep_scheduled(real, "42", lambda: {str(_post_id)})
+check("captured shape: a recorded post id is known by its entity id",
+      real.deleted, [])
+
+# A row with no `entity` is not a post we can identify: skipped and logged,
+# never deleted — not even when its own fields carry the marker.
+class _Capture(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.msgs: list[str] = []
+
+    def emit(self, record):
+        self.msgs.append(record.getMessage())
+
+
+_cap = _Capture()
+_vlog = logging.getLogger("of-relay.vault_upload")
+_vlog.addHandler(_cap)
+try:
+    bare = _Scheduled([{"id": 99, "type": "post",
+                        "rawText": of_client.VAULT_MARKER},
+                       {"id": 98, "entity": "not-a-dict"}])
+    got, lost_count, complete = vault_upload._sweep_scheduled(bare, "42",
+                                                              lambda: set())
+finally:
+    _vlog.removeHandler(_cap)
+check("a row without an entity is never deleted", bare.deleted, [])
+check("…and is logged", sum("no entity" in m for m in _cap.msgs), 2)
+check("…and deletes nothing else", got, 0)
+
+# ── dated carriers: the sweep reads GET /schedules, not later/post ─────────
+# Live read 2026-11-21 (capture queue--scheduled-post-endpoint): a post with a
+# publish date is ONLY in the date-range calendar; /schedules/later/post is the
+# undated "saved for later" list. A carrier is always dated (CARRIER_DAYS out),
+# so reading later/post never saw one. Row shape: the captured /schedules row.
+print("\nvault_upload._sweep_scheduled: dated carriers via GET /schedules")
+_cal = json.loads((Path(__file__).resolve().parents[2] / "app" / "lib"
+                   / "__fixtures__" / "of" / "queue-schedules-2026-11.json").read_text())
+_dated = json.loads(json.dumps(_cal["list"][0]))
+assert _dated["type"] == "post" and _dated["publishDateTime"]
+# The captured shape, but dated relative to NOW: the fixture's fixed date
+# would fall out of the window within days and the tests below go vacuous.
+_dated["publishDateTime"] = _in_days(5)
+_dated["entity"]["text"] = f"<p>{of_client.VAULT_MARKER}</p>"
+_dated["entity"].pop("rawText", None)
+_dated_pid = _dated["entity"]["id"]
+cal = _Scheduled([_dated])
+got, lost_count, complete = vault_upload._sweep_scheduled(cal, "42", lambda: set())
+check("a DATED carrier (publishDateTime set) is found and deleted",
+      cal.deleted, [_dated_pid])
+check("…counted, complete", (got, lost_count, complete), (1, 0, True))
+_carrier_day = (datetime.now(timezone.utc)
+                + timedelta(days=of_client.CARRIER_DAYS)).date().isoformat()
+_today = datetime.now(timezone.utc).date().isoformat()
+check("the walk opens before today and closes past the carrier date",
+      (cal.windows[0][0] < _today, cal.windows[-1][1] > _carrier_day),
+      (True, True))
+check("chunks are gap-free (each starts where the last ended, or earlier)",
+      all(b[0] <= a[1] for a, b in zip(cal.windows, cal.windows[1:])), True)
+check(f"each chunk spans at most {of_paging.SCHEDULE_CHUNK_DAYS} days",
+      max((datetime.fromisoformat(h) - datetime.fromisoformat(l)).days
+          for l, h in cal.windows), of_paging.SCHEDULE_CHUNK_DAYS)
+
+# A carrier 29 days out sits in the last chunks: found, so the window covers it.
+far = _Scheduled([_row(29, days=29, text=of_client.VAULT_MARKER)])
+got, lost_count, complete = vault_upload._sweep_scheduled(far, "42", lambda: set())
+check("a carrier 29 days out is found and deleted",
+      (far.deleted, got, lost_count, complete), ([29], 1, 0, True))
+
+# The calendar lists scheduled CHATS too. A chat row is never deleted, even if
+# its text happened to carry the marker.
+_chat = {"id": 777, "type": "chat", "publishDateTime": _dated["publishDateTime"],
+         "createdDateTime": _dated["createdDateTime"],
+         "entity": {"id": 7770, "text": of_client.VAULT_MARKER}}
+cal = _Scheduled([_chat])
+got, lost_count, complete = vault_upload._sweep_scheduled(cal, "42", lambda: set())
+check("a scheduled CHAT row is never deleted", cal.deleted, [])
+check("…and the scan still completed", (got, lost_count, complete), (0, 0, True))
+
+# A known carrier on the calendar stays with its run.
+cal = _Scheduled([json.loads(json.dumps(_dated))])
+got, _, complete = vault_upload._sweep_scheduled(cal, "42",
+                                                 lambda: {str(_dated_pid)})
+check("a recorded dated carrier is kept", (cal.deleted, complete), ([], True))
+
+
+# An INCOMPLETE listing (of_paging.schedules_in_window says why: a full day,
+# a bad reply, ... — tabled in test_of_paging.py) retires nothing, not even the
+# marker posts it did list.
+_siw_orig = of_paging.schedules_in_window
+of_paging.schedules_in_window = lambda client, days, **kw: (
+    [_row(5, days=5, rawText=of_client.VAULT_MARKER)], "2026-11-30: 100 rows in one day")
+try:
+    inc = _Scheduled([])
+    got, lost_count, complete = vault_upload._sweep_scheduled(inc, "42",
+                                                              lambda: set())
+finally:
+    of_paging.schedules_in_window = _siw_orig
+check("an incomplete listing: nothing deleted, counted, incomplete",
+      (inc.deleted, got, lost_count, complete), ([], 0, 1, False))
+
+# A row whose type is missing or unknown is skipped AND logged.
+_cap = _Capture()
+_vlog.addHandler(_cap)
+try:
+    odd = _Scheduled([{"id": 61, "entity": {"id": 610, "text": of_client.VAULT_MARKER}},
+                      {"id": 62, "type": "story",
+                       "entity": {"id": 620, "text": of_client.VAULT_MARKER}},
+                      {"id": 63, "type": "chat",
+                       "entity": {"id": 630, "text": of_client.VAULT_MARKER}}])
+    got, _, complete = vault_upload._sweep_scheduled(odd, "42", lambda: set())
+finally:
+    _vlog.removeHandler(_cap)
+check("rows with no/unknown type are never deleted", (odd.deleted, complete),
+      ([], True))
+check("…and each is logged (a chat row is expected, not logged)",
+      sum("has type" in m for m in _cap.msgs), 2)
 
 
 # ── a dedupe hit on a HIDDEN vault item is never 'done' ───────────────────
@@ -711,7 +870,7 @@ class _SweepClient:
         self.deleted.append(pid)
         return {}
 
-    def schedules_later_post(self, limit=10, offset=0):
+    def schedules(self, *, limit=20, **_kw):
         return {"list": []}
 
 
@@ -903,12 +1062,12 @@ class _MidScan:
         self.deleted: list = []
         self.listed = 0
 
-    def schedules_later_post(self, limit=100, offset=0):
-        if offset:
+    def schedules(self, *, limit=20, **_kw):
+        if self.listed:         # later date chunks: nothing more scheduled
             return {"list": []}
         self.listed += 1
         self.on_list()          # ... an import starts, right here
-        return {"list": [{"id": 5555, "rawText": of_client.VAULT_MARKER}]}
+        return {"list": [_row(5555, rawText=of_client.VAULT_MARKER)]}
 
     def delete_post(self, pid):
         self.deleted.append(pid)

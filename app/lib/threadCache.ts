@@ -124,3 +124,26 @@ function mergeMedia(opt: OFMessage, server: OFMessage): OFMessage {
   });
   return { ...server, media: mergedMedia, _pending: false, _tempId: opt._tempId };
 }
+
+/** Rows a thread cache keeps when trimmed: ~3 of useChatMessages' 30-row
+ *  pages, so a reopened thread fills the pane and then pages older again. */
+export const THREAD_KEEP = 90;
+
+/** Keep the newest `keep` real (positive-id) rows plus every optimistic row
+ *  (id ≤ 0). Threads persist whole for 7 days, so one deep scroll-up used to
+ *  reopen as a ~5,000-row, 127k-node thread forever. The kept rows are the
+ *  contiguous newest tail, so paging older from the cache minimum walks no
+ *  gap. A reconciled send keeps `_tempId` with its real id and counts as real:
+ *  kept beyond the window it would sit below a hole the cursor jumps.
+ *  Returns `list` itself when nothing is cut. */
+export function trimThread(list: OFMessage[], keep: number): OFMessage[] {
+  const optimistic = (m: OFMessage) => !(Number(m.id) > 0);
+  let real = 0;
+  let cut = -1;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (optimistic(list[i])) continue;
+    if (++real > keep) { cut = i; break; }
+  }
+  if (cut < 0) return list;
+  return list.filter((m, i) => i > cut || optimistic(m));
+}

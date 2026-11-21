@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 
 import { useSplitInbox } from "@/hooks/useSplitInbox";
 import type { OFChatItem } from "@/lib/relay";
-import { groupOf } from "./SplitInbox";
+import { groupOf } from "@/lib/splitInbox";
 
 /**
  * The Split Inbox group chosen in the "All inboxes" selector

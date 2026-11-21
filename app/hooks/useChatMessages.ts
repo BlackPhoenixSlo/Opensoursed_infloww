@@ -31,7 +31,7 @@ import { relay, type OFMessage, type OFMessagesResp } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import type { SendFailure } from "@/lib/sendFailure";
 import { eventBus } from "@/lib/events";
-import { appendMsg, dropMsg, failMsg, reconcileMsg, toUtcIso } from "@/lib/threadCache";
+import { appendMsg, dropMsg, failMsg, reconcileMsg, THREAD_KEEP, toUtcIso, trimThread } from "@/lib/threadCache";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 
 import {
@@ -246,7 +246,14 @@ export function useChatMessages({
   }
   // The chat's older page in flight is cancelled when the chat changes or the
   // hook unmounts: it frees the relay slot, and its answer is stale anyway.
-  useEffect(() => () => { olderAbortRef.current?.abort(); }, [chatKey]);
+  // The left chat's cache is trimmed back to its newest pages, so a deep
+  // scroll-up doesn't reopen (and persist) as a thousands-row thread.
+  useEffect(() => () => {
+    olderAbortRef.current?.abort();
+    if (accountId && fanId != null) trimLeftThread(qc, accountId, fanId);
+    // chatKey stands in for (accountId, fanId).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatKey, qc]);
 
   const query = useQuery<OFMessage[]>({
     queryKey,
@@ -369,7 +376,9 @@ export function useChatMessages({
     if (oldestCursorRef.current != null) return oldestCursorRef.current;
     const head = ridesPrefetch ? headOldest.get(`${accountId}:${fanId}`) : undefined;
     if (head != null && current.some((m) => Number(m.id) === head)) return head;
-    const oldest = current.find((m) => Number(m.id) > 0)?.id;
+    // The oldest OF row: a ledger tip / mass placeholder (5e15+ synthetic ids)
+    // sorted to the top of a trimmed thread is no OF cursor.
+    const oldest = current.find((m) => Number(m.id) > 0 && Number(m.id) < MASS_PLACEHOLDER_MIN)?.id;
     return oldest == null ? null : Number(oldest);
   }, [qc, queryKey, accountId, fanId, ridesPrefetch]);
 
@@ -499,6 +508,24 @@ export function useChatMessages({
     failLocal,
     dropLocal,
   };
+}
+
+/** Trim a thread nobody shows any more (trimThread). Deferred a tick: on a
+ *  chat switch or unmount the leaving hook's own observer is still on the key.
+ *  A thread another pane still shows keeps its rows. Keeps `dataUpdatedAt`,
+ *  so the trim neither freshens the thread nor skips its next refetch. */
+function trimLeftThread(qc: QueryClient, accountId: string, fanId: FanId): void {
+  setTimeout(() => {
+    const q = qc.getQueryCache().find<OFMessage[]>({ queryKey: ["messages", accountId, fanId], exact: true });
+    const list = q?.state.data;
+    if (!q || !list || q.getObserversCount() > 0) return;
+    const next = trimThread(list, THREAD_KEEP);
+    if (next === list) return;
+    qc.setQueryData(q.queryKey, next, { updatedAt: q.state.dataUpdatedAt });
+    // A head that said "nothing older" spoke for the untrimmed rows: the next
+    // mount pages again instead of starting exhausted over the cut.
+    headMore.delete(`${accountId}:${fanId}`);
+  }, 0);
 }
 
 /** Render-path guard: drop rows that repeat an id (keeping the first

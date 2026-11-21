@@ -9,7 +9,7 @@ vi.mock("@/components/AiKeyNotice", () => ({ AiKeyNotice: () => null }));
 
 import VaultExtrasTools from "./VaultExtrasTools";
 
-const sweep = { status: undefined, progress: null, running: false, busy: false, start: async () => {} };
+const sweep = { status: undefined, progress: null, running: false, busy: false, start: async () => null };
 
 function renderTools(
   plan: { undescribed: number; restage: number },

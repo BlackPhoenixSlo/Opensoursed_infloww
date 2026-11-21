@@ -29,6 +29,8 @@ from sqlalchemy import case, func, literal
 VERSION = "v8+nn.10"
 # Where the blob lives in `ai_fields_json` (the one definition; every vault module reads it from here).
 JEV_KEY = "_jev"
+# `_jev.review` of a held clip (`vault_jev_pass.held_blob`; `vault_ai_brief`: disputed, never in a free lane).
+HELD = "fetch_failed"
 # The kinds Jev reads (photos: one still; videos: 12 frames, `video_blob`) — the only kinds with flags.
 JEV_KINDS = ("photo", "video")
 # A video blob's frame source + combine (12 frames @720p, top-3 escalation, max lane): `current` needs it too.

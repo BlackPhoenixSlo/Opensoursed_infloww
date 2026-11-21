@@ -9,6 +9,8 @@ gets a verdict back. Table-tested in tests/test_vault_ai_vision_decide.py.
   selection         live_describable (the base every vision sweep walks) and
                     describe_selection — the ONE predicate both the describe-all
                     sweep and its plan count read, so the two cannot drift.
+  coverage          DESCRIBE_TARGET, is_terminal, coverage — how far a Creator
+                    is from its Describe target.
   order             priority_order — the ONE walk order of both sweeps;
                     rail_folder_ids — its folder rank from the cached OF rail.
   reuse             reuse_plan, build_copy_update, build_flags_copy — one
@@ -165,6 +167,43 @@ def describe_selection(account_id: str, mode: DescribeMode,
         # A wasted fetch is cheaper than a control nobody can trust.
         return and_(base, VaultItem.describe_status.isnot("described"))
     raise ValueError(f"unknown describe mode: {mode!r}")
+
+
+# ── Describe coverage (describe-all `target`, its plan route, the Fill plan) ──
+
+# The Describe target every caller sends (Fill plan, the button, the Rollout driver).
+DESCRIBE_TARGET = 1000
+
+# A last attempt no retry fixes. `failed` / `fetch_failed` are retryable, so not here.
+TERMINAL_STATUSES = frozenset({"refused", "blocked_drm", "gone"})
+
+
+def is_terminal(describe_status: str | None, fields: Mapping[str, Any] | None) -> bool:
+    """A Terminal failure: a not-described Describable item whose status is `refused`, `blocked_drm` or
+    `gone`, or whose `_jev` is the terminal held blob (`vault_jev_pass.held_blob(terminal=True)`: status ok,
+    review held — the sweeps stop fetching it). The non-terminal hold has status `fetch_failed`: retried."""
+    if describe_status == "described":
+        return False
+    if describe_status in TERMINAL_STATUSES:
+        return True
+    j = (fields or {}).get(JEV_KEY)
+    return isinstance(j, Mapping) and j.get("status") == "ok" and j.get("review") == vault_jev_rules.HELD
+
+
+def coverage(rows: Iterable[tuple[str | None, Mapping[str, Any] | None]], target: int) -> dict[str, int]:
+    """How far a Creator is from `target`, over (describe_status, ai_fields) of every Describable item
+    (`live_describable`): goal = min(target, describable − terminal), remaining = max(0, goal − described).
+    The ONE predicate describe-all, its plan route and the Fill plan read."""
+    describable = described = terminal = 0
+    for status, fields in rows:
+        describable += 1
+        if status == "described":
+            described += 1
+        elif is_terminal(status, fields):
+            terminal += 1
+    goal = min(int(target), describable - terminal)
+    return {"target": int(target), "describable": describable, "described": described,
+            "terminal": terminal, "goal": goal, "remaining": max(0, goal - described)}
 
 
 def describe_answer(data: Mapping[str, Any]) -> dict[str, Any]:

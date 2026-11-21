@@ -21,6 +21,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { mergeOlderPage, mergeTopPage, orderThread, prefetchChatMessages, selectMessages, useChatMessages } from "@/hooks/useChatMessages";
 import type { OFMessage, OFMessagesResp } from "@/lib/relay";
+import { THREAD_KEEP } from "@/lib/threadCache";
 import { UNREAD_WARM_REUSE_MS } from "@/hooks/useUnreadMessagesPrefetch";
 
 // The hook talks to the relay + an SSE event bus + a perf logger. Stub them all
@@ -266,6 +267,34 @@ describe("useChatMessages load-older pager", () => {
     expect(olderUrls()).toHaveLength(1);
   });
 
+  it("an older page's rows and the idle pager commit in one render (no idle frame over the old rows)", async () => {
+    relayGet.mockImplementation((url: string) => Promise.resolve(
+      url.includes("before_id=") ? resp([msg(9), msg(8)], true) : resp([msg(11), msg(10)], true),
+    ));
+    // An idle pager over the old rows would re-arm the top sentinel while it
+    // is still in view. Holds because setPager and setQueryData run in one
+    // sync block and the render reads the cache itself (getOptimisticResult).
+    const seen: string[] = [];
+    const { result } = renderHook(() => {
+      const h = useChatMessages({ accountId: ACCT, fanId: FAN });
+      seen.push(`${h.isLoadingOlder}:${ids(h.data).join(",")}`);
+      return h;
+    }, { wrapper });
+    await waitFor(() => expect(ids(result.current.data)).toEqual(["10", "11"]));
+    seen.length = 0;
+    // Not inside act(): act would batch both writes into one flush and hide the order.
+    const prevAct = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    try {
+      await result.current.loadOlder();
+      await waitFor(() => expect(seen.at(-1)).toBe("false:8,9,10,11"));
+    } finally {
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = prevAct;
+    }
+    expect(seen).not.toContain("false:10,11");
+    expect(seen.at(-1)).toBe("false:8,9,10,11");
+  });
+
   it("an exhausted chat stays exhausted across a head poll that says hasMore", async () => {
     relayGet.mockImplementation((url: string) => Promise.resolve(
       url.includes("before_id=") ? resp([msg(9)], false) : resp([msg(11), msg(10)], true),
@@ -322,6 +351,65 @@ describe("useChatMessages load-older pager", () => {
     expect(result.current.hasOlder).toBe(false);
     await act(async () => { await result.current.loadOlder(); });
     expect(relayGet).toHaveBeenCalledTimes(1); // the prefetch alone
+  });
+});
+
+describe("useChatMessages trim on leave", () => {
+  const many = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => msg(from + i));
+  const tick = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+
+  beforeEach(() => {
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: Infinity } } });
+  });
+
+  it("leaving a deep-scrolled chat trims it to THREAD_KEEP newest rows plus optimistic ones, dataUpdatedAt kept", async () => {
+    client.setQueryData(KEY, [...many(1, 300), msg(-1, { _tempId: -1, _pending: true })], { updatedAt: 1234 });
+    const { unmount } = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
+    unmount();
+    await tick();
+    const rows = client.getQueryData<OFMessage[]>(KEY)!;
+    expect(rows).toHaveLength(THREAD_KEEP + 1);
+    expect(ids(rows).slice(0, 2)).toEqual([String(300 - THREAD_KEEP + 1), String(300 - THREAD_KEEP + 2)]);
+    expect(ids(rows).at(-1)).toBe("-1");
+    expect(client.getQueryState(KEY)?.dataUpdatedAt).toBe(1234);
+  });
+
+  it("a chat switch trims the chat left behind, not the one opened", async () => {
+    const B = 46;
+    client.setQueryData(KEY, many(1, 200));
+    client.setQueryData(["messages", ACCT, B], many(1, 200));
+    const { rerender } = renderHook(
+      ({ f }: { f: number }) => useChatMessages({ accountId: ACCT, fanId: f }), { wrapper, initialProps: { f: FAN } },
+    );
+    rerender({ f: B });
+    await tick();
+    expect(client.getQueryData<OFMessage[]>(KEY)).toHaveLength(THREAD_KEEP);
+    expect(client.getQueryData<OFMessage[]>(["messages", ACCT, B])).toHaveLength(200);
+  });
+
+  it("a thread another pane still shows keeps its rows", async () => {
+    client.setQueryData(KEY, many(1, 200));
+    const other = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
+    const { unmount } = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
+    unmount();
+    await tick();
+    expect(client.getQueryData<OFMessage[]>(KEY)).toHaveLength(200);
+    other.unmount();
+  });
+
+  it("a trimmed thread reopens with older history to load, cursoring from its oldest kept row", async () => {
+    client.setQueryData(KEY, many(1, 200));
+    renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper }).unmount();
+    await tick();
+    const { result } = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
+    expect(result.current.hasOlder).toBe(true);
+    expect(result.current.olderCursor()).toBe(200 - THREAD_KEEP + 1);
+  });
+
+  it("the cache-minimum cursor skips a ledger tip sorted to the top (no synthetic before_id)", async () => {
+    client.setQueryData(KEY, [msg(6_000_000_000_000_123), ...many(50, 60)]);
+    const { result } = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
+    expect(result.current.olderCursor()).toBe(50);
   });
 });
 

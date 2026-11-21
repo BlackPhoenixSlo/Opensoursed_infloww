@@ -174,3 +174,34 @@ describe("useThreadPin short-chat fill", () => {
     expect(load).not.toHaveBeenCalled();
   });
 });
+
+describe("useThreadPin load-older anchor (pre-commit snapshot)", () => {
+  // jsdom lays nothing out: fake 100px rows in a 400px viewport.
+  const fakeGeometry = (el: HTMLElement) => {
+    let top = 0;
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 400 });
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => (el.childElementCount - 1) * 100 });
+    Object.defineProperty(el, "scrollTop", {
+      configurable: true, get: () => top, set: (v: number) => { top = Math.max(0, Math.min(v, el.scrollHeight - 400)); },
+    });
+    return el;
+  };
+  const range = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => ({ id: from + i, text: "", media: [] }) as unknown as OFMessage);
+
+  it("an older page while at the top keeps the old top row in place; appends never move a scrolled-up view", async () => {
+    sentinelVisible = false;
+    const load = vi.fn();
+    const { container, rerender } = render(<Thread messages={range(31, 60)} headSettled onLoadOlder={load} />);
+    const c = fakeGeometry(container.firstElementChild as HTMLElement);
+    await advance(AUTO_PIN_BACKSTOP_MS); // the auto-pin lets go
+    c.scrollTop = 0; // the user wheeled to the top
+    rerender(<Thread messages={range(1, 60)} headSettled onLoadOlder={load} />);
+    expect(c.scrollTop).toBe(3000); // row 31 sits where it was: 30 rows × 100px further down
+    rerender(<Thread messages={range(1, 61)} headSettled onLoadOlder={load} />);
+    expect(c.scrollTop).toBe(3000); // an incoming message while scrolled up: none
+    c.scrollTop = c.scrollHeight; // back at the bottom
+    rerender(<Thread messages={range(1, 62)} headSettled onLoadOlder={load} />);
+    expect(c.scrollTop).toBe(c.scrollHeight - 400); // pinned to the new bottom
+  });
+});

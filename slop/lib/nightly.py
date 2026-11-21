@@ -1,9 +1,11 @@
-"""`slop/run nightly`: the daily full sweep, one digest (README "Nightly").
+"""`slop/run nightly`: the daily relevant-only sweep, one digest (README "Nightly").
 
-Phases, each scenario a plain `slop/run <name> <knobs>` subprocess (its own stack and evidence folder,
-as `slop/run all` would run it): `all` (small, UI on), `volume` (a dated rotation of VOLUME_PER_NIGHT
-map entries tagged volume, medium/120, no UI; runs first), `map` (`--map` for the unmapped + entries past the stale bound; every scenario on Sunday). A FAIL in
-`all`/`volume` is re-run once: green = FLAKY. The map phase hands its entries over in <folder>/map.json
+Phases, each scenario a plain `slop/run <name> <knobs>` subprocess (its own stack and evidence folder):
+`all` (small, UI on; owner 2026-11-21: relevant only, see all_plan: the diff pick's own/flow tiers since
+the previous nightly's sha, its non-OK rows carried over, the unmapped, the SMOKE["all"] canaries; every scenario when
+any input is missing), `volume` (a dated rotation of VOLUME_PER_NIGHT map entries tagged volume,
+medium/120, no UI; runs first), `map` (`--map` for at most MAP_PER_NIGHT of the unmapped + entries past
+the stale bound, most behind first: a rotation). A FAIL in `all`/`volume` is re-run once: green = FLAKY. The map phase hands its entries over in <folder>/map.json
 and restores slop/map.json (`--apply-map=<folder>` merges them elsewhere). Evidence:
 evidence/<stamp>-nightly-<hex>/ with plan.txt, run.log, status.json, summary.{json,md}, map.json, done
 (the exit code, written last). Pure parts first (lib/test_nightly.py).
@@ -29,7 +31,7 @@ import traceback
 from collections import deque
 from pathlib import Path
 
-from slop.lib import covmap, gate, phases, procs
+from slop.lib import covmap, gate, phases, procs, selection
 from slop.lib.identity import GATE_ENV, LOCK_SHA  # LOCK_SHA in app/node_modules
 from slop.lib.latency_acceptance import volume_knobs
 from slop.lib.procs import kill_tree, stop_child
@@ -41,8 +43,11 @@ PHASES = ("volume", "all", "map")  # volume first: exclusive runs queue least be
 VOLUME_PER_NIGHT = 3  # owner 2026-11-12: ~95% cut; a dated rotation covers every volume scenario in turn
 PREV_LOOKBACK = 40  # nightlies searched for a rotated volume row's last result (57 volume / 3 = 19 nights)
 KNOBS = {"all": [], "volume": ["--scale=medium", "--users=120", "--no-ui"], "map": ["--map"]}
+# SMOKE["all"] = the `all` phase's always-run canaries too: Web Push + the Electron notification click
+# (inbox-unread-fan-burst drives actors/notif_click.desktop).
 SMOKE = {"all": ("2026-11-03-os-ping-push", "2026-10-23-inbox-unread-fan-burst"),
          "volume": ("2026-11-01-notifications-feed-volume",)}
+MAP_PER_NIGHT = 10  # owner 2026-11-21: the laptop is never free overnight; the map refreshes over nights
 P95_MOVE = 0.20  # a p95_vs_last_green key moved more than this vs the previous nightly: listed
 COV_RED = "RED (coverage)"  # a --map run red only on budgets: coverage overhead, counted with OK
 GREEN, RED = ("OK", "FLAKY", COV_RED), ("FAIL",)
@@ -59,24 +64,75 @@ CUT_NOT_RUN, CUT_STOPPED, CUT_NO_RERUN = "not run: 8 h limit", "stopped at the 8
 
 # ---- pure ----
 
-def map_rule(ages: dict[str, int | None], weekday: int) -> tuple[bool, str]:
-    """(full refresh?, why). `ages`: per map sha, commits it is behind HEAD, None when it is not an
-    ancestor of HEAD (divergent or newer: its count says nothing, so it is stale); `weekday` 0 = Monday.
-    A stale map is no full refresh: build_plan re-maps its stale entries (stale_entry) + the unmapped, which
-    leaves the same bound (no entry > MAP_STALE behind or divergent) without re-mapping fresh entries; a few
-    entries that never re-map (INFRA in --map) had made every night a full ~2.5 h refresh."""
-    stale, reason = covmap.map_stale(ages)
-    if weekday == 6:
-        return True, "Sunday: weekly full refresh" + (f" ({reason})" if stale else "")
-    if stale:
-        return False, reason + ", not Sunday: stale entries + unmapped"
-    return False, reason + ", not Sunday: unmapped only"
+def map_rule(ages: dict[str, int | None], picked: int, due: int) -> str:
+    """The map phase's why. `ages`: per map sha, commits it is behind HEAD, None when it is not an ancestor
+    of HEAD (divergent or newer: stale). No full refresh, Sunday included (owner 2026-11-21): `picked` of the
+    `due` (unmapped + stale entries, map_pick), at most MAP_PER_NIGHT a night; the rest wait for later nights."""
+    _stale, reason = covmap.map_stale(ages)
+    left = f"; {due - picked} wait for later nights" if due > picked else ""
+    return f"{reason}: {picked} of {due} unmapped + stale entries (cap {MAP_PER_NIGHT}, most behind first){left}"
 
 
 def stale_entry(entry: dict, ages: dict[str, int | None]) -> bool:
     """A map entry past the map_stale bound: no sha, a sha not in `ages`, divergent (None), > MAP_STALE behind."""
     n = ages.get(entry.get("sha") or "")
     return n is None or n > covmap.MAP_STALE
+
+
+def map_pick(names: list[str], mapped: dict, ages: dict[str, int | None],
+             k: int = MAP_PER_NIGHT) -> tuple[list[str], int]:
+    """(at most `k` names to --map, how many were due): the unmapped first, then stale entries (stale_entry)
+    with no / unknown / divergent sha, then the most commits behind; ties by name. A re-mapped entry is fresh
+    the next night, so the cap walks the due list over nights."""
+    due = [n for n in names if n not in mapped or stale_entry(mapped[n], ages)]
+
+    def key(n: str):
+        if n not in mapped:
+            return (0, 0, n)
+        a = ages.get(mapped[n].get("sha") or "")
+        return (1, 0, n) if a is None else (2, -a, n)
+    return sorted(due, key=key)[:k], len(due)
+
+
+ALL_SOURCES = ("changed", "carry-over", "unmapped", "canary")
+# owner 2026-11-21: own + flow only; a shared/layout pick (e.g. one module-level import loaded by every
+# scenario) would make every night a full sweep. Those scenarios count as left out.
+NIGHTLY_TIERS = ("own", "flow")
+
+
+def all_plan(names: list[str], mapped: dict, prev: dict | None, picked: dict | None,
+             fallback: str | None) -> tuple[list[str], dict]:
+    """(`all` phase names in `names` order, {"line", "why": {name: [sources]}, "left_out"}). Sources: canary
+    (SMOKE["all"]), carry-over (`prev`'s all/volume rows not OK: FAIL, FLAKY, INFRA, SKIP incl. 8 h cuts),
+    changed (`picked`: selection.pick since prev's sha, NIGHTLY_TIERS only, no budget), unmapped. `fallback`
+    (a reason), no `prev` or no `picked`: every scenario, the reason in the line."""
+    if fallback or prev is None or picked is None:
+        why = fallback or ("no previous nightly" if prev is None else "no pick")
+        return list(names), {"line": f"every scenario (fallback: {why})", "why": {}, "left_out": 0}
+    have, why = set(names), {}
+
+    def add(n: str, src: str) -> None:
+        if n in have and src not in why.setdefault(n, []):
+            why[n].append(src)
+    for n in SMOKE["all"]:
+        add(n, "canary")
+    for r in prev.get("rows") or []:
+        if r.get("phase") in ("all", "volume") and r.get("verdict") != "OK":
+            add(r["scenario"], f"carry-over ({r['phase']} {r['verdict']}" + (f": {r['cut']}" if r.get("cut") else "") + ")")
+    for n, rs in picked.items():
+        if selection.tier(rs) in NIGHTLY_TIERS:
+            add(n, f"changed ({selection.tier(rs)}: {rs[0][1][:120]})")
+    for n in names:
+        if n not in mapped:
+            add(n, "unmapped")
+    why = {n: v for n, v in why.items() if v}
+    run = [n for n in names if n in why]
+    n_src = {k: sum(any(s.startswith(k) for s in why[n]) for n in run) for k in ALL_SOURCES}
+    wide = sum(n in have and n not in why for n, rs in picked.items() if selection.tier(rs) not in NIGHTLY_TIERS)
+    line = (f"relevant only since nightly {prev['name']} @ {prev['sha']}: {len(run)} of {len(names)} ("
+            + ", ".join(f"{k} {v}" for k, v in n_src.items()) + f"); {len(names) - len(run)} left out as unaffected"
+            + f" ({wide} of them shared/layout picks only)")
+    return run, {"line": line, "why": {n: why[n] for n in run}, "left_out": len(names) - len(run), "wide": wide}
 
 
 def volume_slice(names: list[str], day: int, k: int = VOLUME_PER_NIGHT) -> list[str]:
@@ -90,21 +146,24 @@ def volume_slice(names: list[str], day: int, k: int = VOLUME_PER_NIGHT) -> list[
 
 
 def build_plan(paths: dict[str, Path], doc: dict, phases: list[str], smoke: bool, ages: dict[str, int | None],
-               weekday: int, day: int = 0) -> tuple[dict[str, list[str]], str]:
-    """({phase: scenarios}, map rule line), phases in PHASES order. `doc`: this worktree's map; `day`: the
-    date ordinal picking tonight's volume slice."""
+               day: int = 0, *, prev: dict | None = None, picked: dict | None = None,
+               fallback: str | None = None) -> tuple[dict[str, list[str]], str, dict]:
+    """({phase: scenarios}, map rule line, all_plan's notes), phases in PHASES order. `doc`: this worktree's
+    map; `day`: the date ordinal picking tonight's volume slice; `prev`, `picked`, `fallback`: all_plan's."""
     names = list(paths)
     mapped = doc.get("scenarios", {})
     unmapped = [n for n in names if n not in mapped]
-    full, why = map_rule(ages, weekday)
+    to_map, due = map_pick(names, mapped, ages)
+    why = map_rule(ages, len(to_map), due)
     if smoke:
         plan = {"all": [n for n in SMOKE["all"] if n in names],
                 "volume": [n for n in SMOKE["volume"] if n in names], "map": unmapped}
-        why = f"smoke: unmapped only (full rule: {why})"
+        why, notes = f"smoke: unmapped only (rule: {why})", {"line": "smoke set", "why": {}, "left_out": 0}
     else:
-        plan = {"all": list(names), "volume": volume_slice([n for n in names if covmap.is_volume(paths[n])], day),
-                "map": list(names) if full else [n for n in names if n not in mapped or stale_entry(mapped[n], ages)]}
-    return {p: plan[p] for p in PHASES if p in phases}, why
+        run, notes = all_plan(names, mapped, prev, picked, fallback)
+        plan = {"all": run, "volume": volume_slice([n for n in names if covmap.is_volume(paths[n])], day),
+                "map": to_map}
+    return {p: plan[p] for p in PHASES if p in phases}, why, notes
 
 
 def verdict(code: int, checks: list[dict] | None, meta: dict | None, *, map_run: bool = False,
@@ -292,6 +351,13 @@ def digest(s: dict) -> str:
            f"exit {exit_code(v, bool(s.get('infra')))} (0 OK/FLAKY, 1 FAIL, 3 INFRA or all SKIP); counts ok/flaky/fail/infra/skip"]
     if s.get("deps"):
         out.append(f"app deps: {s['deps']}")
+    if s.get("all_plan"):
+        a = s["all_plan"]
+        out.append(f"all plan: {a['line']}")
+        for k in ALL_SOURCES:
+            hit = [n for n, srcs in a["why"].items() if any(x.startswith(k) for x in srcs)]
+            if hit:
+                out.append(f"- {k} ({len(hit)}): " + ", ".join(hit[:20]) + (f" (+{len(hit) - 20} more)" if len(hit) > 20 else ""))
     cut = [r for r in s["rows"] if r.get("cut") in (CUT_NOT_RUN, CUT_STOPPED)]
     if cut:
         out.append(f"8 h limit: {len(cut)} scenarios not run or stopped (the next night runs them)")
@@ -485,15 +551,48 @@ def gate_status() -> str:
         return f"(gate status failed: {type(e).__name__}: {e})"
 
 
-def _plan_text(stamp: str, sha: str, smoke: bool, plan: dict, why: str) -> str:
+def _plan_text(stamp: str, sha: str, smoke: bool, plan: dict, why: str, notes: dict | None = None) -> str:
+    notes = notes or {"line": "every scenario", "why": {}}
     lines = [f"nightly plan {stamp} @ {sha}{' (smoke)' if smoke else ''}: "
              f"{sum(map(len, plan.values()))} runs, each `slop/run <scenario> <knobs>`; a FAIL in all/volume re-runs once"]
     for p, names in plan.items():
-        how = {"all": "every scenario (as slop/run all)", "volume": f"{VOLUME_PER_NIGHT} scenarios declaring volume gates (dated rotation)",
+        how = {"all": notes["line"], "volume": f"{VOLUME_PER_NIGHT} scenarios declaring volume gates (dated rotation)",
                "map": why}[p] if not smoke else ("smoke set" if p != "map" else why)
         lines += [f"{p} ({len(names)}): {how}; effective knobs below"]
-        lines += [f"  {n} {' '.join(effective_knobs(p, n)) or 'small, UI on'}" for n in names]
+        lines += [f"  {n} {' '.join(effective_knobs(p, n)) or 'small, UI on'}"
+                  + (f"  <- {'; '.join(notes['why'][n])}" if p == "all" and n in notes["why"] else "") for n in names]
     return "\n".join(lines) + "\n"
+
+
+def last_nightly(before: str | None = None) -> dict | None:
+    """{"name", "sha", "rows"} of the newest nightly folder (name before `before`) with a summary.json of a
+    non-smoke night that ran `all`: the `all` phase's diff base and carry-over rows. None: no such night."""
+    for d in sorted(EVIDENCE.glob("*-nightly-*"), reverse=True):
+        if before and d.name >= before:
+            continue
+        try:
+            s = json.loads((d / "summary.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(s, dict) and not s.get("smoke") and "all" in (s.get("phase_names") or []) and s.get("sha") \
+                and isinstance(s.get("rows"), list):
+            return {"name": d.name, "sha": s["sha"], "rows": s["rows"]}
+    return None
+
+
+def relevance(doc: dict, before: str | None) -> tuple[dict | None, dict | None, str | None]:
+    """(prev, picked, fallback reason) for all_plan: the diff pick (covmap.pick_changed, as --changed's)
+    since the last nightly's sha. Any missing input or a failed pick: a reason (every scenario runs)."""
+    if not doc.get("scenarios"):
+        return None, None, "no map"
+    prev = last_nightly(before)
+    if prev is None:
+        return None, None, "no previous nightly with summary.json"
+    try:
+        _g, picked, _warns = covmap.pick_changed(doc, prev["sha"])
+    except (Exception, SystemExit) as e:  # base_of / gather exit on an unknown sha
+        return prev, None, f"pick since {prev['sha']} failed: {type(e).__name__}: {e}"
+    return prev, picked, None
 
 
 def _prev(out: Path, smoke: bool, phases: list[str]) -> tuple[str | None, list | None]:
@@ -558,14 +657,16 @@ def _map_phase(night: Night, names: list[str], why: str, all_names: list[str]) -
                   "map_error": reason if map_error else None}
 
 
-def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str, all_names: list[str]) -> int:
+def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str, all_names: list[str],
+          notes: dict | None = None) -> int:
     if shutil.which("caffeinate"):  # macOS: no idle sleep while this process lives
         subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     night.say(f"slop: nightly {stamp} @ {sha} -> {night.out}", (night.out / "plan.txt").read_text().rstrip())
     cores = os.cpu_count() or 1
     s = {"stamp": stamp, "sha": sha, "smoke": args.smoke, "phase_names": list(plan), "cores": cores,
-         "load_start": os.getloadavg()[0], "started": time.strftime("%Y-%m-%d %H:%M %Z"), "phases": {}, "rows": []}
+         "load_start": os.getloadavg()[0], "started": time.strftime("%Y-%m-%d %H:%M %Z"), "phases": {}, "rows": [],
+         "all_plan": notes if "all" in plan and not args.smoke else None}
     night.mark(phase="app deps", total=sum(map(len, plan.values())))
     night.start_wall()
     stale = app_deps_stale()
@@ -648,12 +749,12 @@ def main(argv: list[str], all_s: dict[str, Path]) -> int:
         ap.error(f"--phases: comma list of {','.join(PHASES)}")
     if args.dry:
         try:
-            plan, why, sha = _plan(args, phases, all_s)
+            plan, why, sha, notes = _plan(args, phases, all_s)
         except covmap.MapInvalid as e:
             print(f"slop: INFRA {covmap.map_invalid_reason(e)}", file=sys.stderr)
             return 3
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        print(_plan_text(stamp, sha, args.smoke, plan, why) + f"gate now:\n{gate_status()}\n"
+        print(_plan_text(stamp, sha, args.smoke, plan, why, notes) + f"gate now:\n{gate_status()}\n"
               f"app deps: {app_deps_stale() or 'up to date'}"
               f"{' (would pnpm install)' if app_deps_stale() else ''}\nslop: nightly --dry: nothing run, nothing written")
         return 0
@@ -681,10 +782,10 @@ def main(argv: list[str], all_s: dict[str, Path]) -> int:
         try:
             night = Night(out, tee=not args.folder)
             night.mark(phase="plan")
-            plan, why, sha = _plan(args, phases, all_s)
-            write_atomic(out / "plan.txt", _plan_text(stamp, sha, args.smoke, plan, why)
+            plan, why, sha, notes = _plan(args, phases, all_s, out.name)
+            write_atomic(out / "plan.txt", _plan_text(stamp, sha, args.smoke, plan, why, notes)
                          + f"\ngate at start (`python3 ~/.slop/gate.py status`):\n{gate_status()}\n")
-            code = sweep(night, args, plan, why, stamp, sha, list(all_s))
+            code = sweep(night, args, plan, why, stamp, sha, list(all_s), notes)
         except SystemExit as e:
             code = e.code if isinstance(e.code, int) else 3
             why_infra = f"stopped (SIGTERM or exit {code})" + (
@@ -712,11 +813,14 @@ def main(argv: list[str], all_s: dict[str, Path]) -> int:
     return code
 
 
-def _plan(args, phases: list[str], paths: dict[str, Path]) -> tuple[dict, str, str]:
+def _plan(args, phases: list[str], paths: dict[str, Path], before: str | None = None) -> tuple[dict, str, str, dict]:
+    """build_plan on this worktree's map; `before`: this night's folder name (the last nightly sorts before it)."""
     doc = covmap.load_map()  # this worktree's map: unmapped = what it lacks now
-    plan, why = build_plan(paths, doc, phases, args.smoke, covmap.map_ages(doc), time.localtime().tm_wday,
-                            datetime.date.today().toordinal())
-    return plan, why, covmap.git("rev-parse", "--short", "HEAD").strip()
+    prev, picked, fallback = (relevance(doc, before) if "all" in phases and not args.smoke
+                              else (None, None, "not needed"))
+    plan, why, notes = build_plan(paths, doc, phases, args.smoke, covmap.map_ages(doc),
+                                  datetime.date.today().toordinal(), prev=prev, picked=picked, fallback=fallback)
+    return plan, why, covmap.git("rev-parse", "--short", "HEAD").strip(), notes
 
 
 if __name__ == "__main__":  # slop/run nightly and --detach: `venv/bin/python -m slop.lib.nightly` from the root

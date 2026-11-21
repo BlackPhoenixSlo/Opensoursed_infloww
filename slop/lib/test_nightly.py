@@ -30,39 +30,174 @@ def test_volume_runs_medium_120_without_ui(tmp_path):
     assert calls[0][0] == [str(nt.RUN), "example", "--scale=medium", "--users=120", "--no-ui"]
 
 
-@pytest.mark.parametrize("ages,weekday,full,word", [
-    ({}, 0, False, "no map entry, not Sunday: stale entries"),  # stale: build_plan re-maps stale entries only
-    ({"a" * 40: 201}, 0, False, "201 commits behind HEAD (> 200), not Sunday: stale entries"),
-    ({"a" * 40: 500, "b" * 40: 1}, 0, False, "500 commits"),  # the oldest sha counts
-    ({"a" * 40: 3, "b" * 40: None}, 0, False, "not ancestors of HEAD: bbbbbbb"),  # divergent/newer: stale
-    ({"a" * 40: 0}, 6, True, "Sunday"),
-    ({"a" * 40: 500}, 6, True, "Sunday: weekly full refresh (oldest map sha 500"),
-    ({"a" * 40: 5}, 5, False, "not Sunday"),
+@pytest.mark.parametrize("ages,picked,due,word", [
+    ({}, 0, 0, "no map entry: 0 of 0 unmapped + stale entries (cap 10"),
+    ({"a" * 40: 201}, 10, 37, "201 commits behind HEAD (> 200): 10 of 37 unmapped + stale entries (cap 10, most "
+                              "behind first); 27 wait for later nights"),
+    ({"a" * 40: 500, "b" * 40: 1}, 3, 3, "500 commits"),  # the oldest sha counts
+    ({"a" * 40: 3, "b" * 40: None}, 1, 1, "not ancestors of HEAD: bbbbbbb"),  # divergent/newer: stale
+    ({"a" * 40: 5}, 1, 1, "(<= 200): 1 of 1 unmapped"),
 ])
-def test_map_rule(ages, weekday, full, word):
-    got, why = nt.map_rule(ages, weekday)
-    assert got is full and word in why
+def test_map_rule(ages, picked, due, word):
+    why = nt.map_rule(ages, picked, due)
+    assert word in why and "Sunday" not in why and ("wait for later" in why) == (due > picked)
 
 
-@pytest.mark.parametrize("smoke,phases,ages,weekday,want", [
-    (False, ["all", "volume", "map"], {"x": 3}, 1,  # volume first; day 0: the first 3 sorted volume names
+MAP_ALL_STALE = ["d-new", "2026-11-01-notifications-feed-volume", "2026-11-03-os-ping-push", "a-ui", "b-vol", "c-vol"]
+
+
+@pytest.mark.parametrize("smoke,phases,ages,want", [
+    (False, ["all", "volume", "map"], {"x": 3},  # volume first; day 0: the first 3 sorted volume names
      {"volume": ["2026-11-01-notifications-feed-volume", "2026-11-03-os-ping-push", "b-vol"], "all": NAMES,
       "map": ["d-new"]}),
-    (False, ["map", "all"], {"x": 300}, 1, {"all": NAMES, "map": NAMES}),  # PHASES order; all stale = every name
-    (False, ["map", "all"], {"x": 3}, 6, {"all": NAMES, "map": NAMES}),  # Sunday: full refresh
-    (False, ["map"], {"x": 3, "y": 201}, 1, {"map": ["b-vol", "d-new", "2026-11-03-os-ping-push"]}),  # stale entries
-    (False, ["map"], {"x": 3, "y": None}, 1, {"map": ["b-vol", "d-new", "2026-11-03-os-ping-push"]}),  # divergent
-    (False, ["map"], {"x": 3}, 1, {"map": ["b-vol", "d-new", "2026-11-03-os-ping-push"]}),  # sha y unknown: stale
-    (True, ["all", "volume", "map"], {"x": 300}, 6,  # smoke: never the full map; a missing smoke name dropped
+    (False, ["map", "all"], {"x": 300}, {"all": NAMES, "map": MAP_ALL_STALE}),  # PHASES order; unmapped first
+    (False, ["map"], {"x": 3, "y": 201}, {"map": ["d-new", "2026-11-03-os-ping-push", "b-vol"]}),  # stale entries
+    (False, ["map"], {"x": 3, "y": None}, {"map": ["d-new", "2026-11-03-os-ping-push", "b-vol"]}),  # divergent
+    (False, ["map"], {"x": 3}, {"map": ["d-new", "2026-11-03-os-ping-push", "b-vol"]}),  # sha y unknown: stale
+    (True, ["all", "volume", "map"], {"x": 300},  # smoke: unmapped only; a missing smoke name dropped
      {"volume": ["2026-11-01-notifications-feed-volume"], "all": ["2026-11-03-os-ping-push"], "map": ["d-new"]}),
 ])
-def test_build_plan(smoke, phases, ages, weekday, want, monkeypatch):
+def test_build_plan(smoke, phases, ages, want, monkeypatch):
     monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in
                         {"b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"})
     doc = MIXED if phases == ["map"] else DOC  # the map-only rows: two entries on sha y
-    plan, why = nt.build_plan({n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}, doc, phases, smoke, ages, weekday)
+    plan, why, notes = nt.build_plan({n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}, doc, phases, smoke, ages)
     assert plan == want and list(plan) == list(want)
     assert why.startswith("smoke") == smoke
+    assert notes["line"] == ("smoke set" if smoke else "every scenario (fallback: no previous nightly)")
+
+
+@pytest.mark.parametrize("n_unmapped,ages_of,want,due", [
+    # unmapped first, then no/unknown/divergent sha (by name), then most behind; fresh entries never; cap MAP_PER_NIGHT
+    (12, {}, [f"u{i:02d}" for i in range(10)], 24),  # every sha unknown: all 12 entries stale too
+    (2, {"old": 900, "mid": 400, "new": 3},
+     ["u00", "u01", "div", "nosha", "unknown", "old0", "old1", "old2", "mid0", "mid1"], 11),
+    (0, {"old": 900, "mid": 400, "new": 3}, ["div", "nosha", "unknown", "old0", "old1", "old2", "mid0", "mid1", "mid2"], 9),
+    (0, {"old": 3, "mid": 3, "new": 3}, ["div", "nosha", "unknown"], 3),
+])
+def test_map_pick_cap_and_order(n_unmapped, ages_of, want, due):
+    mapped = {"nosha": {}, "unknown": {"sha": "zzz"}, "div": {"sha": "dv"},
+              **{f"{s}{i}": {"sha": s} for s in ("old", "mid", "new") for i in range(3)}}
+    names = sorted(mapped) + [f"u{i:02d}" for i in range(n_unmapped)]
+    got, n_due = nt.map_pick(names, mapped, {**ages_of, "dv": None})
+    assert got == want and len(got) <= nt.MAP_PER_NIGHT and n_due == due
+
+
+def test_map_pick_rotates_over_nights():
+    """Re-mapped entries are fresh next night: 25 stale entries are all refreshed within 3 nights."""
+    mapped = {f"s{i:02d}": {"sha": "old"} for i in range(25)}
+    done = set()
+    for _night in range(3):
+        got, _ = nt.map_pick(sorted(mapped), mapped, {"old": 500, "new": 0})
+        done |= set(got)
+        for n in got:
+            mapped[n] = {"sha": "new"}
+    assert done == set(mapped)
+
+
+ALL = ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "a-ui", "b-vol", "c-vol", "d-new", "e-ok",
+       "f-gone-ok"]
+ALL_MAP = {n: {"sha": "x"} for n in ALL if n != "d-new"}
+
+
+def _row(phase, name, v, **kw):
+    return {"phase": phase, "scenario": name, "verdict": v, **kw}
+
+
+PREV = {"name": "20261120T010020Z-nightly-d307", "sha": "3ab64de",
+        "rows": [_row("all", "a-ui", "FAIL"), _row("all", "e-ok", "OK"), _row("volume", "c-vol", "INFRA"),
+                 _row("all", "b-vol", "SKIP", cut=nt.CUT_NOT_RUN), _row("map", "f-gone-ok", "SKIP", cut=nt.CUT_NOT_RUN),
+                 _row("all", "removed", "FAIL")]}
+
+
+SHARED = [("shared", "service/x.py (module level @ L1; loaded by 8/8)")]
+LAYOUT = [("layout", "app: every page <- app/app/layout.tsx")]
+
+
+@pytest.mark.parametrize("prev,picked,fallback,want_run,want_why,wide", [
+    # each source: canary always, carry-over = prev all/volume not OK (map rows and removed scenarios not),
+    # changed = own/flow picks only, unmapped; e-ok / f-gone-ok unaffected: left out
+    (PREV, {"e-ok": [("flow", "service/x.py::f (hunk @ L3; run by 1/8)")]}, None,
+     ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "a-ui", "b-vol", "c-vol", "d-new", "e-ok"],
+     {"a-ui": ["carry-over (all FAIL)"], "b-vol": [f"carry-over (all SKIP: {nt.CUT_NOT_RUN})"],
+      "c-vol": ["carry-over (volume INFRA)"], "d-new": ["unmapped"],
+      "e-ok": ["changed (flow: service/x.py::f (hunk @ L3; run by 1/8))"],
+      "2026-11-03-os-ping-push": ["canary"], "2026-10-23-inbox-unread-fan-burst": ["canary"]}, 0),
+    # shared/layout picks (owner 2026-11-21): left out, counted; one that is also canary/carry-over still runs
+    ({**PREV, "rows": [_row("all", "a-ui", "FAIL")]},
+     {"e-ok": SHARED, "f-gone-ok": LAYOUT, "a-ui": SHARED, "2026-11-03-os-ping-push": LAYOUT}, None,
+     ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "a-ui", "d-new"],
+     {"a-ui": ["carry-over (all FAIL)"], "d-new": ["unmapped"], "2026-11-03-os-ping-push": ["canary"],
+      "2026-10-23-inbox-unread-fan-burst": ["canary"]}, 2),
+    ({**PREV, "rows": []}, {}, None,  # nothing changed, nothing red: canaries + unmapped
+     ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "d-new"],
+     {"d-new": ["unmapped"], "2026-11-03-os-ping-push": ["canary"], "2026-10-23-inbox-unread-fan-burst": ["canary"]}, 0),
+    ({**PREV, "rows": []}, {"2026-11-03-os-ping-push": [("own", "scenario file changed")]}, None,  # sources stack
+     ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "d-new"],
+     {"d-new": ["unmapped"], "2026-11-03-os-ping-push": ["canary", "changed (own: scenario file changed)"],
+      "2026-10-23-inbox-unread-fan-burst": ["canary"]}, 0),
+    (None, None, None, ALL, {}, None),  # no previous nightly: every scenario
+    (PREV, None, "pick since 3ab64de failed: SystemExit: not a commit", ALL, {}, None),  # pick error: every scenario
+    (None, None, "no map", ALL, {}, None),
+])
+def test_all_plan_sources_and_fallback(prev, picked, fallback, want_run, want_why, wide):
+    run, notes = nt.all_plan(ALL, ALL_MAP, prev, picked, fallback)
+    assert run == want_run and notes["why"] == want_why
+    assert notes["left_out"] == len(ALL) - len(run) and notes.get("wide") == wide
+    if want_why:
+        assert notes["line"].startswith(f"relevant only since nightly {PREV['name']} @ 3ab64de: {len(run)} of 8 (")
+        assert notes["line"].endswith(f"; {len(ALL) - len(run)} left out as unaffected ({wide} of them shared/layout "
+                                      "picks only)")
+    else:
+        assert notes["line"].startswith("every scenario (fallback: ") and (fallback or "no previous") in notes["line"]
+
+
+def test_smoke_canaries_include_electron_notification_click():
+    src = (nt.SLOP / "scenarios" / f"{nt.SMOKE['all'][1]}.py").read_text()
+    assert "notif_click.desktop(" in src
+
+
+def test_last_nightly_and_relevance(tmp_path, monkeypatch):
+    monkeypatch.setattr(nt, "EVIDENCE", tmp_path)
+
+    def night(name, **s):
+        d = tmp_path / name
+        d.mkdir()
+        if s:
+            (d / "summary.json").write_text(json.dumps({"sha": "abc", "rows": [], "phase_names": ["all"], **s}))
+    night("20261101T000000Z-nightly-aaaa", sha="old")
+    night("20261102T000000Z-nightly-bbbb", smoke=True)  # smoke: never the base
+    night("20261103T000000Z-nightly-cccc", phase_names=["map"])  # no all phase
+    night("20261104T000000Z-nightly-dddd")  # no summary.json (crashed)
+    night("20261109T000000Z-nightly-eeee", sha="later")  # this night or later: never
+    got = nt.last_nightly("20261105T000000Z-nightly-ffff")
+    assert (got["name"], got["sha"]) == ("20261101T000000Z-nightly-aaaa", "old")
+    assert nt.last_nightly(None)["sha"] == "later"
+    assert nt.last_nightly("20261101T000000Z-nightly-aaaa") is None
+    doc = {"scenarios": {"a": {"sha": "x"}}}
+    assert nt.relevance({"scenarios": {}}, None) == (None, None, "no map")
+    assert nt.relevance(doc, "20261101T000000Z-nightly-aaaa")[2] == "no previous nightly with summary.json"
+
+    def boom(_doc, since):
+        raise SystemExit(f"slop: --since={since}: not a commit")
+    monkeypatch.setattr(nt.covmap, "pick_changed", boom)
+    prev, picked, why = nt.relevance(doc, "20261105T000000Z-nightly-ffff")
+    assert prev["sha"] == "old" and picked is None and why.startswith("pick since old failed: SystemExit")
+    monkeypatch.setattr(nt.covmap, "pick_changed", lambda _d, since: ({}, {"a": [("own", since)]}, []))
+    assert nt.relevance(doc, None)[1:] == ({"a": [("own", "later")]}, None)
+
+
+def test_plan_text_and_digest_record_why():
+    notes = {"line": "relevant only since nightly N @ s: 2 of 9 (changed 1, carry-over 1, unmapped 0, canary 0); "
+                     "7 left out as unaffected", "why": {"a": ["changed (own: scenario file changed)"],
+                                                       "b": ["carry-over (all FAIL)"]}, "left_out": 7}
+    txt = nt._plan_text("S", "abc", False, {"all": ["a", "b"]}, "r", notes)
+    assert "all (2): relevant only since nightly N" in txt and "  a small, UI on  <- changed (own:" in txt
+    s = {"headline": "NIGHTLY OK S", "sha": "a", "smoke": False, "started": "", "ended": "", "load_start": 0.0,
+         "load_end": 0.0, "cores": 1, "rows": [], "phases": {}, "changes": {"first": True}, "all_plan": notes}
+    md = nt.digest(s)
+    assert "all plan: relevant only" in md and "7 left out as unaffected" in md
+    assert "- changed (1): a" in md and "- carry-over (1): b" in md and "- unmapped" not in md
 
 
 @pytest.mark.parametrize("names,day,want", [

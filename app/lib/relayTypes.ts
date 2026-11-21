@@ -766,6 +766,68 @@ export interface SavedReplySequenceMeta {
   updated_at: string | null;
 }
 
+/** A Fill plan's one-word outcome (`POST /admin/saved-replies/fill/plan|apply`, `service/script_fill_api.py`). */
+export type FillStatus =
+  | "ok" | "already_filled" | "no_paid_steps" | "not_enough_content" | "no_fit" | "price_conflict"
+  | "price_out_of_range" | "reserved";
+
+/** One Option of a Fill plan: its Role, the media and previews it holds (or would get), and its price in cents
+ *  (`price_fixed`: a saved price above 0, which Fill never changes). */
+export interface FillOption {
+  id: number;
+  step: number;
+  option: number;
+  role: "chat" | "free_media" | "paid_media";
+  wants: string | null;
+  keep: boolean;
+  media: number[];
+  previews: number[];
+  price_cents: number;
+  price_fixed: boolean;
+  flags: string[];
+}
+
+/** The read-only Fill plan of one Sequence. `conflict`: the one price rule a `price_conflict` /
+ *  `price_out_of_range` broke (`under_min`, `over_max`, `below_earlier`, `quote_unholdable`); `describe`: the
+ *  Describe target counts and whether describe-all can start. */
+export interface FillPlan {
+  status: FillStatus;
+  options: FillOption[];
+  flags: string[];
+  conflict: { step: number; rule: string; price_cents: number } | null;
+  describe: {
+    described: number;
+    target: number;
+    remaining: number;
+    can_describe: boolean;
+    blocked_reason: string | null;
+  };
+  fingerprint: string;
+}
+
+/** One row of a Fill's Undo list: what the Fill wrote, the row's price after it, and whether Fill set that price. */
+export interface FillUndoEntry {
+  id: number;
+  media_ids: number[];
+  previews: number[];
+  price_cents: number;
+  price_set: boolean;
+}
+
+/** `fill/apply`'s answer: every non-`ok` status wrote nothing (`applied` and `undo` empty). */
+export interface FillApplyResult {
+  status: FillStatus;
+  plan: FillPlan;
+  applied: FillOption[];
+  undo: FillUndoEntry[];
+}
+
+/** `fill/undo`'s answer: the rows emptied, and each row left with why (`edited`, `moved`, `missing`). */
+export interface FillUndoResult {
+  undone: number[];
+  kept: Array<{ id: number; reason: string }>;
+}
+
 /** A message queued for future delivery via OF's /messages/queue.
  *  Both direct (`userIds: [fanId]`) and mass (`userLists` / `groups`)
  *  sends land in the same queue; we surface both with a recipient hint. */

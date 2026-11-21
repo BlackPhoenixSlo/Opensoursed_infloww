@@ -151,7 +151,13 @@ def case_rich_html_only_when_formatted():
     for body, want in [
         (har, har),
         ("<p><i>x</i></p>", "<p><em>x</em></p>"),
-        ('<p><span class="m-editor-fc__default">x</span></p>', '<p><span class="m-editor-fc__default">x</span></p>'),
+        ('<p><span class="m-editor-fc__default">x</span></p>', None),
+        ('<p><span class="m-editor-fs__default m-editor-fc__default">a</span><br>'
+         '<span class="m-editor-fs__default m-editor-fc__default">b</span></p>', None),  # OF's unformatted send
+        ('<p><span class="m-editor-fs__default m-editor-fc__gray">x</span></p>',
+         '<p><span class="m-editor-fs__default m-editor-fc__gray">x</span></p>'),
+        ('<p><span class="m-editor-fs__sm m-editor-fc__default">x</span></p>',
+         '<p><span class="m-editor-fs__sm m-editor-fc__default">x</span></p>'),
         ("<p>plain<br>two lines</p>", None),
         ('<p><span class="evil">x</span></p>', None),
         ("<p>a<script>b</script></p>", None),
