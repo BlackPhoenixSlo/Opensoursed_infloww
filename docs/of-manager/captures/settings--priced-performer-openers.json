@@ -1,0 +1,51 @@
+{
+ "id": "settings--priced-performer-openers",
+ "section": "settings",
+ "label": "Trial and promotion openers on a priced performer (FakeOF input for ticket 62)",
+ "pages": [
+  "/my/settings/subscription",
+  "/my/settings/subscription/trial-links",
+  "/my/settings/subscription/promotion-campaign"
+ ],
+ "phase": 3,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/api2/v2/users/me",
+  "query": {},
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "canCreateTrial",
+   "canCreatePromotion",
+   "subscribePrice",
+   "subscribeMinPrice",
+   "subscribeMaxPrice",
+   "subscriptionBundles",
+   "trialMaxDays",
+   "trialMaxExpiresDays",
+   "canTrialSend",
+   "promotions"
+  ]
+ },
+ "facts": {
+  "users_me": "canCreateTrial true, canCreatePromotion true, subscribePrice 5, subscribeMinPrice 4.99, subscribeMaxPrice 50, trialMaxDays 7, trialMaxExpiresDays 30, canTrialSend false, subscriptionBundles 3 (durations 3/6/12 months, discounts 15/40/0, canBuy false)",
+  "start_promotion_campaign": "button on /my/settings/subscription, enabled; click routes to /my/settings/subscription/promotion-campaign and shows modal 'PROMOTION CAMPAIGN FOR': New subscribers / Expired subscribers / Both new and expired; Free trial / First month discount; Offer limit (10 subscribers); Offer expiration (7 days); Free trial duration (7 days); summary 'Promotional subscription $0.00 for 7 days.' + 'User will not be subscribed for $5 automatically, only by choice'; Message (optional) 0 / 500; CANCEL / START CAMPAIGN. No opener-specific request (only the page's background reads); 0 aborted; not submitted",
+  "free_trial_links": "button routes to /my/settings/subscription/trial-links; read GET /api2/v2/trials?limit=10&offset=0&pagination=1 -> 200; page controls FREE TRIAL LINKS, CREATE NEW FREE TRIAL LINK (no Sort)",
+  "create_new_free_trial_link": "opens modal 'FREE TRIAL LINK': Trial link name 0 / 64; Offer limit (10 subscribers); Offer expiration (7 days); Free trial duration (7 days); same $0.00 / $5 summary; CANCEL / CREATE LINK. No opener-specific request; 0 aborted; not submitted",
+  "add_bundle": "PARKED: the button is disabled on this account, which already has all three bundle durations (3/6/12 months), inferred as why; opening the ADD SUBSCRIPTION BUNDLE modal would need removing a bundle (a write), not done",
+  "reader": "OFClient signed GET /users/me with the relay-session copy; openers clicked in the capture browser under default deny",
+  "access": "read: GET only, nothing written"
+ },
+ "evidence": [
+  "q62-subscription.png",
+  "q62-promotion-start-open.png",
+  "q62-trial-links-page.png",
+  "q62-trial-create-open.png"
+ ]
+}

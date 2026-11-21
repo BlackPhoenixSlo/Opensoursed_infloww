@@ -1,6 +1,7 @@
 """Collections writes (app/lib/ofMirrorCollections.ts) in the frame, relay mocked: the list page's More menu, a user
-card's Lists menu and the header's + (OF's "Create new list" / "Create new label" dialog) send their relay writes;
-with all models nothing is sent.
+card's Lists menu and the header's + (OF's "Create new list" / "Create new label" dialog) send their relay writes.
+No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
+77e5df419; phase_check.py's one_creator checks it).
 
 Mocks the login (as writes.py) and, with scope `model:acc1`: GET /api/of/v2/lists (two synthetic custom lists with
 OF's flags, Whales 31 and Regulars 32), GET /lists/31/users (two synthetic users), GET /users/alphaone (id 901) and
@@ -11,8 +12,7 @@ Add users with "@alphaone" sends POST /lists/users {"31": [901]}; a card's Lists
 to Regulars", which send DELETE /lists/31/users/202 and POST /lists/32/users/202; Clear list sends DELETE
 /lists/31/users; Delete list sends DELETE /lists/31 and lands on /of-manager/collections, which shows the first list's
 users and whose + opens the "Create new list" dialog, whose Save sends POST /lists {name}; Post Labels' + opens
-"Create new label", whose Save sends POST /labels {name}. Every write carries X-Account-Id acc1. All models (scope key
-removed): the + shows "Select a model to save changes" and nothing is sent. Screenshots:
+"Create new label", whose Save sends POST /labels {name}. Every write carries X-Account-Id acc1. Screenshots:
 /tmp/of-mirror-shots/inapp-collections-more.png, inapp-collections-card.png, inapp-collections-create.png,
 inapp-collections-label.png. Exit 1 on a failed check.
 """
@@ -30,7 +30,6 @@ SOURCES={
     "/api/of/v2/lists/31/users": {"list":[{"id":201,"name":"Delta Four","username":"delta"},{"id":202,"name":"Echo Five","username":"echo"}],"hasMore":False},
     "/api/of/v2/users/alphaone": {"id":901,"username":"alphaone","name":"Alpha One"},
 }
-SELECT_MODEL="Select a model to save changes"
 MORE="[at-attr='list_dropdown'] > button"
 CREATE="button[aria-label='Create new list']"
 NOTE="document.getElementById('oi-note')?.textContent ?? null"
@@ -158,15 +157,6 @@ with sync_playwright() as p:
     print("relay writes:", sent)
     print("console errors:", [e[:160] for e in errs][:8])
     if errs: failures.append(f"{len(errs)} console error(s)")
-
-    pg, sent, errs, open_page=session(b, "localStorage.removeItem('chatterly:scope')")
-    fr=open_page("index")
-    if fr:
-        fr.locator(CREATE).click(); pg.wait_for_timeout(500)
-        check("all models: the + notes Select a model", fr.evaluate(NOTE), SELECT_MODEL)
-        check("all models: no dialog opens", fr.locator(DIALOG).count(), 0)
-        check("all models: no write", sent, [])
-    if errs: failures.append(f"all models: {len(errs)} console error(s)")
 if failures:
     print("FAIL:", *failures, sep="\n  "); sys.exit(1)
 print("collections ok")

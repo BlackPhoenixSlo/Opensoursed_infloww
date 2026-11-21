@@ -1,0 +1,93 @@
+{
+ "id": "collections--create-new-list",
+ "section": "collections",
+ "label": "Create new list",
+ "pages": [
+  "collections/index"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "POST",
+  "path": "/api2/v2/lists",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "name": "oi-proof"
+  }
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "canAddUsers",
+   "canDelete",
+   "canManageUsers",
+   "canPinnedToChat",
+   "canPinnedToFeed",
+   "canUpdate",
+   "direction",
+   "id",
+   "isPinnedToChat",
+   "isPinnedToFeed",
+   "name",
+   "order",
+   "postsCount",
+   "sortList",
+   "type",
+   "users",
+   "usersCount"
+  ]
+ },
+ "undo_request": {
+  "method": "DELETE",
+  "path": "/api2/v2/lists/{id}",
+  "query": {},
+  "content_type": null,
+  "body": null,
+  "response": {
+   "status": 200,
+   "keys": [
+    "success"
+   ]
+  }
+ },
+ "facts": {
+  "ui": "Collections > User lists > 'Create new list' (+ icon) -> modal CREATE NEW LIST, List name 0/64, CANCEL/SAVE",
+  "created": "type custom, name oi-proof",
+  "delete_ui": "list page > More (vertical dots) > Rename list / Add users to list / Clear list / Delete list; confirm 'Are you sure you want to delete oi-proof?' CANCEL/YES",
+  "narrowing": "allowlist was exactly POST ^/api2/v2/lists$ during the create, then exactly DELETE ^/api2/v2/lists/<created id>$ during the delete; everything else default-deny",
+  "reads": "before 36 lists; after undo 36 lists, no oi-proof; before == after-undo (ids and names)",
+  "abort_capture": {
+   "source": "aborted",
+   "method": "POST",
+   "path": "/api2/v2/lists",
+   "content_type": "application/json",
+   "body": {
+    "name": "oi-proof"
+   },
+   "client_retries_aborted": 2,
+   "list_count_before": 36,
+   "list_count_after": 36,
+   "unchanged": true
+  },
+  "capture_undo": "undone",
+  "live_proof_on_app": "pass 2026-11-21 (ticket 11): app Collections + → POST /api2/v2/lists 200, DELETE → 200, before == after-undo",
+  "access": "write: sent live (narrowed), then undone and verified; the abort capture before it reached nothing"
+ },
+ "evidence": [
+  "t11-abort-dialog.png",
+  "t11-abort-after-save.png",
+  "t11-live-after-create.png",
+  "t11-live-list-menu.png",
+  "t11-live-delete-confirm.png",
+  "t11-live-after-undo.png"
+ ],
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T082616Z-ofm-live-7ee0a76c8",
+  "undo": "undone"
+ }
+}

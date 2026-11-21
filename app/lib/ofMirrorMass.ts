@@ -22,6 +22,13 @@
  * The schedule button opens a date and time dialog in the Agency's time zone (Cancel, Save for Later, Next) that puts
  * either on the draft; the Queue's Add to queue puts them there too. The line under the editor names them ("Scheduled
  * for … · Clear", "Saved for later · Clear").
+ * New message's list page (messages/send/state-list-dropdown, ticket 32) has the same composer on the same Mass draft:
+ * Add media, Record video and voice, Add GIF and the schedule dialog work in place; vault, price and tag open New
+ * message's dialogs and Format Text opens New message with its Format text panel open (`?format=1`, FORMAT_PARAM), so
+ * their picks land on the one draft (bindMassList, MASS_DIALOGS' list page entry). ASSUMPTION: these four navigate
+ * rather than open in place (rung 3/5: the generator links the list page to New message's states; overturned by ticket
+ * 28's generator edit giving the list page its own dialogs).
+ * Each keeps its Not-yet title until its draft-only Live proof (D1, ticket 53); the list Send is untouched.
  * Edit message (the Queue's row menu) fills the Mass draft from the queued message (its text, media, price, recipients,
  * lists, excluded lists and date, and `edit_id`): Send then saves that message in place, PUT
  * /api/of/v2/messages/queue/{id} with the same body (a new date is OF's reschedule; an edit always keeps a date or Save
@@ -40,6 +47,7 @@ import { MASS_VAULT } from "@/lib/ofMirrorRow";
 import { dateTimeFields, GREY, localIso, message, minuteAhead, note, NOTE_STYLE, openModal, schedulePill, SELECT_MODEL, textOf, TOO_SOON } from "@/lib/ofMirrorWrites";
 import { fromWallClock, wallClock } from "@/lib/ofMirrorFeedsShared";
 import { ofPrice } from "@/lib/ofMirrorPostCard";
+import { uploadFailed } from "@/lib/ofMirrorPost";
 import {
   bindChatTags,
   bindPrice,
@@ -91,6 +99,8 @@ export interface MassDraft {
   audio?: number;
   /** The queued message this draft edits (the Queue's Edit message): Send saves it (PUT) instead of a new one. */
   edit_id?: string;
+  /** Add media's uploads that attached nothing, by `mediaKey`, with why (ofMirrorPost `mediaTaker`): Send asks first. */
+  upload_failed?: Record<string, string>;
 }
 
 /** POST /api/of/v2/messages/queue (and PUT …/queue/{id}): the Relay's _MassScheduleBody subset (neither date: sent now). */
@@ -189,6 +199,7 @@ const MASS_DIALOGS: Record<string, ChatDialog> = {
   [MASS_TAG]: bindChatTags,
   "messages/send/state-price": bindPrice,
   [MASS_VAULT]: bindVault,
+  "messages/send/state-list-dropdown": bindMassList,
 };
 const MASS_PAGE = "/of-manager/messages/send";
 
@@ -210,6 +221,53 @@ const QUEUE_PAGE = "/of-manager/queue";
 const SFL_MESSAGES = "/of-manager/queue/saved-for-later-messages";
 /** The schedule dialog's title: the schedule button's own (captured) label. */
 export const SCHEDULE_TITLE = "Scheduled messages";
+/**
+ * New message's list page (its list menu open, a State page; ticket 32): the same composer, its tools New message's (the
+ * generator's Not-yet title kept on them until a Live proof, D1; LIST_LIVE's passed). The vault, price and tag buttons open New message's
+ * dialogs, as its links do, and Format Text opens New message with its panel open (the list page has none): a click
+ * outside OF's list menu closes it and reaches the tool.
+ */
+const FORMAT_TEXT = "button[aria-label='Format Text']";
+/** New message's `?format=1`: its Format text panel opens on arrival (the list page's Format Text). */
+export const FORMAT_PARAM = "format";
+const FORMAT_ONCE = "data-oi-format-once";
+/**
+ * The list page's tools whose Live proof passed (D1: their Not-yet title drops): Scheduled messages, Message price, Add
+ * media from vault and Format Text (docs/of-manager/captures/messages--list-{schedule,price,vault,format-text}.json).
+ */
+const LIST_LIVE = `${SCHEDULE_BTN}, [at-attr='price_btn'], [at-attr='add_vault_media'], ${FORMAT_TEXT}`;
+const LIST_OPENS: Array<[string, string]> = [
+  ["[at-attr='add_vault_media']", `/of-manager/${MASS_VAULT}`],
+  ["[at-attr='price_btn']", `${MASS_PAGE}/state-price`],
+  ["[at-attr='release_forms_btn']", `/of-manager/${MASS_TAG}`],
+  [FORMAT_TEXT, `${MASS_PAGE}?${FORMAT_PARAM}=1`],
+];
+
+/**
+ * The list page's tools: the schedule button and Format Text the composer leaves disabled are enabled (the vault, price
+ * and tag buttons follow OF's GIF rule, the composer's lock), all marked Wired (the Not-yet title kept until a Live
+ * proof, D1; dropped on LIST_LIVE's); the openers navigate. The state page's backdrop (z 1, a link back) covers the editor and the GIF box, so
+ * the composer is lifted over it. bindMass' unbind restores the attributes.
+ * ASSUMPTION: a z-index lift, not a generator edit (rung 5, smallest); overturned by ticket 28's generator change.
+ */
+function bindMassList(doc: Document, _ctx: ChatContext, { ready }: Parameters<ChatDialog>[2]): () => void {
+  for (const b of doc.querySelectorAll(`${SCHEDULE_BTN}, ${LIST_OPENS.map(([sel]) => sel).join(", ")}`)) setAttr(doc, b, "data-oi-wired", "");
+  for (const b of doc.querySelectorAll(`${SCHEDULE_BTN}, ${FORMAT_TEXT}`)) setAttr(doc, b, "disabled", null);
+  for (const b of doc.querySelectorAll(LIST_LIVE)) setAttr(doc, b, "title", null);
+  const form = doc.querySelector<HTMLElement>("form.b-create-post-form");
+  if (form) setAttr(doc, form, "style", `${form.getAttribute("style") ?? ""};z-index:2`);
+  const onClick = (ev: MouseEvent) => {
+    const t = ev.target as Element | null;
+    const hit = LIST_OPENS.find(([sel]) => t?.closest?.(sel));
+    // The composer's GIF lock (registered first, same node) prevents a locked tool's click; honour it. Format Text is
+    // never locked, but the composer's own panel toggle prevents its default too, so it always navigates here.
+    if (!hit || (ev.defaultPrevented && hit[0] !== FORMAT_TEXT)) return;
+    ev.preventDefault();
+    ready(t!.closest(hit[0])!)?.navigate(hit[1]);
+  };
+  doc.addEventListener("click", onClick);
+  return () => doc.removeEventListener("click", onClick);
+}
 
 /**
  * Wire New message (messages/send, or one of its dialogs' pages `page`) in `doc`: the list rows, the composer and its
@@ -352,6 +410,12 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
   const tools = bindTools(doc, editor, send, { draftOf: chatDraft, update: edit, refresh, ready, writer: handlers, none: SELECT_MODEL, accountId: ctx.accountId, key: keep?.key ?? `${ctx.accountId ?? ""}:mass`, mobile: ctx.mobile });
   composer = tools.composer;
   sync();
+  // `?format=1` (the list page's Format Text): the panel opens once per frame document. The marker is left unrestored on
+  // purpose, so a rebind (lists or fans loading) after the user closed the panel leaves it closed.
+  if (page === "messages/send" && ctx.massFormat && !doc.body.hasAttribute(FORMAT_ONCE)) {
+    doc.body.setAttribute(FORMAT_ONCE, "");
+    if (doc.querySelector<HTMLElement>("[data-oi-format-panel]")?.style.display === "none") doc.querySelector<HTMLElement>(FORMAT_TEXT)?.click();
+  }
   const unbindDialog = Object.hasOwn(MASS_DIALOGS, page)
     ? MASS_DIALOGS[page](doc, ctx, { page, draftOf: chatDraft, update: edit, back: MASS_PAGE, ready, toggleMute: () => {}, writer: handlers, stay: (href) => href })
     : () => {};
@@ -429,7 +493,7 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     }
     if (target?.closest?.("[data-oi-clear]")) {
       ev.preventDefault();
-      update({ scheduled_date: undefined, save_for_later: undefined, price: undefined, media_files: undefined, thumbs: undefined, giphy_id: undefined, giphy_thumb: undefined, tags: undefined, audio: undefined });
+      update({ scheduled_date: undefined, save_for_later: undefined, price: undefined, media_files: undefined, thumbs: undefined, giphy_id: undefined, giphy_thumb: undefined, tags: undefined, audio: undefined, upload_failed: undefined });
       return refresh();
     }
     if (target?.closest?.("[data-oi-discard]")) {
@@ -454,6 +518,9 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     const draft = draftOf();
     const body = collectMass(hasFormatting(editor) ? ofHtml(editor) : textOf(editor), draft);
     if (typeof body === "string") return note(doc, send, body, true);
+    // A failed upload's media would be missing: OK sends without it (a successful send forgets it), Cancel keeps everything.
+    const failed = draft.upload_failed;
+    if (failed && !handlers.confirm(uploadFailed(failed))) return;
     const picked = (lists ?? []).filter((l) => body.user_lists.includes(String(l.id)));
     const count = picked.reduce((n, l) => n + (l.usersCount ?? 0), 0);
     const names = picked.map((l) => l.name ?? String(l.id)).join(", ");

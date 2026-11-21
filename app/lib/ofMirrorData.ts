@@ -54,14 +54,14 @@ import { applyProfile, applyProfileStatus, applyRecent, mediaKind, ofKind, PROFI
 import { restore, sameId, setText, toggleTile, type Part } from "@/lib/ofMirrorDom";
 import { applyChatLinks, applyChats, applyChatsMore, applyChatsStatus, applyThread, keepThreadScroll, OLDER_PX, THREAD_BOX, threadScroll } from "@/lib/ofMirrorDataChats";
 import { applyListSort, applyVaultAll, applyVaultLists, applyVaultMedia, applyVaultStatus } from "@/lib/ofMirrorDataVault";
-import { applyColumnStatus, applyLabels, applyListTabs, applyListUsers, applyUserLists, hideEmpty, LABELS_COLUMN, LIST_POSTS, listPostsPath, LISTS_COLUMN, postTypeOf, USERS_COLUMN, type UserList } from "@/lib/ofMirrorDataLists";
+import { applyColumnStatus, applyFansTabs, applyLabels, applyListTabs, applyListUsers, applyUserLists, hideEmpty, LABELS_COLUMN, LIST_POSTS, listPostsPath, LISTS_COLUMN, postTypeOf, subscribersPath, USERS_COLUMN, type UserList } from "@/lib/ofMirrorDataLists";
 import { CHATS_MORE_PX, CHATS_PAGE, chatPath, feedStatus, galleryStalled, isVaultPage, markerPagesQuery, mirrorQuery, MORE_PX, offsetPagesQuery, pendingPartners, STORIES_FEED, STREAMS_FEED, TRANSACTIONS, TRANSACTIONS_PAGE, usePageUsers, USER_LISTS, useRevalidate, vaultMediaOf, vaultPagesQuery } from "@/lib/ofMirrorDataQueries";
 import { mirrorDataOf, type MirrorData } from "@/lib/ofMirrorDataOf";
 import { QUEUE, TEMPLATES, useAgencyZone, type MirrorPost, type Month, type Template } from "@/lib/ofMirrorFeedsShared";
 import { applyColumnPosts, applyFeedStatus, applyHome, applyPosts, applyProfileMedia, COLUMN_FEED } from "@/lib/ofMirrorFeedsPosts";
 import { applyPromotions, applyStories } from "@/lib/ofMirrorFeedsStrip";
 import { applyEvents, applyQueue, eventsRoute, QUEUE_CHANGE, queueMonth } from "@/lib/ofMirrorFeedsSchedule";
-import { applyNotificationCounts, applyNotifications, applyNotificationsStatus, NOTIFICATION_COUNTS, NOTIFICATIONS } from "@/lib/ofMirrorFeedsNotifications";
+import { applyNotificationCounts, applyNotifications, applyNotificationsStatus, NOTIFICATION_COUNTS, NOTIFICATIONS, notificationsRoute, relatedUserOf } from "@/lib/ofMirrorFeedsNotifications";
 import { useMarkNotifsReadOnOpen } from "@/lib/ofMirrorNotifsRead";
 import { applyPastStreams, applyPayouts, applyStatementsStatus, applyTransactions } from "@/lib/ofMirrorFeedsStatements";
 // Re-exported: what was cut from here (into ofMirrorPaging and the leaves), so its importers still read it from here.
@@ -163,6 +163,7 @@ export function applyData(doc: Document, page: string, data: MirrorData, img: (u
     applyListUsers(doc, page, data.list, data.listUsers, name, img);
   }
   if (parts.includes("subscribers") && data.subscribers) applyListUsers(doc, page, null, data.subscribers, null, img);
+  if (parts.includes("subscribers")) applyFansTabs(doc, data.fansType ?? null);
   if ((parts.includes("listUsers") || parts.includes("listPosts")) && data.list) applyListTabs(doc, data.list, data.postType ?? null);
   if (parts.includes("listPosts") && data.listPostsStatus !== undefined) applyFeedStatus(doc, data.listPostsStatus, COLUMN_FEED);
   if (parts.includes("listPosts") && data.listPosts && data.templates?.post)
@@ -267,7 +268,8 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const listPostsRoute = list && listPostsPath(list, postType);
   const listPosts = useInfiniteQuery(offsetPagesQuery(accountId, listPostsRoute, parts.includes("listPosts")));
   const listPostRows = useMemo(() => uniqueRows(pageRows<MirrorPost>(listPosts.data?.pages)), [listPosts.data]);
-  const subscribers = useQuery(q("subscribers", "/api/of/v2/subscribers?type=active&limit=50"));
+  const fansType = params.get("type");
+  const subscribers = useQuery(q("subscribers", subscribersPath(fansType)));
   const labels = useQuery(mirrorQuery(accountId, "/api/of/v2/labels", parts.includes("labels") || parts.includes("profile")));
   const ofMeQ = useQuery(ofMeQuery(accountId));
   const ofMe = ofMeQ.data;
@@ -288,9 +290,10 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const [month, setMonth] = useState<Month | null>(null);
   const zone = useAgencyZone();
   const queue = useQuery(q("queue", Object.hasOwn(QUEUE, page) ? QUEUE[page].route(month, zone) : null));
-  // A chat menu's "View user's comments": the commented tab for one user (OF's ?related_user=).
-  const relatedUser = page === "notifications/commented" ? params.get("related_user") : null;
-  const notifications = useQuery(q("notifications", Object.hasOwn(NOTIFICATIONS, page) ? `${NOTIFICATIONS[page]}${relatedUser ? `&related_user=${encodeURIComponent(relatedUser)}` : ""}` : null));
+  // One fan's notifications (OF's ?related_user=): Search users on any tab (ticket 17), a chat menu's "View user's
+  // comments" on the commented tab. Type tabs re-read for the fan; Tags filters its mentions as read (relatedOnly).
+  const relatedUser = Object.hasOwn(NOTIFICATIONS, page) ? relatedUserOf(params) : null;
+  const notifications = useQuery(q("notifications", notificationsRoute(page, relatedUser)));
   const notificationCounts = useQuery(q("notificationCounts", NOTIFICATION_COUNTS));
   // The All tab's open sends OF's mark-read once, as OF web does; then its counts are re-read.
   useMarkNotifsReadOnOpen(accountId, page, notifications);
@@ -330,9 +333,9 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const statementsStatus = stmt ? feedStatus(stmt, need ? template : null) : undefined;
   const data = useMemo<MirrorData>(() => {
     // eslint-disable-next-line react-hooks/refs -- by design, as before mirrorDataOf: known's users are read as the memo runs; the loader reads its ref only when the chat list asks for more
-    return mirrorDataOf({ chat, list, label, parts, listQuery, chatList, loadMoreChats: () => void loadMoreChats.current(), pageIds, partners, knownUsers: known.current.users, detail, isPinnedPage, pinned, thread, isGallery, gTab, gallery, vault, vaultSearch, vaultPage, vaultMedia, vaultPages, vaultRead, lists, members, listPostRows, listPosts, need, template, postType, subscribers, labels, postRows, me, posts, ofMeStatus, photos, videos, ofMe, highlights, bookmarks, queue, zone, notifications, relatedUser, notificationCounts, newTags, pastStreams, transactions, payouts, referrals, statementsStatus, homeRows, home, meId, myStories, stories, streams, authorPages, promotions, events });
+    return mirrorDataOf({ chat, list, label, parts, listQuery, chatList, loadMoreChats: () => void loadMoreChats.current(), pageIds, partners, knownUsers: known.current.users, detail, isPinnedPage, pinned, thread, isGallery, gTab, gallery, vault, vaultSearch, vaultPage, vaultMedia, vaultPages, vaultRead, lists, members, listPostRows, listPosts, need, template, postType, subscribers, fansType, labels, postRows, me, posts, ofMeStatus, photos, videos, ofMe, highlights, bookmarks, queue, zone, notifications, relatedUser, notificationCounts, newTags, pastStreams, transactions, payouts, referrals, statementsStatus, homeRows, home, meId, myStories, stories, streams, authorPages, promotions, events });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- partnersKey and authorsKey stand for partners and authorPages (new arrays each render)
-  }, [chat, list, label, postType, listPosts.data, listPosts.error, listPosts.isPending, listPosts.isFetchingNextPage, listPosts.isFetchNextPageError, listPosts.hasNextPage, listPosts.fetchNextPage, parts, chatList.pages, chatList.isPending, chatList.isPlaceholderData, chatList.isError, chatList.error, chatList.isFetchingMore, chatList.hasMore, partnersKey, listQuery, detail.data, thread.data, isPinnedPage, pinned.data, isGallery, gTab, gallery.data, gallery.isPlaceholderData, gallery.isError, gallery.error, gallery.isPending, gallery.isFetchingNextPage, gallery.hasNextPage, gallery.isFetchNextPageError, vault.data, vaultSearch, vaultPage, vaultMedia.data, vaultPages.data, vaultRead.error, vaultRead.isPending, lists.data, lists.error, lists.isPending, members.data, members.error, members.isPending, subscribers.data, subscribers.error, subscribers.isPending, labels.data, labels.error, labels.isPending, postRows, posts.error, posts.isPending, posts.isFetchingNextPage, posts.isFetchNextPageError, posts.hasNextPage, posts.fetchNextPage, photos.data, photos.error, photos.isPending, videos.data, videos.error, videos.isPending, highlights.data, ofMeStatus, bookmarks.data, queue.data, zone, notifications.data, notifications.error, relatedUser, notificationCounts.data, newTags, pastStreams.data, transactions.data, transactions.isFetchingNextPage, transactions.isFetchNextPageError, transactions.error, transactions.hasNextPage, transactions.fetchNextPage, payouts.data, referrals.data, statementsStatus, homeRows, home.error, home.isPending, home.isFetchingNextPage, home.isFetchNextPageError, home.hasNextPage, home.fetchNextPage, stories.data, streams.data, myStories.data, authorsKey, promotions.data, ofMe, meId, events.data, need, template.data, template.error]);
+  }, [chat, list, label, postType, listPosts.data, listPosts.error, listPosts.isPending, listPosts.isFetchingNextPage, listPosts.isFetchNextPageError, listPosts.hasNextPage, listPosts.fetchNextPage, parts, chatList.pages, chatList.isPending, chatList.isPlaceholderData, chatList.isError, chatList.error, chatList.isFetchingMore, chatList.hasMore, partnersKey, listQuery, detail.data, thread.data, isPinnedPage, pinned.data, isGallery, gTab, gallery.data, gallery.isPlaceholderData, gallery.isError, gallery.error, gallery.isPending, gallery.isFetchingNextPage, gallery.hasNextPage, gallery.isFetchNextPageError, vault.data, vaultSearch, vaultPage, vaultMedia.data, vaultPages.data, vaultRead.error, vaultRead.isPending, lists.data, lists.error, lists.isPending, members.data, members.error, members.isPending, subscribers.data, subscribers.error, subscribers.isPending, fansType, labels.data, labels.error, labels.isPending, postRows, posts.error, posts.isPending, posts.isFetchingNextPage, posts.isFetchNextPageError, posts.hasNextPage, posts.fetchNextPage, photos.data, photos.error, photos.isPending, videos.data, videos.error, videos.isPending, highlights.data, ofMeStatus, bookmarks.data, queue.data, zone, notifications.data, notifications.error, relatedUser, notificationCounts.data, newTags, pastStreams.data, transactions.data, transactions.isFetchingNextPage, transactions.isFetchNextPageError, transactions.error, transactions.hasNextPage, transactions.fetchNextPage, payouts.data, referrals.data, statementsStatus, homeRows, home.error, home.isPending, home.isFetchingNextPage, home.isFetchNextPageError, home.hasNextPage, home.fetchNextPage, stories.data, streams.data, myStories.data, authorsKey, promotions.data, ofMe, meId, events.data, need, template.data, template.error]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -356,6 +359,9 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       const held = isVaultPage(page) ? [...doc.querySelectorAll<HTMLElement>("[data-oi-media].selected")].map((t) => t.dataset.oiMedia) : [];
       // The thread's scroll, read before the redraw empties it (older messages or a poll never move what is in view).
       const was = threadScroll(doc, chat);
+      // An error note under a message (a message menu write's: its undo redraws the thread) stays under it.
+      const noted = doc.getElementById("oi-note");
+      const notedMsg = noted?.previousElementSibling?.getAttribute("data-oi-msg");
       // Another tab, sort, folder or search starts the list at its top, as OF's.
       const list = doc.querySelector<HTMLElement>(".b-chats__scroller");
       if (list && list.dataset.oiView !== listQuery) {
@@ -364,6 +370,7 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       }
       applyData(doc, page, accountId ? { ...shown, picked: picked ?? chatPicked ?? massPicked } : shown, (u) => proxyImage(u, accountId));
       if (shown.thread && chat && partsOf(page).includes("thread")) keepThreadScroll(doc, chat, was);
+      if (noted && notedMsg && !noted.isConnected) doc.querySelector(`[data-oi-msg="${CSS.escape(notedMsg)}"]`)?.after(noted);
       for (const id of held) {
         const tile = doc.querySelector(`[data-oi-media="${id}"]`);
         if (tile) toggleTile(tile, true);
@@ -541,7 +548,9 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
 
   // The chat page's Find and a gallery tile's ?firstId= jump (ofMirrorThread), on the same thread paging.
   // The pinned page's Find: its pins, all drawn (no older pages to read).
-  useThreadFind(frameRef, src, (page === "messages/chat" || isPinnedPage) && !!accountId, accountId, chat, isPinnedPage ? null : params.get("firstId"), isPinnedPage ? NO_PAGING : thread, data, isPinnedPage);
+  // ticket 16: the header menu's State page has the chat page's own Find (the other State pages' backdrop covers the chat
+  // header, so no click reaches theirs: ticket 16's carve-out).
+  useThreadFind(frameRef, src, (page === "messages/chat" || page === "messages/chat/state-header-menu" || isPinnedPage) && !!accountId, accountId, chat, isPinnedPage ? null : params.get("firstId"), isPinnedPage ? NO_PAGING : thread, data, isPinnedPage);
 }
 
 /** The pinned page's thread: one page, nothing older. */

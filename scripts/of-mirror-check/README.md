@@ -14,6 +14,8 @@ with Playwright routes, so no relay is needed. Needs a Next dev server
                                                                      # page states (new post: schedule / poll / expiration, messages sort menu) open and close; the queue's Messages tab toggles in place, Messages saved for later and back
                                                                      # OF's own left nav hidden in the frame (as Infloww); sidebar > New post, Home, home's GO LIVE and back, the streaming dashboard > SCHEDULE (the schedule form) > back, sidebar > OF settings
 
+Live proofs and Request captures reach OnlyFans, so they are never a Mirror check: `scripts/of-live-proof/README.md`.
+
 The generator's own guard runs without a server or inputs: `node scripts/of-mirror.mjs --check` (committed pages: hosts, emails, IPs, handles, links, amounts, digit runs; pages vs `app/lib/of-mirror-pages.ts`).
 
 navigate.py also runs with a single-model scope (`chatterly:scope` = `model:acc1`) and a mocked
@@ -39,12 +41,8 @@ disabled with the tooltip "Not available in Inflowwww yet" (`inapp-writes-price.
 SCHEDULE (`streaming/dashboard/create`) sends nothing and shows "Enter a date and a time" while the form is empty, and with
 tomorrow picked in the Date field's day popup (written as OF's "Oct 13, 2026"), 18:30 in the Time field's time input and a
 description sends exactly one `POST /api/of/v2/streams` `{description, scheduledDate,
-isShowTips: true}` and lands on `/of-manager/queue`. A second pass runs in the all-models
-scope (`chatterly:scope` removed before every load): typing a display name and clicking SAVE sends no PATCH and shows
-"Select a model to save changes", the welcome message switch sends nothing, shows that note and flips back, and the filled
-schedule form's SCHEDULE sends nothing and shows that note too (screenshots `inapp-writes.png`, `inapp-writes-fans.png`,
-`inapp-writes-schedule-invalid.png`, `inapp-writes-schedule-filled.png`, `inapp-writes-schedule-queue.png`,
-`inapp-writes-all-models-schedule.png`):
+isShowTips: true}` and lands on `/of-manager/queue`. No All-models pass: OF Manager has no All scope; a saved "all" shows the first live creator (owner 2026-11-20, origin/main 77e5df419) (screenshots `inapp-writes.png`, `inapp-writes-fans.png`,
+`inapp-writes-schedule-invalid.png`, `inapp-writes-schedule-filled.png`, `inapp-writes-schedule-queue.png`):
 
     python3 -I scripts/of-mirror-check/writes.py
 
@@ -70,15 +68,13 @@ request is recorded with its method, path, JSON body and `X-Account-Id`. Checks,
    OF's toast "Link copied"; its Delete asks in OF's ModalConfirm (nothing sent until its Delete is clicked) and sends exactly one `DELETE
    /api/of/v2/campaigns/7` with `X-Account-Id: 1`, removes the row and stays on the tab. The Free trial links tab and
    the promotion page show their synthetic rows (the promotion's title, the bundle's "$20.35 USD total for 3 months").
-6. All Creators (`chatterly:scope` removed before every load): typing "Synthetic link" and clicking "Create Link"
-   sends nothing, shows "Select a model to save changes" and stays on the modal; 4 holds too; the Tracking links tab
-   shows no row and OF's "No results :(".
-7. No console errors in either pass.
+6. (Retired) No All-models pass: OF Manager has no All scope; a saved "all" shows the first live creator (owner 2026-11-20, origin/main 77e5df419).
+7. No console errors.
 
 It prints one `{"check","want","got"}` line per check and exits 1 on a failure (screenshots
-`inapp-settings-writes-tracking-filled.png`, `-tracking-tab.png`, `-all-models-tracking.png`, `-promotion.png`,
-`-bundle.png`, `-trial.png` (and `-all-models-` each), `-rows-tracking.png`, `-rows-trials.png`,
-`-rows-promotion.png`, `-all-models-rows-tracking.png`, all `inapp-settings-writes-*`):
+`inapp-settings-writes-tracking-filled.png`, `-tracking-tab.png`, `-promotion.png`,
+`-bundle.png`, `-trial.png`, `-rows-tracking.png`, `-rows-trials.png`,
+`-rows-promotion.png`, all `inapp-settings-writes-*`):
 
     python3 -I scripts/of-mirror-check/settings_writes.py
 
@@ -128,14 +124,12 @@ Extras: a label picked on `new-post/state-labels` and a poll typed on `new-post/
 out with the next Post (`label_ids`, `voting_*`), which stays with the toast; NEW LABEL's name field, the quiz's
 correct-answer switch, "+ Add another option" and the formatting tools (disabled, "Not available in Inflowwww yet") are
 covered by `app/lib/ofMirrorPost.test.ts`. Error: with the mock answering 502, the page shows the red "Could not post: <relay text>" note, Post is
-enabled again, the draft is kept and the page stays on New post. All-Creators scope (`chatterly:scope` removed before every
-load): Post and the schedule dialog's Next send nothing, show "Select a model to save changes" and store no draft; the tag
-dialog shows no rows (never the captured examples) and no `tagged-friend-users` request is made. No console errors,
+enabled again, the draft is kept and the page stays on New post. No All-models pass: OF Manager has no All scope; a saved "all" shows the first live creator (owner 2026-11-20, origin/main 77e5df419). No console errors,
 except exactly one failed 502 load in each of the Tag list failure and Error cases (screenshots `inapp-post-typed.png`,
 `inapp-post-posted.png`, `inapp-post-schedule.png`, `inapp-post-scheduled.png`, `inapp-post-validation.png`,
 `inapp-post-tags.png`, `inapp-post-tagged.png`, `inapp-post-tags-failed.png`, `inapp-post-save-later.png`,
 `inapp-post-labels.png`, `inapp-post-poll.png`,
-`inapp-post-error.png`, `inapp-post-all-creators.png`, `inapp-post-all-creators-next.png`, `inapp-post-all-creators-tags.png`):
+`inapp-post-error.png`):
 
     python3 -I scripts/of-mirror-check/post.py
 
@@ -157,11 +151,9 @@ equal the picked tiles' srcs in click order; reopening the dialog marks exactly 
 unchanged, and nothing is sent before Post. After Close again, Post sends exactly one `POST /api/of/v2/posts`
 `{"text":"Synthetic post","media_files":[62,61],"price":0}` with `X-Account-Id: 1` and stays on New post; the draft is
 cleared, the thumbs row is gone and the editor empty. The dialog's folder list is the Relay's (unmocked: `[]`), so it shows
-"All media" alone, never the captured "List <n>" folders, in both scopes. All-Creators scope (`chatterly:scope` removed
-before every load): the dialog shows no tile (never the capture's 21 example tiles) and no vault request is made. No
-console errors in either pass
+"All media" alone, never the captured "List <n>" folders. No All-models pass: OF Manager has no All scope; a saved "all" shows the first live creator (owner 2026-11-20, origin/main 77e5df419). No console errors
 (screenshots `post-vault-tiles.png`, `post-vault-picked.png`, `post-vault-search.png`, `post-vault-composer.png`,
-`post-vault-reopened.png`, `post-vault-all-creators.png`):
+`post-vault-reopened.png`):
 
     python3 -I scripts/of-mirror-check/post_vault.py
 
@@ -188,8 +180,7 @@ body with stdlib `email.parser.BytesParser`. Checks, scope `model:1` unless note
    sent within 1s. A refusal with no note reads "Could not upload: upload not ready".
 6. An upload answered 502 shows a red `#oi-note` starting "Could not upload:" and adds no thumb; picking the same PNG
    again sends a second upload with the same bytes.
-7. All Creators (`chatterly:scope` removed before every load): clicking "Add media" fires no file chooser within 1s,
-   sends no upload, and `#oi-note` reads "Select a model to save changes".
+7. (Retired) No All-models pass: OF Manager has no All scope; a saved "all" shows the first live creator (owner 2026-11-20, origin/main 77e5df419).
 8. No console errors (but a 502's own resource line, and after a reload the dead `blob:` URL's); no request left
    localhost.
 9. Dedupe hit: with vault id 42 seeded in the draft before load, an upload answered
@@ -200,8 +191,7 @@ body with stdlib `email.parser.BytesParser`. Checks, scope `model:1` unless note
     broken `<img>` left visible, and the draft's `media_files` still holds the claim.
 
 It prints one `{"check","want","got"}` line per check and exits 1 on a failure (screenshots `inapp-post-upload-thumb.png`,
-`inapp-post-upload-refused.png`, `inapp-post-upload-round-trip.png`, `inapp-post-upload-reloaded.png`,
-`inapp-post-upload-all-creators.png`). The State pages' copies of "Add media" (in the composer under each
+`inapp-post-upload-refused.png`, `inapp-post-upload-round-trip.png`, `inapp-post-upload-reloaded.png`). The State pages' copies of "Add media" (in the composer under each
 `new-post/state-*` dialog) are the same upload button (`app/lib/ofMirrorPost.test.ts`):
 
     python3 -I scripts/of-mirror-check/post_upload.py
@@ -227,26 +217,23 @@ unless noted, 1-6 on `home` and on `new-post`:
    there after the grey note's 3s fade, and the tile is enabled again.
 6. Neither image nor video: setting a `.txt` file on the chooser sends nothing and the note reads exactly the red "Could
    not add: choose an image or a video" right after the strip, never "Added to story".
-7. All Creators (`chatterly:scope` removed before every load), on `home` and on `new-post`: clicking "Add to story" fires
-   no file chooser within 1s, sends nothing and the note reads the grey "Select a model to save changes", visible, right
-   after the strip. No console errors.
+7. (Retired) No All-models pass: OF Manager has no All scope; a saved "all" shows the first live creator (owner 2026-11-20, origin/main 77e5df419).
 8. My profile (`profile`, scope `model:1`): "Create highlight" is disabled with the tooltip "Not available in Inflowwww
    yet"; a dispatched click fires no file chooser within 1s, sends nothing and shows no note. "Story archive" carries
    `data-oi-wired`; a click opens the in-place archive box right after the strip, sends nothing but GETs, shows no note
-   and stays on the page. No console errors. The strip's tiles are covered in both scopes by
+   and stays on the page. No console errors. The strip's tiles are covered by
    `app/lib/ofMirrorStory.test.ts` and `app/lib/ofMirrorProfile.test.ts`, as are
    Home's "Start profile promotion" (a link to the promotion dialog over Home, `home/state-promotion`) and New post's
    "Go live", "Send message", "Start profile promotion" and "Create new trial link" links.
 
 It prints one `{"check","want","got"}` line per check and exits 1 on a failure (screenshots `inapp-story-home.png`,
-`inapp-story-new-post.png`, `inapp-story-home-error.png`, `inapp-story-new-post-error.png`, `inapp-story-all-models.png`,
-`inapp-story-all-models-new-post.png`, `inapp-story-profile.png`):
+`inapp-story-new-post.png`, `inapp-story-home-error.png`, `inapp-story-new-post-error.png`, `inapp-story-profile.png`):
 
     python3 -I scripts/of-mirror-check/story.py
 
 collections_writes.py checks collections writes (app/lib/ofMirrorCollections.ts) in the frame, relay mocked: the list page's More menu, a user
-card's Lists menu and the header's + (OF's "Create new list" / "Create new label" dialog) send their relay writes;
-with all models nothing is sent.
+card's Lists menu and the header's + (OF's "Create new list" / "Create new label" dialog) send their relay writes.
+No All-models pass: OF Manager has no All scope; a saved "all" shows the first live creator (owner 2026-11-20, origin/main 77e5df419).
 
 Mocks the login (as writes.py) and, with scope `model:acc1`: GET /api/of/v2/lists (two synthetic custom lists with
 OF's flags, Whales 31 and Regulars 32), GET /lists/31/users (two synthetic users), GET /users/alphaone (id 901) and
@@ -257,8 +244,7 @@ Add users with "@alphaone" sends POST /lists/users {"31": [901]}; a card's Lists
 to Regulars", which send DELETE /lists/31/users/202 and POST /lists/32/users/202; Clear list sends DELETE
 /lists/31/users; Delete list sends DELETE /lists/31 and lands on /of-manager/collections, which shows the first list's
 users and whose + opens the "Create new list" dialog, whose Save sends POST /lists {name}; Post Labels' + opens
-"Create new label", whose Save sends POST /labels {name}. Every write carries X-Account-Id acc1. All models (scope key
-removed): the + shows "Select a model to save changes" and nothing is sent. Screenshots:
+"Create new label", whose Save sends POST /labels {name}. Every write carries X-Account-Id acc1. Screenshots:
 /tmp/of-mirror-shots/inapp-collections-more.png, inapp-collections-card.png, inapp-collections-create.png,
 inapp-collections-label.png. Exit 1 on a failed check.
 
@@ -285,7 +271,7 @@ one whose path a mock matches). Checks, scope `model:1` unless noted:
    post), the author links their OF profile (`https://onlyfans.com/<handle>`, target `_blank`), "No bookmarks yet" hidden, the avatar-less author with no picture; the request carries
    `limit=20`; the borrowed post row is one same-origin GET of `/of-mirror/pages/profile/index.html` and no other page
    is fetched; every bookmark's More (another creator's post) is disabled with the tooltip "Not available in Inflowwww yet" and a click shows no note. On `collections`, "Create new list" opens OF's
-   "Create new list" dialog (collections_writes.py checks its write); with All Creators it shows "Select a model to save changes".
+   "Create new list" dialog (collections_writes.py checks its write).
 4. `statements/earnings`: exactly account 1's transactions in order ([date, time, amount, fee, net, description,
    status tips] per row: money with two decimals, an absent fee or net empty, the fan link as text, the done row
    "Complete", the pending row "Earning will become available in 5 days", the refunded row no status tip), no example
@@ -312,17 +298,12 @@ one whose path a mock matches). Checks, scope `model:1` unless noted:
    (Comments, Mentions) hides "No notifications currently!" while rows show. `notifications/tip` keeps its 17 example
    rows and requests no notifications (its `type` value is unsettled; ticket 31).
 8. Creator switch (top bar switcher, no reload) on `profile` and on `notifications`: account 2 shows only account 2's
-   rows and every relay call after the switch carries `X-Account-Id: 2`; All Creators shows no post row on `profile`,
-   only OF's "No posts yet".
-9. All Creators (`chatterly:scope` removed before every load): every page above keeps its example rows or captured
-   empty state (`profile` and `profile/media` no post or tile, only "No posts yet"; `statements/earnings` and `payouts`
-   no rows, only "No earnings for this period" and "This list is empty"), requests none of these Relay routes (no `/users/me` either) and fetches no template page; "Create new
-   list" still shows the Read-only note.
+   rows and every relay call after the switch carries `X-Account-Id: 2`.
+9. (Retired) No All-models pass: OF Manager has no All scope; a saved "all" shows the first live creator (owner 2026-11-20, origin/main 77e5df419).
 10. No console errors.
 
 It prints one `{"check","want","got"}` line per check and exits 1 on a failure (screenshots
-`/tmp/of-mirror-shots/inapp-feeds-*.png`: one per page, its More or "Create new list" click, the Creator switch and
-the All Creators pass). The mocks prove the mapping, not the Relay's shape: the field names the spec marks as guessed
+`/tmp/of-mirror-shots/inapp-feeds-*.png`: one per page, its More or "Create new list" click, the Creator switch). The mocks prove the mapping, not the Relay's shape: the field names the spec marks as guessed
 (notification `isRead`; bookmark `author`; saved-for-later `text`, `mediaCount`)
 render empty if wrong, never as examples:
 
@@ -345,8 +326,9 @@ path). Pages: every page of `new-post`, `home`, `streaming`, `profile`, `queue`,
 pages named, or under a named prefix, e.g. `queue` or `new-post/state-vault`); `sessionStorage` is cleared before each
 page. Mocks: the login as in writes.py, `GET /api/of/v2/users/me` (synthetic), `GET /posts/tagged-friend-users` and
 `GET /vault/media` (one synthetic "Alpha One" row each, so the Co-tag rows and vault tiles exist), `GET /img` (a 1x1 PNG
-the script builds) and `[]` for every other `GET /api/**`; every non-GET `/api/**` is recorded (method, path,
-`X-Account-Id`, body) and answered 200 `{}`; any request to a host other than localhost is aborted and fails the check.
+the script builds), a v2 Relay for Statistics (`V2`, below) and `[]` for every other `GET /api/**`; every `GET /api/**`
+is recorded (path, query, `X-Account-Id`); every non-GET `/api/**` is recorded (method, path, `X-Account-Id`, body) and
+answered 200 `{}`; any request to a host other than localhost is aborted and fails the check.
 Controls: the frame's visible, enabled `button`, `[role=button]` and `input[type=checkbox]` (not inside `.video-js`; a
 hidden checkbox through its visible `label`), clicked one by one with the mouse at their centre; a control under another
 layer or gone by its turn is listed as skipped. Before each click `#oi-note` is removed, then for 1s the first outcome
@@ -375,29 +357,316 @@ Failures, Single Creator (scope `model:1`):
    (`streaming/dashboard/create`) and Create Link (`settings/subscription/tracking-links/modal-1`).
 6. Any console error.
 
-All Creators (`chatterly:scope` removed before every load): the same pages, sweep and checks 1-4 and 6, and no non-GET
-`/api/**` request from a page that does not stand in. A stand-in page (`STAND_IN_SRC` in `app/lib/ofMirrorProfile.ts`,
-read as text: New post, Settings, Messages, the Queue, Statistics, the Vault and the rest show the first model with a
-session in All models, and their actions are that model's) may write, each write with that model's `X-Account-Id`. The
-send controls on the other pages, made sendable first (Post with text typed), give exactly "Select a model to save
-changes": Post, Add to story (`home`) and Start campaign (`home/state-promotion`) and the stream schedule form's SCHEDULE; the New post and Settings ones act as
-the stand-in model. `DISABLED` (submits with no Known body) is empty. New post's Record video and Record voice
+No All-Creators pass: OF Manager has no All creators (owner 2026-11-20). A saved "all" scope shows one creator, the
+first with a live session (`OneCreator` in `app/components/of-manager/OfManagerChrome.tsx`), unsaved; phase_check.py's
+`one_creator` checks it (run once, from golive.py; see content_writes.py below). `DISABLED` (submits with no Known body) is empty. New post's Record video and Record voice
 (the not-supported popup) and its right column search box are marked. `dead.py settings` sweeps every settings page.
 
+Where the rows live (ticket 133): dead.py is the engine only. Each ticket's rows and their mocks live in an area module
+beside it, `dead_<area>.py` (`dead_statistics.py`, `dead_home.py`, `dead_messages.py`, `dead_settings.py`,
+`dead_notifications.py`, `dead_collections.py`, `dead_content.py`, `dead_golive.py`), which exports any of `PHASE1`, `READS`, `SOURCES`, `V2`, `MARKED`,
+`ALLOWED`, `ALLOWED_RE`, `HANDOFF`, `DISABLED` and `SWEPT` (pages that must stay in the sweep), and takes shared helpers (`fx`, `rev`, `SNAP`, `TIPS`, ...) from
+`dead_lib.py`, never from `dead` (it runs as `__main__`). dead.py merges them from one explicit `MODULES` tuple, never
+a glob, in that order (the rows run in it); a new area is one more module, listed there. A mock path (`SOURCES` and `V2`
+together) already present raises at load with the path and both module names. `dead.py --list-rows` prints every
+`PHASE1` and `READS` row, the mocks and tables, and the counts, with no browser: diff it before and after a move.
+
+Phase 1 (`docs/spec/ofm-not-yet/phase-01-read-only-gaps.md`, Seam A; each Phase 1 ticket adds its own rows):
+
+- `V2`: the probe `GET /api/of/v2/streaks/top` answers an object (`isV2` in `app/lib/ofMirrorStats.ts`), so the Statistics
+  binders ask their phase-2 reads, and each source a Phase 1 tab gates on answers in its real shape from the Statistics
+  vitest fixtures (`app/lib/__fixtures__/of/statistics-*.json`): the earnings chart keyed by series, referrals as `{list}`
+  per kind (`onlyPerformers`), top stories, streams and subscribers, profile-visitor stats, message stats and their chart
+  per kind. A param's other tab answers other rows than its default (another fixture, or the same rows reversed; Top fans:
+  `statistics-subs-top-tips.json`, synthetic rows in `/subscribers/top`'s shape), so a dropped param reads the default
+  rows. The run's first two check lines test the mock itself; the next two fail a `PHASE1`/`READS` row whose page the
+  sweep never opens (a mistyped page) and a `READS` row without `shows`.
+- `PHASE1` (Single Creator): `(page, control, status)`, the control `css:<selector>` or the sweep's label (a trailing space:
+  a prefix, `"From "`). `pending`: the control is found on its page (Not-yet title or not); `proven`: also
+  `data-oi-wired` and no Not-yet title. A row turns `proven` in the change that commits its capture record with a live
+  pass (D1). `not-yet` (ticket 16): found, every match still with the Not-yet title (a lost title fails "lost the
+  Not-yet title"). A row whose control is missing fails either way.
+- `READS` (Single Creator, after the page's sweep): per row, a fresh load, then its `steps`, each `(verb, control[,
+  text])` on the control's first match, which the check un-greys itself (no app-side switch), each followed by 1.5s:
+  `click`, `fill` (typed, with input events), `set` (the value put in place with no event: text typed before pressing
+  Search), `press` (a key on it). Within 5s more it needs every GET of `get`, `[(path, {param: value})]`, made during
+  the last step (no `get`: requests unchecked), then the settled snapshot (`SNAP(rows, chart)`: the first visible row,
+  every row's cells joined by ` | `, and the chart's visible texts; settled = the same over `SETTLE` polls in a row,
+  not the first change) holding every `shows` (required: what only the filtered answer renders) and none of `hides`
+  (optional: what only the default answer renders), and no Relay write. A check line names its row by
+  page and steps.
+- Shown once, when the tracer row (Top fans "Tips") was written, all in one run of `dead.py statistics/fans/top-fans`
+  and then reverted: with `by` deleted from `listRoute`'s `subsTop`, READS fails (`get`, `shows` and `hides` false); a
+  `proven` row for "More" (still Not-yet) fails "not Wired: 2 unmarked, 2 with the Not-yet title"; a `css:` row for a
+  control that does not exist fails "not found"; a row on the page `statistics/fans/top-fan` fails the up-front page
+  check.
+- ticket 14 (Statistics › Engagement: Messages' Mass/Direct tabs and its search, Stories' and Streaming's `by` tabs):
+  a default tab's row (Mass messages, Stories Tips, Streaming Purchases) clicks another tab first and checks only what
+  settles. `V2` answers the stories and streams charts per `by` (`rekey`: the fixture's series under another key and
+  total), `/stories/top?by=views` with `statistics-stories-top-views.json` (synthetic, `/stories/top`'s shape, another
+  first card) and likes/comments with it reversed, `messages/group?query=message 3` with only the matching rows
+  (`hits`), and `query=me` with no rows (a 2-character query must never be sent). The search rows, typed in the field
+  and put there then submitted with the button, show only the match from 3 characters, every row under 3, and every
+  row again when cleared. A missing GET now fails the row instead of raising (the last snapshot is read). Shown once
+  each, a run of `dead.py statistics/engagement` (or `.../messages`), then reverted, every run exit 1:
+  - `type` dropped from `messagesChart` and `by` from `storiesTop`: Direct messages, Viewers, Likes and Comments
+    fail (`get` and `settled` false; `shows` false where the first card or chart differs).
+  - `query` dropped from `listRoute`'s `massMessages`: both "message 3" rows (field, and set then button) fail (`get`,
+    `settled` and `hides` false).
+  - both 3-character gates lowered to 2 (`listRoute`'s `massMessages`, `bindSearch`): both "me" rows fail (`shows`
+    false).
+- ticket 16 (Messages: Find on the chat header menu's State page, the sort dropdown's Select, the folders dialog's
+  Sort): `READS` rows also take `query` (the page opened with it: a State page's `chat=`, the list's `select=1`)
+  and `"get": None` (no `GET /api/**` at all during the last step: a client-side control). Its three `PHASE1` rows are `not-yet`: found, every match with the
+  Not-yet title (AC6, D1); a READS step on a `not-yet` control checks the same on the row's own load (Find is bound
+  only with `?chat=`, which the sweep's load lacks), and the Live pass flips the one status to `proven`. A step whose action fails (a control
+  still greyed) fails its row instead of raising. The snapshot reads whichever Mirror page frame is loaded now (`frame_now`, for the steps too: Select opens
+  the list). The un-greying also lifts a Not-yet menu item's `aria-disabled` and `v-list-item--disabled`. Shared
+  `SOURCES` rows: chat 2001's two "needle" messages and four synthetic chat folders; `V2` answers the search for
+  `needle` with only the second message. `V2` answers `/chats` for `list_id=916` only with two synthetic chats (their partners
+  in shared `/users/list`), which the two pick rows open (`folder=916&select=1`); no folder the sweep opens has that id,
+  so no swept page draws them. On the bare list every row's Clear messages is Silent (its `confirm()` is
+  dismissed and the button is unmarked: a gap of the Clear wiring, issue 128).
+  Find reads on the header menu only (the other dialog pages' backdrop covers the chat header: the ticket's
+  carve-out). Select's rows want no GET: the dropdown's Select (its snapshot throws until the bar is drawn), the bar's
+  Cancel and Delete, a row's pick (its box ticked, the URL unchanged: no chat opened) and Select all after it (every
+  box, the button now Deselect). Sort's four rows each pick one option (Recent, Name, People each differ from the
+  default Custom order, and Custom from Name ascending). `PATCH /lists/{id}/pin-chat` (the dialog's boxes, an existing
+  Wired write) is on `ALLOWED_RE`: with the folders in `SOURCES` the sweep's box clicks send it. Open gap: `outcome()`
+  judges a click's writes only when a write is its first outcome; a box's change is seen first, so these writes are
+  not judged against the allow-list at all (issue 129).
+  Shown once, in one run of `dead.py messages/chat/state-header-menu messages/state-filter-dropdown messages/index
+  messages/state-folders`, then reverted, exit 1: with the State pages dropped from `useThreadFind`'s pages, Find fails
+  (its fill step: the find input "not found"); with select mode never entered, the dropdown's Select
+  fails (`settled` and `shows` false) and both select-bar rows fail "not found"; with `sortFolders`' Name branch
+  removed, the Name row fails (`shows` and `hides` false).
+  Round 2, the same way, each exit 1: with the Not-yet title stripped by the binders (Select, Sort; `dead.py
+  messages/state-filter-dropdown messages/state-folders`) both `PHASE1` rows fail "lost the Not-yet title: 1 of 1
+  without it" and Select's READS row fails its click (the item still `aria-disabled`); stripped from Find (`dead.py
+  messages/chat/state-header-menu`), Find's READS row fails "lost the Not-yet title".
+- ticket 15 (Statistics › Fans' Subscriptions and Top fans tabs, Profile visitors' chips, Referrals' kinds, Overview ›
+  Earnings's category radio): `PHASE1` rows by selector (their labels repeat on the page), the radio by its sweep label
+  `[b-input-radio]`. `V2` answers Top fans' Subscriptions/Posts/Streams ranked by their own measure (`top_by`: Fan U
+  leads with $3.00 of it), Subscriptions' New with its own rows (Fan D alone) and, with Profile visitors' Users, a
+  chart of their own (`spot`: one non-zero day), and Referred users (`onlyPerformers=0`) with the creators reversed.
+  `TIPS(rows, chart, canvas, checked)` is `SNAP`'s snapshot plus the chart's tooltips, read by moving the mouse across
+  the canvas (each tooltip's date and `<series> <value>` lines), and the `name`s of the inputs matching `checked` (the
+  radio's snapshot: the checked category radios). Referrals' rows have no `get` (both kinds are read on load): they
+  assert the shown table's first row. The radio's rows use ticket 16's `get: None` (no GET `/api/**` from the last
+  step on; `hit()` is taken again after the settle polls, so the settle window counts: a redraw in place). Dates stay
+  out of `shows` (the browser's time zone is not
+  pinned). Fans "More" has no row: OF's Fans header menu (statistics-fans.js `m-extra-dropdown`) holds only "Add to
+  list" (a write) and the Top Fan card's More is the user-card menu, so both moved to Phase 2 story 51. Shown once
+  each, a run of `dead.py <page>`, then reverted, every run exit 1:
+  - `by` dropped from `listRoute`'s `subsTop`: Tips, Subscriptions, Messages, Posts and Streams fail (`settled`, `get`, `shows` and `hides` false).
+  - the radio's pick added to `statsRoute`'s `earningsChart` (`row`, so a pick reads again): Subscriptions fails (`get`
+    and `settled` false).
+  - `referralsPage` showing `referredCreators` for both kinds: Referred users fails (`shows` and `hides` false).
+- ticket 17 (Notifications, every tab: Search users, the aside's Search users or posts, the Scheduled events widget's
+  new-event button): its rows live in `dead_notifications.py` (in `MODULES`),
+  and add the step `("back", None)` (the top frame's history back) to the engine. Its 30 `PHASE1` rows are `not-yet` by selector (D1). `V2` answers
+  `/users/notifications` with fan 9102's row and, for `related_user=9101`, fan 9101's only (a dropped param shows no
+  row: relatedOnly drops 9102's); `SOURCES` answers Tags' `/release-forms/mentions` with both fans' (no param there);
+  the users and posts searches answer only `synth`. Rows: Search users on each type tab (button, the form's field
+  `synth`, fan 9101 picked: `get` the tab's type plus `related_user=9101`, the URL, only 9101's row, the form showing
+  `9101`), on Tags (`get: None`: filtered as read), then Back (`notifications/tip`: the bare URL, 9102's row, no form);
+  the aside's `synth` (`get` both searches, the Users and Posts lists); and the new-event click (the top URL
+  `/of-manager/home/state-schedule`, no write). Page-shared controls read on `index` only (same markup and
+  binder on every tab). Shown once each, a run of `dead.py <pages>` against `next dev -p 3117`, then reverted, every
+  run exit 1:
+  - `notificationsRoute` sending `related_user` on Tags only (`notifications/tip notifications/tags`): tip's Search
+    users fails (`get`, `settled` and `shows` false); Tags' fails (`get` false: a GET in its last step, `settled` false).
+  - the binder's navigation as `router.replace`, `bindFeedSearch` not called, the new-event click inert
+    (`notifications/index notifications/tip`): Back fails (`shows` and `hides` false); the aside fails (`get`,
+    `settled` and `shows` false); new-event fails (`shows` false).
+  - the new-event button's title stripped (`notifications/index`): `PHASE1` fails "lost the Not-yet title: 1 of 1
+    without it" and new-event's READS rows fail the same.
+- ticket 18 (Collections: the Posts tab on index and Fans, Fans' Expired tab, and Search users on index and a list):
+  its rows live in `dead_collections.py` (in `MODULES`, D31), using ticket 17's
+  `("back", None)`. Posts and Expired are `not-yet` (D1); Search users (already wired) is
+  `pending`. `SOURCES` holds three synthetic lists (7000 empty, first, so a bare page opens it and the sweep draws no
+  member cards; 7001 Alpha; 7002 Bravo) and one post each for 7001, 7002 and `fans`; `V2` answers list 7001's members
+  per `query` (`bravo`: fan 2002 alone) and `/subscribers` per `type` (active: 2001, 2002; expired: 2003). Shown once, a run of `dead.py collections`, then
+  reverted, exit 1: with `subscribersPath` dropping the type, the Expired row and Expired > Back fail.
+- ticket 132 (Text Color on the format-text State pages flaked under load): not the probe. The composer toolbar's
+  ResizeObserver (`bindActionsOverflow`'s `layout`) closed any open menu, so a late layout pass right after the click
+  shut Text Color's just-opened list and its markup read unchanged. `layout` now closes More's own menu only (vitest:
+  "a resize closes More's own menu only"); dead.py is unchanged. Shown once, a run of `dead.py home/state-format-text
+  new-post/state-format-text`, then reverted, exit 1: with Text Color's binder not opening its list, `#5 Text Color`
+  fails "no Silent control" on both pages.
+
 It prints one `{"check","want","got"}` line per check, one `{scope, page, controls, links, wired, readonly}` line per
-page and one per pass, and exits 1 on a failure. It runs for about 25 minutes for both passes. Screenshots: one per
-page with a note showing, `/tmp/of-mirror-shots/inapp-dead-<page, / as __>.png`; the All-Creators pass overwrites a
-page's Single-Creator image:
+page and one for the pass, and exits 1 on a failure. Screenshots: one per page with a note showing,
+`/tmp/of-mirror-shots/inapp-dead-<page, / as __>.png`:
 
     python3 -I scripts/of-mirror-check/dead.py
     python3 -I scripts/of-mirror-check/dead.py queue new-post/state-vault   # only these pages, or under these prefixes
 
+`--sweep-out <file>` regenerates the Not-yet sweep (`docs/of-manager/not-yet-sweep-2026-11-20.json`'s shape plus `ro`) at
+any commit: the same run, with `release-forms` added to the sections (only in this mode; the default run's pages, checks
+and output are unchanged), also writes `[[page, {"ny", "dis", "ro"}]]` for every page the Single-Creator pass swept, or
+only the pages the arguments name. `ny`: the visible controls with the Not-yet title; `dis`: the visible disabled ones
+without it (Empty-form disables); each label once, read as the page opens. `ro`: one entry per control that gave the
+Read-only note, so its length is the page's printed `readonly` count. A label is the control's aria-label, text or
+placeholder (60 characters), with a date "Mon D, YYYY" read as `{date}`, else `[its first two classes]`, else `[its tag]`;
+OF's own left nav (`.l-sidebar`) is left out. A page that ends with no frame (NO IFRAME) is opened once more before it
+counts, in this mode only. Known skip: Release forms' row More (the Sort menu, opened earlier in the sweep, covers it;
+the close-in-place Escape only closes a `.modal.show[data-oi-data]` dialog, not a State menu).
+`sweep_diff.py` compares two sweep files and prints, per section, the `ny` (and, where both files have it, `ro`) controls
+removed, added and kept, one JSON line per section, with dates read as `{date}` on both sides; `--expect-ny-unchanged` fails on a page of the old file missing from
+the new one or with different `ny`, `--expect-ro-counts <log>` on a `ro` length that is not the `readonly` count dead.py
+printed in the same run's Single-Creator pass, or a total `ro` of 0. Table tests: `test_sweep_diff.py` (pytest):
+
+    PORT=3091 python3 -I scripts/of-mirror-check/dead.py --sweep-out /tmp/sweep.json | tee /tmp/dead.log
+    PORT=3091 python3 -I scripts/of-mirror-check/dead.py --sweep-out /tmp/sweep.json queue   # only a Phase's own pages
+    python3 -I scripts/of-mirror-check/sweep_diff.py --expect-ny-unchanged --expect-ro-counts /tmp/dead.log \
+        docs/of-manager/not-yet-sweep-2026-11-20.json /tmp/sweep.json
+    ./venv/bin/python -m pytest -q scripts/of-mirror-check/test_sweep_diff.py
+
+dead.py's Phase hooks: each Phase's control tickets add their writes to `ALLOWED` (exact) or `ALLOWED_RE` ((method,
+full-match regex), for an id in the path; Stop promotion's `/promotions/<id>/finish` is its first row), their Wired
+controls to `MARKED`. The label in sweep files and in phase_check.py is one JS source,
+`sweep_diff.py` `LABEL_JS`.
+
+content_writes.py is Phase 2's Mirror check (`docs/spec/ofm-not-yet/phase-02-content-chat-writes.md`, Testing
+Decisions), on the shared harness `phase_check.py` (a later Phase's check is one more such tables file). The login and
+relay are mocked as in writes.py, `/admin/accounts` lists acc1 and 1 with a session, every non-GET `/api/**` and `/admin/**` request is recorded (method, path, `X-Account-Id`, JSON body) and
+answered `{"success": true}` after the Phase's `AFTER` hooks changed the mocked reads (`READS`), so a write's read-back
+shows what it changed; any non-localhost request fails the check. Its control list is the Phase 2 proof list
+(`scripts/of-live-proof/proofs/phase2.py` `PROOFS`: page, control as the Not-yet sweep labels it): check 1 reads
+runtime state (D18): each proof has one capture record, found as `phase2.py --check-sweep` finds it (label and page,
+`proof_list.py`), its control is Wired (data-oi-wired) and, with that record's Live-proof pass (`kind: live, verdict:
+pass`), has no "Not available in Inflowwww yet" title, else still has it (D1). The switch probe GET
+`/api/of/ofm-writes` answers on (OFM_NEW_WRITES_ENABLED, as of-live-proof runs the Relay; dead.py's mock too); a proof
+tagged `ofm_new_writes` (Record video and Record voice, the vault folder page's More) is also checked in a switch-off
+pass (the probe answered 404): found, not Wired, its Not-yet title kept, nothing sent. Its tables, filled by the Phase 2
+control tickets: `REQUESTS`: the steps send exactly the proof's capture record's request with `X-Account-Id: 1`, then
+the read-back; `RED_NOTES`: a mocked 502 on the write shows the red `#oi-note` and the page keeps its last saved state;
+no console errors. With empty tables it loads home/index. No All-Creators pass: OF Manager has no All creators;
+phase_check's `one_creator` (run once, from golive.py below) checks a saved "all" scope: with a saved `chatterly:scope` of `all` and `/admin/accounts` listing acc0 (dead session) before acc1 and 1,
+typing on home/index (not a stand-in page) and clicking Post sends exactly `POST /api/of/v2/posts` with
+`X-Account-Id: acc1` (the first creator with a live session, `OneCreator`), and the scope stays `all` (not saved). `--plant <rows.json>` adds proofs, rows and capture records
+(`{"proofs", "records", "requests", "red_notes"}`; a planted record replaces the capture file of the same name) to show a check fails; `--captures <dir>` reads the
+records from another folder. Screenshots: `/tmp/of-mirror-shots/inapp-content-writes-*.png`:
+
+    PORT=3091 python3 -I scripts/of-mirror-check/content_writes.py
+    PORT=3091 python3 -I scripts/of-mirror-check/content_writes.py --plant /tmp/rows.json
+
+Committed plants: `plants/phase2-clean.json` must print `content-writes ok`; `plants/phase2-fail.json` must exit 1 (missing control, Live pass on an unwired control, title dropped without a pass, proof without a record).
+
+golive.py is Phase 4's Mirror check (`docs/spec/ofm-not-yet/phase-04-go-live.md`, Testing Decisions; ticket 83), on
+the same harness `phase_check.py`: the stream schedule form (`streaming/dashboard/create`), the dashboard
+(`streaming/dashboard`) and Go live (`streaming/index`). Its control list is the Phase 4 proof list
+(`scripts/of-live-proof/proofs/phase4.py` `PROOFS`), check 1 as content_writes.py's (runtime state, D18; the title
+drops only with the record's Live-proof pass, D1). Its tables, filled by the Phase 4 track A control tickets:
+`SCHEDULE_FORM` and `DASHBOARD` (control, click, its exact request with `X-Account-Id: 1` or zero requests),
+`RED_NOTES`; `GO_LIVE` stays empty until track B's gate
+ticket closes (D7). Whatever the tables hold, it loads the three pages, each showing its `LANDMARKS`
+control (phase_check `pages`: Schedule, the dashboard's Schedule link, Start Live Video). Every
+non-localhost request fails the check. Ticket 84's rows: the schedule form's right column search (Home's), opened
+valid by the `?date=&time=` prefill, types and clicks Search, lists the mocked rows with their OF profile links and
+sends nothing (no POST /streams). Phase 4's dead.py hooks (`ALLOWED`, `ALLOWED_RE`, `MARKED`, plus ticket 84's `MARKED`, `PHASE1` "not-yet" and `READS` rows for that search, Enter included) and
+its `SWEPT` pages (the three Phase 4 pages, checked against the sweep's pages) live in `dead_golive.py` (in `MODULES`). Then
+`one_creator` (content_writes.py above; it runs here only). Screenshots: `/tmp/of-mirror-shots/inapp-golive-*.png`:
+
+    PORT=3091 python3 -I scripts/of-mirror-check/golive.py
+    PORT=3091 python3 -I scripts/of-mirror-check/golive.py --plant scripts/of-mirror-check/plants/phase4-fail.json
+
+Committed plants: `plants/phase4-clean.json` must print `golive ok`; `plants/phase4-fail.json` must exit 1 (missing
+control in a proof and in a row's steps, a Live pass on a control that keeps the title, a parked record whose control
+lost it, a request to a non-localhost host, and that request's console error). A plant's `init` marks Add cover Wired, so
+the title check fails alone.
+
+Phase 1's sections under the v2 mock (`docs/of-manager/not-yet-sweep-2026-11-20-phase1-v2.json`; per-label remainder
+in `.scratch/ofm-not-yet/phase1-remainder.md`):
+
+    PORT=3091 python3 -I scripts/of-mirror-check/dead.py --sweep-out /tmp/oi-p1-sweep.json \
+        statistics statements notifications collections profile messages home | tee /tmp/oi-p1-dead.txt
+
+settings_privacy.py is Phase 3's Mirror check (`docs/spec/ofm-not-yet/phase-03-settings-privacy-links.md`, Testing
+Decisions), on `phase_check.py` (mocks, login, write record, the Phase 3 proof list `proofs/phase3.py` with its
+`REQUESTS` and `RED_NOTES`). It adds a Single-Creator pass (no All-Creators pass: OF Manager has no All creators): `TITLES`, every Phase 3 Not-yet control
+of the 2026-11-20 sweep, each found with its Not-yet title kept, or dropped with its capture record's Live-proof pass
+(runtime state, D18/D1); `ROWS`, one outcome each: exactly one write (the last clicked control Wired), a hand-off URL
+(requested and aborted, never loaded, nothing written), clipboard text, or a landing Mirror path plus its Relay GET
+(dead.py `READS`' param match) plus at least one row. An opener step is clicked on the page it sits on and its modal
+or State menu must show; a row reaching a control by its modal URL fails. `after`/`undo` check the new value on the
+settled frame and on a fresh read of the stateful mock (`STATEFUL`: the write's body merged into a mocked read), then
+the old value after undo. The synthetic stream key must never appear in any frame's DOM or field value, and Stream
+Key shows the mask. Rows with their own `reads` run grouped, one session per distinct `reads`; the rest share the base
+session. `--self-test` runs only planted rows (a missing control, a modal-URL row, a Live pass with the title kept, a
+parked record with it gone, two capture records for one control, the key in the DOM and a fresh read without its hook
+fail; a stateful toggle with undo, an opener, clipboard and land rows pass). Screenshots: `/tmp/of-mirror-shots/inapp-settings-privacy-*.png`:
+
+    PORT=3091 python3 -I scripts/of-mirror-check/settings_privacy.py [--plant rows.json] [--captures dir]
+    PORT=3091 python3 -I scripts/of-mirror-check/settings_privacy.py --self-test
+    PORT=3091 python3 -I scripts/of-mirror-check/dead.py settings profile | tee /tmp/oi-p3-dead.txt
+
+dead.py's Phase 3 hooks (ticket 57): rows appended to `ALLOWED`/`ALLOWED_RE` and `MARKED` in `# ticket NN`
+blocks of `dead_settings.py`, and `HANDOFF` (exact hand-off URLs): a visible `a[data-oi-wired][target=_blank]` to one is swept after the page's own
+controls (clicked at its first line box), and a popup to one is a Wired control's or link's outcome, recorded and
+aborted; a popup anywhere else still fails as a non-localhost request. Shown once with `HANDOFF` set to Bank's
+`BANK_URL` and then reverted: `dead.py bank` passes with each page's "Open banking on onlyfans.com" aborted as a
+hand-off; with the hand-off route off as well, it fails "request to a non-localhost host" and "no Silent control".
+
+Phase 3 outcome (ofm-not-yet tickets 57-76, 110; ticket 77). D1 holds throughout: every control below still carries
+its Not-yet title at runtime until its capture record shows a Live-proof pass (tickets 78/79, attended), so the sweep
+still lists all of them and `phase3.py --check-sweep` expects that. Built means Wired, green in settings_privacy.py
+and dead.py, and its proof green in fake mode, except the tip switch: its proof (`phase3.TIP`) is parked outside PROOFS
+because OF draws the switch only on a free page and the Proof Creator and FakeOF's proof account are priced (needs a
+free account).
+
+- Moved to a write (Relay route, Undo through the Relay): `settings/messaging` tip-from-free-followers switch (`PATCH
+  /users/me`, proof parked, see above); `settings/notifications/email` Update frequency (`PATCH /users/settings/notifications`; the menu offers
+  the stored hours and 24 until row 9's list lands, ticket 60); `settings/profile` cover/avatar upload and cover
+  remove (signed upload then `PATCH /users/me`) and About's format button (`PATCH /users/me` `about`); `settings/social-media`
+  Add button / remove (`PUT` / `DELETE /users/social/buttons`); `settings/links` Things I Like Create link / delete
+  (`PUT` / `DELETE /users/links`); tracking links' share hint (`POST` / `DELETE /campaigns/share-access`, fake-only
+  until the owner names a peer); `settings/streaming/blocked` Block a username and a row's unblock (`POST` / `DELETE
+  /streams/users/{u}/block`); Block by country and Block by IP (`PUT /users/me/settings/security`, Lockout controls:
+  ordered last, `--lockout`, an explicit Creator pick, pinned harmless values Tuvalu / 192.0.2.1).
+- Moved to a read or a browser-only action (no write): tracking links' Sort on the base page, modal-1 and the kebab
+  State page and trial links' Sort radios (OF's server-side sort); "Shared with you" on the base page and behind
+  modal-1 / kebab; the openers behind the modals and kebabs (ticket 62): tracking "Create new tracking link", trial
+  "Create new free trial link" and "Start promotion campaign", the last two against FakeOF's priced proof account
+  (record `settings--priced-performer-openers`); Streaming's Copy link
+  and Copy key (clipboard only; the key never enters the DOM, Stream Key keeps the mask; spec ASSUMPTION: the owner may
+  still want the key off the clipboard, then Copy key goes back to a Read-only note); the OBS server dropdown (OF's
+  local `selectedServer`, no request); Reveal password, both `support@onlyfans.com` mailto links and phone Cancel
+  (ticket 110). Trial links' Create link (connector tickets 38/46) was already Wired; ticket 64 gave it a proof
+  (`settings--trial-create-link`, `WIRED_PROOFS`) and no title to drop.
+- Hand-offs (D11: new tab, `noopener noreferrer`, nothing through the Relay, URL in `app/lib/ofMirrorHandoffs.ts`
+  only), 12 wired (ticket 58): MetaMask's download link, Streaming's "OBS", the stream chat link and the OBS widgets
+  link; Sign in with Google / X and connected accounts' Connect link to OF's own measured settings pages (record
+  `settings--handoff-pages`, never OF's `POST /trust`), with connected accounts' username field readonly and Wired,
+  opening Connect's hand-off; Sign in with Spotify to OF's Spotify settings page, on Settings and My profile's three
+  pages (×4). Parked: Spring Store's "here" (absent from OF's build, ticket 71) and Payment Cards' Add card / Add a
+  payment card / Add funds (no URL, D29, ticket 110).
+- Mocked proofs (D3/D12; title kept, never started live): Close all sessions (ticket 63: the app sends OF's `DELETE
+  /sessions` after OF's ModalConfirm, the Relay's `_denied` backstop answers 403 before the Live guard, the red note
+  shows; proof `refused_as="backstop"`) and Reset stream key (ticket 76: `DELETE /streams/obs/key?type=<server>` after
+  the confirm, refused by the Live guard as `no_undo` before FakeOF; proof `refused_as="no_undo"`). Their live runs
+  are owner-go tickets 81/82.
+- Stays a Read-only note or Not-yet with nothing sent, and why: the Restricted / Blocked rows (ticket 65, blocked on
+  ticket 22's list views; the sitting measured their OF targets as `/my/collections/user-lists/restricted|blocked`);
+  the modal-3 ⋮ (ticket 75: no claimed promotion to open it, checklist rows 11/23; only the Add to list builder exists,
+  tagged `inferred`); Spring Store's URL field (ticket 71: absent from OnlyFans's current build); Fully private (ticket
+  60: drawn only for a non-adult performer, so not in the sweep; Live proof ticket 78); Add bundle (ticket 62
+  `T62_PARKED`: disabled on the priced Proof Creator, all three bundle durations exist); the profile display of social buttons
+  and Things I Like links (tickets 69/70: the captured profile page draws none); the empty-form disables (OF's own
+  validation) and Welcome message Edit/Delete (`ELSEWHERE.welcome`), out of scope.
+
+Phase 3's fake-mode acceptance (ticket 77) runs the whole proof list in batches of at most 4 over `run.sh`, Lockout
+proofs last with `--lockout`, retries a proof alone once only on a `Page.goto` timeout or "no Mirror frame", then runs
+`--check-records` and `--check-sweep` (a fresh sweep with `--sweep-port`, else the committed 2026-11-20 one):
+
+    nice -n 10 ./venv/bin/python -I scripts/of-live-proof/accept.py --phase 3 --sweep-port 3091
+
 What writes, what shows data and what is read-only, page by page (from `app/lib/ofMirrorWrites.ts` `WRITABLE` and `SUBMITS`,
 `app/lib/ofMirrorSubscription.ts`, `app/lib/ofMirrorPost.ts`, `app/lib/ofMirrorData.ts` `DATA_PAGES`, `app/lib/ofMirrorFeeds.ts`,
-`app/lib/ofMirrorSettings.ts` `SETTINGS_MAP`, and the plan's Ground truth table). Writes and Data parts need a single
-Creator: in All-Creators scope a write sends nothing and shows "Select a model to save changes", and a Data part keeps
-its examples. Every control not listed as a write, and not a link, a State page opener or the video player, is
-read-only: in either scope a click on a button or `[role=button]` shows "Read-only in Inflowwww for now", and a
+`app/lib/ofMirrorSettings.ts` `SETTINGS_MAP`, and the plan's Ground truth table). OF Manager has no All scope; a saved "all"
+shows the first live creator (owner 2026-11-20, origin/main 77e5df419). Every control not listed as a write, and not a link, a State page opener or the video player, is
+read-only: a click on a button or `[role=button]` shows "Read-only in Inflowwww for now", and a
 changed checkbox or field shows it too (a checkbox flips back; new-post's panel fields are also reset).
 
 - `new-post` and `new-post/state-*`. Writes: Post (`POST /api/of/v2/posts` `{text, media_files, price: 0}` plus
@@ -428,8 +697,8 @@ changed checkbox or field shows it too (a checkbox flips back; new-post's panel 
   (Available / Invisible: `PATCH /users/me` `{isVisibleOnline}`), the highlight tiles (each plays its stories in the
   viewer, `GET /stories/highlights/<id>`; with no single Creator, its cover). Links: Photos, Videos, Fans, "Go live",
   the More menu's Statistics and QR code (Settings' QR code page). Disabled with the tooltip: "Create highlight" (no
-  highlight write), the label tabs but All, the wall's search, compact view and sort, the sidebar search, Sign in with
-  Spotify, each post's Labels (no Relay route labels an existing post), Post statistics and bookmark (no Relay
+  highlight write), the label tabs but All, the wall's search, compact view and sort, the sidebar search (Sign in with
+  Spotify is a hand-off, ticket 58), each post's Labels (no Relay route labels an existing post), Post statistics and bookmark (no Relay
   post-bookmark route); another creator's post's Send Tip (no Relay tip route, and it spends money). The footer's
   Privacy, Cookie Notice and Terms of Service stay `#` (no OF host link in the pages).
 - `queue/*`. Writes: none. Data: `queue` and `queue/state-list-view` (`/schedules`), `queue/state-tab-messages`
@@ -500,7 +769,7 @@ Limits by design (not covered by the checks):
   list and the collections user lists (and a list's user cards) show that model's rows from the relay
   (`app/lib/ofMirrorData.ts`): the example row nodes are hidden and a template row is cloned per real row. A chat
   shows text only (a media message shows "Media"); a folder's media, a list's posts and a user's subscription
-  details are not shown; the chat header's online status stays the example's. With all models, or when the relay fails, the examples stay, and then:
+  details are not shown; the chat header's online status stays the example's. When the relay fails, the examples stay, and then:
 - Every chat, vault list and collections list row opens the one captured example page
   (`messages/chat`, `vault/list`, `collections/user-lists/list`): the mirror is static markup. The row's
   link carries `?row=<name>|<handle>` and the page (and its state/modal pages, whose links keep the query)

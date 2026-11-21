@@ -1,0 +1,17 @@
+{
+  "id": "settings--promotion-start",
+  "section": "settings",
+  "label": "Start promotion campaign",
+  "pages": [
+    "settings/subscription/promotion-campaign/modal-1",
+    "settings/subscription/promotion-campaign/modal-2",
+    "settings/subscription/promotion-campaign/modal-3"
+  ],
+  "phase": 3,
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T120555Z-ofm-live-ec770eb66",
+    "undo": "none"
+  }
+}

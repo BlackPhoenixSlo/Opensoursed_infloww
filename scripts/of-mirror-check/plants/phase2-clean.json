@@ -1,0 +1,5 @@
+{"proofs": [{"id": "plant.create-list", "page": "collections/index", "control": "Create new list", "kind": "live"}],
+ "requests": [{"proof": "plant.create-list", "steps": ["Create new list", ["[INPUT]", "oi-proof"], "Save"]}],
+ "red_notes": [{"page": "settings/profile", "steps": [["css=#input-name", "Synthetic Name"], "Save"],
+                "fail": ["PATCH", "/api/of/v2/users/me"], "note": "Could not save: synthetic failure",
+                "kept": "document.querySelector('.g-user-name')?.textContent.trim()"}]}

@@ -1,0 +1,16 @@
+{
+  "id": "statements--payout-rows",
+  "section": "statements",
+  "label": "Payouts and Referrals rows",
+  "pages": [
+    "statements/payouts",
+    "statements/referrals"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending"
+  }
+}

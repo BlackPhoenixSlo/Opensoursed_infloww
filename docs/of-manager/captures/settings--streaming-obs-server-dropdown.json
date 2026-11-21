@@ -1,0 +1,22 @@
+{
+ "id": "settings--streaming-obs-server-dropdown",
+ "section": "settings",
+ "label": "[INPUT]",
+ "pages": [
+  "settings/streaming"
+ ],
+ "phase": 3,
+ "source": "of-js",
+ "of_js": {
+  "bundle": "settings-streaming.js",
+  "symbol": "VSelectWrapper selectedServer (local ref; options obs_agora | mux_direct)",
+  "evidence": ".scratch/ofm-not-yet/captures/settings--streaming-obs-server-dropdown.json: display switch only, no write; obs_agora shows streamingRtmpServer/streamingRtmpKey, mux_direct streamingMuxServer/streamingMuxDirectKey"
+ },
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T162026Z-ofm-live-b5ae81315",
+  "undo": "none",
+  "note": "Display switch and no-write proven live; the per-choice server value is unproven live because the Proof Creator's account holds no server for either choice. It is covered by app/lib/ofMirrorObsServer.test.ts and the synthetic pair in scripts/of-mirror-check/settings_privacy.py. The OBS Server / OBS CloudBeta label mapping stays an assumption."
+ }
+}

@@ -1,0 +1,30 @@
+{
+ "id": "messages--message-add-tag",
+ "section": "messages",
+ "label": "Add a tag (my message menu)",
+ "pages": [
+  "messages/chat"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {},
+ "response": {},
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "item not in a text message's menu; needs a media message sent to the Proof fan plus a release-form person (third party) to tag"
+ },
+ "facts": {
+  "my_text_message_menu": "Copy, Reply, Bookmark, Pin, Forward (+ Unsend 23h on a new one)",
+  "fan_media_message_menu": "Copy, Like, Reply, Bookmark, Pin, Hide, Report",
+  "js": "POST /release-forms/attach exists in app.js; message-menu condition not found in fetched chunks",
+  "access": "parked: nothing sent to OnlyFans"
+ },
+ "evidence": [
+  "r20-chat-open.png",
+  "r20-my-message-menu.png"
+ ]
+}

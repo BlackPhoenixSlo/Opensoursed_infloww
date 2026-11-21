@@ -22,13 +22,11 @@ Single Creator (scope `model:1`), "Create new tracking link" (settings/subscript
    its Copy link shows OF's toast "Link copied"; its Delete asks in OF's ModalConfirm (its Delete clicked) and sends exactly one
    DELETE /api/of/v2/campaigns/7 with X-Account-Id 1, removes the row and stays on the tab. The Free trial links tab and
    the promotion page show their synthetic rows (the promotion's title, the bundle's "$20.35 USD total for 3 months").
-All Creators (scope key removed before every load): the Settings pages stand in with the first listed creator
-(ofMirrorProfile's STAND_IN_SRC), so typing "Synthetic link" and clicking "Create Link" sends one POST /campaigns
-{name} with X-Account-Id acc1 and lands on the Tracking links tab.
-No console errors in either pass. Prints one {"check","want","got"} line per check. Screenshots:
-/tmp/of-mirror-shots/inapp-settings-writes-tracking-filled.png, -tracking-tab.png, -all-models-tracking.png,
--promotion.png, -bundle.png, -trial.png (and -all-models- each), -rows-tracking.png, -rows-trials.png, -rows-promotion.png,
--all-models-rows-tracking.png.
+No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
+77e5df419; phase_check.py's one_creator checks it).
+No console errors. Prints one {"check","want","got"} line per check. Screenshots:
+/tmp/of-mirror-shots/inapp-settings-writes-tracking-filled.png, -tracking-tab.png,
+-promotion.png, -bundle.png, -trial.png, -rows-tracking.png, -rows-trials.png, -rows-promotion.png.
 Exit 1 on a failed check.
 """
 import json, os, sys
@@ -44,7 +42,6 @@ TRACKING="subscription/tracking-links/modal-1"
 TRACKING_TAB=f"{M}/settings/subscription/tracking-links"
 CREATE_LINK=".modal-footer button[type='submit']"
 NAME="input[name='name']"
-SELECT_MODEL="Select a model to save changes"
 NOT_YET="Not available in Inflowwww yet"
 # Page under settings/ -> (screenshot name, its button, its label, its write (None: disabled here), the tab it lands on).
 OFFERS={"subscription/promotion-campaign/modal-1":("promotion",".modal-footer button[type='submit']","Start campaign",
@@ -124,29 +121,23 @@ def wait_path(pg, path):
     pg.wait_for_timeout(500)  # a stray second write would land here
     return urlparse(pg.url).path
 ONE=[["POST",CAMPAIGNS,{"name":"Synthetic link"},"1"]]
-def offers(pg, writes, open_page, single):
-    """The offer dialogs (4), in the Single Creator (`single`) or the All Creators scope."""
-    scope, shot = ("", "") if single else ("all creators ", "all-models-")
+def offers(pg, writes, open_page):
+    """The offer dialogs (4), Single Creator."""
     for page, (name, sel, text, write, tab) in OFFERS.items():
         fr=open_page(page)
         if not fr: continue
         before=list(writes)
         state=fr.evaluate("([sel, text]) => [...document.querySelectorAll(sel)].filter(e => e.textContent.trim() === text).map(e => e.disabled)", [sel, text])
-        pg.screenshot(path=f"{SHOTS}/inapp-settings-writes-{shot}{name}.png")
+        pg.screenshot(path=f"{SHOTS}/inapp-settings-writes-{name}.png")
         if write is None:
-            check(f"{scope}{name}: {text} is disabled while OF offers no bundle", state, [True])
-            check(f"{scope}{name}: the dialog says why", fr.evaluate("document.querySelector('.modal.show p.g-input__help')?.textContent.trim() ?? null"),
-                  "OnlyFans offers no more subscription bundles for this page" if single else SELECT_MODEL)
+            check(f"{name}: {text} is disabled while OF offers no bundle", state, [True])
+            check(f"{name}: the dialog says why", fr.evaluate("document.querySelector('.modal.show p.g-input__help')?.textContent.trim() ?? null"),
+                  "OnlyFans offers no more subscription bundles for this page")
             continue
-        check(f"{scope}{name}: {text} is enabled", state, [False])
+        check(f"{name}: {text} is enabled", state, [False])
         fr.locator(sel, has_text=text).click()
-        if single:
-            check(f"{scope}{name}: lands on its tab", wait_path(pg, tab), tab)
-            check(f"{scope}{name}: exactly one POST of OF's default body", writes[len(before):], [write])
-        else:
-            pg.wait_for_timeout(800)
-            check(f"{scope}{name}: sends nothing", writes, before)
-            check(f"{scope}{name}: the select-a-model note", fr.evaluate(NOTE), SELECT_MODEL)
+        check(f"{name}: lands on its tab", wait_path(pg, tab), tab)
+        check(f"{name}: exactly one POST of OF's default body", writes[len(before):], [write])
 def rows(pg, writes, open_page):
     """The Relay's rows (5), Single Creator."""
     fr=open_page("subscription/tracking-links")
@@ -205,26 +196,12 @@ with sync_playwright() as p:
         fr.locator(NAME).press("Enter")
         check("tracking link Enter: lands on the Tracking links tab", wait_path(pg, TRACKING_TAB), TRACKING_TAB)
         check("tracking link Enter: exactly one POST /campaigns {name} with X-Account-Id 1", writes[before:], ONE)
-    offers(pg, writes, open_page, True)
+    offers(pg, writes, open_page)
     rows(pg, writes, open_page)
     print("relay writes:", writes)
     print("console errors:", [e[:160] for e in errs][:8])
     if errs: failures.append(f"{len(errs)} console error(s)")
 
-    # All Creators: the scope key cleared before every load.
-    pg, writes, errs, open_page=session(b, "localStorage.removeItem('chatterly:scope')")
-    fr=open_page(TRACKING)
-    if fr:
-        check("all creators: scope key absent", pg.evaluate("localStorage.getItem('chatterly:scope')"), None)
-        before=len(writes)
-        fr.locator(NAME).fill("Synthetic link")
-        fr.locator(CREATE_LINK).click()
-        check("all creators tracking link: lands on the Tracking links tab", wait_path(pg, TRACKING_TAB), TRACKING_TAB)
-        check("all creators tracking link: one POST /campaigns for the stand-in creator", writes[before:], [["POST",CAMPAIGNS,{"name":"Synthetic link"},"acc1"]])
-        pg.screenshot(path=f"{SHOTS}/inapp-settings-writes-all-models-tracking.png")
-    print("all creators relay writes:", writes)
-    print("all creators console errors:", [e[:160] for e in errs][:8])
-    if errs: failures.append(f"all creators: {len(errs)} console error(s)")
 if failures:
     print("FAIL:", *failures, sep="\n  "); sys.exit(1)
 print("settings_writes ok")

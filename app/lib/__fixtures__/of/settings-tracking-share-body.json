@@ -1,0 +1,6 @@
+{
+  "_note": "ticket 74: the tracking share hint's Share (record settings--tracking-shared-with-you, measured-in-js); synthetic ids. The app sends `relay`, the Relay sends OF `of`; the undo is OF's DELETE with the same body.",
+  "relay": {"campaignId": 6102, "userId": 7401},
+  "of": {"method": "POST", "path": "/campaigns/share-access", "body": {"campaignId": 6102, "userId": 7401}},
+  "undo": {"method": "DELETE", "path": "/campaigns/share-access", "body": {"campaignId": 6102, "userId": 7401}}
+}

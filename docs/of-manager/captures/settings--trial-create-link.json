@@ -1,0 +1,15 @@
+{
+  "id": "settings--trial-create-link",
+  "section": "settings",
+  "label": "Create link",
+  "pages": [
+    "settings/subscription/trial-links/modal-1"
+  ],
+  "phase": 3,
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T122321Z-ofm-live-7adc69d60",
+    "undo": "undone"
+  }
+}

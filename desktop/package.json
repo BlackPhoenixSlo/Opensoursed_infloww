@@ -62,7 +62,11 @@
       ],
       "identity": null,
       "artifactName": "${productName}-${version}-${arch}.${ext}",
-      "icon": "build/icon.icns"
+      "icon": "build/icon.icns",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Go live uses your camera to stream on OnlyFans.",
+        "NSMicrophoneUsageDescription": "Go live uses your microphone to stream on OnlyFans."
+      }
     },
     "dmg": {
       "writeUpdateInfo": false

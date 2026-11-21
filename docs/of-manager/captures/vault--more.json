@@ -1,0 +1,16 @@
+{
+  "id": "vault--more",
+  "section": "vault",
+  "label": "More",
+  "phase": 2,
+  "pages": [
+    "vault/list"
+  ],
+  "note": "The vault folder page's header More: it opens the folder menu (Rename, Delete) and sends nothing itself. Known body: the vault list's existing folder routes, sent by useVaultCache's own builders (not captured here): Rename POST /admin/vault-ai/of-folders/{id}/rename {account_id, name} (the folder's Rename category modal, vault/state-add-list?edit=1, as the action row's RENAME), Delete DELETE /admin/vault-ai/of-folders/{id}?account_id= (confirmed, then the bare Vault); the Relay sends them on as OF's PATCH /api2/v2/vault/lists/{id} {name} and DELETE /api2/v2/vault/lists/{id} {clearMedia: false} (service/of_sends.py). The menu's rows are assumed (no capture of OF's folder menu; the captured v-menu is empty). Proofs vault.more.rename and vault.more.delete (scripts/of-live-proof/proofs/phase2.py) run on a folder the run creates through the page's own Create new category; both passed Live on the Proof Creator 2026-11-21 (the delete run's evidence is in ticket 53's Undo log), each folder deleted after.",
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T092109Z-ofm-live-c1a75b457",
+    "undo": "undone"
+  }
+}

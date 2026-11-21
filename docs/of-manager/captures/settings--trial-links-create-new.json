@@ -1,0 +1,16 @@
+{
+  "id": "settings--trial-links-create-new",
+  "section": "settings",
+  "label": "Create new free trial link",
+  "pages": [
+    "settings/subscription/trial-links/modal-1",
+    "settings/subscription/trial-links/state-kebab"
+  ],
+  "phase": 3,
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T122052Z-ofm-live-f9cf0cde7",
+    "undo": "none"
+  }
+}

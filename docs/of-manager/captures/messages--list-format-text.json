@@ -1,0 +1,16 @@
+{
+ "id": "messages--list-format-text",
+ "section": "messages",
+ "label": "Format Text",
+ "phase": 2,
+ "pages": [
+  "messages/send/state-list-dropdown"
+ ],
+ "note": "New message's list page (its list menu open), on the Mass draft only; the list Send is never run (ADR-0042). Opens New message with its Format text panel; the formatting is the Mass draft's html. No write.",
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T122214Z-ofm-live-2ba2c23f0",
+  "undo": "none"
+ }
+}

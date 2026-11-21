@@ -10,6 +10,26 @@
  */
 
 import { useEffect, type RefObject } from "react";
+import { BRAND_NAME } from "@/lib/brand";
+
+/** The house tooltip of a control Inflowwww never writes (the generator's NOT_YET_TITLE). Defined here, the one place:
+ * this module imports no other mirror module, so ofMirrorWrites, ofMirrorHandoffs and ofMirrorSettingsPages share it. */
+export const NOT_YET = `Not available in ${BRAND_NAME} yet`;
+
+/** A control its binder owns: enabled and data-oi-wired (ofMirrorWrites' read-only fallback skips it); `live`: its Live
+ *  proof passed (D1), the Not-yet title dropped. */
+export function markWired(el: Element, live: boolean): void {
+  if ("disabled" in el) el.disabled = false;
+  if (live) el.removeAttribute("title");
+  el.setAttribute("data-oi-wired", "");
+}
+
+/** A control no binder owns (its switch off, or its binder unbound): disabled, the Not-yet title, not data-oi-wired. */
+export function markNotYet(el: Element): void {
+  if ("disabled" in el) el.disabled = true;
+  el.setAttribute("title", NOT_YET);
+  el.removeAttribute("data-oi-wired");
+}
 
 /**
  * A disabled control's tooltip, in place of "Not available in Inflowwww yet", where another Inflowwww page does its job

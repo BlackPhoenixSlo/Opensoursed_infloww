@@ -6,7 +6,9 @@
  * markup; the fan's state is `GET /api/of/v2/users/list?ids=<fan>` (OF's user: displayName, notice, listsStates,
  * isRestricted, isBlocked, its subscription flags), the chat's `GET /api/of/v2/chats/<fan>`.
  *
- * Header (messages/chat and the menu page over it):
+ * Header (messages/chat and every State page over it: the menu, price, schedule, tag people and vault):
+ * - the More (OF's ⋮): Wired; the generator's State link over it opens the menu page for this fan, and on the menu page
+ *   goes back to the chat (keepQuery carries the fan).
  * - the name's pencil (OF's UserCustomName, while canEditDisplayName): "Rename user", PUT /subscriptions/<fan>/custom-name
  *   {name} (the Relay's PUT /subscriptions/{id} {displayName}; "" clears; Messages Pro's FanDrawer writer).
  * - the star (OF's lists button): filled (`icon-star-on`, m-active) while the fan is in a list of the Creator's own
@@ -132,6 +134,8 @@ export interface ChatToolsContext {
 const TOOL = "[data-oi-tool]";
 const MENU_ITEM = ".of-state-menu [data-oi-menu]";
 const MENU = ".of-state-menu";
+// The chat header's More (OF's ⋮). Pinned's own header button is ofMirrorMessageMenu's.
+const HEADER_MORE = ".b-chat__header .b-dropdown-wrapper > button.m-btn-vertical-dots:not(.m-size-sm):not([data-oi-pinned-menu])";
 const NOTES_ID = "oi-chat-notes";
 const RENAME_ID = "oi-chat-rename";
 const LISTS_ID = "oi-chat-lists";
@@ -413,7 +417,8 @@ export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToo
 }
 
 /**
- * Wire the chat header's tools and (on the menu page) its menu in `doc` for `ctx`. Returns an unbind.
+ * Wire the chat header's tools, its More and (on the menu page) its menu in `doc` for `ctx`: the chat page and every
+ * State page over it. Returns an unbind.
  */
 export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext): () => void {
   const { fan, writes } = ctx;
@@ -427,6 +432,9 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
   const star = tool("lists");
   const notes = tool("notes");
   for (const el of [pencil, star, notes]) el?.setAttribute("data-oi-wired", "");
+  // The More on the chat page and each State page over it: Wired, its Not-yet title kept until its Live proof (decisions
+  // D1). The generator's State link over it takes the click; a State page's dialog covers both (and the tools above).
+  doc.querySelector(HEADER_MORE)?.setAttribute("data-oi-wired", "");
   if (fan) {
     if (pencil) pencil.style.display = canRename(fan) ? "" : "none";
     if (star) {
@@ -573,8 +581,8 @@ export function chatToolWrites(accountId: string, fan: string, qc: QueryClient):
   };
 }
 
-/** A chat page or the menu page over it: its mirror path, else "". */
-const pageOf = (src: string) => /^\/of-mirror\/pages\/(messages\/chat(?:\/state-header-menu)?)\.html$/.exec(src)?.[1] ?? "";
+/** A chat page or a State page over it (its menu, price, schedule, tags, vault): its mirror path, else "". */
+const pageOf = (src: string) => /^\/of-mirror\/pages\/(messages\/chat(?:\/state-[a-z-]+)?)\.html$/.exec(src)?.[1] ?? "";
 
 /** The chat header's tools and menu: bind on every frame load and fan or chat change. */
 export function useOfChatTools(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {

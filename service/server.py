@@ -58,6 +58,7 @@ import lane_config  # noqa: E402  # durable store behind the Concurrency panel
 import account_health  # noqa: E402  # dead-session pause (see service/account_health.py)
 import pump_reconcile  # noqa: E402  # the pump supervisor's pass, pure (see service/pump_reconcile.py)
 import account_page  # noqa: E402  # free-vs-paid page (see service/account_page.py)
+import runtime_switches  # noqa: E402  # Settings → System switches (OFM_NEW_WRITES_ENABLED gates ofm-not-yet writes)
 import ownership  # noqa: E402  # owned-media semantics (see service/ownership.py)
 import proxies as proxy_registry  # noqa: E402
 from brand import BRAND_NAME  # noqa: E402
@@ -68,7 +69,7 @@ import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
 import owner_tokens as _owner_tokens  # noqa: E402  # `Bearer ifw_…` parse, for the share-token gate
 import token_auth as _token_auth  # noqa: E402  # owner-token cookie strip (ASGI) + route allowlist
 from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, READ_TIMING, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError, OFSessionRetired, OFSignedPoolBusy, timing_add  # noqa: E402
-from of_rich_text import MARKUP_MAX  # noqa: E402
+from of_rich_text import MARKUP_MAX, is_of_html, sanitize_of_html  # noqa: E402
 import client_pool  # noqa: E402 — the relay's one OFClient pool
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
 
@@ -135,6 +136,7 @@ from vault_download_api import CUT_SHORT as _vault_cut_short, router as _vault_d
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from of_consent_api import router as _of_consent_router  # noqa: E402
+from of_live_window import router as _of_live_window_router  # noqa: E402
 from assistant_api import router as _assistant_router  # noqa: E402
 from assistant_draft import router as _assistant_draft_router  # noqa: E402
 from report_recipe_api import router as _report_recipe_router  # noqa: E402
@@ -415,6 +417,7 @@ app.include_router(_style_config_router)
 app.include_router(_account_config_router)
 # A Creator's "Auto-accept OnlyFans consent" switch (/admin/of-consent/{id}); its PUT is owner-only.
 app.include_router(_of_consent_router)
+app.include_router(_of_live_window_router)
 # In-product help bot (POST /admin/assistant/ask). Under /admin/* so it
 # inherits the share-token gate + account-isolation middleware; chatters
 # may ask (deliberately not in _CHATTER_BLOCKED_ADMIN_PREFIXES) and the
@@ -4904,6 +4907,15 @@ def of_settings_story():
     """Story settings (who may reply to stories)."""
     return _proxy(lambda: _get_client().settings_story())
 
+# ticket 70: Settings > Things I Like's list. Here, not in of_stats_api.py: one segment under /users/, so ahead of the
+# /users/{user_id_or_username} catch-all below.
+@app.get("/api/of/v2/users/links")
+def of_users_links():
+    """Things I Like's links: OF's GET /users/links (a list of {id, sort, url, title, description, image}:
+    the link is `url`, measured live 2026-11-21). Creating one (PUT `{link}`) and deleting one is of_add_users_link /
+    of_delete_users_link."""
+    return _proxy(lambda: _get_client().users_links())
+
 @app.get("/api/of/v2/schedules/later/chat")
 def of_schedules_later_chat(limit: int = Query(10, ge=1, le=50)):
     """Chats scheduled for the future (newer API than /messages/queue)."""
@@ -4962,15 +4974,22 @@ def of_transactions(
         start_date=startDate, marker=marker, tips_source=tipsSource,
     ))
 
+# A day, or a day and time (both honoured by OF, measured 2026-11-21); never an ISO `T…Z` (the payouts ledger answers
+# one empty: of_reads.transactions).
+_STATS_DAY = r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$"
+
 @app.get("/api/of/v2/payouts/stats")
 @_account_ttl("payouts", 60)
 def of_earning_stats(
     by: str = Query("day", pattern="^(day|week|month)$"),
-    start: str | None = Query(None),
-    end: str | None = Query(None),
+    startDate: str | None = Query(None, pattern=_STATS_DAY,
+                                  description="Statements' Custom period: its first day (YYYY-MM-DD)"),
+    endDate: str | None = Query(None, pattern=_STATS_DAY,
+                                description="Statements' Custom period: its last day (YYYY-MM-DD)"),
 ):
-    """Time-series earnings totals."""
-    return _proxy(lambda: _get_client().earning_stats(by=by, start=start, end=end))
+    """Time-series earnings totals; a range as OF's own startDate/endDate, sent on as is (OF ignores start/end here,
+    of_reads.earning_stats)."""
+    return _proxy(lambda: _get_client().earning_stats(by=by, start_date=startDate, end_date=endDate))
 
 
 # ── Stories ────────────────────────────────────────────────────
@@ -5780,9 +5799,23 @@ class _TrackingLinkBody(BaseModel):
     name: str
     code: int | None = None
 
+# ticket 61: the tracking links Sort menu's fields (its committed State page radios, campaign-field; the Reach read's
+# `field`). `inferred` (D29): no capture of the settings page's own sorted read.
+_CAMPAIGN_SORT_FIELDS = {"created_date", "name", "subscribers_counts", "clicks_count", "shared"}
+
+
+def _campaign_sort_check(field: str | None, sort: str | None) -> None:
+    """422 unless `field` is a _CAMPAIGN_SORT_FIELDS one with a `sort`; neither given is OF's default order."""
+    if (field or sort) and (field not in _CAMPAIGN_SORT_FIELDS or not sort):
+        raise HTTPException(status_code=422, detail=f"field: one of {sorted(_CAMPAIGN_SORT_FIELDS)}, with sort asc|desc")
+
 @app.get("/api/of/v2/campaigns")
-def of_tracking_links():
-    """Tracking link list with countSubscribers + countTransitions stats."""
+def of_tracking_links(field: str | None = Query(None, description="OF's sort field (campaign-field)"),
+                      sort: str | None = Query(None, pattern="^(asc|desc)$")):
+    """Tracking link list with countSubscribers + countTransitions stats; `field` + `sort` is OF's own sort menu."""
+    _campaign_sort_check(field, sort)
+    if field:
+        return _proxy(lambda: _get_client().tracking_links_sorted(field=field, sort=sort))
     return _proxy(lambda: _get_client().tracking_links())
 
 @app.post("/api/of/v2/campaigns")
@@ -5790,6 +5823,45 @@ def of_create_tracking_link(body: _TrackingLinkBody = Body(...)):
     return _proxy(lambda: _get_client().create_tracking_link(
         name=body.name, code=body.code,
     ))
+
+# ticket 74: the "Shared with you" tab and the share hint (record settings--tracking-shared-with-you, measured-in-js).
+# OF's own body keys, so the share's undo sends back exactly what OF sent. Declared before /campaigns/{campaign_id}.
+@app.get("/api/of/v2/campaigns/share-access")
+def of_tracking_links_shared_with_me(field: str | None = Query(None, description="OF's sort field (campaign-field)"),
+                                     sort: str | None = Query(None, pattern="^(asc|desc)$"),
+                                     limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0)):
+    """The "Shared with you" tab: other creators' tracking links shared with this model."""
+    _campaign_sort_check(field, sort)
+    return _proxy(lambda: _get_client().tracking_links_shared_with_me(limit=limit, offset=offset, field=field, sort=sort))
+
+# ofm-not-yet's new OF write routes (ticket 63 onwards) are inert until the owner turns on OFM_NEW_WRITES_ENABLED
+# (runtime_switches, default off): each answers 404 before any OF call, as of_live_window's. The Mirror reads
+# GET /api/of/ofm-writes (app/lib/ofMirrorNewWrites.ts) and leaves those controls Not available while it is 404.
+OFM_NEW_WRITES = "OFM_NEW_WRITES_ENABLED"
+
+
+_ofm_new_writes_on = runtime_switches.require_switch(OFM_NEW_WRITES)
+_OFM_WRITES = [Depends(_ofm_new_writes_on)]
+
+
+@app.get("/api/of/ofm-writes", dependencies=_OFM_WRITES)
+def of_ofm_writes_probe():
+    """The OF Manager's new-writes switch probe: `{"on": true}`, or 404 while OFM_NEW_WRITES_ENABLED is off."""
+    return {"on": True}
+
+class _ShareCampaignBody(BaseModel):
+    campaignId: int = Field(..., ge=1)
+    userId: int = Field(..., ge=1)
+
+@app.post("/api/of/v2/campaigns/share-access", dependencies=_OFM_WRITES)
+def of_share_campaign_stats(body: _ShareCampaignBody = Body(...)):
+    """Share a tracking link's statistics with another creator."""
+    return _proxy(lambda: _get_client().share_campaign_stats(campaign_id=body.campaignId, user_id=body.userId))
+
+@app.delete("/api/of/v2/campaigns/share-access", dependencies=_OFM_WRITES)
+def of_unshare_campaign_stats(body: _ShareCampaignBody = Body(...)):
+    """Stop sharing a tracking link's statistics (the share's undo)."""
+    return _proxy(lambda: _get_client().unshare_campaign_stats(campaign_id=body.campaignId, user_id=body.userId))
 
 @app.delete("/api/of/v2/campaigns/{campaign_id}")
 def of_delete_tracking_link(campaign_id: int):
@@ -5860,13 +5932,35 @@ _PROFILE_KEYS = frozenset({
     "recommenderReward", "sendAwardsTop1", "sendAwardsTop5",
     "isVisibleOnline", "isOldLoginRedirect", "commentsOnlyForPayers", "creatorsCommentsOnlyForFriends",
     "notifyOnAllMentions", "muteTagsInChats", "muteTagsInPosts", "muteTagsInStories",
+    # ticket 60: settings/messaging's Tip-from-free-followers switch (ofMirrorSettingsWrites DRAWN_TOGGLES)
+    "canAcceptMessageOnlyFromFriends",
+    # ticket 67: Edit profile's cover and avatar (ofMirrorWrites ProfileImagePatch): an upload item or "" (removed)
+    "avatar", "header",
 })
+# The keys new to this write (tickets 60, 67): refused while OFM_NEW_WRITES_ENABLED is off.
+_PROFILE_NEW_KEYS = frozenset({"canAcceptMessageOnlyFromFriends", "avatar", "header"})
+# ticket 67: an uploaded image's keys (of_upload `_send_with`, the capture's uploadedFilesUrl item).
+_PROFILE_IMAGE_ITEM_KEYS = frozenset({"processId", "host", "name", "extra", "thumbId"})
+
+
+def _check_profile_images(body: dict) -> None:
+    """ticket 67: `avatar`/`header` are "" (removed) or an upload item of `_PROFILE_IMAGE_ITEM_KEYS` with a processId; else 422."""
+    for key in ("avatar", "header"):
+        if key not in body or body[key] == "":
+            continue
+        v = body[key]
+        if not (isinstance(v, dict) and v.get("processId") and set(v) <= _PROFILE_IMAGE_ITEM_KEYS):
+            raise HTTPException(status_code=422, detail=f"{key}: an uploaded image or \"\"")
+
+
 _SECURITY_PATCH_KEYS = frozenset({
     "isSuggestionsOptOut", "phoneOtp", "isPrivate", "showPostsTips", "showFriendsToSubscribers",
     "showSubscribesOffers", "showSubscribersCount", "isWantComments", "isAutoFollowBack",
     "unfollowAutoFollowBack", "coStreamingRequestFrom", "showMediaCount", "isDrmEnabled",
     "requireFaceIdForPayoutUpdate",
 })
+# Fully private is new to the mirror's writes: refused while OFM_NEW_WRITES_ENABLED is off.
+_SECURITY_NEW_KEYS = frozenset({"isPrivate"})
 _WATERMARK_KEYS = frozenset({"hasWatermarkPhoto", "hasWatermarkVideo", "watermarkText", "watermarkPosition"})
 
 
@@ -5882,8 +5976,13 @@ def _allowed_body(body: dict, allowed: frozenset[str]) -> dict:
 @app.patch("/api/of/v2/users/me")
 def of_update_profile(body: dict = Body(...)):
     """PATCH /users/me — profile fields and the settings toggles OF saves here:
-    only the `_PROFILE_KEYS` the mirror sends (422 on any other)."""
-    body = _allowed_body(body, _PROFILE_KEYS)
+    only the `_PROFILE_KEYS` the mirror sends (422 on any other). While OFM_NEW_WRITES_ENABLED is off the
+    `_PROFILE_NEW_KEYS` are refused too (422) and `about` goes as typed, as on main."""
+    new_writes = runtime_switches.on(OFM_NEW_WRITES)
+    body = _allowed_body(body, _PROFILE_KEYS if new_writes else _PROFILE_KEYS - _PROFILE_NEW_KEYS)
+    _check_profile_images(body)   # ticket 67
+    if new_writes and isinstance(body.get("about"), str) and is_of_html(body["about"]):
+        body = {**body, "about": sanitize_of_html(body["about"])}   # ticket 68: a formatted bio, OF's tags only
     result = _proxy(lambda: _get_client().update_profile(**body))
     # BC5 invalidation: many /users/me fields are mirrored under
     # /users/me/settings, so any profile patch may change the cached blob.
@@ -5907,7 +6006,8 @@ def _settings_write(call: Callable[[], Any]) -> Any:
 @app.patch("/api/of/v2/users/me/settings/security")
 def of_patch_security_settings(body: dict = Body(...)):
     """One security-section toggle, `{key: value}`, as OF's settings pages send it (`_SECURITY_PATCH_KEYS`)."""
-    body = _allowed_body(body, _SECURITY_PATCH_KEYS)
+    allowed = _SECURITY_PATCH_KEYS if runtime_switches.on(OFM_NEW_WRITES) else _SECURITY_PATCH_KEYS - _SECURITY_NEW_KEYS
+    body = _allowed_body(body, allowed)
     return _settings_write(lambda: _get_client().patch_security_settings(body))
 
 @app.put("/api/of/v2/users/me/settings/security")
@@ -5927,6 +6027,112 @@ def of_patch_notification_settings(body: dict = Body(...)):
 def of_patch_story_settings(body: _StorySettingsBody = Body(...)):
     """Story replies switch: `{allowReplyFrom: "subscribers" | "nobody"}`."""
     return _settings_write(lambda: _get_client().patch_story_settings(body.allowReplyFrom))
+
+# ticket 63
+@app.delete("/api/of/v2/sessions", dependencies=_OFM_WRITES)
+def of_close_all_sessions():
+    """Login sessions' Close all sessions: OF's DELETE /sessions, no body (`account-lockout`). The client's
+    `_denied` backstop still refuses it (403 refused_by_relay, nothing sent) until the owner's go (ticket 81)."""
+    return _settings_write(lambda: _get_client().close_all_sessions())
+
+# ticket 66: Block by country and Block by IP (records settings--block-by-country, settings--block-by-ip,
+# measured-in-js): OF's own security PUT with only that control's keys, each on its own route under
+# `account-lockout`, never the general security PUT above (watermarks only). The body is the whole list.
+def _list_body(body: dict, kinds: dict[str, type]) -> dict:
+    """`body` when its keys are exactly `kinds`' and each is a list of that type, else 422."""
+    body = _allowed_body(body, frozenset(kinds))
+    for key, kind in kinds.items():
+        value = body.get(key)
+        if not isinstance(value, list) or any(type(x) is not kind for x in value):
+            raise HTTPException(status_code=422, detail=f"{key}: a list of {kind.__name__}")
+    return body
+
+@app.get("/api/of/v2/countries")
+def of_countries():
+    """Block by country's picker: OF's country list (`?all=1`), `[{code, name, ...}]`."""
+    return _proxy(lambda: _get_client().countries())
+
+@app.put("/api/of/v2/users/me/settings/security/blocked-countries", dependencies=_OFM_WRITES)
+def of_block_countries(body: dict = Body(...)):
+    """Block by country's Save: `{blockedCountries: [code], blockedStates: [id]}` (`account-lockout`)."""
+    body = _list_body(body, {"blockedCountries": str, "blockedStates": int})
+    return _settings_write(lambda: _get_client().put_security_settings(body))
+
+@app.put("/api/of/v2/users/me/settings/security/blocked-ips", dependencies=_OFM_WRITES)
+def of_block_ips(body: dict = Body(...)):
+    """Block by IP's Save: `{blockedIps: [ip]}`, `[]` to clear (`account-lockout`)."""
+    body = _list_body(body, {"blockedIps": str})
+    return _settings_write(lambda: _get_client().put_security_settings(body))
+
+def _is_http_link(v: str) -> bool:
+    """An http(s) URL with a dotted host: the social buttons' and Things I Like links' check."""
+    return re.fullmatch(r"https?://[^\s/]+\.[^\s]+", v) is not None
+
+
+# ticket 69: Settings > Social media's Add button and a button's remove (capture record settings--social-media-buttons).
+_SOCIAL_BUTTON_KEYS = frozenset({"socialMedia", "label", "link", "username"})
+
+@app.put("/api/of/v2/users/social/buttons", dependencies=_OFM_WRITES)
+def of_add_social_button(body: dict = Body(...)):
+    """OF's PUT /users/social/buttons `{socialMedia, label, link, username}` (OF answers the whole list): only those
+    keys, each a string, `socialMedia` and `label` non-blank, and exactly one of `link` (an http(s) URL: a link
+    provider's) or `username` (a username provider's; OF's form sends the other "", 67786.js) (422 otherwise). Which
+    providers OF takes is OF's to say (its 400 "SocialMedia contains invalid value")."""
+    body = _allowed_body(body, _SOCIAL_BUTTON_KEYS)
+    if not all(isinstance(v, str) for v in body.values()):
+        raise HTTPException(status_code=422, detail="every value is a string")
+    link, username = str(body.get("link") or ""), str(body.get("username") or "").strip()
+    link_ok = _is_http_link(link)
+    if (not str(body.get("label") or "").strip() or not str(body.get("socialMedia") or "").strip()
+            or bool(link) == bool(username) or (link and not link_ok)):
+        raise HTTPException(status_code=422, detail="socialMedia, label and either an http(s) link or a username are required")
+    return _settings_write(lambda: _get_client().add_social_button(body))
+
+@app.delete("/api/of/v2/users/social/buttons/{button_id}", dependencies=_OFM_WRITES)
+def of_delete_social_button(button_id: int):
+    """One social media button's remove: OF's DELETE /users/social/buttons/{id}, no body."""
+    return _settings_write(lambda: _get_client().delete_social_button(button_id))
+
+# ticket 70: Settings > Things I Like's Create link and a link's delete (capture record settings--things-i-like-links).
+_USERS_LINK_KEYS = frozenset({"link"})
+
+@app.put("/api/of/v2/users/links", dependencies=_OFM_WRITES)
+def of_add_users_link(body: dict = Body(...)):
+    """OF's PUT /users/links `{link}` (OF answers the whole list): only that key, an http(s) URL string (422 otherwise).
+    OF's own form takes only Amazon/Goodreads/IMDB/YouTube/OFTV links; that check is the Mirror's (inferred hosts)."""
+    body = _allowed_body(body, _USERS_LINK_KEYS)
+    if not isinstance(body.get("link"), str) or not _is_http_link(body["link"]):
+        raise HTTPException(status_code=422, detail="an http(s) link is required")
+    return _settings_write(lambda: _get_client().add_users_link(body))
+
+@app.delete("/api/of/v2/users/links/{link_id}", dependencies=_OFM_WRITES)
+def of_delete_users_link(link_id: int):
+    """One Things I Like link's delete: OF's DELETE /users/links/{id}, no body."""
+    return _settings_write(lambda: _get_client().delete_users_link(link_id))
+
+# ticket 76
+@app.delete("/api/of/v2/streams/obs/key", dependencies=_OFM_WRITES)
+def of_reset_stream_key(server: Literal["obs_agora", "mux_direct"] = Query(..., alias="type"), body: dict | None = Body(None)):
+    """Settings > Streaming's Reset stream key: OF's DELETE /streams/obs/key?type=<shown OBS server>, no body
+    (`account-lockout`; any body key 422s, as does a type other than OF's two). Drops the cached settings, whose
+    re-read carries the new key (never drawn: the page shows the mask)."""
+    if body:
+        raise HTTPException(status_code=422, detail="no body allowed")
+    return _settings_write(lambda: _get_client().reset_stream_key(server))
+
+# ticket 73
+@app.post("/api/of/v2/streams/users/{username}/block", dependencies=_OFM_WRITES)
+def of_block_stream_viewer(username: str = PathParam(..., pattern=r"^[A-Za-z0-9._-]{1,24}$"), body: dict | None = Body(None)):
+    """Settings > Streaming > Blocked users' Block a username: OF's POST /streams/users/{username}/block, no body
+    (`block-fan`; any body key 422s). ASSUMPTION: OF usernames are 1–24 of [A-Za-z0-9._-] (the form's maxlength 24)."""
+    if body:
+        raise HTTPException(status_code=422, detail="no body allowed")
+    return _proxy(lambda: _get_client().block_stream_viewer(username))
+
+@app.delete("/api/of/v2/streams/users/{user_id}/block", dependencies=_OFM_WRITES)
+def of_unblock_stream_viewer(user_id: int):
+    """A Blocked users row's remove: OF's DELETE /streams/users/{user_id}/block (the row's id; `block-fan`)."""
+    return _proxy(lambda: _get_client().unblock_stream_viewer(user_id))
 
 # ── Statistics + Settings reads (Earnings/Engagement/Reach, Statements, referrals, bookmarks) ──
 # Live in of_stats_api.py; included HERE (not top-of-file) to keep route order.
@@ -6433,6 +6639,59 @@ async def of_upload_media(file: UploadFile = File(...)):
     except Exception as e:  # noqa: BLE001 — cache invalidation must never block the upload response
         log.warning("vault_cache: invalidate-on-upload failed: %s", e)
     return result
+
+
+# ticket 67: Edit profile's cover and avatar upload (capture record settings--profile-cover-avatar): OF's upload steps
+# (signed/create, the S3 PUT, the convert claim with `additional[customThumbSize]`, `inferred`; no hash dedupe, OF's
+# `isAvoidHash`), answering the upload item the profile Save then PATCHes /users/me with. Multipart form: `file` and
+# `kind` ("avatar" | "header"), nothing else (422). Only JPEG, PNG, GIF or WebP up to one upload part (5 MiB, so the
+# upload is a single PUT, as the record's sequence without signed/finish) is taken; anything else is refused before
+# any OF request (413/415). Nothing is cached for it: the Save's PATCH drops the settings blob.
+from starlette.datastructures import UploadFile as StarletteUploadFile  # noqa: E402  (request.form()'s parts)
+
+PROFILE_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
+PROFILE_IMAGE_MAX = 5 * 1024 * 1024
+
+
+@app.post("/api/of/v2/users/me/profile-image", dependencies=_OFM_WRITES)
+async def of_upload_profile_image(request: Request):
+    """POST /api/of/v2/users/me/profile-image — upload a cover (`kind` header) or avatar image; answers the upload item."""
+    import tempfile, shutil
+    length = request.headers.get("content-length")
+    if length and length.isdigit() and int(length) > PROFILE_IMAGE_MAX + 64 * 1024:
+        raise HTTPException(status_code=413, detail="image over 5 MB")
+    form = await request.form()
+    if extra := sorted(set(form.keys()) - {"file", "kind"}):
+        raise HTTPException(status_code=422, detail=f"keys not allowed: {', '.join(extra)}")
+    file, kind = form.get("file"), form.get("kind")
+    if kind not in ("avatar", "header"):
+        raise HTTPException(status_code=422, detail="kind: avatar or header")
+    if not isinstance(file, StarletteUploadFile):
+        raise HTTPException(status_code=422, detail="file: missing")
+    if (file.content_type or "").lower() not in PROFILE_IMAGE_TYPES:
+        raise HTTPException(status_code=415, detail="only JPEG, PNG, GIF or WebP images")
+    if file.size is None or file.size > PROFILE_IMAGE_MAX:
+        raise HTTPException(status_code=413, detail="image over 5 MB")
+
+    def _upload():
+        tmp_dir = tempfile.mkdtemp(prefix="of-profile-image-")
+        try:
+            tmp_path = os.path.join(tmp_dir, _upload_basename(file.filename))
+            with open(tmp_path, "wb") as tmp:
+                shutil.copyfileobj(file.file, tmp)
+            return _proxy(lambda: _get_client().upload_media(
+                tmp_path, content_type=file.content_type, check_dedupe=False, thumb_size=kind))
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    result = await asyncio.to_thread(_upload)   # off the loop, as of_upload_media
+    if not isinstance(result, dict) or not result.get("ready"):
+        note = result.get("note") if isinstance(result, dict) else None
+        raise HTTPException(status_code=502, detail=f"upload failed: {note or 'no upload item'}")
+    items = result.get("send_with")
+    if not isinstance(items, list) or not items or not isinstance(items[0], dict):
+        raise HTTPException(status_code=502, detail="upload failed: no upload item")
+    return items[0]
 
 
 # ── Vault import (fan check, batch, append, Drive list, status) ─────────

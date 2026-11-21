@@ -27,10 +27,13 @@ import { useOfChat } from "@/lib/ofMirrorChat";
 import { useOfCollections } from "@/lib/ofMirrorCollections";
 import { useOfData } from "@/lib/ofMirrorData";
 import { useOfChats } from "@/lib/ofMirrorChats";
+import { useOfPinHome } from "@/lib/ofMirrorPinHome";
+import { useOfNotifications } from "@/lib/ofMirrorNotifications";
 import { useOfLanguage } from "@/lib/ofMirrorLanguage";
 import { useOfQr } from "@/lib/ofMirrorQr";
 import { useOfPhone } from "@/lib/ofMirrorPhone";
 import { useOfStreamBlocked } from "@/lib/ofMirrorStreamBlocked";
+import { useOfGoLiveWindow } from "@/lib/ofMirrorGoLiveWindow";
 import { useOfPostActions } from "@/lib/ofMirrorHome";
 import { ofMeQuery, useOfIdentity } from "@/lib/ofMirrorIdentity";
 import { useOfMoney } from "@/lib/ofMirrorMoney";
@@ -47,6 +50,8 @@ import { useOfSubscription } from "@/lib/ofMirrorSubscription";
 import { useOfRow } from "@/lib/ofMirrorRow";
 import { useOfSettings } from "@/lib/ofMirrorSettings";
 import { useOfSettingsWrites } from "@/lib/ofMirrorSettingsWrites";
+import { useOfScheduleSearch } from "@/lib/ofMirrorScheduleSearch";
+import { useOfStreamCopy } from "@/lib/ofMirrorStreamCopy";
 import { useOfTheme } from "@/lib/ofMirrorTheme";
 import { useOfTooltips } from "@/lib/ofMirrorTooltip";
 import { useOfVault } from "@/lib/ofMirrorVault";
@@ -83,11 +88,14 @@ function Frame({ src, title, standIn }: { src: string; title: string; standIn: s
   useOfIdentity(ref, src);
   useOfSettings(ref, src);
   useOfWrites(ref, src);
-  useOfSettingsWrites(ref, src);
+  useOfSettingsWrites(ref, src, standIn); // ticket 63: a Lockout control acts for a picked model only
   useOfSubscription(ref, src); // Subscription settings: promotion, bundle, tracking and free trial link rows
   useOfQr(ref, src); // Settings > QR code: OF's code, its two switches and Download
   useOfLanguage(ref, src); // Settings > Display > Language: OF's client-only pick, and Display's row
-  useOfStreamBlocked(ref, src); // Settings > Streaming > Blocked users: OF's list, read-only
+  useOfStreamBlocked(ref, src); // Settings > Streaming > Blocked users: OF's list, Block a username and a row's unblock (ticket 73)
+  useOfStreamCopy(ref, src, standIn); // Settings > Streaming: Copy link / Copy key to the clipboard (the key never in the page)
+  useOfScheduleSearch(ref, src); // ticket 84: the stream schedule form's right column search, as Home's
+  useOfGoLiveWindow(ref, src); // Go live's Start: the desktop Go live window, or Download the app (switch OF_LIVE_WINDOW_ENABLED)
   useOfOffers(ref, src); // the promotion, bundle and free trial link dialogs, the trial links' sort and share, Stop promotion
   useOfPost(ref, src);
   useOfStory(ref, src);
@@ -97,7 +105,9 @@ function Frame({ src, title, standIn }: { src: string; title: string; standIn: s
   useOfRow(ref, src);
   useOfData(ref, src); // after useOfRow: its load handler runs later, so the real rows win
   useOfChats(ref, src); // the chat list's tabs, sort menu, search, folders, Clear messages and Mark all as read
+  useOfPinHome(ref, src); // Home's feed tabs pencil: Pin to home's lists and Sort (the pin stays read-only)
   useOfQueue(ref, src);
+  useOfNotifications(ref, src); // Notifications: Search users (?related_user=), the aside's search, the new-event button
   useOfReleaseForms(ref, src); // Release forms: the Tag user and Release form lists, their search, Sort, row More and Invite
   useOfMoney(ref, src); // Statements and Statistics balances, earning statistics, referral earnings, chargeback ratio
   useOfStats(ref, src); // Statistics: the period menu, figures, tables, charts and chargeback ratio for the period picked

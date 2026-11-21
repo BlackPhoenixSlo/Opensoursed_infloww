@@ -128,6 +128,33 @@ export function periodOf(key: PeriodKey, now: Date, tz: string | null, userStart
   };
 }
 
+/**
+ * OF's Custom period picker's days (ofMirrorDatepicker): `start`..`end` picked, `now` as today, pickable from the
+ * Creator's start (`/users/me/start-date-model`; none: from `start`) to today, each the calendar day in `tz` (null: the
+ * browser's). Statistics' Custom opens on the period shown; Statements' From … To (ticket 20) on today (start = end = now).
+ */
+export function pickerDays(start: Date, end: Date, now: Date, tz: string | null, userStart: Date | null): { start: Day; end: Day; today: Day; userStart: Day | null } {
+  const day = (at: Date): Day => {
+    const w = wallOf(at, tz);
+    return { y: w.y, m: w.m, d: w.d };
+  };
+  return { start: day(start), end: day(end), today: day(now), userStart: userStart ? day(userStart) : null };
+}
+
+// ---------------------------------------------------------------- Statements' From … To (ticket 20)
+
+/**
+ * The picked days as the earning statistics read asks them: OF's Apply sends `/payouts/stats?startDate=&endDate=`, each
+ * the owner's calendar day as "YYYY-MM-DD" (capture record statements--custom-period-apply, measured in OF's JS), and the
+ * instants they cover in `tz`: the first day's midnight to the last day's 23:59:59, at most `now`. Days in either order.
+ * Apply re-reads with its params (ticket 24, ofMirrorMoney's earningStatsRoute).
+ */
+export function statementsRange(a: Day, b: Day, now: Date, tz: string | null): { params: { startDate: string; endDate: string }; start: Date; end: Date } {
+  const [from, to] = isoDay(a) <= isoDay(b) ? [a, b] : [b, a];
+  const p = periodOf(customKey(from, to), now, tz, null);
+  return { params: { startDate: isoDay(from), endDate: isoDay(to) }, start: p.start, end: p.end };
+}
+
 /** OF's menu (PeriodDatepicker's datesList): its items in order; null: a divider; key null: Custom (it opens the date picker). */
 export function periodMenu(now: Date, tz: string | null, userStart: Date | null): ({ title: string; key: PeriodKey | null } | null)[] {
   const w = wallOf(now, tz);
@@ -250,17 +277,7 @@ export function bindMenu(doc: Document, p: Period, userStart: Date | null) {
     if (t?.closest?.("[data-oi-period-custom]")) {
       closeMenu(doc);
       const { p, userStart } = current();
-      const toDay = (at: Date): Day => {
-        const w = wallOf(at, p.tz);
-        return { y: w.y, m: w.m, d: w.d };
-      };
-      openDatepicker(doc, {
-        start: toDay(p.start),
-        end: toDay(p.end),
-        today: toDay(p.now),
-        userStart: userStart ? toDay(userStart) : null,
-        onApply: (from, to) => setPeriod(customKey(from, to)),
-      });
+      openDatepicker(doc, { ...pickerDays(p.start, p.end, p.now, p.tz, userStart), onApply: (from, to) => setPeriod(customKey(from, to)) });
       return;
     }
     const item = t?.closest?.("[data-oi-period-key]");

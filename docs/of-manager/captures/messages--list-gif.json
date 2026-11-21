@@ -1,0 +1,15 @@
+{
+ "id": "messages--list-gif",
+ "section": "messages",
+ "label": "Add GIF",
+ "phase": 2,
+ "pages": [
+  "messages/send/state-list-dropdown"
+ ],
+ "note": "New message's list page (its list menu open), on the Mass draft only; the list Send is never run (ADR-0042). The chat composer's GIF picker (GET /api/of/v2/giphy/proxy/gifs/trending and search, reads); the pick is the Mass draft's giphy_id. No message is sent.",
+ "proof": {
+  "kind": "mocked",
+  "verdict": "parked",
+  "reason": "Mocked: no FakeOF Giphy read for a draft-only definition; Live proof pending (ticket 53)"
+ }
+}

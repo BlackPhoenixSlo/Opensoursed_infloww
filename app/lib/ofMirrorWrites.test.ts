@@ -21,6 +21,7 @@ const doc = (html: string) => {
   return document;
 };
 const handlers = () => ({
+  uploadProfileImage: vi.fn(),
   saveProfile: vi.fn(() => Promise.resolve()),
   setReplyOnSubscribe: vi.fn(() => Promise.resolve()),
   submit: vi.fn((_path: string, _body: unknown) => Promise.resolve({ id: 1 })),
@@ -69,14 +70,14 @@ const untouched = (h: ReturnType<typeof handlers>) => Object.values(h).forEach((
 describe("collectProfilePatch", () => {
   it("reads the writable fields only, the bio one line per paragraph", () => {
     const d = doc(PROFILE);
-    expect(collectProfilePatch(d)).toEqual({
+    expect(collectProfilePatch(d, true)).toEqual({
       name: "Your Model",
       about: "Line one\nLine two",
       location: "Paris",
       website: "https://example.com",
       wishlist: "",
     });
-    expect(collectProfilePatch(d, ["name"])).toEqual({ name: "Your Model" });
+    expect(collectProfilePatch(d, true, ["name"])).toEqual({ name: "Your Model" });
   });
 });
 
@@ -84,7 +85,7 @@ describe("bindWrites", () => {
   it("enables Save on a change and saves the changed fields", async () => {
     const d = doc(PROFILE);
     const h = handlers();
-    const unbind = bindWrites(d, "settings/profile", h);
+    const unbind = bindWrites(d, "settings/profile", h, true);
     const save = d.querySelector("button")!;
     const name = d.getElementById("input-name") as HTMLInputElement;
     name.value = "New Name";
@@ -104,7 +105,7 @@ describe("bindWrites", () => {
     const page = "settings/profile";
     const d = loadPage(page);
     expect(d.querySelector(".input-text-editor .of-state-link")).toBeNull();
-    const unbind = bindWrites(d, page, handlers());
+    const unbind = bindWrites(d, page, handlers(), true);
     const name = d.getElementById("input-name") as HTMLInputElement;
     name.value = "Ana";
     fire(name, "input");
@@ -118,7 +119,7 @@ describe("bindWrites", () => {
 
   it.each(["bank/index", "bank/payments", "bank/dac7/edit"])("%s: one grey line under the title says the bank details stay on onlyfans.com, linking there; unbind removes it", (page) => {
     const d = loadPage(page);
-    const unbind = bindWrites(d, page, null);
+    const unbind = bindWrites(d, page, null, true);
     const line = d.getElementById("oi-bank-note")!;
     expect(line.previousElementSibling!.matches(".g-page__header")).toBe(true);
     expect(line.textContent).toBe(`${BANK_NOTE} Open banking on onlyfans.com`);
@@ -131,14 +132,14 @@ describe("bindWrites", () => {
     expect(d.getElementById("oi-bank-note")).toBeNull();
     // Only the Bank pages have it.
     const other = loadPage("statements/earnings");
-    bindWrites(other, "statements/earnings", null)();
+    bindWrites(other, "statements/earnings", null, true)();
     expect(other.getElementById("oi-bank-note")).toBeNull();
   });
 
   it("re-enables Save and shows the error when saving fails", async () => {
     const d = doc(PROFILE);
     const h = { ...handlers(), saveProfile: vi.fn(() => Promise.reject(new Error("relay 502"))) };
-    const unbind = bindWrites(d, "settings/profile", h);
+    const unbind = bindWrites(d, "settings/profile", h, true);
     fire(d.querySelector("[data-placeholder='Bio']")!, "input");
     d.querySelector("button")!.click();
     expect(h.saveProfile).toHaveBeenCalledWith({ about: "Line one\nLine two" });
@@ -151,7 +152,7 @@ describe("bindWrites", () => {
   it("saves the welcome switch in place with OF's settings toast", async () => {
     const d = doc(`<div class="g-input__wrapper"><input id="autoMessage" type="checkbox" name="autoMessage"></div>`);
     const h = handlers();
-    const unbind = bindWrites(d, "settings/messaging", h);
+    const unbind = bindWrites(d, "settings/messaging", h, true);
     const sw = d.getElementById("autoMessage") as HTMLInputElement;
     sw.click();
     expect(h.setReplyOnSubscribe).toHaveBeenCalledWith(true);
@@ -165,7 +166,7 @@ describe("bindWrites", () => {
   it("sends the welcome switch and reverts it on failure", async () => {
     const d = doc(`<div class="g-input__wrapper"><input id="autoMessage" type="checkbox" name="autoMessage"></div>`);
     const h = { ...handlers(), setReplyOnSubscribe: vi.fn(() => Promise.reject(new Error("relay 403"))) };
-    const unbind = bindWrites(d, "settings/messaging", h);
+    const unbind = bindWrites(d, "settings/messaging", h, true);
     const sw = d.getElementById("autoMessage") as HTMLInputElement;
     sw.click();
     expect(h.setReplyOnSubscribe).toHaveBeenCalledWith(true);
@@ -178,7 +179,7 @@ describe("bindWrites", () => {
   it("sends nothing for an unmapped toggle and shows the read-only note", () => {
     const d = doc(`<div class="g-input__wrapper"><input id="setting_isAutoFollowBack" type="checkbox"></div>`);
     const h = handlers();
-    const unbind = bindWrites(d, "settings/fans", h);
+    const unbind = bindWrites(d, "settings/fans", h, true);
     const toggle = d.getElementById("setting_isAutoFollowBack") as HTMLInputElement;
     toggle.click();
     expect(h.saveProfile).not.toHaveBeenCalled();
@@ -193,7 +194,7 @@ describe("bindWrites", () => {
   it("schedule form: SCHEDULE posts the stream and opens the queue", async () => {
     const d = loadPage(CREATE);
     const h = handlers();
-    const unbind = bindWrites(d, CREATE, h);
+    const unbind = bindWrites(d, CREATE, h, true);
     const day = ahead(2);
     fillStream(d, day, "18:30", "Synthetic stream"); // the browser's time input gives 24h
     const editor = d.querySelector(".create-scheduled__description [contenteditable]")!;
@@ -216,7 +217,7 @@ describe("bindWrites", () => {
   it("schedule form: an empty or past form sends nothing and shows the validation note", () => {
     const d = loadPage(CREATE);
     const h = handlers();
-    const unbind = bindWrites(d, CREATE, h);
+    const unbind = bindWrites(d, CREATE, h, true);
     const submit = d.querySelector(SUBMITS[CREATE].button)!;
     clickSubmit(d);
     let n = d.getElementById("oi-note");
@@ -237,7 +238,7 @@ describe("bindWrites", () => {
   it("schedule form: shows the relay error and stays on the form", async () => {
     const d = loadPage(CREATE);
     const h = { ...handlers(), submit: vi.fn(() => Promise.reject(new Error("upstream 400: Date is in the past"))) };
-    const unbind = bindWrites(d, CREATE, h);
+    const unbind = bindWrites(d, CREATE, h, true);
     fillStream(d, ahead(1), "12:00");
     clickSubmit(d);
     await flush();
@@ -247,10 +248,30 @@ describe("bindWrites", () => {
     unbind();
   });
 
+  it("schedule form (ticket 84): only its own form's native submit sends; the aside's search form's sends nothing", () => {
+    const d = loadPage(CREATE);
+    const h = handlers();
+    const unbind = bindWrites(d, CREATE, h, true);
+    fillStream(d, ahead(2), "18:30", "Synthetic stream"); // a valid form: a stray send would go through
+    const submit = (form: Element) => {
+      const ev = new Event("submit", { bubbles: true, cancelable: true });
+      form.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    };
+    expect(submit(d.querySelector("form.b-search-form")!)).toBe(true); // cancelled, never reloads the frame
+    expect(h.submit).not.toHaveBeenCalled();
+    expect(d.getElementById("oi-note")).toBeNull();
+    expect(submit(d.querySelector("form[data-vv-scope='schedule-stream']")!)).toBe(true);
+    const [y, m, dd] = ahead(2).split("-").map(Number);
+    expect(h.submit).toHaveBeenCalledWith("/api/of/v2/streams", { description: "Synthetic stream", scheduledDate: localIso(new Date(y, m - 1, dd, 18, 30)), isShowTips: true });
+    expect(h.submit).toHaveBeenCalledTimes(1);
+    unbind();
+  });
+
   it("tracking link: Create Link turns on with a name and posts {name}, then follows Cancel", async () => {
     const d = loadPage(TRACKING);
     const h = handlers();
-    const unbind = bindWrites(d, TRACKING, h);
+    const unbind = bindWrites(d, TRACKING, h, true);
     expect(trackingButton(d).disabled).toBe(true); // as captured: no name yet
     typeName(d, "  Synthetic link ");
     expect(trackingButton(d).disabled).toBe(false);
@@ -272,7 +293,7 @@ describe("bindWrites", () => {
   it("tracking link: a blank name keeps Create Link off and sends nothing", () => {
     const d = loadPage(TRACKING);
     const h = handlers();
-    const unbind = bindWrites(d, TRACKING, h);
+    const unbind = bindWrites(d, TRACKING, h, true);
     typeName(d, "   ");
     expect(trackingButton(d).disabled).toBe(true);
     clickSubmit(d, TRACKING);
@@ -289,7 +310,7 @@ describe("bindWrites", () => {
   it("tracking link: Enter in the name field (a native form submit) sends once and does not navigate the document", () => {
     const d = loadPage(TRACKING);
     const h = handlers();
-    const unbind = bindWrites(d, TRACKING, h);
+    const unbind = bindWrites(d, TRACKING, h, true);
     typeName(d, "Synthetic link");
     let prevented: boolean | undefined;
     const seen = (e: Event) => (prevented = e.defaultPrevented);
@@ -307,7 +328,7 @@ describe("bindWrites", () => {
   it("tracking link: a relay error shows Could not create, re-enables the button and keeps the name", async () => {
     const d = loadPage(TRACKING);
     const h = { ...handlers(), submit: vi.fn(() => Promise.reject(new Error("upstream 400: Synthetic refusal"))) };
-    const unbind = bindWrites(d, TRACKING, h);
+    const unbind = bindWrites(d, TRACKING, h, true);
     typeName(d, "Synthetic link");
     clickSubmit(d, TRACKING);
     await flush();
@@ -323,7 +344,7 @@ describe("bindWrites", () => {
   it("tracking link: a second click, or typing, while the create is in flight sends nothing more", () => {
     const d = loadPage(TRACKING);
     const h = { ...handlers(), submit: vi.fn(() => new Promise(() => {})) };
-    const unbind = bindWrites(d, TRACKING, h);
+    const unbind = bindWrites(d, TRACKING, h, true);
     typeName(d, "Synthetic link");
     clickSubmit(d, TRACKING);
     typeName(d, "Synthetic link 2");
@@ -357,7 +378,7 @@ describe("bindWrites", () => {
       (d.querySelector(".modal.show form") ?? d.querySelector(".modal.show .modal-body"))!.setAttribute("data-oi-offer", JSON.stringify(state));
       if (page === TRIAL) d.querySelector<HTMLInputElement>(".modal.show input[at-attr='input']")!.value = "Synthetic link";
       const h = handlers();
-      const unbind = bindWrites(d, page, h);
+      const unbind = bindWrites(d, page, h, true);
       footerButton(d, page).click();
       await Promise.resolve();
       await Promise.resolve();
@@ -376,7 +397,7 @@ describe("bindWrites", () => {
       const submit = vi.fn((_path: string, _body: unknown) => Promise.resolve({ id: 1 }));
       submit.mockImplementationOnce(() => Promise.reject(unresolved()));
       const h = { ...handlers(), submit };
-      const unbind = bindWrites(d, PROMOTION, h);
+      const unbind = bindWrites(d, PROMOTION, h, true);
       const start = footerButton(d, PROMOTION);
       start.click();
       await flush();
@@ -402,7 +423,7 @@ describe("bindWrites", () => {
     for (const page of [PROMOTION, BUNDLE]) {
       const d = loadPage(page);
       const h = handlers();
-      const unbind = bindWrites(d, page, h);
+      const unbind = bindWrites(d, page, h, true);
       const forms = [...d.querySelectorAll("form")];
       expect(forms.length, page).toBe(page === PROMOTION ? 2 : 1); // the modal's own form (promotion only) and the price form behind it
       for (const form of forms) {
@@ -428,7 +449,7 @@ describe("bindWrites", () => {
   describe("with no single model selected (handlers null)", () => {
     it("sends nothing on Save and shows the select-a-model note", () => {
       const d = doc(PROFILE);
-      const unbind = bindWrites(d, "settings/profile", null);
+      const unbind = bindWrites(d, "settings/profile", null, true);
       const save = d.querySelector("button")!;
       const name = d.getElementById("input-name") as HTMLInputElement;
       name.value = "New Name";
@@ -446,7 +467,7 @@ describe("bindWrites", () => {
 
     it("flips a writable switch back with the select-a-model note", () => {
       const d = doc(`<div class="g-input__wrapper"><input id="autoMessage" type="checkbox" name="autoMessage"></div>`);
-      const unbind = bindWrites(d, "settings/messaging", null);
+      const unbind = bindWrites(d, "settings/messaging", null, true);
       const sw = d.getElementById("autoMessage") as HTMLInputElement;
       sw.click();
       expect(sw.checked).toBe(false);
@@ -456,7 +477,7 @@ describe("bindWrites", () => {
 
     it("an unmapped toggle gets the read-only note and flips back", () => {
       const d = doc(`<div class="g-input__wrapper"><input id="setting_isAutoFollowBack" type="checkbox"></div>`);
-      const unbind = bindWrites(d, "settings/fans", null);
+      const unbind = bindWrites(d, "settings/fans", null, true);
       const toggle = d.getElementById("setting_isAutoFollowBack") as HTMLInputElement;
       toggle.click();
       expect(toggle.checked).toBe(false); // flipped back
@@ -466,7 +487,7 @@ describe("bindWrites", () => {
 
     it("tracking link: Create Link sends nothing and shows the select-a-model note", () => {
       const d = loadPage(TRACKING);
-      const unbind = bindWrites(d, TRACKING, null);
+      const unbind = bindWrites(d, TRACKING, null, true);
       typeName(d, "Synthetic link");
       expect(clickSubmit(d, TRACKING).defaultPrevented).toBe(true);
       expect(d.getElementById("oi-note")?.textContent).toBe(SELECT_MODEL);
@@ -476,7 +497,7 @@ describe("bindWrites", () => {
     it("promotion, bundle and free trial link: their submit sends nothing and shows the select-a-model note", () => {
       for (const page of [PROMOTION, BUNDLE, TRIAL]) {
         const d = loadPage(page);
-        const unbind = bindWrites(d, page, null);
+        const unbind = bindWrites(d, page, null, true);
         footerButton(d, page).click();
         expect(d.getElementById("oi-note")?.textContent, page).toBe(SELECT_MODEL);
         unbind();
@@ -485,7 +506,7 @@ describe("bindWrites", () => {
 
     it("schedule form: SCHEDULE sends nothing and shows the select-a-model note", () => {
       const d = loadPage(CREATE);
-      const unbind = bindWrites(d, CREATE, null);
+      const unbind = bindWrites(d, CREATE, null, true);
       fillStream(d, ahead(1), "12:00");
       expect(clickSubmit(d).defaultPrevented).toBe(true);
       expect(d.getElementById("oi-note")?.textContent).toBe("Select a model to save changes");
@@ -495,7 +516,7 @@ describe("bindWrites", () => {
 
   it("leaves OF's Dark mode switch alone (it switches our theme)", () => {
     const d = doc(`<div class="g-input__wrapper"><input id="dark_mode_switcher" type="checkbox"></div>`);
-    const unbind = bindWrites(d, "settings/display", handlers());
+    const unbind = bindWrites(d, "settings/display", handlers(), true);
     const sw = d.getElementById("dark_mode_switcher") as HTMLInputElement;
     sw.click();
     expect(sw.checked).toBe(true);
@@ -509,18 +530,25 @@ describe("bindWrites marks its Wired controls data-oi-wired", () => {
   const wired = (d: Document) => [...d.querySelectorAll("[data-oi-wired]:not([at-attr='add_event_widget'])")];
   const scopes = [["Single-Creator", handlers()], ["All-Creators", null]] as const;
 
-  it.each(scopes)("settings/profile (%s scope): the five profile fields and Save, and only those", (_scope, h) => {
+  it.each(scopes)("settings/profile (%s scope): the five profile fields, Save, the cover's and avatar's controls (ticket 67), the About format button and its toolbar (ticket 68), and only those", (_scope, h) => {
     const d = loadPage("settings/profile");
-    const unbind = bindWrites(d, "settings/profile", h);
-    const want = ["#input-name", "[data-placeholder='Bio']", "#input-location", "#input-website", "#input-wishlist", ".g-btn__wrapper button[type='submit']"];
-    expect(new Set(wired(d))).toEqual(new Set(want.map((sel) => d.querySelector(sel))));
-    expect(wired(d)).toHaveLength(want.length);
+    const unbind = bindWrites(d, "settings/profile", h, true);
+    const want = ["#input-name", "[data-placeholder='Bio']", "#input-location", "#input-website", "#input-wishlist", ".g-btn__wrapper button[type='submit']",
+      ".b-profile__header > .b-profile__header__cover__btns button.dropdown-toggle", ".b-profile__header > .b-profile__header__cover__btns > button",
+      ".b-profile__user .g-avatar .b-profile__header__cover__btns button.dropdown-toggle",
+      "input[data-oi-profile-file='header']", "input[data-oi-profile-file='avatar']",
+      ".b-input-contenteditable .b-icon-text-container > button"];
+    // The toolbar's tools are New post's Format text panel's (ofMirrorPost bindFormatPanel marks each).
+    const tools = [...d.querySelectorAll("[data-oi-about-format] [data-oi-wired]")];
+    expect(tools.length).toBeGreaterThan(0);
+    expect(new Set(wired(d))).toEqual(new Set([...want.map((sel) => d.querySelector(sel)), ...tools]));
+    expect(wired(d)).toHaveLength(want.length + tools.length);
     unbind();
   });
 
   it.each(scopes)("settings/messaging (%s scope): the welcome switch", (_scope, h) => {
     const d = loadPage("settings/messaging");
-    const unbind = bindWrites(d, "settings/messaging", h);
+    const unbind = bindWrites(d, "settings/messaging", h, true);
     expect(wired(d)).toEqual([d.getElementById("autoMessage")]);
     unbind();
   });
@@ -528,7 +556,7 @@ describe("bindWrites marks its Wired controls data-oi-wired", () => {
   it.each(scopes)("SUBMITS pages (%s scope): the submit button and every field its collect sends (SCHEDULE: date, time, description; Create Link: name)", (_scope, h) => {
     for (const [page, count] of [[CREATE, 3], [TRACKING, 1]] as const) {
       const d = loadPage(page);
-      const unbind = bindWrites(d, page, h);
+      const unbind = bindWrites(d, page, h, true);
       const fields = [...d.querySelectorAll(SUBMITS[page].fields)];
       expect(fields, page).toHaveLength(count);
       expect(new Set(wired(d)), page).toEqual(new Set([d.querySelector(SUBMITS[page].button), ...fields]));
@@ -540,7 +568,7 @@ describe("bindWrites marks its Wired controls data-oi-wired", () => {
   it("promotion, bundle and free trial link: the submit and the fields their collect reads are marked", () => {
     for (const page of [PROMOTION, BUNDLE, TRIAL]) {
       const d = loadPage(page);
-      const unbind = bindWrites(d, page, handlers());
+      const unbind = bindWrites(d, page, handlers(), true);
       const fields = [...d.querySelectorAll(SUBMITS[page].fields)];
       expect(fields.length, page).toBeGreaterThan(0);
       // (the free trial links page behind its dialog: its rows' share, ofMirrorOffers')
@@ -552,7 +580,7 @@ describe("bindWrites marks its Wired controls data-oi-wired", () => {
   it("profile/state-more-menu, over the profile fixture, marks and binds no WRITABLE field (settings/profile does)", () => {
     const d = doc(PROFILE);
     const h = handlers();
-    const unbind = bindWrites(d, "profile/state-more-menu", h);
+    const unbind = bindWrites(d, "profile/state-more-menu", h, true);
     expect(wired(d)).toEqual([]);
     const name = d.getElementById("input-name") as HTMLInputElement;
     name.value = "New Name";
@@ -563,7 +591,7 @@ describe("bindWrites marks its Wired controls data-oi-wired", () => {
     untouched(h);
     unbind();
     const p = doc(PROFILE);
-    const unbindP = bindWrites(p, "settings/profile", h);
+    const unbindP = bindWrites(p, "settings/profile", h, true);
     expect(wired(p)).toHaveLength(6); // contrast: the same fixture as a settings page marks its five fields and Save
     unbindP();
   });
@@ -580,7 +608,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
 
   it.each(scopes)("queue/index and settings/security/watermarks (%s scope): a <button> and a [role=button] get a fresh note beside them, sending nothing", (_scope, h) => {
     const q = loadPage("queue/index");
-    const unbindQ = bindWrites(q, "queue/index", h);
+    const unbindQ = bindWrites(q, "queue/index", h, true);
     // OF's sidebar close button: not wired ("Add to queue" is, by ofMirrorQueue).
     const add = q.querySelector("button[at-attr='close_btn']")!;
     expect(noteOf(q)?.textContent ?? null).toBeNull();
@@ -594,7 +622,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
 
     // Collections disables its chips and Statements its period select; Watermarks' position select is a [role=button] <div>.
     const c = loadPage("settings/security/watermarks");
-    const unbindC = bindWrites(c, "settings/security/watermarks", h);
+    const unbindC = bindWrites(c, "settings/security/watermarks", h, true);
     const chip = c.querySelector("div[role='button']")!;
     expect(noteOf(c)).toBeNull();
     click(chip.firstElementChild ?? chip);
@@ -615,7 +643,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
         <select id="f-select"></select><div contenteditable="true" id="f-editable"></div>
       </div>
       <button id="other">Other</button>`);
-    const unbind = bindWrites(d, "queue/index", handlers());
+    const unbind = bindWrites(d, "queue/index", handlers(), true);
     for (const id of ["in-link", "in-state-link", "in-video", "wired", "in-wired", "f-input", "f-label", "f-textarea", "f-select", "f-editable"]) {
       click(d.getElementById(id)!);
       expect(noteOf(d), id).toBeNull();
@@ -631,7 +659,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
         <button type="submit" id="save"><span id="save-text">Save</span></button><button type="button" id="max">Max</button>
       </div></form></div></div>
       <button id="other">Other</button>`);
-    const unbind = bindWrites(d, "collections/index", handlers());
+    const unbind = bindWrites(d, "collections/index", handlers(), true);
     for (const id of ["save", "save-text", "max"]) {
       click(d.getElementById(id)!);
       expect(noteOf(d), id).toBeNull();
@@ -644,7 +672,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
   it.each(scopes)("covers a dropdown's read-only input and a button nested in a Wired row or a label (%s scope)", (_scope, h) => {
     // settings/security/watermarks: OF's position dropdown is a [role=button] whose middle is a readonly <input>
     const s = loadPage("settings/security/watermarks");
-    const unbindS = bindWrites(s, "settings/security/watermarks", h);
+    const unbindS = bindWrites(s, "settings/security/watermarks", h, true);
     const slot = s.querySelector(".v-input__slot[role='button']")!;
     click(slot.querySelector("input[readonly]")!);
     expect(noteOf(s)?.textContent).toBe(READ_ONLY);
@@ -653,7 +681,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
     const d = doc(`
       <label class="b-rows-lists__item" data-oi-wired><input type="checkbox"><button id="in-wired-row"><span>More</span></button></label>
       <label class="b-rows-lists__item"><input type="checkbox"><button id="in-label"><span>More</span></button></label>`);
-    const unbind = bindWrites(d, "new-post/state-tag-people", h);
+    const unbind = bindWrites(d, "new-post/state-tag-people", h, true);
     for (const id of ["in-wired-row", "in-label"]) {
       noteOf(d)?.remove();
       click(d.getElementById(id)!.firstElementChild!); // its icon, as OF's kebab
@@ -667,7 +695,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
   it("is silent on the video player's own buttons (messages/chat)", () => {
     const page = "messages/chat";
     const d = loadPage(page);
-    const unbind = bindWrites(d, page, null);
+    const unbind = bindWrites(d, page, null, true);
     const player = [...d.querySelectorAll(".video-js button")];
     expect(player.length).toBeGreaterThan(0);
     for (const b of player) click(b);
@@ -678,8 +706,8 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
   it.each(scopes)("new-post/index (%s scope): the marked Post never shows the Read-only note; All-Creators keeps the select-a-model note", (_scope, h) => {
     const d = loadPage("new-post/index");
     const createPost = vi.fn((_body: unknown) => Promise.resolve({ id: 1 }));
-    const unbindPost = bindPost(d, "new-post/index", { handlers: h && { createPost, createLabel: vi.fn(), upload: vi.fn(), navigate: vi.fn() }, storage: null, accountId: null });
-    const unbind = bindWrites(d, "new-post/index", h);
+    const unbindPost = bindPost(d, "new-post/index", { newWrites: false, handlers: h && { createPost, createLabel: vi.fn(), upload: vi.fn(), navigate: vi.fn() }, storage: null, accountId: null });
+    const unbind = bindWrites(d, "new-post/index", h, true);
     const editor = d.querySelector("[contenteditable][aria-label='Textbox field']")!;
     editor.innerHTML = "<p>Synthetic post</p>";
     fire(editor, "input");
@@ -711,7 +739,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
     const page = "settings/account/password";
     const d = loadPage(page);
     const h = handlers();
-    const unbind = bindWrites(d, page, h);
+    const unbind = bindWrites(d, page, h, true);
     const save = d.querySelector<HTMLButtonElement>(".g-btn__wrapper button[type='submit']")!;
     expect(save.disabled).toBe(true);
     expect(save.title).toBe(NOT_YET);
@@ -727,7 +755,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
     const d = doc(`
       <form><div class="g-btn__wrapper"><button type="submit" id="first">Search</button></div></form>
       <form><div class="g-btn__wrapper"><button type="submit" id="second">Apply</button></div></form>`);
-    const unbind = bindWrites(d, "queue/index", h);
+    const unbind = bindWrites(d, "queue/index", h, true);
     for (const id of ["first", "second"]) {
       noteOf(d)?.remove();
       const button = d.getElementById(id)!;
@@ -747,7 +775,7 @@ describe("bindWrites change path: an unwired checkbox on any Mirror page shows t
 
   it.each(scopes)("collections/index (%s scope): an unwired checkbox gets the note and flips back, sending nothing", (_scope, h) => {
     const d = doc(`<div class="b-menu-list__el"><label><input id="box" type="checkbox"> Pinned</label></div>`);
-    const unbind = bindWrites(d, "collections/index", h);
+    const unbind = bindWrites(d, "collections/index", h, true);
     const box = d.getElementById("box") as HTMLInputElement;
     box.click();
     expect(box.checked).toBe(false);
@@ -761,7 +789,7 @@ describe("bindWrites change path: an unwired checkbox on any Mirror page shows t
       <label data-oi-wired><input id="in-wired" type="checkbox"> Alpha One</label>
       <input id="wired" type="checkbox" data-oi-wired>
       <input id="other" type="checkbox">`);
-    const unbind = bindWrites(d, "new-post/state-tag-people", h);
+    const unbind = bindWrites(d, "new-post/state-tag-people", h, true);
     for (const id of ["in-wired", "wired"]) {
       const box = d.getElementById(id) as HTMLInputElement;
       box.click();
@@ -777,8 +805,8 @@ describe("bindWrites change path: an unwired checkbox on any Mirror page shows t
     const page = "new-post/state-labels";
     const d = loadPage(page);
     const createPost = vi.fn((_body: unknown) => Promise.resolve({ id: 1 }));
-    const unbindPost = bindPost(d, page, { handlers: h && { createPost, createLabel: vi.fn(), upload: vi.fn(), navigate: vi.fn() }, storage: null, accountId: null });
-    const unbind = bindWrites(d, page, h);
+    const unbindPost = bindPost(d, page, { newWrites: false, handlers: h && { createPost, createLabel: vi.fn(), upload: vi.fn(), navigate: vi.fn() }, storage: null, accountId: null });
+    const unbind = bindWrites(d, page, h, true);
     const rows = [...d.querySelectorAll<HTMLElement>(".modal.show label.b-rows-lists__item")];
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((r) => r.style.display === "none")).toBe(true);
@@ -802,7 +830,7 @@ describe("WRITABLE", () => {
   it("is consulted only for a settings path: the same page outside settings/ writes nothing", () => {
     const d = doc(PROFILE);
     const h = handlers();
-    const unbind = bindWrites(d, "profile", h);
+    const unbind = bindWrites(d, "profile", h, true);
     const save = d.querySelector("button")!;
     const name = d.getElementById("input-name") as HTMLInputElement;
     name.value = "New Name";
@@ -812,7 +840,7 @@ describe("WRITABLE", () => {
     expect(h.saveProfile).not.toHaveBeenCalled();
     unbind();
     const m = doc(`<div class="g-input__wrapper"><input id="autoMessage" type="checkbox" name="autoMessage"></div>`);
-    const unbindM = bindWrites(m, "messaging", h);
+    const unbindM = bindWrites(m, "messaging", h, true);
     (m.getElementById("autoMessage") as HTMLInputElement).click();
     expect(h.setReplyOnSubscribe).not.toHaveBeenCalled();
     expect(m.getElementById("oi-note")?.textContent).toBe(READ_ONLY); // the change path's read-only note, as on any page
@@ -896,7 +924,7 @@ describe("schedule form parsing", () => {
 
   it("Date opens OF's day popup and Apply fills it; Time is the browser's time input; unbind drops the trigger (U11)", () => {
     const d = loadPage(CREATE);
-    const unbind = bindWrites(d, CREATE, null);
+    const unbind = bindWrites(d, CREATE, null, true);
     const date = d.querySelector<HTMLInputElement>("input[name='date']")!;
     const time = d.querySelector<HTMLInputElement>("input[name='time']")!;
     expect([date.readOnly, time.type]).toEqual([true, "time"]);

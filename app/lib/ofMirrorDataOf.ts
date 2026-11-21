@@ -67,8 +67,10 @@ export interface MirrorData {
   listPostsMore?: MorePages;
   /** A list's Posts tab's type chip: OF's `?postType=` (postTypeOf: photos, videos, …; null: All), its feed's `type`. */
   postType?: string | null;
-  /** Collections' Fans: the Creator's active subscribers (GET /subscribers?type=active). */
+  /** Collections' Fans: the Creator's subscribers of the tab's type (GET /subscribers?type=active, or expired). */
   subscribers?: OFUserMini[];
+  /** Fans' tab: OF's ?type= ("expired": Expired, else Active). */
+  fansType?: string | null;
   /** The users column (a list's users, the Fans) while they are not here: still loading (null), or the Relay's error text. */
   usersStatus?: string | null;
   /** Collections' Post Labels: the Creator's post labels, and the open one (?label=, else the first). */
@@ -171,6 +173,7 @@ export interface MirrorDataInputs {
   template: ReadState & { data?: Element | null };
   postType: string | null;
   subscribers: Read;
+  fansType: string | null;
   labels: Read;
   postRows: MirrorPost[] | undefined;
   /** The Creator's /users/<id> path (null: their id is not in yet). */
@@ -206,7 +209,7 @@ export interface MirrorDataInputs {
 
 /** The page's MirrorData from useOfData's reads (its memo's body): each part's rows, or its status while they are not here. */
 export function mirrorDataOf(inputs: MirrorDataInputs): MirrorData {
-  const { chat, list, label, parts, listQuery, chatList, loadMoreChats, pageIds, partners, knownUsers, detail, isPinnedPage, pinned, thread, isGallery, gTab, gallery, vault, vaultSearch, vaultPage, vaultMedia, vaultPages, vaultRead, lists, members, listPostRows, listPosts, need, template, postType, subscribers, labels, postRows, me, posts, ofMeStatus, photos, videos, ofMe, highlights, bookmarks, queue, zone, notifications, relatedUser, notificationCounts, newTags, pastStreams, transactions, payouts, referrals, statementsStatus, homeRows, home, meId, myStories, stories, streams, authorPages, promotions, events } = inputs;
+  const { chat, list, label, parts, listQuery, chatList, loadMoreChats, pageIds, partners, knownUsers, detail, isPinnedPage, pinned, thread, isGallery, gTab, gallery, vault, vaultSearch, vaultPage, vaultMedia, vaultPages, vaultRead, lists, members, listPostRows, listPosts, need, template, postType, subscribers, fansType, labels, postRows, me, posts, ofMeStatus, photos, videos, ofMe, highlights, bookmarks, queue, zone, notifications, relatedUser, notificationCounts, newTags, pastStreams, transactions, payouts, referrals, statementsStatus, homeRows, home, meId, myStories, stories, streams, authorPages, promotions, events } = inputs;
   // A tab, sort or search switch shows the loading line, not the previous view's rows (useChatList keeps them meanwhile).
   const pages = chatList.isPending || chatList.isPlaceholderData ? undefined : chatList.pages;
   // A page's rows wait for its partners (no flash of bare ids); a failed /users/list shows them as they are.
@@ -255,6 +258,7 @@ export function mirrorDataOf(inputs: MirrorDataInputs): MirrorData {
     listPostsMore: morePages(listPosts),
     postType,
     subscribers: rowsOf<OFUserMini>(subscribers.data),
+    fansType,
     usersStatus: status(people),
     labels: rowsOf<PostLabel>(labels.data),
     labelsStatus: status(labels),

@@ -1,0 +1,90 @@
+{
+ "id": "home--story-strip-pencil",
+ "section": "home",
+ "label": "Pencil (Home story strip) / Pin to home",
+ "pages": [
+  "home/index"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "PATCH",
+  "path": "/api2/v2/lists/{id}",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "isPinnedToFeed": true
+  }
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "canAddUsers",
+   "canDelete",
+   "canManageUsers",
+   "canPinnedToChat",
+   "canPinnedToFeed",
+   "canUpdate",
+   "direction",
+   "id",
+   "isPinnedToChat",
+   "isPinnedToFeed",
+   "name",
+   "order",
+   "postsCount",
+   "sortList",
+   "type",
+   "users",
+   "usersCount"
+  ]
+ },
+ "undo_request": {
+  "method": "PATCH",
+  "path": "/api2/v2/lists/{id}",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "isPinnedToFeed": false
+  },
+  "response": {
+   "status": 200,
+   "keys": [
+    "canAddUsers",
+    "canDelete",
+    "canManageUsers",
+    "canPinnedToChat",
+    "canPinnedToFeed",
+    "canUpdate",
+    "direction",
+    "id",
+    "isPinnedToChat",
+    "isPinnedToFeed",
+    "name",
+    "order",
+    "postsCount",
+    "sortList",
+    "type",
+    "users",
+    "usersCount"
+   ]
+  }
+ },
+ "facts": {
+  "dialog": "PIN TO HOME: one checkbox per list from GET /api2/v2/lists?filter=can_pin; each checkbox writes at once; CLOSE has no write",
+  "read": "GET /api2/v2/lists/{id} isPinnedToFeed",
+  "reads": "before false; after write true; after undo false (equal)",
+  "users_settings_story": "PATCH /api2/v2/users/settings/story was not sent by this dialog (no control for it seen)",
+  "client_retry": "an aborted PATCH is retried by OF's client 6 times, 2 s apart",
+  "narrowing": "allow exactly PATCH ^/api2/v2/lists/<that id>$",
+  "access": "write: sent live (narrowed), then undone and verified",
+  "capture_verdict": "pass",
+  "capture_undo": "undone",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r19-live-after-write.png",
+  "r19-live-after-undo.png"
+ ]
+}

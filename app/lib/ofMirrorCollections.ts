@@ -21,10 +21,14 @@
  * - Search users (Collections and a list page: the open list's users) opens a search field under the users column's
  *   header; Enter is the page's ?query= (ofMirrorData sends it as OF's own `query` on GET /lists/<id>/users), an empty
  *   one or Escape drops it. The field stays open while the page searches.
+ * - The Posts tab (Collections: the open list's; Fans: OF's "fans" list) opens that list's Posts tab
+ *   (collections/user-lists/list/posts?list=<id>, ofMirrorData's GET /lists/<id>/posts); Fans' Expired tab is the page's
+ *   ?type=expired (ofMirrorData's GET /subscribers?type=expired; applyFansTabs marks Expired current). Both keep
+ *   OF's disabled and NOT_YET until their Live proof (D1); the operator reaches them once that drops.
  * The menus are OF's v-menu list markup (as on the State pages), hung under their control. A success shows a grey note
  * and refreshes the model's mirror queries; a failure the red "Could not save: …" (in the dialog, under its field).
  * A More or Lists button with nothing to do (no list, or OF's flags allow nothing) is disabled with NOT_YET. All models:
- * the +, a card's tools and Search users show "Select a model to save changes".
+ * the +, a card's tools, Search users, Posts and Expired show "Select a model to save changes".
  */
 
 import { useEffect, type RefObject } from "react";
@@ -34,10 +38,10 @@ import { useScope } from "@/contexts/ScopeContext";
 import { relay } from "@/lib/relay";
 import { mirrorQuery, rowsOf } from "@/lib/ofMirrorData";
 import { USER_LISTS, usersListPath } from "@/lib/ofMirrorDataQueries";
-import { LIST_TABS, usersLabel } from "@/lib/ofMirrorDataLists";
+import { FANS_EXPIRED, LIST_POSTS, LIST_TABS, usersLabel } from "@/lib/ofMirrorDataLists";
 import { afterChatWrite } from "@/lib/ofMirrorKeys";
 import { message, note, NOT_YET, SELECT_MODEL } from "@/lib/ofMirrorWrites";
-import { floatLabel } from "@/lib/ofMirrorSettings";
+import { floatLabel } from "@/lib/ofMirrorDom";
 import { canRename, chatToolWrites, fanTools, field, type FanState, type FanToolsContext, type ToolsMe } from "@/lib/ofMirrorChatTools";
 import { wasSubscriber } from "@/lib/fanDiscount";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
@@ -58,9 +62,22 @@ const cardToolOf = (b: Element) =>
   : ({ Discount: "discount", "Add notes": "notes", "Edit notes": "notes" } as Record<string, string>)[b.textContent?.trim() ?? ""] ?? null;
 export const USERS_SEARCH = "button[aria-label='Search users']";
 export const USERS_SEARCH_ID = "oi-users-search";
+/** Collections' and Fans' Posts tab (the users column's tabs: the one button among them). */
+const POSTS_TAB = "button.b-tabs__nav__link.m-tb-sm";
 const INDEX = "collections/index";
 const LIST = "collections/user-lists/list";
 const FANS = "collections/user-lists/subscribers/active";
+/** A tab of the page's users column by its text. */
+const tabOf = (doc: Document, sel: string, text: string) =>
+  [...doc.querySelectorAll<HTMLElement>(sel)].find((e) => e.textContent?.trim() === text) ?? null;
+/**
+ * The Posts tab's page: on Collections the open list's (none: the first list's), on Fans OF's "fans" list (its Posts
+ * tab, captures/collections--list-posts-search-sort-compact).
+ */
+const postsHref = (page: string, list: string | null) => {
+  const id = page === FANS ? "fans" : list;
+  return `/of-manager/${LIST_POSTS}${id ? `?list=${encodeURIComponent(id)}` : ""}`;
+};
 /** Pages whose users column is the open list's users (its Search users is that list's `query`). */
 const membersPage = (page: string) => page === INDEX || page === LIST;
 /** The dialog's root (OF's modal wrapper). */
@@ -168,6 +185,11 @@ export function bindCollections(
   };
   if (plus) mark(doc.querySelector(CREATE_LIST));
   if (hasMenu) mark(doc.querySelector(LIST_MORE));
+  // Posts and Expired: marked, OF's disabled and NOT_YET kept until their Live proof (D1).
+  const postsTab = page === INDEX || page === FANS ? doc.querySelector<HTMLElement>(POSTS_TAB) : null;
+  const expiredTab = page === FANS ? tabOf(doc, "button.b-tabs__nav__link", "Expired") : null;
+  mark(postsTab);
+  mark(expiredTab);
 
   // The controls with nothing to do here: disabled with NOT_YET (cards come and go with the data: swept on each change).
   const off = (el: Element, on: boolean) => {
@@ -514,6 +536,13 @@ export function bindCollections(
     if (!t?.closest) return;
     if (open && !open.menu.contains(t) && !open.opener.contains(t)) close();
     if (t.closest("[data-oi-menu]") || t.closest(DIALOG) || t.closest(`#${USERS_SEARCH_ID}`)) return; // their own handlers
+    const tab = postsTab?.contains(t) ? postsTab : expiredTab?.contains(t) ? expiredTab : null;
+    if (tab) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!handlers) return note(doc, tab, SELECT_MODEL);
+      return handlers.navigate(tab === postsTab ? postsHref(page, ctx.list) : `/of-manager/${FANS}?type=${FANS_EXPIRED}`);
+    }
     const tool = t.closest<HTMLElement>(CARD_TOOL);
     const search = searchable ? t.closest<HTMLElement>(USERS_SEARCH) : null;
     if (tool || search) {

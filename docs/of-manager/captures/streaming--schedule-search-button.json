@@ -1,0 +1,15 @@
+{
+ "id": "streaming--schedule-search-button",
+ "section": "streaming",
+ "label": "Search",
+ "pages": [
+  "streaming/dashboard/create"
+ ],
+ "phase": 4,
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "wired (ticket 84); Live proof pending (ticket 91: attended run)"
+ }
+}

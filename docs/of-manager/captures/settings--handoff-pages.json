@@ -1,0 +1,128 @@
+{
+ "id": "settings--handoff-pages",
+ "section": "settings",
+ "label": "Hand-off pages",
+ "pages": [
+  "settings/account/*",
+  "settings/ethwallet",
+  "settings/spotify",
+  "release-forms",
+  "banking",
+  "home post menu"
+ ],
+ "phase": "P3 s35-38",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/my/settings/account",
+  "query": {},
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": null,
+  "keys": []
+ },
+ "facts": {
+  "controls": [
+   {
+    "label": "Sign in with X",
+    "opens": "onlyfans.com/twitter/auth (after aborted POST /api2/v2/trust, empty body)",
+    "redirect": "302 -> onlyfans.com/my/settings/account/x",
+    "provider_host_reached": false
+   },
+   {
+    "label": "Sign in with Google",
+    "opens": "onlyfans.com/auth/google (after aborted POST /api2/v2/trust)",
+    "redirect": "302 -> onlyfans.com/my/settings/account/google",
+    "provider_host_reached": false
+   },
+   {
+    "label": "Sign in with Spotify",
+    "opens": "onlyfans.com/api2/v2/proxy/spotify",
+    "redirect": "302 -> accounts.spotify.com/authorize",
+    "redirect_query_keys": [
+     "client_id",
+     "redirect_uri",
+     "response_type",
+     "scope",
+     "state"
+    ]
+   },
+   {
+    "label": "Connected accounts CONNECT",
+    "opens": null,
+    "in_app": "POST /api2/v2/users/connect {login} application/json (aborted x3)",
+    "handoff": false
+   },
+   {
+    "label": "ETH wallet MetaMask link",
+    "opens": "metamask.io/download.html (new tab, foreign host aborted)"
+   },
+   {
+    "label": "Report (another creator's post menu)",
+    "opens": null,
+    "in_app": "modal REPORT, reasons from GET /api2/v2/reports/reasons",
+    "reasons": [
+     "I don't like this post",
+     "Violates OnlyFans Terms of Service",
+     "Contains copyrighted material (DMCA)",
+     "Non-Consensual Intimate Image",
+     "Consent Withdrawal Request",
+     "Child Sexual Abuse Material (CSAM) / Child Protection",
+     "Spam and Fraud"
+    ],
+    "policy_links": [
+     "/transparency-center/complaints",
+     "/transparency-center/appeals"
+    ],
+    "submitted": false
+   },
+   {
+    "label": "Release forms CREATE NEW RELEASE FORM",
+    "opens": null,
+    "in_app": "modal CREATE RELEASE FORM LINK (Link name 0/60, CANCEL/SAVE)"
+   },
+   {
+    "label": "Bank: Digital Platform Reporting Click here",
+    "opens": "onlyfans.com/my/banking/dac7/edit"
+   },
+   {
+    "label": "Bank: EDIT INFO",
+    "opens": "onlyfans.com/my/banking/edit"
+   },
+   {
+    "label": "Bank: OTHER PAYOUT OPTIONS",
+    "opens": "onlyfans.com/my/banking/payout_types"
+   },
+   {
+    "label": "Bank: IBAN help 'clicking here'",
+    "opens": "www.ibancalculator.com/"
+   },
+   {
+    "label": "Bank: 2025 report",
+    "opens": "href '#', not clicked (DAC7)"
+   }
+  ],
+  "account_page_links": [
+   "/my/settings/account/x",
+   "/my/settings/account/google",
+   "/my/settings/account/connected"
+  ],
+  "bank_page_html_saved": false,
+  "bank_page_reason": "holds masked bank data",
+  "access": "read: only GETs sent to OnlyFans; provider-page navigations were aborted by the capture browser, no write",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r10-settings-account.html",
+  "r10-settings-account-x.html",
+  "r10-settings-account-connected.html",
+  "r10-settings-ethwallet.html",
+  "r10-report-dialog.html"
+ ]
+}

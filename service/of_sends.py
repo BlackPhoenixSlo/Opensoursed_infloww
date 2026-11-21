@@ -377,6 +377,15 @@ class SendsMixin:
     def unblock_user(self, user_id: str | int) -> Any:
         return self.delete_json(f"{API_BASE}/users/{user_id}/block")
 
+    def block_stream_viewer(self, username: str) -> Any:
+        """POST /api2/v2/streams/users/{username}/block, no body — Settings > Streaming > Blocked users'
+        Block a username (settings-streaming-blocked.js, capture settings--streaming-block-username)."""
+        return self.post_json(f"{API_BASE}/streams/users/{username}/block")
+
+    def unblock_stream_viewer(self, user_id: int) -> Any:
+        """DELETE /api2/v2/streams/users/{user_id}/block — a Blocked users row's remove (its row id)."""
+        return self.delete_json(f"{API_BASE}/streams/users/{user_id}/block")
+
     def restrict_user(self, user_id: str | int) -> Any:
         """POST /api2/v2/users/{user_id}/restrict. VERIFIED LIVE."""
         return self.post_json(f"{API_BASE}/users/{user_id}/restrict")
@@ -591,6 +600,18 @@ class SendsMixin:
         return self.post_json(f"{API_BASE}/trials/share-access",
                               json_body={"trialId": int(trial_id), "userId": int(user_id)})
 
+    def share_campaign_stats(self, *, campaign_id: int, user_id: int) -> Any:
+        """POST /api2/v2/campaigns/share-access {campaignId, userId} — share a
+        tracking link's statistics with another creator (ticket 74, measured-in-js)."""
+        return self.post_json(f"{API_BASE}/campaigns/share-access",
+                              json_body={"campaignId": int(campaign_id), "userId": int(user_id)})
+
+    def unshare_campaign_stats(self, *, campaign_id: int, user_id: int) -> Any:
+        """DELETE /api2/v2/campaigns/share-access with JSON body {campaignId,
+        userId} — the share's undo (ticket 74, measured-in-js)."""
+        return self.delete_json(f"{API_BASE}/campaigns/share-access",
+                                json_body={"campaignId": int(campaign_id), "userId": int(user_id)})
+
     def delete_trial_link(self, trial_id: int) -> Any:
         """DELETE /api2/v2/trials/{id}."""
         return self.delete_json(f"{API_BASE}/trials/{trial_id}")
@@ -625,7 +646,8 @@ class SendsMixin:
     def put_security_settings(self, fields: dict) -> Any:
         """PUT /api2/v2/users/me/settings/security — OF's watermarks Save
         (`changeUserBySection`): `{hasWatermarkPhoto, hasWatermarkVideo,
-        watermarkText?, watermarkPosition}`."""
+        watermarkText?, watermarkPosition}`; ticket 66: Block by country's
+        `{blockedCountries, blockedStates}` and Block by IP's `{blockedIps}`."""
         if not fields:
             raise ValueError("at least one field required")
         return self.request_json("PUT", f"{API_BASE}/users/me/settings/security", json_body=fields)
@@ -643,6 +665,47 @@ class SendsMixin:
         ("subscribers" or "nobody" from OF's story replies switch)."""
         return self.request_json("PATCH", f"{API_BASE}/users/settings/story",
                                  json_body={"allowReplyFrom": allow_reply_from})
+
+    def close_all_sessions(self) -> Any:
+        """DELETE /api2/v2/sessions, no body — Account > Login sessions' Close
+        all sessions (settings-sessions.js module 205489). Cannot be undone.
+        `_denied` refuses it before it leaves the box until the owner's go
+        lifts that backstop for this call (ticket 81)."""
+        return self.request_json("DELETE", f"{API_BASE}/sessions")
+
+    # ticket 69
+    def add_social_button(self, body: dict) -> Any:
+        """PUT /api2/v2/users/social/buttons — Settings > Social media's Add button,
+        `{socialMedia, label, link, username}` (OF's socialButtonsCreate, 67786.js);
+        OF answers the whole list."""
+        if not body:
+            raise ValueError("empty body")
+        return self.request_json("PUT", f"{API_BASE}/users/social/buttons", json_body=body)
+
+    def delete_social_button(self, button_id: int) -> Any:
+        """DELETE /api2/v2/users/social/buttons/{id}, no body — one button's remove
+        (OF's socialButtonsDelete, app.js module 964472); OF answers {success}."""
+        return self.request_json("DELETE", f"{API_BASE}/users/social/buttons/{int(button_id)}")
+
+    # ticket 70
+    def add_users_link(self, body: dict) -> Any:
+        """PUT /api2/v2/users/links — Settings > Things I Like's Create link, `{link}`
+        (OF's users/putLink, app.js module 202600); OF answers the whole list."""
+        if not body:
+            raise ValueError("empty body")
+        return self.request_json("PUT", f"{API_BASE}/users/links", json_body=body)
+
+    def delete_users_link(self, link_id: int) -> Any:
+        """DELETE /api2/v2/users/links/{id}, no body — one link's delete (app.js module
+        202600); OF answers {success}."""
+        return self.request_json("DELETE", f"{API_BASE}/users/links/{int(link_id)}")
+
+    def reset_stream_key(self, server: str) -> Any:
+        """DELETE /api2/v2/streams/obs/key?type={server}, no body — Settings >
+        Streaming's Reset beside the Stream Key, for the OBS server shown
+        (obs_agora or mux_direct; capture settings--streaming-reset-stream-key,
+        aborted at the sitting). The old key stops working: cannot be undone."""
+        return self.delete_json(f"{API_BASE}/streams/obs/key", params={"type": server})
 
     # FAN NOTES + CUSTOM NAME: not native OF endpoints.
     # OnlyFansAPI exposes `PUT /fans/{id}/{notes,custom-name}` but these are

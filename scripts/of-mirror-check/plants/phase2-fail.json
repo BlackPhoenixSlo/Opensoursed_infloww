@@ -1,0 +1,10 @@
+{"proofs": [{"id": "plant.missing", "page": "home/index", "control": "No such control", "kind": "live"},
+            {"id": "plant.more", "page": "home/index", "control": "More", "kind": "live"},
+            {"id": "plant.create-list", "page": "collections/index", "control": "Create new list", "kind": "live"},
+            {"id": "plant.no-record", "page": "collections/index", "control": "Search", "kind": "live"}],
+ "records": {"home--no-such.json": {"label": "No such control", "pages": ["home/index"],
+                 "proof": {"kind": "live", "verdict": "parked", "reason": "owner go pending"}},
+             "home--more.json": {"label": "More", "pages": ["home/index"],
+                 "proof": {"kind": "live", "verdict": "pass", "reason": ""}},
+             "collections--create-new-list.json": {"label": "Create new list", "pages": ["collections/index"],
+                 "proof": {"kind": "live", "verdict": "parked", "reason": "owner go pending"}}}}

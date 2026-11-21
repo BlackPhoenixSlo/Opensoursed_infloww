@@ -1,0 +1,33 @@
+{
+  "id": "settings--social-media-buttons",
+  "section": "settings",
+  "label": "Add button",
+  "pages": [
+    "settings/social-media"
+  ],
+  "phase": 3,
+  "source": "of-js",
+  "of_js": {
+    "bundle": "67786.js",
+    "symbol": "create z({...r,link:n,username:s}) -> socialButtonsCreate; userSocialData O (link or username by isLink); providers k = init.socialMediaProviders; app.js 964472 read/delete",
+    "evidence": ".scratch/ofm-not-yet/captures/settings--social-media-buttons.json: PUT /users/social/buttons {socialMedia, label, link, username} answers the full list; DELETE /users/social/buttons/{id} undoes it; socialMedia is one of GET /init socialMediaProviders, the typed field goes to link (isLink) or username, the other key empty"
+  },
+  "request": {
+    "method": "PUT",
+    "path": "/api2/v2/users/social/buttons",
+    "query": {},
+    "body": {
+      "socialMedia": "{socialMedia}",
+      "label": "{label}",
+      "link": "{link}",
+      "username": "{username}"
+    }
+  },
+  "note": "Measured live 2026-11-21: GET /init socialMediaProviders = 22 items {socialMedia, label, isLink, isShowAt} (instagram, x, facebook, youtube, tiktok, snapchat, amazon, twitch, patreon, pinterest, etsy, bereal, kick, depop, poshmark, vsco, threads, throne, shopltk, oftv, bsky, spoilme; isLink: amazon, etsy, bereal, vsco; isShowAt: youtube, tiktok, threads), socialButtonsMaxLimit 10. The old body {socialMedia: \"example\", label, link: an example.com URL, username} got 400 {\"error\":{\"code\":0,\"message\":\"SocialMedia contains invalid value\"},\"errors\":{\"socialMedia\":[\"SocialMedia contains invalid value\"],\"username\":[\"Username not allowed.\"]}}. Measured in OF's JS (of_js.bundle): a username provider sends link \"\" and the username (leading @ stripped, trimmed, not a URL); a link provider sends username \"\" and an http(s) URL; label required, max 255.",
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T123949Z-ofm-live-2ceb9be5b",
+    "undo": "undone"
+  }
+}

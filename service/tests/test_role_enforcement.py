@@ -18,6 +18,11 @@ import _harness  # MUST be first — binds a throwaway temp DB before any db imp
 
 _harness.bootstrap()
 
+import os  # noqa: E402
+
+# The ofm-not-yet write routes under test answer 404 until OFM_NEW_WRITES_ENABLED is on (test_ofm_new_writes.py pins that).
+os.environ["OFM_NEW_WRITES_ENABLED"] = "1"
+
 import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import importlib.util  # noqa: E402
@@ -847,6 +852,38 @@ def case_a_chatter_lacking_only_a_page_gets_403_on_one_of_its_routes():
     assert failures == [], f"no 403 for: {failures}"
 
 
+# ticket 17: Notifications' Search users (users/search) and its aside's Search users or posts (both searches).
+def case_notifications_runs_both_searches_and_a_role_with_none_of_their_pages_is_refused():
+    """Granted Notifications alone, a chatter runs the users and posts searches; holding none of the pages that read
+    them (Home, New post, Notifications, Go live's schedule form: ticket 84), it is refused each, naming the first of
+    them in map order."""
+    searches = ("/api/of/v2/users/search?q=synth&limit=5", "/api/of/v2/posts/search?query=synth&limit=5")
+    for path in searches:
+        assert "/of-manager/notifications" in permissions.route_pages(path.split("?")[0], "GET"), path
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-notifications"}, _role("role-notifications", _only("/of-manager/notifications")))
+
+        def _granted(fake):
+            for path in searches:
+                r = CHATTER_A.get(path)
+                assert r.status_code == 200, f"{path}: {r.status_code} {r.text}"
+            assert fake.calls == ["search_users", "search_posts"], fake.calls
+        _with_fake_of(_granted)
+        _roles(OWNER_A, True, {EMP_A: "role-other"},
+               _role("role-other", _all_but("/of-manager/home", "/of-manager/new-post", "/of-manager/notifications",
+                                         "/of-manager/streaming")))
+
+        def _refused(fake):
+            for path, page in zip(searches, ("Home", "Go live")):
+                r = CHATTER_A.get(path)
+                assert r.status_code == 403 and r.json() == {"detail": f"Your role does not allow {page}"}, (
+                    f"{path}: {r.status_code} {r.text}")
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
+    finally:
+        _reset()
+
+
 def case_the_strips_streams_are_homes_and_a_highlights_stories_my_profiles():
     """Home's story strip reads streams/feed, My profile's highlight tiles stories/highlights/{id}: each is its
     page's alone, not Go live's `/streams` nor Home's `/stories` (the longest prefix wins)."""
@@ -1197,7 +1234,7 @@ def case_every_action_matches_a_route_a_chatter_reaches_and_no_opt_in_only_route
             assert permissions.route_action(method, path, {"format": "csv"}) == action, pattern
             pages = permissions.route_pages(path, method)
             assert pages and not set(pages) <= permissions.OPT_IN_PAGES, f"{pattern}: {pages}"
-    assert len(permissions.ACTION_KEYS) == 41  # send-tip went with POST /tips (cleanup R6)
+    assert len(permissions.ACTION_KEYS) == 43  # send-tip went with POST /tips (cleanup R6); account-lockout (Phase 3); settings#block-fan (73)
 
 
 def case_each_actions_alternate_routes_map_to_it():
@@ -1254,6 +1291,10 @@ _NOT_ACTION_DELETES: dict[str, str] = {
     "/api/of/v2/posts/{post_id}/like": "undoes a like",
     "/api/of/v2/posts/{post_id}/pin": "unpins a post",
 }
+# ticket 69
+_NOT_ACTION_DELETES["/api/of/v2/users/social/buttons/{button_id}"] = "a profile's social media button, the OF settings page's"
+# ticket 70
+_NOT_ACTION_DELETES["/api/of/v2/users/links/{link_id}"] = "a profile's Things I Like link, the OF settings page's"
 
 
 def case_every_delete_a_chatter_reaches_is_an_action_or_listed_as_none():
@@ -1270,6 +1311,166 @@ def case_the_editors_action_list_is_the_relays():
     assert ts == permissions.ACTION_KEYS, {k: (ts.get(k), permissions.ACTION_KEYS.get(k))
                                            for k in set(ts) ^ set(permissions.ACTION_KEYS)}
     assert list(ts) == list(permissions.ACTION_KEYS)
+
+
+# ── account-lockout (docs/spec/ofm-not-yet/phase-03-settings-privacy-links.md, story 42) ───────────────
+
+SETTINGS = "/of-manager/settings"
+LOCKOUT_KEY = f"{SETTINGS}#account-lockout"
+LOCKOUT_REFUSED = {"detail": "Your role does not allow Block countries or IPs, close sessions, reset the stream key"}
+# Phase 3's lockout routes as (method, path, JSON body): block by country, block by IP, Close all sessions, Reset
+# stream key. Empty until tickets 63, 66 and 76 add each route; every row is held to the house rule below.
+LOCKOUT_ROUTES: list[tuple[str, str, dict | None]] = []
+# ticket 63
+LOCKOUT_ROUTES += [("DELETE", "/api/of/v2/sessions", None)]
+# ticket 66
+LOCKOUT_ROUTES += [
+    ("PUT", "/api/of/v2/users/me/settings/security/blocked-countries", {"blockedCountries": ["AQ"], "blockedStates": []}),
+    ("PUT", "/api/of/v2/users/me/settings/security/blocked-ips", {"blockedIps": ["192.0.2.1"]}),
+]
+# ticket 76
+LOCKOUT_ROUTES += [("DELETE", "/api/of/v2/streams/obs/key?type=obs_agora", None)]
+
+
+def _lockout_route_follows_the_house_rule(method: str, path: str, body: dict | None) -> None:
+    """With enforcement on, a role granting OF settings that stores `account-lockout` false is refused by the
+    action's name, and one not granting OF settings (key unset) by the page's; OnlyFans is never called. With
+    enforcement off, or the key unset or true on a role granting OF settings, the request passes."""
+    def call():
+        return CHATTER_A.request(method, path, json=body, headers={"X-Account-Id": IDS["creator_a"]})
+
+    def _check(fake):
+        denies = _role("role-set", {**_only(SETTINGS), LOCKOUT_KEY: False})
+        _roles(OWNER_A, True, {EMP_A: "role-set"}, denies)
+        r = call()
+        assert r.status_code == 403 and r.json() == LOCKOUT_REFUSED, f"{method} {path}: {r.status_code} {r.text}"
+        assert fake.calls == [], fake.calls
+        _roles(OWNER_A, True, {EMP_A: "role-set"}, _role("role-set", _all_but(SETTINGS)))
+        r = call()
+        assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow OF settings"}, \
+            f"{method} {path} no OF settings: {r.status_code} {r.text}"
+        assert fake.calls == [], fake.calls
+        _roles(OWNER_A, False, {EMP_A: "role-set"}, denies)
+        r = call()
+        assert r.status_code == 200, f"{method} {path} enforcement off: {r.status_code} {r.text}"
+        for stored in ({}, {LOCKOUT_KEY: True}):
+            _roles(OWNER_A, True, {EMP_A: "role-set"}, _role("role-set", {**_only(SETTINGS), **stored}))
+            r = call()
+            assert r.status_code == 200, f"{method} {path} {stored or 'key unset'}: {r.status_code} {r.text}"
+    original = server.account_registry.get_account
+    server.account_registry.get_account = lambda aid: {"id": aid} if aid == IDS["creator_a"] else original(aid)
+    try:
+        _with_fake_of(_check)
+    finally:
+        server.account_registry.get_account = original
+        _reset()
+
+
+def case_every_lockout_route_follows_the_house_rule():
+    assert LOCKOUT_KEY in permissions.ACTION_KEYS
+    for method, path, body in LOCKOUT_ROUTES:
+        assert permissions.route_pages(path, method) == (SETTINGS,), f"{method} {path}"
+        _lockout_route_follows_the_house_rule(method, path, body)
+
+
+def case_a_planted_lockout_route_is_refused_only_for_a_role_storing_the_key_false_under_enforcement():
+    # Plant a lockout route (an OF settings write path, a pattern for the action, a handler that answers ok) to
+    # show the rule holds for any route a body-less pattern names, not only ticket 63's.
+    method, path = "PUT", "/api/of/v2/users/me/settings/oi-lockout-plant"
+
+    async def _plant():
+        return {"ok": True}
+
+    patterns = permissions._ACTION_PATTERNS
+    permissions._ACTION_PATTERNS = [("account-lockout", permissions._pattern(f"{method} {path}")), *patterns]
+    server.app.router.add_api_route(path, _plant, methods=[method])
+    planted = server.app.router.routes.pop()
+    server.app.router.routes.insert(0, planted)  # ahead of any catch-all
+    try:
+        assert permissions.route_pages(path, method) == (SETTINGS,)
+        assert permissions.route_action(method, path) == "account-lockout"
+        _lockout_route_follows_the_house_rule(method, path, {"blockedIps": ["192.0.2.1"]})
+    finally:
+        server.app.router.routes.remove(planted)
+        permissions._ACTION_PATTERNS = patterns
+    assert permissions.route_action(method, path) is None
+
+
+# ticket 73
+BLOCK_FAN_KEY = f"{SETTINGS}#block-fan"
+
+
+def case_stream_block_routes_are_block_fan_under_of_settings():
+    """Streaming > Blocked users' Block a username and a row's remove: OF settings' routes, refused by `block-fan`
+    stored false (under any page) with enforcement on, and by the page with OF settings not granted; OnlyFans is
+    never called. Key unset, or enforcement off, passes."""
+    assert BLOCK_FAN_KEY in permissions.ACTION_KEYS
+    refused = {"detail": "Your role does not allow Block or restrict fans"}
+    rows = [("POST", "/api/of/v2/streams/users/oi_synthetic_fan/block"), ("DELETE", "/api/of/v2/streams/users/7/block")]
+    assert permissions.route_pages("/api/of/v2/streams/users/blocked", "GET") == (SETTINGS,)
+
+    def _check(fake):
+        for method, path in rows:
+            assert permissions.route_pages(path, method) == (SETTINGS,), f"{method} {path}"
+            assert permissions.route_action(method, path) == "block-fan", f"{method} {path}"
+
+            def call():
+                return CHATTER_A.request(method, path, headers={"X-Account-Id": IDS["creator_a"]})
+            sent = list(fake.calls)
+            for stored in ({BLOCK_FAN_KEY: False}, {"/of-manager/messages#block-fan": False}):
+                _roles(OWNER_A, True, {EMP_A: "role-set"}, _role("role-set", {**_only(SETTINGS, "/of-manager/messages"), **stored}))
+                r = call()
+                assert r.status_code == 403 and r.json() == refused, f"{method} {path} {stored}: {r.status_code} {r.text}"
+            _roles(OWNER_A, True, {EMP_A: "role-set"}, _role("role-set", _all_but(SETTINGS)))
+            r = call()
+            assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow OF settings"}, r.text
+            assert fake.calls == sent, fake.calls
+            _roles(OWNER_A, False, {EMP_A: "role-set"}, _role("role-set", {**_only(SETTINGS), BLOCK_FAN_KEY: False}))
+            assert call().status_code == 200, f"{method} {path} enforcement off"
+            _roles(OWNER_A, True, {EMP_A: "role-set"}, _role("role-set", _only(SETTINGS)))
+            assert call().status_code == 200, f"{method} {path} key unset"
+        assert fake.calls == ["block_stream_viewer"] * 2 + ["unblock_stream_viewer"] * 2, fake.calls
+        # A body, a username OF's form could not hold, or a non-numeric row id: 422, nothing sent.
+        head = {"X-Account-Id": IDS["creator_a"]}
+        for method, path, body in (("POST", "/api/of/v2/streams/users/fan/block", {"x": 1}),
+                                   ("POST", "/api/of/v2/streams/users/" + "a" * 25 + "/block", None),
+                                   ("POST", "/api/of/v2/streams/users/a%20b/block", None),
+                                   ("DELETE", "/api/of/v2/streams/users/abc/block", None)):
+            r = CHATTER_A.request(method, path, json=body, headers=head)
+            assert r.status_code == 422, (method, path, r.status_code, r.text)
+        assert len(fake.calls) == 4, fake.calls
+    original = server.account_registry.get_account
+    server.account_registry.get_account = lambda aid: {"id": aid} if aid == IDS["creator_a"] else original(aid)
+    try:
+        _with_fake_of(_check)
+    finally:
+        server.account_registry.get_account = original
+        _reset()
+
+
+# ticket 76
+def case_reset_stream_key_is_account_lockout_and_takes_only_ofs_two_servers():
+    """Reset stream key (its house-rule row is in LOCKOUT_ROUTES): `account-lockout`; no type, a type other than OF's
+    obs_agora / mux_direct, or a body: 422, OnlyFans never called."""
+    path = "/api/of/v2/streams/obs/key"
+    assert permissions.route_action("DELETE", path) == "account-lockout"
+
+    def _check(fake):
+        _roles(OWNER_A, True, {EMP_A: "role-set"}, _role("role-set", _only(SETTINGS)))
+        head = {"X-Account-Id": IDS["creator_a"]}
+        for query, body in (("", None), ("?type=mux", None), ("?type=obs_agora", {"type": "obs_agora"})):
+            r = CHATTER_A.request("DELETE", path + query, json=body, headers=head)
+            assert r.status_code == 422, (query, body, r.status_code, r.text)
+        assert fake.calls == [], fake.calls
+        r = CHATTER_A.request("DELETE", path + "?type=mux_direct", headers=head)
+        assert r.status_code == 200 and fake.calls == ["reset_stream_key"], (r.status_code, r.text, fake.calls)
+    original = server.account_registry.get_account
+    server.account_registry.get_account = lambda aid: {"id": aid} if aid == IDS["creator_a"] else original(aid)
+    try:
+        _with_fake_of(_check)
+    finally:
+        server.account_registry.get_account = original
+        _reset()
 
 
 # ── Role status ─────────────────────────────────────────────────────────────
@@ -1685,6 +1886,118 @@ def case_users_me_writes_need_of_settings_where_reads_follow_the_map():
         _reset()
 
 
+# ticket 67
+PNG_1PX = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                        "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")
+
+
+def case_the_profile_image_upload_needs_of_settings():
+    """Edit profile's cover and avatar upload (POST users/me/profile-image) is OF settings' alone, as the other users/me
+    writes: refused for a role without OF settings before anything reaches OF, allowed with OF settings alone."""
+    path = f"{ME}/profile-image"
+    assert permissions.route_pages(path, "POST") == ("/of-manager/settings",)
+    files = {"file": ("cover.png", PNG_1PX, "image/png")}
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-most"}, _role("role-most", _all_but("/of-manager/settings")))
+
+        def _refused(fake):
+            r = CHATTER_A.post(path, files=files, data={"kind": "header"})
+            assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow OF settings"}, r.text
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
+
+        _roles(OWNER_A, True, {EMP_A: "role-settings"}, _role("role-settings", _only("/of-manager/settings")))
+
+        def _allowed(fake):
+            fake.upload_media = lambda *_a, **_k: fake.calls.append("upload_media") or {
+                "ready": True, "send_with": [{"processId": "p1", "host": "h", "name": "cover.png"}]}
+            r = CHATTER_A.post(path, files=files, data={"kind": "header"})
+            assert r.status_code == 200 and r.json()["processId"] == "p1", r.text
+            assert fake.calls == ["upload_media"], fake.calls
+        resolve, server._resolve_account_id = server._resolve_account_id, lambda _ctx: IDS["creator_a"]
+        try:
+            _with_fake_of(_allowed)
+        finally:
+            server._resolve_account_id = resolve
+    finally:
+        _reset()
+
+
+# ticket 69
+def case_social_media_buttons_need_of_settings():
+    """Settings > Social media's buttons (GET/PUT /users/social/buttons, DELETE /users/social/buttons/{id}, and the Add
+    button's providers GET /init) are OF settings' alone: refused for a role without OF settings before anything reaches
+    OF, allowed with OF settings alone."""
+    path = "/api/of/v2/users/social/buttons"
+    body = {"socialMedia": "instagram", "label": "IG", "link": "", "username": "alpha"}
+    for method, p in (("GET", path), ("PUT", path), ("DELETE", f"{path}/7"), ("GET", "/api/of/v2/init")):
+        assert permissions.route_pages(p, method) == ("/of-manager/settings",), (method, p)
+    calls = (("get", path, {}, "social_buttons"), ("put", path, {"json": body}, "add_social_button"),
+             ("delete", f"{path}/7", {}, "delete_social_button"),
+             ("get", "/api/of/v2/init", {}, "social_media_providers"))
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-most"}, _role("role-most", _all_but("/of-manager/settings")))
+
+        def _refused(fake):
+            for verb, p, kw, _ in calls:
+                r = getattr(CHATTER_A, verb)(p, **kw)
+                assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow OF settings"}, r.text
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
+
+        _roles(OWNER_A, True, {EMP_A: "role-settings"}, _role("role-settings", _only("/of-manager/settings")))
+
+        def _allowed(fake):
+            for verb, p, kw, _ in calls:
+                r = getattr(CHATTER_A, verb)(p, **kw)
+                assert r.status_code == 200, (verb, r.status_code, r.text)
+            assert fake.calls == [name for *_, name in calls], fake.calls
+        resolve, server._resolve_account_id = server._resolve_account_id, lambda _ctx: IDS["creator_a"]
+        try:
+            _with_fake_of(_allowed)
+        finally:
+            server._resolve_account_id = resolve
+    finally:
+        _reset()
+
+
+# ticket 70
+def case_things_i_like_links_need_of_settings():
+    """Settings > Things I Like's links (GET/PUT /users/links, DELETE /users/links/{id}) are OF settings' alone: refused
+    for a role without OF settings before anything reaches OF, allowed with OF settings alone; the GET is never the
+    /users/{user_id_or_username} lookup."""
+    path = "/api/of/v2/users/links"
+    body = {"link": "https://www.youtube.com/watch?v=alpha"}
+    for method, p in (("GET", path), ("PUT", path), ("DELETE", f"{path}/7")):
+        assert permissions.route_pages(p, method) == ("/of-manager/settings",), (method, p)
+    calls = (("get", path, {}, "users_links"), ("put", path, {"json": body}, "add_users_link"),
+             ("delete", f"{path}/7", {}, "delete_users_link"))
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-most"}, _role("role-most", _all_but("/of-manager/settings")))
+
+        def _refused(fake):
+            for verb, p, kw, _ in calls:
+                r = getattr(CHATTER_A, verb)(p, **kw)
+                assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow OF settings"}, r.text
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
+
+        _roles(OWNER_A, True, {EMP_A: "role-settings"}, _role("role-settings", _only("/of-manager/settings")))
+
+        def _allowed(fake):
+            for verb, p, kw, _ in calls:
+                r = getattr(CHATTER_A, verb)(p, **kw)
+                assert r.status_code == 200, (verb, r.status_code, r.text)
+            assert fake.calls == [name for *_, name in calls], fake.calls
+        resolve, server._resolve_account_id = server._resolve_account_id, lambda _ctx: IDS["creator_a"]
+        try:
+            _with_fake_of(_allowed)
+        finally:
+            server._resolve_account_id = resolve
+    finally:
+        _reset()
+
+
 # ── On by default (S11) ─────────────────────────────────────────────────────
 
 def case_a_never_stored_or_invalid_switch_reads_on_and_only_false_turns_it_off():
@@ -1869,6 +2182,142 @@ def case_full_ai_config_writes_are_owner_only_and_the_read_follows_the_page():
         assert put.status_code == 200 and put.json()["rev"] == 1, put.text
         assert ckpt.status_code == 409 and save.status_code == 409 and rollback.status_code == 409, (
             ckpt.text, save.text, rollback.text)
+    finally:
+        _reset()
+
+# ticket 18: Collections' Posts tab (a list's posts, OF's "fans" list's on Fans), Fans' Expired tab and Search users.
+COLLECTIONS_READS = ["/api/of/v2/lists/31/posts?limit=10", "/api/of/v2/lists/fans/posts?limit=10",
+                     "/api/of/v2/subscribers?type=expired&limit=50", "/api/of/v2/lists/31/users?limit=50&query=bravo"]
+
+
+def case_collections_alone_reads_list_posts_expired_fans_and_list_search_others_are_refused():
+    """Granted only Collections, a chatter reads each (200, one OnlyFans call apiece); a role without Collections and
+    without every page sharing these routes (Messages, the growth pages' list selects, ...) is refused each (403,
+    naming the route's first page in map order) and OnlyFans is never called."""
+    shared = sorted({p for path in COLLECTIONS_READS for p in permissions.route_pages(path.split("?")[0], "GET")})
+    assert "/of-manager/collections" in shared, shared
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-coll"}, _role("role-coll", _only("/of-manager/collections")))
+
+        def _granted(fake):
+            for path in COLLECTIONS_READS:
+                r = CHATTER_A.get(path)
+                assert r.status_code == 200, f"{path}: {r.status_code} {r.text}"
+            assert fake.calls == ["list_posts_in", "list_posts_in", "subscribers", "list_users_in"], fake.calls
+        _with_fake_of(_granted)
+        _roles(OWNER_A, True, {EMP_A: "role-none"}, _role("role-none", _all_but(*shared)))
+
+        def _refused(fake):
+            for path in COLLECTIONS_READS:
+                pages = permissions.route_pages(path.split("?")[0], "GET")
+                want = {"detail": f"Your role does not allow {permissions.PAGE_MAP[pages[0]][0]}"}
+                r = CHATTER_A.get(path)
+                assert r.status_code == 403 and r.json() == want, f"{path}: {r.status_code} {r.text}"
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
+    finally:
+        _reset()
+
+
+# ticket 19: Home's Pin to home dialog (the feed tabs' pencil, home/state-feed-tabs-edit) lists the Creator's lists from
+# the Relay's /lists read (the same read and cache as Collections).
+def case_home_alone_reads_the_pin_to_home_lists_and_a_role_with_no_lists_page_is_refused():
+    """Granted only Home, a chatter reads /lists (200, one OnlyFans call); a role holding none of the pages that read
+    /lists is refused (403, naming the first of them in map order) and OnlyFans is never called."""
+    path = "/api/of/v2/lists?limit=50"
+    pages = permissions.route_pages(path.split("?")[0], "GET")
+    assert "/of-manager/home" in pages, pages
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-home"}, _role("role-home", _only("/of-manager/home")))
+
+        def _granted(fake):
+            r = CHATTER_A.get(path)
+            assert r.status_code == 200, f"{path}: {r.status_code} {r.text}"
+            assert fake.calls == ["get_lists"], fake.calls
+        _with_fake_of(_granted)
+        _roles(OWNER_A, True, {EMP_A: "role-none"}, _role("role-none", _all_but(*pages)))
+
+        def _refused(fake):
+            r = CHATTER_A.get(path)
+            assert r.status_code == 403 and r.json() == {"detail": f"Your role does not allow {permissions.PAGE_MAP[pages[0]][0]}"}, f"{path}: {r.status_code} {r.text}"
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
+    finally:
+        _reset()
+
+
+# ticket 20: Statements' Earning statistics bounds its From … To picker by the Creator's start (the same read Statistics
+# makes, /users/me/start-date-model).
+def case_statements_alone_reads_the_creator_start_and_a_role_with_neither_page_is_refused():
+    """Granted only Statements, a chatter reads /users/me/start-date-model (200, one OnlyFans call); a role holding
+    neither Statements nor Statistics is refused (403, naming the first in map order) and OnlyFans is never called."""
+    path = "/api/of/v2/users/me/start-date-model"
+    pages = permissions.route_pages(path, "GET")
+    assert "/of-manager/statements" in pages and "/of-manager/statistics" in pages, pages
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-statements"}, _role("role-statements", _only("/of-manager/statements")))
+
+        def _granted(fake):
+            r = CHATTER_A.get(path)
+            assert r.status_code == 200, f"{path}: {r.status_code} {r.text}"
+            assert fake.calls == ["my_start_date"], fake.calls
+        _with_fake_of(_granted)
+        _roles(OWNER_A, True, {EMP_A: "role-none"}, _role("role-none", _all_but(*pages)))
+
+        def _refused(fake):
+            r = CHATTER_A.get(path)
+            assert r.status_code == 403 and r.json() == {"detail": f"Your role does not allow {permissions.PAGE_MAP[pages[0]][0]}"}, f"{path}: {r.status_code} {r.text}"
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
+    finally:
+        _reset()
+
+
+# ticket 24: Statements' Earning statistics reads /payouts/stats (its all-time totals, and its From … To range on Apply),
+# so the Statements page's entry names it beside Statistics' (permissions.py; it was Statistics only, a 403 for a
+# Statements-only role).
+def case_statements_alone_reads_the_payout_stats_and_a_role_with_neither_page_is_refused():
+    """Granted only Statements, a chatter reads /payouts/stats bare and for a range (200, one OnlyFans call each); a range
+    not a day (or a day and time) is a 422 before OnlyFans; a role holding neither Statements nor Statistics is refused
+    (403, naming the first in map order) and OnlyFans is never called."""
+    path = "/api/of/v2/payouts/stats"
+    pages = permissions.route_pages(path, "GET")
+    assert "/of-manager/statements" in pages and "/of-manager/statistics" in pages, pages
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-statements"}, _role("role-statements", _only("/of-manager/statements")))
+
+        def _granted(fake):
+            for q in ("", "?startDate=2026-10-01&endDate=2026-10-31", "?startDate=2026-10-01 00:00:00&endDate=2026-10-31 23:59:59"):
+                r = CHATTER_A.get(path + q)
+                assert r.status_code == 200, f"{path}{q}: {r.status_code} {r.text}"
+            assert fake.calls == ["earning_stats"] * 3, fake.calls
+            r = CHATTER_A.get(path + "?startDate=2026-10-01T00:00:00Z&endDate=2026-10-31")
+            assert r.status_code == 422, f"ISO start: {r.status_code} {r.text}"
+            assert fake.calls == ["earning_stats"] * 3, fake.calls
+        _with_fake_of(_granted)
+        # OF's own names go through as they are; start/end are not the route's (OF ignores them too): no range.
+        seen = []
+
+        class _Stats:
+            def earning_stats(self, **k):
+                seen.append(k)
+                return {"ok": True}
+        original = server._get_client
+        server._get_client = lambda *_a, **_k: _Stats()
+        try:
+            for q in ("?startDate=2026-09-01&endDate=2026-09-30", "?start=2026-08-01&end=2026-08-31"):
+                assert CHATTER_A.get(path + q).status_code == 200, q
+        finally:
+            server._get_client = original
+        assert seen == [{"by": "day", "start_date": "2026-09-01", "end_date": "2026-09-30"},
+                        {"by": "day", "start_date": None, "end_date": None}], seen
+        _roles(OWNER_A, True, {EMP_A: "role-none"}, _role("role-none", _all_but(*pages)))
+
+        def _refused(fake):
+            r = CHATTER_A.get(path + "?startDate=2026-10-01&endDate=2026-10-31")
+            assert r.status_code == 403 and r.json() == {"detail": f"Your role does not allow {permissions.PAGE_MAP[pages[0]][0]}"}, f"{path}: {r.status_code} {r.text}"
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
     finally:
         _reset()
 

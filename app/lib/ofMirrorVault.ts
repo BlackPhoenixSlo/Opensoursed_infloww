@@ -27,6 +27,9 @@
  *   turns into OF's custom order (title "Customize order", X cancels, the check saves), every folder with a drag handle
  *   and All media pinned; the check sends POST /vault/lists/sort {customOrder, sort: "custom"} (the Relay's
  *   /admin/vault-ai/of-folders/sort {custom_order}).
+ * - vault/list's header More (ticket 34, bindFolderMore): OF's folder menu for the open custom folder, Rename (the
+ *   ?edit=1 modal above) and Delete (confirmed, then the bare Vault), as the action row's RENAME and DELETE. Only with
+ *   OFM_NEW_WRITES_ENABLED on (ofMirrorNewWrites); off it stays as captured, disabled with the Not-yet title.
  */
 
 import { useEffect, type RefObject } from "react";
@@ -36,13 +39,15 @@ import { useScope } from "@/contexts/ScopeContext";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { relay, type VaultList } from "@/lib/relay";
 import { addToOfFolder, createOfFolder, deleteOfFolder, invalidateVaultGrid, removeFromOfFolder, renameOfFolder, sortOfFolders } from "@/hooks/useVaultCache";
-import { floatLabel } from "@/lib/ofMirrorSettings";
 import { GREY, message, note, NOTE_STYLE, SELECT_MODEL } from "@/lib/ofMirrorWrites";
+import { closeMenu, showMenu } from "@/lib/ofMirrorMenu";
+import { markNotYet, markWired } from "@/lib/ofMirrorTooltip";
 import { mirrorQuery } from "@/lib/ofMirrorData";
 import { VAULT_LISTS } from "@/lib/ofMirrorDataQueries";
-import { toggleTile } from "@/lib/ofMirrorDom";
+import { floatLabel, toggleTile } from "@/lib/ofMirrorDom";
 import { isoDay, openDatepicker, parseDay, type Day } from "@/lib/ofMirrorDatepicker";
 import { BRAND_NAME } from "@/lib/brand";
+import { useOfmNewWrites } from "@/lib/ofMirrorNewWrites";
 
 export const VAULT = "/of-manager/vault";
 const VIEW_KEYS = ["list", "type", "field", "sort", "date", "q", "slist"] as const;
@@ -143,6 +148,8 @@ export interface VaultContext {
   navigate(href: string): void;
   /** null: no single model selected. */
   handlers: VaultHandlers | null;
+  /** OFM_NEW_WRITES_ENABLED (useOfmNewWrites): vault/list's header More is bound; false, it stays as captured. */
+  newWrites: boolean;
 }
 
 const RIGHT = ".l-main-content.m-r-side";
@@ -400,6 +407,72 @@ function bindFolderForm(doc: Document, ctx: VaultContext): () => void {
   };
 }
 
+// ticket 34: the folder page's header More (vault/list), OF's folder menu.
+export const FOLDER_MORE = `${RIGHT} [at-attr='list_dropdown'] > button`;
+/** The menu rows' tooltip while no custom folder is open (All media, a type tab: nothing to rename or delete). */
+export const NO_FOLDER = "Open a custom folder to rename or delete it";
+
+type Run = (job: () => Promise<unknown>, done: string, fail: string) => void;
+/** Run `job`, then say `done` (or the error) under `el`; `el` is off while it runs (no second click), then `after`. */
+function runner(doc: Document, el: HTMLElement, after?: () => void): Run {
+  return (job, done, fail) => {
+    el.style.pointerEvents = "none";
+    el.style.opacity = "0.5";
+    job()
+      .then(
+        () => note(doc, el, done),
+        (e) => note(doc, el, `${fail}: ${message(e)}`, true),
+      )
+      .finally(() => {
+        el.style.pointerEvents = "";
+        el.style.opacity = "";
+        after?.();
+      });
+  };
+}
+
+/** The open folder's rename: the "Create new category" modal with ?edit=1 (bindFolderForm), with the view. */
+const renameHref = (view: VaultView) => vaultHref(view, `${VAULT}/state-add-list`) + (view.list ? "&" : "?") + "edit=1";
+
+/** The custom folder's delete (the action row's DELETE, vault/list's More → Delete): confirmed, then the bare Vault. */
+function deleteFolder(ctx: VaultContext, handlers: VaultHandlers, folder: VaultList, run: Run) {
+  if (!handlers.confirm(`Delete the folder "${folder.name}"? Its media stay in the vault.`)) return;
+  run(() => handlers.deleteFolder(String(folder.id)).then(() => ctx.navigate(VAULT)), "Deleted", "Could not delete");
+}
+
+/**
+ * vault/list's header More: enabled and Wired, its Not-yet title dropped (D1: Live proofs vault.more.rename and
+ * vault.more.delete passed, docs/of-manager/captures/vault--more.json), it opens OF's folder menu, Rename and Delete, for the open custom folder (else both rows are off). Rename opens the open folder's
+ * "Rename category" modal (state-add-list?edit=1, as the action row's RENAME); Delete is the action row's DELETE.
+ * ASSUMPTION: OF's folder menu holds Rename and Delete (spec story 26 "as captured"; no capture of the menu, the v-menu
+ * is empty in vault/list.html), worded as the action row's; overturned by a capture of OF's menu, whose items then
+ * replace these.
+ */
+function bindFolderMore(doc: Document, ctx: VaultContext): () => void {
+  const more = doc.querySelector<HTMLButtonElement>(FOLDER_MORE);
+  if (!more) return () => {};
+  markWired(more, true);
+  const run = runner(doc, more);
+  const onClick = (ev: MouseEvent) => {
+    ev.preventDefault();
+    const { handlers } = ctx;
+    if (!handlers) return note(doc, more, SELECT_MODEL);
+    const folder = customFolder(ctx);
+    const off = folder ? undefined : NO_FOLDER;
+    showMenu(doc, more, [{ name: "folder", radio: false, options: [{ value: "rename", label: "Rename", disabled: off }, { value: "delete", label: "Delete", disabled: off }] }], (_, v) => {
+      if (!folder) return;
+      if (v === "rename") ctx.navigate(renameHref(ctx.view));
+      else deleteFolder(ctx, handlers, folder, run);
+    });
+  };
+  more.addEventListener("click", onClick);
+  return () => {
+    more.removeEventListener("click", onClick);
+    closeMenu(doc);
+    markNotYet(more);
+  };
+}
+
 /** One of OF's flat text buttons (the modals' CANCEL / SAVE style), Wired. */
 function flatButton(doc: Document, text: string, act: string): HTMLButtonElement {
   const b = doc.createElement("button");
@@ -627,20 +700,7 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
   };
 
   /** Run `job`, then say `done` (or the error) under the row; the row is off while it runs. */
-  const run = (job: () => Promise<unknown>, done: string, fail: string) => {
-    bar.style.pointerEvents = "none";
-    bar.style.opacity = "0.5";
-    job()
-      .then(
-        () => note(doc, bar, done),
-        (e) => note(doc, bar, `${fail}: ${message(e)}`, true),
-      )
-      .finally(() => {
-        bar.style.pointerEvents = "";
-        bar.style.opacity = "";
-        draw();
-      });
-  };
+  const run = runner(doc, bar, () => draw());
   const clear = () => {
     for (const t of doc.querySelectorAll(`${TILE}.selected`)) toggleTile(t, false);
   };
@@ -688,11 +748,9 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
       const tags = input.value.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
       run(() => handlers.saveTags(id, tags), "Tags saved", "Could not save tags");
     },
-    rename: () => ctx.navigate(vaultHref(ctx.view, `${VAULT}/state-add-list`) + (ctx.view.list ? "&" : "?") + "edit=1"),
+    rename: () => ctx.navigate(renameHref(ctx.view)),
     delete: () => {
-      if (!folder) return;
-      if (!handlers.confirm(`Delete the folder "${folder.name}"? Its media stay in the vault.`)) return;
-      run(() => handlers.deleteFolder(String(folder.id)).then(() => ctx.navigate(VAULT)), "Deleted", "Could not delete");
+      if (folder) deleteFolder(ctx, handlers, folder, run);
     },
     remove: (ids) => {
       if (folder) run(() => handlers.removeFromFolder(String(folder.id), ids).then(clear), "Removed from the folder", "Could not remove");
@@ -959,6 +1017,7 @@ export function bindVault(doc: Document, page: string, ctx: VaultContext): () =>
   if (page === "vault/state-lists-sort-dropdown") unbinds.push(bindListSort(doc, ctx));
   if (page === "vault/state-add-list") unbinds.push(bindFolderForm(doc, ctx));
   if (page === "vault/index" && handlers) unbinds.push(bindActions(doc, ctx, handlers));
+  if (page === "vault/list" && ctx.newWrites) unbinds.push(bindFolderMore(doc, ctx)); // ticket 34
 
   const search = doc.querySelector<HTMLInputElement>(`${RIGHT} ${SEARCH}`);
   const header = search?.closest(".g-page__header");
@@ -1028,6 +1087,7 @@ export function useOfVault(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   // "Go to date"'s first day, as OF's: the model's first published post, else its join day.
   const me = useQuery(ofMeQuery(accountId)).data as { firstPublishedPostDate?: string | null; joinDate?: string | null } | undefined;
   const minDate = me?.firstPublishedPostDate || me?.joinDate || null;
+  const newWrites = useOfmNewWrites(page === "vault/list"); // OFM_NEW_WRITES_ENABLED off: the header More stays Not yet
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -1081,7 +1141,7 @@ export function useOfVault(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     const bind = () => {
       unbind?.();
       const doc = frame.contentDocument;
-      unbind = doc?.body ? bindVault(doc, page, { view, edit: sp.get("edit") === "1", customize: sp.get("customize") === "1", minDate, lists: accountId ? lists : undefined, navigate: (href) => router.push(href), handlers }) : undefined;
+      unbind = doc?.body ? bindVault(doc, page, { view, edit: sp.get("edit") === "1", customize: sp.get("customize") === "1", minDate, lists: accountId ? lists : undefined, navigate: (href) => router.push(href), handlers, newWrites }) : undefined;
     };
     if (frame.contentDocument?.readyState === "complete") bind();
     frame.addEventListener("load", bind);
@@ -1089,5 +1149,5 @@ export function useOfVault(frameRef: RefObject<HTMLIFrameElement | null>, src: s
       frame.removeEventListener("load", bind);
       unbind?.();
     };
-  }, [frameRef, src, page, isVault, query, accountId, lists, minDate, qc, router]);
+  }, [frameRef, src, page, isVault, query, accountId, lists, minDate, qc, router, newWrites]);
 }

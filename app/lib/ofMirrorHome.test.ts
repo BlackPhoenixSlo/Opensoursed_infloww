@@ -343,7 +343,7 @@ describe("home: the composer", () => {
     const s = memory();
     const h = composer();
     let doc = load("home/state-poll");
-    let unbind = bindPost(doc, "home/state-poll", { handlers: h, storage: s, accountId: "1", draftId: "home:1" });
+    let unbind = bindPost(doc, "home/state-poll", { newWrites: false, handlers: h, storage: s, accountId: "1", draftId: "home:1" });
     const options = [...doc.querySelectorAll<HTMLInputElement>(".b-make-post__voting .vote-input input[at-attr='input']")];
     expect(options.length).toBeGreaterThanOrEqual(2);
     options.forEach((o, i) => {
@@ -357,7 +357,7 @@ describe("home: the composer", () => {
     unbind();
 
     doc = load("home/state-expiration");
-    unbind = bindPost(doc, "home/state-expiration", { handlers: h, storage: s, accountId: "1", draftId: "home:1" });
+    unbind = bindPost(doc, "home/state-expiration", { newWrites: false, handlers: h, storage: s, accountId: "1", draftId: "home:1" });
     expect(doc.querySelector(".modal.show .modal-title")!.textContent?.trim()).toBe("POLL DURATION");
     for (const a of doc.querySelectorAll(".modal.show .modal-footer a, .modal.show .of-state-backdrop")) expect(a.getAttribute("href")).toBe("/of-manager/home/state-poll");
     const days = doc.querySelector<HTMLInputElement>(".modal.show input[name='periodValue']")!;
@@ -368,7 +368,7 @@ describe("home: the composer", () => {
     unbind();
 
     doc = load("home/index");
-    unbind = bindPost(doc, "home/index", { handlers: h, storage: s, accountId: "1", draftId: "home:1" });
+    unbind = bindPost(doc, "home/index", { newWrites: false, handlers: h, storage: s, accountId: "1", draftId: "home:1" });
     type(doc, "Synthetic poll");
     doc.querySelector<HTMLButtonElement>(POST)!.click();
     await flush();
@@ -382,7 +382,7 @@ describe("home: the composer", () => {
     const s = memory();
     const h = composer();
     const doc = load("home/state-poll");
-    const unbind = bindPost(doc, "home/state-poll", { handlers: h, storage: s, accountId: "1", draftId: "home:1" });
+    const unbind = bindPost(doc, "home/state-poll", { newWrites: false, handlers: h, storage: s, accountId: "1", draftId: "home:1" });
     const options = () => [...doc.querySelectorAll<HTMLInputElement>(".b-make-post__voting .vote-input input[at-attr='input']")];
     options().forEach((o, i) => {
       o.value = ["Yes", "No"][i] ?? "";
@@ -404,7 +404,7 @@ describe("home: the composer", () => {
     const s = memory();
     const h = composer();
     const doc = load("home/state-target");
-    const unbind = bindPost(doc, "home/state-target", { handlers: h, storage: s, accountId: "1", draftId: "home:1" });
+    const unbind = bindPost(doc, "home/state-target", { newWrites: false, handlers: h, storage: s, accountId: "1", draftId: "home:1" });
     const field = doc.querySelector<HTMLInputElement>(".modal.show input[at-attr='input']")!;
     field.value = "25";
     field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -429,7 +429,7 @@ describe("home: the composer", () => {
     const doc = load("home/index");
     const s = memory();
     const h = composer();
-    const unbind = bindPost(doc, "home/index", { handlers: h, storage: s, accountId: "1", draftId: "home:1" });
+    const unbind = bindPost(doc, "home/index", { newWrites: false, handlers: h, storage: s, accountId: "1", draftId: "home:1" });
     const post = doc.querySelector<HTMLButtonElement>(POST)!;
     type(doc, "Synthetic post");
     expect(post.disabled).toBe(false);
@@ -455,7 +455,7 @@ describe("home: the composer", () => {
     at.setSeconds(0, 0);
     s.setItem("oi:new-post:home:1", JSON.stringify({ text: "Later post", tagged_users: [], media_files: [], thumbs: [], posted_at: localIso(at) }));
     const h = composer();
-    let unbind = bindPost(doc, "home/index", { handlers: h, storage: s, accountId: "1", draftId: "home:1" });
+    let unbind = bindPost(doc, "home/index", { newWrites: false, handlers: h, storage: s, accountId: "1", draftId: "home:1" });
     doc.querySelector<HTMLButtonElement>(POST)!.click();
     await flush();
     expect(h.createPost).toHaveBeenCalledWith({ text: "Later post", media_files: [], price: 0, posted_at: localIso(at) });
@@ -463,7 +463,7 @@ describe("home: the composer", () => {
     expect(doc.querySelector(".toast__text")!.textContent).toMatch(/^Your post is scheduled for \w{3}, /);
     unbind();
     const fail = composer({ createPost: vi.fn(() => Promise.reject(new Error("Please allow 10 seconds"))) });
-    unbind = bindPost(doc, "home/index", { handlers: fail, storage: s, accountId: "1", draftId: "home:1" });
+    unbind = bindPost(doc, "home/index", { newWrites: false, handlers: fail, storage: s, accountId: "1", draftId: "home:1" });
     type(doc, "Synthetic post");
     doc.querySelector<HTMLButtonElement>(POST)!.click();
     await flush();
@@ -475,10 +475,10 @@ describe("home: the composer", () => {
 
   it("Add media on Home is the upload button (marked wired); All Creators: Post gives the select-a-model note", () => {
     const doc = load("home/index");
-    let unbind = bindPost(doc, "home/index", { handlers: composer(), storage: memory(), accountId: "1", draftId: "home:1" });
+    let unbind = bindPost(doc, "home/index", { newWrites: false, handlers: composer(), storage: memory(), accountId: "1", draftId: "home:1" });
     expect(TOOL(doc, "Add media").hasAttribute("data-oi-wired")).toBe(true);
     unbind();
-    unbind = bindPost(doc, "home/index", { handlers: null, storage: null, accountId: null });
+    unbind = bindPost(doc, "home/index", { newWrites: false, handlers: null, storage: null, accountId: null });
     type(doc, "Synthetic post");
     doc.querySelector<HTMLButtonElement>(POST)!.click();
     expect(doc.getElementById("oi-note")!.textContent).toBe(SELECT_MODEL);
@@ -494,7 +494,7 @@ describe("home: the composer", () => {
     const doc = load("home/state-schedule");
     const s = memory();
     const h = composer();
-    const unbind = bindPost(doc, "home/state-schedule", { handlers: h, storage: s, accountId: "1", draftId: "home:1" });
+    const unbind = bindPost(doc, "home/state-schedule", { newWrites: false, handlers: h, storage: s, accountId: "1", draftId: "home:1" });
     doc.querySelector<HTMLButtonElement>(".vdatetime-popup__actions__button--confirm button")!.click();
     expect(h.navigate).toHaveBeenCalledWith("/of-manager/home");
     expect(JSON.parse(s.getItem("oi:new-post:home:1")!).posted_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
@@ -505,7 +505,7 @@ describe("home: the composer", () => {
     const doc = home("home/state-tag-people");
     const s = memory();
     const tagItems = [{ id: 901, name: "Alpha One", type: "user", user: { id: 901, name: "Alpha One", username: "alphaone" } }];
-    const unbind = bindPost(doc, "home/state-tag-people", { handlers: composer(), storage: s, accountId: "1", draftId: "home:1", tagItems });
+    const unbind = bindPost(doc, "home/state-tag-people", { newWrites: false, handlers: composer(), storage: s, accountId: "1", draftId: "home:1", tagItems });
     const tagRows = () => [...doc.querySelectorAll<HTMLElement>("label.b-rows-lists__item[data-oi-user]")];
     expect(tagRows()).toHaveLength(1);
     // The feed's data arrives again (a refetch): restore and re-apply leave the dialog's rows alone.
@@ -528,7 +528,7 @@ describe("home: the composer", () => {
     const tile = doc.querySelector<HTMLElement>(".modal [data-oi-media='61']")!;
     expect(tile).not.toBeNull();
     const s = memory();
-    const unbind = bindPost(doc, HOME_VAULT, { handlers: composer(), storage: s, accountId: "1", draftId: "home:1" });
+    const unbind = bindPost(doc, HOME_VAULT, { newWrites: false, handlers: composer(), storage: s, accountId: "1", draftId: "home:1" });
     // Home's post actions are bound too: a vault tile is no post picture (the vault's `data-oi-media` is its id).
     const unbindActions = bindPostActions(doc, handlers());
     tile.click();
@@ -835,7 +835,7 @@ describe("bindPostActions with bindWrites", () => {
   it("its clicks never get the Read-only note; another creator's More has Copy link to post only; unbind stops it", async () => {
     const doc = home();
     const h = handlers();
-    const unbindWrites = bindWrites(doc, "home/index", null);
+    const unbindWrites = bindWrites(doc, "home/index", null, true);
     const unbind = bindPostActions(doc, h);
     click(row(doc, 0).querySelector(".set-favorite-btn")!);
     click(row(doc, 0).querySelector(".send-comment-btn")!);

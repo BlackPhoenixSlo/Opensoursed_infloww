@@ -25,8 +25,8 @@ the poll with the piece at "3 days" and the options kept; New post (loaded afres
 label_ids [11], voting_type 1, voting_options ["Yes","No"] and voting_due 3, and stays with the toast.
 Error: with the mock answering 502, the page shows the red "Could not post: <relay text>" note, Post is enabled again,
 the draft is kept and the page stays on New post.
-All-Creators (scope key removed before every load): New post stands in with the first listed creator ("Showing Model
-One, pick a model to switch" over the frame), so Post sends its POST /api/of/v2/posts with X-Account-Id acc1.
+No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
+77e5df419; phase_check.py's one_creator checks it).
 Screenshots: /tmp/of-mirror-shots/inapp-post-*.png. Exit 1 on a failed check.
 """
 import json, os, sys
@@ -41,7 +41,6 @@ user={"user_id":"u1","username":"tester","is_admin":False}
 POSTS="/api/of/v2/posts"
 EDITOR="[contenteditable][aria-label='Textbox field']"
 POST="button[at-attr='submit_post']"
-SELECT_MODEL="Select a model to save changes"
 TOO_SOON="Pick a time at least a minute from now"
 SCHEDULE="a[at-attr='scheduled_msg']"
 TAG="a[aria-label='Tag other creators']"
@@ -344,19 +343,6 @@ with sync_playwright() as p:
     console_ok("error", errs, failed_loads=1)
     pg.context.close()
 
-    # All-Creators scope: the scope key cleared before every load. New post stands in with the first listed creator
-    # (ofMirrorProfile's STAND_IN_SRC, the "Showing ..." line over the frame), so POST goes out for it.
-    pg, sent, tag_gets, errs, open_new_post=session(b, "localStorage.removeItem('chatterly:scope')")
-    fr=open_new_post()
-    if fr:
-        check("all creators: scope key absent", pg.evaluate("localStorage.getItem('chatterly:scope')"), None)
-        check("all creators: the line over the frame names the stand-in", pg.get_by_test_id("of-standin-hint").inner_text(), "Showing Model One, pick a model to switch")
-        fr.locator(EDITOR).fill("Synthetic post")
-        fr.locator(POST).click(); pg.wait_for_timeout(1000)
-        check("all creators: POST for the stand-in creator", sent, [("POST","/api/of/v2/posts",{"text":"Synthetic post","media_files":[],"price":0},"acc1")])
-        pg.screenshot(path=f"{SHOTS}/inapp-post-all-creators.png")
-    console_ok("all creators", errs)
-    pg.context.close()
 if failures:
     print("FAIL:", *failures, sep="\n  "); sys.exit(1)
 print("post ok")

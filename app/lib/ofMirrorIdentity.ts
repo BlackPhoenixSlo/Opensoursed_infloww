@@ -17,6 +17,8 @@ import { useOfManagerAccounts } from "@/hooks/useAccounts";
 import { ofMeQuery, type OfMe } from "@/lib/ofMe";
 import { proxyImage } from "@/lib/mediaUrl";
 import { fillSlot, htmlLines } from "@/lib/ofMirrorDom";
+import { setOfHtml } from "@/lib/ofMirrorFormat";
+import { hasOfFormatting } from "@/lib/ofRichText";
 
 // `/users/me` lives in lib/ofMe (Messages Pro reads it too); re-exported for the mirror's readers.
 export { ofMeQuery, type OfMe };
@@ -216,6 +218,11 @@ export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) =
     if (priceInput) priceInput.value = String(price);
   }
 
+  // ticket 68: a formatted bio (OF's markup, ofMirrorProfileFormat's Save) shows formatted in Edit profile's Bio, through
+  // the allow-list. ASSUMPTION: rawAbout, when OF sends it, holds the editor's markup as `about` does; overturned by the
+  // Live proof's read.
+  const about = typeof me.rawAbout === "string" ? me.rawAbout : typeof me.about === "string" ? me.about : null;
+  if (about && hasOfFormatting(about)) for (const el of doc.querySelectorAll("[data-placeholder='Bio']")) setOfHtml(el, about);
   if (bio !== null) {
     for (const el of doc.querySelectorAll("[data-placeholder='Bio']")) {
       const counter = el.closest(".g-input__wrapper")?.querySelector(".count-block");

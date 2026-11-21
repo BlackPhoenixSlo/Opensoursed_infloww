@@ -324,7 +324,7 @@ function bindDialog<T extends object>(
 }
 
 /** Mark a tab current (OF's m-current m-no-pointer) or not. */
-function current(tab: Element | null, on: boolean) {
+export function current(tab: Element | null, on: boolean) {
   tab?.classList.toggle("m-current", on);
   tab?.classList.toggle("m-no-pointer", on);
   tab?.setAttribute("data-oi-wired", "");
@@ -496,6 +496,9 @@ export const trialHref = (view: TrialView) => {
   const s = q.toString();
   return `/of-manager/${TRIAL_PAGE}${s ? `?${s}` : ""}`;
 };
+/** `view` after picking `value` in the Sort menu's `group` ("field", else the order). */
+export const trialPick = (view: TrialView, group: string, value: string): TrialView =>
+  group === "field" ? { ...view, field: value === "create_date" ? null : value } : { ...view, sort: value === "asc" ? "asc" : null };
 
 /** A performer as OF's performers search lists one. */
 export interface Performer {
@@ -519,6 +522,18 @@ function bindTrialPage(doc: Document, view: TrialView, handlers: OfferHandlers |
   sortBtn?.setAttribute("data-oi-wired", "");
   const title = doc.querySelector(".b-content-filter__title");
   if (title) title.textContent = view.field ? (TRIAL_SORT.find((o) => o.value === view.field)?.label ?? "Recent") : "Recent";
+  // ticket 61: the kebab State page's radios, checked as `view`, each Select link to the base page's sort for its pick
+  // (as the menu's), Toggle back to the same sort; their Not-yet title stays (D1).
+  for (const r of doc.querySelectorAll<HTMLInputElement>("input[name='trial-filter-field'], input[name='trial-order-dir']")) {
+    const group = r.name === "trial-filter-field" ? "field" : "order";
+    const on = r.value === (group === "field" ? (view.field ?? "create_date") : (view.sort ?? "desc"));
+    r.checked = on;
+    r.toggleAttribute("checked", on);
+    r.disabled = false;
+    r.setAttribute("data-oi-wired", "");
+    r.closest("[role='menuitem']")?.querySelector("a.of-state-link")?.setAttribute("href", trialHref(trialPick(view, group, r.value)));
+  }
+  doc.querySelector(".trial-sorting-dropdown > a.of-state-link[aria-label='Toggle']")?.setAttribute("href", trialHref(view));
   const yours = doc.querySelector<HTMLElement>("#Your-links");
   const shared = doc.querySelector<HTMLElement>("#Shared-with-you");
   current(yours, view.tab !== "shared");
@@ -530,10 +545,7 @@ function bindTrialPage(doc: Document, view: TrialView, handlers: OfferHandlers |
     if (sortBtn && t.closest("button[aria-label='Sort']") === sortBtn) {
       ev.preventDefault();
       if (!handlers) return note(doc, sortBtn, SELECT_MODEL);
-      showMenu(doc, sortBtn, [{ name: "field", options: TRIAL_SORT, value: view.field ?? "create_date" }, ORDER_GROUP(view.sort)], (group, value) => {
-        const next = group === "field" ? { ...view, field: value === "create_date" ? null : value } : { ...view, sort: value === "asc" ? "asc" : null };
-        handlers?.navigate(trialHref(next));
-      });
+      showMenu(doc, sortBtn, [{ name: "field", options: TRIAL_SORT, value: view.field ?? "create_date" }, ORDER_GROUP(view.sort)], (group, value) => handlers?.navigate(trialHref(trialPick(view, group, value))));
       return;
     }
     const tab = t.closest("#Your-links, #Shared-with-you");
@@ -556,12 +568,21 @@ function bindTrialPage(doc: Document, view: TrialView, handlers: OfferHandlers |
   return () => doc.removeEventListener("click", onClick);
 }
 
+/** The free trial link's share dialog (shareStatsDialog): Share sends {trial_id, user_id}. */
+export function shareDialog(doc: Document, trialId: number, handlers: Pick<OfferHandlers, "searchPerformers" | "share">): HTMLElement {
+  return shareStatsDialog(doc, { searchPerformers: handlers.searchPerformers, send: (userId) => handlers.share({ trial_id: trialId, user_id: userId }) });
+}
+
 /**
  * OF's share dialog (ModalShareLinkStats; never captured, so drawn in OF's modal markup): a username field whose text
  * runs OF's performers search (300 ms after typing stops), a pick fills it, Cancel or the backdrop closes it; Share
- * (enabled once a creator is picked) sends {trial_id, user_id}, then OF's toast. Returns the dialog.
+ * (enabled once a creator is picked) calls `send` with the picked creator's id (a free trial or, ticket 74, a tracking
+ * link's share), then OF's toast. Returns the dialog.
  */
-export function shareDialog(doc: Document, trialId: number, handlers: Pick<OfferHandlers, "searchPerformers" | "share">): HTMLElement {
+export function shareStatsDialog(
+  doc: Document,
+  handlers: { searchPerformers(query: string): Promise<Performer[]>; send(userId: number): Promise<unknown> },
+): HTMLElement {
   doc.getElementById("oi-share")?.remove();
   const root = doc.createElement("div");
   root.id = "oi-share";
@@ -634,7 +655,7 @@ export function shareDialog(doc: Document, trialId: number, handlers: Pick<Offer
     if (t.closest("[data-oi-send]") && picked && !send.disabled) {
       send.disabled = true;
       const who = picked;
-      handlers.share({ trial_id: trialId, user_id: who.id }).then(
+      handlers.send(who.id).then(
         () => {
           close();
           toast(doc, `Link's statistics shared with ${who.username ? `@${who.username}` : (who.name ?? "")}`);
@@ -776,4 +797,30 @@ export function useOfOffers(frameRef: RefObject<HTMLIFrameElement | null>, src: 
       unbind?.();
     };
   }, [frameRef, src, page, accountId, router, qc, me, settings, viewKey]);
+}
+
+/**
+ * Ticket 75 (D29): the promotion "Offer claimed" dialog's ⋮ (settings/subscription/promotion-campaign/modal-3, OF's
+ * user_list_dropdown beside "Message all"). OF's JS (record settings--promotion-modal3-kebab, build
+ * 202611201129-df73dce944) gives it one item, Add to list (disabled while the claims list is empty), which opens the
+ * USER_LISTS dialog and sends addClaimsToList: POST /lists/{listId}/users/{promo|trial}/{claimId}/claims, no body,
+ * answering {addedUsers}. OF's JS has no inverse: the undo, one DELETE /lists/{listId}/users/{userId} per added user
+ * (the Relay's existing route), is `inferred`, never the bulk DELETE /lists/{id}/users (it clears the whole list).
+ * Not wired: the ⋮ stays disabled with its Not-yet title, its opened menu (capture-checklist row 11) and a live
+ * narrowed run (row 23) parked "needs capture (ticket 12 sitting)"; the write's Relay route comes with that wiring.
+ */
+export const CLAIMS_TO_LIST = {
+  source: "inferred",
+  write(listId: number, kind: "promo" | "trial", claimId: number): { method: "POST"; path: string } {
+    return { method: "POST", path: `/api/of/v2/lists/${positive(listId)}/users/${kind}/${positive(claimId)}/claims` };
+  },
+  undo(listId: number, addedUsers: readonly number[]): { method: "DELETE"; path: string }[] {
+    const list = positive(listId);
+    return [...new Set(addedUsers)].map((u) => ({ method: "DELETE", path: `/api/of/v2/lists/${list}/users/${positive(u)}` }));
+  },
+} as const;
+
+function positive(n: number): number {
+  if (!Number.isSafeInteger(n) || n < 1) throw new RangeError(`not an OnlyFans id: ${n}`);
+  return n;
 }

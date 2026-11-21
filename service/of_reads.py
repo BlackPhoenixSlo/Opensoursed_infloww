@@ -618,12 +618,17 @@ class ReadsMixin:
         return self.get_json(f"{API_BASE}/payouts/transactions", params=params)
 
     def earning_stats(self, *, by: str = "day",
-                      start: str | None = None, end: str | None = None) -> dict:
+                      start_date: str | None = None, end_date: str | None = None) -> dict:
         """GET /api2/v2/payouts/stats — time-series totals.
-        `by` in {'day','week','month'}."""
+        `by` in {'day','week','month'}.
+
+        A range goes as OF's own `startDate`/`endDate` (statements-earning-stats.js applyDatePicker: the Custom
+        period's days as "YYYY-MM-DD"). Measured 2026-11-21 on the Proof Creator (read-only): `startDate=2026-10-01&
+        endDate=2026-10-31` answered October alone (a day and time answered the same), while `start`/`end` are
+        IGNORED (the all-time answer), so they are never sent."""
         params: dict[str, Any] = {"by": by}
-        if start: params["start"] = start
-        if end:   params["end"] = end
+        if start_date: params["startDate"] = start_date
+        if end_date:   params["endDate"] = end_date
         return self.get_json(f"{API_BASE}/payouts/stats", params=params)
 
     # ── Stories / Highlights ───────────────────────────────────
@@ -973,8 +978,31 @@ class ReadsMixin:
         Login sessions page reads them (settings-sessions.js: a list of
         {sessionId, client, os, brand, ipAddress, countryName, loginMessage,
         lastActivity, isCurrent}). Read-only: OF's DELETE /sessions ("Close all
-        sessions") has no method here."""
+        sessions") is of_sends' close_all_sessions."""
         return self.get_json(f"{API_BASE}/sessions")
+
+    # ticket 69
+    def social_buttons(self) -> list:
+        """GET /api2/v2/users/social/buttons — Settings > Social media's buttons, as OF's
+        page reads them (app.js module 964472: a list of {id, socialMedia, label, link,
+        username}). Adding and removing one is of_sends' add/delete_social_button."""
+        return self.get_json(f"{API_BASE}/users/social/buttons")
+
+    # ticket 69
+    def social_media_providers(self) -> dict:
+        """GET /api2/v2/init, only its `socialMediaProviders` (a list of {socialMedia, label, isLink, isShowAt},
+        measured live 2026-11-21): Social media's Add button form picks one (67786.js reads init.socialMediaProviders).
+        The rest of init never leaves the Relay."""
+        data = self.get_json(f"{API_BASE}/init")
+        providers = data.get("socialMediaProviders") if isinstance(data, dict) else None
+        return {"socialMediaProviders": providers if isinstance(providers, list) else []}
+
+    # ticket 70
+    def users_links(self) -> list:
+        """GET /api2/v2/users/links — Settings > Things I Like's links, as OF's page reads
+        them: a list of {id, sort, url, title, description, image} (measured live 2026-11-21;
+        the link is `url`, no `link` key). Creating and deleting one is of_sends' add/delete_users_link."""
+        return self.get_json(f"{API_BASE}/users/links")
 
     def stream_blocked_users(self, *, limit: int = 10, offset: int = 0, query: str = "") -> dict:
         """GET /api2/v2/streams/users/blocked — the users blocked from joining the
@@ -1378,6 +1406,16 @@ class ReadsMixin:
             params.update({"with_deleted": 1, "sorting_deleted": 0})
         return self.get_json(f"{API_BASE}/campaigns", params=params or None)
 
+    def tracking_links_sorted(self, *, offset: int = 0, limit: int = 100,
+                              field: str, sort: str) -> Any:
+        """GET /api2/v2/campaigns with the Sort menu's `field` (created_date |
+        name | subscribers_counts | clicks_count | shared) and `sort` (asc |
+        desc). `inferred` (D29, ticket 61): the names are the settings page's
+        State radios and the Reach read's (campaigns_stats) params; no capture
+        confirms the settings page's own sorted read. Response {list, hasMore}."""
+        return self.get_json(f"{API_BASE}/campaigns", params={
+            "limit": int(limit), "offset": int(offset), "pagination": 1, "field": field, "sort": sort})
+
     # ── Free-trial links ──────────────────────────────────────
     # GET /trials returns active trial-link entries; each has a public URL,
     # subscribeDays (free duration), subscribeCounts (cap), claimCounts.
@@ -1411,6 +1449,25 @@ class ReadsMixin:
         return self.get_json(f"{API_BASE}/trials/share-access",
                              params={"limit": int(limit), "offset": int(offset), "pagination": 1})
 
+    # ticket 66
+    def countries(self) -> Any:
+        """GET /api2/v2/countries?all=1 — Block by country's picker list
+        `[{code, name, ...}]` (record settings--block-by-country, measured-in-js)."""
+        return self.get_json(f"{API_BASE}/countries", params={"all": 1})
+
+
+    def tracking_links_shared_with_me(self, *, offset: int = 0, limit: int = 100,
+                                      field: str | None = None, sort: str | None = None) -> Any:
+        """GET /api2/v2/campaigns/share-access — tracking links' "Shared with
+        you" tab (ticket 74, measured-in-js): OF sends with_deleted=1 +
+        sorting_deleted=1 + stats on that tab, and the Sort menu's field/sort
+        (name → shared). Response {list, hasMore}."""
+        params: dict[str, Any] = {"limit": int(limit), "offset": int(offset), "pagination": 1,
+                                  "with_deleted": 1, "sorting_deleted": 1, "stats": "true"}
+        if field and sort:
+            params["field"] = field
+            params["sort"] = sort
+        return self.get_json(f"{API_BASE}/campaigns/share-access", params=params)
 
 # Last, not first: of_client imports this module while it loads, and these
 # names are read only when a method runs, so either import order works.

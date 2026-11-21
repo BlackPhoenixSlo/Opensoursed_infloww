@@ -1,0 +1,65 @@
+{
+ "id": "settings--blocked-accounts-page",
+ "section": "settings",
+ "label": "Blocked accounts page",
+ "pages": [
+  "/my/collections/user-lists/blocked"
+ ],
+ "phase": "P3 s2",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/api2/v2/users/blocked",
+  "query": {
+   "limit": "10",
+   "offset": "0",
+   "format": "infinite"
+  },
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "hasMore",
+   "list",
+   "nextOffset"
+  ]
+ },
+ "facts": {
+  "page_path": "/my/collections/user-lists/blocked (checklist said /my/subscribers/blocked)",
+  "header": "BLOCKED",
+  "tabs": [
+   "USERS",
+   "POSTS"
+  ],
+  "sort": "DEFAULT",
+  "chips": [
+   "All",
+   "Active",
+   "Expired",
+   "Restricted",
+   "Blocked",
+   "Promotions",
+   "Fan Stats"
+  ],
+  "rows": "No users found",
+  "privacy_links_in_order": [
+   "Reserved usernames",
+   "Watermarks",
+   "Restricted accounts",
+   "Blocked accounts",
+   "Block by country",
+   "Block by IP address"
+  ],
+  "access": "read: only GETs were sent, no write",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r08-settings-blocked-accounts.html"
+ ]
+}

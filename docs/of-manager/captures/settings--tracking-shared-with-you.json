@@ -1,0 +1,43 @@
+{
+  "id": "settings--tracking-shared-with-you",
+  "section": "settings",
+  "label": "Shared with you",
+  "pages": [
+    "settings/subscription/tracking-links",
+    "settings/subscription/tracking-links/modal-1",
+    "settings/subscription/tracking-links/state-kebab"
+  ],
+  "phase": 3,
+  "source": "of-js",
+  "of_js": {
+    "bundle": "app.js (fetchSharedCampaigns, deleteSharedCampaignAction); the SHARE_LINK_STATISTIC modal chunk",
+    "symbol": "campaigns module T (read) / P (undo); modal (0,u.oe) (share)",
+    "evidence": ".scratch/ofm-not-yet/captures/settings--tracking-shared-with-you.json (measured-in-js)"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api2/v2/campaigns/share-access",
+    "query": {
+      "limit": "int",
+      "offset": "int",
+      "pagination": "1",
+      "with_deleted": "1",
+      "sorting_deleted": "1",
+      "stats": "true"
+    }
+  },
+  "write": {
+    "method": "POST",
+    "path": "/api2/v2/campaigns/share-access",
+    "body": {
+      "campaignId": "int",
+      "userId": "int"
+    }
+  },
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending (fake-only until the owner names a peer creator to share with)"
+  }
+}

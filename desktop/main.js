@@ -53,6 +53,8 @@ const { SseClient } = require("./lib/sse");
 const { DEFAULT_BRAND, DEFAULT_SETTINGS, SETTINGS_KEY, parseSettings, shouldPing, noticesFor, SeenKeys } = require("./lib/relay-notices");
 const { ClockPause } = require("./lib/clock-pause");
 const { registerCaptureIpc, openOfCaptureFlow } = require("./capture/of-capture");
+const { createGoLive, goLiveRefusal } = require("./lib/of-live-window");
+const { chromeMajor } = require("./lib/of-ua");
 
 const IS_DEV = process.argv.includes("--dev");
 // Internal identifiers keep the old "fastt" name on purpose: renaming the
@@ -849,6 +851,37 @@ ipcMain.handle("app:quit", (event) => {
 ipcMain.handle("shell:add-of-account", (event) => {
   if (!isAppOrigin(event.senderFrame ? event.senderFrame.url : "", originOf(currentConfig().base))) return;
   openOfCaptureFlow(() => currentConfig(), reloadMainAfterCapture);
+});
+
+// Go live (ticket 127, D28): OnlyFans's own streaming page for one Creator in a
+// window on its own in-memory partition (lib/of-live-window.js holds the flow).
+// The page sends only the Creator id; the session is read here, from the Relay,
+// through the app partition (the signed-in owner's cookies), and goes straight
+// into the window's partition: never to the page, never logged, never written
+// back. The Relay gates it (OF_LIVE_WINDOW_ENABLED, default off: 404), refuses
+// chatters, and answers {"session": null} when the Creator has no session (the
+// window then opens OF's login page for a person; nothing is scripted).
+const openGoLive = createGoLive({
+  BrowserWindow,
+  session,
+  platform: process.platform,
+  chromeMajor: chromeMajor(process.versions),
+  focusWindow,
+  warn: (msg) => console.warn(msg),
+  fetchSession: (creatorId) =>
+    relayFetch("/api/of/live-window/session", {
+      method: "POST",
+      headers: { Accept: "application/json", "X-Account-Id": creatorId },
+      cache: "no-store",
+      signal: AbortSignal.timeout(10000),
+    }),
+});
+
+ipcMain.handle("shell:open-go-live", (event, rawId) => {
+  if (!isAppOrigin(event.senderFrame ? event.senderFrame.url : "", originOf(currentConfig().base))) {
+    return { ok: false, error: goLiveRefusal(403) };
+  }
+  return openGoLive(rawId);
 });
 
 // Notifications for the hosted page (`fasttShell.notify`, row 3.3) and the

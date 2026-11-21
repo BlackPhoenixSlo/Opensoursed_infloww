@@ -1,0 +1,15 @@
+{
+  "id": "settings--fully-private",
+  "section": "settings",
+  "label": "Fully private profile",
+  "pages": [
+    "settings/security"
+  ],
+  "phase": 3,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending: parked in ticket 78 until the owner names a non-adult account (owner sheet item 10)"
+  }
+}

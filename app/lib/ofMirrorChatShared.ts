@@ -43,6 +43,8 @@ export interface ChatDraft {
   /** A picked script's (applyScript) vault ids sent unlocked and its locked text, both only with a price. */
   previews?: number[];
   locked_text?: boolean;
+  /** Add media's uploads that attached nothing, by `mediaKey`, with why (ofMirrorPost `mediaTaker`): Send asks first. */
+  upload_failed?: Record<string, string>;
 }
 
 /** A tag dialog pick: its row's id and type (OF's release-form entity type) and the name the line shows. */
@@ -120,6 +122,8 @@ export interface ChatContext {
   lists?: UserList[];
   /** New message: why the user lists could not be read (the Relay's text), else undefined. */
   listsError?: string;
+  /** New message's `?format=1` (the list page's Format Text): its Format text panel opens on arrival. */
+  massFormat?: boolean;
   /** New message's left tab, OF's own ?list= (`exclude`, `users`); absent: Send to. */
   massView?: MassView;
   /** New message's Users tab: the Creator's recent chats' fans (undefined while loading or All-Creators). */

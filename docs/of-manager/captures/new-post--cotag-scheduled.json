@@ -1,0 +1,16 @@
+{
+  "id": "new-post--cotag-scheduled",
+  "section": "new-post",
+  "label": "Co-tag on a scheduled post",
+  "pages": [
+    "new-post/state-tag-people",
+    "new-post/state-schedule"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending; waits on owner sheet item 4 (Co-tag partner)"
+  }
+}

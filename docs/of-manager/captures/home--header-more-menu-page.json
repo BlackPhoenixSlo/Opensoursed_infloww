@@ -1,0 +1,38 @@
+{
+ "id": "home--header-more-menu-page",
+ "section": "home",
+ "label": "Home header More menu open",
+ "pages": [
+  "/"
+ ],
+ "phase": "P2 s1-2",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/",
+  "query": {},
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": null,
+  "keys": []
+ },
+ "facts": {
+  "menu_items_in_order": [
+   "Hide all Locked Posts",
+   "Hide all Promotional Posts",
+   "Hide the Profile Banners"
+  ],
+  "requests_on_open": 0,
+  "access": "read: only GETs were sent, no write",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r04-home-header-more-open.html"
+ ]
+}

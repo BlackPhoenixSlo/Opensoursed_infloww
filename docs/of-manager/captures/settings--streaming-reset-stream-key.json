@@ -1,0 +1,49 @@
+{
+ "id": "settings--streaming-reset-stream-key",
+ "section": "settings",
+ "label": "Reset",
+ "pages": [
+  "settings/streaming"
+ ],
+ "phase": "P3 s24",
+ "source": "aborted",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "DELETE",
+  "path": "/api2/v2/streams/obs/key",
+  "query": {
+   "type": "obs_agora"
+  },
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": null,
+  "keys": []
+ },
+ "facts": {
+  "gate": "OBS block shown only when authUser.canStreaming (false on this account); revealed client-side in the store, no request",
+  "confirm_text": "Please confirm you want to generate a new key (previous key will no longer be valid)",
+  "non_get_before_confirm": 0,
+  "client_retries_aborted": 3,
+  "body": null,
+  "after": "reload: streaming key settings unchanged (null) - nothing reached OnlyFans",
+  "access": "write, blocked: the capture browser aborted it, nothing reached OnlyFans",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r02-before.png",
+  "r02-obs-block-shown.png",
+  "r02-confirm.png",
+  "r02-after-confirm.png"
+ ],
+ "proof": {
+  "kind": "mocked",
+  "verdict": "parked",
+  "undo": "not reversible, owner go",
+  "reason": "mocked: not run live; the live run is ticket 82 (owner go). Ticket 76: label is the button's text (Reset); the sitting's own result is facts.capture_verdict/capture_undo (D1)"
+ }
+}

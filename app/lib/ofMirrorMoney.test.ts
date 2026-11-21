@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   amountError,
   applyMoney,
+  earningStatsRoute,
   earningsChart,
   minSumMessage,
   moneyOf,
@@ -29,6 +30,18 @@ const load = (p: string) => {
   return document;
 };
 const visible = (el: Element) => !el.closest("[style*='display:none']");
+/** Earning Statistics' capture as any apply leaves it with no data: its From … To button marked (ticket 20's picker). */
+const RANGE = ".b-stats-row__body button.m-time-period";
+const rangeWired = (p: string) => {
+  const doc = load(p);
+  // As applyMoney leaves it: marked, enabled, its Not-yet title gone (D1 Live pass).
+  for (const b of doc.querySelectorAll(RANGE)) {
+    b.setAttribute("data-oi-wired", "");
+    b.removeAttribute("disabled");
+    b.removeAttribute("title");
+  }
+  return doc.documentElement.innerHTML;
+};
 const texts = (doc: Document, sel: string) => [...doc.querySelectorAll(sel)].filter(visible).map((e) => e.textContent?.trim());
 
 /** OF's own /payouts/balances, captured through the Relay (synthetic figures; app/lib/__fixtures__/of). */
@@ -162,6 +175,8 @@ const STATS: EarningStats = {
   },
 };
 const NOW = new Date(2026, 9, 16, 12, 0);
+// The browser's zone (as NOW and the month keys): the owner set none.
+const TZ_NONE = null;
 
 describe("Earning Statistics", () => {
   const page = "statements/stats/earnings";
@@ -183,7 +198,7 @@ describe("Earning Statistics", () => {
     ]);
     expect(texts(doc, ".m-total .m-total-item .b-stats-row__val")).toEqual(["$2,500.00", "$2,000.00"]);
     expect(texts(doc, ".b-stats-row.m-expanded .b-date-value")).toEqual(["Feb 1, 2025", "Oct 16, 2026"]);
-    expect(doc.querySelector<HTMLButtonElement>(".m-time-period")!.disabled).toBe(true); // no range: all time only
+    expect([doc.querySelector<HTMLButtonElement>(".m-time-period")!.disabled, doc.querySelector<HTMLButtonElement>(".m-time-period")!.title]).toEqual([false, ""]); // no range yet: all time; enabled (D1 Live pass)
     const months = [...doc.querySelectorAll(".b-stats-wrap > .b-stats-row:not(.m-expanded)")].filter(visible);
     expect(months.map((r) => [r.querySelector(".b-stats-row__month")!.textContent, r.querySelector(".b-stats-row__total-net")!.textContent!.trim()])).toEqual([
       [" October, 2026 ", "$800.00"],
@@ -198,7 +213,8 @@ describe("Earning Statistics", () => {
       const doc = load(p);
       expect([...doc.querySelectorAll(".b-stats-wrap > .b-stats-row")].filter(visible)).toHaveLength(1);
       expect(new Set(texts(doc, ".b-stats-row__total-net > span, .b-stats-row__val, .b-date-value"))).toEqual(new Set(["—"]));
-      const html = doc.documentElement.innerHTML;
+      const html = rangeWired(p);
+      load(p);
       applyMoney(doc, p, { earningStats: {} }, NOW);
       expect([...doc.querySelectorAll(".b-stats-wrap > .b-stats-row")].filter(visible)).toHaveLength(1);
       expect(texts(doc, ".b-stats-row.m-expanded > .b-stats-row__head .b-stats-row__total-net")).toEqual(["$0.00"]);
@@ -252,10 +268,13 @@ describe("Earning Statistics: OF's expanded row and chart", () => {
   });
 
   it("a category row picks its line (m-current); a refetch keeps the open month and the pick; no data restores byte for byte", () => {
+    const html = rangeWired(page);
     const doc = load(page);
-    const html = doc.documentElement.innerHTML;
     applyMoney(doc, page, { earningStats: ITEMS }, NOW);
     head(doc, "October, 2026").click();
+    // The From … To button, the All time body's and the expanded month's copy, each marked (ticket 20).
+    expect([...doc.querySelectorAll(RANGE)].filter(visible).map((b) => b.hasAttribute("data-oi-wired"))).toEqual([true]);
+    expect(open(doc)[0].querySelector(RANGE)?.hasAttribute("data-oi-wired")).toBe(true);
     open(doc)[0].querySelector<HTMLElement>(".b-stats-row__label.m-tips")!.click();
     expect(texts(doc, ".b-stats-row__body .b-stats-row__label.m-current .b-stats-row__name")).toEqual(["Tips"]);
     applyMoney(doc, page, { earningStats: ITEMS }, NOW);
@@ -281,6 +300,82 @@ describe("Earning Statistics: OF's expanded row and chart", () => {
     expect(tips[1]).toBe(20);
     expect(spec.lines.map((l) => l.color)).toEqual(["rgba(33,150,243,0.4)", "#00bcd4", "rgba(236,64,122,0.4)", "rgba(255,112,67,0.4)", "rgba(149,117,205,0.4)", "rgba(255,160,0,0.4)"]);
     expect(spec.lines.every((l) => l.kind === "money")).toBe(true);
+  });
+});
+
+describe("Earning Statistics' From … To Apply (ticket 24): the totals for the picked range", () => {
+  const page = "statements/stats/earnings";
+  // OF's /payouts/stats for October 1-16 alone (startDate/endDate), other figures than all time's (STATS).
+  const RANGED: EarningStats = {
+    total: { all: { total_gross: 14, total_net: 11.2 }, tips: { total_gross: 14, total_net: 11.2 } },
+    months: { [sec(2026, 9)]: { total_gross: 14, total_net: 11.2, tips: [{ gross: 14, net: 11.2, time: new Date(2026, 9, 3, 12).getTime() / 1000 }] } },
+  };
+  const OCT1 = { y: 2026, m: 10, d: 1 };
+  const OCT16 = { y: 2026, m: 10, d: 16 };
+  const head = (doc: Document, title: string) =>
+    [...doc.querySelectorAll<HTMLElement>(".b-stats-wrap > .b-stats-row > .b-stats-row__head")].find((h) => visible(h) && h.querySelector(".b-stats-row__month")!.textContent!.trim() === title)!;
+  const shown = (doc: Document) => ({
+    label: texts(doc, ".b-stats-row.m-expanded .b-date-value"),
+    totals: texts(doc, ".b-stats-row.m-expanded .m-total .m-total-item .b-stats-row__val"),
+    net: texts(doc, ".b-stats-wrap > .b-stats-row:first-of-type > .b-stats-row__head .b-stats-row__total-net"),
+    months: texts(doc, ".b-stats-wrap > .b-stats-row:not(:first-of-type) .b-stats-row__month"),
+  });
+  const ALL_TIME = { label: ["Feb 1, 2025", "Oct 16, 2026"], totals: ["$2,500.00", "$2,000.00"], net: ["$2,000.00"], months: ["October, 2026", "September, 2026", "February, 2025"] };
+  const OCTOBER = { label: ["Oct 1, 2026", "Oct 16, 2026"], totals: ["$14.00", "$11.20"], net: ["$11.20"], months: ALL_TIME.months };
+
+  it("the route: OF's own startDate/endDate, as the Relay sends them on", () => {
+    expect(earningStatsRoute({ startDate: "2026-10-01", endDate: "2026-10-31" })).toBe("/api/of/v2/payouts/stats?startDate=2026-10-01&endDate=2026-10-31");
+  });
+
+  it("Apply hands the picked days on; the label and totals turn to the range's once its read answers; month rows stay all time's", () => {
+    const html = rangeWired(page);
+    const doc = load(page);
+    const pick = vi.fn();
+    const clear = vi.fn();
+    const range = { tz: TZ_NONE, userStart: null, pick, clear };
+    applyMoney(doc, page, { earningStats: STATS, range }, NOW);
+    expect(shown(doc)).toEqual(ALL_TIME);
+    const btn = doc.querySelector<HTMLButtonElement>(RANGE)!;
+    expect([btn.disabled, btn.title]).toEqual([false, ""]); // enabled, its Not-yet title gone (D1 Live pass)
+    btn.click();
+    expect([!!doc.querySelector("[data-oi-picker]"), btn.getAttribute("aria-expanded")]).toEqual([true, "true"]);
+    doc.querySelector<HTMLElement>("[data-oi-picker-apply]")!.click();
+    expect(btn.hasAttribute("aria-expanded")).toBe(false);
+    expect(doc.querySelector("[data-oi-picker]")).toBeNull();
+    expect(pick).toHaveBeenCalledTimes(1);
+    const [from, to] = pick.mock.calls[0];
+    expect(from).toEqual(to); // the picker opens on today (ticket 20)
+    // Picked, its read in flight: still all time's.
+    applyMoney(doc, page, { earningStats: STATS, range: { ...range, picked: { from: OCT1, to: OCT16 } } }, NOW);
+    expect(shown(doc)).toEqual(ALL_TIME);
+    // Its read answered: the range's label, totals and All time's net; the category rows the range's too.
+    applyMoney(doc, page, { earningStats: STATS, range: { ...range, picked: { from: OCT1, to: OCT16, stats: RANGED } } }, NOW);
+    expect(shown(doc)).toEqual(OCTOBER);
+    expect(texts(doc, ".b-stats-row.m-expanded .b-stats-row__label.m-tips .b-stats-row__val")).toEqual(["$14.00", "$11.20"]);
+    // Reopened, the picker shows the picked range (each apply puts the capture's disabled back: un-greyed again).
+    const again = doc.querySelector<HTMLButtonElement>(RANGE)!;
+    again.disabled = false;
+    again.click();
+    expect(doc.querySelector("[data-oi-picker] .vdatetime-popup__title")?.textContent?.trim()).toBe("16 days selected");
+    doc.querySelector<HTMLElement>("[data-oi-picker-close]")!.click();
+    // A month's head shows that month as read for all time; All time's head drops the range (OF's updateExpand "all").
+    head(doc, "September, 2026").click();
+    expect(texts(doc, ".b-stats-row.m-expanded .m-total .m-total-item .b-stats-row__val")).toEqual(["$1,500.00", "$1,200.00"]);
+    expect(clear).not.toHaveBeenCalled();
+    head(doc, "All time").click();
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(shown(doc)).toEqual(ALL_TIME);
+    applyMoney(doc, page, {}, NOW);
+    expect(doc.documentElement.innerHTML).toBe(html);
+  });
+
+  it("a range applied from an open month opens All time on it", () => {
+    const doc = load(page);
+    const range = { tz: TZ_NONE, userStart: null, pick: () => {}, clear: () => {} };
+    applyMoney(doc, page, { earningStats: STATS, range }, NOW);
+    head(doc, "September, 2026").click();
+    applyMoney(doc, page, { earningStats: STATS, range: { ...range, picked: { from: OCT1, to: OCT16, stats: RANGED } } }, NOW);
+    expect(shown(doc)).toEqual(OCTOBER);
   });
 });
 

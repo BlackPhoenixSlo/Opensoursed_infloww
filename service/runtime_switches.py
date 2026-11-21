@@ -66,6 +66,7 @@ class Switch:
     where: str                        # the consumer, for the panel and grep
     minimum: int | None = None        # number only
     maximum: int | None = None        # number only: a UI override above it is refused
+    off_only: bool = False            # bool only: env turns it on; a UI override may only force it off
 
 
 def _truthy(raw: str) -> bool:
@@ -107,6 +108,20 @@ SWITCHES: tuple[Switch, ...] = (
            "Off: Keep running re-creates a promo only after it ends (no re-create at 90% filled "
            "or shortly before OnlyFans's end time).",
            "bool", True, _not_off, "automations/promo_reactivate, promo_create_guard._recheck"),
+    Switch("OF_LIVE_WINDOW_ENABLED", "Go live in the desktop app",
+           "On: Go live and Start open OnlyFans's own streaming page in the desktop app (the web "
+           "shows a Download the app button). Off: both stay Not available.",
+           "bool", False, _truthy, "of_live_window"),
+    Switch("OFM_NEW_WRITES_ENABLED", "OF Manager new writes",
+           "On: in OF Manager, Close all sessions, Block by country / IP, Social media's and Things I "
+           "Like's add and remove, Reset stream key, Streaming blocked users' block and unblock, Edit "
+           "profile's cover and avatar, Messaging's Tip-from-free-followers and Security's Fully "
+           "private switches and a tracking link's Share work and save to OnlyFans; so do Edit "
+           "profile's Bio formatting, email's Update frequency, Record video / voice and a vault "
+           "list's More, which send requests the app already sent before. Off: all stay Not available; the Relay refuses the "
+           "first group's writes (the second group is only hidden in the app). "
+           "Turns on only from the server's env; here it can only be forced off.",
+           "bool", False, _truthy, "server._ofm_new_writes_on", off_only=True),
 )
 BY_NAME: dict[str, Switch] = {s.env: s for s in SWITCHES}
 
@@ -132,9 +147,10 @@ def _env(sw: Switch) -> tuple[Any, bool]:
 
 
 def value(name: str) -> Any:
-    """The effective value: DB override > env > default. Sync and cheap (hot path)."""
+    """The effective value: DB override > env > default (an off_only switch: env AND not forced off).
+    Sync and cheap (hot path)."""
     o = _overrides.get(name)
-    if o is not None:
+    if o is not None and not (BY_NAME[name].off_only and o["value"]):
         return o["value"]
     return _env(BY_NAME[name])[0]
 
@@ -143,12 +159,24 @@ def on(name: str) -> bool:
     return bool(value(name))
 
 
+def require_switch(name: str) -> Callable[[], None]:
+    """A route guard (FastAPI dependency, or a direct call) for an inert-until-on switch: 404 while `name` is off,
+    before any OF call, so a client's probe reads the route as absent."""
+    def _require() -> None:
+        if not on(name):
+            from fastapi import HTTPException   # lazy: this module stays importable without FastAPI
+            raise HTTPException(status_code=404, detail="Not Found")
+    return _require
+
+
 def coerce(sw: Switch, v: Any) -> Any:
     """A UI value for `sw`, or ValueError. bool switches take JSON booleans only;
     numbers take finite whole numbers within [minimum, maximum]."""
     if sw.kind == "bool":
         if not isinstance(v, bool):
             raise ValueError(f"{sw.env} is on/off: send true or false")
+        if v and sw.off_only:
+            raise ValueError(f"{sw.env} turns on only from the server's env; here it can only be forced off")
         return v
     if isinstance(v, bool) or not isinstance(v, (int, float)) \
             or (isinstance(v, float) and not math.isfinite(v)) or int(v) != v:
@@ -177,7 +205,7 @@ def describe(name: str) -> dict[str, Any]:
     sw = BY_NAME[name]
     env_value, from_env = _env(sw)
     o = _overrides.get(name)
-    effective = o["value"] if o is not None else env_value
+    effective = value(name)
     return {
         "env": sw.env, "label": sw.label, "effect": sw.effect, "kind": sw.kind,
         "default": sw.default, "minimum": sw.minimum, "maximum": sw.maximum, "where": sw.where,

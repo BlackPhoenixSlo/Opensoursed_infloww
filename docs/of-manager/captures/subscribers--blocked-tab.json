@@ -1,0 +1,27 @@
+{
+ "id": "subscribers--blocked-tab",
+ "section": "subscribers",
+ "label": "Blocked tab Sort",
+ "pages": [
+  "collections/user-lists/blocked"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {},
+ "response": {},
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "Sort is disabled with 0 blocked accounts; enabling it needs blocking a real account"
+ },
+ "facts": {
+  "read": "GET /api2/v2/users/blocked?limit=10&offset=0&format=infinite -> list 0",
+  "access": "parked: nothing sent to OnlyFans"
+ },
+ "evidence": [
+  "r26-blocked-sort-disabled.png"
+ ]
+}

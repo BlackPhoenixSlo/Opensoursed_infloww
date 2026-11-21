@@ -1,0 +1,972 @@
+[
+ [
+  "home/index",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-avatar-menu",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-expiration",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-feed-tabs-edit",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice",
+    "Sort"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-format-text",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-poll",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "[vote-input__btn.delete-vote-option]",
+    "Add poll",
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-promotion",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search",
+    "First month discount"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-quiz",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "[vote-input__btn.delete-vote-option]",
+    "Add quiz",
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-schedule",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-tag-people",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-target",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-vault",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/index",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/commented",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/deactivated_media",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/favorited",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/mentioned",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/message",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/purchases",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/subscribed",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/tags",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "notifications/tip",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/index",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "messages/chat",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Send"
+   ],
+   "ro": [
+    "Find"
+   ]
+  }
+ ],
+ [
+  "messages/chat/gallery",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "messages/chat/pinned",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [],
+   "ro": [
+    "Find"
+   ]
+  }
+ ],
+ [
+  "messages/chat/state-header-menu",
+  {
+   "ny": [
+    "More",
+    "Report",
+    "Find"
+   ],
+   "dis": [
+    "Send"
+   ],
+   "ro": [
+    "Tag other creators"
+   ]
+  }
+ ],
+ [
+  "messages/chat/state-price",
+  {
+   "ny": [
+    "More",
+    "Find"
+   ],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/chat/state-schedule",
+  {
+   "ny": [
+    "More",
+    "Find",
+    "Save for Later"
+   ],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/chat/state-tag-people",
+  {
+   "ny": [
+    "More",
+    "Find"
+   ],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/chat/state-vault",
+  {
+   "ny": [
+    "More",
+    "Find"
+   ],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/send",
+  {
+   "ny": [],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/send/state-list-dropdown",
+  {
+   "ny": [
+    "Add media",
+    "Add GIF",
+    "Record video",
+    "Record voice",
+    "Add media from vault",
+    "Scheduled messages",
+    "Message price",
+    "Tag other creators",
+    "Format Text"
+   ],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/send/state-price",
+  {
+   "ny": [],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/send/state-tag-people",
+  {
+   "ny": [],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/send/state-vault",
+  {
+   "ny": [],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/state-filter-dropdown",
+  {
+   "ny": [
+    "More",
+    "Select"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "messages/state-folders",
+  {
+   "ny": [
+    "More",
+    "Sort"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "collections/index",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "Pin to home",
+    "Posts"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "collections/bookmarks/all",
+  {
+   "ny": [
+    "Search",
+    "Create new list"
+   ],
+   "dis": [
+    "Sort"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "collections/post-labels/archived",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "More",
+    "Compact view"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "collections/user-lists/list",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "Pin to home",
+    "More"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "collections/user-lists/list/posts",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "Pin to home",
+    "More",
+    "Compact view"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "collections/user-lists/subscribers/active",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "Posts",
+    "Search users",
+    "Filter",
+    "Expired",
+    "Restricted",
+    "Blocked",
+    "Promotions",
+    "Fan Stats"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "collections/user-lists/subscriptions/posts",
+  {
+   "ny": [
+    "Search",
+    "Compact view",
+    "Sort"
+   ],
+   "dis": [
+    "Sort"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statements/index",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statements/earnings",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statements/payouts",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statements/referrals",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statements/stats/earnings",
+  {
+   "ny": [
+    "From {date} To {date}"
+   ],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statements/support",
+  {
+   "ny": [
+    "\u200bSelect subject",
+    "[TEXTAREA]",
+    "Send"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/engagement/messages",
+  {
+   "ny": [
+    "New message",
+    "Unsend"
+   ],
+   "dis": [
+    "Unsend"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/engagement/posts",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/engagement/stories",
+  {
+   "ny": [],
+   "dis": [
+    "Tips",
+    "Likes",
+    "Comments"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/engagement/streaming",
+  {
+   "ny": [],
+   "dis": [
+    "Viewers",
+    "Likes",
+    "Comments"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/fans/activity",
+  {
+   "ny": [
+    "More",
+    "[g-btn.m-btn-icon]",
+    "Lists",
+    "Discount",
+    "Restrict",
+    "Add notes"
+   ],
+   "dis": [
+    "Tips",
+    "Streams",
+    "Offers"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/fans/subscriptions",
+  {
+   "ny": [
+    "More",
+    "[g-btn.m-btn-icon]",
+    "Lists",
+    "Discount",
+    "Restrict",
+    "Add notes"
+   ],
+   "dis": [
+    "Tips",
+    "Streams",
+    "Offers"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/fans/top-fans",
+  {
+   "ny": [
+    "More",
+    "[g-btn.m-btn-icon]",
+    "Lists",
+    "Discount",
+    "Restrict",
+    "Add notes"
+   ],
+   "dis": [
+    "Tips",
+    "Streams",
+    "Offers"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/overview/earnings",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/overview/streaks",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/overview/top-highlights",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Unsend",
+    "Viewers",
+    "Likes",
+    "Comments",
+    "Tips",
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/reach/profile-visitors",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/reach/promotions",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/reach/tracking-links",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/reach/trial-links",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/statements/disputes",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/statements/earnings",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/statements/payout-request",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "statistics/statements/referrals/earnings",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "profile/index",
+  {
+   "ny": [
+    "Create highlight",
+    "[g-btn.m-gray]",
+    "Compact view",
+    "Sort",
+    "Search user`s post",
+    "Search",
+    "Sign in with spotify"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "profile/media",
+  {
+   "ny": [
+    "Create highlight",
+    "[g-btn.m-gray]",
+    "Compact view",
+    "Sort",
+    "Search user`s post",
+    "Search",
+    "Sign in with spotify"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "profile/state-more-menu",
+  {
+   "ny": [
+    "Create highlight",
+    "[g-btn.m-gray]",
+    "Compact view",
+    "Sort",
+    "Search user`s post",
+    "Search",
+    "Sign in with spotify"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ]
+]

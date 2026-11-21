@@ -45,8 +45,7 @@ than localhost is aborted and fails the check (even one whose path a mock matche
    or `Lorem` text in the table; one request each (/payouts/requests, /payouts/requests/referral), exactly limit=20;
    Payouts fetches no page, Referrals borrows its row by one same-origin GET of /of-mirror/pages/statements/payouts.html.
 2. Creator switch on `profile` (top bar switcher, no reload): account 2 shows only account 2's posts and every relay
-   call after the switch carries X-Account-Id: 2; All models shows the first model's (account 1's) posts again, under
-   the "Showing <model>, pick a model to switch" line.
+   call after the switch carries X-Account-Id: 2.
 3. Scope `model:1`, browser time zone Europe/Ljubljana, the clock fixed at 2026-10-12 12:00, on the six queue pages:
    the list view and the saved-for-later pages exactly the synthetic items, by day soonest first ([day, [[colour mark,
    time, text] per item]] per section), each mark painted in OF's colour, "Media" for a media-only item, a stream its
@@ -67,21 +66,12 @@ than localhost is aborted and fails the check (even one whose path a mock matche
    Subscriptions 3, Tips 1, Tags 2, the rest none). On `streaming/dashboard` one thumb per past stream with media
    ([/img? u, account_id, loaded], "Viewers: n", date), one /users/1/streams request with limit=8.
    Creator switch on `notifications`: account 2 shows only account 2's notifications and every relay call after the
-   switch carries X-Account-Id: 2; All models shows OF's empty tab ("No notifications currently!") and no row.
+   switch carries X-Account-Id: 2. Nothing is written but OF's mark-read (POST /users/notifications/read) on the All
+   tab's open (app/lib/ofMirrorNotifsRead.ts), exactly one per open with that Creator's X-Account-Id.
    The other tabs (Purchases, Likes, Promotions, OnlyFans: their type; Tags: /release-forms/mentions, limit=20 and no
    type), with no notification of theirs: OF's empty tab, no row, no example text.
-5. All Creators (scope key removed before every load), `profile`: the first model's (account 1's) posts, its relay calls
-   carrying X-Account-Id: 1, and the line "Showing <model>, pick a model to switch" over the frame; `profile/media`:
-   account 1's tiles in the grid and the recent strip;
-   `collections/bookmarks/all`: "No bookmarks yet" and no row, no bookmarks request and no page fetched;
-   `collections`: "Create new list" shows "Select a model to save changes"; the six queue pages show the first model
-   under the "Showing <model>" line, their queue routes requested by account 1 only (the saved-for-later pages its
-   items), borrowing only the list view's agenda block; every notifications tab shows OF's empty tab ("No
-   notifications currently!", its centring layout), no row and no example text, and requests no notifications nor
-   counts; `streaming/dashboard` requests no streams;
-   `statements/earnings` shows the first model's (account 1's) transactions, its requests carrying X-Account-Id: 1,
-   under the "Showing <model>, pick a model to switch" line; `statements/payouts` and `statements/referrals` show no row, only "This list is empty", and neither
-   requests a payout route nor fetches a page.
+5. (Retired) No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner
+   2026-11-20, origin/main 77e5df419; phase_check.py's one_creator checks it).
 6. No console errors.
 Prints one {"check","want","got"} line per check. Screenshots: /tmp/of-mirror-shots/inapp-feeds-*.png. Exit 1 on a
 failed check.
@@ -268,8 +258,6 @@ EMPTY_TAB=[["No notifications currently!"],True]
 # The tabs the mock has no notification for: path, frame page, the route and query requested.
 NOTIF_EMPTY_TABS=[(f"notifications/{t}",f"notifications/{t}",NOTIF_ROUTE,{"limit":["20"],"type":[t]}) for t in ("purchases","favorited","message","deactivated_media")]+[
                   ("notifications/tags","notifications/tags","/api/of/v2/release-forms/mentions",{"limit":["20"]})]
-ALL_NOTIF_PAGES=[("notifications","notifications/index")]+[(f"notifications/{t}",f"notifications/{t}") for t in
-                 ("subscribed","purchases","tip","tags","commented","mentioned","favorited","message","deactivated_media")]
 # Statements' Earnings, newest first (local times, no Z), in OF's shape (app/lib/__fixtures__/of/statements-transactions.json).
 TXN_ROUTE="/api/of/v2/payouts/transactions"
 def txn(i, day, amount, desc, status="done", deleted=False, **more):
@@ -425,13 +413,8 @@ def images(pg, fr, n):
         pg.wait_for_timeout(250)
     return got
 def scope_to(pg, current, label):
-    """Pick `label` in OF Manager's creator column ("All models": its All creators menu); `current` is the creator shown."""
-    col=pg.locator("aside[aria-label='Creators']")
-    if label=="All models":
-        col.get_by_role("button", name="All creators").first.click(); pg.wait_for_timeout(300)
-        col.get_by_role("button", name="All creators").last.click()
-    else:
-        col.get_by_role("button", name=label).first.click()
+    """Pick `label` in OF Manager's creator column; `current` is the creator shown."""
+    pg.locator("aside[aria-label='Creators']").get_by_role("button", name=label).first.click()
     pg.wait_for_timeout(500)
 
 with sync_playwright() as p:
@@ -530,7 +513,7 @@ with sync_playwright() as p:
     print("model 1 console errors:", [e[:160] for e in errs][:8])
     check("model 1: no console errors", errs, [])
 
-    # 2. Creator switch on profile: account 1 -> 2 -> All models, with no reload.
+    # 2. Creator switch on profile: account 1 -> 2, with no reload.
     pg, calls, errs, fetched=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     open_page(pg, "profile")
     fr=frame(pg, "profile/index")
@@ -544,11 +527,6 @@ with sync_playwright() as p:
         check("switch: every relay call after the switch carries X-Account-Id: 2", accts(calls[before:]), ["2"])
         check("switch: account 2's posts asked for by its OnlyFans id", sorted({c[1] for c in calls[before:] if c[1].endswith("/posts")}), ["/api/of/v2/users/2/posts"])
         pg.screenshot(path=f"{SHOTS}/inapp-feeds-switch-2.png")
-        scope_to(pg, "Model Two", "All models")
-        fr=frame(pg, "profile/index")
-        check("switch: All models shows the first model's posts", settle(pg, fr, WANT["1"]), WANT["1"])
-        check("switch: All models says which model it shows", pg.get_by_test_id("of-standin-hint").inner_text(), "Showing Live Model, pick a model to switch")
-        pg.screenshot(path=f"{SHOTS}/inapp-feeds-switch-all.png")
     print("switch console errors:", [e[:160] for e in errs][:8])
     check("switch: no console errors", errs, [])
 
@@ -623,11 +601,6 @@ with sync_playwright() as p:
         check("notifications switch: every relay call after the switch carries X-Account-Id: 2", accts(calls[before:]), ["2"])
         check("notifications switch: account 2's notifications requested", [c[2] for c in calls[before:] if c[1]==NOTIF_ROUTE], [{"limit":["20"]}])
         pg.screenshot(path=f"{SHOTS}/inapp-feeds-notifications-switch-2.png")
-        scope_to(pg, "Model Two", "All models")
-        fr=frame(pg, "notifications/index")
-        check("notifications switch: All models shows OF's empty tab and no row", settle(pg, fr, [], NNAMES), [])
-        check("notifications switch: All models' empty tab", fr.evaluate(NEMPTY), EMPTY_TAB)
-        pg.screenshot(path=f"{SHOTS}/inapp-feeds-notifications-switch-all.png")
     for path, page, route, query in NOTIF_EMPTY_TABS:
         before=len(calls)
         open_page(pg, path)
@@ -639,91 +612,14 @@ with sync_playwright() as p:
         check(f"{page}: its request's query", [c[2] for c in calls[before:] if c[1]==route][:1], [query])
         check(f"{page}: X-Account-Id: 1", accts(calls[before:]), ["1"])
         pg.screenshot(path=f"{SHOTS}/inapp-feeds-{page.replace('/','-')}.png")
-    check("notifications: nothing but GETs sent", sorted({c[0] for c in calls}), ["GET"])
+    # OF's mark-read on the All tab's open (app/lib/ofMirrorNotifsRead.ts), one per Creator per open: the tab check's and
+    # the switch's opens as account 1, then account 2 after the switch; nothing else written.
+    READ="/api/of/v2/users/notifications/read"
+    check("notifications: nothing but GETs and one mark-read per All tab open", [(c[0], c[1], c[3]) for c in calls if c[0]!="GET"],
+          [("POST", READ, "1"), ("POST", READ, "1"), ("POST", READ, "2")])
     print("notifications console errors:", [e[:160] for e in errs][:8])
     check("notifications: no console errors", errs, [])
 
-    # 5. All Creators: My profile shows the first model; the other pages no example and no request.
-    pg, calls, errs, fetched=session(b, "localStorage.removeItem('chatterly:scope')")
-    open_page(pg, "profile")
-    fr=frame(pg, "profile/index")
-    if fr:
-        check("all creators: profile shows the first model's (account 1's) posts", settle(pg, fr, WANT["1"]), WANT["1"])
-        check("all creators: profile's relay calls carry X-Account-Id: 1", accts([c for c in calls if c[1].startswith("/api/of/v2/users/")]), ["1"])
-        check("all creators: the line over the frame names the model", pg.get_by_test_id("of-standin-hint").inner_text(), "Showing Live Model, pick a model to switch")
-        pg.screenshot(path=f"{SHOTS}/inapp-feeds-all-creators.png")
-    open_page(pg, "profile/media")
-    fr=frame(pg, "profile/media")
-    if fr:
-        check("all creators: profile/media shows account 1's media", settle(pg, fr, WANT_MEDIA, TILES), WANT_MEDIA)
-        check("all creators: profile/media [grid, recent strip] tiles shown", fr.evaluate(COUNTS), [5, 3])
-        fr.locator(GRID).evaluate("e => e.scrollIntoView({block: 'start'})")
-        pg.screenshot(path=f"{SHOTS}/inapp-feeds-all-creators-media.png")
-    open_page(pg, "collections/bookmarks/all")
-    fr=frame(pg, "collections/bookmarks/all")
-    if fr:
-        pg.wait_for_timeout(1500)
-        check("all creators: bookmarks keeps \"No bookmarks yet\" and no row", [fr.evaluate(EMPTY_SHOWN), fr.evaluate(BROWS)], [["No bookmarks yet"], []])
-        check("all creators: no bookmarks request", [c[1] for c in calls if "bookmarks" in c[1]], [])
-        check("all creators: no mirror page fetched for a template", fetched, [])
-        pg.screenshot(path=f"{SHOTS}/inapp-feeds-all-creators-bookmarks.png")
-    open_page(pg, "collections")
-    fr=frame(pg, "collections/index")
-    if fr:
-        fr.locator(CREATE).first.click(); pg.wait_for_timeout(300)
-        check("all creators: \"Create new list\" shows the Select a model note", fr.evaluate(NOTE), "Select a model to save changes")
-    # The queue shows the first model (account 1); the clock is not fixed here, so only the undated saved-for-later items are compared.
-    queue_fetched=len(fetched)
-    for path, page, route, want, calendar in QUEUE_PAGES:
-        open_page(pg, path)
-        fr=frame(pg, page)
-        if not fr: continue
-        if page.startswith("queue/saved-for-later"):
-            check(f"all creators: {page} shows the first model's (account 1's) items", settle(pg, fr, want, CARDS), want)
-        check(f"all creators: {page} says which model it shows", pg.get_by_test_id("of-standin-hint").inner_text(), "Showing Live Model, pick a model to switch")
-        if page=="queue/saved-for-later-posts": pg.screenshot(path=f"{SHOTS}/inapp-feeds-all-creators-queue.png")
-    check("all creators: the queue routes requested by account 1 only", sorted({(c[1], c[3]) for c in calls if c[1] in QUEUE}),
-          sorted({(q[2], "1") for q in QUEUE_PAGES}))
-    check("all creators: the queue pages borrow only the list view's agenda block", sorted({tuple(f) for f in fetched[queue_fetched:]}), [("GET", "/of-mirror/pages/queue/state-list-view.html")])
-    del fetched[queue_fetched:]
-    for path, page in ALL_NOTIF_PAGES:
-        open_page(pg, path)
-        fr=frame(pg, page)
-        if not fr: continue
-        pg.wait_for_timeout(1000)
-        check(f"all creators: {page} shows no row", fr.evaluate(NNAMES), [])
-        check(f"all creators: {page} shows no example text", fr.evaluate(NLEFTOVER), [])
-        check(f"all creators: {page} shows OF's empty tab", fr.evaluate(NEMPTY), EMPTY_TAB)
-        if page=="notifications/index": pg.screenshot(path=f"{SHOTS}/inapp-feeds-all-creators-notifications.png")
-    check("all creators: no notifications requested", [c[1] for c in calls if c[1]==NOTIF_ROUTE], [])
-    check("all creators: notification counts only the creator column's, one per listed creator", sorted({c[3] for c in calls if c[1]==NCOUNT_ROUTE}, key=str), ["1", "2"])
-    open_page(pg, "streaming/dashboard")
-    if frame(pg, "streaming/dashboard"):
-        pg.wait_for_timeout(1000)
-        check("all creators: streaming/dashboard requests no streams", [c[1] for c in calls if c[1].endswith("/streams")], [])
-    open_page(pg, "statements/earnings")
-    fr=frame(pg, "statements/earnings")
-    if fr:
-        pg.wait_for_timeout(1000)
-        check("all creators: statements/earnings shows the first model's (account 1's) first page", settle(pg, fr, WANT_TXNS[:TXN_PAGE], TROWS)[:TXN_PAGE], WANT_TXNS[:TXN_PAGE])
-        check("all creators: statements/earnings' line over the frame names the model", pg.get_by_test_id("of-standin-hint").inner_text(), "Showing Live Model, pick a model to switch")
-        pg.screenshot(path=f"{SHOTS}/inapp-feeds-all-creators-earnings.png")
-    check("all creators: the transactions requests carry X-Account-Id: 1", sorted({c[3] for c in calls if c[1]==TXN_ROUTE}, key=str), ["1"])
-    open_page(pg, "statements/payouts")
-    fr=frame(pg, "statements/payouts")
-    if fr:
-        pg.wait_for_timeout(1000)
-        check("all creators: statements/payouts shows no example row, only OF's empty row", [fr.evaluate(PROWS), fr.evaluate(PEMPTY)], [[], ["This list is empty"]])
-    open_page(pg, "statements/referrals")
-    fr=frame(pg, "statements/referrals")
-    if fr:
-        pg.wait_for_timeout(1000)
-        check("all creators: statements/referrals keeps \"This list is empty\" and no row", [fr.evaluate(PEMPTY), fr.evaluate(PROWS)], [["This list is empty"], []])
-        pg.screenshot(path=f"{SHOTS}/inapp-feeds-all-creators-referrals.png")
-    check("all creators: no payout route requested", [c[1] for c in calls if c[1] in PAYOUTS], [])
-    check("all creators: no mirror page fetched for a template (statements included)", fetched, [])
-    print("all creators console errors:", [e[:160] for e in errs][:8])
-    check("all creators: no console errors", errs, [])
     b.close()
 if failures:
     print("FAIL:", *failures, sep="\n  "); sys.exit(1)

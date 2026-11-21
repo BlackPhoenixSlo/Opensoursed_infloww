@@ -1,0 +1,16 @@
+{
+ "id": "messages--list-vault",
+ "section": "messages",
+ "label": "Add media from vault",
+ "phase": 2,
+ "pages": [
+  "messages/send/state-list-dropdown"
+ ],
+ "note": "New message's list page (its list menu open), on the Mass draft only; the list Send is never run (ADR-0042). Opens New message's vault dialog (messages/send/state-vault, reads only); its picks are the Mass draft's media_files. No message is sent.",
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T122214Z-ofm-live-2ba2c23f0",
+  "undo": "none"
+ }
+}

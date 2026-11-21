@@ -1,0 +1,15 @@
+{
+  "id": "notifications--tips",
+  "section": "notifications",
+  "label": "Tips tab",
+  "pages": [
+    "notifications/tip"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending"
+  }
+}

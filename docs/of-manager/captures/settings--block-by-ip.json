@@ -1,0 +1,31 @@
+{
+  "id": "settings--block-by-ip",
+  "section": "settings",
+  "label": "[TEXTAREA]",
+  "pages": [
+    "settings/security/block_by_ip"
+  ],
+  "phase": 3,
+  "source": "of-js",
+  "of_js": {
+    "bundle": "settings-ip.js",
+    "symbol": "save()",
+    "evidence": "save() PUTs /users/me/settings/security {blockedIps}, the textarea lines ([] when empty); Cancel resets the field and sends nothing"
+  },
+  "request": {
+    "method": "PUT",
+    "path": "/api2/v2/users/me/settings/security",
+    "query": {},
+    "body": {
+      "blockedIps": [
+        "192.0.2.1"
+      ]
+    }
+  },
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T141601Z-ofm-live-0792fc9e8",
+    "undo": "undone"
+  }
+}

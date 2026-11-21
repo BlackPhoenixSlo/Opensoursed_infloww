@@ -1,0 +1,1708 @@
+[
+ [
+  "home/index",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "home/state-avatar-menu",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "home/state-expiration",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "home/state-feed-tabs-edit",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice",
+    "Sort"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "home/state-format-text",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "home/state-poll",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "[vote-input__btn.delete-vote-option]",
+    "Add poll",
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "home/state-promotion",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search",
+    "First month discount"
+   ]
+  }
+ ],
+ [
+  "home/state-quiz",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "[vote-input__btn.delete-vote-option]",
+    "Add quiz",
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "home/state-schedule",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "home/state-tag-people",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "home/state-target",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "home/state-vault",
+  {
+   "ny": [
+    "More",
+    "Record video",
+    "Record voice"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "streaming/index",
+  {
+   "ny": [
+    "Post to X that I'm Live",
+    "Available to all subscribers",
+    "Add a tip goal",
+    "Show total collected tips to viewers",
+    "Private comments only with tips",
+    "\u200b0 / 500",
+    "Start Live Video"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "streaming/dashboard",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "streaming/dashboard/create",
+  {
+   "ny": [
+    "Add cover",
+    "[g-btn.m-with-round-hover]",
+    "Search users or posts",
+    "Search"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "new-post/index",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "new-post/state-expiration",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "new-post/state-format-text",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "new-post/state-labels",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "new-post/state-poll",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "[vote-input__btn.delete-vote-option]",
+    "Add poll",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "new-post/state-price",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "new-post/state-promotion",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search",
+    "First month discount"
+   ]
+  }
+ ],
+ [
+  "new-post/state-quiz",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "[vote-input__btn.delete-vote-option]",
+    "Add quiz",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "new-post/state-schedule",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "new-post/state-tag-people",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "new-post/state-target",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "new-post/state-trial-link",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "new-post/state-vault",
+  {
+   "ny": [],
+   "dis": [
+    "Post",
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/index",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/commented",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/deactivated_media",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/favorited",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/mentioned",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/message",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/purchases",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/subscribed",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/tags",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "notifications/tip",
+  {
+   "ny": [
+    "Search users",
+    "[b-tabs__nav__link.m-reset-wcag-link-focus]",
+    "Search users or posts",
+    "[b-new-event-btn]"
+   ],
+   "dis": [
+    "Search"
+   ]
+  }
+ ],
+ [
+  "messages/index",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "messages/chat",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/chat/gallery",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "messages/chat/pinned",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "messages/chat/state-header-menu",
+  {
+   "ny": [
+    "More",
+    "Report",
+    "Find"
+   ],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/chat/state-price",
+  {
+   "ny": [
+    "More",
+    "Find"
+   ],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/chat/state-schedule",
+  {
+   "ny": [
+    "More",
+    "Find",
+    "Save for Later"
+   ],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/chat/state-tag-people",
+  {
+   "ny": [
+    "More",
+    "Find"
+   ],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/chat/state-vault",
+  {
+   "ny": [
+    "More",
+    "Find"
+   ],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/send",
+  {
+   "ny": [],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/send/state-list-dropdown",
+  {
+   "ny": [
+    "Add media",
+    "Add GIF",
+    "Record video",
+    "Record voice",
+    "Add media from vault",
+    "Scheduled messages",
+    "Message price",
+    "Tag other creators",
+    "Format Text"
+   ],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/send/state-price",
+  {
+   "ny": [],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/send/state-tag-people",
+  {
+   "ny": [],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/send/state-vault",
+  {
+   "ny": [],
+   "dis": [
+    "Send"
+   ]
+  }
+ ],
+ [
+  "messages/state-filter-dropdown",
+  {
+   "ny": [
+    "More",
+    "Select"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "messages/state-folders",
+  {
+   "ny": [
+    "More",
+    "Sort"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "vault/index",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "vault/list",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "vault/state-add-list",
+  {
+   "ny": [],
+   "dis": [
+    "Save"
+   ]
+  }
+ ],
+ [
+  "vault/state-lists-sort-dropdown",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "vault/state-sort-dropdown",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "queue/index",
+  {
+   "ny": [],
+   "dis": [
+    "[b-queue-header__btn.g-btn]"
+   ]
+  }
+ ],
+ [
+  "queue/saved-for-later-messages",
+  {
+   "ny": [
+    "[b-checkbox-switcher]",
+    "\u200bSend my messages saved for later every18h since my last mes"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "queue/saved-for-later-posts",
+  {
+   "ny": [
+    "[b-checkbox-switcher]",
+    "\u200bPublish my posts saved for later every6h since my last post"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "queue/state-list-view",
+  {
+   "ny": [],
+   "dis": [
+    "[b-queue-header__btn.g-btn]"
+   ]
+  }
+ ],
+ [
+  "queue/state-tab-messages",
+  {
+   "ny": [],
+   "dis": [
+    "[b-queue-header__btn.g-btn]"
+   ]
+  }
+ ],
+ [
+  "queue/state-tab-streams",
+  {
+   "ny": [],
+   "dis": [
+    "[b-queue-header__btn.g-btn]"
+   ]
+  }
+ ],
+ [
+  "collections/index",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "Pin to home",
+    "Posts"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "collections/bookmarks/all",
+  {
+   "ny": [
+    "Search",
+    "Create new list"
+   ],
+   "dis": [
+    "Sort"
+   ]
+  }
+ ],
+ [
+  "collections/post-labels/archived",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "More",
+    "Compact view"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "collections/user-lists/list",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "Pin to home",
+    "More"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "collections/user-lists/list/posts",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "Pin to home",
+    "More",
+    "Compact view"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "collections/user-lists/subscribers/active",
+  {
+   "ny": [
+    "Search",
+    "Sort",
+    "Posts",
+    "Search users",
+    "Filter",
+    "Expired",
+    "Restricted",
+    "Blocked",
+    "Promotions",
+    "Fan Stats"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "collections/user-lists/subscriptions/posts",
+  {
+   "ny": [
+    "Search",
+    "Compact view",
+    "Sort"
+   ],
+   "dis": [
+    "Sort"
+   ]
+  }
+ ],
+ [
+  "statements/index",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statements/earnings",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statements/payouts",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statements/referrals",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statements/stats/earnings",
+  {
+   "ny": [
+    "From Nov 20, 2026 To Nov 20, 2026"
+   ],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statements/support",
+  {
+   "ny": [
+    "\u200bSelect subject",
+    "[TEXTAREA]",
+    "Send"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/engagement/messages",
+  {
+   "ny": [
+    "Mass messages",
+    "Direct messages",
+    "Search",
+    "Search messages..."
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/engagement/posts",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/engagement/stories",
+  {
+   "ny": [
+    "Tips",
+    "Viewers",
+    "Likes",
+    "Comments"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/engagement/streaming",
+  {
+   "ny": [
+    "Purchases",
+    "Tips",
+    "Viewers",
+    "Likes",
+    "Comments"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/fans/activity",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/fans/subscriptions",
+  {
+   "ny": [
+    "More",
+    "All",
+    "Renews",
+    "New subscribers"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/fans/top-fans",
+  {
+   "ny": [
+    "More",
+    "Total",
+    "Subscriptions",
+    "Tips",
+    "Messages",
+    "Posts",
+    "Streams"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/overview/earnings",
+  {
+   "ny": [
+    "[b-input-radio]",
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statistics/overview/streaks",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statistics/overview/top-highlights",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statistics/reach/profile-visitors",
+  {
+   "ny": [
+    "All",
+    "Guests",
+    "Users"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/reach/promotions",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/reach/tracking-links",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/reach/trial-links",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "statistics/statements/disputes",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statistics/statements/earnings",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statistics/statements/payout-request",
+  {
+   "ny": [
+    "Minimum withdrawal amount is $20"
+   ],
+   "dis": [
+    "Request withdrawal"
+   ]
+  }
+ ],
+ [
+  "statistics/statements/referrals/earnings",
+  {
+   "ny": [
+    "Referred creators",
+    "Referred users"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "bank/index",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "bank/dac7/edit",
+  {
+   "ny": [
+    "[INPUT]",
+    "Send",
+    "2024",
+    "support@onlyfans.com"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "bank/edit",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "bank/payments",
+  {
+   "ny": [
+    "Add card",
+    "Payments",
+    "Alternative methods",
+    "Add a payment card"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "bank/payout_types",
+  {
+   "ny": [
+    "[b-input-radio]",
+    "CONTINUE",
+    "click here"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "bank/support",
+  {
+   "ny": [
+    "[TEXTAREA]",
+    "Send"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "profile/index",
+  {
+   "ny": [
+    "Create highlight",
+    "[g-btn.m-gray]",
+    "Compact view",
+    "Sort",
+    "Search user`s post",
+    "Search",
+    "Sign in with spotify"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "profile/media",
+  {
+   "ny": [
+    "Create highlight",
+    "[g-btn.m-gray]",
+    "Compact view",
+    "Sort",
+    "Search user`s post",
+    "Search",
+    "Sign in with spotify"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "profile/state-more-menu",
+  {
+   "ny": [
+    "Create highlight",
+    "[g-btn.m-gray]",
+    "Compact view",
+    "Sort",
+    "Search user`s post",
+    "Search",
+    "Sign in with spotify"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/2fa",
+  {
+   "ny": [
+    "Add a device to Passwordless sign in"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/connected",
+  {
+   "ny": [
+    "[INPUT]",
+    "Connect"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/delete",
+  {
+   "ny": [
+    "support@onlyfans.com",
+    "[INPUT]",
+    "Reload code",
+    "Delete account"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/email",
+  {
+   "ny": [
+    "[INPUT]",
+    "Update email address"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/google",
+  {
+   "ny": [
+    "Sign in with google"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/password",
+  {
+   "ny": [
+    "[INPUT]",
+    "Reveal password",
+    "Forgot password?",
+    "Save"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/phone",
+  {
+   "ny": [
+    "\u200b",
+    "[INPUT]",
+    "Cancel",
+    "SAVE"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/sessions",
+  {
+   "ny": [
+    "Close all sessions"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/username",
+  {
+   "ny": [
+    "[INPUT]",
+    "Save"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/account/x",
+  {
+   "ny": [
+    "Sign in with X"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/display",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/display/language",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/ethwallet",
+  {
+   "ny": [
+    "https://metamask.io/download.html"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/fans",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/links",
+  {
+   "ny": [
+    "Create link"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/messaging",
+  {
+   "ny": [
+    "[b-checkbox-switcher]",
+    "Restricted"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/nft",
+  {
+   "ny": [],
+   "dis": [
+    "Connect your MetaMask Wallet"
+   ]
+  }
+ ],
+ [
+  "settings/notifications",
+  {
+   "ny": [
+    "Restricted"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/notifications/email",
+  {
+   "ny": [
+    "\u200bUpdate frequencyEvery 24 Hours",
+    "[INPUT]"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/notifications/mentions",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/notifications/message",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/notifications/toast",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/notifications/webpush",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/profile",
+  {
+   "ny": [
+    "[btn.dropdown-toggle]",
+    "[g-btn.m-icon]",
+    "[INPUT]",
+    "[g-btn.m-with-round-hover]"
+   ],
+   "dis": [
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/qrcode",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/security",
+  {
+   "ny": [
+    "Restricted accounts",
+    "Blocked accounts"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/security/block_by_country",
+  {
+   "ny": [
+    "\u200bSelect from available options",
+    "[INPUT]"
+   ],
+   "dis": [
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/security/block_by_country/state-country-picker",
+  {
+   "ny": [
+    "\u200bSelect from available options United States of America Unit",
+    "[INPUT]"
+   ],
+   "dis": [
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/security/block_by_ip",
+  {
+   "ny": [
+    "[TEXTAREA]"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/security/watermarks",
+  {
+   "ny": [],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/security/watermarks/state-options",
+  {
+   "ny": [],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/social-media",
+  {
+   "ny": [
+    "Add button"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/spotify",
+  {
+   "ny": [
+    "Sign in with spotify"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/spring-store",
+  {
+   "ny": [
+    "Paste your Spring Store URL",
+    "here"
+   ],
+   "dis": [
+    "Connect"
+   ]
+  }
+ ],
+ [
+  "settings/story",
+  {
+   "ny": [],
+   "dis": []
+  }
+ ],
+ [
+  "settings/streaming",
+  {
+   "ny": [
+    "OBS",
+    "[INPUT]",
+    "Copy link",
+    "Reset",
+    "Copy key",
+    "https://onlyfans.com/my/streaming/chat",
+    "https://obs-settings.onlyfans.com/"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/streaming/blocked",
+  {
+   "ny": [
+    "[INPUT]",
+    "Block"
+   ],
+   "dis": []
+  }
+ ],
+ [
+  "settings/subscription",
+  {
+   "ny": [],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/promotion-campaign",
+  {
+   "ny": [],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/promotion-campaign/modal-1",
+  {
+   "ny": [
+    "Start promotion campaign",
+    "Add bundle"
+   ],
+   "dis": [
+    "Cancel",
+    "Save",
+    "First month discount"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/promotion-campaign/modal-2",
+  {
+   "ny": [
+    "Start promotion campaign",
+    "Add bundle"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/promotion-campaign/modal-3",
+  {
+   "ny": [
+    "Start promotion campaign",
+    "Add bundle",
+    "[btn.dropdown-toggle]"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/tracking-links",
+  {
+   "ny": [
+    "Sort",
+    "Shared with you"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/tracking-links/modal-1",
+  {
+   "ny": [
+    "Create new tracking link",
+    "Sort",
+    "Shared with you"
+   ],
+   "dis": [
+    "Cancel",
+    "Save",
+    "Create Link"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/tracking-links/state-kebab",
+  {
+   "ny": [
+    "Create new tracking link",
+    "Sort",
+    "[b-input-radio]",
+    "Shared with you"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/trial-links",
+  {
+   "ny": [],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/trial-links/modal-1",
+  {
+   "ny": [
+    "Create new free trial link"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ],
+ [
+  "settings/subscription/trial-links/state-kebab",
+  {
+   "ny": [
+    "Create new free trial link",
+    "[b-input-radio]"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ]
+  }
+ ]
+]

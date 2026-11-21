@@ -1,0 +1,7 @@
+{"id": "messages--more", "section": "messages", "label": "More", "phase": 2,
+ "pages": ["messages/index", "messages/state-filter-dropdown", "messages/state-folders", "messages/chat",
+           "messages/chat/gallery", "messages/chat/pinned", "messages/chat/state-header-menu",
+           "messages/chat/state-price", "messages/chat/state-schedule", "messages/chat/state-tag-people",
+           "messages/chat/state-vault"],
+ "note": "The chat list header's More (sort toggle), the chat header's More and each message's More. Each opens the chat page's menu and sends nothing itself. Known body: the chat page's existing routes for its items, sent by the chat page's own builders (not captured here): the dropdown's Mark all as read (ofMirrorChats), the header menu's items (ofMirrorChatTools chatToolWrites, e.g. Restrict) and the message menu's items (ofMirrorMessageMenu messageWrites, e.g. Like). Report, Forward, Add a tag, Add to collection and Save for Later stay off (tickets 42, 44, 45).",
+ "proof": {"kind": "mocked", "verdict": "parked", "reason": "Live proof pending (ticket 54): opener only, its items' Known bodies are the chat page's routes"}}

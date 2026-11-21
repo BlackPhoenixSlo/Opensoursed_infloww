@@ -21,9 +21,9 @@ nothing is sent until Post. After Close again, Post sends exactly one POST /api/
 {"text":"Synthetic post","media_files":[62,61],"price":0} with X-Account-Id: 1 and stays on New post, whose thumbs row
 is gone and editor empty.
 Folders: the dialog's folder list is the Relay's (unmocked: []), so it shows "All media" alone, never the captured
-"List <n>" folders, in both scopes.
-All Creators (scope key removed before every load): New post stands in with the first listed creator (ofMirrorProfile's
-STAND_IN_SRC), so the dialog shows that creator's media (never the capture's 21 example tiles), read with its id.
+"List <n>" folders.
+No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
+77e5df419; phase_check.py's one_creator checks it).
 Add to story: with 61 and 62 picked it shows "Pick one vault item for the story" and sends nothing; in a fresh session it
 sits before Close, wired; picking photo 61 alone and pressing it sends exactly one POST /api/of/v2/stories
 {"media_url": 61's full url} with X-Account-Id: 1 and shows "Added to story"; video 62 alone sends {"media_files":[62]};
@@ -250,18 +250,6 @@ with sync_playwright() as p:
     console_ok("story", errs)
     pg.context.close()
 
-    # All Creators: the scope key cleared before every load; New post stands in with the first listed creator (acc1).
-    pg, vault_gets, imgs, sent, errs=session(b, "localStorage.removeItem('chatterly:scope')")
-    fr=open_vault_dialog(pg)
-    if fr:
-        pg.wait_for_timeout(1500)
-        check("all creators: the stand-in creator's media, never the capture's examples", fr.evaluate(TILES), [["61","Oct 10"],["62","Oct 9"],["63","Oct 8"]])
-        check("all creators: the folders are All media alone", fr.evaluate(FOLDERS), ["All media"])
-        check("all creators: the vault read by the stand-in creator", vault_gets, [("limit=24","acc1"),("limit=24&refresh=1","acc1")])
-        check("all creators: nothing sent", sent, [])
-        pg.screenshot(path=f"{SHOTS}/post-vault-all-creators.png")
-    console_ok("all creators", errs)
-    pg.context.close()
 if failures:
     print("FAIL:", *failures, sep="\n  "); sys.exit(1)
 print("post vault ok")

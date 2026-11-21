@@ -1,0 +1,70 @@
+{
+ "id": "streaming--schedule-format-panel-page",
+ "section": "streaming",
+ "label": "Schedule form Format text panel",
+ "pages": [
+  "/my/streaming/dashboard/create"
+ ],
+ "phase": "P4 s25",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/my/streaming/dashboard/create",
+  "query": {},
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": null,
+  "keys": []
+ },
+ "facts": {
+  "toolbar": [
+   "size select",
+   "Bold",
+   "Italic",
+   "Text Color",
+   "Clear Formatting",
+   "Close Formatting Panel"
+  ],
+  "size_list": [
+   "Largest",
+   "Large",
+   "Default (selected)",
+   "Small",
+   "Smallest"
+  ],
+  "text_colour_list": [
+   {
+    "label": "Grey",
+    "class": "m-editor-fc__gray"
+   },
+   {
+    "label": "Light blue",
+    "class": "m-editor-fc__blue-1"
+   },
+   {
+    "label": "Medium blue",
+    "class": "m-editor-fc__blue-2"
+   },
+   {
+    "label": "Black",
+    "class": "m-editor-fc__default",
+    "after_separator": true
+   }
+  ],
+  "gate": "same client-side reveal as row 13",
+  "closed_unsaved": true,
+  "non_get": 0,
+  "access": "read: only GETs were sent, no write",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r14-schedule-format-size-open.html",
+  "r14-schedule-format-color-open.html"
+ ]
+}

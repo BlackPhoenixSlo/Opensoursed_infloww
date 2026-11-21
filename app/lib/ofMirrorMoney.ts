@@ -12,6 +12,15 @@
  *   category's gross summed up over the period, the picked category's line bright), its date range and its category
  *   rows (a month's: its items summed); a category row picks its line;
  * - Referrals' "Current referral earnings" shows `/payments/referrals/balance`'s `referralEarnings`;
+ * - Earning Statistics' "From … To …" button (ticket 20; Not-yet title kept until its Live proof, D1) opens OF's Custom
+ *   period picker (ofMirrorDatepicker) on today (once a range is picked: on it), from the Creator's start
+ *   (`/users/me/start-date-model`) to today, in the owner's time zone (`preferences.tz`); no Relay read. Its Apply re-reads
+ *   `/payouts/stats` for the picked days as OF's applyDatePicker does (ticket 24: OF's startDate/endDate, YYYY-MM-DD,
+ *   statementsRange), and once that answers All time shows the range: the button's dates, the totals, the category rows,
+ *   All time's net and the chart (OF's updateExpand "custom"); the month rows stay all time's, a month's head shows that
+ *   month as read for all time, and All time's head drops the range (OF's updateExpand "all"). No ledger re-read: OF's
+ *   Apply reads only `/payouts/stats` (capture record statements--custom-period-apply). All models: the Select-model
+ *   note, no Relay call;
  * Field names and selectors are OF's own (build 202610091632: statements.js, statistics-statements.js,
  * statements-earning-stats.js, app.js module 874727). All models (but on Statements' Earnings, which shows the first
  * model: standInModel), no data yet or a relay error: each figure a dash, as the generator draws Statements (no example
@@ -43,6 +52,10 @@ import { clearChart, drawLines, type LinesSpec } from "@/lib/ofMirrorChart";
 import { basePage } from "@/lib/ofMirrorRow";
 import { note } from "@/lib/ofMirrorWrites";
 import { parseSendFailure } from "@/lib/sendFailure";
+import { useAppliedSettings } from "@/lib/appliedSettings";
+import { openDatepicker, tabDate, type Day } from "@/lib/ofMirrorDatepicker";
+import { mirrorQuery } from "@/lib/ofMirrorDataQueries";
+import { pickerDays, startOf, statementsRange } from "@/lib/ofMirrorStatsPeriod";
 
 export type MoneyPart = "balances" | "earningStats" | "referralBalance";
 
@@ -109,6 +122,24 @@ export interface MoneyData {
   /** A frequency change is being saved (OF's disabledWithdrawalPeriod). */
   periodSaving?: boolean;
   actions?: MoneyActions;
+  /** Earning Statistics' From … To picker (none: no single model, the Select-model note). */
+  range?: EarningRange | null;
+}
+
+/** Earning Statistics' From … To: the owner's time zone and the Creator's start (the picker's bounds), the range picked
+ * (its read's answer once in), what Apply does with the picked days and how All time's head drops the range. */
+export interface EarningRange {
+  tz: string | null;
+  userStart: Date | null;
+  picked?: { from: Day; to: Day; stats?: EarningStats } | null;
+  pick: (from: Day, to: Day) => void;
+  clear: () => void;
+}
+
+/** The Relay's route for the earning statistics of a range (statementsRange's params, OF's own startDate/endDate, which
+ * the Relay sends on as they are; OF ignores start/end, service/of_reads.py earning_stats). */
+export function earningStatsRoute(p: { startDate: string; endDate: string }): string {
+  return `${MONEY_ROUTES.earningStats}?${new URLSearchParams(p)}`;
 }
 
 /** The relay's body for a part as MoneyData (anything unusable: nothing). */
@@ -151,6 +182,8 @@ const minAmount = (v: number) => `$${v.toLocaleString("en-US", { maximumFraction
 /** The relay's routes for OF's payout writes and the account's payout eligibility. */
 export const PAYOUT_REQUESTS = "/api/of/v2/payouts/requests";
 export const CHECK_RECEIVE = "/api/of/v2/payouts/check-receive";
+/** The Creator's start (Statistics' `startDate` source): the lower bound of Earning Statistics' picker. */
+const START_DATE = "/api/of/v2/users/me/start-date-model";
 
 /** OF's copy (texts_en.json, build 202610091632), by OF's key. */
 export const TEXTS = {
@@ -416,6 +449,9 @@ interface EarningView {
   months: Map<number, Month | undefined>;
   expanded: "all" | number;
   current: string;
+  /** The From … To range All time shows (its read answered), its days as the key; All time's head drops it. */
+  custom?: { key: string; stats: EarningStats; from: Day; to: Day; start: number; end: number };
+  clear?: () => void;
 }
 const earningViews = new WeakMap<Document, EarningView>();
 const earningBound = new WeakSet<Document>();
@@ -444,14 +480,22 @@ function showEarning(doc: Document) {
   const allBody = all?.querySelector<HTMLElement>(":scope > .b-stats-row__body");
   if (!all || !allBody) return;
   setAttr(doc, allBody, "style", v.expanded === "all" ? null : "display:none");
-  const total = v.stats.total ?? {};
+  // OF's allItems: the range's answer while All time shows it, else all time's (a month open: all time's).
+  const custom = v.expanded === "all" ? v.custom : undefined;
+  const total = (custom ? custom.stats.total : v.stats.total) ?? {};
+  // OF shows 0 for an absent sum.
+  setMoney(doc, all.querySelector(".b-stats-row__total-net > span"), total.all?.total_net ?? 0);
   const month = v.expanded === "all" ? undefined : v.months.get(v.expanded);
   let body = allBody;
   let start: number;
   let end: number;
   let from: string;
   let to: string;
-  if (v.expanded === "all") {
+  if (custom) {
+    // OF's mergeData with the picked startDate/endDate: the range's days (the owner's zone), its earnings.
+    [start, end] = [custom.start, custom.end];
+    [from, to] = [tabDate(custom.from), tabDate(custom.to)];
+  } else if (v.expanded === "all") {
     // OF's mergeData: from the earliest month (none: today), to now.
     const first = Math.min(...v.months.keys());
     start = Number.isFinite(first) ? first : new Date(v.now.getFullYear(), v.now.getMonth(), v.now.getDate()).getTime();
@@ -483,7 +527,8 @@ function showEarning(doc: Document) {
   setMoney(doc, items[0]?.querySelector(".b-stats-row__val"), sums?.total_gross ?? 0);
   setMoney(doc, items[1]?.querySelector(".b-stats-row__val"), sums?.total_net ?? 0);
   const canvas = body.querySelector("canvas");
-  if (canvas) drawEarnings(doc, canvas, earningsChart(v.expanded === "all" ? [...v.months.values()] : [month], start, end, v.current));
+  const chartMonths = custom ? Object.values(custom.stats.months ?? {}) : v.expanded === "all" ? [...v.months.values()] : [month];
+  if (canvas) drawEarnings(doc, canvas, earningsChart(chartMonths, start, end, v.current));
 }
 
 /** A row's head expands that row; a category row in the open body picks its line (one listener per page). */
@@ -498,6 +543,11 @@ function bindEarning(doc: Document) {
     const key = head && v.rows.get(head.parentElement as HTMLElement);
     if (key !== undefined && key !== null) {
       v.expanded = key;
+      // OF's updateExpand("all", "all"): All time's head resets the picked range to all time.
+      if (key === "all" && v.custom) {
+        v.custom = undefined;
+        v.clear?.();
+      }
       return showEarning(doc);
     }
     const label = t.closest(".b-stats-row__body .b-stats-row__content > .b-stats-row__label");
@@ -509,20 +559,26 @@ function bindEarning(doc: Document) {
   });
 }
 
-function applyEarningStats(doc: Document, stats: EarningStats, now: Date, prev: EarningView | undefined) {
+function applyEarningStats(doc: Document, stats: EarningStats, now: Date, prev: EarningView | undefined, range: EarningRange | null) {
   const rows = [...doc.querySelectorAll<HTMLElement>(".b-stats-wrap > .b-stats-row")];
   const all = rows.find((r) => r.querySelector(".b-stats-row__content"));
   const monthTpl = rows.find((r) => r !== all);
   if (!all) return;
-  const total = stats.total ?? {};
-  // OF shows 0 for an absent sum.
-  setMoney(doc, all.querySelector(".b-stats-row__total-net > span"), total.all?.total_net ?? 0);
   const months = Object.entries(stats.months ?? {})
     .map(([k, m]) => ({ at: new Date(Number(k) * 1000), m }))
     .filter(({ at }) => !Number.isNaN(at.getTime()))
     .sort((a, b) => b.at.getTime() - a.at.getTime());
   const view: EarningView = { stats, now, rows: new Map([[all, "all"]]), months: new Map(months.map(({ at, m }) => [at.getTime(), m])), expanded: "all", current: prev?.current ?? "subscribes" };
   if (prev && prev.expanded !== "all" && view.months.has(prev.expanded)) view.expanded = prev.expanded;
+  const picked = range?.picked;
+  if (range && picked?.stats) {
+    const r = statementsRange(picked.from, picked.to, now, range.tz);
+    const key = `${r.params.startDate}..${r.params.endDate}`;
+    view.custom = { key, stats: picked.stats, from: picked.from, to: picked.to, start: r.start.getTime(), end: r.end.getTime() };
+    // OF's loadFilteredStatistics → updateExpand("all", "custom"): a new range opens All time on it.
+    if (prev?.custom?.key !== key) view.expanded = "all";
+  }
+  view.clear = range?.clear;
   earningViews.set(doc, view);
   bindEarning(doc);
   if (monthTpl) {
@@ -564,7 +620,18 @@ export function applyMoney(doc: Document, page: string, data: MoneyData, now: Da
   payouts.set(doc, { balances: parts.includes("balances") ? data.balances : undefined, user: data.payoutUser, actions: data.actions });
   const view = earningViews.get(doc);
   earningViews.delete(doc);
-  if (parts.includes("earningStats") && data.earningStats) applyEarningStats(doc, data.earningStats, now, view);
+  if (parts.includes("earningStats")) {
+    // Marked and enabled before applyEarningStats clones the All time body into a month row, so each copy is; its Not-yet
+    // title gone (D1: Live proof p1.statements.range.apply passed, docs/of-manager/captures/statements--range.json).
+    // With no model its click shows RANGE_NO_MODEL (bindRange).
+    for (const b of doc.querySelectorAll(RANGE)) {
+      setAttr(doc, b, "data-oi-wired", "");
+      setAttr(doc, b, "disabled", null);
+      setAttr(doc, b, "title", null);
+    }
+    bindRange(doc, data.range ?? null);
+  }
+  if (parts.includes("earningStats") && data.earningStats) applyEarningStats(doc, data.earningStats, now, view, data.range ?? null);
   if (parts.includes("referralBalance") && data.referralEarnings !== undefined) {
     for (const el of doc.querySelectorAll(".g-box__header__inner__value > span, .b-referrals-state__count")) setMoney(doc, el, data.referralEarnings);
   }
@@ -575,6 +642,30 @@ export function applyMoney(doc: Document, page: string, data: MoneyData, now: Da
     if (url) for (const el of doc.querySelectorAll(".b-referrals__copy-description, .b-referrals-state__copy-url__link")) setText(doc, el, ` ${url} `);
   }
   bindStatements(doc);
+}
+
+/** Earning Statistics' "From … To …" button (the All time body's, and its copy in an expanded month's). */
+const RANGE = ".b-stats-row__body button.m-time-period";
+export const RANGE_NO_MODEL = "Select a model to pick a period";
+// The picker's context per page (null: no model), read at click time.
+const ranges = new WeakMap<Document, EarningRange | null>();
+/** The From … To button opens OF's Custom period picker (no Relay read) on today, or on the range picked; its Apply hands
+ * the picked days to `pick` (the hook re-reads /payouts/stats for them). */
+function bindRange(doc: Document, range: EarningRange | null) {
+  const bound = ranges.has(doc);
+  ranges.set(doc, range);
+  if (bound) return;
+  doc.addEventListener("click", (ev) => {
+    const btn = (ev.target as Element | null)?.closest?.<HTMLElement>(RANGE);
+    if (!btn) return;
+    ev.preventDefault();
+    const r = ranges.get(doc);
+    if (!r) return note(doc, btn, RANGE_NO_MODEL);
+    const now = new Date();
+    const days = pickerDays(now, now, now, r.tz, r.userStart);
+    const p = r.picked;
+    openDatepicker(doc, { ...days, ...(p && { start: p.from, end: p.to }), opener: btn, onApply: (from, to) => r.pick(from, to) });
+  });
 }
 
 // Referrals' link per page (null: no model), read by its Copy link at click time.
@@ -822,6 +913,17 @@ export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   });
   const balances = useQuery(q("balances")).data;
   const stats = useQuery(q("earningStats")).data;
+  // Earning Statistics' picker: the Creator's start as Statistics reads it (the same query and cache), in the owner's zone.
+  const tz = useAppliedSettings().data?.preferences?.tz ?? null;
+  const startBody = useQuery(mirrorQuery(accountId, START_DATE, parts.includes("earningStats"))).data;
+  // The From … To range Apply picked (this model and page only) and its earning statistics (OF's startDate/endDate).
+  const [picked, setPicked] = useState<{ accountId: string; src: string; from: Day; to: Day } | null>(null);
+  // Another model or page drops it (OF reloads on All time): reset during render, so a return finds no range.
+  const stale = !!picked && (picked.accountId !== accountId || picked.src !== src);
+  if (stale) setPicked(null);
+  const pick = stale ? null : picked;
+  const rangeRoute = pick ? earningStatsRoute(statementsRange(pick.from, pick.to, new Date(), tz).params) : null;
+  const rangeBody = useQuery(mirrorQuery(accountId, rangeRoute, parts.includes("earningStats"))).data;
   const referral = useQuery(q("referralBalance")).data;
   const me = useQuery({ ...ofMeQuery(accountId), enabled: !!accountId && (parts.includes("referralBalance") || parts.includes("balances")) }).data;
   const meId = me?.id;
@@ -878,6 +980,13 @@ export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: s
           payoutUser,
           periodSaving,
           actions,
+          range: {
+            tz,
+            userStart: startOf(startBody, tz),
+            picked: pick && { from: pick.from, to: pick.to, stats: moneyOf("earningStats", rangeBody).earningStats },
+            pick: (from, to) => setPicked({ accountId, src, from, to }),
+            clear: () => setPicked(null),
+          },
         }
       : {};
     const apply = () => {
@@ -887,5 +996,5 @@ export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     if (frame.contentDocument?.readyState === "complete") apply();
     frame.addEventListener("load", apply);
     return () => frame.removeEventListener("load", apply);
-  }, [frameRef, src, page, accountId, qc, balances, stats, referral, me, meId, receive, periodSaving]);
+  }, [frameRef, src, page, accountId, qc, balances, stats, referral, me, meId, receive, periodSaving, tz, startBody, pick, rangeBody]);
 }

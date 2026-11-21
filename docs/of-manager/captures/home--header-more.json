@@ -1,0 +1,61 @@
+{
+ "id": "home--header-more",
+ "section": "home",
+ "label": "More (Home header)",
+ "pages": [
+  "home/index"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "PATCH",
+  "path": "/api2/v2/users/me",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "paidFeed": true
+  }
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "success"
+  ]
+ },
+ "undo_request": {
+  "method": "PATCH",
+  "path": "/api2/v2/users/me",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "paidFeed": false
+  },
+  "response": {
+   "status": 200,
+   "keys": [
+    "success"
+   ]
+  }
+ },
+ "facts": {
+  "items": {
+   "Hide all Locked Posts / Show all Locked Posts": "PATCH /api2/v2/users/me {paidFeed: true|false}",
+   "Hide all Promotional Posts / Show ...": "no request: localStorage feedSettings.isHidePromoFeedPosts",
+   "Hide the Profile Banners / Show ...": "no request: localStorage feedSettings.isHideFeedPostsProfileBanners"
+  },
+  "read": "GET /api2/v2/users/me paidFeed",
+  "reads": "before false; after write true (label became Show all Locked Posts); after undo false (equal)",
+  "local_items_reverted": "the two localStorage items were flipped by the abort probe and flipped back (both false again)",
+  "narrowing": "allow exactly PATCH ^/api2/v2/users/me$ per click",
+  "access": "write: sent live (narrowed), then undone and verified",
+  "capture_verdict": "pass",
+  "capture_undo": "undone",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r18-live-after-write.png",
+  "r18-live-after-undo.png"
+ ]
+}

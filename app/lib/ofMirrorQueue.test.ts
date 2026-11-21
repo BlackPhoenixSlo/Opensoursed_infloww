@@ -296,7 +296,7 @@ describe("bindQueue", () => {
 
   it("with bindWrites bound too, More and the menu never get the read-only fallback note", () => {
     const { doc } = setup();
-    unbinds.push(bindWrites(doc, "queue/state-list-view", null));
+    unbinds.push(bindWrites(doc, "queue/state-list-view", null, true));
     more(rows(doc)[0]).click();
     expect(noteText(doc)).toBeUndefined();
     entry(doc, "publish_now").click();
@@ -690,7 +690,7 @@ describe("Add to queue (the \"+\": OF's NEW_SCHEDULED_EVENT modal)", () => {
 
   it("with bindWrites bound too, the modal's buttons never get the read-only fallback note", () => {
     const doc = bound("queue/index", handlers());
-    unbinds.push(bindWrites(doc, "queue/index", null));
+    unbinds.push(bindWrites(doc, "queue/index", null, true));
     doc.querySelector<HTMLElement>("[at-attr='add_event_header']")!.click();
     const time = field(doc, "time");
     time.value = "18:30";

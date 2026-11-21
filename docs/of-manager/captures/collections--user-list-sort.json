@@ -1,0 +1,61 @@
+{
+ "id": "collections--user-list-sort",
+ "section": "collections",
+ "label": "Sort (a user list)",
+ "pages": [
+  "collections/user-lists/{id}"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "POST",
+  "path": "/api2/v2/lists/{id}/sort",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "order": "recent",
+   "direction": "asc"
+  }
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "canAddFriends",
+   "success"
+  ]
+ },
+ "undo_request": {
+  "method": "POST",
+  "path": "/api2/v2/lists/{id}/sort",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "order": "default",
+   "direction": "asc"
+  },
+  "response": {
+   "status": 200,
+   "keys": [
+    "canAddFriends",
+    "success"
+   ]
+  }
+ },
+ "facts": {
+  "menu": "Default / Recent, then Ascending / Descending (values default, recent, asc, desc)",
+  "disabled_when": "Sort is disabled on a list with 1 user (tp-hunt); used a custom list with 4 users",
+  "read": "GET /api2/v2/lists/{id} order + direction",
+  "reads": "before default/asc; after write recent/asc; after undo default/asc (equal)",
+  "menu_ignores_server": "after reload the menu still showed Default checked while the server said recent, so clicking Default sent nothing; undo = Recent (recent/asc, 200) then Default (default/asc, 200)",
+  "narrowing": "allow exactly POST ^/api2/v2/lists/<that id>/sort$",
+  "access": "write: sent live (narrowed), then undone and verified",
+  "capture_verdict": "pass",
+  "capture_undo": "undone",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r17-live-after-undo.png"
+ ]
+}

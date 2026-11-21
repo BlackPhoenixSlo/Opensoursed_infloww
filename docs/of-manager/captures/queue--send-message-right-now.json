@@ -1,0 +1,15 @@
+{
+  "id": "queue--send-message-right-now",
+  "section": "queue",
+  "label": "Send message right now",
+  "pages": [
+    "queue/state-tab-messages"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending; waits on owner sheet item 1 (Proof fan)"
+  }
+}

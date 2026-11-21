@@ -1,0 +1,14 @@
+{"init":
+   "addEventListener('load', () => document.querySelector('.post_media__controls button')?.setAttribute('data-oi-wired', ''))",
+ "proofs": [{"id": "plant.missing", "page": "streaming/dashboard/create", "control": "No such control", "kind": "live", "phase": 4},
+            {"id": "plant.add-cover-live", "page": "streaming/dashboard/create", "control": "Add cover", "kind": "live", "phase": 4},
+            {"id": "plant.schedule-parked", "page": "streaming/dashboard/create", "control": "Schedule", "kind": "live", "phase": 4}],
+ "records": {"streaming--no-such.json": {"label": "No such control", "pages": ["streaming/dashboard/create"],
+                 "proof": {"kind": "live", "verdict": "parked", "reason": "owner go pending"}},
+             "streaming--add-cover.json": {"label": "Add cover", "pages": ["streaming/dashboard/create"],
+                 "proof": {"kind": "live", "verdict": "pass", "reason": ""}},
+             "streaming--schedule.json": {"label": "Schedule", "pages": ["streaming/dashboard/create"],
+                 "proof": {"kind": "live", "verdict": "parked", "reason": "owner go pending"}}},
+ "requests": [{"page": "streaming/dashboard/create", "steps": ["No such control"], "want": []},
+              {"page": "streaming/dashboard", "prep": "fetch('https://example.invalid/oi-plant').catch(() => {})",
+               "steps": [], "want": []}]}

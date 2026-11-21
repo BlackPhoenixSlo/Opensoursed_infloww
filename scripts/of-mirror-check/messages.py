@@ -13,9 +13,9 @@ Single Creator (scope `model:1`):
   the header's "Fan insights" toggle (aria-pressed) hides it, the chat then running on past it, and shows it again.
 - /of-manager/messages/send: the Send to rows are the 2 lists; ticking both and typing "Synthetic blast" then Send asks
   first and makes exactly one POST /api/of/v2/messages/queue {"text":"Synthetic blast","user_lists":["fans","42"]}.
-All Creators (scope key removed) with no creator: Infloww's OfNotHaveModel instead of the frame, nothing sent.
-All Creators with models 1 and 2 (/admin/accounts): /of-manager/messages shows model 1's chat (its partner's name from
-/users/list) under the line "Showing Model One, pick a model to switch", every relay read carrying X-Account-Id: 1.
+No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
+77e5df419; phase_check.py's one_creator checks it).
+No creator (/admin/accounts lists none), scope `model:1`: Infloww's OfNotHaveModel instead of the frame, nothing sent.
 No console errors. Screenshots: /tmp/of-mirror-shots/messages-*.png. Exit 1 on a failed check.
 """
 import json, os, sys
@@ -41,9 +41,9 @@ def check(label, got, want):
     print(json.dumps({"check":label,"got":got,"want":want}))
     if got!=want: failures.append(f"{label}: got {got!r}, expected {want!r}")
 ACCOUNTS={"accounts":[{"id":"1","nickname":"Model One","has_session":True},{"id":"2","nickname":"Model Two","has_session":True}],"active_account_id":None}
-def session(b, scope_js, models=True, reads=None):
+def session(b, scope_js, models=True):
     """A fresh page with scope_js run before every load; returns (page, sent writes as (method, path, body, X-Account-Id), console errors).
-    models: /admin/accounts lists models 1 and 2 (else none). reads: a list that gets each /api/of GET as (path, X-Account-Id)."""
+    models: /admin/accounts lists models 1 and 2 (else none)."""
     ctx=b.new_context(viewport={"width":1440,"height":900})
     ctx.add_init_script(scope_js)
     foreign=lambda url: urlparse(url).hostname not in ("localhost","127.0.0.1")
@@ -61,7 +61,6 @@ def session(b, scope_js, models=True, reads=None):
         if req.method!="GET" and path.startswith("/api/"):
             sent.append((req.method, path, req.post_data_json if req.post_data else None, req.headers.get("x-account-id")))
             return ok(route, {"id":1})
-        if reads is not None and path.startswith("/api/of/"): reads.append((path, req.headers.get("x-account-id")))
         if path=="/api/of/v2/chats": return ok(route, CHATS)
         if path=="/api/of/v2/users/list": return ok(route, {"9001":FAN})
         if path=="/admin/accounts" and models: return ok(route, ACCOUNTS)
@@ -145,28 +144,13 @@ with sync_playwright() as p:
     print("single creator console errors:", [e[:160] for e in errs][:8])
     if errs: failures.append(f"single creator: {len(errs)} console error(s)")
 
-    pg, sent, errs=session(b, "localStorage.removeItem('chatterly:scope')", models=False)
+    # No creator: whatever the scope, OF Manager shows OfNotHaveModel, no frame, and sends nothing.
+    pg, sent, errs=session(b, "localStorage.setItem('chatterly:scope','model:1')", models=False)
     pg.goto(f"{BASE}{M}/messages/chat?chat=9001", wait_until="load", timeout=90000); pg.wait_for_timeout(3000)
-    check("all creators, no creator: OfNotHaveModel, no frame", [pg.get_by_text("You have not yet tied a creator").count() > 0, [f.url for f in pg.frames if "of-mirror" in f.url]], [True, []])
-    check("all creators: nothing sent", sent, [])
-    print("all creators console errors:", [e[:160] for e in errs][:8])
-    if errs: failures.append(f"all creators: {len(errs)} console error(s)")
-
-    reads=[]
-    pg, sent, errs=session(b, "localStorage.removeItem('chatterly:scope')", models=True, reads=reads)
-    fr=go(pg, f"{M}/messages", "index")
-    if fr:
-        wait_for(lambda: fr.evaluate("[...document.querySelectorAll('.b-chats__item .g-user-name')].filter(e => e.checkVisibility()).length")==1)
-        check("all creators with models: model 1's chat, its partner named from /users/list",
-              fr.evaluate("[...document.querySelectorAll('.b-chats__item')].filter(e => e.checkVisibility()).map(e => [e.querySelector('.g-user-name').textContent.trim(), e.querySelector('.g-user-username').textContent.trim()])"),
-              [["Synthetic Fan","@synthfan"]])
-        check("all creators with models: the line over the frame names the model", pg.get_by_test_id("of-standin-hint").inner_text(), "Showing Model One, pick a model to switch")
-        # The creator column reads each listed creator's /users/me and notification count.
-        check("all creators with models: every relay read but the creator column's carries X-Account-Id: 1", sorted({a for r, a in reads if r not in ("/api/of/v2/users/me", "/api/of/v2/users/notifications/count")}, key=str), ["1"])
-        check("all creators with models: nothing sent", sent, [])
-        pg.screenshot(path=f"{SHOTS}/messages-all-standin.png")
-    print("all creators with models console errors:", [e[:160] for e in errs][:8])
-    if errs: failures.append(f"all creators with models: {len(errs)} console error(s)")
+    check("no creator: OfNotHaveModel, no frame", [pg.get_by_text("You have not yet tied a creator").count() > 0, [f.url for f in pg.frames if "of-mirror" in f.url]], [True, []])
+    check("no creator: nothing sent", sent, [])
+    print("no creator console errors:", [e[:160] for e in errs][:8])
+    if errs: failures.append(f"no creator: {len(errs)} console error(s)")
     b.close()
 if failures:
     print("FAILED:"); [print(" -", f) for f in failures]; sys.exit(1)

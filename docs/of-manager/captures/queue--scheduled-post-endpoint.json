@@ -1,0 +1,54 @@
+{
+ "id": "queue--scheduled-post-endpoint",
+ "section": "queue",
+ "label": "Which endpoint lists a dated (future) scheduled post",
+ "pages": [
+  "queue/index"
+ ],
+ "phase": 2,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/api2/v2/schedules",
+  "query": {
+   "limit": "10",
+   "filter[publishDate]": "{today}",
+   "filter[publishDateEnd]": "{today+1y}",
+   "filter[timeZone]": "{tz}"
+  },
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "list",
+   "syncInProcess"
+  ]
+ },
+ "facts": {
+  "question": "ticket 136: does GET /schedules/later/post list a post scheduled for a future date?",
+  "answer": "no. A dated scheduled post appears only in GET /schedules (date-range calendar). GET /schedules/later/post returned an empty list while one dated post was scheduled.",
+  "later_post_read": "GET /api2/v2/schedules/later/post?limit=10&offset=0 -> 200 {list: [] (0), hasMore: false, syncInProcess}",
+  "schedules_read": "GET /api2/v2/schedules?limit=10&filter[publishDate]={today}&filter[publishDateEnd]={today+1y}&filter[timeZone]={tz} -> 200 {list: 1 item, syncInProcess}; item type post, publishDateTime set (5 days ahead), createdDateTime months earlier, entity = the post (same entity shape as later/post)",
+  "paging": "GET /schedules has no paging: limit and offset are both ignored. Answer keys are only list + syncInProcess (no hasMore, no total, no cursor). GET /schedules/later/post does carry hasMore. A client must page /schedules by date range (publishDate/publishDateEnd), not by offset.",
+  "queue_page_read": "the Queue page (/my/queue) itself reads GET /schedules?limit=4 with publishDate today .. today+1y and the browser time zone",
+  "existing_post": "the dated post was already on the account (not created by this read, not an oi- marker post); nothing was scheduled, so no write and no undo",
+  "reader": "OFClient signed GETs with the relay-session copy of the Proof Creator's capture-browser session, plus one Queue page load in the capture browser",
+  "access": "ticket 136 read: GET only. Paging follow-up: 1 scheduled-post create + 1 delete on the Proof Creator sandbox (D25), undone",
+  "item_keys": "id, type, publishDateTime, createdDateTime, entity",
+  "offset_honoured": "no, offset is ignored. With 2 dated posts in today..today+40d, limit=1&offset=0 and limit=1&offset=1 both returned the same 2 items in the same order.",
+  "limit_honoured": "no for limit=1: it returned 2 items, on 2 different days. Per-day vs fully ignored was not separated (only 1 post per day). The date range is honoured: today..today+10d returned only the item inside it.",
+  "limit_100": "accepted: 200, returned every item in the range (2 with the marker post, 1 after the undo). No error, no cap seen.",
+  "item_types_seen": "post only (the range had no scheduled chats)",
+  "scheduled_create_body": "OF's composer schedules a post with POST /api2/v2/posts {text (<p>-wrapped), preview [], rfTag [], rfGuest [], rfPartner [], isScheduled 1, scheduledDate ISO UTC with ms}. The post stays unpublished and shows up in /schedules with publishDateTime = scheduledDate.",
+  "paging_reads": "OFClient signed GET /api2/v2/schedules with filter[publishDate]={today}, filter[publishDateEnd]={today+40d}, filter[timeZone]={tz}: (a) limit=1&offset=0, (b) limit=1&offset=1, (c) limit=100, (d) limit=10. All 4 returned 200 with the identical 2-item list.",
+  "undo": "the oi-136-paging marker post (scheduled +20d, never published) was deleted with DELETE /api2/v2/posts/{post id} -> 200 success. /schedules re-read: 1 item, only the pre-existing post. Logged in sitting UNDO-LOG part 4."
+ },
+ "evidence": [
+  "q136-before-queue.png",
+  "q136p-scheduled-composer.png"
+ ]
+}

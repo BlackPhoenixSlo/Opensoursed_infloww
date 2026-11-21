@@ -1,0 +1,16 @@
+{
+ "id": "messages--list-schedule",
+ "section": "messages",
+ "label": "Scheduled messages",
+ "phase": 2,
+ "pages": [
+  "messages/send/state-list-dropdown"
+ ],
+ "note": "New message's list page (its list menu open), on the Mass draft only; the list Send is never run (ADR-0042). New message's date and time dialog; Next or Save for Later puts scheduled_date or save_for_later on the Mass draft. No write.",
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T122214Z-ofm-live-2ba2c23f0",
+  "undo": "none"
+ }
+}

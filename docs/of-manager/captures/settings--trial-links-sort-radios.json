@@ -1,0 +1,15 @@
+{
+  "id": "settings--trial-links-sort-radios",
+  "section": "settings",
+  "label": "[b-input-radio]",
+  "pages": [
+    "settings/subscription/trial-links/state-kebab"
+  ],
+  "phase": 3,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "needs 2+ trial links whose order the sort changes; the live account's first trial is first unsorted too (live run 2026-11-21 13:03Z)"
+  }
+}

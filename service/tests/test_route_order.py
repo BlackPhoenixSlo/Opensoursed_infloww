@@ -172,8 +172,48 @@ Golden refresh (2026-11-19, promo preempt 21): POST /admin/promotions' body gain
 row changes; diff = the sha (HEAD's tree green on the prior golden, measured).
 Golden refresh (2026-11-19, Money rail one read per Creator): adds GET /api/of/v2/users/notifications/money
 (of_notifications_money) right after /users/notifications/count; no existing row moves; diff = that row + the sha.
+Golden refresh (2026-11-21, ofm-not-yet ticket 63): adds DELETE /api/of/v2/sessions (of_close_all_sessions) right after
+PATCH /users/settings/story; GET /sessions' description names it; no existing row moves; diff = that row + the sha
+(measured: dropping the row and the old description reproduces the prior sha).
+Golden refresh (2026-11-21, ofm-not-yet ticket 61): GET /api/of/v2/campaigns gains optional `field` and `sort`
+query params (the tracking links Sort); no route row changes; diff = the sha. Merged with ticket 63 (lane p3): both changes, new sha.
+Golden refresh (2026-11-21, ofm-not-yet ticket 74): adds GET, POST and DELETE /api/of/v2/campaigns/share-access
+(the tracking links "Shared with you" tab and share hint) right after POST /campaigns, before DELETE
+/campaigns/{campaign_id}; no existing row moves; diff = those three rows + the sha.
+Golden refresh (2026-11-21, ofm-not-yet ticket 66): adds GET /api/of/v2/countries and PUT
+/api/of/v2/users/me/settings/security/blocked-countries and .../blocked-ips (Block by country and Block by IP, under
+account-lockout) right after DELETE /sessions; no existing row moves; diff = those three rows + the sha.
+Golden refresh (2026-11-21, ofm-not-yet ticket 67): adds POST /api/of/v2/users/me/profile-image
+(of_upload_profile_image, Edit profile's cover/avatar upload); no existing row moves; diff = that row + the sha.
+Golden refresh (2026-11-21, ofm-not-yet ticket 69): adds PUT /api/of/v2/users/social/buttons (of_add_social_button) and
+DELETE /api/of/v2/users/social/buttons/{button_id} (of_delete_social_button) right after DELETE /sessions, and GET
+/api/of/v2/users/social/buttons (of_social_buttons) right after GET /sessions; no existing row moves; diff = those rows +
+the sha.
+Golden refresh (2026-11-21, ofm-not-yet ticket 70): adds GET /api/of/v2/users/links (of_users_links) right after GET
+/users/settings/story (ahead of the /users/{user_id_or_username} lookup), and PUT /api/of/v2/users/links
+(of_add_users_link) and DELETE /api/of/v2/users/links/{link_id} (of_delete_users_link) right after the social buttons'
+DELETE; no existing row moves; diff = those rows + the sha.
+Golden refresh (2026-11-21, ofm-not-yet ticket 73): adds POST /api/of/v2/streams/users/{username}/block
+(of_block_stream_viewer) and DELETE /api/of/v2/streams/users/{user_id}/block (of_unblock_stream_viewer) right after
+DELETE /sessions; GET /streams/users/blocked's description names them; no existing row moves; diff = those rows + the sha.
+Golden refresh (2026-11-21, ofm-not-yet ticket 76): adds DELETE /api/of/v2/streams/obs/key (of_reset_stream_key)
+right after DELETE /sessions, before ticket 73's rows; no existing row moves; diff = that row + the sha.
+Golden refresh (2026-11-21, ofm-69f social providers): adds GET /api/of/v2/init (of_init, init's socialMediaProviders
+only) right after GET /users/social/buttons; PUT /users/social/buttons' description names the link-or-username rule; no
+existing row moves; diff = that row + the sha.
+Golden refresh (2026-11-21, lane p3 merge of tickets 74, 75, 66 to 70, 72, 73, 76, 71): every ticket's rows, none moved;
+each later ticket's rows sit after the earlier one's (66's blocked-countries/blocked-ips, then 69's, 70's, 76's, 73's,
+where each alone sat right after DELETE /sessions); new sha.
+Golden refresh (2026-11-21, ofm-not-yet ticket 24): GET /api/of/v2/payouts/stats (of_earning_stats) gains optional
+`startDate`/`endDate` queries (OF's own names, sent on as they are); no route row changes; diff = the sha (measured: HEAD's
+server.py == the prior golden).
+Golden refresh (2026-11-21, ofm-70f): GET /api/of/v2/users/links' description names OF's real item shape ({id, sort,
+url, title, ...}, measured live); no route row changes; diff = the sha (measured: HEAD's server.py == the prior golden).
 Golden refresh (2026-11-20): one wired golden only: optional query params and body fields (caption language,
 kind / language narrowing, per-row tags); docstrings reworded. No route row changes; diff = the sha.
+Golden refresh (2026-11-21, OFM_NEW_WRITES_ENABLED switch): adds GET /api/of/ofm-writes (of_ofm_writes_probe) right
+before POST /campaigns/share-access; the 13 gated writes take a no-param dependency (no schema change); no existing row
+moves; diff = that row + the sha.
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 Golden refresh (2026-11-20, main c0f0ef88a): adds POST /admin/unconfirmed-sends/dismiss (#882) and
@@ -191,9 +231,15 @@ that field removed == the prior golden).
 Golden refresh (2026-11-21, script fill 1b Fill routes): adds POST /admin/saved-replies/fill/plan, /fill/apply and
 /fill/undo (script_fill_api) after the bulk-import row; no existing row moves (measured: sha1 with those three
 routes removed == the prior golden).
+Golden refresh (2026-11-21, merge main into spec/ofm-not-yet): main's golden plus this branch's ofm-not-yet rows
+above, regenerated with --write-golden; diff vs main's golden = those rows + the sha.
+Golden refresh (2026-11-21, ofm-not-yet rwl r1 #5): PATCH /api/of/v2/users/me's docstring (switch off: `about` as
+main sent it); no route row changes; diff = the sha (measured: the old docstring == the prior golden).
 Golden refresh (2026-11-21, Keep running indefinite): schema _PatchBody (PATCH /admin/promotions/{id}) docstring
 says the Re-create limit is optional; no route row changes; diff = the sha (measured: the old promotions_api.py
 passes the prior golden).
+Golden refresh (2026-11-21, merge main into spec/ofm-not-yet again): both refreshes above; regenerated with
+--write-golden.
 """
 from __future__ import annotations
 

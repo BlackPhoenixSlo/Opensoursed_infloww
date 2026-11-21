@@ -18,18 +18,15 @@ email.parser.BytesParser. Checks in the frame, scope `model:1`, on `home` and on
 6. Neither image nor video: setting a .txt file on the chooser sends nothing (the recorded requests equal those before the
    pick) and the note reads exactly the red "Could not add: choose an image or a video" right after the strip, never
    "Added to story".
-7. All Creators (scope key removed before every load), on `home`: clicking "Add to story" fires no file chooser within
-   1s, sends nothing (the recorded requests equal those before the click) and the note reads the grey "Select a model to
-   save changes", visible, right after the strip. On `new-post`, which stands in with the first listed creator
-   (ofMirrorProfile's STAND_IN_SRC), the chooser opens and the PNG goes up for that creator (acc1). No console errors.
+7. (Retired) No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner
+   2026-11-20, origin/main 77e5df419; phase_check.py's one_creator checks it).
 8. My profile, scope `model:1`: "Create highlight" (no Relay write; like Home's and New post's "Start profile
    promotion") is disabled with the tooltip "Not available in Inflowwww yet"; a dispatched click fires no file chooser
    within 1s, sends nothing and shows no note. "Story archive" carries data-oi-wired; a click opens the in-place archive
    box right after the strip (ofMirrorProfile), sends nothing but GETs, shows no note and leaves the page where it is.
    No console errors.
 Prints one {"check","want","got"} line per check. Screenshots: /tmp/of-mirror-shots/inapp-story-{home,new-post}.png and
-inapp-story-{home,new-post}-error.png, inapp-story-all-models.png (home) and inapp-story-all-models-new-post.png, and
-inapp-story-profile.png (profile, the archive box open).
+inapp-story-{home,new-post}-error.png and inapp-story-profile.png (profile, the archive box open).
 Exit 1 on a failed check.
 """
 import json, os, struct, sys, zlib
@@ -43,7 +40,6 @@ os.makedirs(SHOTS, exist_ok=True)
 user={"user_id":"u1","username":"tester","is_admin":False}
 STORY_UPLOAD="/api/of/v2/stories/upload"
 OWN=".b-story-item.m-story-item-own"
-SELECT_MODEL="Select a model to save changes"
 NOT_YET="Not available in Inflowwww yet"
 CREATE_HIGHLIGHT=".b-story-item:not(.m-story-item-own):has(.b-story-item__text:text-is('Create highlight'))"
 ARCHIVE=".b-story-item[data-oi-story-archive]"
@@ -183,39 +179,6 @@ with sync_playwright() as p:
         print(f"{section} console errors:", [e[:160] for e in errs][:8])
         check(f"4 {section}: one failed 500 load (the error case)", len(loads), 1)
         check(f"4 {section}: no other console errors", [e for e in errs if e not in loads], [])
-        pg.context.close()
-    for section in ["home", "new-post"]:
-        # All Creators: the scope key cleared before every load; Add to story opens no picker and sends nothing.
-        pg, sent, errs, fail=session(b, "localStorage.removeItem('chatterly:scope')")
-        fr=open_page(pg, section)
-        if fr:
-            check(f"7 {section}: scope key absent", pg.evaluate("localStorage.getItem('chatterly:scope')"), None)
-            before=json.loads(json.dumps(sent))
-            chooser=None
-            try:
-                with pg.expect_file_chooser(timeout=1000) as fc: fr.locator(OWN).click()
-                chooser=fc.value
-            except PlaywrightTimeout:
-                pass
-            # A chooser that fires anyway gets the PNG, so an upload it led to is counted below.
-            if chooser: chooser.set_files(PNG)
-            if section=="new-post":
-                check("7 new-post: stands in with the first creator, so Add to story opens the file chooser", chooser is not None, True)
-                pg.wait_for_timeout(1500)
-                check("7 new-post: the PNG goes up once, for the stand-in creator", [r[:3] for r in sent[len(before):]], [["POST", "/api/of/v2/stories/upload", "acc1"]])
-                print(f"{section} all creators console errors:", [e[:160] for e in errs][:8])
-                check(f"7 {section}: no console errors in All Creators", errs, [])
-                pg.context.close()
-                continue
-            check(f"7 {section}: clicking Add to story fires no file chooser within 1s", chooser is not None, False)
-            want_note=[SELECT_MODEL, False, True]
-            check(f"7 {section}: the grey select-a-model note right after the strip", wait_for(pg, lambda: fr.evaluate(NOTE), want_note), want_note)
-            check(f"7 {section}: the note is visible", fr.locator("#oi-note").is_visible(), True)
-            pg.screenshot(path=f"{SHOTS}/inapp-story-all-models{'' if section=='home' else '-' + section}.png")
-            pg.wait_for_timeout(500)
-            check(f"7 {section}: sends nothing (requests unchanged by the click)", sent, before)
-        print(f"{section} all creators console errors:", [e[:160] for e in errs][:8])
-        check(f"7 {section}: no console errors in All Creators", errs, [])
         pg.context.close()
     # My profile: Create highlight disabled quietly; Story archive opens its box in place.
     pg, sent, errs, fail=session(b, "localStorage.setItem('chatterly:scope','model:1')")

@@ -20,6 +20,8 @@
  *   /messages/{id} {withUserId} (Messages Pro's useUnsendMessage: the bubble goes at once, back on an error).
  * OF has no Delete and no Edit for a sent message (ledger). The pinned page's ⋮: Unpin all messages (asks first;
  * DELETE /chats/{id}/messages/pin), off while there is no pin. Errors show in place; with no model nothing is sent.
+ * The chat's State pages (menu, price, schedule, tag people, vault) draw the same thread: each ⋮ there is the same menu
+ * (Wired; the State page's dialog or menu backdrop lies over the thread, so no mouse reaches it there, as on OF).
  */
 
 import { useEffect, useRef, type RefObject } from "react";
@@ -115,6 +117,8 @@ export interface MessageMenuContext {
 
 const MENU_BTN = "button[data-oi-msg-menu]";
 const PINNED_BTN = "button[data-oi-pinned-menu]";
+// A message's ⋮ as the State pages over the chat draw it: the generator tags (and enables) only the chat and pinned pages'.
+const BUBBLE_BTN = ".b-chat__message button.m-size-sm.m-btn-vertical-dots";
 const MENU_ID = "oi-msg-menu";
 const CONFIRM_ID = "oi-msg-confirm";
 export const COPIED_TEXT = "Copied to clipboard";
@@ -172,6 +176,13 @@ function place(menu: HTMLElement, btn: HTMLElement): boolean {
 /** Wire the thread's message menus (and the pinned page's ⋮) in `doc`. Returns an unbind. */
 export function bindMessageMenu(doc: Document, ctx: MessageMenuContext): () => void {
   const { writes } = ctx;
+  // The generator tags (and enables) only the chat and pinned pages' ⋮; a State page over the chat gets the same here,
+  // its Not-yet title kept until its Live proof (decisions D1). The thread's draws clone this template, tag and all
+  // (applyThread's menuTagged).
+  for (const b of doc.querySelectorAll<HTMLButtonElement>(`${BUBBLE_BTN}:not([data-oi-msg-menu])`)) {
+    b.setAttribute("data-oi-msg-menu", "");
+    b.disabled = false;
+  }
   for (const b of doc.querySelectorAll(`${MENU_BTN}, ${PINNED_BTN}`)) b.setAttribute("data-oi-wired", "");
   const pinnedBtn = doc.querySelector<HTMLButtonElement>(PINNED_BTN);
   if (pinnedBtn && ctx.pins !== undefined) pinnedBtn.disabled = ctx.pins === 0;
@@ -221,7 +232,8 @@ export function bindMessageMenu(doc: Document, ctx: MessageMenuContext): () => v
     }
     const w = ready(anchor);
     if (!w) return;
-    const failed = (what: string) => (e: unknown) => note(doc, anchor, `Could not ${what}: ${message(e)}`, true);
+    // Under the message's node as drawn now (the write's patch redrew the thread; useOfData keeps it there on the undo's).
+    const failed = (what: string) => (e: unknown) => note(doc, doc.querySelector(`[data-oi-msg="${CSS.escape(id)}"]`) ?? anchor, `Could not ${what}: ${message(e)}`, true);
     if (key === "like") return void w.like(id, !m.isLiked).catch(failed(m.isLiked ? "unlike" : "like"));
     if (key === "pin") return void w.pin(id, !m.isPinned).catch(failed(m.isPinned ? "unpin" : "pin"));
     if (key === "bookmark") {
@@ -383,8 +395,8 @@ export function unsendLeft(reads: Map<string, MessageRead>, m: MenuMessage, now 
   return Math.max(0, Math.floor(cs - (now - at) / 1000));
 }
 
-/** The chat page or its pinned page: its mirror path, else "". */
-const pageOf = (src: string) => /^\/of-mirror\/pages\/(messages\/chat(?:\/pinned)?)\.html$/.exec(src)?.[1] ?? "";
+/** The chat page, its pinned page or a State page over it (menu, price, schedule, tags, vault): its mirror path, else "". */
+const pageOf = (src: string) => /^\/of-mirror\/pages\/(messages\/chat(?:\/pinned|\/state-[a-z-]+)?)\.html$/.exec(src)?.[1] ?? "";
 
 /** The thread's message menus: bind on every frame load and data change. */
 export function useOfMessageMenu(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {

@@ -5,8 +5,9 @@ import { bindChat, chatDraftKey, collectMessage, loadChatDraft, loadVaultPick, v
 import { NO_EDIT_GIF, type ChatContext, type ChatDraft } from "./ofMirrorChatShared";
 import { bindMass, collectMass, loadMassDraft, massDraftKey, NO_MASS_FORMS, type MassDraft } from "./ofMirrorMass";
 import { applyData } from "./ofMirrorData";
-import { bareType, CAMERA_BLOCKED, GIF_ALONE, GIF_SEARCH_MS, MIC_BLOCKED, NO_GIFS, NO_MIC, notMedia, VOICE_MAX_MS } from "./ofMirrorComposer";
-import { localIso, SELECT_MODEL } from "./ofMirrorWrites";
+import { bareType, CAMERA_BLOCKED, GIF_ALONE, GIF_SEARCH_MS, MIC_BLOCKED, NO_GIFS, NO_MIC, notMedia, VOICE_MAX_MS, VOICE_WAV_RATE, wavBytes } from "./ofMirrorComposer";
+import { uploadFailed } from "./ofMirrorPost";
+import { localIso, NOT_YET, SELECT_MODEL } from "./ofMirrorWrites";
 import type { GiphyItem, TaggedFriendUser, VaultMedia, VaultUploadResp } from "./relay";
 
 /** The committed chat captures (the generator's output). */
@@ -65,6 +66,17 @@ const $ = <T extends Element = HTMLElement>(d: ParentNode, sel: string) => d.que
 const send = (d: Document) => $<HTMLButtonElement>(d, "button[at-attr='send_btn']");
 const editor = (d: Document) => $(d, "[contenteditable][aria-label='Textbox field']");
 const noteText = (d: Document) => d.getElementById("oi-note")?.textContent;
+/** Type `text` into the composer. */
+const typeText = (d: Document, text: string) => {
+  editor(d).innerHTML = `<p>${text}</p>`;
+  editor(d).dispatchEvent(new Event("input", { bubbles: true }));
+};
+/** Pick `file` in Add media's hidden picker. */
+const pick = (d: Document, file: File) => {
+  const input = $<HTMLInputElement>(d, "input[type='file'][data-oi-wired]");
+  Object.defineProperty(input, "files", { value: [file], configurable: true });
+  input.dispatchEvent(new Event("change"));
+};
 /** Nothing but the asked-for calls reached the Relay. */
 const writes = (h: H) => [h.send, h.upload, h.toggleTag, h.inviteGuest, h.mute, h.hide].reduce((n, f) => n + f.mock.calls.length, 0);
 
@@ -285,9 +297,10 @@ describe("the chat composer's tools", () => {
 /**
  * A fake microphone / camera: getUserMedia's stream and a MediaRecorder whose stop() hands over one chunk.
  * `supported`: the types its isTypeSupported says yes to (absent: no isTypeSupported); `recorded`: the mimeType it
- * reports for an asked type (a browser adds codecs). `hold`: getUserMedia waits for `grant()`.
+ * reports for an asked type (a browser adds codecs). `hold`: getUserMedia waits for `grant()`. `undecodable`: the
+ * decoder (`stubDecoder`) cannot decode the recording.
  */
-function fakeMedia(fail?: string, opts: { supported?: string[]; recorded?: (asked: string) => string; hold?: boolean } = {}) {
+function fakeMedia(fail?: string, opts: { supported?: string[]; recorded?: (asked: string) => string; hold?: boolean; undecodable?: boolean } = {}) {
   const tracks = [{ stop: vi.fn() }];
   const stream = { getTracks: () => tracks } as unknown as MediaStream;
   let grant: () => void = () => {};
@@ -317,9 +330,35 @@ function fakeMedia(fail?: string, opts: { supported?: string[]; recorded?: (aske
       this.onstop?.();
     }
   }
+  const { decoded } = stubDecoder(opts.undecodable);
   Object.defineProperty(window.navigator, "mediaDevices", { value: { getUserMedia }, configurable: true });
   vi.stubGlobal("MediaRecorder", Rec);
-  return { getUserMedia, tracks, recorders, grant: () => grant() };
+  return { getUserMedia, tracks, recorders, decoded, grant: () => grant() };
+}
+
+/**
+ * The upload's audio re-encoder's decoder (voiceFile's OfflineAudioContext): two channels of 2 samples at the
+ * context's rate (`rates`: each context's), or, `undecodable`, the browser's decode error.
+ */
+function stubDecoder(undecodable = false) {
+  const decoded: ArrayBuffer[] = [];
+  const rates: number[] = [];
+  class Ctx {
+    constructor(
+      _channels: number,
+      _length: number,
+      readonly rate: number,
+    ) {
+      rates.push(rate);
+    }
+    async decodeAudioData(b: ArrayBuffer) {
+      if (undecodable) throw new Error("Unable to decode audio data");
+      decoded.push(b);
+      return { numberOfChannels: 2, sampleRate: this.rate, length: 2, getChannelData: (c: number) => Float32Array.from(c ? [1, -1] : [0, -1]) };
+    }
+  }
+  vi.stubGlobal("OfflineAudioContext", Ctx);
+  return { decoded, rates };
 }
 
 describe("Record voice and Record video", () => {
@@ -342,10 +381,11 @@ describe("Record voice and Record video", () => {
     $(panel, ".b-float-panel__btn-record").click();
     expect(panel.style.display).toBe("none");
     expect(m.tracks[0].stop).toHaveBeenCalled();
+    await flush();
     expect(h.upload).toHaveBeenCalledTimes(1);
     const file = h.upload.mock.calls[0][0];
-    expect(file.type).toBe("audio/webm");
-    expect(file.name).toMatch(/^voice-\d+\.webm$/);
+    expect(file.type).toBe("audio/wav"); // the browser's default (webm) re-encoded: OF's voice types only
+    expect(file.name).toMatch(/^voice-\d+\.wav$/);
     await flush();
     expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ media_files: [{ processId: "p1" }], audio: 1 });
     expect($(d, "button[aria-label='Record voice']").hasAttribute("disabled")).toBe(true);
@@ -367,6 +407,7 @@ describe("Record voice and Record video", () => {
     vi.advanceTimersByTime(61_000);
     expect($(d, ".js-chat__audio-record-timer").textContent).toBe(" 1:01 / 30:00 ");
     vi.advanceTimersByTime(VOICE_MAX_MS);
+    await flush();
     expect(h.upload).toHaveBeenCalledTimes(1);
     expect($(d, ".js-chat__audiorecord-panel").style.display).toBe("none");
     un();
@@ -405,6 +446,109 @@ describe("Record voice and Record video", () => {
     un();
   });
 
+  it("wavBytes: a 16-bit PCM, one-channel RIFF/WAVE at the rate given, samples clamped", () => {
+    const v = new DataView(wavBytes(Float32Array.from([0, 1, -1, 2]), 8000));
+    const ascii = (at: number) => String.fromCharCode(...[0, 1, 2, 3].map((i) => v.getUint8(at + i)));
+    expect([ascii(0), ascii(8), ascii(12), ascii(36)]).toEqual(["RIFF", "WAVE", "fmt ", "data"]);
+    expect([v.getUint32(4, true), v.getUint16(20, true), v.getUint16(22, true), v.getUint32(24, true), v.getUint32(28, true), v.getUint16(34, true), v.getUint32(40, true)]).toEqual([
+      36 + 8, 1, 1, 8000, 16000, 16, 8,
+    ]);
+    expect([0, 1, 2, 3].map((i) => v.getInt16(44 + i * 2, true))).toEqual([0, 32767, -32768, 32767]);
+    expect(v.byteLength).toBe(44 + 8);
+  });
+
+  it("Record voice: a recording the browser cannot decode for WAV says so, uploads nothing, and Send asks first", async () => {
+    fakeMedia(undefined, { undecodable: true });
+    const d = loadPage("chat");
+    const s = memoryStorage();
+    const h = handlers({ confirm: vi.fn(() => false) });
+    const un = bindChat(d, "messages/chat", ctxOf(h, s));
+    typeText(d, "hello");
+    $(d, "button[aria-label='Record voice']").click();
+    $(d, ".b-float-panel__btn-record").click();
+    await flush();
+    $(d, ".b-float-panel__btn-record").click();
+    await flush();
+    expect(noteText(d)).toBe("Could not upload: Unable to decode audio data");
+    expect(writes(h)).toBe(0);
+    send(d).click();
+    expect(h.confirm).toHaveBeenCalledWith(uploadFailed({ voice: "Unable to decode audio data" }));
+    expect(writes(h)).toBe(0);
+    expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ text: "hello", upload_failed: { voice: "Unable to decode audio data" } });
+    un();
+  });
+
+  it("a failed upload makes Send ask first (live 2026-11-21): Cancel sends nothing and keeps the text, OK sends without it", async () => {
+    fakeMedia();
+    const d = loadPage("chat");
+    const s = memoryStorage();
+    const h = handlers({ upload: vi.fn(() => Promise.reject(new Error("Invalid file type"))), confirm: vi.fn(() => false) });
+    const un = bindChat(d, "messages/chat", ctxOf(h, s));
+    typeText(d, "hello");
+    $(d, "button[aria-label='Record voice']").click();
+    $(d, ".b-float-panel__btn-record").click();
+    await flush();
+    $(d, ".b-float-panel__btn-record").click();
+    await flush();
+    expect(h.upload).toHaveBeenCalledTimes(1);
+    expect(noteText(d)).toBe("Could not upload: Invalid file type");
+    expect(send(d).disabled).toBe(false);
+    send(d).click();
+    expect(h.confirm).toHaveBeenCalledWith("Upload failed: Invalid file type. Send without it?");
+    expect(h.send).not.toHaveBeenCalled();
+    expect(editor(d).textContent).toBe("hello");
+    expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ text: "hello", media_files: [], upload_failed: { voice: "Invalid file type" } });
+    // Asked again, OK: sent without the media, and the failure is gone with the draft.
+    h.confirm.mockReturnValue(true);
+    send(d).click();
+    expect(h.confirm).toHaveBeenCalledTimes(2);
+    expect(h.send).toHaveBeenCalledWith(`/api/of/v2/chats/${CHAT}/messages`, { text: "hello", price: 0, media_files: [] });
+    await flush();
+    expect(loadChatDraft(s, ACCOUNT, CHAT).upload_failed).toBeUndefined();
+    un();
+  });
+
+  it("a failed upload belongs to its chat's draft: another fan's chat sends without asking", async () => {
+    const s = memoryStorage();
+    const h = handlers({ upload: vi.fn(() => Promise.reject(new Error("Invalid file type"))), confirm: vi.fn(() => false) });
+    const a = loadPage("chat");
+    let un = bindChat(a, "messages/chat", ctxOf(h, s));
+    pick(a, new File(["x"], "a.jpg", { type: "image/jpeg" }));
+    await flush();
+    expect(loadChatDraft(s, ACCOUNT, CHAT).upload_failed).toEqual({ "a.jpg": "Invalid file type" });
+    un();
+    const b = loadPage("chat");
+    un = bindChat(b, "messages/chat", ctxOf(h, s, { chat: "9002", fan: { name: "Fan B" } }));
+    typeText(b, "hi B");
+    send(b).click();
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(h.send).toHaveBeenCalledWith("/api/of/v2/chats/9002/messages", { text: "hi B", price: 0, media_files: [] });
+    un();
+  });
+
+  it("Clear forgets a failed upload with the media: Send no longer asks", async () => {
+    const s = memoryStorage();
+    const upload = vi
+      .fn()
+      .mockResolvedValueOnce({ ready: true, deduped: false, vault_id: null, send_with: [{ processId: "p1" }] })
+      .mockRejectedValueOnce(new Error("Invalid file type"));
+    const h = handlers({ upload, confirm: vi.fn(() => false) });
+    const d = loadPage("chat");
+    const un = bindChat(d, "messages/chat", ctxOf(h, s));
+    typeText(d, "hello");
+    pick(d, new File(["x"], "a.jpg", { type: "image/jpeg" }));
+    await flush();
+    pick(d, new File(["y"], "b.jpg", { type: "image/jpeg" }));
+    await flush();
+    expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ media_files: [{ processId: "p1" }], upload_failed: { "b.jpg": "Invalid file type" } });
+    $(d, "#oi-chat-summary [data-oi-clear]").click();
+    expect(loadChatDraft(s, ACCOUNT, CHAT).upload_failed).toBeUndefined();
+    send(d).click();
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(h.send).toHaveBeenCalledWith(`/api/of/v2/chats/${CHAT}/messages`, { text: "hello", price: 0, media_files: [] });
+    un();
+  });
+
   it("Record video: OF's recorder previews the camera, records, and the clip uploads; its close cancels", async () => {
     const m = fakeMedia();
     const d = loadPage("chat");
@@ -421,6 +565,7 @@ describe("Record voice and Record video", () => {
     expect(rec.title).toBe("Stop");
     expect($(box, ".b-chat__videorec-live-label").classList.contains("g-hidden")).toBe(false);
     rec.click();
+    await flush();
     expect(h.upload).toHaveBeenCalledTimes(1);
     expect(h.upload.mock.calls[0][0].name).toMatch(/^video-\d+\.webm$/);
     expect(box.classList.contains("g-hidden")).toBe(true);
@@ -586,10 +731,14 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     const d = loadPage("chat");
     const s = memoryStorage();
     const h = handlers();
+    stubDecoder();
     saveDraft(s, draft({ giphy_id: "g1" }));
     const un = bindChat(d, "messages/chat", ctxOf(h, s));
     drag(area(d), "drop", [new File(["v"], "v.webm", { type: "audio/webm" })]);
+    await flush();
     expect(h.upload).toHaveBeenCalledTimes(1);
+    // A dropped webm goes up as OF's WAV, as a recording does.
+    expect([h.upload.mock.calls[0][0].name, h.upload.mock.calls[0][0].type]).toEqual(["v.wav", "audio/wav"]);
     await flush();
     expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ giphy_id: "g1", media_files: [{ processId: "p1" }], audio: 1 });
     un();
@@ -625,36 +774,51 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     un();
   });
 
-  it("an audio file picked in Add media counts as the voice note (Record voice turns off)", async () => {
+  it("an audio file picked in Add media counts as the voice note (Record voice turns off); an .m4a goes up as WAV", async () => {
+    const dec = stubDecoder();
     const d = loadPage("chat");
     const s = memoryStorage();
     const h = handlers();
     const un = bindChat(d, "messages/chat", ctxOf(h, s));
-    const input = d.querySelector<HTMLInputElement>("input[type='file'][data-oi-wired]")!;
-    Object.defineProperty(input, "files", { value: [new File(["a"], "a.m4a", { type: "audio/mp4" })], configurable: true });
-    input.dispatchEvent(new Event("change"));
+    pick(d, new File(["a"], "a.m4a", { type: "audio/mp4" }));
     await flush();
+    // OF refused audio/mp4 .m4a live (2026-11-21): decoded at 16 kHz, one channel, re-encoded as WAV.
+    const up = h.upload.mock.calls[0][0];
+    expect([up.name, up.type, dec.decoded.length, dec.rates]).toEqual(["a.wav", "audio/wav", 1, [VOICE_WAV_RATE]]);
+    const v = new DataView(await up.arrayBuffer());
+    expect([v.getUint16(22, true), v.getUint32(24, true), v.getInt16(44, true), v.getInt16(46, true)]).toEqual([1, 16000, 16383, -32768]);
     expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ media_files: [{ processId: "p1" }], audio: 1 });
     expect($(d, "button[aria-label='Record voice']").hasAttribute("disabled")).toBe(true);
     un();
   });
 
-  it("the recorders ask for mp4 first (then webm) and the uploaded File's type has no ;codecs", async () => {
+  it("Record video asks for mp4 first (then webm), Record voice for OF's mp3 then ogg; the File's type has no ;codecs", async () => {
     expect(bareType("video/webm;codecs=vp8,opus")).toBe("video/webm");
-    const m = fakeMedia(undefined, { supported: ["audio/mp4", "audio/webm", "video/mp4", "video/webm"], recorded: (t) => `${t};codecs=avc1,mp4a.40.2` });
-    const d = loadPage("chat");
-    const h = handlers();
-    const un = bindChat(d, "messages/chat", ctxOf(h, memoryStorage()));
-    $(d, "button[aria-label='Record voice']").click();
-    $(d, ".b-float-panel__btn-record").click();
-    await flush();
-    $(d, ".b-float-panel__btn-record").click();
-    expect(m.recorders[0].asked).toBe("audio/mp4");
-    const voice = h.upload.mock.calls[0][0];
-    expect(voice.type).toBe("audio/mp4");
-    expect(voice.name).toMatch(/^voice-\d+\.m4a$/);
-    un();
-    await flush();
+    const voiceOf = async (supported: string[]) => {
+      const m = fakeMedia(undefined, { supported, recorded: (t) => `${t};codecs=opus` });
+      const d = loadPage("chat");
+      const h = handlers();
+      const un = bindChat(d, "messages/chat", ctxOf(h, memoryStorage()));
+      $(d, "button[aria-label='Record voice']").click();
+      $(d, ".b-float-panel__btn-record").click();
+      await flush();
+      $(d, ".b-float-panel__btn-record").click();
+      await flush();
+      un();
+      await flush();
+      const f = h.upload.mock.calls[0][0];
+      return { asked: m.recorders[0].asked, type: f.type, name: f.name, decoded: m.decoded.length };
+    };
+    // OF's own recorder's order (24014.js V()): mpeg, then ogg, kept as recorded; anything else re-encoded to WAV.
+    expect(await voiceOf(["audio/mpeg", "audio/ogg", "audio/mp4"])).toMatchObject({ asked: "audio/mpeg", type: "audio/mpeg", decoded: 0 });
+    expect((await voiceOf(["audio/mpeg"])).name).toMatch(/^voice-\d+\.mp3$/);
+    const ogg = await voiceOf(["audio/ogg", "audio/mp4", "audio/webm"]);
+    expect(ogg).toMatchObject({ asked: "audio/ogg", type: "audio/ogg", decoded: 0 });
+    expect(ogg.name).toMatch(/^voice-\d+\.ogg$/);
+    // Chrome (mp4 and webm only): never audio/mp4 .m4a, which OF refused live (2026-11-21): the browser's own, as WAV.
+    const wav = await voiceOf(["audio/mp4", "audio/webm"]);
+    expect(wav).toMatchObject({ asked: undefined, type: "audio/wav", decoded: 1 });
+    expect(wav.name).toMatch(/^voice-\d+\.wav$/);
     // Only webm recordable: webm is asked for.
     const m2 = fakeMedia(undefined, { supported: ["video/webm"], recorded: (t) => `${t};codecs=vp8,opus` });
     const d2 = loadPage("chat");
@@ -664,6 +828,7 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     await flush();
     $(d2, ".vjs-record-button").click();
     $(d2, ".vjs-record-button").click();
+    await flush();
     expect(m2.recorders[0].asked).toBe("video/webm");
     const clip = h2.upload.mock.calls[0][0];
     expect(clip.type).toBe("video/webm");
@@ -732,6 +897,7 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     expect(m.tracks[0].stop).not.toHaveBeenCalled();
     expect($(d, ".js-chat__audiorecord-panel").style.display).toBe("");
     $(d, ".b-float-panel__btn-record").click();
+    await flush();
     expect(h.upload).toHaveBeenCalledTimes(1);
     await flush();
     expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ media_files: [{ processId: "p1" }], audio: 1 });
@@ -794,6 +960,27 @@ describe("New message: the chat composer's tools on the Mass draft", () => {
     un();
   });
 
+  it("New message: a failed upload makes Send ask first; Cancel keeps the text, OK sends without it", async () => {
+    const d = loadPage("send");
+    const s = memoryStorage();
+    saveMass(s, { text: "hi all" });
+    const h = handlers({ upload: vi.fn(() => Promise.reject(new Error("Invalid file type"))), confirm: vi.fn(() => false) });
+    const un = bindMass(d, mass(h, s));
+    pick(d, new File(["x"], "a.jpg", { type: "image/jpeg" }));
+    await flush();
+    send(d).click();
+    expect(h.confirm).toHaveBeenCalledWith(uploadFailed({ "a.jpg": "Invalid file type" }));
+    expect(h.send).not.toHaveBeenCalled();
+    expect(editor(d).textContent).toBe("hi all");
+    expect(loadMassDraft(s, ACCOUNT)).toMatchObject({ text: "hi all", upload_failed: { "a.jpg": "Invalid file type" } });
+    // OK to both asks (the failed upload, then the audience): sent without the media.
+    h.confirm.mockReturnValue(true);
+    send(d).click();
+    expect(h.confirm).toHaveBeenCalledTimes(3);
+    expect(h.send).toHaveBeenCalledWith("/api/of/v2/messages/queue", { text: "hi all", user_lists: ["fans"] });
+    un();
+  });
+
   it("Add GIF on New message: a pick is the Mass draft's giphy_id and Send sends it; Clear drops every extra", async () => {
     const d = loadPage("send");
     const s = memoryStorage();
@@ -840,6 +1027,18 @@ describe("New message: the chat composer's tools on the Mass draft", () => {
     expect(h.confirm).toHaveBeenCalledWith("Send this message to 12 users on Fans for $15?");
     expect(h.send).toHaveBeenCalledWith("/api/of/v2/messages/queue", { text: "ppv", user_lists: ["fans"], price: 15 });
     un();
+  });
+
+  it("the list page (send/state-list-dropdown): its four Live-passed tools drop the Not-yet title (D1), Tag other creators keeps it; unbind restores", () => {
+    const d = loadPage("send/state-list-dropdown");
+    const live = ["button[at-attr='scheduled_msg']", "[at-attr='price_btn']", "[at-attr='add_vault_media']", "button[aria-label='Format Text']"].map((sel) => $(d, sel));
+    const tag = $(d, "[at-attr='release_forms_btn']");
+    expect([...live, tag].map((el) => el.title)).toEqual(Array(5).fill(NOT_YET));
+    const un = bindMass(d, mass(handlers(), memoryStorage()), "messages/send/state-list-dropdown");
+    expect(live.map((el) => [el.hasAttribute("title"), el.hasAttribute("data-oi-wired")])).toEqual(Array(4).fill([false, true]));
+    expect([tag.title, tag.hasAttribute("data-oi-wired")]).toEqual([NOT_YET, true]);
+    un();
+    expect(live.map((el) => el.title)).toEqual(Array(4).fill(NOT_YET));
   });
 
   it("Add media from vault over New message (send/state-vault): a tile only ticks, a type tab keeps the ticks, Add appends them (no chat)", () => {

@@ -1,0 +1,102 @@
+{
+ "id": "messages--message-forward",
+ "section": "messages",
+ "label": "Forward (my message menu)",
+ "pages": [
+  "messages/chat"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "POST",
+  "path": "/api2/v2/chats/{fan}/messages",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "text": "<p>{forwarded text}</p>",
+   "lockedText": false,
+   "mediaFiles": [],
+   "price": "",
+   "previews": [],
+   "rfTag": [],
+   "rfGuest": [],
+   "rfPartner": [],
+   "isForward": true
+  }
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "canBePinned",
+   "canPurchase",
+   "canPurchaseReason",
+   "canReport",
+   "cancelSeconds",
+   "changedAt",
+   "chatUserId",
+   "createdAt",
+   "fromUser",
+   "giphyId",
+   "id",
+   "isAddedToBookmarks",
+   "isCouplePeopleMedia",
+   "isFree",
+   "isFromQueue",
+   "isLiked",
+   "isMarkdownDisabled",
+   "isMediaReady",
+   "isNew",
+   "isOpened",
+   "isPinned",
+   "isReportedByMe",
+   "isTip",
+   "lockedText",
+   "media",
+   "mediaCount",
+   "previews",
+   "price",
+   "queueId",
+   "releaseForms",
+   "responseType",
+   "text"
+  ]
+ },
+ "undo_request": {
+  "method": "DELETE",
+  "path": "/api2/v2/messages/{id}",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "withUserId": "{fan}"
+  },
+  "response": {
+   "status": 200,
+   "keys": [
+    "success"
+   ]
+  }
+ },
+ "facts": {
+  "ui": "my message > More > Forward opens /my/chats/send (NEW MESSAGE) with the text prefilled; recipients via SEND TO lists / EXCLUDE / USERS tab + search; picked only the owner-named Proof fan ({fan}); 'NEW MESSAGE TO 1 USER'",
+  "path_for_one_user": "one picked user sends POST /api2/v2/chats/{fan}/messages with isForward:true, not /messages/queue (the queue path stays inferred for list recipients; not exercised: no mass send)",
+  "unsend": "new message menu adds 'Unsend 23h 59m' (cancelSeconds = 24 h less 1 s); confirm 'Are you sure you want to unsend this message?' CANCEL / YES, UNSEND",
+  "read": "GET /api2/v2/chats/{fan}/messages?limit=10&order=desc&skip_users=all",
+  "reads": "before 10 ids; after undo the forwarded id is absent and every before id is present (first page returned 9: the unsent slot still counts toward limit; the 10th is first on the next page)",
+  "abort_capture": "same body aborted first (client sent it twice)",
+  "narrowing": "allow exactly POST ^/api2/v2/chats/<fan>/messages$, then exactly DELETE ^/api2/v2/messages/<new id>$",
+  "access": "write: sent live (narrowed), then undone and verified",
+  "capture_verdict": "pass",
+  "capture_undo": "undone",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r21-forward-composer.png",
+  "r21-selected.png",
+  "r21-live-after-send.png",
+  "r21-new-message-menu.png",
+  "r21-unsend-confirm.png",
+  "r21-live-after-undo.png"
+ ]
+}

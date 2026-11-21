@@ -12,7 +12,8 @@
 // origin). One more narrow call: `notify({id, title, body, href})` hands four
 // strings to the main process, which shows a native notification (lib/notify.js
 // validates them; the web Notification permission never reached "granted" in
-// packaged builds, cause unconfirmed). Badge and navigation hardening live in
+// packaged builds, cause unconfirmed). And `openGoLive(creatorId)`: one id in,
+// {ok, signIn?, error?} out (main.js shell:open-go-live). Badge and navigation hardening live in
 // the main process, not here.
 
 const { contextBridge, ipcRenderer } = require("electron");
@@ -37,6 +38,10 @@ try {
         body: str(n && n.body),
         href: str(n && n.href),
       }),
+    // Go live (ticket 127): only the Creator id crosses; the main process reads
+    // the session from the Relay itself, so no secret ever reaches this page.
+    // Resolves {ok, signIn?, error?}.
+    openGoLive: (creatorId) => ipcRenderer.invoke("shell:open-go-live", String(creatorId == null ? "" : creatorId)),
   }));
 } catch (err) {
   console.error("[preload] bridge failed:", err && err.message);

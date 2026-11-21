@@ -1,12 +1,13 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { applyLabelRows, applyTagRows, bindPost, RECORD_TEXT, POSTED_TOAST, SAVED_TOAST, clearDraft, collectPost, collectSchedule, draftKey, labelsOf, loadDraft, mergeSendWith, postLabelsOf, postPriceLimits, readPrice, renderCalendar, saveDraft, vaultStoryBody, type PostDraft, type PostLabelsResp } from "./ofMirrorPost";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi, type Mock } from "vitest";
+import { applyLabelRows, applyTagRows, bindPost, POSTED_TOAST, RECORD_TEXT, SAVED_TOAST, clearDraft, collectPost, collectSchedule, draftKey, labelsOf, loadDraft, mergeSendWith, postLabelsOf, postPriceLimits, readPrice, renderCalendar, saveDraft, uploadFailed, vaultStoryBody, type PostDraft, type PostLabelsResp } from "./ofMirrorPost";
 import type { OfMe } from "./ofMirrorIdentity";
 import { standInModel } from "./ofMirrorProfile";
 import { bindWrites, localIso, NOT_YET, OLD_RELAY, SELECT_MODEL } from "./ofMirrorWrites";
+import { CAMERA_BLOCKED, MIC_BLOCKED } from "./ofMirrorComposer";
 import { applyData } from "./ofMirrorData";
-import { RelayError, type TaggedFriendUser, type VaultList, type VaultMedia } from "./relay";
+import { RelayError, type TaggedFriendUser, type VaultList, type VaultMedia, type VaultUploadResp } from "./relay";
 
 /** A scrubbed OF response (app/lib/__fixtures__/of/<name>.json). */
 const fixture = (name: string): unknown => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/${name}.json`), "utf8"));
@@ -186,7 +187,7 @@ describe("bindPost on the new-post capture", () => {
   it("typing enables Post and keeps the placeholder marks in step; clearing disables Post", () => {
     const d = loadPage("index");
     const s = memoryStorage();
-    const unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" });
     expect(post(d).disabled).toBe(true);
     type(d, "Synthetic post");
     expect(post(d).disabled).toBe(false);
@@ -206,7 +207,7 @@ describe("bindPost on the new-post capture", () => {
     const d = loadPage("state-labels");
     const s = memoryStorage();
     saveDraft(s, "1", { ...empty(), text: "Line one\nLine two" });
-    const unbind = bindPost(d, "new-post/state-labels", { handlers: handlers(), storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/state-labels", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" });
     expect([...editor(d).querySelectorAll("p")].map((p) => p.textContent)).toEqual(["Line one", "Line two"]);
     expect(post(d).disabled).toBe(false);
     expect(editor(d).getAttribute("data-is-empty")).toBe("false");
@@ -217,7 +218,7 @@ describe("bindPost on the new-post capture", () => {
     const s = memoryStorage();
     saveDraft(s, "2", { ...empty(), text: "Beta draft" });
     const d = loadPage("index");
-    const unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" });
     expect(editor(d).textContent).toBe("");
     type(d, "Alpha draft");
     expect(loadDraft(s, "2").text).toBe("Beta draft");
@@ -227,15 +228,15 @@ describe("bindPost on the new-post capture", () => {
   it("a rebind for another scope shows that scope's draft, or an empty editor", () => {
     const d = loadPage("index");
     const s = memoryStorage();
-    let unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: s, accountId: "1" });
+    let unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" });
     type(d, "Alpha draft");
     unbind();
-    unbind = bindPost(d, "new-post/index", { handlers: null, storage: s, accountId: null });
+    unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: null, storage: s, accountId: null });
     expect(editor(d).textContent).toBe("");
     expect(post(d).disabled).toBe(true);
     expect(editor(d).getAttribute("data-is-empty")).toBe("true");
     unbind();
-    unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: s, accountId: "1" });
+    unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" });
     expect(editor(d).textContent).toBe("Alpha draft");
     unbind();
   });
@@ -244,7 +245,7 @@ describe("bindPost on the new-post capture", () => {
     const d = loadPage("index");
     const s = memoryStorage();
     const h = handlers();
-    const unbind = bindPost(d, "new-post/index", { handlers: h, storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" });
     type(d, "Synthetic post");
     post(d).click();
     expect(post(d).disabled).toBe(true);
@@ -266,7 +267,7 @@ describe("bindPost on the new-post capture", () => {
     const d = loadPage("index");
     const s = memoryStorage();
     const h = handlers(vi.fn(() => Promise.reject(new Error("Please allow 10 seconds"))));
-    const unbind = bindPost(d, "new-post/index", { handlers: h, storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" });
     type(d, "Synthetic post");
     post(d).click();
     await flush();
@@ -282,7 +283,7 @@ describe("bindPost on the new-post capture", () => {
   it("All-Creators scope: Post gives the select-a-model note, sends nothing and stores no draft", () => {
     const d = loadPage("index");
     const s = memoryStorage();
-    const unbind = bindPost(d, "new-post/index", { handlers: null, storage: s, accountId: null });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: null, storage: s, accountId: null });
     type(d, "Synthetic post");
     expect(post(d).disabled).toBe(false);
     post(d).click();
@@ -292,7 +293,7 @@ describe("bindPost on the new-post capture", () => {
   });
 
   it("All-Creators scope (handlers null): Post, Add media, schedule Next and the vault search are marked too", () => {
-    const ctx = { handlers: null, storage: memoryStorage(), accountId: null };
+    const ctx = { newWrites: false, handlers: null, storage: memoryStorage(), accountId: null };
     let d = loadPage("index");
     let unbind = bindPost(d, "new-post/index", ctx);
     // (The Scheduled events widget's "+" is the generator's Wired control, ofMirrorQueue's Add to queue.)
@@ -310,8 +311,8 @@ describe("bindPost on the new-post capture", () => {
 
   it("marks Post, Add media and its picker, Record video and voice, and the search box, and only those, as wired; a pick gets no Read-only note", () => {
     const d = loadPage("index");
-    const unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: memoryStorage(), accountId: "1" });
-    const unbindWrites = bindWrites(d, "new-post/index", null); // its change path, as OfMirrorFrame binds it
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "1" });
+    const unbindWrites = bindWrites(d, "new-post/index", null, true); // its change path, as OfMirrorFrame binds it
     const picker = d.querySelector("input[type=file]")!;
     expect(new Set(d.querySelectorAll("[data-oi-wired]:not([at-attr='add_event_widget'])"))).toEqual(new Set(composerWired(d)));
     picker.dispatchEvent(new Event("change", { bubbles: true }));
@@ -322,7 +323,7 @@ describe("bindPost on the new-post capture", () => {
 
   it.each(["state-poll", "state-quiz", "state-format-text", "state-labels"])("%s: Add media in the toolbar under the panel is the upload button too", (page) => {
     const d = loadPage(page);
-    const unbind = bindPost(d, `new-post/${page}`, { handlers: handlers(), storage: memoryStorage(), accountId: "1" });
+    const unbind = bindPost(d, `new-post/${page}`, { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "1" });
     expect(d.querySelector("button[aria-label='Add media']")!.hasAttribute("data-oi-wired")).toBe(true);
     expect(d.querySelectorAll("input[type=file][accept='image/*,video/*,audio/*'][multiple]")).toHaveLength(1);
     unbind();
@@ -334,7 +335,7 @@ describe("bindPost on the new-post capture", () => {
     const pickers = () => d.querySelectorAll("input[type=file]");
     const opened = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {});
     try {
-      let unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: memoryStorage(), accountId: "1" });
+      let unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "1" });
       expect(pickers()).toHaveLength(1);
       addMedia.click();
       expect(opened).toHaveBeenCalledTimes(1);
@@ -347,9 +348,9 @@ describe("bindPost on the new-post capture", () => {
       expect(pickers()).toHaveLength(0);
 
       // useOfPost rebinds the same frame document when the Creator changes: one picker, one open per click.
-      unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: memoryStorage(), accountId: "1" });
+      unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "1" });
       unbind();
-      unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: memoryStorage(), accountId: "2" });
+      unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "2" });
       expect(pickers()).toHaveLength(1);
       addMedia.click();
       expect(opened).toHaveBeenCalledTimes(2);
@@ -383,8 +384,8 @@ describe("schedule dialog (state-schedule capture)", () => {
   };
   const bindSchedule = (s = memoryStorage(), h: ReturnType<typeof handlers> | null = handlers()) => {
     const d = loadPage("state-schedule");
-    const unbindPost = bindPost(d, "new-post/state-schedule", { handlers: h, storage: s, accountId: h ? "1" : null });
-    const unbindWrites = bindWrites(d, "new-post/state-schedule", null); // the click fallback and change path, as OfMirrorFrame binds it
+    const unbindPost = bindPost(d, "new-post/state-schedule", { newWrites: false, handlers: h, storage: s, accountId: h ? "1" : null });
+    const unbindWrites = bindWrites(d, "new-post/state-schedule", null, true); // the click fallback and change path, as OfMirrorFrame binds it
     const unbind = () => {
       unbindPost();
       unbindWrites();
@@ -565,7 +566,7 @@ describe("a scheduled draft on the composer", () => {
     const s = memoryStorage();
     saveDraft(s, "1", { ...empty(), text: "Synthetic post", posted_at: AT });
     const h = handlers();
-    const unbind = bindPost(d, "new-post/index", { handlers: h, storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" });
     post(d).click();
     expect(h.createPost).toHaveBeenCalledWith({ text: "Synthetic post", media_files: [], price: 0, posted_at: AT });
     await flush();
@@ -580,7 +581,7 @@ describe("a scheduled draft on the composer", () => {
     const s = memoryStorage();
     saveDraft(s, "1", { ...empty(), text: "Synthetic post", posted_at: AT });
     const h = handlers();
-    const unbind = bindPost(d, "new-post/index", { handlers: h, storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" });
     vi.setSystemTime(new Date(2026, 9, 13, 18, 30));
     post(d).click();
     expect(d.getElementById("oi-note")?.textContent).toBe("Pick a time at least a minute from now");
@@ -593,7 +594,7 @@ describe("a scheduled draft on the composer", () => {
     const d = loadPage("index");
     const s = memoryStorage();
     saveDraft(s, "1", { ...empty(), text: "Synthetic post", posted_at: AT });
-    const unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" });
     const summary = d.getElementById("oi-post-summary")!;
     expect(summary.textContent).toBe("Scheduled for Tue, Oct 13, 6:30 PM · Clear");
     expect(summary.style.color).toBe("rgb(138, 150, 163)");
@@ -608,7 +609,7 @@ describe("a scheduled draft on the composer", () => {
 
   it("no schedule, no summary", () => {
     const d = loadPage("index");
-    const unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: memoryStorage(), accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "1" });
     expect(d.getElementById("oi-post-summary")).toBeNull();
     unbind();
   });
@@ -626,9 +627,9 @@ describe("tag dialog (state-tag-people capture)", () => {
   /** bindPost and bindWrites (its change path), both on the tag dialog in `h`'s scope, as OfMirrorFrame binds them. */
   const bindTags = (s: Storage, h: ReturnType<typeof handlers> | null, tagItems?: TaggedFriendUser[]) => {
     const d = loadPage("state-tag-people");
-    const unbindPost = bindPost(d, "new-post/state-tag-people", { handlers: h, storage: s, accountId: h ? "1" : null, tagItems });
-    const writes = h && { saveProfile: vi.fn(), setReplyOnSubscribe: vi.fn(), submit: vi.fn(), navigate: vi.fn() };
-    const unbindWrites = bindWrites(d, "new-post/state-tag-people", writes);
+    const unbindPost = bindPost(d, "new-post/state-tag-people", { newWrites: false, handlers: h, storage: s, accountId: h ? "1" : null, tagItems });
+    const writes = h && { uploadProfileImage: vi.fn(), saveProfile: vi.fn(), setReplyOnSubscribe: vi.fn(), submit: vi.fn(), navigate: vi.fn() };
+    const unbindWrites = bindWrites(d, "new-post/state-tag-people", writes, true);
     const unbind = () => {
       unbindWrites();
       unbindPost();
@@ -745,7 +746,7 @@ describe("vault dialog (state-vault capture)", () => {
   const bindVault = (s: Storage, h: ReturnType<typeof handlers> | null) => {
     const d = loadPage("state-vault");
     if (h) applyData(d, PAGE, { vaultMedia: MEDIA, picked: [] }, (u) => `/img?u=${u}&account_id=1`);
-    return { d, unbind: bindPost(d, PAGE, { handlers: h, storage: s, accountId: h ? "1" : null }) };
+    return { d, unbind: bindPost(d, PAGE, { newWrites: false, handlers: h, storage: s, accountId: h ? "1" : null }) };
   };
 
   it("a tile click picks it and a second click unpicks it; media_files and thumbs follow the clicks in order", () => {
@@ -788,7 +789,7 @@ describe("vault dialog (state-vault capture)", () => {
     const d = loadPage("state-vault");
     const tabs = () => [...d.querySelectorAll<HTMLButtonElement>(".modal.show .b-tabs__nav__link")];
     const h = handlers();
-    let unbind = bindPost(d, PAGE, { handlers: h, storage: memoryStorage(), accountId: "1", vaultView: { list: "7", type: "video" } });
+    let unbind = bindPost(d, PAGE, { newWrites: false, handlers: h, storage: memoryStorage(), accountId: "1", vaultView: { list: "7", type: "video" } });
     expect(tabs().map((t) => t.classList.contains("m-current"))).toEqual([false, false, false, true, false]);
     tabs()[1].click();
     expect(h.navigate).toHaveBeenCalledWith(`/of-manager/${PAGE}?list=7&type=photo`);
@@ -796,7 +797,7 @@ describe("vault dialog (state-vault capture)", () => {
     tabs()[0].click();
     expect(h.navigate.mock.calls).toEqual([[`/of-manager/${PAGE}?list=7&type=photo`], [`/of-manager/${PAGE}?list=7`]]);
     unbind();
-    unbind = bindPost(d, PAGE, { handlers: null, storage: null, accountId: null });
+    unbind = bindPost(d, PAGE, { newWrites: false, handlers: null, storage: null, accountId: null });
     tabs()[2].click();
     expect(d.getElementById("oi-note")?.textContent).toBe(SELECT_MODEL);
     unbind();
@@ -868,7 +869,7 @@ describe("vault dialog (state-vault capture)", () => {
     saveDraft(s, "1", { ...empty(), text: "Synthetic post" });
     const d = loadPage("state-vault");
     const h = handlers();
-    const unbind = bindPost(d, PAGE, { handlers: h, storage: s, accountId: "1" });
+    const unbind = bindPost(d, PAGE, { newWrites: false, handlers: h, storage: s, accountId: "1" });
     exampleTile(d).click();
     expect(d.getElementById("oi-note")?.textContent).toBe(SELECT_MODEL);
     expect(marked(d)).toEqual([]);
@@ -906,7 +907,7 @@ describe("vault dialog (state-vault capture)", () => {
     const s = memoryStorage();
     if (h) saveDraft(s, "1", { ...empty(), ...draft });
     const d = loadPage("state-vault");
-    return { d, s, h, unbind: bindPost(d, PAGE, { handlers: h, storage: s, accountId: h ? "1" : null, vaultItems: h ? ITEMS : undefined }) };
+    return { d, s, h, unbind: bindPost(d, PAGE, { newWrites: false, handlers: h, storage: s, accountId: h ? "1" : null, vaultItems: h ? ITEMS : undefined }) };
   };
 
   it("vaultStoryBody: a photo goes by its full picture, a video (or an unknown item) by its vault id", () => {
@@ -972,7 +973,7 @@ describe("picked vault media on the composer (index capture)", () => {
     const d = loadPage("index");
     const s = memoryStorage();
     saveDraft(s, "1", { ...empty(), text: "Synthetic post", media_files: [62, 61], thumbs: THUMBS });
-    const ctx = { handlers: handlers(), storage: s, accountId: "1" };
+    const ctx = { newWrites: false, handlers: handlers(), storage: s, accountId: "1" };
     bindPost(d, "new-post/index", ctx)();
     expect(rows(d)).toHaveLength(1);
     expect(rows(d)[0].nextElementSibling?.classList.contains("b-make-post__actions")).toBe(true);
@@ -987,12 +988,12 @@ describe("picked vault media on the composer (index capture)", () => {
   it("an empty draft adds no row, and a load after the draft is cleared removes it", () => {
     const d = loadPage("index");
     const s = memoryStorage();
-    bindPost(d, "new-post/index", { handlers: handlers(), storage: s, accountId: "1" })();
+    bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" })();
     expect(rows(d)).toHaveLength(0);
     saveDraft(s, "1", { ...empty(), text: "Synthetic post", media_files: [62, 61], thumbs: THUMBS });
-    bindPost(d, "new-post/index", { handlers: handlers(), storage: s, accountId: "1" })();
+    bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" })();
     clearDraft(s, "1");
-    const unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" });
     expect(rows(d)).toHaveLength(0);
     unbind();
   });
@@ -1002,7 +1003,7 @@ describe("picked vault media on the composer (index capture)", () => {
     const s = memoryStorage();
     saveDraft(s, "1", { ...empty(), text: "Synthetic post", media_files: [62, 61], thumbs: THUMBS });
     const h = handlers();
-    const unbind = bindPost(d, "new-post/index", { handlers: h, storage: s, accountId: "1" });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" });
     post(d).click();
     expect(h.createPost).toHaveBeenCalledTimes(1);
     expect(h.createPost).toHaveBeenCalledWith({ text: "Synthetic post", media_files: [62, 61], price: 0 });
@@ -1017,7 +1018,7 @@ describe("picked vault media on the composer (index capture)", () => {
     const s = memoryStorage();
     const id = page.startsWith("home/") ? "home:1" : "1";
     saveDraft(s, id, { ...empty(), media_files: [62, { processId: "p1" }], thumbs: THUMBS });
-    const unbind = bindPost(d, page, { handlers: handlers(), storage: s, accountId: "1", draftId: page.startsWith("home/") ? id : undefined });
+    const unbind = bindPost(d, page, { newWrites: false, handlers: handlers(), storage: s, accountId: "1", draftId: page.startsWith("home/") ? id : undefined });
     const xs = () => [...d.querySelectorAll<HTMLButtonElement>("#oi-post-thumbs button[aria-label='Delete']")];
     expect(xs()).toHaveLength(2);
     expect(xs()[0].querySelector("use")!.getAttribute("href")).toBe("#icon-close");
@@ -1047,7 +1048,7 @@ describe("Co-tags on the composer", () => {
     const d = loadPage("index");
     const s = memoryStorage();
     saveDraft(s, "1", { ...empty(), text: "Synthetic post", posted_at: AT, tagged_users: [2001] });
-    const unbind = bindPost(d, "new-post/index", { handlers: handlers(), storage: s, accountId: "1", tagItems: TAGS });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: s, accountId: "1", tagItems: TAGS });
     const summary = d.getElementById("oi-post-summary")!;
     expect(summary.textContent).toContain("Scheduled for");
     expect(summary.textContent).toContain("Synth Creator 1");
@@ -1062,7 +1063,7 @@ describe("Co-tags on the composer", () => {
   it("Co-tags alone show the summary; checking a row in the dialog updates it", () => {
     const s = memoryStorage();
     const d = loadPage("state-tag-people");
-    const unbind = bindPost(d, "new-post/state-tag-people", { handlers: handlers(), storage: s, accountId: "1", tagItems: TAGS });
+    const unbind = bindPost(d, "new-post/state-tag-people", { newWrites: false, handlers: handlers(), storage: s, accountId: "1", tagItems: TAGS });
     expect(d.getElementById("oi-post-summary")).toBeNull();
     d.querySelector<HTMLInputElement>("[data-oi-user='2001'] input")!.click();
     d.querySelector<HTMLInputElement>("[data-oi-user='2002'] input")!.click();
@@ -1075,7 +1076,7 @@ describe("Co-tags on the composer", () => {
     const s = memoryStorage();
     saveDraft(s, "1", { ...empty(), text: "Synthetic post", posted_at: AT, tagged_users: [2001] });
     const h = handlers();
-    const unbind = bindPost(d, "new-post/index", { handlers: h, storage: s, accountId: "1", tagItems: TAGS });
+    const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1", tagItems: TAGS });
     post(d).click();
     expect(h.createPost).toHaveBeenCalledTimes(1);
     expect(h.createPost).toHaveBeenCalledWith({ text: "Synthetic post", media_files: [], price: 0, posted_at: AT, tagged_users: [2001] });
@@ -1088,8 +1089,8 @@ describe("Co-tags on the composer", () => {
 /** Bind `page` (under new-post) with bindPost and bindWrites, as OfMirrorFrame binds them. */
 const bindBoth = (page: string, s = memoryStorage(), h: ReturnType<typeof handlers> | null = handlers(), extra: Partial<Parameters<typeof bindPost>[2]> = {}) => {
   const d = loadPage(page);
-  const unbindPost = bindPost(d, `new-post/${page}`, { handlers: h, storage: s, accountId: h ? "1" : null, ...extra });
-  const unbindWrites = bindWrites(d, `new-post/${page}`, null);
+  const unbindPost = bindPost(d, `new-post/${page}`, { newWrites: false, handlers: h, storage: s, accountId: h ? "1" : null, ...extra });
+  const unbindWrites = bindWrites(d, `new-post/${page}`, null, true);
   return {
     d,
     s,
@@ -1561,8 +1562,8 @@ describe("read-only controls (no Known body)", () => {
     const d = loadPage(page);
     const s = memoryStorage();
     const h = handlers();
-    const unbindPost = bindPost(d, `new-post/${page}`, { handlers: h, storage: s, accountId: "1" });
-    const unbindWrites = bindWrites(d, `new-post/${page}`, null); // the click fallback and change path, as OfMirrorFrame binds it
+    const unbindPost = bindPost(d, `new-post/${page}`, { newWrites: false, handlers: h, storage: s, accountId: "1" });
+    const unbindWrites = bindWrites(d, `new-post/${page}`, null, true); // the click fallback and change path, as OfMirrorFrame binds it
     const unbind = () => {
       unbindPost();
       unbindWrites();
@@ -1599,7 +1600,7 @@ describe("read-only controls (no Known body)", () => {
     unbind();
   });
 
-  it.each(["Record voice", "Record video"])("index: %s opens the not-supported popup, whose OK closes it; nothing is sent", (label) => {
+  it.each(["Record voice", "Record video"])("index, OFM_NEW_WRITES_ENABLED off: %s opens the not-supported popup (main's), whose OK closes it; nothing is sent", (label) => {
     const { d, h, unbind } = bindPage("index");
     const button = d.querySelector<HTMLButtonElement>(`button[aria-label='${label}']`)!;
     expect(button.disabled).toBe(false);
@@ -1767,7 +1768,7 @@ describe("New post with the captured shapes", () => {
     expect(folders.map((r) => r.querySelector(".b-rows-lists__item__name")!.textContent!.trim())).toEqual(["All media", ...lists.list.map((l) => l.name)]);
     expect([...d.querySelectorAll("[data-oi-media]")].map((t) => t.getAttribute("data-oi-media"))).toEqual(media.map((m) => String(m.id)));
     const s = memoryStorage();
-    const unbind = bindPost(d, "new-post/state-vault", { handlers: handlers(), storage: s, accountId: "1", vaultItems: media });
+    const unbind = bindPost(d, "new-post/state-vault", { newWrites: false, handlers: handlers(), storage: s, accountId: "1", vaultItems: media });
     d.querySelector<HTMLElement>("[data-oi-media='5001']")!.click();
     expect(loadDraft(s, "1").media_files).toEqual([5001]);
     unbind();
@@ -1871,5 +1872,304 @@ describe("Edit post (the Queue's row menu): New post saves the queued post in pl
     expect(h.confirm).toHaveBeenCalledWith("This post has no date: publish it now?");
     expect(h.editPost).not.toHaveBeenCalled();
     unbind();
+  });
+});
+
+/**
+ * Record video and Record voice on Home (its index and 11 State pages) and New post (index and State pages): the chat
+ * composer's recorders (ofMirrorComposer), the File through Add media's upload, the Post carrying its send_with.
+ * getUserMedia and MediaRecorder are stubbed (a synthetic stream; stop() hands over one chunk).
+ */
+describe("Record video and Record voice on Home and New post", () => {
+  const PAGES = (dir: string) => readdirSync(resolve(__dirname, `../public/of-mirror/pages/${dir}`)).filter((f) => f.endsWith(".html")).map((f) => `${dir}/${f.slice(0, -5)}`);
+  const HOME_PAGES = PAGES("home");
+  const NEW_POST_PAGES = PAGES("new-post");
+  /** post_upload.py's CLAIM: a fresh convert claim as OF's JS builds it. */
+  const CLAIM = { processId: "p1", host: "h", name: "n" };
+  const NEW_POST_HTML = readFileSync(resolve(__dirname, "../public/of-mirror/pages/new-post/index.html"), "utf8");
+  const open = (page: string) => {
+    document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${page}.html`), "utf8");
+    document.body.className = "";
+    return document;
+  };
+  const media = (fail?: string) => {
+    const tracks = [{ stop: vi.fn() }];
+    const stream = { getTracks: () => tracks } as unknown as MediaStream;
+    const getUserMedia = vi.fn(() => (fail ? Promise.reject(Object.assign(new Error(fail), { name: fail })) : Promise.resolve(stream)));
+    class Rec {
+      static isTypeSupported = (t: string) => t === "video/mp4" || t === "audio/webm";
+      state = "inactive";
+      mimeType: string;
+      ondataavailable: ((e: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      constructor(_s: MediaStream, o?: { mimeType?: string }) {
+        this.mimeType = o?.mimeType ?? "";
+      }
+      start() {
+        this.state = "recording";
+      }
+      stop() {
+        this.state = "inactive";
+        this.ondataavailable?.({ data: new Blob(["rec"], { type: this.mimeType }) });
+        this.onstop?.();
+      }
+    }
+    // The upload re-encodes a webm recording to WAV (ofMirrorComposer voiceFile): a decoder handing back 2 samples.
+    class Ctx {
+      decodeAudioData = async (_b: ArrayBuffer) => ({ numberOfChannels: 1, sampleRate: 16000, length: 2, getChannelData: () => Float32Array.from([0, 0.5]) });
+    }
+    Object.defineProperty(window.navigator, "mediaDevices", { value: { getUserMedia }, configurable: true });
+    vi.stubGlobal("MediaRecorder", Rec);
+    vi.stubGlobal("OfflineAudioContext", Ctx);
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: () => "blob:synthetic" }));
+    const fetched = vi.fn(async (_url: string) => new Response(NEW_POST_HTML, { status: 200 }));
+    vi.stubGlobal("fetch", fetched);
+    return { getUserMedia, tracks, fetched };
+  };
+  const bind = (page: string, over: { upload?: Mock<(f: File) => Promise<VaultUploadResp>>; handlers?: null; confirm?: Mock<(t: string) => boolean>; newWrites?: boolean } = {}) => {
+    const d = open(page);
+    const s = memoryStorage();
+    const h = { ...handlers(), upload: over.upload ?? vi.fn((_f: File) => Promise.resolve({ ready: true, deduped: false, vault_id: null, send_with: [CLAIM] })), confirm: over.confirm };
+    const home = page.startsWith("home/");
+    const draftId = home ? "home:1" : undefined;
+    const unbind = bindPost(d, page, { handlers: over.handlers === null ? null : h, storage: s, accountId: over.handlers === null ? null : "1", draftId, newWrites: over.newWrites ?? true });
+    return { d, s, h, unbind, id: draftId ?? "1" };
+  };
+  const button = (d: Document, label: string) => d.querySelector<HTMLButtonElement>(`button[aria-label='${label}']`)!;
+  /** Record, then stop: the panel's (voice) or the video-js recorder's (video) record button, twice. */
+  const record = async (d: Document, label: "Record voice" | "Record video") => {
+    button(d, label).click();
+    for (let i = 0; i < 5; i++) await flush();
+    const rec = label === "Record voice" ? ".js-chat__audiorecord-panel .b-float-panel__btn-record" : ".b-chat__video-message__preview .vjs-record-button";
+    d.querySelector<HTMLElement>(rec)!.click();
+    for (let i = 0; i < 3; i++) await flush();
+    d.querySelector<HTMLElement>(rec)!.click();
+    for (let i = 0; i < 3; i++) await flush();
+  };
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each(HOME_PAGES)("%s, OFM_NEW_WRITES_ENABLED off: Record video and Record voice stay as captured (disabled, Not-yet, not Wired); a click asks for nothing", async (page) => {
+    const m = media();
+    const { d, h, unbind } = bind(page, { newWrites: false });
+    for (const label of ["Record video", "Record voice"]) {
+      expect([button(d, label).disabled, button(d, label).hasAttribute("data-oi-wired"), button(d, label).title], label).toEqual([true, false, NOT_YET]);
+      button(d, label).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    }
+    await flush();
+    expect(m.getUserMedia).not.toHaveBeenCalled();
+    expect(m.fetched).not.toHaveBeenCalled();
+    expect(d.getElementById("oi-record-popup")).toBeNull();
+    expect(h.upload).not.toHaveBeenCalled();
+    unbind();
+  });
+
+  it.each(NEW_POST_PAGES.flatMap((page) => [[page, "Record voice"], [page, "Record video"]] as const))(
+    "%s, OFM_NEW_WRITES_ENABLED off: %s opens main's not-supported popup and records nothing",
+    async (page, label) => {
+      const m = media();
+      const { d, h, unbind } = bind(page, { newWrites: false });
+      const b = button(d, label);
+      b.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+      expect(d.getElementById("oi-record-popup")?.textContent).toContain(RECORD_TEXT);
+      expect(m.getUserMedia).not.toHaveBeenCalled();
+      expect(h.upload).not.toHaveBeenCalled();
+      unbind();
+      expect(d.getElementById("oi-record-popup")).toBeNull();
+    },
+  );
+
+  it.each(HOME_PAGES)("%s: Record video and Record voice are enabled and wired, their Not-yet title dropped (Live pass, D1)", (page) => {
+    media();
+    const { d, unbind } = bind(page);
+    for (const label of ["Record video", "Record voice"]) {
+      expect(button(d, label).disabled, label).toBe(false);
+      expect(button(d, label).hasAttribute("data-oi-wired"), label).toBe(true);
+      expect(button(d, label).hasAttribute("title"), label).toBe(false);
+    }
+    unbind();
+  });
+
+  it.each([...HOME_PAGES, ...NEW_POST_PAGES].flatMap((page) => [[page, "Record voice"], [page, "Record video"]] as const))(
+    "%s: %s then stop sends one upload with the File, and the next Post carries its send_with",
+    async (page, label) => {
+      const m = media();
+      const { d, s, h, unbind, id } = bind(page);
+      await record(d, label);
+      expect(h.upload).toHaveBeenCalledTimes(1);
+      const file = h.upload.mock.calls[0][0] as File;
+      expect(file.name).toMatch(label === "Record voice" ? /^voice-\d+\.wav$/ : /^video-\d+\.mp4$/);
+      expect(file.type).toBe(label === "Record voice" ? "audio/wav" : "video/mp4");
+      expect(m.getUserMedia).toHaveBeenCalledWith(label === "Record voice" ? { audio: true } : { audio: true, video: true });
+      expect(loadDraft(s, id).media_files).toEqual([CLAIM]);
+      expect(d.getElementById("oi-note")).toBeNull();
+      post(d).click();
+      expect(h.createPost).toHaveBeenCalledWith({ text: "", media_files: [CLAIM], price: 0 });
+      unbind();
+    },
+  );
+
+  it.each([
+    ["home/index", "Record voice", "NotAllowedError", MIC_BLOCKED],
+    ["home/index", "Record video", "NotAllowedError", CAMERA_BLOCKED],
+    ["new-post/index", "Record voice", "NotAllowedError", MIC_BLOCKED],
+    ["new-post/index", "Record video", "NotAllowedError", CAMERA_BLOCKED],
+  ] as const)("%s: %s with the permission refused (%s) shows the red note naming it and sends nothing", async (page, label, err, text) => {
+    media(err);
+    const { d, s, h, unbind, id } = bind(page);
+    await record(d, label).catch(() => {});
+    const n = d.getElementById("oi-note")!;
+    expect(n.textContent).toBe(text);
+    expect(n.style.color).toBe("rgb(255, 69, 69)");
+    expect(h.upload).not.toHaveBeenCalled();
+    expect(h.createPost).not.toHaveBeenCalled();
+    expect(loadDraft(s, id).media_files).toEqual([]);
+    unbind();
+  });
+
+  it.each(["home/index", "new-post/index"])("%s: a 502 on the upload shows the red note and the draft keeps its prior media", async (page) => {
+    media();
+    const upload = vi.fn((_f: File) => Promise.reject(new RelayError(502, {}, "relay 502")));
+    const d0 = open(page);
+    void d0;
+    const s0 = memoryStorage();
+    const id = page.startsWith("home/") ? "home:1" : "1";
+    saveDraft(s0, id, { ...empty(), media_files: [62], thumbs: ["/img?u=https://cdn.example/62.jpg&account_id=1"] });
+    const h = { ...handlers(), upload };
+    const unbind = bindPost(document, page, { handlers: h, storage: s0, accountId: "1", draftId: page.startsWith("home/") ? id : undefined, newWrites: true });
+    await record(document, "Record voice");
+    expect(upload).toHaveBeenCalledTimes(1);
+    const n = document.getElementById("oi-note")!;
+    expect(n.textContent).toBe("Could not upload: relay 502");
+    expect(n.style.color).toBe("rgb(255, 69, 69)");
+    expect(loadDraft(s0, id).media_files).toEqual([62]);
+    expect(document.querySelectorAll("#oi-post-thumbs .b-photos__item")).toHaveLength(1);
+    unbind();
+  });
+
+  it.each([
+    ["home/index", "rejected", () => Promise.reject(new RelayError(502, {}, "Invalid file type"))],
+    ["new-post/index", "refused", () => Promise.resolve({ ready: false, deduped: false, vault_id: null, send_with: [], note: "Invalid file type" } as VaultUploadResp)],
+  ] as const)("%s: a %s upload makes Post ask first (live 2026-11-21): Cancel sends nothing and keeps the text, OK posts without it", async (page, _how, answer) => {
+    media();
+    const upload = vi.fn((_f: File) => answer());
+    const confirm = vi.fn((_t: string) => false);
+    const { d, s, h, unbind, id } = bind(page, { upload, confirm });
+    type(d, "oi-proof-1");
+    await record(d, "Record voice");
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(d.getElementById("oi-note")!.textContent).toBe("Could not upload: Invalid file type");
+    expect(post(d).disabled).toBe(false);
+    post(d).click();
+    await flush();
+    expect(confirm).toHaveBeenCalledWith("Upload failed: Invalid file type. Send without it?");
+    expect(h.createPost).not.toHaveBeenCalled();
+    expect(editor(d).textContent).toBe("oi-proof-1");
+    expect(loadDraft(s, id)).toMatchObject({ text: "oi-proof-1", upload_failed: { voice: "Invalid file type" } });
+    confirm.mockReturnValue(true);
+    post(d).click();
+    expect(h.createPost).toHaveBeenCalledWith(expect.objectContaining({ text: "oi-proof-1", media_files: [] }));
+    await flush();
+    expect(loadDraft(s, id).upload_failed).toBeUndefined();
+    unbind();
+  });
+
+  it("another upload does not forget a failed one (Post still asks); the same media re-recorded does", async () => {
+    media();
+    let n = 0;
+    const upload = vi.fn((_f: File) => (n++ ? Promise.resolve({ ready: true, deduped: false, vault_id: null, send_with: [CLAIM] }) : Promise.reject(new Error("Invalid file type"))));
+    const confirm = vi.fn((_t: string) => false);
+    const { d, s, h, unbind } = bind("new-post/index", { upload, confirm });
+    type(d, "x");
+    await record(d, "Record voice");
+    await record(d, "Record video");
+    expect(upload).toHaveBeenCalledTimes(2);
+    post(d).click();
+    expect(confirm).toHaveBeenCalledWith(uploadFailed({ voice: "Invalid file type" }));
+    expect(h.createPost).not.toHaveBeenCalled();
+    // Record voice again, accepted this time: nothing failed is left, Post posts both without asking.
+    await record(d, "Record voice");
+    expect(loadDraft(s, "1").upload_failed).toBeUndefined();
+    post(d).click();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(h.createPost).toHaveBeenCalledWith(expect.objectContaining({ text: "x", media_files: [CLAIM, CLAIM] }));
+    unbind();
+  });
+
+  it("Clear and Discard forget a failed upload: Post no longer asks", () => {
+    const failed = { voice: "Invalid file type" };
+    const s = memoryStorage();
+    saveDraft(s, "1", { ...empty(), text: "x", expire_days: 7, upload_failed: failed });
+    const confirm = vi.fn((_t: string) => false);
+    const h = { ...handlers(), confirm };
+    let d = open("new-post/index");
+    let unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" });
+    d.querySelector<HTMLElement>("#oi-post-summary [data-oi-clear]")!.click();
+    expect(loadDraft(s, "1").upload_failed).toBeUndefined();
+    post(d).click();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(h.createPost).toHaveBeenCalledWith(expect.objectContaining({ text: "x", media_files: [] }));
+    unbind();
+    // Editing a queued post: Discard drops the whole draft, its failed upload with it.
+    saveDraft(s, "1", { ...empty(), text: "x", edit_id: "q1", upload_failed: failed });
+    d = open("new-post/index");
+    unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" });
+    d.querySelector<HTMLElement>("#oi-post-summary [data-oi-discard]")!.click();
+    expect(loadDraft(s, "1").upload_failed).toBeUndefined();
+    unbind();
+  });
+
+  it.each(["Record voice", "Record video"])("Home in All-Creators scope: %s shows the Select-model note, asks for nothing and sends nothing", async (label) => {
+    const m = media();
+    const { d, h, unbind } = bind("home/index", { handlers: null });
+    button(d, label).click();
+    await flush();
+    expect(d.getElementById("oi-note")?.textContent).toBe(SELECT_MODEL);
+    expect(m.getUserMedia).not.toHaveBeenCalled();
+    expect(m.fetched).not.toHaveBeenCalled();
+    expect(h.upload).not.toHaveBeenCalled();
+    unbind();
+  });
+
+  it("Home borrows OF's recorder markup from New post's capture once; Back on the voice panel keeps nothing", async () => {
+    const m = media();
+    const { d, h, unbind } = bind("home/index");
+    expect(d.querySelector(".js-chat__audiorecord-panel")).toBeNull();
+    button(d, "Record voice").click();
+    for (let i = 0; i < 5; i++) await flush();
+    expect(m.fetched).toHaveBeenCalledWith("/of-mirror/pages/new-post/index.html");
+    const panel = d.querySelector<HTMLElement>(".js-chat__audiorecord-panel")!;
+    expect(panel.style.display).toBe("");
+    expect(d.querySelectorAll(".js-chat__audiorecord-panel")).toHaveLength(1);
+    expect(d.querySelectorAll(".b-chat__video-message__preview")).toHaveLength(1);
+    expect(d.getElementById("icon-stop")).not.toBeNull();
+    panel.querySelector<HTMLElement>("a[aria-label='Back']")!.click();
+    await flush();
+    expect(panel.style.display).toBe("none");
+    expect(h.upload).not.toHaveBeenCalled();
+    expect(h.navigate).not.toHaveBeenCalled();
+    unbind();
+  });
+
+  it.each(["home/index", "new-post/index"])("%s: a rebind of the same draft mid-recording sends the File through the latest bind's upload", async (page) => {
+    media();
+    const { d, s, h, unbind } = bind(page);
+    button(d, "Record voice").click();
+    for (let i = 0; i < 5; i++) await flush();
+    const rec = () => d.querySelector<HTMLElement>(".js-chat__audiorecord-panel .b-float-panel__btn-record")!;
+    rec().click();
+    for (let i = 0; i < 3; i++) await flush();
+    // useOfPost rebinds when the model's details load: unbind, then a bind of the same draft in the same task.
+    unbind();
+    const h2 = { ...handlers(), upload: vi.fn((_f: File) => Promise.resolve({ ready: true, deduped: false, vault_id: null, send_with: [CLAIM] })) };
+    const unbind2 = bindPost(d, page, { handlers: h2, storage: s, accountId: "1", draftId: page.startsWith("home/") ? "home:1" : undefined, newWrites: true });
+    await flush();
+    rec().click();
+    for (let i = 0; i < 3; i++) await flush();
+    expect(h.upload).not.toHaveBeenCalled();
+    expect(h2.upload).toHaveBeenCalledTimes(1);
+    unbind2();
   });
 });

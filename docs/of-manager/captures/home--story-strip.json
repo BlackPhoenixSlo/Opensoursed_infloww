@@ -1,0 +1,15 @@
+{
+  "id": "home--story-strip",
+  "section": "home",
+  "label": "Story strip",
+  "pages": [
+    "home/index"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending"
+  }
+}

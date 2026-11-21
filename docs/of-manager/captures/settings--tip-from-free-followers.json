@@ -1,0 +1,15 @@
+{
+  "id": "settings--tip-from-free-followers",
+  "section": "settings",
+  "label": "[b-checkbox-switcher]",
+  "pages": [
+    "settings/messaging"
+  ],
+  "phase": 3,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending: free-page-only (tipRow hides it when subscribePrice > 0); the Proof Creator is priced (capture 2026-11-21); needs a free account"
+  }
+}

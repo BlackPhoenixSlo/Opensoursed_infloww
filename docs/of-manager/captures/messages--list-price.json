@@ -1,0 +1,16 @@
+{
+ "id": "messages--list-price",
+ "section": "messages",
+ "label": "Message price",
+ "phase": 2,
+ "pages": [
+  "messages/send/state-list-dropdown"
+ ],
+ "note": "New message's list page (its list menu open), on the Mass draft only; the list Send is never run (ADR-0042). Opens New message's price dialog (messages/send/state-price); Save puts price on the Mass draft. No write.",
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T122214Z-ofm-live-2ba2c23f0",
+  "undo": "none"
+ }
+}

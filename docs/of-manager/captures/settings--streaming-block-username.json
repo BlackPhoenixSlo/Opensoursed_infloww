@@ -1,0 +1,21 @@
+{
+ "id": "settings--streaming-block-username",
+ "section": "settings",
+ "label": "Block",
+ "pages": [
+  "settings/streaming/blocked"
+ ],
+ "phase": 3,
+ "source": "of-js",
+ "of_js": {
+  "bundle": "app.js",
+  "symbol": "565144 wo blockStreamViewerByName / iT unblockStreamViewerByUserId",
+  "evidence": ".scratch/ofm-not-yet/captures/settings--streaming-block-username.json: POST /api2/v2/streams/users/{username}/block and DELETE /api2/v2/streams/users/{userId}/block, no body, {success}"
+ },
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "Live proof parked: OF answers GET /streams/users/blocked 403 \"Access denied.\" on the Proof Creator (measured 2026-11-21, run log in .scratch/ofm-not-yet/map.md; same with OF's own params limit only); no write sent. Needs an account OF lets manage stream viewers"
+ }
+}

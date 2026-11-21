@@ -5,6 +5,7 @@ import { applyStats, bindMenu, bindPicks, currentPeriodKey, currentPicks, custom
 import { chartSpecOf, viewDuration } from "./ofMirrorChart";
 import { parseDay } from "./ofMirrorDatepicker";
 import { standInModel } from "./ofMirrorProfile";
+import { pickerDays, statementsRange } from "./ofMirrorStatsPeriod";
 
 const capture = (p: string) => readFileSync(resolve(__dirname, `../public/of-mirror/pages/${p}.html`), "utf8");
 const load = (p: string) => {
@@ -570,5 +571,36 @@ describe("OF's own landings (scripts/of-mirror.mjs REDIRECTS, from the captures'
       expect(new Set(links)).toEqual(new Set(["/of-manager/statistics/statements/disputes"]));
     }
     expect(() => capture("statements/stats/disputes")).toThrow();
+  });
+});
+
+describe("Statements' From … To range (ticket 20): days in the owner's time zone as the earning statistics read asks them", () => {
+  const NY = "America/New_York";
+  const LATE = new Date("2026-11-20T23:30:00Z"); // 00:30 on the 21st in Ljubljana (UTC +01:00), 18:30 on the 20th in New York
+  it.each([
+    // [case, from, to, now, tz, params, start, end]
+    ["same day", "2026-10-17", "2026-10-17", NOW, TZ, ["2026-10-17", "2026-10-17"], "2026-10-16T22:00:00.000Z", NOW.toISOString()],
+    ["a month boundary", "2026-09-30", "2026-10-01", NOW, TZ, ["2026-09-30", "2026-10-01"], "2026-09-29T22:00:00.000Z", "2026-10-01T21:59:59.000Z"],
+    ["days in either order", "2026-10-01", "2026-09-30", NOW, TZ, ["2026-09-30", "2026-10-01"], "2026-09-29T22:00:00.000Z", "2026-10-01T21:59:59.000Z"],
+    ["the day past Ljubljana's midnight", "2026-11-21", "2026-11-21", LATE, TZ, ["2026-11-21", "2026-11-21"], "2026-11-20T23:00:00.000Z", LATE.toISOString()],
+    ["the same instant, still the 20th in New York", "2026-11-20", "2026-11-20", LATE, NY, ["2026-11-20", "2026-11-20"], "2026-11-20T05:00:00.000Z", LATE.toISOString()],
+    ["a DST change day (25 hours: +02:00 to +01:00)", "2026-10-25", "2026-10-25", LATE, TZ, ["2026-10-25", "2026-10-25"], "2026-10-24T22:00:00.000Z", "2026-10-25T22:59:59.000Z"],
+  ] as const)("%s", (_, from, to, now, tz, [startDate, endDate], start, end) => {
+    const r = statementsRange(parseDay(from)!, parseDay(to)!, now, tz);
+    expect(r.params).toEqual({ startDate, endDate });
+    expect([r.start.toISOString(), r.end.toISOString()]).toEqual([start, end]);
+  });
+
+  it.each([
+    // [case, start, end, now, tz, userStart, [start, end, today, first pickable]]: Statements opens on today (start = end
+    // = now); Statistics' Custom on the period shown.
+    ["Statements: today in Ljubljana past its midnight", LATE, LATE, LATE, TZ, null, ["2026-11-21", "2026-11-21", "2026-11-21", null]],
+    ["Statements: today in New York at the same instant", LATE, LATE, LATE, NY, null, ["2026-11-20", "2026-11-20", "2026-11-20", null]],
+    ["Statements: the Creator's start on its own day in the zone", NOW, NOW, NOW, TZ, new Date("2021-09-27T22:30:00Z"), ["2026-10-17", "2026-10-17", "2026-10-17", "2021-09-28"]],
+    ["Statistics: the period shown", new Date("2026-09-30T22:00:00Z"), NOW, NOW, TZ, null, ["2026-10-01", "2026-10-17", "2026-10-17", null]],
+  ] as const)("pickerDays: %s", (_, start, end, now, tz, userStart, want) => {
+    const d = pickerDays(start, end, now, tz, userStart);
+    const iso = (x: { y: number; m: number; d: number } | null) => x && `${x.y}-${String(x.m).padStart(2, "0")}-${String(x.d).padStart(2, "0")}`;
+    expect([iso(d.start), iso(d.end), iso(d.today), iso(d.userStart)]).toEqual(want);
   });
 });

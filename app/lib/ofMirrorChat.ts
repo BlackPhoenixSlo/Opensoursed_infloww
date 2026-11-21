@@ -50,7 +50,7 @@ import { chatPath, usersListPath, withChatUsers, USER_LISTS } from "@/lib/ofMirr
 import type { UserList } from "@/lib/ofMirrorDataLists";
 import { handleOf, nameOf, stamp } from "@/lib/ofMirrorDom";
 import { afterChatWrite } from "@/lib/ofMirrorKeys";
-import { collectSchedule, renderCalendar, tagsRoute, tagViewOf, type TagView } from "@/lib/ofMirrorPost";
+import { collectSchedule, renderCalendar, tagsRoute, tagViewOf, type TagView, uploadFailed } from "@/lib/ofMirrorPost";
 import { type bindComposer, GIF_ALONE } from "@/lib/ofMirrorComposer";
 import { hasFormatting, ofHtml, setOfHtml } from "@/lib/ofMirrorFormat";
 import { hasOfFormatting } from "@/lib/ofRichText";
@@ -79,7 +79,7 @@ import {
   type ChatDraft,
   type ChatHandlers,
 } from "@/lib/ofMirrorChatShared";
-import { bindMass, MASS_FANS, MASS_TAG, massViewOf, tickMassList, USERS_LIST_MAX } from "@/lib/ofMirrorMass";
+import { bindMass, FORMAT_PARAM, MASS_FANS, MASS_TAG, massViewOf, tickMassList, USERS_LIST_MAX } from "@/lib/ofMirrorMass";
 import { MASS_SEND } from "@/lib/ofMirrorPick";
 
 // Re-exported: the vault pick's tests (ofMirrorChat, ofMirrorComposer, ofMirrorStandIn) read a chat's pick from here.
@@ -314,7 +314,7 @@ export function bindChat(doc: Document, page: string, ctx: ChatContext): () => v
     if (!target?.closest) return;
     if (target.closest("[data-oi-clear]")) {
       ev.preventDefault();
-      return update({ price: undefined, scheduled_date: undefined, media_files: [], thumbs: [], reply_to: undefined, reply_text: undefined, giphy_id: undefined, giphy_thumb: undefined, tags: undefined, audio: undefined, previews: undefined, locked_text: undefined });
+      return update({ price: undefined, scheduled_date: undefined, media_files: [], thumbs: [], reply_to: undefined, reply_text: undefined, giphy_id: undefined, giphy_thumb: undefined, tags: undefined, audio: undefined, previews: undefined, locked_text: undefined, upload_failed: undefined });
     }
     if (bell && target.closest(MUTE_BTN) === bell) {
       ev.preventDefault();
@@ -328,6 +328,9 @@ export function bindChat(doc: Document, page: string, ctx: ChatContext): () => v
     if (send.disabled) return;
     const body = collectMessage(hasFormatting(editor) ? ofHtml(editor) : textOf(editor), draftOf());
     if (typeof body === "string") return note(doc, send, body, true);
+    // A failed upload's media would be missing: OK sends without it (a successful send forgets it), Cancel keeps everything.
+    const failed = draftOf().upload_failed;
+    if (failed && !h.confirm(uploadFailed(failed))) return;
     if (body.price > 0 && !h.confirm(`Send this message to ${ctx.fan?.name || "this fan"} for ${ofPrice(body.price)}?`)) return;
     send.disabled = true;
     doc.getElementById("oi-note")?.remove();
@@ -494,6 +497,7 @@ export function useOfChat(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const mass = page.startsWith("messages/send");
   const massView = mass ? massViewOf(params.get("list")) : undefined;
   const massTo = mass ? params.get("to") : null;
+  const massFormat = mass && params.get(FORMAT_PARAM) === "1";
   const lists = useQuery(mirrorQuery(accountId, USER_LISTS, mass));
   const listRows = rowsOf<UserList>(lists.data);
   // The Users tab: the Creator's recent chats' fans (OF's Users tab lists its recent chats' users too).
@@ -576,6 +580,7 @@ export function useOfChat(frameRef: RefObject<HTMLIFrameElement | null>, src: st
         lists: accountId ? listRows : undefined,
         listsError: rowsError ? message(rowsError) : undefined,
         massView,
+        massFormat,
         fans: accountId ? fans : undefined,
         vaultView: viewOf({ get: (k) => ({ type: vaultType, list: vaultList, slist: vaultSlist, field: vaultField, sort: vaultSort })[k] ?? null }),
         zone,
@@ -588,5 +593,5 @@ export function useOfChat(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       frame.removeEventListener("load", bind);
       unbind?.();
     };
-  }, [frameRef, src, page, mass, accountId, chat, fanName, muted, tipsEnabled, listRows, rowsError, massView, fans, vaultType, vaultList, vaultSlist, vaultField, vaultSort, qc, router, zone, tagItems, tagKey]);
+  }, [frameRef, src, page, mass, accountId, chat, fanName, muted, tipsEnabled, listRows, rowsError, massView, massFormat, fans, vaultType, vaultList, vaultSlist, vaultField, vaultSort, qc, router, zone, tagItems, tagKey]);
 }

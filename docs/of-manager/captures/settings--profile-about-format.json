@@ -1,0 +1,21 @@
+{
+  "id": "settings--profile-about-format",
+  "section": "settings",
+  "label": "[g-btn.m-with-round-hover]",
+  "pages": [
+    "settings/profile"
+  ],
+  "phase": 3,
+  "source": "of-js",
+  "of_js": {
+    "bundle": "60518.js",
+    "symbol": "Ye save; about from tiptap onUpdate getHTML() (PROFILE_BIO toolbar)",
+    "evidence": ".scratch/ofm-not-yet/captures/settings--profile-about-format.json: the format button sends nothing; Save sends PATCH /users/me {about: OF's HTML}"
+  },
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T115525Z-ofm-live-bf521a5ba",
+    "undo": "undone"
+  }
+}

@@ -259,7 +259,7 @@ describe("bindChat: the composer", () => {
   it("Send is not the click fallback's (no Read-only note beside bindWrites)", () => {
     const doc = loadPage("chat");
     const h = handlers();
-    bindWrites(doc, "messages/chat", null);
+    bindWrites(doc, "messages/chat", null, true);
     bindChat(doc, "messages/chat", ctxOf(h, memoryStorage()));
     type(doc, "x");
     send(doc).click();

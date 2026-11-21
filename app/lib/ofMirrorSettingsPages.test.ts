@@ -30,8 +30,8 @@ describe("applyAccount: Account menu (settings/account)", () => {
   it("Phone number line shows OF's masked phone (six stars, the last 4) after its label, once", () => {
     const doc = load("account");
     expect(phoneRow().querySelector(".b-menu-list__subtext")).toBeNull();
-    applyAccount(doc, "account", { settings: { phoneLast4: "1234" } });
-    applyAccount(doc, "account", { settings: { phoneLast4: "1234" } });
+    applyAccount(doc, "account", { settings: { phoneLast4: "1234" } }, undefined, false);
+    applyAccount(doc, "account", { settings: { phoneLast4: "1234" } }, undefined, false);
     const subs = phoneRow().querySelectorAll(".b-menu-list__subtext");
     expect(subs).toHaveLength(1);
     expect(subs[0].textContent).toBe("******1234");
@@ -45,19 +45,19 @@ describe("applyAccount: Account menu (settings/account)", () => {
     ["null last4", { phoneLast4: null }],
   ])("no Phone number line without a string last4 (%s)", (_name, settings) => {
     const doc = load("account");
-    applyAccount(doc, "account", { settings });
+    applyAccount(doc, "account", { settings }, undefined, false);
     expect(phoneRow().querySelector(".b-menu-list__subtext")).toBeNull();
   });
 
   it("Email line is users/me's email; none or empty email leaves the generator's dash", () => {
     let doc = load("account");
     expect(emailLine().textContent).toBe("—");
-    applyAccount(doc, "account", { me: { email: "m@example.com" } });
+    applyAccount(doc, "account", { me: { email: "m@example.com" } }, undefined, false);
     expect(emailLine().textContent).toBe("m@example.com");
     doc = load("account");
-    applyAccount(doc, "account", { me: { email: "" } });
+    applyAccount(doc, "account", { me: { email: "" } }, undefined, false);
     expect(emailLine().textContent).toBe("—");
-    applyAccount(doc, "account", { me: { email: 5 } });
+    applyAccount(doc, "account", { me: { email: 5 } }, undefined, false);
     expect(emailLine().textContent).toBe("—");
   });
 
@@ -69,7 +69,7 @@ describe("applyAccount: Account menu (settings/account)", () => {
     titled.title = "Already explained";
     // The capture ships them disabled: enable both so the disable below is applyAccount's own.
     face.disabled = titled.disabled = false;
-    applyAccount(doc, "account/2fa", {});
+    applyAccount(doc, "account/2fa", {}, undefined, false);
     const controls = $$<HTMLInputElement | HTMLButtonElement>("#content input, #content button, #content textarea, #content select");
     expect(controls.length).toBeGreaterThan(0);
     for (const c of controls) {
@@ -86,8 +86,8 @@ describe("applyAccount: Phone number (settings/account/phone)", () => {
   it("draws OF's connected-phone view with the masked number, verified hint and disabled Delete / Update phone, once", () => {
     const doc = load("account/phone");
     expect(input("connected_phone_number")).toBeNull();
-    applyAccount(doc, "account/phone", { settings: { phoneLast4: "0042" } });
-    applyAccount(doc, "account/phone", { settings: { phoneLast4: "0042" } });
+    applyAccount(doc, "account/phone", { settings: { phoneLast4: "0042" } }, undefined, false);
+    applyAccount(doc, "account/phone", { settings: { phoneLast4: "0042" } }, undefined, false);
     expect($$("#connected_phone_number")).toHaveLength(1);
     const field = input("connected_phone_number")!;
     expect(field.value).toBe("******0042");
@@ -106,14 +106,14 @@ describe("applyAccount: Phone number (settings/account/phone)", () => {
 
   it("without a phone keeps the generator's entry form", () => {
     const doc = load("account/phone");
-    applyAccount(doc, "account/phone", { settings: {} });
+    applyAccount(doc, "account/phone", { settings: {} }, undefined, false);
     expect(input("connected_phone_number")).toBeNull();
     expect($("input[name='telephone']")).not.toBeNull();
   });
 
   it("only on account/phone: the same page applied as another base keeps its entry form", () => {
     const doc = load("account/phone");
-    applyAccount(doc, "account", { settings: { phoneLast4: "0042" } });
+    applyAccount(doc, "account", { settings: { phoneLast4: "0042" } }, undefined, false);
     expect(input("connected_phone_number")).toBeNull();
   });
 });
@@ -124,8 +124,8 @@ describe("applyAccount: Two Step Authentication (settings/account/2fa)", () => {
   it("Verification via SMS help reads 'Phone ******<last 4>', once", () => {
     const doc = load("account/2fa");
     expect(smsHelp()).toHaveLength(0);
-    applyAccount(doc, "account/2fa", { settings: { phoneLast4: "7788" } });
-    applyAccount(doc, "account/2fa", { settings: { phoneLast4: "7788" } });
+    applyAccount(doc, "account/2fa", { settings: { phoneLast4: "7788" } }, undefined, false);
+    applyAccount(doc, "account/2fa", { settings: { phoneLast4: "7788" } }, undefined, false);
     expect(smsHelp()).toHaveLength(1);
     expect(smsHelp()[0].textContent).toBe("Phone ******7788");
     expect(smsHelp()[0].tagName).toBe("P");
@@ -133,10 +133,10 @@ describe("applyAccount: Two Step Authentication (settings/account/2fa)", () => {
 
   it("no SMS help without a phone, nor on another base", () => {
     let doc = load("account/2fa");
-    applyAccount(doc, "account/2fa", { settings: {} });
+    applyAccount(doc, "account/2fa", { settings: {} }, undefined, false);
     expect(smsHelp()).toHaveLength(0);
     doc = load("account/2fa");
-    applyAccount(doc, "account", { settings: { phoneLast4: "7788" } });
+    applyAccount(doc, "account", { settings: { phoneLast4: "7788" } }, undefined, false);
     expect(smsHelp()).toHaveLength(0);
   });
 
@@ -144,7 +144,7 @@ describe("applyAccount: Two Step Authentication (settings/account/2fa)", () => {
     const doc = load("account/2fa");
     const b = () => [...document.querySelectorAll("#content .alert-text-wrapper b")].find((x) => /Email:\s*$/.test(x.previousSibling?.textContent ?? ""));
     expect(b()?.textContent).toBe("—");
-    applyAccount(doc, "account/2fa", { me: { email: "otp@example.com" } });
+    applyAccount(doc, "account/2fa", { me: { email: "otp@example.com" } }, undefined, false);
     expect(b()?.textContent).toBe("otp@example.com");
   });
 });
@@ -155,8 +155,8 @@ describe("applyAccount: Email (settings/account/email)", () => {
 
   it("Current email is users/me's email; verified adds OF's hint, once", () => {
     const doc = load("account/email");
-    applyAccount(doc, "account/email", { me: { email: "v@example.com", isEmailChecked: true } });
-    applyAccount(doc, "account/email", { me: { email: "v@example.com", isEmailChecked: true } });
+    applyAccount(doc, "account/email", { me: { email: "v@example.com", isEmailChecked: true } }, undefined, false);
+    applyAccount(doc, "account/email", { me: { email: "v@example.com", isEmailChecked: true } }, undefined, false);
     expect(input("authUser_email")!.value).toBe("v@example.com");
     expect(hints()).toHaveLength(1);
     expect(hints()[0].textContent).toBe("E-mail v@example.com is verified");
@@ -170,15 +170,15 @@ describe("applyAccount: Email (settings/account/email)", () => {
     ["truthy non-true", 1],
   ])("no hint unless isEmailChecked === true (%s)", (_name, isEmailChecked) => {
     const doc = load("account/email");
-    applyAccount(doc, "account/email", { me: { email: "n@example.com", isEmailChecked } });
+    applyAccount(doc, "account/email", { me: { email: "n@example.com", isEmailChecked } }, undefined, false);
     expect(input("authUser_email")!.value).toBe("n@example.com");
     expect(hints()).toHaveLength(0);
   });
 
   it("a later unverified apply takes the verified hint out", () => {
     const doc = load("account/email");
-    applyAccount(doc, "account/email", { me: { email: "v@example.com", isEmailChecked: true } });
-    applyAccount(doc, "account/email", { me: { email: "v@example.com", isEmailChecked: false } });
+    applyAccount(doc, "account/email", { me: { email: "v@example.com", isEmailChecked: true } }, undefined, false);
+    applyAccount(doc, "account/email", { me: { email: "v@example.com", isEmailChecked: false } }, undefined, false);
     expect(hints()).toHaveLength(0);
   });
 });
@@ -201,7 +201,7 @@ describe("applyAccount: Login sessions (settings/account/sessions)", () => {
 
   it("current session first in the first list ('Active now', ip • country), above Close all sessions", () => {
     const doc = load("account/sessions");
-    applyAccount(doc, "account/sessions", { sessions: SESSIONS });
+    applyAccount(doc, "account/sessions", { sessions: SESSIONS }, undefined, true);
     const [cur] = rows(0);
     expect(rows(0)).toHaveLength(1);
     expect(lists()[0].firstElementChild).toBe(cur);
@@ -210,16 +210,17 @@ describe("applyAccount: Login sessions (settings/account/sessions)", () => {
     const online = cur.querySelector(".session-time")!;
     expect(["session-time", "m-online", "g-blue"].map((c) => online.classList.contains(c))).toEqual([true, true, true]);
     expect(cur.querySelector(".b-session-location")?.textContent).toBe(" 1.2.3.4 • Slovenia ");
-    // Close all sessions stays the generator's: disabled, house tooltip.
+    // Close all sessions: usable and Wired (ticket 63, ofMirrorSettingsWrites), its house tooltip kept (D1).
     const close = lists()[0].querySelector("button")!;
     expect(close.textContent?.trim()).toBe("Close all sessions");
-    expect(close.disabled).toBe(true);
+    expect(close.disabled).toBe(false);
+    expect(close.hasAttribute("data-oi-wired")).toBe(true);
     expect(close.title).toBe(NOT_YET);
   });
 
   it("the others in the second list in order, with OF's M/D/YY h:mm a local time and 'ip - country'", () => {
     const doc = load("account/sessions");
-    applyAccount(doc, "account/sessions", { sessions: SESSIONS });
+    applyAccount(doc, "account/sessions", { sessions: SESSIONS }, undefined, false);
     expect(lists()[1].style.display).toBe("");
     const others = rows(1);
     expect(others.map((r) => r.querySelector("strong")?.textContent)).toEqual(["Firefox", "Safari", "Edge", "Opera"]);
@@ -241,36 +242,36 @@ describe("applyAccount: Login sessions (settings/account/sessions)", () => {
 
   it("idempotent: a second apply redraws the same rows", () => {
     const doc = load("account/sessions");
-    applyAccount(doc, "account/sessions", { sessions: SESSIONS });
-    applyAccount(doc, "account/sessions", { sessions: SESSIONS });
+    applyAccount(doc, "account/sessions", { sessions: SESSIONS }, undefined, false);
+    applyAccount(doc, "account/sessions", { sessions: SESSIONS }, undefined, false);
     expect(rows(0)).toHaveLength(1);
     expect(rows(1)).toHaveLength(4);
   });
 
   it("no other sessions: the second list is hidden; a later apply with some shows it again", () => {
     const doc = load("account/sessions");
-    applyAccount(doc, "account/sessions", { sessions: [SESSIONS[1]] });
+    applyAccount(doc, "account/sessions", { sessions: [SESSIONS[1]] }, undefined, false);
     expect(rows(0)).toHaveLength(1);
     expect(rows(1)).toHaveLength(0);
     expect(lists()[1].style.display).toBe("none");
-    applyAccount(doc, "account/sessions", { sessions: SESSIONS });
+    applyAccount(doc, "account/sessions", { sessions: SESSIONS }, undefined, false);
     expect(lists()[1].style.display).toBe("");
     expect(rows(1)).toHaveLength(4);
   });
 
   it("no current session: nothing prepended to the first list", () => {
     const doc = load("account/sessions");
-    applyAccount(doc, "account/sessions", { sessions: [SESSIONS[0]] });
+    applyAccount(doc, "account/sessions", { sessions: [SESSIONS[0]] }, undefined, false);
     expect(rows(0)).toHaveLength(0);
     expect(rows(1)).toHaveLength(1);
   });
 
   it("sessions not an array, or another base: nothing drawn", () => {
     let doc = load("account/sessions");
-    applyAccount(doc, "account/sessions", { sessions: { list: SESSIONS } });
+    applyAccount(doc, "account/sessions", { sessions: { list: SESSIONS } }, undefined, false);
     expect($$("[data-oi-session]")).toHaveLength(0);
     doc = load("account/sessions");
-    applyAccount(doc, "account", { sessions: SESSIONS });
+    applyAccount(doc, "account", { sessions: SESSIONS }, undefined, false);
     expect($$("[data-oi-session]")).toHaveLength(0);
   });
 });
@@ -281,9 +282,9 @@ describe("applySecurity: Fully private profile (settings/security)", () => {
   const row = () => input("setting_isPrivate")?.closest(".g-input__wrapper") ?? null;
   const performer = { isPerformer: true, isAdultContent: false };
 
-  it("a non-adult performer's switch right after Show activity status: value, disabled, tooltip, OF's names, help", () => {
+  it("a non-adult performer's switch right after Show activity status: value, wired, tooltip, OF's names, help", () => {
     const doc = load("security");
-    applySecurity(doc, "security", { me: performer, settings: { isPrivate: true } });
+    applySecurity(doc, "security", { me: performer, settings: { isPrivate: true } }, undefined, true);
     const r = row()!;
     expect(r).not.toBeNull();
     expect(r.previousElementSibling).toBe(input("setting_isVisibleOnline")!.closest(".g-input__wrapper"));
@@ -291,7 +292,8 @@ describe("applySecurity: Fully private profile (settings/security)", () => {
     const i = input("setting_isPrivate")!;
     expect(i.name).toBe("isPrivate");
     expect(i.checked).toBe(true);
-    expect(i.disabled).toBe(true);
+    expect(i.disabled).toBe(false); // ticket 60: saved on change
+    expect(i.hasAttribute("data-oi-wired")).toBe(true);
     expect(i.title).toBe(NOT_YET);
     const sw = r.querySelector("label.b-checkbox-switcher")!;
     expect(sw.getAttribute("for")).toBe("setting_isPrivate");
@@ -311,14 +313,14 @@ describe("applySecurity: Fully private profile (settings/security)", () => {
     [undefined, false],
   ])("isPrivate %j -> checked %j", (isPrivate, checked) => {
     const doc = load("security");
-    applySecurity(doc, "security", { me: performer, settings: { isPrivate } });
+    applySecurity(doc, "security", { me: performer, settings: { isPrivate } }, undefined, true);
     expect(input("setting_isPrivate")!.checked).toBe(checked);
   });
 
   it("idempotent: re-applying replaces the row with the new value", () => {
     const doc = load("security");
-    applySecurity(doc, "security", { me: performer, settings: { isPrivate: true } });
-    applySecurity(doc, "security", { me: performer, settings: { isPrivate: false } });
+    applySecurity(doc, "security", { me: performer, settings: { isPrivate: true } }, undefined, true);
+    applySecurity(doc, "security", { me: performer, settings: { isPrivate: false } }, undefined, true);
     expect($$("#setting_isPrivate")).toHaveLength(1);
     expect(input("setting_isPrivate")!.checked).toBe(false);
     expect($$("p.g-input__help").filter((p) => p.textContent === "Text will be hidden")).toHaveLength(1);
@@ -330,21 +332,21 @@ describe("applySecurity: Fully private profile (settings/security)", () => {
     ["not a performer", { isPerformer: false, isAdultContent: false }],
   ])("no switch for %s; a drawn one is taken out", (_name, me) => {
     const doc = load("security");
-    applySecurity(doc, "security", { me, settings: { isPrivate: true } });
+    applySecurity(doc, "security", { me, settings: { isPrivate: true } }, undefined, true);
     expect(row()).toBeNull();
-    applySecurity(doc, "security", { me: performer, settings: { isPrivate: true } });
+    applySecurity(doc, "security", { me: performer, settings: { isPrivate: true } }, undefined, true);
     expect(row()).not.toBeNull();
-    applySecurity(doc, "security", { me, settings: { isPrivate: true } });
+    applySecurity(doc, "security", { me, settings: { isPrivate: true } }, undefined, true);
     expect(row()).toBeNull();
   });
 
   it("me or settings not read yet: nothing drawn, nothing taken out", () => {
     const doc = load("security");
-    applySecurity(doc, "security", { me: performer });
-    applySecurity(doc, "security", { settings: { isPrivate: true } });
+    applySecurity(doc, "security", { me: performer }, undefined, true);
+    applySecurity(doc, "security", { settings: { isPrivate: true } }, undefined, true);
     expect(row()).toBeNull();
-    applySecurity(doc, "security", { me: performer, settings: { isPrivate: true } });
-    applySecurity(doc, "security", { me: { isPerformer: false }, settings: null });
+    applySecurity(doc, "security", { me: performer, settings: { isPrivate: true } }, undefined, true);
+    applySecurity(doc, "security", { me: { isPerformer: false }, settings: null }, undefined, true);
     expect(row()).not.toBeNull();
   });
 });
@@ -355,15 +357,16 @@ describe("applyMessaging: the Tip switch (settings/messaging)", () => {
   const tip = () => input("messageOnlyFromFriends");
   const LABEL = "Don't accept messages without a Tip from free followers whom you don't follow back";
 
-  it("while free: OF's switch in its own list before the Welcome message form, disabled with the value", () => {
+  it("while free: OF's switch in its own list before the Welcome message form, wired with the value", () => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", { me: { subscribePrice: 0 }, settings: { canAcceptMessageOnlyFromFriends: true } }, (u) => u);
+    applyMessaging(doc, "messaging", { me: { subscribePrice: 0 }, settings: { canAcceptMessageOnlyFromFriends: true } }, (u) => u, true);
     const list = tip()!.closest(".b-menu-list")!;
     expect(list.nextElementSibling).toBe(input("autoMessage")!.closest("form"));
     expect(list.querySelector(".g-input__label")?.textContent).toBe(LABEL);
     expect(tip()!.name).toBe("messageOnlyFromFriends");
     expect(tip()!.checked).toBe(true);
-    expect(tip()!.disabled).toBe(true);
+    expect(tip()!.disabled).toBe(false); // ticket 60: saved on change
+    expect(tip()!.hasAttribute("data-oi-wired")).toBe(true);
     expect(tip()!.title).toBe(NOT_YET);
     const sw = list.querySelector("label.b-checkbox-switcher")!;
     expect(sw.getAttribute("for")).toBe("messageOnlyFromFriends");
@@ -382,24 +385,24 @@ describe("applyMessaging: the Tip switch (settings/messaging)", () => {
     ["9.99", false],
   ])("subscribePrice %j -> tip row shown %j", (subscribePrice, shown) => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", { me: { subscribePrice }, settings: {} }, (u) => u);
+    applyMessaging(doc, "messaging", { me: { subscribePrice }, settings: {} }, (u) => u, true);
     expect(!!tip()).toBe(shown);
   });
 
   it("idempotent, and going paid takes it out", () => {
     const doc = load("messaging");
     const free = { me: { subscribePrice: 0 }, settings: { canAcceptMessageOnlyFromFriends: false } };
-    applyMessaging(doc, "messaging", free, (u) => u);
-    applyMessaging(doc, "messaging", free, (u) => u);
+    applyMessaging(doc, "messaging", free, (u) => u, true);
+    applyMessaging(doc, "messaging", free, (u) => u, true);
     expect($$("#messageOnlyFromFriends")).toHaveLength(1);
     expect(tip()!.checked).toBe(false);
-    applyMessaging(doc, "messaging", { me: { subscribePrice: 5 }, settings: {} }, (u) => u);
+    applyMessaging(doc, "messaging", { me: { subscribePrice: 5 }, settings: {} }, (u) => u, true);
     expect(tip()).toBeNull();
   });
 
   it("settings not read: no tip row", () => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", { me: { subscribePrice: 0 } }, (u) => u);
+    applyMessaging(doc, "messaging", { me: { subscribePrice: 0 } }, (u) => u, true);
     expect(tip()).toBeNull();
   });
 });
@@ -428,7 +431,7 @@ describe("applyMessaging: the welcome message (settings/messaging)", () => {
   it("maps each medium's still through img onto its <img src>, skips a medium with none, keeps order", () => {
     const doc = load("messaging");
     const img = vi.fn(proxy);
-    applyMessaging(doc, "messaging", welcome({ text: "Hi<br>there", media: MEDIA }), img);
+    applyMessaging(doc, "messaging", welcome({ text: "Hi<br>there", media: MEDIA }), img, true);
     expect(img.mock.calls.map((c) => c[0])).toEqual([PREVIEW, POSTER, LOOSE]);
     const pics = [...box()!.querySelectorAll("img")];
     expect(pics.map((p) => p.getAttribute("src"))).toEqual([proxy(PREVIEW), proxy(POSTER), proxy(LOOSE)]);
@@ -442,7 +445,7 @@ describe("applyMessaging: the welcome message (settings/messaging)", () => {
 
   it("text only: a text bubble with one <p> per line", () => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", welcome({ text: "<p>Hello</p><p>fan</p>" }), proxy);
+    applyMessaging(doc, "messaging", welcome({ text: "<p>Hello</p><p>fan</p>" }), proxy, true);
     expect(bubble()).toEqual({ "m-has-media": false, "m-photo": false, "m-text": true, "m-from-me": true });
     expect(box()!.querySelectorAll("img")).toHaveLength(0);
     expect([...box()!.querySelectorAll(".b-chat__message__text p")].map((p) => p.textContent)).toEqual(["Hello", "fan"]);
@@ -451,7 +454,7 @@ describe("applyMessaging: the welcome message (settings/messaging)", () => {
 
   it("media only: no text box, no m-text", () => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", welcome({ text: "", media: [MEDIA[0]] }), proxy);
+    applyMessaging(doc, "messaging", welcome({ text: "", media: [MEDIA[0]] }), proxy, true);
     expect(bubble()).toEqual({ "m-has-media": true, "m-photo": true, "m-text": false, "m-from-me": true });
     expect(box()!.querySelector(".b-chat__message__text-wrapper")).toBeNull();
     expect(box()!.querySelector("img")?.getAttribute("src")).toBe(proxy(PREVIEW));
@@ -460,7 +463,7 @@ describe("applyMessaging: the welcome message (settings/messaging)", () => {
   it("only a voice note and no text: an empty text bubble, img never called", () => {
     const doc = load("messaging");
     const img = vi.fn(proxy);
-    applyMessaging(doc, "messaging", welcome({ media: [MEDIA[2]] }), img);
+    applyMessaging(doc, "messaging", welcome({ media: [MEDIA[2]] }), img, true);
     expect(img).not.toHaveBeenCalled();
     expect(bubble()).toEqual({ "m-has-media": false, "m-photo": false, "m-text": true, "m-from-me": true });
     expect([...box()!.querySelectorAll(".b-chat__message__text p")].map((p) => p.textContent)).toEqual([""]);
@@ -468,7 +471,7 @@ describe("applyMessaging: the welcome message (settings/messaging)", () => {
 
   it("sits after the Welcome switch, then its disabled Delete and Edit with the elsewhere tooltip", () => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", welcome({ text: "Hi" }), proxy);
+    applyMessaging(doc, "messaging", welcome({ text: "Hi" }), proxy, true);
     expect(box()!.previousElementSibling).toBe(input("autoMessage")!.closest(".g-input__wrapper"));
     const row = box()!.nextElementSibling as HTMLElement;
     expect(row.hasAttribute("data-oi-welcome")).toBe(true);
@@ -488,21 +491,21 @@ describe("applyMessaging: the welcome message (settings/messaging)", () => {
     ["truthy non-true is off", 1, true],
   ])("switch %s -> g-disabled %j", (_name, replyOnSubscribe, grayed) => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", welcome({ text: "Hi" }, { settings: { replyOnSubscribe } }), proxy);
+    applyMessaging(doc, "messaging", welcome({ text: "Hi" }, { settings: { replyOnSubscribe } }), proxy, true);
     expect(box()!.classList.contains("g-disabled")).toBe(grayed);
   });
 
   it("settings not read: neither look (no g-disabled)", () => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", { me: {}, templates: [{ template: "reply_on_subscribe", text: "Hi" }] }, proxy);
+    applyMessaging(doc, "messaging", { me: {}, templates: [{ template: "reply_on_subscribe", text: "Hi" }] }, proxy, true);
     expect(box()).not.toBeNull();
     expect(box()!.classList.contains("g-disabled")).toBe(false);
   });
 
   it("idempotent: one welcome box and one button row after two applies", () => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", welcome({ text: "Hi", media: MEDIA }), proxy);
-    applyMessaging(doc, "messaging", welcome({ text: "Hi again" }), proxy);
+    applyMessaging(doc, "messaging", welcome({ text: "Hi", media: MEDIA }), proxy, true);
+    applyMessaging(doc, "messaging", welcome({ text: "Hi again" }), proxy, true);
     expect($$("[data-oi-welcome]")).toHaveLength(2);
     expect($$("[data-oi-welcome].b-settings__message")).toHaveLength(1);
     expect(box()!.querySelectorAll("img")).toHaveLength(0);
@@ -515,18 +518,18 @@ describe("applyMessaging: the welcome message (settings/messaging)", () => {
     ["empty template list", { me: {}, templates: [] }],
   ])("none when %s; a drawn one is taken out", (_name, d) => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", welcome({ text: "Hi" }), proxy);
+    applyMessaging(doc, "messaging", welcome({ text: "Hi" }), proxy, true);
     expect(box()).not.toBeNull();
-    applyMessaging(doc, "messaging", d, proxy);
+    applyMessaging(doc, "messaging", d, proxy, true);
     expect($$("[data-oi-welcome]")).toHaveLength(0);
   });
 
   it("templates or me not read: the drawn welcome stays", () => {
     const doc = load("messaging");
-    applyMessaging(doc, "messaging", welcome({ text: "Hi" }), proxy);
-    applyMessaging(doc, "messaging", { me: {} }, proxy);
+    applyMessaging(doc, "messaging", welcome({ text: "Hi" }), proxy, true);
+    applyMessaging(doc, "messaging", { me: {} }, proxy, true);
     expect(box()).not.toBeNull();
-    applyMessaging(doc, "messaging", { templates: [] }, proxy);
+    applyMessaging(doc, "messaging", { templates: [] }, proxy, true);
     expect(box()).not.toBeNull();
   });
 });

@@ -1,0 +1,27 @@
+{
+  "id": "settings--profile-cover-avatar",
+  "section": "settings",
+  "label": "[btn.dropdown-toggle]",
+  "pages": [
+    "settings/profile"
+  ],
+  "phase": 3,
+  "source": "of-js",
+  "of_js": {
+    "bundle": "60518.js",
+    "symbol": "Qe -> processFiles([file],{customThumbSize:kind}); Ye save -> users/patchUser",
+    "evidence": ".scratch/ofm-not-yet/captures/settings--profile-cover-avatar.json: upload steps then PATCH /users/me {avatar|header: item | \"\"}"
+  },
+  "facts": {
+    "upload_host": "of2transcoder.s3-accelerate.amazonaws.com",
+    "upload_host_source": "inferred: the Relay's POST /users/me/profile-image runs the same upload_media and service/of_upload.py _S3_BASE as Record video, whose storage PUT went to this host on the live run of 2026-11-21 (the Relay's wire log seq 45); this route's own PUT not measured yet (ticket 79)"
+  },
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T133810Z-ofm-live-efa6e4461",
+    "undo": "undone",
+    "note": "Restored, re-encoded by OF (not byte-identical); restore machine-verified read-only by the reverify run listed in .scratch/ofm-not-yet/map.md (mean pixel diff 1.45). The after-undo wait/poll logic is drilled on FakeOF only. Known residual: a late test write landing after the restore matched (OF's apply order unmeasured).",
+    "declared_undo": "Put the prior cover back: its picture (users/me header, downloaded through the Relay's /img before the trigger, kept in the evidence folder) is uploaded again on the same Relay route, then PATCH /users/me {header: <its new upload item>}; OF's Save sends only a new upload item or \"\" (of_js symbol Ye), never an old picture. Always sent (one after-write read cannot prove the write never lands); a reply without an upload item sends no PATCH. The URL is new and OF re-encodes the picture and applies it late (measured live 2026-11-21): the after-undo read is retaken, up to 60 s, until it names a cover URL other than the before and after-write ones that decodes to the kept picture's size with a mean absolute pixel difference under 12 (re-encode noise measured <= 5, another picture ~60; the kept bytes unchanged are not the re-encode); none by then: FAILED; both sha256 are recorded. A Creator with no cover has nothing to put back: the proof stops before any write"
+  }
+}

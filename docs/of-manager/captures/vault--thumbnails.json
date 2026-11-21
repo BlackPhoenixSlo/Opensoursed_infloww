@@ -1,0 +1,16 @@
+{
+  "id": "vault--thumbnails",
+  "section": "vault",
+  "label": "Vault tiles (Vault page, New post vault dialog)",
+  "pages": [
+    "vault/index",
+    "new-post/state-vault"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T122958Z-ofm-live-0cd69487c",
+    "undo": "none"
+  }
+}

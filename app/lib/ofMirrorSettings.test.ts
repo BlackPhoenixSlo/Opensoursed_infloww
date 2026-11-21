@@ -111,19 +111,19 @@ describe("Security's Fully private profile (OF: a performer's, unless isAdultCon
     doc(readFileSync(resolve(__dirname, "../public/of-mirror/pages/settings/security.html"), "utf8").replace(/^[\s\S]*?<body[^>]*>/, ""));
   const labels = (d: Document) => [...d.querySelectorAll("#content .g-input__label")].slice(0, 3).map((l) => l.textContent?.trim());
 
-  it("shows the switch after Show activity status with its help, the model's value, disabled", () => {
+  it("shows the switch after Show activity status with its help, the model's value, wired (ticket 60)", () => {
     const d = page();
-    for (let i = 0; i < 2; i++) applyPageExtras(d, "security", { me: { isPerformer: true, isAdultContent: false }, settings: { isPrivate: true } });
+    for (let i = 0; i < 2; i++) applyPageExtras(d, "security", { me: { isPerformer: true, isAdultContent: false }, settings: { isPrivate: true } }, true);
     expect(labels(d)).toEqual(["Show activity status", "Fully private profile", "Show fans count on your profile"]);
     const sw = input(d, "setting_isPrivate");
-    expect([sw.name, sw.checked, sw.disabled, sw.title]).toEqual(["isPrivate", true, true, "Not available in Inflowwww yet"]);
+    expect([sw.name, sw.checked, sw.disabled, sw.title]).toEqual(["isPrivate", true, false, "Not available in Inflowwww yet"]);
     expect(sw.closest(".g-input__wrapper")!.querySelector(".g-input__help")!.textContent).toBe("Text will be hidden");
     expect(d.querySelectorAll("#setting_isPrivate")).toHaveLength(1);
   });
 
   it("none for an adult-content page (OF's v-if)", () => {
     const d = page();
-    applyPageExtras(d, "security", { me: { isPerformer: true, isAdultContent: true }, settings: { isPrivate: false } });
+    applyPageExtras(d, "security", { me: { isPerformer: true, isAdultContent: true }, settings: { isPrivate: false } }, true);
     expect(d.getElementById("setting_isPrivate")).toBeNull();
     expect(labels(d)[1]).toBe("Show fans count on your profile");
   });
@@ -131,7 +131,7 @@ describe("Security's Fully private profile (OF: a performer's, unless isAdultCon
   it("no switch drawn while users/me/settings loads or after it failed (never a made-up off)", () => {
     for (const settings of [undefined, null]) {
       const d = page();
-      applyPageExtras(d, "security", { me: { isPerformer: true, isAdultContent: false }, settings });
+      applyPageExtras(d, "security", { me: { isPerformer: true, isAdultContent: false }, settings }, true);
       expect(d.getElementById("setting_isPrivate")).toBeNull();
       expect(labels(d)[1]).toBe("Show fans count on your profile");
     }
@@ -143,19 +143,19 @@ describe("Messaging (OF's settings-messaging.js)", () => {
     doc(readFileSync(resolve(__dirname, "../public/of-mirror/pages/settings/messaging.html"), "utf8").replace(/^[\s\S]*?<body[^>]*>/, ""));
   const welcome = { id: "1", template: "reply_on_subscribe", text: "<p>Synthetic hello</p><p>Second line</p>" };
 
-  it("free: the Tip switch before Welcome message, the model's value, disabled; the welcome template with Delete and Edit disabled, pointing at Delayed welcome", () => {
+  it("free: the Tip switch before Welcome message, the model's value, wired (ticket 60); the welcome template with Delete and Edit disabled, pointing at Delayed welcome", () => {
     const d = page();
     for (let i = 0; i < 2; i++)
       applyPageExtras(d, "messaging", {
         me: { subscribePrice: 0, canChat: true },
         settings: { canAcceptMessageOnlyFromFriends: true, replyOnSubscribe: false },
         templates: [{ id: "2", template: null, text: "other" }, welcome],
-      });
+      }, true);
     const tip = input(d, "messageOnlyFromFriends");
     expect(tip.closest(".g-input__wrapper")!.querySelector(".g-input__label")!.textContent).toBe(
       "Don't accept messages without a Tip from free followers whom you don't follow back",
     );
-    expect([tip.checked, tip.disabled, tip.title]).toEqual([true, true, "Not available in Inflowwww yet"]);
+    expect([tip.checked, tip.disabled, tip.title]).toEqual([true, false, "Not available in Inflowwww yet"]);
     expect(tip.closest(".b-menu-list")!.nextElementSibling!.tagName).toBe("FORM");
     expect(d.querySelectorAll("#messageOnlyFromFriends")).toHaveLength(1);
     const box = d.querySelectorAll(".b-settings__message");
@@ -181,7 +181,7 @@ describe("Messaging (OF's settings-messaging.js)", () => {
         d,
         "messaging",
         { me: { subscribePrice: 5, canChat: true }, settings: { replyOnSubscribe: true }, templates: [{ id: "1", template: "reply_on_subscribe", text, media }] },
-        (u) => `/img?u=${encodeURIComponent(u)}`,
+        true, (u) => `/img?u=${encodeURIComponent(u)}`,
       );
     run("<p>Synthetic hello</p>");
     run("<p>Synthetic hello</p>");
@@ -206,25 +206,25 @@ describe("Messaging (OF's settings-messaging.js)", () => {
   it("the welcome text keeps a paragraph's line breaks (<br>, nl2br's \"<br />\\n\" once), as bioOf", () => {
     const d = page();
     const text = "<p>Synthetic hello<br />\nSecond line</p><p>Third</p>";
-    applyPageExtras(d, "messaging", { me: { subscribePrice: 5, canChat: true }, settings: {}, templates: [{ ...welcome, text }] });
+    applyPageExtras(d, "messaging", { me: { subscribePrice: 5, canChat: true }, settings: {}, templates: [{ ...welcome, text }] }, true);
     expect([...d.querySelectorAll(".b-settings__message p")].map((p) => p.textContent)).toEqual(["Synthetic hello", "Second line", "Third"]);
   });
 
   it("settings not read (loading or failed): no Tip switch, and the welcome neither grayed nor claimed on", () => {
     const d = page();
-    applyPageExtras(d, "messaging", { me: { subscribePrice: 0, canChat: true }, templates: [welcome] });
+    applyPageExtras(d, "messaging", { me: { subscribePrice: 0, canChat: true }, templates: [welcome] }, true);
     expect(d.getElementById("messageOnlyFromFriends")).toBeNull();
     const box = d.querySelector(".b-settings__message")!;
     expect(box.classList.contains("g-disabled")).toBe(false);
     // Once read, both show: off grays the welcome.
-    applyPageExtras(d, "messaging", { me: { subscribePrice: 0, canChat: true }, settings: { replyOnSubscribe: false }, templates: [welcome] });
+    applyPageExtras(d, "messaging", { me: { subscribePrice: 0, canChat: true }, settings: { replyOnSubscribe: false }, templates: [welcome] }, true);
     expect(d.getElementById("messageOnlyFromFriends")).not.toBeNull();
     expect(d.querySelector(".b-settings__message")!.classList.contains("g-disabled")).toBe(true);
   });
 
   it("priced: no Tip switch; no welcome template: nothing under the switch", () => {
     const d = page();
-    applyPageExtras(d, "messaging", { me: { subscribePrice: 5, canChat: true }, settings: {}, templates: [] });
+    applyPageExtras(d, "messaging", { me: { subscribePrice: 5, canChat: true }, settings: {}, templates: [] }, true);
     expect(d.getElementById("messageOnlyFromFriends")).toBeNull();
     expect(d.querySelector(".b-settings__message")).toBeNull();
   });
@@ -283,7 +283,7 @@ describe("Account > Login sessions (OF's settings-sessions.js, read-only)", () =
     const d = page();
     expect(rows(d)).toEqual([]);
     expect(d.querySelector("[data-oi-empty]")).toBeNull(); // no invented copy
-    for (let i = 0; i < 2; i++) applyPageExtras(d, "account/sessions", { sessions: SESSIONS });
+    for (let i = 0; i < 2; i++) applyPageExtras(d, "account/sessions", { sessions: SESSIONS }, true);
     expect(rows(d)).toEqual([
       "Chrome 1.0, Mac OS 1, Apple Active now 203.0.113.1 • Synthetic Land",
       "Firefox 1.0, Linux 1 10/9/26 3:04 pm 203.0.113.2 - Synthetic Land",
@@ -296,13 +296,16 @@ describe("Account > Login sessions (OF's settings-sessions.js, read-only)", () =
     expect(second.style.display).toBe("");
   });
 
-  it("every control stays disabled with the tooltip; no other sessions: no second list", () => {
+  it("every control but Close all sessions stays disabled; all keep the tooltip; no other sessions: no second list", () => {
     const d = page();
-    applyPageExtras(d, "account/sessions", { sessions: [SESSIONS[1]] });
+    applyPageExtras(d, "account/sessions", { sessions: [SESSIONS[1]] }, true);
     expect(rows(d)).toHaveLength(1);
     expect(d.querySelectorAll<HTMLElement>(".b-sessions-list")[1].style.display).toBe("none");
     const buttons = [...d.querySelectorAll<HTMLButtonElement>("#content button")];
     expect(buttons.length).toBeGreaterThan(0);
-    for (const b of buttons) expect([b.disabled, b.title]).toEqual([true, "Not available in Inflowwww yet"]);
+    // ticket 63: Close all sessions is usable (ofMirrorSettingsWrites); its Not-yet title stays (D1).
+    for (const b of buttons) {
+      expect([b.disabled, b.title]).toEqual([b.textContent?.trim() !== "Close all sessions", "Not available in Inflowwww yet"]);
+    }
   });
 });

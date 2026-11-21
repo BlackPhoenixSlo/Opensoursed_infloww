@@ -1,0 +1,17 @@
+{
+  "id": "settings--promotion-add-bundle",
+  "section": "settings",
+  "label": "Add bundle",
+  "pages": [
+    "settings/subscription/promotion-campaign/modal-1",
+    "settings/subscription/promotion-campaign/modal-2",
+    "settings/subscription/promotion-campaign/modal-3"
+  ],
+  "phase": 3,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending: disabled with all three durations (capture 2026-11-21)"
+  }
+}

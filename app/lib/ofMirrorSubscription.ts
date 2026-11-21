@@ -21,6 +21,16 @@
  *   (!canCreateTrial, which also disables the model's own links' Copy link).
  * - Tracking links: `/campaigns` (campaignName, created, countSubscribers, countTransitions); Delete (Remove once OF
  *   marks it isDeleted) asks first, then DELETE /campaigns/{id}; Copy link copies OF's `https://onlyfans.com/<username>/c<campaignCode>`.
+ *   Sort (ticket 61; base, modal and kebab pages): its field and order go in the app URL (?field=, ?sort=) and the Relay
+ *   sorts (`/campaigns?field=&sort=`, `inferred`); the list keeps the served order. The kebab State page's radios open it.
+ *   Ticket 74 (record settings--tracking-shared-with-you, measured-in-js; base, modal and kebab pages): "Shared with you"
+ *   (?tab=shared) reads `/campaigns/share-access` (OF sends field `shared` for Name there), its rows "Shared from @owner"
+ *   with no Delete; a row's "Share link's statistics with another user" opens the share dialog (ofMirrorOffers
+ *   shareStatsDialog), whose Share POSTs `/campaigns/share-access` {campaignId, userId}; a link already shared shows
+ *   "Shared with @user". Tab and hint keep their Not-yet title (D1); behind a modal they take a key (Enter).
+ * - Ticket 62: on the link and promotion modal and kebab State pages, the base page's openers (Create new tracking link,
+ *   Create new free trial link, Start promotion campaign, Add bundle) are its links again, gated as there; a promotion's
+ *   Claims count opens "Offer claimed" (modal-3; the base page has no opener for it). Each keeps its Not-yet title (D1).
  * - Free trial links: `/trials` (trialLinkName and its length, "- expired", created, offer limit, claims, clicks);
  *   Delete/Remove asks first, then DELETE /trials/{id}; Copy link copies its `url`.
  * A link page's list status is OF's own: the preloader while loading, "No results :(" when empty (and with all models),
@@ -29,17 +39,19 @@
 
 import { useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
+import { useOfmNewWrites } from "@/lib/ofMirrorNewWrites";
 import { relay } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { plain } from "@/lib/ofMirrorData";
 import { fillSlot, make, setAvatar, valid } from "@/lib/ofMirrorDom";
 import { onOffer, promotionTitle, type Promotion } from "@/lib/ofMirrorFeedsStrip";
 import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
-import { bundleOptions, NO_BUNDLES_LEFT, trialsRoute, trialViewOf, type BundleSettings } from "@/lib/ofMirrorOffers";
+import { showMenu, ORDER_GROUP, type MenuOption } from "@/lib/ofMirrorMenu";
+import { bundleOptions, current, NO_BUNDLES_LEFT, shareStatsDialog, trialsRoute, trialViewOf, type BundleSettings, type Performer } from "@/lib/ofMirrorOffers";
 import { toast } from "@/lib/ofMirrorPost";
-import { message, note, NOT_YET, ofConfirm, ofErrorMessage, type Ask } from "@/lib/ofMirrorWrites";
+import { message, note, NOT_YET, ofConfirm, ofErrorMessage, SELECT_MODEL, type Ask } from "@/lib/ofMirrorWrites";
 import { SUB_ROUTES, type SubPart } from "@/lib/ofSubRoutes";
 
 export interface SubPromotion extends Promotion {
@@ -62,6 +74,10 @@ export interface Campaign {
   countTransitions?: number | null;
   createdAt?: string | null;
   isDeleted?: boolean | null;
+  /** ticket 74: the link's owner (another creator's, on Shared with you). */
+  user?: { username?: string | null } | null;
+  /** ticket 74: whom the owner shared the link's statistics with. */
+  sharedWith?: { username?: string | null } | null;
 }
 export interface Trial {
   id?: number | string;
@@ -291,9 +307,26 @@ function linkDate(row: Element, label: string, iso: string | null | undefined) {
   return value;
 }
 
-function campaignRow(doc: Document, tpl: HTMLElement, c: Campaign, username: string | null | undefined): HTMLElement {
+function campaignRow(doc: Document, tpl: HTMLElement, c: Campaign, username: string | null | undefined, canShare: boolean, shared = false): HTMLElement {
   const el = clone(tpl);
   const off = !!c.isDeleted;
+  // ticket 74: the row's share hint shares this link (bindTrackingSort); a link shared with this model is not its own.
+  const hint = el.querySelector<HTMLElement>(".b-hint-offer");
+  const withUser = shared ? c.user?.username : c.sharedWith?.username;
+  if (hint && withUser) {
+    for (const a of ["aria-disabled", "title", "style"]) hint.removeAttribute(a);
+    sharedLine(doc, hint, shared, withUser);
+  } else if (shared || off || c.id == null) hint?.remove();
+  else if (hint && canShare) {
+    hint.removeAttribute("aria-disabled");
+    hint.style.opacity = "";
+    hint.classList.add("g-pointer-cursor");
+    hint.setAttribute("role", "button");
+    hint.tabIndex = 0;
+    hint.dataset.oiShare = "";
+    hint.dataset.oiCampaign = String(c.id);
+    hint.setAttribute("data-oi-wired", "");
+  }
   const details = el.querySelector(".b-offer-join__details");
   if (details?.firstChild?.nodeType === 3) details.firstChild.textContent = ` ${c.campaignName ?? ""} `;
   const created = linkDate(el, "Tracking link created", c.createdAt);
@@ -308,13 +341,15 @@ function campaignRow(doc: Document, tpl: HTMLElement, c: Campaign, username: str
   text(clicks, ` ${c.countTransitions ?? 0} `);
   if (off) [created, clicks].forEach(gray);
   const del = button(el, "Delete");
+  if (shared) del?.remove();
   wire(del, off ? "Remove" : "Delete");
-  if (del && c.id != null)
+  if (del && c.id != null && !shared)
     actions.set(del, { kind: "campaign", id: String(c.id), ask: ASKS.campaign, route: `${SUB_ROUTES.campaigns}/${c.id}` });
   const copy = button(el, "Copy link");
-  if (copy && !off && username && c.campaignCode != null) {
+  const owner = shared ? c.user?.username : username;
+  if (copy && !off && owner && c.campaignCode != null) {
     wire(copy);
-    actions.set(copy, { kind: "campaign", id: String(c.id ?? ""), ask: null, route: "", copy: campaignLink(username, c.campaignCode) });
+    actions.set(copy, { kind: "campaign", id: String(c.id ?? ""), ask: null, route: "", copy: campaignLink(owner, c.campaignCode) });
   } else if (copy) copy.disabled = true; // OF disables a deleted link's
   return el;
 }
@@ -439,8 +474,44 @@ function gate(doc: Document, dialog: string, why: string | null) {
     a.setAttribute("aria-disabled", String(off));
     // OF's [disabled] g-btn takes no pointer events; this one keeps them so its tooltip shows.
     a.classList.toggle("g-pointer-events-auto", off);
-    if (off) a.title = why;
+    if (a.hasAttribute("data-oi-ny") && !LIVE_OPENERS.has(dialog)) a.title = NOT_YET; // ticket 62: a rebuilt opener keeps its Not-yet title until its Live pass (D1)
+    else if (off) a.title = why;
     else a.removeAttribute("title");
+  }
+}
+
+// ---------------------------------------------------------------- ticket 62: openers behind the modals
+const SUB = "settings/subscription";
+/** The base page's openers [under, label, dialog], rebuilt on the pages under `under` (ASSUMPTION: at runtime until
+ * ticket 28 regenerates them). */
+const OPENERS: [string, string, string][] = [
+  ["tracking-links/", "Create new tracking link", "tracking-links/modal-1"],
+  ["trial-links/", "Create new free trial link", "trial-links/modal-1"],
+  ["promotion-campaign/", "Start promotion campaign", "promotion-campaign/modal-1"],
+  ["promotion-campaign/", "Add bundle", "promotion-campaign/modal-2"],
+];
+/** The openers whose Live proof passed, by dialog: their Not-yet title drops (D1; a gated one then shows OF's reason,
+ * as the base page's). 2026-11-21, docs/of-manager/captures/: Create new tracking link
+ * (settings--tracking-links-create-new.json), Create new free trial link (settings--trial-links-create-new.json), Start
+ * promotion campaign (settings--promotion-start.json). Add bundle is still parked. */
+const LIVE_OPENERS = new Set(["tracking-links/modal-1", "trial-links/modal-1", "promotion-campaign/modal-1"]);
+/** `b` as the base page's link to `dialog` (its classes kept, its Not-yet title until its Live pass, marked Wired). */
+function asLink(doc: Document, b: Element, dialog: string): HTMLAnchorElement {
+  const a = doc.createElement("a");
+  for (const { name, value } of [...b.attributes]) if (name !== "disabled" && name !== "type") a.setAttribute(name, value);
+  if (LIVE_OPENERS.has(dialog)) a.removeAttribute("title");
+  a.append(...b.childNodes);
+  a.setAttribute("href", `/of-manager/${SUB}/${dialog}`);
+  a.setAttribute("target", "_top");
+  a.setAttribute("data-oi-wired", "");
+  a.setAttribute("data-oi-ny", "");
+  b.replaceWith(a);
+  return a;
+}
+function openers(doc: Document, page: string) {
+  for (const [under, label, dialog] of OPENERS) {
+    if (!page.startsWith(`${SUB}/${under}`)) continue;
+    for (const b of doc.querySelectorAll("button.g-btn")) if (b.textContent?.trim() === label) asLink(doc, b, dialog);
   }
 }
 
@@ -477,17 +548,174 @@ function status(doc: Document, s: PartState<unknown> | undefined) {
   });
 }
 
-/** Draw `data` on the Subscription page at `page` in `doc` (the parts it shows; a part with no rows draws none). */
+// ---------------------------------------------------------------- ticket 61: the tracking links Sort
+const TRACKING_PAGE = "settings/subscription/tracking-links";
+/** OF's tracking links Sort fields (its kebab State page's campaign-field radios), the default first. `inferred` (D29):
+ * the names are those radios' and the Reach read's (campaigns_stats `field`); no capture shows this page's own read. */
+export const TRACKING_SORT: MenuOption[] = [
+  { value: "created_date", label: "Created" },
+  { value: "name", label: "Name" },
+  { value: "subscribers_counts", label: "Subscribers count" },
+  { value: "clicks_count", label: "Clicks count" },
+  { value: "shared", label: "Shared" },
+];
+export interface TrackingView {
+  field: string | null;
+  sort: "asc" | "desc" | null;
+  /** ticket 74: "Shared with you" (?tab=shared); absent on Your links. */
+  tab?: "shared";
+}
+const withTab = (view: TrackingView, tab: TrackingView["tab"] | null): TrackingView => {
+  const { tab: _drop, ...rest } = view;
+  void _drop;
+  return tab ? { ...rest, tab } : rest;
+};
+export const trackingViewOf = (params: { get(k: string): string | null }): TrackingView => {
+  const field = params.get("field");
+  const sort = params.get("sort");
+  const view: TrackingView = { field: field && TRACKING_SORT.some((o) => o.value === field) ? field : null, sort: sort === "asc" || sort === "desc" ? sort : null };
+  return withTab(view, params.get("tab") === "shared" ? "shared" : null);
+};
+/** ticket 74: the "Shared with you" tab's Relay read (OF's /campaigns/share-access). */
+export const TRACKING_SHARED_ROUTE = "/api/of/v2/campaigns/share-access";
+/**
+ * The Relay read for `view`: bare (OF's unpaged list) until a sort is picked, then exactly its field and order. On
+ * Shared with you, OF's share-access read, where OF sends field `shared` for Name (the record's note).
+ */
+export function trackingRoute(view: TrackingView): string {
+  const base = view.tab === "shared" ? TRACKING_SHARED_ROUTE : SUB_ROUTES.campaigns;
+  if (!view.field && !view.sort) return base;
+  const field = view.field ?? "created_date";
+  return `${base}?field=${view.tab === "shared" && field === "name" ? "shared" : field}&sort=${view.sort ?? "desc"}`;
+}
+/** `view` after picking `value` in the menu's `group` ("field", else the order): both named, as the pick reads them. */
+export const trackingPick = (view: TrackingView, group: string, value: string): TrackingView => {
+  const next = withTab({ field: view.field ?? "created_date", sort: view.sort ?? "desc" }, view.tab);
+  return group === "field" ? { ...next, field: value } : { ...next, sort: value === "asc" ? "asc" : "desc" };
+};
+export const trackingHref = (view: TrackingView) => {
+  const q = new URLSearchParams();
+  if (view.field) q.set("field", view.field);
+  if (view.sort) q.set("sort", view.sort);
+  if (view.tab) q.set("tab", view.tab);
+  const s = q.toString();
+  return `/of-manager/${TRACKING_PAGE}${s ? `?${s}` : ""}`;
+};
+/** Un-grey `el` and mark it Wired; its Not-yet title stays (D1). */
+function wireKeepTitle(el: HTMLInputElement | HTMLButtonElement | null) {
+  if (!el) return;
+  el.disabled = false;
+  el.setAttribute("data-oi-wired", "");
+}
+
+/** Un-grey `el`, mark it Wired and drop its Not-yet title: a read whose Live proof passed (D1), so ungated. */
+function wireLive(el: HTMLInputElement | HTMLButtonElement | null) {
+  wireKeepTitle(el);
+  el?.removeAttribute("title");
+}
+
+/** ticket 74: the share dialog's search and Share (POST /campaigns/share-access {campaignId, userId}). */
+export interface TrackingShareHandlers {
+  searchPerformers(query: string): Promise<Performer[]>;
+  share(body: { campaignId: number; userId: number }): Promise<unknown>;
+}
+
+/**
+ * The tracking links pages' Sort (base, modal-1 and kebab: OF's field and order menu, then `navigate` to its URL; no
+ * model: the Select-a-model note) and the kebab State page's radios (checked as `view`, each Select link to its pick's
+ * URL, Toggle back to the same sort). Both passed their Live proofs (D1, 2026-11-21, docs/of-manager/captures/settings--
+ * tracking-links-sort.json, sweep label "Sort" on all three pages, and settings--tracking-links-sort-radios.json, "[b-input-
+ * radio]" on the kebab page): their Not-yet titles drop. Ticket 74: the Your links / Shared with you tabs (`navigate` to the tab, the sort
+ * kept) and each row's share hint (click, or Enter behind a modal: the share dialog; no model: the note). Returns an
+ * unbind.
+ */
+export function bindTrackingSort(
+  doc: Document,
+  page: string,
+  view: TrackingView,
+  navigate: ((href: string) => void) | null,
+  share: TrackingShareHandlers | null = null,
+): () => void {
+  if (page !== TRACKING_PAGE && !page.startsWith(`${TRACKING_PAGE}/`)) return () => {};
+  const title = doc.querySelector(".b-content-filter__title");
+  if (title) title.textContent = view.field && view.field !== "created_date" ? (TRACKING_SORT.find((o) => o.value === view.field)?.label ?? "Recent") : "Recent";
+  const sortBtn = doc.querySelector<HTMLButtonElement>("button[aria-label='Sort']");
+  wireLive(sortBtn);
+  const cur = { field: view.field ?? "created_date", order: view.sort ?? "desc" };
+  for (const r of doc.querySelectorAll<HTMLInputElement>("input[name='campaign-field'], input[name='campaign-sort']")) {
+    const group = r.name === "campaign-field" ? "field" : "order";
+    const on = r.value === cur[group];
+    r.checked = on;
+    r.toggleAttribute("checked", on);
+    wireLive(r);
+    r.closest("[role='menuitem']")?.querySelector("a.of-state-link")?.setAttribute("href", trackingHref(trackingPick(view, group, r.value)));
+  }
+  doc.querySelector(".b-dropdown-wrapper > a.of-state-link[aria-label='Toggle']")?.setAttribute("href", trackingHref(view));
+  // ticket 74: the tabs, current as `view`; Shared with you keeps its Not-yet title (D1).
+  const yours = doc.querySelector<HTMLElement>("#Your-links");
+  const sharedTab = doc.querySelector<HTMLButtonElement>("#Shared-with-you");
+  current(yours, view.tab !== "shared");
+  current(sharedTab, view.tab === "shared");
+  wireKeepTitle(sharedTab);
+  yours?.setAttribute("role", "button");
+  const openShare = (hint: HTMLElement) => {
+    if (!share) return note(doc, hint, SELECT_MODEL);
+    const campaignId = Number(hint.dataset.oiCampaign);
+    if (campaignId) shareStatsDialog(doc, { searchPerformers: share.searchPerformers, send: (userId) => share.share({ campaignId, userId }) });
+  };
+  const onClick = (ev: MouseEvent) => {
+    const t = ev.target as Element | null;
+    if (!t?.closest) return;
+    const tab = t.closest<HTMLElement>("#Your-links, #Shared-with-you");
+    if (tab) {
+      ev.preventDefault();
+      const want = tab.id === "Shared-with-you" ? "shared" : null;
+      if (!navigate) return note(doc, tab, SELECT_MODEL);
+      if (want !== (view.tab ?? null)) navigate(trackingHref(withTab(view, want)));
+      return;
+    }
+    const hint = t.closest<HTMLElement>("[data-oi-share][data-oi-campaign]");
+    if (hint) {
+      ev.preventDefault();
+      return openShare(hint);
+    }
+    if (!sortBtn || t.closest("button[aria-label='Sort']") !== sortBtn) return;
+    ev.preventDefault();
+    if (!navigate) return note(doc, sortBtn, SELECT_MODEL);
+    showMenu(doc, sortBtn, [{ name: "field", options: TRACKING_SORT, value: cur.field }, ORDER_GROUP(cur.order)], (group, value) => navigate(trackingHref(trackingPick(view, group, value))));
+  };
+  // A hint behind an open modal takes Enter (the modal covers it from the mouse), as OF's focusable hint.
+  const onKey = (ev: KeyboardEvent) => {
+    const hint = (ev.target as Element | null)?.closest?.<HTMLElement>("[data-oi-share][data-oi-campaign]");
+    if (!hint || (ev.key !== "Enter" && ev.key !== " ")) return;
+    ev.preventDefault();
+    openShare(hint);
+  };
+  doc.addEventListener("click", onClick);
+  doc.addEventListener("keydown", onKey);
+  return () => {
+    doc.removeEventListener("click", onClick);
+    doc.removeEventListener("keydown", onKey);
+  };
+}
+
+/**
+ * Draw `data` on the Subscription page at `page` in `doc` (the parts it shows; a part with no rows draws none).
+ * `canShare` false (OFM_NEW_WRITES_ENABLED off, ofMirrorNewWrites): a tracking link row's Share hint stays Not yet.
+ */
 export function applySubscription(
   doc: Document,
   page: string,
   data: SubData,
   me: OfMe | undefined,
+  canShare: boolean,
   img: (u: string) => string = (u) => u,
   trialsShared = false,
   settings?: BundleSettings,
+  campaignsShared = false,
 ): void {
   const parts = subscriptionParts(page);
+  openers(doc, page); // ticket 62
   const tpl = (name: string) => doc.querySelector<HTMLElement>(`[data-oi-template='${name}']`);
   // OF's m-disabled-block on the section headers: no price, or (promotions) no right to create one.
   const free = me ? !me.subscribePrice : null;
@@ -498,6 +726,12 @@ export function applySubscription(
     if (t) {
       put(t, (data.promotions?.rows ?? []).map((p) => promotionRow(doc, t, p, me, img)));
       boundList(t.parentElement);
+      // ticket 62: behind a modal, Claims count opens "Offer claimed" (the base page has no opener for it).
+      if (page.startsWith(`${SUB}/promotion-campaign/`))
+        for (const row of t.parentElement?.querySelectorAll(":scope > [data-oi-row]") ?? []) {
+          const c = cell(row, "Claims count");
+          if (c?.matches("button")) asLink(doc, c, "promotion-campaign/modal-3");
+        }
     }
     if (free !== null) header("Profile promotion campaign")?.classList.toggle("m-disabled-block", free || me?.canCreatePromotion === false);
     // OF's "Start promotion campaign": disabled with no price, or for a page that is no performer's, may not promote or earn.
@@ -515,7 +749,7 @@ export function applySubscription(
     if (!parts.includes(part)) continue;
     const t = tpl("link-row");
     const rows = (data[part]?.rows ?? []) as (Campaign & Trial)[];
-    if (t) put(t, rows.map((r) => (part === "campaigns" ? campaignRow(doc, t, r, me?.username) : trialRow(doc, t, r, trialsShared, !me || !!me.canCreateTrial))));
+    if (t) put(t, rows.map((r) => (part === "campaigns" ? campaignRow(doc, t, r, me?.username, canShare, campaignsShared) : trialRow(doc, t, r, trialsShared, !me || !!me.canCreateTrial))));
     // OF's "Create new free trial link": disabled while the model may not create free trials (authUser.canCreateTrial).
     if (part === "trials") {
       gate(doc, "trial-links/modal-1", me ? (me.canCreateTrial ? "" : free ? PRICE_FIRST : OF_DISALLOWS) : null);
@@ -590,9 +824,15 @@ export function useOfSubscription(frameRef: RefObject<HTMLIFrameElement | null>,
   const qc = useQueryClient();
   const page = /^\/of-mirror\/pages\/(.+)\.html$/.exec(src)?.[1] ?? "";
   const parts = subscriptionParts(page);
-  const campaigns = useQuery(subQuery(accountId, "campaigns", parts.includes("campaigns")));
+  const router = useRouter();
+  const params = useSearchParams();
+  // The tracking links sort (ticket 61: ?field=, ?sort=), sorted by the Relay.
+  const trackingKey = JSON.stringify(trackingViewOf(params));
+  const trackingShared = trackingViewOf(params).tab === "shared";
+  const newWrites = useOfmNewWrites(parts.includes("campaigns")); // OFM_NEW_WRITES_ENABLED off: a row's Share hint stays Not yet
+  const campaigns = useQuery(subQuery(accountId, "campaigns", parts.includes("campaigns"), trackingRoute(trackingViewOf(params))));
   // The free trial links tab and sort (ofMirrorOffers: ?tab=shared, ?field=, ?sort=).
-  const trialView = trialViewOf(useSearchParams());
+  const trialView = trialViewOf(params);
   const trials = useQuery(subQuery(accountId, "trials", parts.includes("trials"), trialsRoute(trialView)));
   const meQuery = useQuery({ ...ofMeQuery(accountId), enabled: !!accountId && parts.length > 0 });
   // Add bundle's options (OF's isAddBundleDisabled reads canAddSubscriberByBundle), shared with the bundle dialog's read.
@@ -629,13 +869,29 @@ export function useOfSubscription(frameRef: RefObject<HTMLIFrameElement | null>,
       confirm: (ask) => (frame.contentDocument ? ofConfirm(frame.contentDocument, ask) : Promise.resolve(false)),
       retry: () => void qc.invalidateQueries({ queryKey: ["of-settings", "subscription"] }),
     };
+    // ticket 74: the tracking share dialog's search (as the trial one's, ofMirrorOffers) and Share.
+    const share: TrackingShareHandlers | null = accountId
+      ? {
+          searchPerformers: (q) =>
+            relay.get<Performer[] | { list?: Performer[] }>(`/api/of/v2/users/performers-search?query=${encodeURIComponent(q)}&limit=10`, { accountId }).then((r) => (Array.isArray(r) ? r : (r?.list ?? []))),
+          share: (body) => relay.post(TRACKING_SHARED_ROUTE, body, { accountId }).then((r) => {
+            void qc.invalidateQueries({ queryKey: ["of-settings", "subscription"] });
+            return r;
+          }),
+        }
+      : null;
     let unbind: (() => void) | undefined;
     const apply = () => {
       unbind?.();
       const doc = frame.contentDocument;
       if (!doc?.body) return;
-      applySubscription(doc, page, data, me, (u) => proxyImage(u, accountId), trialView.tab === "shared", settings.data);
-      unbind = bindSubscription(doc, handlers);
+      applySubscription(doc, page, data, me, newWrites, (u) => proxyImage(u, accountId), trialView.tab === "shared", settings.data, trackingShared);
+      const unbindRows = bindSubscription(doc, handlers);
+      const unbindSort = bindTrackingSort(doc, page, JSON.parse(trackingKey) as TrackingView, accountId ? (href) => router.push(href) : null, share);
+      unbind = () => {
+        unbindRows();
+        unbindSort();
+      };
     };
     if (frame.contentDocument?.readyState === "complete") apply();
     frame.addEventListener("load", apply);
@@ -645,5 +901,5 @@ export function useOfSubscription(frameRef: RefObject<HTMLIFrameElement | null>,
     };
     // `data` is rebuilt each render; `key` says when it changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [frameRef, src, page, accountId, qc, me, key, trialView.tab]);
+  }, [frameRef, src, page, accountId, qc, me, key, trialView.tab, trackingKey, router, newWrites]);
 }

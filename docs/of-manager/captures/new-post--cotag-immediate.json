@@ -1,0 +1,15 @@
+{
+  "id": "new-post--cotag-immediate",
+  "section": "new-post",
+  "label": "Co-tag on an immediate post",
+  "pages": [
+    "new-post/state-tag-people"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending; waits on owner sheet item 4 (Co-tag partner)"
+  }
+}

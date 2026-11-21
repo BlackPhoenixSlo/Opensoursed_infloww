@@ -2667,13 +2667,14 @@ function bankPage(html) {
  * and Sort, the sidebar search and a row's More are ofMirrorReleaseForms'. Mentions opens Notifications' Tags tab (the
  * same OF list, /release-forms/mentions), its count gone. Create new release form (OF's release-form-links, whose body
  * no capture shows) and Create new invitation link (the page's own chunk, and so its request, was never captured) are
- * disabled with the tooltip.
+ * disabled with the tooltip, and so is a row's checkbox (nothing to pick on this page: no post to tag).
  */
 function releaseFormsPage(html) {
   html = html.replace(/<span class="b-tabs__nav__count">[^<]*<\/span>/g, "");
   html = html.replace(/<button\b([^>]*\sclass="b-tabs__nav__link\b[^>]*)>(<span\b[^>]*>\s*Mentions\s*<\/span>)<\/button>/, (_, attrs, inner) => `${asLink(attrs, `${MANAGER}/notifications/tags`)}>${inner}</a>`);
   let rows = 0;
   html = html.replace(/<label\b[^>]*\sclass="b-rows-lists__item\b[^"]*\bm-release-item\b[^"]*"[\s\S]*?<\/label>/g, (row) => (rows++ ? "" : row));
+  html = html.replace(/<input\b((?:(?!disabled=)[^>])*\sclass="b-input-radio"[^>]*)>/g, `<input disabled="disabled" title="${NOT_YET_TITLE}"$1>`);
   return notYetWhere(html, (_, text) => text === "Create new release form" || text === "Create new invitation link");
 }
 

@@ -35,6 +35,31 @@ export const NOTIFICATIONS: Record<string, string> = {
   "notifications/tags": "/api/of/v2/release-forms/mentions?limit=20",
 };
 
+/** Tags' route: OF's mentions, which take no related_user (server.py's /release-forms/mentions). */
+const TAGS = "notifications/tags";
+
+/** ticket 17: a Notifications page URL's fan (`?related_user=`): its OF id, digits only (the Relay's related_user is a
+ *  number); anything else is dropped. */
+export function relatedUserOf(params: URLSearchParams): string | null {
+  const v = params.get("related_user")?.trim() ?? "";
+  return /^\d+$/.test(v) ? v : null;
+}
+
+/** ticket 17: a Notifications tab's read for fan `relatedUser` (spec story 15): a type tab re-reads with OF's
+ *  related_user; Tags keeps its mentions read (its rows are filtered as read, relatedOnly); no tab: null. */
+export function notificationsRoute(page: string, relatedUser: string | null): string | null {
+  if (!Object.hasOwn(NOTIFICATIONS, page)) return null;
+  const route = NOTIFICATIONS[page];
+  return relatedUser && page !== TAGS ? `${route}&related_user=${encodeURIComponent(relatedUser)}` : route;
+}
+
+/** ticket 17: a Notifications tab's URL for fan `relatedUser` (none: the tab as is). */
+export function notificationsHref(page: string, relatedUser: string | null): string {
+  const tab = page.slice("notifications/".length);
+  const path = `/of-manager/notifications${tab && tab !== "index" ? `/${tab}` : ""}`;
+  return relatedUser ? `${path}?related_user=${encodeURIComponent(relatedUser)}` : path;
+}
+
 /** `/users/notifications/count`: the unread count per tab type (`all`, `subscribed`, `tip`, ...). */
 export type NotificationCounts = Record<string, number | null | undefined>;
 export const NOTIFICATION_COUNTS = "/api/of/v2/users/notifications/count";

@@ -30,6 +30,13 @@ No live OF tab was driven on the Vault, so nothing below was watched on onlyfans
 - **Ascending/Descending** are disabled only for the Custom sort, per OF's code. Not watched live.
 - **Folder sort with Ascending** was not tested live (the reversible test used Name + Descending, then restored
   Recent + Descending; both confirmed).
+- **Folder page's header More** (`vault/list?list=<id>`, ticket 34) writes: it opens a folder menu with Rename (the
+  folder's "Rename category" modal, `state-add-list?edit=1`, as the action row's RENAME: Save opens the Vault on the
+  folder) and Delete (a confirm, then the bare Vault), sent through the
+  vault list's own routes (`POST /admin/vault-ai/of-folders/{id}/rename`, `DELETE /admin/vault-ai/of-folders/{id}`).
+  In All Creators it writes as the stand-in Creator. The menu's rows are assumed: OF's folder menu is not in the
+  captures. It keeps its "Not available in Inflowwww yet" title until its Live proof (ticket 53). The routes are
+  Vault Pro's in the page map, so a chatter needs Vault Pro (not Vault) to send them.
 
 ## Freshness
 

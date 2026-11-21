@@ -43,6 +43,7 @@ function inputs(over: Partial<MirrorDataInputs> = {}): MirrorDataInputs {
     template: idle,
     postType: null,
     subscribers: idle,
+    fansType: null,
     labels: idle,
     postRows: undefined,
     me: null,

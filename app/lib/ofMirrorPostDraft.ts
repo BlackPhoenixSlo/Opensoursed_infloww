@@ -39,6 +39,8 @@ export interface PostDraft {
   price?: number;
   /** The queued post this draft edits (the Queue's Edit post): Post saves it (PUT /api/of/v2/queue/posts/{id}) instead of a new one. */
   edit_id?: string;
+  /** Add media's uploads that attached nothing, by `mediaKey`, with why (ofMirrorPost `mediaTaker`): Post asks first. */
+  upload_failed?: Record<string, string>;
 }
 
 /** A poll (type 1) or quiz (type 2): its options as typed, blanks kept so each keeps its row, and the quiz's correct row. */
@@ -146,6 +148,8 @@ export interface PostContext {
   /** The labels' and the vault folders' current sort (GET /labels' and /vault/lists' `sort` and `order`). */
   labelSort?: { sort?: string; order?: string };
   folderSort?: { sort?: string; order?: string };
+  /** OFM_NEW_WRITES_ENABLED (useOfmNewWrites): Record video and Record voice record; false, main's state. */
+  newWrites: boolean;
 }
 
 /**

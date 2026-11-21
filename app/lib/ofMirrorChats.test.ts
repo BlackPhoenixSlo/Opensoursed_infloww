@@ -11,13 +11,17 @@ import {
   chatsWrites,
   CLEAR_CONFIRM,
   counter,
+  folderSortHref,
   listHref,
+  pickAll,
   SEARCH_MS,
+  selectHref,
   type ChatsContext,
   type ChatsMe,
   type ChatsView,
 } from "./ofMirrorChats";
 import { applyData, rowsOf } from "./ofMirrorData";
+import { folderSortOf, pickFolderSort, sortFolders, type FolderOrder, type FolderSort, type FolderSortKey } from "./ofMirrorDataLists";
 import { withChatUsers } from "./ofMirrorDataQueries";
 import { keepThreadScroll, threadScroll } from "./ofMirrorDataChats";
 import { SELECT_MODEL } from "./ofMirrorWrites";
@@ -49,6 +53,8 @@ const ctx = (over: Partial<ChatsContext> = {}): ChatsContext => ({
   navigate: vi.fn(),
   writes: writes(),
   confirm: vi.fn(() => true),
+  select: false,
+  folderSort: { sort: "custom", order: "desc" },
   ...over,
 });
 /** The list page with the captured chats (named from /users/list), as useOfData draws them. */
@@ -630,4 +636,76 @@ describe("a row's swipe: OF's Mark as Read / Mark as Unread (its SwipeOut), neve
     swipe(rows(none)[0], 100);
     expect(none.getElementById("oi-note")!.textContent).toBe("Select a model to save changes");
   });
+});
+
+// ticket 16: the chat list's client-side tools (select mode, story 29; the folders dialog's Sort, story 30).
+describe("selectHref: select mode is the list's ?select=1 (no other GET /chats param)", () => {
+  it.each([
+    [null, ALL, true, "/of-manager/messages?select=1"],
+    [null, ALL, false, "/of-manager/messages"],
+    ["3001", { ...ALL, filter: "unread" as const }, true, "/of-manager/messages/chat?chat=3001&filter=unread&select=1"],
+    ["3001", { ...ALL, filter: "unread" as const }, false, "/of-manager/messages/chat?chat=3001&filter=unread"],
+  ])("chat %s, on %s", (chat, view, on, want) => expect(selectHref(chat, view, on)).toBe(want));
+});
+
+describe("pickAll: OF's Select all / Deselect", () => {
+  it.each([
+    [[], ["1", "2"], ["1", "2"]],
+    [["1"], ["1", "2"], ["1", "2"]],
+    [["1", "2"], ["1", "2"], []],
+    [["2", "1"], ["1", "2"], []],
+  ])("picked %j of %j -> %j", (picked, ids, want) => expect([...pickAll(new Set(picked), ids)]).toEqual(want));
+});
+
+// Folders Sort (story 30): OF's lists sort menu (captured: messages/send/state-list-dropdown, radios recent | name |
+// people | custom, then asc | desc), client-side over the folders /chats/folders already read.
+const F = [
+  { id: "30", name: "Bravo", usersCount: 5 },
+  { id: "10", name: "alpha", usersCount: 9 },
+  { id: "following", name: "Following", usersCount: 0 },
+  { id: "20", name: "Charlie", usersCount: 1 },
+];
+describe("sortFolders: Recent (newest id first; a system list's word id last), Name, People (users), Custom (as read)", () => {
+  it.each<[FolderSortKey, FolderOrder, string[]]>([
+    ["recent", "desc", ["30", "20", "10", "following"]],
+    ["recent", "asc", ["following", "10", "20", "30"]],
+    ["name", "asc", ["10", "30", "20", "following"]],
+    ["name", "desc", ["following", "20", "30", "10"]],
+    ["people", "desc", ["10", "30", "20", "following"]],
+    ["people", "asc", ["following", "20", "30", "10"]],
+    ["custom", "desc", ["30", "10", "following", "20"]],
+    ["custom", "asc", ["30", "10", "following", "20"]],
+  ])("%s %s", (sort, order, want) => expect(sortFolders(F, sort, order).map((f) => f.id)).toEqual(want));
+  it("leaves the list it was given as it was", () => {
+    const read = [...F];
+    sortFolders(read, "name", "asc");
+    expect(read).toEqual(F);
+  });
+});
+
+describe("folderSortOf / folderSortHref: the folders dialog's sort is its page's ?fsort=&forder= (default Custom, Descending)", () => {
+  it.each([
+    ["", { sort: "custom", order: "desc" }],
+    ["fsort=name&forder=asc", { sort: "name", order: "asc" }],
+    ["fsort=people", { sort: "people", order: "desc" }],
+    ["fsort=bogus&forder=up", { sort: "custom", order: "desc" }],
+  ])("?%s", (q, want) => expect(folderSortOf(new URLSearchParams(q))).toEqual(want));
+  it.each<[string | null, ChatsView, FolderSort, string]>([
+    [null, ALL, { sort: "name", order: "asc" }, "/of-manager/messages/state-folders?fsort=name&forder=asc"],
+    ["3001", { ...ALL, filter: "unread" as const }, { sort: "people", order: "desc" }, "/of-manager/messages/state-folders?chat=3001&filter=unread&fsort=people&forder=desc"],
+    [null, ALL, { sort: "custom", order: "desc" }, "/of-manager/messages/state-folders"],
+  ])("chat %s", (chat, view, sorted, want) => expect(folderSortHref(chat, view, sorted)).toBe(want));
+});
+
+describe("pickFolderSort: a Sort menu pick changes its own group only; a value outside the menu changes nothing", () => {
+  const was: FolderSort = { sort: "name", order: "asc" };
+  it.each<[string, string, FolderSort]>([
+    ["sort", "recent", { sort: "recent", order: "asc" }],
+    ["sort", "custom", { sort: "custom", order: "asc" }],
+    ["order", "desc", { sort: "name", order: "desc" }],
+    ["sort", "desc", was],
+    ["order", "people", was],
+    ["sort", "bogus", was],
+    ["other", "asc", was],
+  ])("%s=%s", (group, value, want) => expect(pickFolderSort(was, group, value)).toEqual(want));
 });

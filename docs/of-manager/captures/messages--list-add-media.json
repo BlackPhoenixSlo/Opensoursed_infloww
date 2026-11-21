@@ -1,0 +1,15 @@
+{
+ "id": "messages--list-add-media",
+ "section": "messages",
+ "label": "Add media",
+ "phase": 2,
+ "pages": [
+  "messages/send/state-list-dropdown"
+ ],
+ "note": "New message's list page (its list menu open), on the Mass draft only; the list Send is never run (ADR-0042). Add media's existing upload (POST /api/of/v2/upload, multipart file; service/of_upload.py upload_media), its claim kept on the Mass draft's media_files. No message is sent.",
+ "proof": {
+  "kind": "mocked",
+  "verdict": "parked",
+  "reason": "Mocked: the upload is an OnlyFans write with no undo off a sent message or post; ticket 53 decides"
+ }
+}

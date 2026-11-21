@@ -61,7 +61,7 @@ const subHandlers = (over: Partial<SubHandlers> = {}): SubHandlers =>
 describe("the bundle rows", () => {
   it("draws each of users/me's bundles as OF does: total, months, discount", () => {
     const d = load(PAGE);
-    applySubscription(d, PAGE, data(fx), fx.me, undefined, false, fx.settings);
+    applySubscription(d, PAGE, data(fx), fx.me, true, undefined, false, fx.settings);
     const rows = bundleRows();
     expect(rows).toHaveLength(2);
     rows.forEach((r, i) => {
@@ -78,14 +78,14 @@ describe("the bundle rows", () => {
 
   it("an empty list draws no row, and Add bundle stays open", () => {
     const d = load(PAGE);
-    applySubscription(d, PAGE, data(free.empty), free.empty.me, undefined, false, free.empty.settings);
+    applySubscription(d, PAGE, data(free.empty), free.empty.me, true, undefined, false, free.empty.settings);
     expect(bundleRows()).toHaveLength(0);
     expect(addBundle().hasAttribute("href")).toBe(true);
   });
 
   it("free: OF grays the header and each bundle, and disables Add bundle", () => {
     const d = load(PAGE);
-    applySubscription(d, PAGE, data(free.free), free.free.me, undefined, false, free.free.settings);
+    applySubscription(d, PAGE, data(free.free), free.free.me, true, undefined, false, free.free.settings);
     expect(header().classList.contains("m-disabled-block")).toBe(true);
     expect(bundleRows()[0].querySelector(".b-offer-join__content")?.classList.contains("g-disabled")).toBe(true);
     const a = addBundle();
@@ -93,21 +93,21 @@ describe("the bundle rows", () => {
     expect(a.hasAttribute("disabled")).toBe(true);
     expect(a.title).toBe(PRICE_FIRST);
     // Priced again (another model): the link comes back.
-    applySubscription(d, PAGE, data(free.empty), free.empty.me, undefined, false, free.empty.settings);
+    applySubscription(d, PAGE, data(free.empty), free.empty.me, true, undefined, false, free.empty.settings);
     expect(a.getAttribute("href")).toBe(`/of-manager/${BUNDLE_MODAL}`);
     expect(a.hasAttribute("disabled")).toBe(false);
   });
 
   it("every offered duration has a bundle: Add bundle is disabled (OF's isAddBundleDisabled)", () => {
     const d = load(PAGE);
-    applySubscription(d, PAGE, data(free.full), free.full.me, undefined, false, free.full.settings);
+    applySubscription(d, PAGE, data(free.full), free.full.me, true, undefined, false, free.full.settings);
     expect([addBundle().hasAttribute("disabled"), addBundle().title]).toEqual([true, NO_BUNDLES_LEFT]);
     expect(header().classList.contains("m-disabled-block")).toBe(false);
   });
 
   it("no model read yet: Add bundle is left as it is", () => {
     const d = load(PAGE);
-    applySubscription(d, PAGE, {}, undefined);
+    applySubscription(d, PAGE, {}, undefined, true);
     expect(addBundle().hasAttribute("href")).toBe(true);
   });
 });
@@ -115,7 +115,7 @@ describe("the bundle rows", () => {
 describe("delete", () => {
   it("asks, then DELETEs the bundle and drops its row", async () => {
     const d = load(PAGE);
-    applySubscription(d, PAGE, data(fx), fx.me, undefined, false, fx.settings);
+    applySubscription(d, PAGE, data(fx), fx.me, true, undefined, false, fx.settings);
     const h = subHandlers();
     unbinds.push(bindSubscription(d, h));
     const row = bundleRows()[1];
@@ -129,7 +129,7 @@ describe("delete", () => {
 
   it("an OF error: the row stays, its button works again, and OF's message shows in OF's toast", async () => {
     const d = load(PAGE);
-    applySubscription(d, PAGE, data(fx), fx.me, undefined, false, fx.settings);
+    applySubscription(d, PAGE, data(fx), fx.me, true, undefined, false, fx.settings);
     unbinds.push(bindSubscription(d, subHandlers({ remove: vi.fn(() => Promise.reject(relayError())) })));
     const row = bundleRows()[1];
     const del = row.querySelector<HTMLButtonElement>("button[aria-label='Delete']")!;
@@ -175,7 +175,7 @@ describe("Add bundle's dialog", () => {
     expect(textOf(d.querySelector(".modal.show p.g-input__help"))).toBe(`Promotional subscription $${fx.create.amount} for 12 months.`);
     expect(collectBundle(d)).toEqual(fx.create.relay.body);
     const h = writes();
-    unbinds.push(bindWrites(d, BUNDLE_MODAL, h));
+    unbinds.push(bindWrites(d, BUNDLE_MODAL, h, true));
     click(save());
     expect(h.submit).toHaveBeenCalledWith(fx.create.relay.path, fx.create.relay.body);
     await flush();
@@ -196,7 +196,7 @@ describe("Add bundle's dialog", () => {
     const d = at(BUNDLE_MODAL);
     unbinds.push(bindBundleDialog(d, fx.me, fx.settings));
     const { h, push } = framed(vi.fn(() => Promise.reject(relayError())));
-    unbinds.push(bindWrites(d, BUNDLE_MODAL, h));
+    unbinds.push(bindWrites(d, BUNDLE_MODAL, h, true));
     const back = d.querySelector(".modal-footer a[href]")!.getAttribute("href");
     click(save());
     expect(save().disabled).toBe(true);
@@ -204,15 +204,15 @@ describe("Add bundle's dialog", () => {
     expect(h.navigate).toHaveBeenCalledWith(back, fx.error.message);
     expect(push).toHaveBeenCalledWith(back);
     // A rebind of the dialog's page it left, while the frame loads, keeps it.
-    unbinds.push(bindWrites(at(BUNDLE_MODAL), BUNDLE_MODAL, h));
+    unbinds.push(bindWrites(at(BUNDLE_MODAL), BUNDLE_MODAL, h, true));
     expect(document.querySelector("#oi-toast")).toBeNull();
     // The new frame's about:blank placeholder binds first (OfMirrorFrame's key={src}): it neither shows nor uses up the toast.
     const blank = document.implementation.createHTMLDocument("");
-    unbinds.push(bindWrites(blank, PAGE, h));
+    unbinds.push(bindWrites(blank, PAGE, h, true));
     expect(blank.querySelector("#oi-toast")).toBeNull();
     // The page under the dialog binds next: the toast shows there.
     const page = at(PAGE);
-    unbinds.push(bindWrites(page, PAGE, h));
+    unbinds.push(bindWrites(page, PAGE, h, true));
     expect(textOf(page.querySelector("#oi-toast .toast__text"))).toBe(fx.error.message);
   });
 
@@ -220,26 +220,26 @@ describe("Add bundle's dialog", () => {
     const d = at(BUNDLE_MODAL);
     unbinds.push(bindBundleDialog(d, fx.me, fx.settings));
     const { h } = framed(vi.fn(() => Promise.reject(new Error("offline"))));
-    unbinds.push(bindWrites(d, BUNDLE_MODAL, h));
+    unbinds.push(bindWrites(d, BUNDLE_MODAL, h, true));
     click(save());
     await flush();
     expect(h.navigate).toHaveBeenCalledWith("/of-manager/" + PAGE, "Could not add the bundle: offline");
     const page = at(PAGE);
-    unbinds.push(bindWrites(page, PAGE, h));
+    unbinds.push(bindWrites(page, PAGE, h, true));
     expect(textOf(page.querySelector("#oi-toast .toast__text"))).toBe("Could not add the bundle: offline");
   });
 
   it("an error's toast shows on its own page only: another page binding first drops it", async () => {
     const d = at(BUNDLE_MODAL);
     unbinds.push(bindBundleDialog(d, fx.me, fx.settings));
-    unbinds.push(bindWrites(d, BUNDLE_MODAL, framed(vi.fn(() => Promise.reject(relayError()))).h));
+    unbinds.push(bindWrites(d, BUNDLE_MODAL, framed(vi.fn(() => Promise.reject(relayError()))).h, true));
     click(save());
     await flush();
     const other = at("settings/subscription/trial-links");
-    unbinds.push(bindWrites(other, "settings/subscription/trial-links", writes()));
+    unbinds.push(bindWrites(other, "settings/subscription/trial-links", writes(), true));
     expect(other.querySelector("#oi-toast")).toBeNull();
     const page = at(PAGE);
-    unbinds.push(bindWrites(page, PAGE, writes()));
+    unbinds.push(bindWrites(page, PAGE, writes(), true));
     expect(page.querySelector("#oi-toast")).toBeNull();
   });
 
@@ -250,11 +250,11 @@ describe("Add bundle's dialog", () => {
     unbinds.push(bindBundleDialog(d, fx.me, fx.settings));
     let fail!: (e: unknown) => void;
     const { h, push } = framed(vi.fn(() => new Promise((_, reject) => (fail = reject))));
-    unbinds.push(bindWrites(d, BUNDLE_MODAL, h));
+    unbinds.push(bindWrites(d, BUNDLE_MODAL, h, true));
     click(d.querySelector(".modal.show .modal-footer button"));
     // The user went back (Cancel) before OF answered: the same URL again would not reload the frame.
     const page = at(PAGE);
-    unbinds.push(bindWrites(page, PAGE, writes()));
+    unbinds.push(bindWrites(page, PAGE, writes(), true));
     fail(relayError());
     await flush();
     expect(textOf(page.querySelector("#oi-toast .toast__text"))).toBe(fx.error.message);
@@ -268,7 +268,7 @@ describe("Add bundle's dialog", () => {
     expect(push).toHaveBeenCalledWith("/of-manager/settings");
     expect(document.querySelector("#oi-toast")).toBeNull();
     const page = at("settings/profile");
-    unbinds.push(bindWrites(page, "settings/profile", writes()));
+    unbinds.push(bindWrites(page, "settings/profile", writes(), true));
     expect(textOf(page.querySelector("#oi-toast .toast__text"))).toBe("Synthetic error");
   });
 
@@ -277,7 +277,7 @@ describe("Add bundle's dialog", () => {
     d.querySelectorAll(".modal-footer a[href]").forEach((a) => a.remove());
     unbinds.push(bindBundleDialog(d, fx.me, fx.settings));
     const { h, push } = framed(vi.fn(() => Promise.reject(relayError())));
-    unbinds.push(bindWrites(d, BUNDLE_MODAL, h));
+    unbinds.push(bindWrites(d, BUNDLE_MODAL, h, true));
     click(save());
     await flush();
     expect(h.navigate).toHaveBeenCalledWith("", fx.error.message);
@@ -290,12 +290,12 @@ describe("Add bundle's dialog", () => {
     try {
       const d = at(BUNDLE_MODAL);
       unbinds.push(bindBundleDialog(d, fx.me, fx.settings));
-      unbinds.push(bindWrites(d, BUNDLE_MODAL, framed(vi.fn(() => Promise.reject(relayError()))).h));
+      unbinds.push(bindWrites(d, BUNDLE_MODAL, framed(vi.fn(() => Promise.reject(relayError()))).h, true));
       click(save());
       await flush();
       vi.setSystemTime(Date.now() + CARRY_MS);
       const page = at(PAGE);
-      unbinds.push(bindWrites(page, PAGE, writes()));
+      unbinds.push(bindWrites(page, PAGE, writes(), true));
       expect(page.querySelector("#oi-toast")).toBeNull();
     } finally {
       vi.useRealTimers();

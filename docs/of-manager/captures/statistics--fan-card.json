@@ -1,0 +1,26 @@
+{
+ "id": "statistics--fan-card",
+ "section": "statistics",
+ "label": "Fan card (Statistics > Fans)",
+ "pages": [
+  "statistics/fans"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {},
+ "response": {},
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "the owner-named Proof fan is not a fan of this creator (absent from active subscribers and Statistics > Fans), so has no fan card; every other card is a real fan"
+ },
+ "facts": {
+  "active_subscribers": 2,
+  "page": "/my/statistics/fans/subscriptions",
+  "access": "parked: nothing sent to OnlyFans"
+ },
+ "evidence": []
+}

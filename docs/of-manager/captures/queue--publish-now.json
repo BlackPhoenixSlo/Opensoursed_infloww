@@ -1,0 +1,21 @@
+{
+  "id": "queue--publish-now",
+  "section": "queue",
+  "label": "Publish now",
+  "pages": [
+    "queue/index"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending"
+  },
+  "facts": {
+    "upload_host": "of2transcoder.s3-accelerate.amazonaws.com",
+    "upload_host_source": "inferred: the same upload_media and service/of_upload.py _S3_BASE as Record video, whose storage PUT went to this host on the live run of 2026-11-21 (the Relay's wire log seq 45, measured; home--record-video.json facts.upload_host); this proof's own PUT not measured yet",
+    "convert_host": "convert.onlyfans.com",
+    "convert_host_source": "inferred: the same upload_media convert claim (POST /file/upload, service/of_upload.py convert_register) p2.record-video and p2.record-voice passed live through on 2026-11-21; an onlyfans.com subdomain, so the Live guard needs no naming for it"
+  }
+}

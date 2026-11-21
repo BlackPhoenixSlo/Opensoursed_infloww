@@ -1,0 +1,15 @@
+{
+  "id": "statements--range",
+  "section": "statements",
+  "label": "From ",
+  "pages": [
+    "statements/stats/earnings"
+  ],
+  "phase": 1,
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T114951Z-ofm-live-e27a56690",
+    "undo": "none"
+  }
+}

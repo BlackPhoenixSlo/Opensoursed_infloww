@@ -1,0 +1,19 @@
+{
+  "id": "profile--highlights",
+  "section": "profile",
+  "label": "Highlights row and playback",
+  "pages": [
+    "profile/index"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending",
+    "branches": {
+      "row": "parked: Live proof pending",
+      "playback": "parked: Live proof pending"
+    }
+  }
+}

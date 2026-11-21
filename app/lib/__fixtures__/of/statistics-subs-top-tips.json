@@ -1,0 +1,33 @@
+{
+ "users": [
+  {
+   "id": 900020,
+   "name": "Synthetic Fan T",
+   "username": "u_synthetic_t",
+   "avatar": null,
+   "subscribedOnData": {
+    "totalSumm": 52,
+    "subscribesSumm": 0,
+    "tipsSumm": 40,
+    "messagesSumm": 12,
+    "postsSumm": 0,
+    "streamsSumm": 0
+   }
+  },
+  {
+   "id": 900021,
+   "name": "Synthetic Fan U",
+   "username": "u_synthetic_u",
+   "avatar": null,
+   "subscribedOnData": {
+    "totalSumm": 9,
+    "subscribesSumm": 0,
+    "tipsSumm": 9,
+    "messagesSumm": 0,
+    "postsSumm": 0,
+    "streamsSumm": 0
+   }
+  }
+ ],
+ "hasMore": false
+}

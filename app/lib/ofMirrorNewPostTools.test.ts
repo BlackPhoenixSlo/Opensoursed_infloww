@@ -102,17 +102,17 @@ describe("Format text: OF's composer markup", () => {
     const d = loadPage("new-post/index");
     const h = handlers();
     const s = memoryStorage();
-    bound(bindPost(d, "new-post/index", { handlers: h, storage: s, accountId: "1" }));
+    bound(bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" }));
     const editor = d.querySelector<HTMLElement>("[contenteditable][aria-label='Textbox field']")!;
     editor.innerHTML = "<p>Hello <b>bold</b></p>";
     editor.dispatchEvent(new Event("input", { bubbles: true }));
     expect(loadDraft(s, "1").html).toBe("<p>Hello <strong>bold</strong></p>");
     // a State page round trip: the editor is drawn from the draft's markup
     const d2 = loadPage("new-post/state-schedule");
-    bound(bindPost(d2, "new-post/state-schedule", { handlers: h, storage: s, accountId: "1" }));
+    bound(bindPost(d2, "new-post/state-schedule", { newWrites: false, handlers: h, storage: s, accountId: "1" }));
     expect(d2.querySelector("[contenteditable][aria-label='Textbox field']")!.innerHTML).toBe("<p>Hello <strong>bold</strong></p>");
     const d3 = loadPage("new-post/index");
-    bound(bindPost(d3, "new-post/index", { handlers: h, storage: s, accountId: "1" }));
+    bound(bindPost(d3, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" }));
     click(d3.querySelector("button[at-attr='submit_post']"));
     await flush();
     expect(h.createPost).toHaveBeenCalledWith({ text: "<p>Hello <strong>bold</strong></p>", media_files: [], price: 0 });
@@ -132,7 +132,7 @@ describe("Add media: several files in one pick, audio too", () => {
       return Promise.resolve({ ready: true, send_with: u.send_with } as unknown as VaultUploadResp);
     });
     vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: () => "blob:synthetic" }));
-    bound(bindPost(d, "new-post/index", { handlers: h, storage: s, accountId: "1" }));
+    bound(bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" }));
     const picker = d.querySelector<HTMLInputElement>("input[type=file]")!;
     expect(picker.multiple).toBe(true);
     expect(picker.accept).toBe("image/*,video/*,audio/*");
@@ -174,7 +174,7 @@ describe("Tag other creators: search, sort, tabs, row menu, invite", () => {
   const bindTag = (view = "") => {
     const d = loadPage(PAGE);
     const h = handlers();
-    bound(bindPost(d, PAGE, { handlers: h, storage: memoryStorage(), accountId: "1", tagItems: items, tagView: tagViewOf(new URLSearchParams(view)) }));
+    bound(bindPost(d, PAGE, { newWrites: false, handlers: h, storage: memoryStorage(), accountId: "1", tagItems: items, tagView: tagViewOf(new URLSearchParams(view)) }));
     return { d, h };
   };
 
@@ -216,7 +216,7 @@ describe("Tag other creators: search, sort, tabs, row menu, invite", () => {
   it("the Release form tab with no forms shows OF's empty placeholder; while searching the search icon and Nothing found", () => {
     const empty = (view: string, list: TaggedFriendUser[] | undefined) => {
       const d = loadPage(PAGE);
-      const unbind = bindPost(d, PAGE, { handlers: handlers(), storage: memoryStorage(), accountId: "1", tagItems: list, tagView: tagViewOf(new URLSearchParams(view)) });
+      const unbind = bindPost(d, PAGE, { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "1", tagItems: list, tagView: tagViewOf(new URLSearchParams(view)) });
       const docs = d.querySelector<HTMLElement>(".modal.show .b-release-form__docs")!;
       const el = docs.querySelector<HTMLElement>(":scope > .empty-message");
       const out = el && { icon: el.querySelector("svg")!.getAttribute("data-icon-name"), svg: el.querySelector("svg")!.getAttribute("class"), text: el.querySelector("span")!.textContent, column: docs.className };
@@ -273,7 +273,7 @@ describe("Vault dialog: folder search and sort, media sort", () => {
       rows[i].querySelector(".b-rows-lists__item__name")!.textContent = n;
     });
     const h = handlers();
-    bound(bindPost(d, PAGE, { handlers: h, storage: memoryStorage(), accountId: "1", vaultView: { field: null, sort: null, slist: null }, folderSort: { sort: "default", order: "desc" } }));
+    bound(bindPost(d, PAGE, { newWrites: false, handlers: h, storage: memoryStorage(), accountId: "1", vaultView: { field: null, sort: null, slist: null }, folderSort: { sort: "default", order: "desc" } }));
     const names = () => [...d.querySelectorAll<HTMLElement>(".modal.show .l-sidebar-column .b-rows-lists__item[data-oi-data]")].filter((r) => r.style.display !== "none").map((r) => r.querySelector(".b-rows-lists__item__name")!.textContent);
     return { d, h, names };
   };
@@ -343,7 +343,7 @@ describe("ADD LABELS: Sort", () => {
     const labels = fixture<{ list: PostLabel[]; sort: string; order: string }>("new-post-labels");
     const d = loadPage("new-post/state-labels");
     const h = handlers();
-    bound(bindPost(d, "new-post/state-labels", { handlers: h, storage: memoryStorage(), accountId: "1", labelItems: labels.list, labelSort: { sort: labels.sort, order: labels.order } }));
+    bound(bindPost(d, "new-post/state-labels", { newWrites: false, handlers: h, storage: memoryStorage(), accountId: "1", labelItems: labels.list, labelSort: { sort: labels.sort, order: labels.order } }));
     const names = () => [...d.querySelectorAll("label.b-rows-lists__item[data-oi-label] .b-rows-lists__item__name")].map((n) => n.textContent?.trim());
     expect(names()).toEqual(["Label 3", "Label 4"]);
     click(d.querySelector(".modal.show button[aria-label='Sort']"));
@@ -361,7 +361,7 @@ describe("Poll and quiz: drag to reorder", () => {
   it("a row's handle carries it below the next one; the draft keeps the new order", () => {
     const d = loadPage("new-post/state-poll");
     const s = memoryStorage();
-    bound(bindPost(d, "new-post/state-poll", { handlers: handlers(), storage: s, accountId: "1" }));
+    bound(bindPost(d, "new-post/state-poll", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" }));
     click(d.querySelector(".b-make-post__voting .new_vote_add_option"));
     const rows = () => [...d.querySelectorAll<HTMLElement>(".b-make-post__voting .vote-input")];
     rows().forEach((r, i) => {
@@ -383,7 +383,7 @@ describe("Poll and quiz: drag to reorder", () => {
   it("quiz: the correct-answer marker moves with its row, and the draft's correct index follows it", () => {
     const d = loadPage("new-post/state-quiz");
     const s = memoryStorage();
-    bound(bindPost(d, "new-post/state-quiz", { handlers: handlers(), storage: s, accountId: "1" }));
+    bound(bindPost(d, "new-post/state-quiz", { newWrites: false, handlers: handlers(), storage: s, accountId: "1" }));
     click(d.querySelector(".b-make-post__voting .new_vote_add_option"));
     const rows = () => [...d.querySelectorAll<HTMLElement>(".b-make-post__voting .vote-input")];
     const text = () => rows().map((r) => r.querySelector<HTMLInputElement>("input[at-attr='input']")!.value);
@@ -419,7 +419,7 @@ describe("Right column search", () => {
     const h = handlers();
     h.searchUsers.mockResolvedValue([{ id: 5001, name: "Synthetic Fan", username: "fan1" }, { id: 5002, name: "Fan &amp; Co", username: "fan2" }] as never);
     h.searchPosts.mockResolvedValue({ list: [{ id: 6001, text: "<p>Hello</p>", author: { id: 77, username: "yourmodel" } }, { id: 6002, text: "Other &lt;3 &amp; more", author: { id: 88, username: "creator2" } }] } as never);
-    bound(bindPost(d, "new-post/index", { handlers: h, storage: memoryStorage(), accountId: "1", meId: 77 }));
+    bound(bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: memoryStorage(), accountId: "1", meId: 77 }));
     const input = d.querySelector<HTMLInputElement>("input[name='feed-search-input']")!;
     input.value = "syn";
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -448,7 +448,7 @@ describe("Right column search", () => {
   it("All-Creators: says select a model, sends nothing", async () => {
     vi.useFakeTimers();
     const d = loadPage("new-post/index");
-    bound(bindPost(d, "new-post/index", { handlers: null, storage: memoryStorage(), accountId: null }));
+    bound(bindPost(d, "new-post/index", { newWrites: false, handlers: null, storage: memoryStorage(), accountId: null }));
     const input = d.querySelector<HTMLInputElement>("input[name='feed-search-input']")!;
     input.value = "syn";
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -501,6 +501,29 @@ describe("Composer toolbar on a narrow screen (OF's resize: overflow into More)"
     expect(d.getElementById("oi-actions-more")).toBeNull();
   });
 
+  it("a resize closes More's own menu only: Text Color's, just opened, stays open (ticket 132)", () => {
+    const ro: (() => void)[] = [];
+    vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { ro.push(cb); } observe() {} disconnect() {} });
+    try {
+      const d = loadPage("new-post/state-format-text");
+      layout(d, 360);
+      bound(bindPost(d, "new-post/state-format-text", { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "1" }));
+      expect(ro.length).toBeGreaterThan(0);
+      const color = d.querySelector<HTMLElement>(".js-text-editor-toolbar button[aria-label='Text Color']")!;
+      click(color);
+      ro.forEach((cb) => cb());
+      expect(d.getElementById("oi-menu")).not.toBeNull();
+      expect(color.getAttribute("aria-expanded")).toBe("true");
+      closeMenu(d);
+      click(d.getElementById("oi-actions-more"));
+      expect(d.getElementById("oi-menu")).not.toBeNull();
+      ro.forEach((cb) => cb());
+      expect(d.getElementById("oi-menu")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("the send-tip button OF keeps hidden stays hidden throughout", () => {
     const d = loadPage("new-post/index");
     const tip = d.querySelector<HTMLElement>("button[at-attr='send_tip']")!;
@@ -517,7 +540,7 @@ describe("Dialog notes sit above the footer's buttons", () => {
   it("Invite new user's failure shows over its name row, which keeps its field, Cancel and Save together", async () => {
     const d = loadPage("new-post/state-tag-people");
     const h = { ...handlers(), inviteGuest: vi.fn(() => Promise.reject(new Error("intercepted: not sent to OnlyFans"))) };
-    bound(bindPost(d, "new-post/state-tag-people", { handlers: h, storage: memoryStorage(), accountId: "1", tagItems: [], tagView: tagViewOf(new URLSearchParams("")) }));
+    bound(bindPost(d, "new-post/state-tag-people", { newWrites: false, handlers: h, storage: memoryStorage(), accountId: "1", tagItems: [], tagView: tagViewOf(new URLSearchParams("")) }));
     click([...d.querySelectorAll<HTMLButtonElement>(".modal.show button")].find((b) => b.textContent?.trim() === "Invite new user"));
     const row = d.getElementById("oi-new-label")!;
     expect(row.style.display).toBe("flex");

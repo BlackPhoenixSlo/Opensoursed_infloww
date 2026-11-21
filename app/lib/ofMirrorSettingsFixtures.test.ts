@@ -71,7 +71,7 @@ describe("the toggles show the model's captured values", () => {
   it("Two Step Authentication shows the app, SMS and Face ID switches, all disabled", () => {
     load("account/2fa");
     applySettings(document, "account/2fa", data({ settings: { ...SETTINGS, appOtp: true, phoneOtp: false, faceOtp: true } }));
-    applyPageExtras(document, "account/2fa", data());
+    applyPageExtras(document, "account/2fa", data(), true);
     expect([input("show_otp_settings").checked, input("otp_phone_settings").checked, input("otp_face_info").checked]).toEqual([true, false, true]);
     for (const el of document.querySelectorAll<HTMLInputElement | HTMLButtonElement>("#content input, #content button")) {
       expect(el.disabled).toBe(true);
@@ -83,10 +83,10 @@ describe("the toggles show the model's captured values", () => {
     expect(sourcesFor("account")).toContain("settings");
     load("account");
     const phone = () => document.querySelector("#content a[href='/of-manager/settings/account/phone'] .b-menu-list__subtext");
-    applyPageExtras(document, "account", data({ settings: { ...SETTINGS, phoneLast4: null } }));
+    applyPageExtras(document, "account", data({ settings: { ...SETTINGS, phoneLast4: null } }), true);
     expect(phone()).toBeNull();
-    applyPageExtras(document, "account", data());
-    applyPageExtras(document, "account", data());
+    applyPageExtras(document, "account", data(), true);
+    applyPageExtras(document, "account", data(), true);
     expect(textOf(phone())).toBe(`******${SETTINGS.phoneLast4}`);
     expect(document.querySelectorAll("#content a[href='/of-manager/settings/account/phone'] .b-menu-list__subtext")).toHaveLength(1);
   });
@@ -94,7 +94,7 @@ describe("the toggles show the model's captured values", () => {
   it("Phone number with a phone: OF's connected view (masked number, verified hint), Delete and Update phone disabled", () => {
     expect(sourcesFor("account/phone")).toContain("settings");
     load("account/phone");
-    for (let i = 0; i < 2; i++) applyPageExtras(document, "account/phone", data());
+    for (let i = 0; i < 2; i++) applyPageExtras(document, "account/phone", data(), true);
     const field = input("connected_phone_number");
     expect([field.value, field.readOnly, field.disabled]).toEqual([`******${SETTINGS.phoneLast4}`, true, true]);
     expect(textOf(document.querySelector(".phone-setting-block .g-input__help"))).toBe(`Phone number ******${SETTINGS.phoneLast4} is verified`);
@@ -108,7 +108,7 @@ describe("the toggles show the model's captured values", () => {
 
   it("Two Step Authentication: Verification via SMS says OF's Phone ******<last 4>", () => {
     load("account/2fa");
-    for (let i = 0; i < 2; i++) applyPageExtras(document, "account/2fa", data());
+    for (let i = 0; i < 2; i++) applyPageExtras(document, "account/2fa", data(), true);
     const sms = input("otp_phone_settings").closest(".g-input__wrapper")!;
     expect(textOf(sms.querySelector(".g-input__help"))).toBe(`Phone ******${SETTINGS.phoneLast4}`);
     expect(sms.querySelectorAll(".g-input__help")).toHaveLength(1);
@@ -117,7 +117,7 @@ describe("the toggles show the model's captured values", () => {
   it("Streaming: OBS's Server is the model's; the Stream Key is masked, never in the page; Reset and Copy stay disabled", () => {
     load("streaming");
     applySettings(document, "streaming", data());
-    applyPageExtras(document, "streaming", data());
+    applyPageExtras(document, "streaming", data(), true);
     const field = (label: string) => {
       const l = [...document.querySelectorAll<HTMLLabelElement>("#content label.v-label")].find((x) => textOf(x) === label)!;
       return input(l.htmlFor);
@@ -129,7 +129,7 @@ describe("the toggles show the model's captured values", () => {
       expect(b.disabled).toBe(true);
       expect(b.title).toBe("Not available in Inflowwww yet");
     }
-    applyPageExtras(document, "streaming", data({ settings: { ...SETTINGS, streamingRtmpKey: "" } }));
+    applyPageExtras(document, "streaming", data({ settings: { ...SETTINGS, streamingRtmpKey: "" } }), true);
     expect(field("Stream Key").value).toBe("");
   });
 
@@ -137,23 +137,23 @@ describe("the toggles show the model's captured values", () => {
     expect(sourcesFor("account")).toContain("me");
     expect(sourcesFor("account/email")).toEqual(["me"]);
     load("account");
-    applyPageExtras(document, "account", data());
+    applyPageExtras(document, "account", data(), true);
     expect(textOf(document.querySelector("#content a[href='/of-manager/settings/account/email'] .b-menu-list__subtext"))).toBe(ME.email);
     load("account/email");
-    applyPageExtras(document, "account/email", data());
-    applyPageExtras(document, "account/email", data());
+    applyPageExtras(document, "account/email", data(), true);
+    applyPageExtras(document, "account/email", data(), true);
     const field = input("authUser_email");
     expect(field.value).toBe(ME.email);
     expect([field.readOnly, field.disabled, field.title]).toEqual([true, true, "Not available in Inflowwww yet"]);
     const help = field.closest(".v-input")!.querySelector(".g-input__help")!;
     expect(textOf(help)).toBe(`E-mail ${ME.email} is verified`);
     // Not verified: no hint (OF's error text is not in the capture).
-    applyPageExtras(document, "account/email", data({ me: { ...ME, isEmailChecked: false } }));
+    applyPageExtras(document, "account/email", data({ me: { ...ME, isEmailChecked: false } }), true);
     expect(textOf(help)).toBe("");
     // Two Step Authentication's passwordless note.
     load("account/2fa");
     expect(sourcesFor("account/2fa")).toContain("me");
-    applyPageExtras(document, "account/2fa", data());
+    applyPageExtras(document, "account/2fa", data(), true);
     expect(document.querySelector("#content .alert-text-wrapper b")?.textContent).toBe(ME.email);
   });
 
@@ -187,7 +187,7 @@ describe("the toggles show the model's captured values", () => {
     load("fans");
     const before = input("setting_isAutoFollowBack").checked;
     applySettings(document, "fans", {});
-    applyPageExtras(document, "fans", {});
+    applyPageExtras(document, "fans", {}, true);
     expect(input("setting_isAutoFollowBack").checked).toBe(before);
     expect(line("Following price").style.display).toBe("none"); // the generator's hidden placeholder price stays hidden
   });
@@ -197,9 +197,9 @@ describe("OF's computed lines (applyPageExtras)", () => {
   it("Profile: no price line while free; '$P per month, N subscription bundles' with a price", () => {
     expect(sourcesFor("profile")).toContain("me");
     load("profile");
-    applyPageExtras(document, "profile", data());
+    applyPageExtras(document, "profile", data(), true);
     expect(line("Subscription price and bundles").style.display).toBe("none");
-    applyPageExtras(document, "profile", data({ me: PRICED }));
+    applyPageExtras(document, "profile", data({ me: PRICED }), true);
     expect(textOf(line("Subscription price and bundles"))).toBe("$9.69 per month, 2 subscription bundles");
     expect(line("Subscription price and bundles").hasAttribute("data-oi-price")).toBe(false);
   });
@@ -207,10 +207,10 @@ describe("OF's computed lines (applyPageExtras)", () => {
   it("Fans: 'Free' and the referral switch disabled while free; '$P per month' with a price", () => {
     expect(sourcesFor("fans")).toEqual(expect.arrayContaining(["settings", "me"]));
     load("fans");
-    applyPageExtras(document, "fans", data());
+    applyPageExtras(document, "fans", data(), true);
     expect(textOf(line("Following price"))).toBe("Free");
     expect(input("setting_recommenderReward").disabled).toBe(true);
-    applyPageExtras(document, "fans", data({ me: PRICED }));
+    applyPageExtras(document, "fans", data({ me: PRICED }), true);
     expect(textOf(line("Following price"))).toBe("$9.69 per month");
     expect(input("setting_recommenderReward").disabled).toBe(false);
   });
@@ -230,7 +230,7 @@ describe("Subscription bundles come from /users/me, as OF's list", () => {
   const header = (t: string) => [...document.querySelectorAll("h3.b-menu-list__el")].find((h) => textOf(h.querySelector(".b-menu-list__text")) === t)!;
   it("draws the captured bundles; free: both headers and every bundle grayed, as OF", () => {
     load("subscription");
-    applySubscription(document, "settings/subscription", { promotions: { rows: [] }, bundles: { rows: bundles } }, ME);
+    applySubscription(document, "settings/subscription", { promotions: { rows: [] }, bundles: { rows: bundles } }, ME, true);
     const rows = [...document.querySelectorAll(".m-bundle-row[data-oi-row]")];
     expect(rows.map((r) => textOf(r.querySelector(".b-offer-join__details")))).toEqual(bundles.map((b) => `$${(b.price ?? 0).toFixed(2).replace(".00", "")} USD total for ${b.duration} months -${b.discount}%`));
     expect(rows.every((r) => r.querySelector(".b-offer-join__content")!.classList.contains("g-disabled"))).toBe(true);
@@ -240,7 +240,7 @@ describe("Subscription bundles come from /users/me, as OF's list", () => {
 
   it("with a price nothing is grayed; no bundles draws none (the empty state)", () => {
     load("subscription");
-    applySubscription(document, "settings/subscription", { promotions: { rows: [] }, bundles: { rows: [] } }, { ...PRICED, canCreatePromotion: true });
+    applySubscription(document, "settings/subscription", { promotions: { rows: [] }, bundles: { rows: [] } }, { ...PRICED, canCreatePromotion: true }, true);
     expect(document.querySelectorAll(".m-bundle-row[data-oi-row]")).toHaveLength(0);
     expect(header("Subscription bundles").classList.contains("m-disabled-block")).toBe(false);
     expect(header("Profile promotion campaign").classList.contains("m-disabled-block")).toBe(false);
@@ -252,10 +252,10 @@ describe("Watermarks: the custom text field, as OF's form", () => {
     const { collectWatermarks } = await import("./ofMirrorSettingsWrites");
     load("security/watermarks");
     applySettings(document, "security/watermarks", data());
-    applyPageExtras(document, "security/watermarks", data());
+    applyPageExtras(document, "security/watermarks", data(), true);
     expect(input("input-watermark-text").value).toBe(ME.watermarkText);
     expect(collectWatermarks(document)).toMatchObject({ watermarkText: ME.watermarkText, watermarkPosition: ME.watermarkPosition });
-    applyPageExtras(document, "security/watermarks", data({ me: { ...ME, watermarkText: `OnlyFans.com/${ME.username}` } }));
+    applyPageExtras(document, "security/watermarks", data({ me: { ...ME, watermarkText: `OnlyFans.com/${ME.username}` } }), true);
     expect(input("input-watermark-text").value).toBe("");
   });
 });

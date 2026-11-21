@@ -1,0 +1,15 @@
+{
+ "id": "settings--account-connected-connect",
+ "section": "settings",
+ "label": "Connect",
+ "pages": [
+  "settings/account/connected"
+ ],
+ "phase": 3,
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "Live proof pending"
+ }
+}

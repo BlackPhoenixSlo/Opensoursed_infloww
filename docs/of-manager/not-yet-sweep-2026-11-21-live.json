@@ -1,0 +1,498 @@
+[
+ [
+  "home/index",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-avatar-menu",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-expiration",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Post",
+    "Search",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-feed-tabs-edit",
+  {
+   "ny": [
+    "More",
+    "Sort"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": [
+    "[b-input-radio]",
+    "[b-input-radio]",
+    "[b-input-radio]"
+   ]
+  }
+ ],
+ [
+  "home/state-format-text",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-poll",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "[vote-input__btn.delete-vote-option]",
+    "Add poll",
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-promotion",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Post",
+    "Search",
+    "First month discount"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-quiz",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "[vote-input__btn.delete-vote-option]",
+    "Add quiz",
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-schedule",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-tag-people",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-target",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Post",
+    "Search",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "home/state-vault",
+  {
+   "ny": [
+    "More"
+   ],
+   "dis": [
+    "Post",
+    "Search"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "messages/send/state-list-dropdown",
+  {
+   "ny": [
+    "Add media",
+    "Add GIF",
+    "Record video",
+    "Record voice",
+    "Tag other creators"
+   ],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "vault/list",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "statements/stats/earnings",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]",
+    "Request withdrawal"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "profile/index",
+  {
+   "ny": [
+    "Create highlight",
+    "[g-btn.m-gray]",
+    "Compact view",
+    "Sort",
+    "Search user`s post",
+    "Search"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "profile/media",
+  {
+   "ny": [
+    "Create highlight",
+    "[g-btn.m-gray]",
+    "Compact view",
+    "Sort",
+    "Search user`s post",
+    "Search"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "profile/state-more-menu",
+  {
+   "ny": [
+    "Create highlight",
+    "[g-btn.m-gray]",
+    "Compact view",
+    "Sort",
+    "Search user`s post",
+    "Search"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "settings/account/connected",
+  {
+   "ny": [
+    "Connect"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "settings/account/google",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "settings/account/x",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "settings/links",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "settings/notifications/email",
+  {
+   "ny": [],
+   "dis": [
+    "[INPUT]"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/profile",
+  {
+   "ny": [
+    "[g-btn.m-icon]",
+    "Change avatar",
+    "[INPUT]"
+   ],
+   "dis": [
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/security/block_by_country",
+  {
+   "ny": [],
+   "dis": [
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/security/block_by_ip",
+  {
+   "ny": [],
+   "dis": [
+    "Cancel",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/social-media",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "settings/spotify",
+  {
+   "ny": [],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "settings/streaming",
+  {
+   "ny": [
+    "Stream server address",
+    "Stream key",
+    "Reset",
+    "Copy key",
+    "Copy stream chat link",
+    "Copy OBS widgets link"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "settings/streaming/blocked",
+  {
+   "ny": [
+    "[INPUT]",
+    "Block"
+   ],
+   "dis": [],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/promotion-campaign",
+  {
+   "ny": [],
+   "dis": [
+    "Cancel",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/promotion-campaign/modal-1",
+  {
+   "ny": [
+    "Add bundle"
+   ],
+   "dis": [
+    "Cancel",
+    "Save",
+    "First month discount"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/promotion-campaign/modal-2",
+  {
+   "ny": [
+    "Add bundle"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/promotion-campaign/modal-3",
+  {
+   "ny": [
+    "Add bundle",
+    "[btn.dropdown-toggle]"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/tracking-links",
+  {
+   "ny": [
+    "Shared with you"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/tracking-links/modal-1",
+  {
+   "ny": [
+    "Shared with you"
+   ],
+   "dis": [
+    "Cancel",
+    "Save",
+    "Create Link"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/tracking-links/state-kebab",
+  {
+   "ny": [
+    "Shared with you"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/trial-links",
+  {
+   "ny": [],
+   "dis": [
+    "Cancel",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/trial-links/modal-1",
+  {
+   "ny": [],
+   "dis": [
+    "Cancel",
+    "Save"
+   ],
+   "ro": []
+  }
+ ],
+ [
+  "settings/subscription/trial-links/state-kebab",
+  {
+   "ny": [
+    "[b-input-radio]"
+   ],
+   "dis": [
+    "Cancel",
+    "Save"
+   ],
+   "ro": []
+  }
+ ]
+]

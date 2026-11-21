@@ -6,6 +6,7 @@
  */
 
 import type { OFUserMini } from "@/lib/relay";
+import { ORDER_GROUP, showMenu, type MenuOption } from "@/lib/ofMirrorMenu";
 import { basePage, keepQuery } from "@/lib/ofMirrorRow";
 import { MASS_SEND } from "@/lib/ofMirrorPick";
 import { formatCount } from "@/lib/ofMirrorIdentity";
@@ -23,6 +24,10 @@ export const POST_TYPES: Record<string, string> = { All: "", Photos: "photos", V
 export const postTypeOf = (v: string | null) => (v && Object.values(POST_TYPES).includes(v) ? v : null);
 /** A list's Posts tab's feed, one of OF's pages of 10 (`offset` appended per page). */
 export const listPostsPath = (list: string, type: string | null) => `/api/of/v2/lists/${encodeURIComponent(list)}/posts?limit=10${type ? `&type=${type}` : ""}`;
+/** Fans' Expired tab: OF's subscribers of type "expired", the page's ?type= (ticket 18). */
+export const FANS_EXPIRED = "expired";
+/** Fans' (collections/user-lists/subscribers/active) cards: OF's subscribers of the tab's type, the page's ?type= (Expired: "expired", else active). */
+export const subscribersPath = (type: string | null) => `/api/of/v2/subscribers?type=${type === FANS_EXPIRED ? FANS_EXPIRED : "active"}&limit=50`;
 
 export interface UserList {
   id: number | string;
@@ -200,6 +205,17 @@ export function applyListTabs(doc: Document, list: string, type: string | null) 
   }
 }
 
+/** Fans' tabs: on ?type=expired (`type`) Expired is current, not Active, as OF marks its tab. */
+export function applyFansTabs(doc: Document, type: string | null) {
+  if (type !== FANS_EXPIRED) return;
+  const tab = (sel: string, text: string) => [...doc.querySelectorAll(sel)].find((e) => e.textContent?.trim() === text);
+  for (const [el, on] of [[tab("button.b-tabs__nav__link", "Expired"), true], [tab("a.b-tabs__nav__link", "Active"), false]] as const) {
+    if (!el) continue;
+    for (const c of ["m-current", "m-no-pointer"]) setClass(doc, el, c, on);
+    setAttr(doc, el, "aria-current", on ? "page" : null);
+  }
+}
+
 /** Post Labels: the Creator's labels in copies of the generator's hidden label row (name, posts count), `open` marked and titled. */
 export function applyLabels(doc: Document, labels: PostLabel[], open: string | null) {
   const rows = [...doc.querySelectorAll<HTMLElement>(`${LABELS_COLUMN} .b-rows-lists__item`)];
@@ -271,4 +287,60 @@ export function applyListRows(doc: Document, lists: Array<UserList & { sub?: str
   // OF's "Nothing found" (the generator's) only for no list.
   const empty = lists.length ? [...doc.querySelectorAll<HTMLElement>(where.empty)] : [];
   fill(doc, [...examples, ...empty], rows);
+}
+
+// The lists sort menu's state and order (ticket 16's folders dialog, ticket 19's Pin to home): client-side, the dialog's
+// ?fsort=&forder=.
+/** OF's lists sort fields (their captured radios' values and words). */
+export type FolderSortKey = "recent" | "name" | "people" | "custom";
+export type FolderOrder = "asc" | "desc";
+export const FOLDER_SORTS: (MenuOption & { value: FolderSortKey })[] = [
+  { value: "recent", label: "Recent" },
+  { value: "name", label: "Name" },
+  { value: "people", label: "People" },
+  { value: "custom", label: "Custom" },
+];
+export interface FolderSort {
+  sort: FolderSortKey;
+  order: FolderOrder;
+}
+const DEFAULT_SORT: FolderSort = { sort: "custom", order: "desc" };
+const isFolderSort = (v: string | null): v is FolderSortKey => FOLDER_SORTS.some((o) => o.value === v);
+const isFolderOrder = (v: string | null): v is FolderOrder => v === "asc" || v === "desc";
+
+/** A lists dialog's sort in `params` (unknown values: Custom, Descending). */
+export function folderSortOf(params: { get(key: string): string | null }): FolderSort {
+  const sort = params.get("fsort");
+  const order = params.get("forder");
+  return {
+    sort: isFolderSort(sort) ? sort : DEFAULT_SORT.sort,
+    order: isFolderOrder(order) ? order : DEFAULT_SORT.order,
+  };
+}
+
+/** `sorted` with the Sort menu's pick (group "sort" or "order"); a value outside the menu changes nothing. */
+export function pickFolderSort(sorted: FolderSort, group: string, value: string): FolderSort {
+  if (group === "sort" && isFolderSort(value)) return { ...sorted, sort: value };
+  if (group === "order" && isFolderOrder(value)) return { ...sorted, order: value };
+  return sorted;
+}
+
+/** OF's lists Sort menu at `anchor`, `sorted` checked; `go`: the sort with the pick. */
+export function showListSort(doc: Document, anchor: HTMLElement, sorted: FolderSort, go: (s: FolderSort) => void): void {
+  showMenu(doc, anchor, [{ name: "sort", value: sorted.sort, options: FOLDER_SORTS }, ORDER_GROUP(sorted.order)], (g, v) => go(pickFolderSort(sorted, g, v)));
+}
+
+/** `href` with the dialog's sort as `?fsort=&forder=` (or `&`); the default (Custom, Descending) adds nothing. */
+export function withListSort(href: string, sorted: FolderSort): string {
+  if (sorted.sort === DEFAULT_SORT.sort && sorted.order === DEFAULT_SORT.order) return href;
+  return `${href}${href.includes("?") ? "&" : "?"}fsort=${sorted.sort}&forder=${sorted.order}`;
+}
+
+/** `folders` in `sort` / `order` (a new array): Recent by id, Name, People by users, Custom as given. */
+export function sortFolders<T extends { id: number | string; name?: string; usersCount?: number }>(folders: readonly T[], sort: FolderSortKey, order: FolderOrder): T[] {
+  const dir = order === "asc" ? 1 : -1;
+  const key = (f: T) => (sort === "recent" ? Number(f.id) || 0 : sort === "people" ? (f.usersCount ?? 0) : 0);
+  if (sort === "name") return [...folders].sort((a, b) => dir * (a.name ?? "").localeCompare(b.name ?? ""));
+  if (sort === "recent" || sort === "people") return [...folders].sort((a, b) => dir * (key(a) - key(b)));
+  return [...folders];
 }

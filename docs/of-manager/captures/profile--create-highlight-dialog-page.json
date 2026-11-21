@@ -1,0 +1,45 @@
+{
+ "id": "profile--create-highlight-dialog-page",
+ "section": "profile",
+ "label": "Create highlight dialog",
+ "pages": [
+  "/{creator}"
+ ],
+ "phase": "P2 s13-14",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/api2/v2/stories/archive",
+  "query": {
+   "limit": "18"
+  },
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "hasMore",
+   "list",
+   "marker"
+  ]
+ },
+ "facts": {
+  "dialog": "CREATE HIGHLIGHT",
+  "content": "archived stories grouped by date",
+  "buttons": [
+   "CANCEL",
+   "NEXT (disabled until a story is picked)"
+  ],
+  "writes": 0,
+  "access": "read: only GETs were sent, no write",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r07-profile-create-highlight-dialog.html"
+ ]
+}

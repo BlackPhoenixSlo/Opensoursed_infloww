@@ -7,6 +7,8 @@ Each relay route the mirror calls must reach OF as OF's own client sends it
   GET /payouts/balances                      -> payoutAvailable, payoutPending, minPayoutSumm, withdrawalPeriod(Options)
   GET /payouts/stats                         -> {list: {total, months}} (OF sends no query on the page; ours adds by=day,
                                                  the shape the legacy UI read live)
+  GET /payouts/stats?startDate&endDate       -> the same for a Custom period (ticket 24: OF's Apply, YYYY-MM-DD; OF
+                                                 ignores start/end, measured 2026-11-21 on the Proof Creator)
   GET /payments/referrals/balance            -> referralEarnings
   GET /payouts/chargebacks/ratio?startDate&endDate (the date picker's last 30 days) -> chargebacksRatio
 
@@ -52,8 +54,17 @@ def case_balances_is_a_bare_get():
 
 
 def case_earning_stats_path():
-    _, sent = _via_route(server.of_earning_stats, by="day", start=None, end=None)
+    _, sent = _via_route(server.of_earning_stats, by="day", startDate=None, endDate=None)
     assert sent == [(f"{of_client.API_BASE}/payouts/stats", {"by": "day"})], sent
+
+
+def case_earning_stats_range_reaches_of_as_start_date_and_end_date():
+    """ticket 24: the route's `startDate`/`endDate` (OF's own names) reach OF as they are (statements-earning-stats.js
+    applyDatePicker; capture record statements--custom-period-apply). OF ignores `start`/`end` (all-time answer,
+    measured 2026-11-21), so neither is ever sent."""
+    _, sent = _via_route(server.of_earning_stats, by="day", startDate="2026-10-01", endDate="2026-10-31")
+    assert sent == [(f"{of_client.API_BASE}/payouts/stats",
+                     {"by": "day", "startDate": "2026-10-01", "endDate": "2026-10-31"})], sent
 
 
 def case_referral_balance_is_a_bare_get():

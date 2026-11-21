@@ -1,0 +1,43 @@
+{
+ "id": "streaming--view-stats-modal-page",
+ "section": "streaming",
+ "label": "Streaming dashboard View stats modal",
+ "pages": [
+  "/my/streaming/dashboard"
+ ],
+ "phase": "P4 s40",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/api2/v2/streams/{id}/stats",
+  "query": {
+   "withChart": "true"
+  },
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": 403,
+  "keys": [
+   "error"
+  ]
+ },
+ "facts": {
+  "modal": "STREAM STATISTICS",
+  "buttons": [
+   "CLOSE"
+  ],
+  "stats_read": "403 Access denied (2 past streams tried)",
+  "stat_labels_shown": false,
+  "why": "inferred: streaming is off for this account (canStreaming false)",
+  "access": "read: only GETs were sent, no write",
+  "capture_verdict": "partial: modal captured, stats read 403",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r15-streaming-view-stats-modal.html"
+ ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "settings--things-i-like-links",
+  "section": "settings",
+  "label": "Create link",
+  "pages": [
+    "settings/links"
+  ],
+  "phase": 3,
+  "source": "of-js",
+  "of_js": {
+    "bundle": "app.js",
+    "symbol": "202600 De/Ne/$e (users/putLink from 29050.js's modal)",
+    "evidence": ".scratch/ofm-not-yet/captures/settings--things-i-like-links.json: PUT /users/links {link} answers the full list; DELETE /users/links/{id} undoes it"
+  },
+  "request": {
+    "method": "PUT",
+    "path": "/api2/v2/users/links",
+    "query": {},
+    "body": {
+      "link": "{link}"
+    }
+  },
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T121818Z-ofm-live-b07cc1d3d",
+    "undo": "undone"
+  }
+}

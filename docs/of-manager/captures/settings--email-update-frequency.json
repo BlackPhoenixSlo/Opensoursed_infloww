@@ -1,0 +1,15 @@
+{
+  "id": "settings--email-update-frequency",
+  "section": "settings",
+  "label": "​Update frequencyEvery 24 Hours",
+  "pages": [
+    "settings/notifications/email"
+  ],
+  "phase": 3,
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T130922Z-ofm-live-183bff5d4",
+    "undo": "undone"
+  }
+}

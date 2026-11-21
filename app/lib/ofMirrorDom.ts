@@ -3,8 +3,8 @@
 /**
  * The OF mirror's DOM primitives, cut from ofMirrorData: the undo list every change registers
  * with (track, restore, ...), cloning and filling rows (make, fill, fillGrid), users' names, links and avatars, OF's
- * date formats, icons and vault tiles, OF's infinite loading row (applyMore). Every ofMirrorData* and ofMirrorFeeds*
- * leaf imports them from here.
+ * date formats, icons and vault tiles, OF's infinite loading row (applyMore), a Vuetify field's floated label
+ * (floatLabel). Every ofMirrorData* and ofMirrorFeeds* leaf imports them from here.
  */
 
 import type { OFUserMini } from "@/lib/relay";
@@ -114,6 +114,18 @@ export function fillSlot(ref: Element, where: "after" | "before" | "append", el:
   const slot = where === "after" ? ref.nextSibling : where === "before" ? ref.previousSibling : ref.lastChild;
   if (slot?.nodeType === 8) slot.replaceWith(el);
   else ref[where](el);
+}
+
+/** What Vuetify does for a filled field: its label floats up into a gap in the outline, clear of the value. */
+export function floatLabel(input: HTMLInputElement | HTMLTextAreaElement, filled: boolean) {
+  const field = input.closest(".v-input");
+  if (!field) return;
+  for (const c of ["v-input--is-label-active", "v-input--is-dirty"]) field.classList.toggle(c, filled);
+  const label = field.querySelector<HTMLElement>(".v-label");
+  label?.classList.toggle("v-label--active", filled);
+  // Vuetify's gap: the label at its floated scale (0.75) plus 6px.
+  const legend = field.querySelector<HTMLElement>("legend");
+  if (legend && label) legend.style.width = filled ? `${label.scrollWidth * 0.75 + 6}px` : "0px";
 }
 
 export const valid = (iso?: string) => {

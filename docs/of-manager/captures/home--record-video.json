@@ -1,0 +1,67 @@
+{
+  "id": "home--record-video",
+  "section": "home",
+  "label": "Record video",
+  "pages": [
+    "home/index",
+    "home/state-avatar-menu",
+    "home/state-expiration",
+    "home/state-feed-tabs-edit",
+    "home/state-format-text",
+    "home/state-poll",
+    "home/state-promotion",
+    "home/state-quiz",
+    "home/state-schedule",
+    "home/state-tag-people",
+    "home/state-target",
+    "home/state-vault",
+    "new-post/index",
+    "new-post/state-expiration",
+    "new-post/state-format-text",
+    "new-post/state-labels",
+    "new-post/state-poll",
+    "new-post/state-price",
+    "new-post/state-promotion",
+    "new-post/state-quiz",
+    "new-post/state-schedule",
+    "new-post/state-tag-people",
+    "new-post/state-target",
+    "new-post/state-trial-link",
+    "new-post/state-vault"
+  ],
+  "phase": 2,
+  "source": null,
+  "known_body": {
+    "source": "existing route",
+    "relay": [
+      "POST /api/of/v2/upload (multipart file)",
+      "POST /api/of/v2/posts (media_files: the upload's send_with)"
+    ],
+    "code": [
+      "service/of_upload.py upload_media (signed create, storage PUT, convert claim)",
+      "service/of_sends.py create_post"
+    ]
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api2/v2/posts",
+    "query": {},
+    "content_type": "application/json",
+    "body": null
+  },
+  "response": {
+    "status": null,
+    "keys": []
+  },
+  "facts": {
+    "upload_host": "of2transcoder.s3-accelerate.amazonaws.com",
+    "upload_host_source": "measured: the live run of 2026-11-21 (p2.record-video), the Relay's wire log seq 45: PUT /upload/{creator}/<uuid>/{id}/<file> to this host, refused there as off-host before ticket 53; also service/of_upload.py _S3_BASE"
+  },
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T101251Z-ofm-live-6aa979f40",
+    "undo": "undone",
+    "declared_undo": "DELETE the Scheduled post, then OF's Remove from vault (PUT /api2/v2/vault/media/hidden {mediaIds: [the post's media id]}) on the vault item the upload made; the hide is one-way: OF has no unhide, the item is hidden, not destroyed (D30, 2026-11-21)"
+  }
+}

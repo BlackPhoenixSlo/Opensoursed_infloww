@@ -113,14 +113,28 @@ def of_my_qr_views():
 @router.get("/api/of/v2/sessions")
 def of_sessions():
     """Settings > Account > Login sessions, read-only: OF's GET /sessions (a list). Ending
-    sessions (OF's DELETE /sessions) has no relay route."""
+    sessions (OF's DELETE /sessions) is server.py's of_close_all_sessions."""
     return _proxy(lambda: _get_client().sessions())
+
+# ticket 69
+@router.get("/api/of/v2/users/social/buttons")
+def of_social_buttons():
+    """Settings > Social media's buttons: OF's GET /users/social/buttons (a list). Adding and
+    removing one is server.py's of_add_social_button / of_delete_social_button."""
+    return _proxy(lambda: _get_client().social_buttons())
+
+# ticket 69
+@router.get("/api/of/v2/init")
+def of_init():
+    """Social media's Add button providers: OF's GET /init, only `{socialMediaProviders}` (of_reads
+    social_media_providers); nothing else of init is served."""
+    return _proxy(lambda: _get_client().social_media_providers())
 
 @router.get("/api/of/v2/streams/users/blocked")
 def of_stream_blocked_users(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0),
                             query: str = Query("", max_length=64)):
     """Settings > Streaming > Blocked users, read-only: OF's GET /streams/users/blocked
-    ({list, hasMore}). Blocking and unblocking have no relay route."""
+    ({list, hasMore}). Blocking and unblocking are server.py's of_block_stream_viewer / of_unblock_stream_viewer."""
     return _proxy(lambda: _get_client().stream_blocked_users(limit=limit, offset=offset, query=query))
 
 @router.get("/api/of/v2/users/me/start-date-model")

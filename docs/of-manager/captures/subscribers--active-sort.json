@@ -1,0 +1,28 @@
+{
+ "id": "subscribers--active-sort",
+ "section": "subscribers",
+ "label": "Sort (Subscribers > Active)",
+ "pages": [
+  "collections/user-lists/subscribers/active"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {},
+ "response": {},
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "OnlyFans shows 'Ongoing maintenance, some options may be unavailable': only the current Recent + Descending are enabled, clicking them sends nothing"
+ },
+ "facts": {
+  "menu": "Recent (last_activity) / Current subscription (expire_date, disabled) / Started (subscribe_date, disabled); Ascending (disabled) / Descending",
+  "read": "GET /api2/v2/lists/fans order last_activity, direction desc; sortList.all expire_date/desc",
+  "access": "parked: nothing sent to OnlyFans"
+ },
+ "evidence": [
+  "r25-sort-maintenance.png"
+ ]
+}

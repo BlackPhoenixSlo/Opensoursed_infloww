@@ -23,6 +23,8 @@
 // ───────────────────────────────────────────────────────────────────────────
 
 const { BrowserWindow, session, ipcMain } = require("electron");
+const ofUa = require("../lib/of-ua");
+const { chromeMajor } = ofUa;
 
 const OF_URL = "https://onlyfans.com/";
 const CAPTURE_PARTITION = "of-capture"; // NON-persistent → OF creds never touch disk.
@@ -39,7 +41,7 @@ const SIGNIN_CHECK_TIMEOUT_MS = 5000;
 // process.versions.chrome is the one value that cannot drift from the binary.
 // Chrome freezes the minor/build/patch at 0.0.0 in its reduced UA, so the
 // major alone is the whole story.
-const CHROME_MAJOR = String(process.versions.chrome || "").split(".")[0];
+const CHROME_MAJOR = chromeMajor(process.versions);
 
 // A malformed UA ("Chrome/.0.0.0") is worse than no capture at all — it is a
 // unique fingerprint. Fail loudly instead of quietly signing requests with it.
@@ -49,15 +51,7 @@ if (!/^\d+$/.test(CHROME_MAJOR)) {
       JSON.stringify(process.versions.chrome)
   );
 }
-function uaProfile() {
-  const isMac = process.platform === "darwin";
-  return {
-    userAgent: isMac
-      ? `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_MAJOR}.0.0.0 Safari/537.36`
-      : `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_MAJOR}.0.0.0 Safari/537.36`,
-    platform: isMac ? '"macOS"' : '"Windows"',
-  };
-}
+const UA = ofUa.uaProfile(process.platform, CHROME_MAJOR);
 
 let flow = null; // single active capture flow
 
@@ -138,7 +132,7 @@ function buildCurl(s, cookieList) {
   const lines = [
     `curl ${shellQuote(url)} \\`,
     `  -H ${shellQuote("accept: application/json, text/plain, */*")} \\`,
-    `  -H ${shellQuote("user-agent: " + (h["user-agent"] || uaProfile().userAgent))} \\`,
+    `  -H ${shellQuote("user-agent: " + (h["user-agent"] || UA.userAgent))} \\`,
     `  -H ${shellQuote("user-id: " + h["user-id"])} \\`,
     `  -H ${shellQuote("x-bc: " + h["x-bc"])} \\`,
     `  -H ${shellQuote("x-of-rev: " + h["x-of-rev"])} \\`,
@@ -370,22 +364,7 @@ function teardown() {
   flow = null;
 }
 
-function applyClientHints(ses) {
-  // Native (no-CDP) UA + client-hint consistency: make the Sec-CH-UA headers say
-  // Chrome, matching the UA string, instead of leaking Electron/Chromium.
-  const ua = uaProfile();
-  ses.webRequest.onBeforeSendHeaders((details, cb) => {
-    const h = details.requestHeaders;
-    h["User-Agent"] = ua.userAgent;
-    h["sec-ch-ua"] = `"Google Chrome";v="${CHROME_MAJOR}", "Chromium";v="${CHROME_MAJOR}", "Not_A Brand";v="24"`;
-    h["sec-ch-ua-mobile"] = "?0";
-    h["sec-ch-ua-platform"] = ua.platform;
-    cb({ requestHeaders: h });
-  });
-}
-
 async function createOfWindow() {
-  const ua = uaProfile();
   const win = new BrowserWindow({
     width: 1120,
     height: 820,
@@ -403,8 +382,8 @@ async function createOfWindow() {
       backgroundThrottling: false,
     },
   });
-  applyClientHints(session.fromPartition(CAPTURE_PARTITION));
-  win.webContents.setUserAgent(ua.userAgent);
+  ofUa.applyClientHints(session.fromPartition(CAPTURE_PARTITION), UA, CHROME_MAJOR);
+  win.webContents.setUserAgent(UA.userAgent);
   flow.ofWindow = win;
 
   const wc = win.webContents;

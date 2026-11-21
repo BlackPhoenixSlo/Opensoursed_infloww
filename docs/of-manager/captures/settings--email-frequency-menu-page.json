@@ -1,0 +1,65 @@
+{
+ "id": "settings--email-frequency-menu-page",
+ "section": "settings",
+ "label": "Email digest frequency menu",
+ "pages": [
+  "/my/settings/notifications/email"
+ ],
+ "phase": "P3 s11",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/api2/v2/users/settings/notifications/email",
+  "query": {
+   "group": "1"
+  },
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "code",
+   "items",
+   "title"
+  ]
+ },
+ "facts": {
+  "control": "Update frequency (new_likes_digest)",
+  "choices_in_order": [
+   {
+    "label": "Every Hour",
+    "value": 1
+   },
+   {
+    "label": "3 Hours",
+    "value": 3
+   },
+   {
+    "label": "6 Hours",
+    "value": 6
+   },
+   {
+    "label": "12 Hours",
+    "value": 12
+   },
+   {
+    "label": "24 Hours",
+    "value": 24,
+    "selected": true
+   }
+  ],
+  "reveal": "email master toggle off on this account; row enabled client-side in component data only",
+  "picked": null,
+  "non_get": 0,
+  "access": "read: only GETs were sent, no write",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r09-settings-email-frequency-menu-open.html"
+ ]
+}

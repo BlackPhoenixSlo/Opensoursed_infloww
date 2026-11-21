@@ -1,0 +1,37 @@
+{
+ "id": "settings--promotion-modal3-menu-page",
+ "section": "settings",
+ "label": "modal-3 with ⋮ menu open",
+ "pages": [
+  "/my/settings/subscription"
+ ],
+ "phase": "P3 s34",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/my/settings/subscription",
+  "query": {},
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": null,
+  "keys": []
+ },
+ "facts": {
+  "promotion": "one, ended, claims count 'Not claimed yet' (not clickable; no request on click)",
+  "claims_modal_rows_read_in_js": "GET /api2/v2/campaigns/{id}/claimers (user-list modal campaign_claimers)",
+  "access": "parked: nothing sent to OnlyFans"
+ },
+ "evidence": [
+  "r11-subscription-promotion-not-claimed.html"
+ ],
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "the only promotion has 0 claims, so the claims modal has no row and no ⋮; needs a promotion with at least one claim"
+ }
+}

@@ -1,0 +1,15 @@
+{
+ "id": "settings--ethwallet-metamask",
+ "section": "settings",
+ "label": "https://metamask.io/download.html",
+ "pages": [
+  "settings/ethwallet"
+ ],
+ "phase": 3,
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "Live proof pending"
+ }
+}

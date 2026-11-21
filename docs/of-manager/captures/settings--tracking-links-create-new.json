@@ -1,0 +1,16 @@
+{
+  "id": "settings--tracking-links-create-new",
+  "section": "settings",
+  "label": "Create new tracking link",
+  "pages": [
+    "settings/subscription/tracking-links/modal-1",
+    "settings/subscription/tracking-links/state-kebab"
+  ],
+  "phase": 3,
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T115525Z-ofm-live-bf521a5ba",
+    "undo": "none"
+  }
+}

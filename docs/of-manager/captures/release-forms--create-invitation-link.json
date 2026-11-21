@@ -1,0 +1,50 @@
+{
+ "id": "release-forms--create-invitation-link",
+ "section": "release-forms",
+ "label": "Create new invitation link",
+ "pages": [
+  "my/release-forms"
+ ],
+ "phase": "P2 s36a",
+ "source": "aborted",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "POST",
+  "path": "/api2/v2/guests/",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "name": "oi-proof-test"
+  }
+ },
+ "response": {
+  "status": null,
+  "keys": []
+ },
+ "facts": {
+  "modal": "INVITE A USER WHO DOES NOT YET HAVE AN ACCOUNT",
+  "fields": [
+   "Name 0/60"
+  ],
+  "buttons": [
+   "CANCEL",
+   "SAVE"
+  ],
+  "client_retries_aborted": 3,
+  "third_party_host": false,
+  "delete_endpoint_in_js": false,
+  "after_read": "GET /api2/v2/release-forms?limit=10&offset=0&filter=all&sort=date:desc -> items [] (nothing reached OnlyFans)",
+  "path_wired": "inferred",
+  "access": "write, blocked: the capture browser aborted it, nothing reached OnlyFans",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r01-before.png",
+  "r01-after-click.png",
+  "r01-after-save.png",
+  "r01-state-after.png"
+ ]
+}

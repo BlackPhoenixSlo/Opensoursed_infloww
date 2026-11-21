@@ -1,0 +1,26 @@
+{
+  "id": "settings--close-all-sessions",
+  "section": "settings",
+  "label": "Close all sessions",
+  "pages": [
+    "settings/account/sessions"
+  ],
+  "phase": 3,
+  "source": "of-js",
+  "of_js": {
+    "bundle": "settings-sessions.js",
+    "symbol": "205489.l/d",
+    "evidence": "docs/plans/of-manager-api-catalogue.md: Session list / log out others, GET / DELETE /sessions, no body"
+  },
+  "request": {
+    "method": "DELETE",
+    "path": "/api2/v2/sessions",
+    "query": {}
+  },
+  "proof": {
+    "kind": "mocked",
+    "verdict": "parked",
+    "undo": "not reversible, owner go",
+    "reason": "mocked: not run live; the live path is ticket 81 (lift the Relay's _denied /sessions backstop) and ticket 82 (the owner-go run)"
+  }
+}

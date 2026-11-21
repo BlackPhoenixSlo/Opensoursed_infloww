@@ -27,8 +27,8 @@ stdlib email.parser.BytesParser. Checks in the frame, scope `model:1`:
 6. An upload answered HTTP 502 shows a red #oi-note starting `Could not upload:` and adds no thumb; picking the same
    PNG again sends a second POST /api/of/v2/upload with the same bytes. No console error but the 502's own resource line
    (a rejection left unhandled is a page error, collected with the console errors).
-7. All Creators (scope key removed before every load): New post stands in with the first listed creator (ofMirrorProfile's
-   STAND_IN_SRC), so clicking "Add media" opens the file chooser and the PNG goes up once with X-Account-Id acc1; no post.
+7. (Retired) No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner
+   2026-11-20, origin/main 77e5df419; phase_check.py's one_creator checks it).
 8. No console errors; no request left localhost.
 9. Dedupe hit: with vault id 42 seeded in the oi:new-post:1 draft before load, an upload answered
    {"ready":true,"deduped":true,"vault_id":42,"send_with":[42]} is appended as returned: Post sends media_files [42, 42].
@@ -341,18 +341,6 @@ with sync_playwright() as p:
     check("8: no console error after a reload but a dead blob: resource line", [e for e in errs if not e.startswith("Failed to load resource")], [])
     pg.context.close()
 
-    # All Creators: the scope key cleared before every load; New post stands in with the first listed creator.
-    pg, uploads, held, posts, errs=session(b, "localStorage.removeItem('chatterly:scope')")
-    fr=open_new_post(pg)
-    if fr:
-        check("7: scope key absent", pg.evaluate("localStorage.getItem('chatterly:scope')"), None)
-        check("7: clicking Add media opens the file chooser (the stand-in creator)", pick(pg, fr) is not None, True)
-        pg.wait_for_timeout(1500)
-        pg.screenshot(path=f"{SHOTS}/inapp-post-upload-all-creators.png")
-        check("7: one upload, for the stand-in creator, and no post", [[u[0] for u in uploads], posts], [["acc1"], []])
-    print("all creators console errors:", [e[:160] for e in errs][:8])
-    check("8: no console errors in All Creators", errs, [])
-    pg.context.close()
 check("8: no request left localhost", [f for f in failures if f.startswith("request to a non-localhost host")], [])
 if failures:
     print("FAIL:", *failures, sep="\n  "); sys.exit(1)

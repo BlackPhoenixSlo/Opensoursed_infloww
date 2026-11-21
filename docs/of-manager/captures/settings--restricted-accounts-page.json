@@ -1,0 +1,56 @@
+{
+ "id": "settings--restricted-accounts-page",
+ "section": "settings",
+ "label": "Restricted accounts page",
+ "pages": [
+  "/my/collections/user-lists/restricted"
+ ],
+ "phase": "P3 s1",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/api2/v2/users/restrict",
+  "query": {
+   "limit": "10",
+   "offset": "0"
+  },
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "hasMore",
+   "list",
+   "nextOffset"
+  ]
+ },
+ "facts": {
+  "page_path": "/my/collections/user-lists/restricted (checklist said /my/subscribers/restricted)",
+  "header": "RESTRICTED",
+  "tabs": [
+   "USERS",
+   "POSTS"
+  ],
+  "sort": "DEFAULT",
+  "chips": [
+   "All",
+   "Active",
+   "Expired",
+   "Restricted",
+   "Blocked",
+   "Promotions",
+   "Fan Stats"
+  ],
+  "rows": "No users found",
+  "access": "read: only GETs were sent, no write",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r12-settings-restricted-accounts.html"
+ ]
+}

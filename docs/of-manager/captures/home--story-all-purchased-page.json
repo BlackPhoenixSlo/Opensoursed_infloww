@@ -1,0 +1,41 @@
+{
+ "id": "home--story-all-purchased-page",
+ "section": "home",
+ "label": "Home story strip All / Purchased",
+ "pages": [
+  "/"
+ ],
+ "phase": "P1 s32",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/api2/v2/posts/paid/pinned/all",
+  "query": {
+   "skip_users": "all"
+  },
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "hasMore",
+   "list"
+  ]
+ },
+ "facts": {
+  "exists": true,
+  "where": "Home feed tabs (.b-tabs__nav): All, Purchased, pencil",
+  "purchased_click_read": "GET /api2/v2/posts/paid/pinned/all?skip_users=all",
+  "access": "read: only GETs were sent, no write",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r05-home-story-all-purchased.html",
+  "r05-home-story-purchased-clicked.html"
+ ]
+}

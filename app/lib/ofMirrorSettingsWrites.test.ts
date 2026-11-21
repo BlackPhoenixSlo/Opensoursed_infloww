@@ -2,11 +2,23 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bindWrites, NOT_YET, READ_ONLY, SAVED_TOAST, SELECT_MODEL } from "./ofMirrorWrites";
+import { applyPageExtras, applySettings } from "./ofMirrorSettings";
+import { drawObsServer, STREAM_KEY_MASK } from "./ofMirrorObsServer";
+import { DIGEST_OFF } from "./ofMirrorSettingsPages";
+import { streamCopy } from "./ofMirrorStreamCopy";
 import {
   bindSettingsWrites,
+  CLOSE_ALL_ASK,
+  CLOSE_ALL_WRITE,
+  closeAllNote,
   collectWatermarks,
+  frequencyChoices,
+  frequencyWrite,
   isPricePage,
   parsePrice,
+  RESET_KEY_ASK,
+  resetKeyNote,
+  resetKeyWrite,
   settingWrite,
   toggleWrite,
   type SettingsWrite,
@@ -31,7 +43,7 @@ afterEach(() => {
 });
 
 /** Bind both write layers on `settings/<page>`, as the frame does; returns the recorded settings writes. */
-function bind(page: string, opts: { data?: object; me?: object; fail?: string; confirm?: boolean; scope?: "all" } = {}) {
+function bind(page: string, opts: { data?: object; me?: object; fail?: string; confirm?: boolean; scope?: "all"; standIn?: boolean; newWrites?: boolean } = {}) {
   const doc = load(page);
   const sent: SettingsWrite[] = [];
   const handlers =
@@ -40,9 +52,10 @@ function bind(page: string, opts: { data?: object; me?: object; fail?: string; c
       : {
           send: (w: SettingsWrite) => (sent.push(w), opts.fail ? Promise.reject(new Error(opts.fail)) : Promise.resolve({ success: true })),
           confirm: vi.fn(() => opts.confirm ?? true),
+          standIn: !!opts.standIn,
         };
-  unbinds.push(bindWrites(doc, `settings/${page}`, null));
-  unbinds.push(bindSettingsWrites(doc, `settings/${page}`, () => (opts.data ?? {}) as never, opts.me, handlers));
+  unbinds.push(bindWrites(doc, `settings/${page}`, null, true));
+  unbinds.push(bindSettingsWrites(doc, `settings/${page}`, () => (opts.data ?? {}) as never, opts.me, handlers, opts.newWrites ?? true));
   return { sent, handlers };
 }
 
@@ -261,5 +274,433 @@ describe("subscription price", () => {
     save.click();
     expect(sent).toEqual([]);
     expect(noteText()).toBe("Enter a valid price");
+  });
+});
+
+// ticket 60
+describe("drawn switches and email Update frequency", () => {
+  const NOTIF = "/api/of/v2/users/settings/notifications";
+  /** `settings/<page>` with its extras drawn from `data`, then both write layers bound. */
+  function drawn(page: string, data: object, opts: { fail?: string; scope?: "all" } = {}) {
+    const r = bind(page, { ...opts, data });
+    applySettings(document, page, data as never);
+    applyPageExtras(document, page, data as never, true);
+    return r;
+  }
+  const freq = () => document.querySelector("#toggle_new_likes_digest")!.closest("span")!.parentElement!.querySelector<HTMLElement>(".v-select")!;
+  const shown = () => freq().querySelector(".v-select__selection")?.textContent;
+  const menuRows = () => [...document.querySelectorAll<HTMLElement>("#oi-menu [data-oi-group]")];
+  const email = (on: boolean, hours: number | false) => ({
+    settings: { isEmailNotificationsEnabled: true },
+    "notifications:email": [{ items: [{ code: "new_likes_digest", isEnabled: on, value: on ? hours : 0 }] }], // the fixture's shape
+  });
+
+  it.each([
+    ["messaging", "messageOnlyFromFriends", { me: { subscribePrice: 0 }, settings: { canAcceptMessageOnlyFromFriends: false } }, "/api/of/v2/users/me", "canAcceptMessageOnlyFromFriends"],
+    ["security", "setting_isPrivate", { me: { isPerformer: true, isAdultContent: false }, settings: { isPrivate: false } }, "/api/of/v2/users/me/settings/security", "isPrivate"],
+  ])("%s: the drawn switch saves its key on change, keeps the tooltip, is not the read-only note", async (page, id, data, path, key) => {
+    const { sent } = drawn(page, data);
+    expect(input(id).title).toBe(NOT_YET);
+    toggle(id);
+    await flush();
+    expect(sent).toEqual([{ method: "PATCH", path, body: { [key]: true } }]);
+    expect(toastText()).toBe(SAVED_TOAST);
+    expect(noteText()).toBeNull();
+  });
+
+  it.each([
+    ["messaging", "messageOnlyFromFriends", { me: { subscribePrice: 0 }, settings: { canAcceptMessageOnlyFromFriends: true } }],
+    ["security", "setting_isPrivate", { me: { isPerformer: true, isAdultContent: false }, settings: { isPrivate: true } }],
+  ])("%s: a failed save (502) puts the drawn switch back with the red note", async (page, id, data) => {
+    drawn(page, data, { fail: "502 Bad Gateway" });
+    toggle(id);
+    await flush();
+    expect(input(id).checked).toBe(true);
+    expect(noteText()).toBe("Could not save: 502 Bad Gateway");
+    expect((document.getElementById("oi-note") as HTMLElement).style.color).toMatch(/255, 69, 69|#ff4545/i);
+  });
+
+  it("switch off (OFM_NEW_WRITES_ENABLED unset): the drawn Fully private stays Not yet, never marked Wired, sends nothing (live 2026-11-21)", () => {
+    const data = { me: { isPerformer: true, isAdultContent: false }, settings: { isPrivate: false } };
+    const { sent } = bind("security", { data, newWrites: false }); // bound first, as live: Show activity status is Wired
+    applySettings(document, "security", data as never);
+    applyPageExtras(document, "security", data as never, false); // the drawn row is its clone
+    const el = input("setting_isPrivate");
+    expect([el.hasAttribute("data-oi-wired"), el.disabled, el.title]).toEqual([false, true, NOT_YET]);
+    toggle("setting_isPrivate");
+    expect(sent).toEqual([]);
+  });
+
+  it("no model: the drawn switch sends nothing, flips back, says select a model", () => {
+    const { sent } = drawn("messaging", { me: { subscribePrice: 0 }, settings: { canAcceptMessageOnlyFromFriends: false } }, { scope: "all" });
+    toggle("messageOnlyFromFriends");
+    expect(sent).toEqual([]);
+    expect(input("messageOnlyFromFriends").checked).toBe(false);
+    expect(noteText()).toBe(SELECT_MODEL);
+  });
+
+  it.each([
+    [24, [24]],
+    [12, [12, 24]],
+    [48, [24, 48]],
+  ])("frequency choices for stored %s h: %j (OF's list needs capture)", (stored, want) => {
+    expect(frequencyChoices(stored)).toEqual(want);
+  });
+
+  it("frequencyWrite is the email digest notifications body", () => {
+    expect(frequencyWrite(12)).toEqual({ method: "PATCH", path: NOTIF, body: { notifications: { email: [{ code: "new_likes_digest", value: 12 }] } } });
+  });
+
+  it.each([
+    [false, false, "Every 24 Hours", true],
+    [true, 12, "Every 12 Hours", false],
+  ])("digest on=%s stored=%s: shows %s, disabled=%s; select and field lose the Not-yet title (Live pass, D1), an off select says why", (on, hours, text, disabled) => {
+    drawn("notifications/email", email(on as boolean, hours as number | false));
+    expect(shown()).toBe(text);
+    expect(freq().classList.contains("v-input--is-disabled")).toBe(disabled);
+    expect(freq().closest(".b-menu-list__el")!.classList.contains("m-disabled")).toBe(disabled);
+    expect(freq().querySelector<HTMLInputElement>("input#input-189")!.disabled).toBe(disabled);
+    expect(freq().getAttribute("title")).toBe(disabled ? DIGEST_OFF : null);
+    expect(freq().querySelector<HTMLInputElement>("input#input-189")!.hasAttribute("title")).toBe(false);
+    expect(freq().hasAttribute("data-oi-wired")).toBe(true);
+  });
+
+  it("a pick sends the digest with the hours and shows it; the menu lists the stored value and 24", async () => {
+    const { sent } = drawn("notifications/email", email(true, 12));
+    freq().click();
+    expect(menuRows().map((r) => r.textContent)).toEqual(["Every 12 Hours", "Every 24 Hours"]);
+    menuRows()[1].click();
+    await flush();
+    expect(sent).toEqual([frequencyWrite(24)]);
+    expect(shown()).toBe("Every 24 Hours");
+    expect(toastText()).toBe(SAVED_TOAST);
+    expect(noteText()).toBeNull();
+  });
+
+  it("a failed frequency save (502) puts the old value back with the red note", async () => {
+    drawn("notifications/email", email(true, 12), { fail: "502 Bad Gateway" });
+    freq().click();
+    menuRows()[1].click();
+    await flush();
+    expect(shown()).toBe("Every 12 Hours");
+    expect(noteText()).toBe("Could not save: 502 Bad Gateway");
+  });
+
+  it("while the digest is off the select opens nothing; switching it on makes it usable", async () => {
+    const { sent } = drawn("notifications/email", email(false, false));
+    freq().click();
+    expect(menuRows()).toEqual([]);
+    toggle("toggle_new_likes_digest");
+    await flush();
+    expect(sent).toEqual([{ method: "PATCH", path: NOTIF, body: { notifications: { email: [{ code: "new_likes_digest", value: 24 }] } } }]);
+    expect(freq().classList.contains("v-input--is-disabled")).toBe(false);
+  });
+
+  it("no model: a pick sends nothing and says select a model", () => {
+    const { sent } = drawn("notifications/email", email(true, 12), { scope: "all" });
+    freq().click();
+    menuRows()[1].click();
+    expect(sent).toEqual([]);
+    expect(shown()).toBe("Every 12 Hours");
+    expect(noteText()).toBe(SELECT_MODEL);
+  });
+});
+
+// ticket 63
+describe("Close all sessions (account/sessions)", () => {
+  const button = () =>
+    [...document.querySelectorAll<HTMLButtonElement>("#content button")].find((b) => b.textContent?.trim() === "Close all sessions")!;
+  const modal = () => document.getElementById("ModalConfirm");
+  const [cancelBtn, okBtn] = [0, 1].map((i) => () => modal()!.querySelectorAll<HTMLButtonElement>(".modal-footer button")[i]);
+  const WRONG_USER = 'upstream 400: {"error":{"code":301,"message":"Wrong user."}}';
+
+  it("is usable and Wired, its Not-yet title kept, after the page's settings apply", () => {
+    bind("account/sessions");
+    applyPageExtras(document, "account/sessions", { sessions: [] }, true);
+    expect([button().disabled, button().hasAttribute("data-oi-wired"), button().title]).toEqual([false, true, NOT_YET]);
+    // every other Account control stays disabled
+    expect([...document.querySelectorAll<HTMLButtonElement>("#content button")].filter((b) => b !== button() && !b.disabled)).toEqual([]);
+  });
+
+  it.each([
+    ["Cancel", cancelBtn, []],
+    ["Confirm", okBtn, [CLOSE_ALL_WRITE]],
+  ])("%s on OF's confirm sends %j", async (_name, pick, want) => {
+    const { sent } = bind("account/sessions");
+    button().click();
+    await flush();
+    expect([modal()?.querySelector(".modal-title")?.textContent, modal()?.querySelector(".dialog_message")?.textContent]).toEqual([
+      CLOSE_ALL_ASK.title,
+      CLOSE_ALL_ASK.text,
+    ]);
+    expect(CLOSE_ALL_ASK.text).toMatch(/cannot be undone/);
+    pick().click();
+    await flush();
+    expect([sent, modal()]).toEqual([want, null]);
+    expect(CLOSE_ALL_WRITE).toEqual({ method: "DELETE", path: "/api/of/v2/sessions" });
+  });
+
+  it.each([
+    ["a session-lost answer says to re-link the Creator", WRONG_USER, /re-linked in Manage creators/],
+    ["a 502 says it could not", "upstream 502: synthetic", /^Could not close sessions: upstream 502/],
+  ])("%s, in red", async (_name, fail, want) => {
+    bind("account/sessions", { fail });
+    button().click();
+    await flush();
+    okBtn().click();
+    await flush();
+    await flush();
+    expect(noteText()).toMatch(want);
+    expect(document.getElementById("oi-note")!.style.color).toBe("rgb(255, 69, 69)");
+  });
+
+  it.each([
+    ["All models with no stand-in", { scope: "all" as const }],
+    ["All models' stand-in", { standIn: true }],
+  ])("%s: no confirm, nothing sent, Select a model", async (_name, opts) => {
+    const { sent } = bind("account/sessions", opts);
+    button().click();
+    await flush();
+    expect([sent, modal(), noteText()]).toEqual([[], null, SELECT_MODEL]);
+  });
+
+  it.each([
+    [WRONG_USER, true],
+    ["upstream 400: Wrong password", false],
+    ["upstream 502: x", false],
+  ])("closeAllNote(%j) re-link: %s", (fail, relink) => {
+    expect(closeAllNote(new Error(fail)).includes("re-linked")).toBe(relink);
+  });
+
+  it.each([
+    ['{"upstream_status":"refused_by_relay","upstream_body":"refused: DELETE /api2/v2/sessions (ends sessions)"}',
+      `Could not close sessions: ${NOT_YET}`],
+    ["upstream 502: x", "Could not close sessions: upstream 502: x"],
+  ])("closeAllNote(%j) = %j", (fail, want) => {
+    expect(closeAllNote(new Error(fail))).toBe(want);
+  });
+});
+
+// ticket 66
+describe("Block by country and Block by IP (Lockout writes)", () => {
+  const COUNTRIES = [
+    { code: "AQ", name: "Antarctica" },
+    { code: "US", name: "United States of America" },
+  ];
+  const data = { settings: { blockedCountries: [], blockedStates: [], blockedIps: [] }, countries: COUNTRIES };
+  const modal = () => document.getElementById("ModalConfirm");
+  const [cancelBtn, okBtn] = [0, 1].map((i) => () => modal()!.querySelectorAll<HTMLButtonElement>(".modal-footer button")[i]);
+  const box = () => document.querySelector<HTMLElement>("#content .g-select__wrapper .v-input")!;
+  const countrySave = () => document.querySelector<HTMLButtonElement>("#content .g-page__header .g-btn__wrapper button[type='submit']")!;
+  const field = () => document.getElementById("input-blocked-ips") as HTMLTextAreaElement;
+  const ipButton = (t: string) => [...document.querySelectorAll<HTMLButtonElement>("#content .b-settings__row.g-btn__wrapper button")].find((b) => b.textContent?.trim() === t)!;
+  const chips = () => [...document.querySelectorAll("#oi-countries [data-oi-country]")].map((c) => c.getAttribute("data-oi-country"));
+  const type = (text: string) => {
+    field().value = text;
+    field().dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const pickAntarctica = async () => {
+    box().click();
+    await flush();
+    document.querySelector<HTMLElement>("#oi-menu [data-oi-value='AQ']")!.click();
+  };
+  const COUNTRY_PAGE = "security/block_by_country";
+  const IP_PAGE = "security/block_by_ip";
+
+  it.each([COUNTRY_PAGE, IP_PAGE])("%s: its controls Wired, their Not-yet titles dropped (Live pass, D1)", (page) => {
+    bind(page, { data });
+    const els = page === COUNTRY_PAGE ? [box(), document.getElementById("input-298")!, countrySave()] : [field(), ipButton("Cancel"), ipButton("Save")];
+    expect(els.map((e) => e.hasAttribute("data-oi-wired"))).toEqual([true, true, true]);
+    expect(els.map((e) => e.hasAttribute("title"))).toEqual([false, false, false]);
+    expect(document.querySelector("a.of-state-link")).toBeNull();
+  });
+
+  it("the saved countries show as chips by name once the settings read lands", () => {
+    const read: { settings?: object; countries?: object } = {};
+    bind(COUNTRY_PAGE, { data: read });
+    expect(chips()).toEqual([]);
+    Object.assign(read, { ...data, settings: { blockedCountries: ["US"] } });
+    applyPageExtras(document, COUNTRY_PAGE, read as never, true);
+    expect(document.querySelector("#oi-countries")?.textContent).toBe("United States of America ✕");
+  });
+
+  it.each([COUNTRY_PAGE, IP_PAGE])("%s: a read landing during an edit keeps the edit; after Cancel it shows", async (page) => {
+    const read = { ...data };
+    bind(page, { data: read });
+    if (page === COUNTRY_PAGE) await pickAntarctica();
+    else type("192.0.2.1");
+    read.settings = { blockedCountries: ["US"], blockedStates: [], blockedIps: ["198.51.100.7"] } as never;
+    applyPageExtras(document, page, read as never, true);
+    expect(page === COUNTRY_PAGE ? chips() : field().value).toEqual(page === COUNTRY_PAGE ? ["AQ"] : "192.0.2.1");
+    if (page === IP_PAGE) {
+      ipButton("Cancel").click();
+      applyPageExtras(document, page, read as never, true);
+      expect(field().value).toBe("198.51.100.7");
+    }
+  });
+
+  it.each([
+    ["OK", okBtn, [{ method: "PUT", path: "/api/of/v2/users/me/settings/security/blocked-countries", body: { blockedCountries: ["AQ"], blockedStates: [] } }]],
+    ["Cancel", cancelBtn, []],
+  ])("country: pick Antarctica, Save, %s on the confirm naming it", async (_n, pick, want) => {
+    const { sent } = bind(COUNTRY_PAGE, { data });
+    expect(countrySave().disabled).toBe(true);
+    await pickAntarctica();
+    expect([chips(), countrySave().disabled]).toEqual([["AQ"], false]);
+    countrySave().click();
+    await flush();
+    expect(modal()?.querySelector(".dialog_message")?.textContent).toBe("People in Antarctica will not be able to see your profile or posts.");
+    pick().click();
+    await flush();
+    await flush();
+    expect(sent).toEqual(want);
+    if (want.length) expect([toastText(), countrySave().disabled]).toEqual([SAVED_TOAST, true]);
+  });
+
+  it("country: a chip click unpicks it; typing filters the list", async () => {
+    bind(COUNTRY_PAGE, { data });
+    await pickAntarctica();
+    document.querySelector<HTMLElement>("#oi-countries [data-oi-country='AQ']")!.click();
+    expect([chips(), countrySave().disabled]).toEqual([[], true]);
+    const input = document.getElementById("input-298") as HTMLInputElement;
+    input.value = "united";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect([...document.querySelectorAll("#oi-menu [data-oi-value]")].map((r) => r.getAttribute("data-oi-value"))).toEqual(["US"]);
+  });
+
+  it.each([
+    ["OK", okBtn, [{ method: "PUT", path: "/api/of/v2/users/me/settings/security/blocked-ips", body: { blockedIps: ["192.0.2.1"] } }]],
+    ["Cancel", cancelBtn, []],
+  ])("IP: type 192.0.2.1, Save, %s on the confirm naming it", async (_n, pick, want) => {
+    const { sent } = bind(IP_PAGE, { data });
+    expect([ipButton("Save").disabled, ipButton("Cancel").disabled]).toEqual([true, true]);
+    type("192.0.2.1");
+    ipButton("Save").click();
+    await flush();
+    expect(modal()?.querySelector(".dialog_message")?.textContent).toBe("Visitors from 192.0.2.1 will not be able to see your profile or posts.");
+    pick().click();
+    await flush();
+    await flush();
+    expect(sent).toEqual(want);
+  });
+
+  it("IP: Cancel puts the saved list back and sends nothing", () => {
+    const { sent } = bind(IP_PAGE, { data: { settings: { blockedIps: ["198.51.100.7"] } } });
+    type("192.0.2.1");
+    ipButton("Cancel").click();
+    expect([field().value, sent, modal(), ipButton("Cancel").disabled]).toEqual(["198.51.100.7", [], null, true]);
+  });
+
+  it("IP: a line that is not an address disables Save and says so", () => {
+    bind(IP_PAGE, { data });
+    type("192.0.2.999");
+    expect([ipButton("Save").disabled, ipButton("Cancel").disabled]).toEqual([true, false]);
+    expect(document.querySelector("#content .v-messages__wrapper")?.textContent).toBe("Not an IP address: 192.0.2.999");
+  });
+
+  it.each([
+    ["All models with no stand-in", { scope: "all" as const }],
+    ["All models' stand-in", { standIn: true }],
+  ])("%s: read-only, Select a model, nothing sent", async (_name, opts) => {
+    const { sent } = bind(COUNTRY_PAGE, { data, ...opts });
+    box().click();
+    await flush();
+    expect([document.getElementById("oi-menu"), noteText(), (document.getElementById("input-298") as HTMLInputElement).readOnly]).toEqual([null, SELECT_MODEL, true]);
+    bind(IP_PAGE, { data, ...opts });
+    field().click();
+    expect([noteText(), field().readOnly, ipButton("Save").disabled, sent]).toEqual([SELECT_MODEL, true, true, []]);
+  });
+
+  it.each([COUNTRY_PAGE, IP_PAGE])("%s: a 502 says it could not, in red, and the page shows the saved list", async (page) => {
+    bind(page, { data, fail: "upstream 502: synthetic" });
+    if (page === COUNTRY_PAGE) await pickAntarctica();
+    else type("192.0.2.1");
+    (page === COUNTRY_PAGE ? countrySave() : ipButton("Save")).click();
+    await flush();
+    okBtn().click();
+    await flush();
+    await flush();
+    expect(noteText()).toBe("Could not save: upstream 502: synthetic");
+    expect(document.getElementById("oi-note")!.style.color).toBe("rgb(255, 69, 69)");
+    expect(page === COUNTRY_PAGE ? chips() : field().value).toEqual(page === COUNTRY_PAGE ? [] : "");
+  });
+});
+
+// ticket 76
+describe("Reset stream key (streaming)", () => {
+  const button = () =>
+    [...document.querySelectorAll<HTMLButtonElement>("#content button")].find((b) => b.textContent?.trim() === "Reset")!;
+  const modal = () => document.getElementById("ModalConfirm");
+  const [cancelBtn, okBtn] = [0, 1].map((i) => () => modal()!.querySelectorAll<HTMLButtonElement>(".modal-footer button")[i]);
+  const keyField = () => {
+    const label = [...document.querySelectorAll<HTMLLabelElement>("#content label.v-label")].find((l) => l.textContent?.trim() === "Stream Key")!;
+    return document.getElementById(label.htmlFor) as HTMLInputElement;
+  };
+
+  it("is usable and Wired, its Not-yet title kept", () => {
+    bind("streaming");
+    expect([button().disabled, button().hasAttribute("data-oi-wired"), button().title]).toEqual([false, true, NOT_YET]);
+  });
+
+  it.each([
+    ["Cancel", cancelBtn, []],
+    ["Confirm", okBtn, [resetKeyWrite("obs_agora")]],
+  ])("%s on OF's confirm sends %j", async (_name, pick, want) => {
+    const { sent } = bind("streaming");
+    button().click();
+    await flush();
+    expect([modal()?.querySelector(".modal-title")?.textContent, modal()?.querySelector(".dialog_message")?.textContent]).toEqual([
+      RESET_KEY_ASK.title,
+      RESET_KEY_ASK.text,
+    ]);
+    pick().click();
+    await flush();
+    expect([sent, modal()]).toEqual([want, null]);
+  });
+
+  it("sends the capture record's request for the OBS server the page shows, no body", async () => {
+    expect(resetKeyWrite("obs_agora")).toEqual({ method: "DELETE", path: "/api/of/v2/streams/obs/key?type=obs_agora" });
+    const { sent } = bind("streaming");
+    drawObsServer(document, undefined, "mux_direct");
+    button().click();
+    await flush();
+    okBtn().click();
+    await flush();
+    expect(sent).toEqual([{ method: "DELETE", path: "/api/of/v2/streams/obs/key?type=mux_direct" }]);
+    expect(toastText()).toBe(SAVED_TOAST);
+  });
+
+  it("after a reset the field shows the new key masked, never its text; Copy key copies the new key", () => {
+    load("streaming");
+    const fresh = { streamingRtmpServer: "rtmp://synthetic.invalid/live", streamingRtmpKey: "oi-synthetic-new-key" };
+    drawObsServer(document, fresh);
+    expect(keyField().value).toBe(STREAM_KEY_MASK);
+    expect(document.documentElement.outerHTML.includes("oi-synthetic-new-key")).toBe(false);
+    expect(streamCopy("key", fresh, null, true, "obs_agora")).toEqual({ text: "oi-synthetic-new-key", toast: "Copied to clipboard" });
+  });
+
+  it("a failed reset is the red note", async () => {
+    bind("streaming", { fail: "upstream 502: synthetic" });
+    button().click();
+    await flush();
+    okBtn().click();
+    await flush();
+    await flush();
+    expect(noteText()).toBe("Could not reset the stream key: upstream 502: synthetic");
+    expect(document.getElementById("oi-note")!.style.color).toBe("rgb(255, 69, 69)");
+    expect(resetKeyNote(new Error("x"))).toBe("Could not reset the stream key: x");
+    expect(resetKeyNote(new Error('{"upstream_status":"refused_by_relay","upstream_body":"Live guard refused"}'))).toBe(
+      `Could not reset the stream key: ${NOT_YET}`,
+    );
+  });
+
+  it.each([
+    ["All models with no stand-in", { scope: "all" as const }],
+    ["All models' stand-in", { standIn: true }],
+  ])("%s: no confirm, nothing sent, Select a model", async (_name, opts) => {
+    const { sent } = bind("streaming", opts);
+    button().click();
+    await flush();
+    expect([sent, modal(), noteText()]).toEqual([[], null, SELECT_MODEL]);
   });
 });

@@ -1,0 +1,41 @@
+{
+  "id": "new-post--labels-expiration-target",
+  "section": "new-post",
+  "label": "Add labels; Expiration period; Your target",
+  "pages": [
+    "new-post/index",
+    "new-post/state-expiration",
+    "new-post/state-labels",
+    "new-post/state-target"
+  ],
+  "phase": 2,
+  "source": null,
+  "known_body": {
+    "source": "existing route",
+    "relay": [
+      "GET /api/of/v2/labels (the labels dialog's rows)",
+      "POST /api/of/v2/posts (label_ids, expire_days, fund_raising_target, posted_at)"
+    ],
+    "code": [
+      "app/lib/ofMirrorPostDraft.ts collectPost",
+      "service/of_sends.py create_post (_post_body: labelIds, expireDays, fundRaisingTargetAmount + fundRaisingTipsPresets, isScheduled + scheduledDate)"
+    ]
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api2/v2/posts",
+    "query": {},
+    "content_type": "application/json",
+    "body": null
+  },
+  "response": {
+    "status": null,
+    "keys": []
+  },
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T093848Z-ofm-live-85bf55590",
+    "undo": "undone"
+  }
+}

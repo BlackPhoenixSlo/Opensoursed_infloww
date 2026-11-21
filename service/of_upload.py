@@ -393,7 +393,8 @@ class UploadMixin:
     def upload_media(self, file_path: str | Path, *,
                      content_type: str | None = None,
                      check_dedupe: bool = True,
-                     watermark_text: str | None = None) -> dict:
+                     watermark_text: str | None = None,
+                     thumb_size: str | None = None) -> dict:
         """Upload a single file and register it with OF. Returns either:
 
         Dedupe-hit shape (file already in vault):
@@ -423,6 +424,11 @@ class UploadMixin:
 
         Caller must pass `mediaFiles=result["send_with"]` straight to
         send_message() / create_post() / etc. Don't try to interpret it.
+
+        `thumb_size` (ofm-not-yet ticket 67, Edit profile's cover and avatar): "avatar" or "header", sent as the
+        claim's `additional[customThumbSize]` (capture record settings--profile-cover-avatar; `inferred`: read from
+        OF's JS, its exact form fields not observed live). The profile route passes check_dedupe=False (OF's
+        `isAvoidHash`).
         """
         import hashlib, mimetypes, time, uuid as _uuid, random
         path = Path(file_path)
@@ -623,7 +629,8 @@ class UploadMixin:
             return self._claim_uploaded(
                 upload_key=key, etag=etag, filename=filename, size=size,
                 upload_token=upload_token, put_url=put_url,
-                watermark_text=watermark_text, timeout_s=_CONVERT_TIMEOUT_S)
+                watermark_text=watermark_text, timeout_s=_CONVERT_TIMEOUT_S,
+                thumb_size=thumb_size)
 
         got = _claim()
         if (not got["ready"] and not got["rejected"]
@@ -978,7 +985,8 @@ class UploadMixin:
                         size: int = 0, upload_token: str | None = None,
                         put_url: str | None = None,
                         watermark_text: str | None = None,
-                        timeout_s: int | None = None) -> dict:
+                        timeout_s: int | None = None,
+                        thumb_size: str | None = None) -> dict:
         """The convert claim for bytes already sitting in S3 — THE one claim
         builder. upload_media's first claim and upload_claim's retry both
         come through here, so chat uploads and vault imports send the same body.
@@ -1019,11 +1027,14 @@ class UploadMixin:
         from urllib.parse import urlparse
         location = (put_url or f"{_S3_BASE}{upload_key}").split("?")[0]
         try:
+            args = self._upload_args()
+            if thumb_size:   # ticket 67 (`inferred`): see upload_media
+                args = {**args, "additional": {**(args.get("additional") or {}), "customThumbSize": thumb_size}}
             claim = self.convert_register(
                 s3_etag=etag, s3_location=location,
                 s3_key=upload_key, s3_bucket=urlparse(location).netloc.split(".")[0],
                 filename=filename, secure=False, upload_token=upload_token,
-                watermark_text=watermark_text, upload_args=self._upload_args(),
+                watermark_text=watermark_text, upload_args=args,
                 timeout_s=timeout_s or _CONVERT_TIMEOUT_S,
             )
         except Exception as e:  # noqa: BLE001

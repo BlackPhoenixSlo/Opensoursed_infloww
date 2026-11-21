@@ -33,6 +33,8 @@ export interface PickerOptions {
   single?: boolean;
   /** From today on, no upper bound (a schedule); the Creator's start is ignored. */
   future?: boolean;
+  /** The control that opened it: aria-expanded while it is open. */
+  opener?: Element;
 }
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -209,9 +211,14 @@ function fitRanges(root: HTMLElement) {
 const PICKER = "data-oi-picker";
 const MENU = "data-oi-picker-months";
 
+// Each page's open picker's opener (aria-expanded="true" until it closes).
+const openers = new WeakMap<Document, Element>();
+
 export function closeDatepicker(doc: Document): void {
   doc.querySelector(`[${MENU}]`)?.remove();
   doc.querySelector(`[${PICKER}]`)?.remove();
+  openers.get(doc)?.removeAttribute("aria-expanded");
+  openers.delete(doc);
 }
 
 /**
@@ -232,6 +239,10 @@ function linkPickerCss(doc: Document): HTMLLinkElement | null {
 /** OF's picker in `doc` for `opts`; returns its root. */
 export function openDatepicker(doc: Document, opts: PickerOptions): HTMLElement {
   closeDatepicker(doc);
+  if (opts.opener) {
+    opts.opener.setAttribute("aria-expanded", "true");
+    openers.set(doc, opts.opener);
+  }
   const css = linkPickerCss(doc);
   const s: State = { ...opts, fromTab: true, initial: opts.start, month: { y: opts.start.y, m: opts.start.m, d: 1 }, menu: false };
   const root = doc.createElement("div");

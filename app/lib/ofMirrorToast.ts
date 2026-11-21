@@ -2,7 +2,8 @@
 
 /**
  * The Mirror frame's chrome: OF's toast (toast), carried over a frame navigation (frameNavigate, takeCarried), a disabled
- * tool (lock) and the "not supported here" Record popup (recordPopup). ofMirrorPost re-exports its public names.
+ * tool (lock) and the "not supported here" Record popup (recordPopup: New post's Record while OFM_NEW_WRITES_ENABLED
+ * is off). ofMirrorPost re-exports its public names.
  */
 
 import type { RefObject } from "react";

@@ -1,0 +1,15 @@
+{
+ "id": "messages--list-tag",
+ "section": "messages",
+ "label": "Tag other creators",
+ "phase": 2,
+ "pages": [
+  "messages/send/state-list-dropdown"
+ ],
+ "note": "New message's list page (its list menu open), on the Mass draft only; the list Send is never run (ADR-0042). Opens New message's tag dialog (messages/send/state-tag-people, reads only); its picks are the Mass draft's tags (creators only). No message is sent.",
+ "proof": {
+  "kind": "mocked",
+  "verdict": "parked",
+  "reason": "Mocked: no FakeOF taggable-creators read for a draft-only definition; Live proof pending (ticket 53)"
+ }
+}

@@ -1,0 +1,27 @@
+{
+ "id": "settings--spring-store-connect",
+ "section": "settings",
+ "label": "Paste your Spring Store URL",
+ "pages": [
+  "settings/spring-store"
+ ],
+ "phase": "P3 s19",
+ "source": null,
+ "of_rev": "202611201129-df73dce944",
+ "captured": null,
+ "request": null,
+ "response": {
+  "status": null,
+  "keys": []
+ },
+ "facts": {
+  "gatherer_record": ".scratch/ofm-not-yet/captures/settings--spring-store.json",
+  "absence": "no Spring Store request or settings-spring chunk in OnlyFans's current bundle (all 962 chunks grepped for 'spring', 2026-11-20); the mirror page comes from the 2026-10-09 build, so the feature is gone from current OnlyFans (measured absence)",
+  "controls": "Paste your Spring Store URL (Connect) and its disconnect stay Not-yet notes; Spring's 'here' sign-up link is ticket 58's parked hand-off"
+ },
+ "proof": {
+  "kind": "mocked",
+  "verdict": "parked",
+  "reason": "blocked: Spring Store is absent from OnlyFans's current build (no connect or disconnect request to capture; ticket 71 builds nothing, never a guessed endpoint). Unblocked if OnlyFans brings it back and the sitting captures it."
+ }
+}

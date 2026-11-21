@@ -16,7 +16,7 @@ with sync_playwright() as p:
         elif u.split("?")[0].endswith("/admin/accounts"): body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}'  # creators: none shows OfNotHaveModel
         elif "/chatter/me/accounts" in u: body="[]"
         elif "/chatter/me" in u: body="null"
-        # All models' Settings stand in with the first creator (ofMirrorProfile): a performer OF lets start a promotion.
+        # No saved scope: OF Manager shows the first creator (OfManagerChrome's OneCreator), a performer OF lets start a promotion.
         elif u.split("?")[0].endswith("/api/of/v2/users/me"): body=json.dumps({"id":1,"username":"alphaone","name":"Alpha One","isPerformer":True,"subscribePrice":10,"canEarn":True,"canCreatePromotion":True,"canCreateTrial":True})
         else: body="[]"
         route.fulfill(status=200, content_type="application/json", body=body)
@@ -41,7 +41,7 @@ with sync_playwright() as p:
         if not spa: fail(f"{label}: full page reload (client-side navigation lost)")
     step("click Fans and following", lambda: frame().get_by_text("Fans and following").first.click(), f"{R}/fans", "settings/fans")
 
-    # Switches and inputs: in All Creators the Settings pages stand in with the first creator (ofMirrorProfile), so a
+    # Switches and inputs: with no saved scope the Settings pages show the first creator (OneCreator), so a
     # settings switch (ofMirrorSettingsWrites) writes for it and stays flipped with no note (the write is mocked); the
     # price is a Save form, so typing in it shows no note.
     note=lambda: frame().evaluate("document.getElementById('oi-note')?.textContent ?? null")
@@ -89,7 +89,7 @@ with sync_playwright() as p:
     step("sidebar Notifications", side(f"{M}/notifications"), f"{M}/notifications", "notifications/index")
     step("click notifications Tips tab", inframe(f"{M}/notifications/tip"), f"{M}/notifications/tip", "notifications/tip")
     step("sidebar Messages Basic", side(f"{M}/messages"), f"{M}/messages", "messages/index")
-    # All Creators with no model (this mock lists none): the list shows OF's own "Nothing found", no example rows.
+    # The first creator with no chat (this mock lists none): the list shows OF's own "Nothing found", no example rows.
     got=frame().evaluate("""[[...document.querySelectorAll('.b-chats__item')].filter(e => e.checkVisibility()).length,
       [...document.querySelectorAll('.b-chats__scroller [data-oi-empty]')].some(e => e.checkVisibility() && e.textContent.includes('Nothing found'))]""")
     print("  chat list rows, Nothing found:", got)

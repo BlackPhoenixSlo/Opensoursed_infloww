@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CLAIMS_TO_LIST,
   bindBundleDialog,
   bindOffers,
   bindPromotionDialog,
@@ -19,6 +20,7 @@ import {
   TRIAL_DURATIONS,
   trialBody,
   trialHref,
+  trialPick,
   trialsRoute,
   trialViewOf,
   type BundleForm,
@@ -33,7 +35,7 @@ import {
   PROMOTION_MODAL,
   TRIAL_MODAL,
 } from "./ofMirrorOffers";
-import { SUBMITS } from "./ofMirrorWrites";
+import { NOT_YET, SUBMITS } from "./ofMirrorWrites";
 import { applyPromotions } from "./ofMirrorFeedsStrip";
 import type { OfMe } from "./ofMirrorIdentity";
 
@@ -194,6 +196,28 @@ describe("free trial links page", () => {
     expect(navigate).toHaveBeenLastCalledWith("/of-manager/settings/subscription/trial-links?field=claims_count&sort=asc&tab=shared");
   });
 
+  // ticket 61
+  it("the kebab State page's radios open the base page's sort, as the menu's picks; titles stay", () => {
+    const page = "settings/subscription/trial-links/state-kebab";
+    const doc = loadPage(page);
+    const view = trialViewOf(new URLSearchParams("field=claims_count"));
+    bound(bindOffers(doc, page, { trialView: view, handlers: null }));
+    const radios = [...doc.querySelectorAll<HTMLInputElement>("input[name='trial-filter-field'], input[name='trial-order-dir']")];
+    expect(radios).toHaveLength(9);
+    const hrefs = Object.fromEntries(radios.map((r) => [r.value, r.closest("[role='menuitem']")!.querySelector("a.of-state-link")!.getAttribute("href")]));
+    for (const r of radios) {
+      expect([r.disabled, r.hasAttribute("data-oi-wired"), r.title]).toEqual([false, true, NOT_YET]);
+      expect(hrefs[r.value]).toBe(trialHref(trialPick(view, r.name === "trial-filter-field" ? "field" : "order", r.value)));
+    }
+    expect(hrefs.expire_date).toBe("/of-manager/settings/subscription/trial-links?field=expire_date");
+    expect(hrefs.asc).toBe("/of-manager/settings/subscription/trial-links?field=claims_count&sort=asc");
+    expect(hrefs.create_date).toBe("/of-manager/settings/subscription/trial-links");
+    // Each URL is the base page's read for that pick.
+    expect(trialsRoute(trialViewOf(new URLSearchParams(hrefs.asc!.split("?")[1])))).toBe("/api/of/v2/trials?field=claims_count&sort=asc");
+    expect(radios.filter((r) => r.checked).map((r) => r.value)).toEqual(["claims_count", "desc"]);
+    expect(doc.querySelector(".trial-sorting-dropdown > a.of-state-link[aria-label='Toggle']")!.getAttribute("href")).toBe("/of-manager/settings/subscription/trial-links?field=claims_count");
+  });
+
   it("shares a link's statistics: OF's performers search, then {trial_id, user_id}", async () => {
     vi.useFakeTimers();
     const fx = fixture<{ relay: { trial_id: number; user_id: number } }>("new-post-trial-share-body");
@@ -315,5 +339,35 @@ describe("New post's offer tiles and dialogs (OF's PromoteProfile and CreateTria
     expect(SUBMITS[NEW_POST_TRIAL].then(loadPage(NEW_POST_TRIAL))).toBe(AFTER_NEW_POST_TRIAL);
     // On Settings each still returns to its Cancel's tab.
     expect(SUBMITS[TRIAL_MODAL].then(loadPage(TRIAL_MODAL))).toBe("/of-manager/settings/subscription/trial-links");
+  });
+});
+
+describe("Offer claimed ⋮ Add to list (ticket 75: builder only, the control parked)", () => {
+  it("is tagged inferred (its undo has no inverse in OF's JS)", () => {
+    expect(CLAIMS_TO_LIST.source).toBe("inferred");
+  });
+  it.each([
+    [7, "promo" as const, 62001, "/api/of/v2/lists/7/users/promo/62001/claims"],
+    [3, "trial" as const, 8, "/api/of/v2/lists/3/users/trial/8/claims"],
+  ])("write: list %s, %s claim %s → POST %s, no body", (list, kind, claim, path) => {
+    expect(CLAIMS_TO_LIST.write(list, kind, claim)).toEqual({ method: "POST", path });
+  });
+  it.each([
+    [[2001, 2002], ["/api/of/v2/lists/7/users/2001", "/api/of/v2/lists/7/users/2002"]],
+    [[2001, 2001], ["/api/of/v2/lists/7/users/2001"]],
+    [[], []],
+  ])("undo: added users %j → one DELETE per user, never the whole list", (added, paths) => {
+    expect(CLAIMS_TO_LIST.undo(7, added)).toEqual(paths.map((path) => ({ method: "DELETE", path })));
+  });
+  it.each([0, -1, 1.5, Number.NaN])("refuses a non-id (%s)", (bad) => {
+    expect(() => CLAIMS_TO_LIST.write(bad, "promo", 1)).toThrow(RangeError);
+    expect(() => CLAIMS_TO_LIST.write(1, "promo", bad)).toThrow(RangeError);
+    expect(() => CLAIMS_TO_LIST.undo(bad, [1])).toThrow(RangeError);
+    expect(() => CLAIMS_TO_LIST.undo(1, [bad])).toThrow(RangeError);
+  });
+  it("leaves modal-3's ⋮ disabled with the Not-yet title (capture-checklist rows 11, 23)", () => {
+    const doc = loadPage("settings/subscription/promotion-campaign/modal-3");
+    const kebab = doc.querySelector<HTMLButtonElement>("[at-attr=user_list_dropdown] button.dropdown-toggle");
+    expect([kebab?.disabled, kebab?.title]).toEqual([true, NOT_YET]);
   });
 });

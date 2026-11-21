@@ -182,7 +182,7 @@ The OF Manager with one Creator selected. Only here do Wired controls send and D
 _Avoid_: single model, single-model scope
 
 **All-Creators scope**:
-The OF Manager with all Creators selected. Nothing is sent and every Mirror page keeps its Example rows.
+The OF Manager with all Creators selected. Mirror pages keep their Example rows; a write follows its page's already-wired writes, so it goes to the stand-in first Creator where the page already writes that way (`STAND_IN_SRC`) and otherwise shows the Select-model note, while a Lockout, undo-less or Critical control always waits for a Creator pick.
 _Avoid_: all-models scope, All Models (that is the Messages Pro extra)
 ASSUMPTION: named from **Creator** rather than the code's "all models"; overturned if the human prefers the code's word.
 
@@ -201,6 +201,70 @@ _Avoid_: Not wired (the disabled control state), stub, coming soon
 - **Co-tag** (another OnlyFans creator, not a **Creator**): ADR-0005
 - **Scheduled post**, **Queue**: `docs/spec/of-manager-connectors/phase-04-real-data-pages.md`
 - **Story**: `app/lib/ofMirrorPost.ts`
+
+### OF Manager not-yet controls
+
+**Not-yet title**:
+"Not available in Inflowwww yet", the tooltip on a Mirror page control that the generator disables (`NOT_YET_TITLE`, `scripts/of-mirror.mjs:1058`). Unlike a control with the Read-only note, it does not answer a click.
+_Avoid_: Not wired (Messages Pro's disabled state), Read-only note (the enabled counterpart), coming soon
+
+**Not-yet control**:
+A Mirror page control that shows the Not-yet title or the Read-only note; the OF Manager not-yet effort (`docs/plans/ofm-not-yet.md`) turns each one into a Wired control. A control under an Empty-form disable is not one.
+_Avoid_: dead control, gap, stub, Silent control (one that answers nothing, which the Mirror check already forbids)
+
+**Empty-form disable**:
+OnlyFans's own disabling of a control while its form is empty (the Not-yet sweep's `dis`); left as OnlyFans has it.
+_Avoid_: disabled on its own, Not-yet title
+
+**Unproven control**:
+A Wired control that only mocked Mirror checks have shown working, never a Live proof: Co-tagged post, upload dedupe, vault thumbnails via `/img`, Tips feed, stories and highlights shapes, Statements invoice, state and reason, Queue Publish now and Send now, Vault custom order save.
+_Avoid_: untested control, built-but-untested, parked connector (the older tickets 06 and 19 are two of them)
+
+- **Not-yet sweep** (the 2026-11-20 headless sweep of 154 Mirror pages in Single-Creator scope, `ny` and `dis` per page; Release forms were not in it): `docs/of-manager/not-yet-sweep-2026-11-20.json`
+
+**Request capture**:
+OnlyFans's real request (method, path, body) for one control, recorded from the Proof Creator's signed-in session with REA or a browser capture. It is how a control's body becomes a Known body (ADR-0005).
+_Avoid_: capture on its own (an Infloww capture, or the Mirror page HTML captures of ADR-0006), HAR, sniff, guessed body
+ASSUMPTION: ADR-0005's "this effort adds no OnlyFans endpoint … and no Relay route" bound the connectors effort only, while its rule (a write only with a confirmed body) binds this one, a Request capture being that confirmation (rung 3); overturned if the human reads ADR-0005 as forbidding new Relay routes for good.
+
+### OF Manager live proof
+
+**Proof Creator**:
+The owner's own OnlyFans Creator founder (80000112, session in `service/sessions/accounts/80000112`), with 59 real subscribing Fans, on which every Live proof runs.
+_Avoid_: test account (the **Creator** entry rules out "account"), test model, Test chat (Full AI Chat's), founder on its own
+ASSUMPTION: "Proof Creator" over the brief's "Test account", because **Creator** avoids "account" and Full AI Chat already owns "test" (Test chat, test Mode) (rung 3); overturned if the specs must say "Test account".
+
+**Proof fan**:
+The one Fan the owner names for message and PPV Live proofs, reached alone through `included_users`; a run never picks one itself.
+_Avoid_: test fan, test user, dummy fan
+
+**Live proof**:
+A Not-yet control or Unproven control driven on the running app in Single-Creator scope against the Proof Creator: a screenshot of the trigger, one of the settled end state, and the result confirmed on OnlyFans's side. Each live write it makes is a Narrowed write and enters the Undo log (ADR-0042).
+_Avoid_: live test, smoke test, e2e, Mirror check (mocked, ADR-0006)
+
+**Narrowed write**:
+A Live proof write whose reach is cut down before it is sent: to an OF list, to the Proof fan, or as a Scheduled post deleted before it fires; a post to all Fans only if deleted at once, and never a mass message (ADR-0042).
+_Avoid_: test send, safe send, dry run
+
+**Undo log**:
+The PR's record of every live write a Live proof made on the Proof Creator, each with the write that reversed it (delete the post, list or link; unblock; restore the setting) and that reversal's confirmation (ADR-0042).
+_Avoid_: audit log, change log, rollback log, cleanup list
+
+**Lockout control**:
+A control whose live write can end Inflowwww's own session on the Proof Creator: Close all sessions, block by country, block by IP. Block by country or IP is Live-proven last with a harmless value, then reverted (ADR-0042); Close all sessions cannot be reverted, so it gets a Mocked proof and runs live only on the owner's named go (ADR-0043).
+_Avoid_: dangerous control, Critical control (never written live)
+
+**Critical control**:
+A control that moves money, files payout or tax data, writes to OnlyFans support, or changes the Proof Creator's sign-in or existence: Bank's payments, cards, payout types, DAC7 and support, the Statements support form, and OF settings account's password, username, email, phone, 2FA passwordless and delete. It is wired behind the owner's off-by-default Critical switch, and its only proof is a Mocked proof (ADR-0043).
+_Avoid_: dangerous control, sensitive control, money control, Lockout control (block by country or IP: proven live, then reverted)
+
+**Mocked proof**:
+The proof of a control in ADR-0043's mocked-proof class (every Critical control, and the writes with no undo such as Report, Close all sessions or Send tip): its binder sends its Request capture's shape to a mocked Relay, and nothing reaches OnlyFans. It never drops the Not-yet title by itself.
+_Avoid_: dry run, Shadow mode (Full AI Chat's), fake proof, Live proof
+
+**OAuth hand-off**:
+A sign-in or connect control (Google, X, Spotify in OF settings and My profile, MetaMask and NFT) that opens OnlyFans's own page for the operator rather than linking anything inside Inflowwww; a Live proof makes no live link.
+_Avoid_: redirect, connect flow, Deep link (Messages Pro's chat link)
 
 ### Settings layout
 

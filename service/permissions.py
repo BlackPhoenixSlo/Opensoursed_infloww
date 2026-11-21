@@ -279,10 +279,14 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
         "/admin/shifts/clocked-in", "/api/of/v2/subscriptions/count", _SUBS_CHART, _ME)),
     # posts/likes: an own post's "N Likes" (also My profile's). Its Post statistics (posts/stats: per-post earnings)
     # stays Statistics'. streams/feed: the story strip's live and scheduled streams (not Go live's `/streams`).
+    # lists: the feed tabs' Pin to home dialog (its rows and Sort; the pin itself stays read-only).
     "/of-manager/home": ("Home", (
         _ME, "/api/of/v2/posts", "/api/of/v2/stories", "/api/of/v2/users/search", "/api/of/v2/posts/likes",
-        "/api/of/v2/streams/feed")),
-    "/of-manager/streaming": ("Go live", (_ME, "/api/of/v2/streams")),
+        "/api/of/v2/streams/feed", "/api/of/v2/lists")),
+    # live-window: the desktop Go live window's probe (its session read refuses every chatter: of_live_window).
+    # users/search, posts/search: the schedule form's right column search (Home's; ticket 84).
+    "/of-manager/streaming": ("Go live", (
+        _ME, "/api/of/v2/streams", "/api/of/live-window", "/api/of/v2/users/search", "/api/of/v2/posts/search")),
     # labels: ADD LABELS (its rows, + and Sort); guests and release-forms: the tag dialog's Invite new user,
     # Release form tab and a row's hide; users/search, posts/search: the right column's search; promotions, trials,
     # subscriptions/bundles, performers-search, settings: the promotion and free trial link dialogs its tiles open;
@@ -294,8 +298,10 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
         "/api/of/v2/users/search", "/api/of/v2/posts/search", "/api/of/v2/promotions",
         "/api/of/v2/trials", "/api/of/v2/subscriptions/bundles", "/api/of/v2/users/performers-search",
         f"{_ME}/settings", "/api/of/v2/queue/posts/")),
-    # Its feed is `users/notifications`, which the top bar's bell also reads (UNMAPPED).
-    "/of-manager/notifications": ("Notifications", (_ME, "/api/of/v2/release-forms/mentions")),
+    # Its feed is `users/notifications`, which the top bar's bell also reads (UNMAPPED). users/search: Search users
+    # (a fan for ?related_user=) and, with posts/search, the right column's Search users or posts (ticket 17).
+    "/of-manager/notifications": ("Notifications", (
+        _ME, "/api/of/v2/release-forms/mentions", "/api/of/v2/users/search", "/api/of/v2/posts/search")),
     # Every route the Messages tab's controls call (ofMirrorChat*, ofMirrorMessageMenu, ofMirrorThread): the chat
     # list and thread, a chat's header tools (subscriptions/: rename, notes, discount; lists; users/: restrict, block,
     # users/list), a message's menu (messages/), New message (messages/queue), and the composer (upload, vault, tag
@@ -316,10 +322,11 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
         _ME, "/api/of/v2/lists", "/api/of/v2/labels", "/api/of/v2/subscribers", "/api/of/v2/users/")),
     # Collections' Bookmarks tab, its own menu in Infloww (id 6), and the one page reading the bookmarks.
     "/of-manager/collections/bookmarks/all": ("Bookmarks", (_ME, "/api/of/v2/posts/bookmarks")),
-    # Its Stats › Disputes tab shows the chargebacks ratio and list.
+    # Its Stats › Disputes tab shows the chargebacks ratio and list; Stats › Earnings its payout stats (all time, and
+    # the From … To range: ticket 24).
     "/of-manager/statements": ("Statements", (
         _ME, "/api/of/v2/payouts", "/api/of/v2/payouts/transactions", "/api/of/v2/payments",
-        "/api/of/v2/payouts/chargebacks")),
+        "/api/of/v2/payouts/chargebacks", f"{_ME}/start-date-model", "/api/of/v2/payouts/stats")),
     # Every Statistics tab's reads. Each is a specific prefix, because the longest
     # prefix wins and the shorter ones (`/messages/queue`, `/subscriptions/subscribers`,
     # `/streams`, `/stories`, `/trials`, `/promotions`, `/campaigns`, `users/me`) belong
@@ -356,7 +363,14 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
         _ME, "/api/of/v2/users/settings", f"{_ME}/settings", f"{_ME}/reply-on-subscribe",
         "/api/of/v2/campaigns", "/api/of/v2/subscriptions/bundles", "/api/of/v2/promotions",
         "/api/of/v2/trials", "/api/of/v2/users/performers-search",
-        "/api/of/v2/sessions")),
+        "/api/of/v2/sessions",
+        "/api/of/v2/countries",  # ticket 66: Block by country's picker
+        f"{_ME}/profile-image",  # ticket 67: Edit profile's cover and avatar upload
+        "/api/of/v2/users/social/buttons",  # ticket 69: Social media's buttons (read, add, remove)
+        "/api/of/v2/init",  # ticket 69: Add button's providers (init's socialMediaProviders only)
+        "/api/of/v2/users/links",  # ticket 70: Things I Like's links (read, create, delete)
+        "/api/of/v2/streams/users",  # ticket 73: Streaming > Blocked users (its read, block and unblock)
+        "/api/of/v2/streams/obs")),  # ticket 76: Streaming's Reset stream key
     # Its Overview is the Creator Reports card, which reads revenue by day and by kind (ticket 20).
     "/analytics/creator-reports": ("Creator reports", (
         *_STATS_REPORT, "/admin/stats/revenue", "/admin/stats/per-model", "/admin/stats/referrals", "/admin/stats/xlsx",
@@ -500,6 +514,7 @@ UNMAPPED: dict[str, str] = {
     "/api/of/v2/users/notifications": "the top bar's notification bell (its reads and its mark-read, which every"
                                       " bell viewer sends as OF web does on open) and the Money rail (its /money read)",
     "/api/of/v2/giphy": "GIF search for every composer, no Creator data",
+    "/api/of/ofm-writes": "the OF Manager's new-writes switch probe (server._ofm_new_writes_on), no Creator data",
     "/admin/sensitive-words": "the Agency's Sensitive words list every composer warns on;"
                               " its writes are owner-only (chatters.py)",
     "/admin/_debug": "diagnostics, no nav page", "/admin/coalesce": "diagnostics, no nav page",
@@ -601,7 +616,8 @@ ACTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
         "POST /admin/priority-mass/runs", "POST /admin/priority-mass/runs/*/resume")),
     "block-fan": ("Block or restrict fans", (
         "POST /api/of/v2/users/*/block", "DELETE /api/of/v2/users/*/block",
-        "POST /api/of/v2/users/*/restrict", "DELETE /api/of/v2/users/*/restrict")),
+        "POST /api/of/v2/users/*/restrict", "DELETE /api/of/v2/users/*/restrict",
+        "POST /api/of/v2/streams/users/*/block", "DELETE /api/of/v2/streams/users/*/block")),  # ticket 73
     "discount": ("Give subscription discounts", ("PUT /api/of/v2/subscriptions/*/discount",)),
     "export": ("Export CSV", (
         "GET /admin/paid-messages?format=csv", "GET /admin/stats/sales-records?format=csv",
@@ -623,6 +639,16 @@ ACTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
         "DELETE /admin/tracking-links/*", "DELETE /admin/of-tracking-links/*", "DELETE /admin/trial-links/*",
         "DELETE /api/of/v2/campaigns/*", "DELETE /api/of/v2/trials/*",
         "DELETE /admin/promotions/*", "DELETE /api/of/v2/promotions/*", "POST /api/of/v2/promotions/*/finish")),
+    # Phase 3's Lockout controls and Reset stream key (docs/spec/ofm-not-yet/phase-03-settings-privacy-links.md
+    # story 42): block by country or IP, Close all sessions, Reset stream key. Tickets 63, 66 and 76 add each
+    # one's pattern here (or `require_action` in a handler that tells it by a body field).
+    "account-lockout": ("Block countries or IPs, close sessions, reset the stream key", (
+        "DELETE /api/of/v2/sessions",  # ticket 63: Close all sessions
+        # ticket 66: Block by country, Block by IP (their own routes, never the general security PUT)
+        "PUT /api/of/v2/users/me/settings/security/blocked-countries",
+        "PUT /api/of/v2/users/me/settings/security/blocked-ips",
+        "DELETE /api/of/v2/streams/obs/key",  # ticket 76: Reset stream key
+    )),
 }
 
 

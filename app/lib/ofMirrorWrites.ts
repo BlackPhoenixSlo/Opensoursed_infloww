@@ -2,7 +2,8 @@
 
 /**
  * Write-through for the few OF mirror controls whose relay route is
- * implemented: the profile page's text fields (Save -> PATCH /users/me),
+ * implemented: the profile page's text fields (Save -> PATCH /users/me; its cover and avatar too,
+ * ofMirrorProfileImages, ticket 67; the Bio's format button, ofMirrorProfileFormat, ticket 68),
  * the messaging page's welcome message switch (PATCH /users/me/reply-on-subscribe),
  * the stream schedule form's SCHEDULE (SUBMITS: POST /streams, then the queue) and the
  * "Create new tracking link" modal's Create Link (SUBMITS: POST /campaigns {name}, then its Cancel link).
@@ -33,8 +34,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay, RelayError } from "@/lib/relay";
 import { parseSendFailure } from "@/lib/sendFailure";
-import { floatLabel } from "@/lib/ofMirrorSettings";
+import { floatLabel } from "@/lib/ofMirrorDom";
 import { afterProfileWrite, MIRROR } from "@/lib/ofMirrorKeys";
+import { flushPersistedCache } from "@/lib/rqPersister";
 import { frameNavigate, LIST_ROW, STORY, takeCarried, toast } from "@/lib/ofMirrorPost";
 import { mirrorPageOfPath } from "@/lib/of-mirror-route";
 import { openDatepicker, tabDate, type Day } from "@/lib/ofMirrorDatepicker";
@@ -42,6 +44,12 @@ import { openDatepicker, tabDate, type Day } from "@/lib/ofMirrorDatepicker";
 // a constant of a module still evaluating would be undefined here.
 import { AFTER_NEW_POST_PROMOTION, AFTER_NEW_POST_TRIAL, collectBundle, collectPromotion, collectTrial } from "@/lib/ofMirrorOffers";
 import { BRAND_NAME } from "@/lib/brand";
+import { bindHandoffs } from "@/lib/ofMirrorHandoffs";
+import { NOT_YET } from "@/lib/ofMirrorTooltip";
+import { bindAboutFormat, profileAbout } from "@/lib/ofMirrorProfileFormat";
+import { bindProfileImages, profileImagePatch, type ProfileImage, type ProfileImageKind, type ProfileImagePatch } from "@/lib/ofMirrorProfileImages";
+import { bindBrowserOnly } from "@/lib/ofMirrorBrowserOnly";
+import { useOfmNewWrites } from "@/lib/ofMirrorNewWrites";
 
 export type ProfilePatch = Partial<Record<"name" | "about" | "location" | "website" | "wishlist", string>>;
 
@@ -161,8 +169,8 @@ export const READ_ONLY = `Read-only in ${BRAND_NAME} for now`;
 /** The Bank pages' line under the title (the mirror shows OF's banking placeholders and reads none of it). */
 export const BANK_NOTE = `Bank details stay on onlyfans.com (${BRAND_NAME} does not read them).`;
 export const BANK_URL = "https://onlyfans.com/my/banking";
-/** The tooltip of a control quietly disabled because Inflowwww has no source for it (the generator's NOT_YET_TITLE). */
-export const NOT_YET = `Not available in ${BRAND_NAME} yet`;
+/** The tooltip of a control quietly disabled because Inflowwww has no source for it (ofMirrorTooltip's, re-exported). */
+export { NOT_YET };
 export const SELECT_MODEL = "Select a model to save changes";
 /** OF's settings success toast (`message.changes_saved_toast`, OF's texts_en.json). */
 export const SAVED_TOAST = "Changes were saved";
@@ -187,7 +195,9 @@ const NOT_FALLBACK = "a[href], .video-js, [data-oi-dialog]";
 const OWNED = "[data-oi-wired], input:not([readonly]), label, textarea, select, [contenteditable]";
 
 export interface WriteHandlers {
-  saveProfile(body: ProfilePatch): Promise<unknown>;
+  saveProfile(body: ProfilePatch & ProfileImagePatch): Promise<unknown>;
+  /** ticket 67: Edit profile's picked cover or avatar up through the Relay; its reply goes in saveProfile's body. */
+  uploadProfileImage(kind: ProfileImageKind, file: File): Promise<ProfileImage>;
   setReplyOnSubscribe(enabled: boolean): Promise<unknown>;
   submit(path: string, body: object): Promise<unknown>;
   /** `toast`: OF's toast, carried to the page href opens (carryToast). */
@@ -203,15 +213,19 @@ export const textOf = (el: Element) => {
   return ps.length ? ps.map((p) => p.textContent ?? "").join("\n") : (el.textContent ?? "");
 };
 
-/** The profile page's writable values (only `fields`, when given) as a PATCH /users/me body. */
-export function collectProfilePatch(doc: Document, fields?: Iterable<string>): ProfilePatch {
+/**
+ * The profile page's writable values (only `fields`, when given) as a PATCH /users/me body. `formatted`
+ * (OFM_NEW_WRITES_ENABLED, ofMirrorNewWrites): the Bio as OF's markup once formatted; else its plain text, as before.
+ */
+export function collectProfilePatch(doc: Document, formatted: boolean, fields?: Iterable<string>): ProfilePatch {
   const only = fields ? new Set(fields) : null;
   const body: Record<string, string> = {};
   for (const [sel, field] of Object.entries(WRITABLE.profile)) {
     if (only && !only.has(field)) continue;
     const el = doc.querySelector(sel);
     if (!el) continue;
-    body[field] = el.tagName === "INPUT" ? (el as HTMLInputElement).value : textOf(el);
+    // ticket 68: the Bio as OF's markup once formatted (ofMirrorProfileFormat), else its plain text as before
+    body[field] = el.tagName === "INPUT" ? (el as HTMLInputElement).value : formatted ? profileAbout(el) : textOf(el);
   }
   return body;
 }
@@ -572,12 +586,15 @@ export function unresolvedId(body: unknown): number | null {
  * note) and then navigates.
  * Every native submit is cancelled (a SUBMITS page's is sent), so none reloads the frame.
  * `handlers` null (no single model selected): a writable control's Save, switch or submit sends nothing
- * and gets the select-a-model note instead. Returns an unbind.
+ * and gets the select-a-model note instead. `newWrites` false (OFM_NEW_WRITES_ENABLED off, ofMirrorNewWrites): Edit
+ * profile's cover and avatar buttons and the Bio's format button stay disabled with their Not-yet title, and the Bio
+ * goes as plain text. Returns an unbind.
  */
-export function bindWrites(doc: Document, path: string, handlers: WriteHandlers | null): () => void {
+export function bindWrites(doc: Document, path: string, handlers: WriteHandlers | null, newWrites: boolean): () => void {
   takeCarried(doc);
   const unbindBank = path.startsWith("bank/") ? bankNote(doc) : () => {};
   const unbindPickers = path === "streaming/dashboard/create" ? streamPickers(doc) : () => {};
+  const unbindHandoffs = bindHandoffs(doc, path);
   const page = settingsPage(path);
   const map = page !== null && Object.hasOwn(WRITABLE, page) ? WRITABLE[page] : {};
   const entry = Object.hasOwn(SUBMITS, path) ? SUBMITS[path] : null;
@@ -601,6 +618,17 @@ export function bindWrites(doc: Document, path: string, handlers: WriteHandlers 
     ...(form ? [form.button, ...doc.querySelectorAll(form.submit.fields)] : []),
   ];
   for (const el of wired) el.setAttribute("data-oi-wired", "");
+  // ticket 67: Edit profile's cover and avatar (ofMirrorProfileImages), staged until this Save sends them.
+  const images = save && newWrites
+    ? bindProfileImages(doc, {
+        canWrite: !!handlers,
+        onStage: () => void (save.disabled = false),
+        onRefuse: (anchor, text) => note(doc, anchor, text, true),
+        onSelectModel: (anchor) => note(doc, anchor, SELECT_MODEL),
+      })
+    : null;
+  // ticket 68: the Bio's format button opens OF's toolbar (ofMirrorProfileFormat); a format is an edit Save sends.
+  const unbindFormat = save && newWrites ? bindAboutFormat(doc, () => (handlers ? null : SELECT_MODEL)) : null;
 
   const onInput = (ev: Event) => {
     if (form) doc.getElementById("oi-note")?.remove(); // a validation note is stale once the form changes
@@ -680,10 +708,15 @@ export function bindWrites(doc: Document, path: string, handlers: WriteHandlers 
     void post(body);
   };
 
-  /** Every native submit (Enter in a field, a submit button's click), on any page: cancelled, so it never reloads the frame; a SUBMITS page's is sent. */
+  /**
+   * Every native submit (Enter in a field, a submit button's click), on any page: cancelled, so it never reloads the
+   * frame. Only the page's own form is sent: the one holding its SUBMITS button or a field it sends (the schedule
+   * form's SCHEDULE sits outside it, in the header); another form's (the aside's search) sends nothing.
+   */
   const onSubmit = (ev: Event) => {
     ev.preventDefault();
-    send();
+    const t = ev.target as Element;
+    if (form && (t.contains(form.button) || t.querySelector(form.submit.fields))) send();
   };
 
   /** The click fallback: any other button or [role=button] says it is read-only (no preventDefault: skips are markup). */
@@ -702,17 +735,26 @@ export function bindWrites(doc: Document, path: string, handlers: WriteHandlers 
     const btn = (ev.target as Element | null)?.closest?.(SAVE);
     if (!btn || btn !== save) return fallback(ev.target as Element | null);
     ev.preventDefault();
-    if (!dirty.size) return;
+    const pictures = images?.staged() ?? {};
+    if (!dirty.size && !Object.keys(pictures).length) return;
     if (!handlers) return note(doc, save, SELECT_MODEL);
     const fields = [...dirty];
     save.disabled = true;
-    handlers.saveProfile(collectProfilePatch(doc, fields)).then(
+    const upload = (kind: ProfileImageKind, file: File) => handlers.uploadProfileImage(kind, file);
+    const text = collectProfilePatch(doc, newWrites, fields);
+    // Text alone saves at once, as before; a picked picture goes up first.
+    const sent = Object.keys(pictures).length
+      ? profileImagePatch(pictures, upload).then((imgs) => handlers.saveProfile({ ...text, ...imgs }))
+      : handlers.saveProfile(text);
+    sent.then(
       () => {
         for (const f of fields) dirty.delete(f);
+        images?.commit();
         save.disabled = dirty.size === 0;
         toast(doc, SAVED_TOAST);
       },
       (e) => {
+        images?.revert(); // the pictures show the saved state again
         save.disabled = false;
         note(doc, save, `Could not save: ${message(e)}`, true);
       },
@@ -730,6 +772,9 @@ export function bindWrites(doc: Document, path: string, handlers: WriteHandlers 
     doc.removeEventListener("submit", onSubmit);
     unbindBank();
     unbindPickers();
+    unbindHandoffs();
+    images?.unbind();
+    unbindFormat?.();
   };
 }
 
@@ -794,13 +839,25 @@ export function useOfWrites(frameRef: RefObject<HTMLIFrameElement | null>, src: 
   const stream = path === "streaming/dashboard/create";
   const streamDate = stream ? params.get("date") : null;
   const streamTime = stream ? params.get("time") : null;
+  const newWrites = useOfmNewWrites(settingsPage(path) === "profile"); // OFM_NEW_WRITES_ENABLED: the cover and avatar
   const refresh = () => {
-    void afterProfileWrite(qc, accountId);
+    // ticket 67: the refetched users/me saved now, not 4 s later: a reload right after Save showed the old cover
+    // (the persisted snapshot, fresh for 5 min).
+    void afterProfileWrite(qc, accountId).then(flushPersistedCache);
     void qc.invalidateQueries({ queryKey: ["reply-on-subscribe", accountId] });
   };
   const { mutateAsync: saveProfile } = useMutation({
-    mutationFn: (body: ProfilePatch) => relay.patch("/api/of/v2/users/me", body, { accountId }),
+    mutationFn: (body: ProfilePatch & ProfileImagePatch) => relay.patch("/api/of/v2/users/me", body, { accountId }),
     onSuccess: refresh,
+  });
+  // ticket 67: the Relay's upload route (OF's upload steps); its reply is the item saveProfile sends.
+  const { mutateAsync: uploadProfileImage } = useMutation({
+    mutationFn: ({ kind, file }: { kind: ProfileImageKind; file: File }) => {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("kind", kind);
+      return relay.uploadForm<ProfileImage>("/api/of/v2/users/me/profile-image", form, { accountId });
+    },
   });
   const { mutateAsync: setReplyOnSubscribe } = useMutation({
     mutationFn: (enabled: boolean) => relay.patch("/api/of/v2/users/me/reply-on-subscribe", { enabled }, { accountId }),
@@ -821,7 +878,13 @@ export function useOfWrites(frameRef: RefObject<HTMLIFrameElement | null>, src: 
           return r;
         });
       if (doc?.body && stream) prefillStream(doc, streamDate, streamTime);
-      unbind = doc?.body ? bindWrites(doc, path, accountId ? { saveProfile, setReplyOnSubscribe, submit, navigate } : null) : undefined;
+      if (!doc?.body) return void (unbind = undefined);
+      const unbindWrites = bindWrites(doc, path, accountId ? { saveProfile, uploadProfileImage: (kind, file) => uploadProfileImage({ kind, file }), setReplyOnSubscribe, submit, navigate } : null, newWrites);
+      const unbindBrowserOnly = bindBrowserOnly(doc, path, navigate); // ticket 110: both scopes, nothing sent
+      unbind = () => {
+        unbindWrites();
+        unbindBrowserOnly();
+      };
     };
     if (frame.contentDocument?.readyState === "complete") bind();
     frame.addEventListener("load", bind);
@@ -829,5 +892,5 @@ export function useOfWrites(frameRef: RefObject<HTMLIFrameElement | null>, src: 
       frame.removeEventListener("load", bind);
       unbind?.();
     };
-  }, [frameRef, src, path, entry, accountId, qc, saveProfile, setReplyOnSubscribe, router, stream, streamDate, streamTime]);
+  }, [frameRef, src, path, entry, accountId, qc, saveProfile, uploadProfileImage, setReplyOnSubscribe, router, stream, streamDate, streamTime, newWrites]);
 }

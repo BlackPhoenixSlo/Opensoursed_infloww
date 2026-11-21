@@ -1,0 +1,15 @@
+{
+  "id": "vault--customize-order-save",
+  "section": "vault",
+  "label": "Customize order Save",
+  "pages": [
+    "vault/state-lists-sort-dropdown"
+  ],
+  "phase": 6,
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "undo": "none",
+    "reason": "Live proof pending (fake mode passes, ticket 96; parks itself live unless OnlyFans answers sort \"custom\" for the Proof Creator)"
+  }
+}

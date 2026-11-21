@@ -1,0 +1,80 @@
+{
+ "id": "notifications--tab-order-editor",
+ "section": "notifications",
+ "label": "Tab pencil > tab-order editor",
+ "pages": [
+  "notifications"
+ ],
+ "phase": 0,
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "POST",
+  "path": "/api2/v2/users/notifications/settings/tabs-order",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "tabs": [
+    "all",
+    "purchases",
+    "subscribed",
+    "tip",
+    "tags",
+    "favorited",
+    "mentioned",
+    "commented",
+    "message",
+    "deactivated_media"
+   ]
+  }
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "success"
+  ]
+ },
+ "undo_request": {
+  "method": "POST",
+  "path": "/api2/v2/users/notifications/settings/tabs-order",
+  "query": {},
+  "content_type": "application/json",
+  "body": {
+   "tabs": [
+    "all",
+    "subscribed",
+    "purchases",
+    "tip",
+    "tags",
+    "favorited",
+    "mentioned",
+    "commented",
+    "message",
+    "deactivated_media"
+   ]
+  },
+  "response": {
+   "status": 200,
+   "keys": [
+    "success"
+   ]
+  }
+ },
+ "facts": {
+  "dialog": "Rearrange categories: drag rows (sortable handle), CANCEL / SAVE; drag alone sends nothing, SAVE posts the whole order",
+  "rows": "Subscriptions, Purchases, Tips, Tags, Likes, Mentions, Comments, Promotions, OnlyFans ('all' is always first and not shown)",
+  "read": "GET /api2/v2/users/notifications/settings/tabs-order (JSON array)",
+  "reads": "before all,subscribed,purchases,...; after write all,purchases,subscribed,...; after undo equal to before",
+  "narrowing": "allow exactly POST ^/api2/v2/users/notifications/settings/tabs-order$",
+  "access": "write: sent live (narrowed), then undone and verified",
+  "capture_verdict": "pass",
+  "capture_undo": "undone",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r22-editor-open.png",
+  "r22-live-after-write.png",
+  "r22-live-after-undo.png"
+ ]
+}

@@ -1,5 +1,6 @@
 """Single-model scope: the writable OF settings mirror controls send their relay PATCH; others send nothing.
-All-models scope (no single model selected): nothing is sent; writable controls say "Select a model".
+No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
+77e5df419; phase_check.py's one_creator checks it).
 
 Mocks the login and relay as settings_values.py (SYNTHETIC values), records the
 bodies of PATCH /api/of/v2/users/me and /users/me/reply-on-subscribe, and checks:
@@ -14,12 +15,8 @@ available in Inflowwww yet", and the stream schedule form (streaming/dashboard/c
 empty sends nothing and shows the validation note; with tomorrow picked in the Date field's day popup (shown as OF's
 "Oct 13, 2026"), 6:30 pm in the Time field's time input and a description it sends exactly one POST /api/of/v2/streams {description, scheduledDate (local ISO with
 offset), isShowTips: true} and lands on /of-manager/queue.
-Then, with the scope key cleared before every load (all models, two creators listed): the Settings pages stand in
-with the first creator (ofMirrorProfile's STAND_IN_SRC), so typing a name + SAVE sends its PATCH and the welcome
-switch its write; the schedule form (no stand-in) sends nothing on SCHEDULE and shows "Select a model to save changes".
 Screenshots: /tmp/of-mirror-shots/inapp-writes.png (profile, its toast), inapp-writes-fans.png, inapp-writes-price.png, inapp-writes-webpush.png,
-inapp-writes-schedule-invalid.png, inapp-writes-schedule-filled.png, inapp-writes-schedule-queue.png,
-inapp-writes-all-models-schedule.png. Exit 1 on a failed check.
+inapp-writes-schedule-invalid.png, inapp-writes-schedule-filled.png, inapp-writes-schedule-queue.png. Exit 1 on a failed check.
 """
 import json, os, sys
 from datetime import date, datetime, timedelta
@@ -39,7 +36,6 @@ failures=[]
 def check(label, got, want):
     print(json.dumps({"check":label,"want":want,"got":got}))
     if got!=want: failures.append(f"{label}: got {got!r}, expected {want!r}")
-SELECT_MODEL="Select a model to save changes"
 def session(b, scope_js):
     """A fresh context and page with scope_js run before every load; returns (page, sent writes, console errors, open_page)."""
     ctx=b.new_context(viewport={"width":1440,"height":900})
@@ -187,35 +183,6 @@ with sync_playwright() as p:
     print("console errors:", [e[:160] for e in errs][:8])
     if errs: failures.append(f"{len(errs)} console error(s)")
 
-    # All models: the scope key cleared before every load.
-    pg, sent, errs, open_page=session(b, "localStorage.removeItem('chatterly:scope')")
-    fr=open_page("profile")
-    if fr:
-        check("all models: scope key absent", pg.evaluate("localStorage.getItem('chatterly:scope')"), None)
-        save=fr.locator(".g-btn__wrapper button[type='submit']")
-        fr.locator("#input-name").fill("Synthetic Name")
-        check("all models profile: Save enabled after an edit", save.is_enabled(), True)
-        save.click(); pg.wait_for_timeout(1000)
-        check("all models profile: stands in with the first creator, PATCH /users/me sent", [s for s in sent if s[:2]==("PATCH","/api/of/v2/users/me")], [("PATCH","/api/of/v2/users/me",{"name":"Synthetic Name"})])
-    fr=open_page("messaging")
-    if fr:
-        before=fr.evaluate("document.getElementById('autoMessage').checked")
-        fr.locator("label[for='autoMessage']").click(); pg.wait_for_timeout(1000)
-        check("all models messaging: stands in, the switch's write sent", [s[:2] for s in sent if s[1].endswith("/reply-on-subscribe")], [("PATCH","/api/of/v2/users/me/reply-on-subscribe")])
-        check("all models messaging: the switch stays flipped", fr.evaluate("document.getElementById('autoMessage').checked"), not before)
-    fr=open_page("dashboard/create", "streaming")
-    if fr:
-        fill_stream(fr)
-        n=len(sent)
-        fr.locator(SUBMIT).click(); pg.wait_for_timeout(1000)
-        check("all models schedule form: no write", sent[n:], [])
-        check("all models schedule form: note visible", fr.locator("#oi-note").is_visible(), True)
-        check("all models schedule form: note", fr.evaluate(note), SELECT_MODEL)
-        check("all models schedule form: still on the form", pg.url.endswith("/of-manager/streaming/dashboard/create"), True)
-        pg.screenshot(path=f"{SHOTS}/inapp-writes-all-models-schedule.png")
-    print("all models relay writes:", sent)
-    print("all models console errors:", [e[:160] for e in errs][:8])
-    if errs: failures.append(f"all models: {len(errs)} console error(s)")
 if failures:
     print("FAIL:", *failures, sep="\n  "); sys.exit(1)
 print("writes ok")

@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyData } from "./ofMirrorData";
-import { BAR, bindVault, CUSTOMIZE, LIST_SORTS, LISTS_SEARCH, ORDER_BOX, PHONE_BACK, pollUpload, vaultHref, vaultListsPath, vaultMediaPath, VIEWER, viewOf, VIEW_OPEN, type VaultContext, type VaultHandlers, type VaultLists } from "./ofMirrorVault";
-import { SELECT_MODEL } from "./ofMirrorWrites";
+import { BAR, bindVault, CUSTOMIZE, FOLDER_MORE, NO_FOLDER, LIST_SORTS, LISTS_SEARCH, ORDER_BOX, PHONE_BACK, pollUpload, vaultHref, vaultListsPath, vaultMediaPath, VIEWER, viewOf, VIEW_OPEN, type VaultContext, type VaultHandlers, type VaultLists } from "./ofMirrorVault";
+import { NOT_YET, SELECT_MODEL } from "./ofMirrorWrites";
 import type { VaultMedia } from "./relay";
 
 const capture = (p: string) => readFileSync(resolve(__dirname, `../public/of-mirror/pages/${p}.html`), "utf8");
@@ -54,7 +54,7 @@ function handlers(over: Partial<VaultHandlers> = {}): VaultHandlers {
 }
 const ctxOf = (params: string, over: Partial<VaultContext> = {}): VaultContext => {
   const sp = new URLSearchParams(params);
-  return { view: viewOf(sp), edit: sp.get("edit") === "1", lists: LISTS, navigate: vi.fn(), handlers: handlers(), ...over };
+  return { view: viewOf(sp), edit: sp.get("edit") === "1", lists: LISTS, navigate: vi.fn(), handlers: handlers(), newWrites: false, ...over };
 };
 const click = (el: Element) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 /** A tile's own checkbox (OF's: it selects the tile). */
@@ -84,7 +84,7 @@ describe("the view", () => {
     expect(hrefs).toContain(`/of-manager/vault?list=${BID}`);
   });
 
-  it("vault/list's folder sort, media sort and Create new category open the Vault's state pages with the view; More stays disabled", () => {
+  it("vault/list's folder sort, media sort and Create new category open the Vault's state pages with the view", () => {
     const doc = load("vault/list");
     applyData(doc, "vault/list", { vaultLists: LISTS.list, list: AID });
     bind(doc, "vault/list", ctxOf(`list=${AID}&type=photo`));
@@ -95,7 +95,6 @@ describe("the view", () => {
       `/of-manager/vault/state-sort-dropdown?list=${AID}&type=photo`,
     ]);
     expect(link("a[aria-label='Create new category']")).toBe(`/of-manager/vault/state-add-list?list=${AID}&type=photo`);
-    expect(doc.querySelector<HTMLButtonElement>("button[aria-label='More']")!.disabled).toBe(true);
   });
 
   it("the rail, the side menu and the column's Back go to the bare Vault, as OF's; closing the search keeps the folder", () => {
@@ -637,5 +636,95 @@ describe("pollUpload", () => {
     await vi.advanceTimersByTimeAsync(12_000);
     await done;
     expect(status.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+});
+
+describe("the folder page's More (ticket 34)", () => {
+  const open = (params = `list=${AID}`, over: Partial<VaultContext> = {}) => {
+    const doc = load("vault/list");
+    applyData(doc, "vault/list", { vaultLists: LISTS.list, list: AID, vaultMedia: MEDIA });
+    const ctx = ctxOf(params, { newWrites: true, ...over });
+    bind(doc, "vault/list", ctx);
+    const more = doc.querySelector<HTMLButtonElement>(FOLDER_MORE)!;
+    return { doc, ctx, more, h: ctx.handlers! };
+  };
+  const row = (doc: Document, v: string) => doc.querySelector<HTMLElement>(`#oi-menu [data-oi-value='${v}']`)!;
+
+  it.each([{}, { newWrites: false }])("OFM_NEW_WRITES_ENABLED off (%j): as captured, disabled with the Not-yet title, not Wired; a click opens nothing", (off) => {
+    const { doc, ctx, more, h } = open(`list=${AID}`, { newWrites: undefined, ...off });
+    expect([more.disabled, more.hasAttribute("data-oi-wired"), more.title]).toEqual([true, false, NOT_YET]);
+    click(more);
+    expect(doc.getElementById("oi-menu")).toBeNull();
+    expect(ctx.navigate).not.toHaveBeenCalled();
+    expect(h.deleteFolder).not.toHaveBeenCalled();
+  });
+
+  it("is OF's one header More, enabled and wired, its Not-yet title dropped (Live pass, D1); it opens Rename and Delete", () => {
+    const { doc, more } = open();
+    expect(doc.querySelectorAll(FOLDER_MORE)).toHaveLength(1);
+    expect(more.disabled).toBe(false);
+    expect(more.hasAttribute("data-oi-wired")).toBe(true);
+    expect(more.hasAttribute("title")).toBe(false);
+    click(more);
+    expect([...doc.querySelectorAll("#oi-menu [data-oi-value]")].map((r) => r.getAttribute("data-oi-value"))).toEqual(["rename", "delete"]);
+    expect(row(doc, "rename").getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("without a model it asks for one; without a custom folder its rows are off and do nothing", () => {
+    const none = open(`list=${AID}`, { handlers: null });
+    click(none.more);
+    expect(noteText(none.doc)).toBe(SELECT_MODEL);
+    expect(none.doc.getElementById("oi-menu")).toBeNull();
+    const { doc, ctx, more, h } = open("");
+    click(more);
+    for (const v of ["rename", "delete"]) {
+      expect(row(doc, v).getAttribute("aria-disabled")).toBe("true");
+      expect(row(doc, v).title).toBe(NO_FOLDER);
+      click(row(doc, v));
+    }
+    expect(ctx.navigate).not.toHaveBeenCalled();
+    expect(h.deleteFolder).not.toHaveBeenCalled();
+  });
+
+  it("Rename opens the folder's Rename category modal with the view, as the action row's RENAME; it sends nothing", () => {
+    const { doc, ctx, more, h } = open(`list=${AID}&type=photo`);
+    click(more);
+    click(row(doc, "rename"));
+    expect(ctx.navigate).toHaveBeenCalledWith(`/of-manager/vault/state-add-list?list=${AID}&type=photo&edit=1`);
+    expect(h.renameFolder).not.toHaveBeenCalled();
+  });
+
+  it("Delete asks, sends the delete and lands on the Vault; a no or a failure stays", async () => {
+    const ok = open();
+    click(ok.more);
+    click(row(ok.doc, "delete"));
+    await flush();
+    expect(ok.h.confirm).toHaveBeenCalledWith(`Delete the folder "${A.name}"? Its media stay in the vault.`);
+    expect(ok.h.deleteFolder).toHaveBeenCalledWith(AID);
+    expect(ok.ctx.navigate).toHaveBeenCalledWith("/of-manager/vault");
+
+    const no = open(`list=${AID}`, { handlers: handlers({ confirm: vi.fn(() => false) }) });
+    click(no.more);
+    click(row(no.doc, "delete"));
+    await flush();
+    expect(no.h.deleteFolder).not.toHaveBeenCalled();
+
+    const bad = open(`list=${AID}`, { handlers: handlers({ deleteFolder: vi.fn(async () => Promise.reject(new Error("502"))) }) });
+    click(bad.more);
+    click(row(bad.doc, "delete"));
+    await flush();
+    expect(noteText(bad.doc)).toMatch(/^Could not delete: /);
+    expect(bad.ctx.navigate).not.toHaveBeenCalled();
+  });
+
+  it("More is off while its delete is in flight, as the action row is", async () => {
+    let settle = () => {};
+    const { doc, more } = open(`list=${AID}`, { handlers: handlers({ deleteFolder: vi.fn(() => new Promise<void>((r) => (settle = r))) }) });
+    click(more);
+    click(row(doc, "delete"));
+    expect(more.style.pointerEvents).toBe("none");
+    settle();
+    await flush();
+    expect(more.style.pointerEvents).toBe("");
   });
 });

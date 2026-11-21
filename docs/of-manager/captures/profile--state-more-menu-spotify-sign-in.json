@@ -1,0 +1,15 @@
+{
+ "id": "profile--state-more-menu-spotify-sign-in",
+ "section": "profile",
+ "label": "Sign in with spotify",
+ "pages": [
+  "profile/state-more-menu"
+ ],
+ "phase": 3,
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T122052Z-ofm-live-f9cf0cde7",
+  "undo": "none"
+ }
+}

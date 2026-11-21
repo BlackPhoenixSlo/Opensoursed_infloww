@@ -1,0 +1,15 @@
+{
+ "id": "settings--account-x-sign-in",
+ "section": "settings",
+ "label": "Sign in with X",
+ "pages": [
+  "settings/account/x"
+ ],
+ "phase": 3,
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T120555Z-ofm-live-ec770eb66",
+  "undo": "none"
+ }
+}

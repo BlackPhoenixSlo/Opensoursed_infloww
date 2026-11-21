@@ -1,0 +1,15 @@
+{
+ "id": "settings--streaming-obs-widgets",
+ "section": "settings",
+ "label": "https://obs-settings.onlyfans.com/",
+ "pages": [
+  "settings/streaming"
+ ],
+ "phase": 3,
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T115116Z-ofm-live-8c4e386b6",
+  "undo": "none"
+ }
+}

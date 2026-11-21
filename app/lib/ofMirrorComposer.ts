@@ -18,7 +18,8 @@
  * OF's rules between them: Add GIF is off with a GIF picked, media other than voice, a price or tagged creators; the
  * price, Record video, Tag creators, Add media and the vault are off with a GIF (a GIF goes with nothing but a voice
  * note; bindChat refuses a drop and collectMessage a body otherwise); Record voice is off once an audio file is attached.
- * A drop takes photos, videos and audio only. The recorders ask for mp4 first, then webm (isTypeSupported), and the
+ * A drop takes photos, videos and audio only. Record video asks for mp4 first, then webm (isTypeSupported); Record voice
+ * asks for OF's own recorder's types (VOICE_TYPES: mp3, then ogg) and re-encodes anything else to WAV, as OF's does. The
  * File's type has no `;codecs`. Recordings belong to the document, not the bind: a rebind of the same chat keeps them.
  * Opening a tool sends nothing; without a model or an open chat it shows the reason (`ready`).
  */
@@ -85,8 +86,26 @@ const clock = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
-/** The containers a recording is asked for, OF's upload's first: mp4 where the browser records it, then webm. */
-const RECORD_TYPES = { audio: ["audio/mp4", "audio/webm"], video: ["video/mp4", "video/webm"] } as const;
+/**
+ * The voice note types OF's upload takes, with their extensions, in the order OF's own audio record panel picks them
+ * (bundle 24014.js `V()`, constants MakeFeedPost 800378 `xJ`/`ni`): `audio/mpeg` .mp3 where MediaRecorder records it,
+ * else `audio/ogg` .ogg, else `audio/wav` .wav from RecordRTC's StereoAudioRecorder, one channel (always WAV on iOS and
+ * Safari); OF names it `audiorecord_<id>_<time>.<ext>`. OF refused `audio/mp4` .m4a (signed/create 400 "Invalid file
+ * type", live 2026-11-21). Any other audio (Chrome's webm recording, a picked or dropped .m4a) is re-encoded to WAV
+ * on its way to the upload (`voiceFile`, called by ofMirrorPost's mediaTaker).
+ * ASSUMPTION: OF takes these three for a voice note (rung 3: its own recorder uploads them; only the m4a refusal was
+ * measured); overturned by a Live Record voice run refusing the type sent, which then changes this one constant.
+ */
+export const VOICE_TYPES: Readonly<Record<string, string>> = { "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/wav": "wav" };
+const WAV = "audio/wav";
+/**
+ * The rate a re-encoded voice note is resampled to: OF's recorder asks RecordRTC for 16 kHz (`desiredSampRate`, bundle
+ * constant `o4`), on Android only; elsewhere it leaves the input's rate. ASSUMPTION: 16 kHz everywhere (rung 3 + 5:
+ * OF's own lowest; a third of a 48 kHz WAV's size under OF's 350 MB cap); overturned by a Live run refusing it.
+ */
+export const VOICE_WAV_RATE = 16_000;
+/** The containers a recording is asked for: video mp4 where the browser records it, then webm; voice OF's mp3, then ogg. */
+const RECORD_TYPES = { audio: ["audio/mpeg", "audio/ogg"], video: ["video/mp4", "video/webm"] } as const;
 /** The first of RECORD_TYPES[kind] the browser's MediaRecorder records, or undefined (its own default). */
 export function recordType(win: Window, kind: "audio" | "video"): string | undefined {
   const Rec = (win as unknown as { MediaRecorder?: { isTypeSupported?(t: string): boolean } }).MediaRecorder;
@@ -101,7 +120,10 @@ export function recordType(win: Window, kind: "audio" | "video"): string | undef
 /** A MIME type without its parameters (`video/webm;codecs=vp8,opus` is `video/webm`). */
 export const bareType = (t: string) => t.split(";")[0].trim().toLowerCase();
 
-/** A media stream's recorder: `stop(save)` ends it (save: the recording goes to `done` with its bare type), every track stopped. */
+/**
+ * A media stream's recorder: `stop(save)` ends it (save: the recording goes to `done` with its bare type), every track
+ * stopped. `stop` returns whether `done` is still to come (it was recording and `save`).
+ */
 function recorder(win: Window, stream: MediaStream, kind: "audio" | "video", done: (blob: Blob, type: string) => void) {
   const Rec = (win as unknown as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder;
   const mimeType = recordType(win, kind);
@@ -119,12 +141,67 @@ function recorder(win: Window, stream: MediaStream, kind: "audio" | "video", don
   };
   return {
     start: () => rec.start(),
-    stop(save: boolean) {
+    stop(save: boolean): boolean {
       keep = save;
-      if (rec.state !== "inactive") rec.stop();
-      else for (const t of stream.getTracks()) t.stop();
+      if (rec.state !== "inactive") {
+        rec.stop();
+        return save;
+      }
+      for (const t of stream.getTracks()) t.stop();
+      return false;
     },
   };
+}
+
+/** 16-bit PCM WAV bytes of one channel of `samples` (-1..1) at `rate` Hz (OF's voice fallback: one channel). */
+export function wavBytes(samples: Float32Array, rate: number): ArrayBuffer {
+  const out = new DataView(new ArrayBuffer(44 + samples.length * 2));
+  const ascii = (at: number, s: string) => [...s].forEach((c, i) => out.setUint8(at + i, c.charCodeAt(0)));
+  ascii(0, "RIFF");
+  out.setUint32(4, 36 + samples.length * 2, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  out.setUint32(16, 16, true); // fmt chunk size
+  out.setUint16(20, 1, true); // PCM
+  out.setUint16(22, 1, true); // channels
+  out.setUint32(24, rate, true);
+  out.setUint32(28, rate * 2, true); // bytes per second
+  out.setUint16(32, 2, true); // block align
+  out.setUint16(34, 16, true); // bits per sample
+  ascii(36, "data");
+  out.setUint32(40, samples.length * 2, true);
+  samples.forEach((v, i) => {
+    const c = Math.max(-1, Math.min(1, v));
+    out.setInt16(44 + i * 2, c < 0 ? c * 0x8000 : c * 0x7fff, true);
+  });
+  return out.buffer;
+}
+
+/** Whether `file` is audio of a type OF's upload refuses (one VOICE_TYPES lacks): `voiceFile` re-encodes it. */
+export function refusedAudio(file: File): boolean {
+  const type = bareType(file.type);
+  return type.startsWith("audio/") && !Object.hasOwn(VOICE_TYPES, type);
+}
+/** Why an audio file cannot be re-encoded: the browser has no Web Audio decoder. */
+export const NO_DECODER = "this browser cannot convert audio";
+/**
+ * `file` as OF's upload takes it: as is unless it is audio of a type VOICE_TYPES lacks, which is decoded (Web Audio, in
+ * the app's window, resampled to VOICE_WAV_RATE), mixed to one channel and re-encoded to WAV, same name, `.wav`.
+ * Rejects when it cannot be decoded.
+ */
+export async function voiceFile(file: File): Promise<File> {
+  if (!refusedAudio(file)) return file;
+  const w = globalThis as unknown as { OfflineAudioContext?: typeof OfflineAudioContext; webkitOfflineAudioContext?: typeof OfflineAudioContext };
+  const Ctx = w.OfflineAudioContext ?? w.webkitOfflineAudioContext;
+  if (!Ctx) throw new Error(NO_DECODER);
+  const audio = await new Ctx(1, 1, VOICE_WAV_RATE).decodeAudioData(await file.arrayBuffer());
+  const n = audio.numberOfChannels;
+  let mono = audio.getChannelData(0);
+  if (n > 1) {
+    mono = new Float32Array(audio.length);
+    for (let c = 0; c < n; c++) audio.getChannelData(c).forEach((v, i) => (mono[i] += v / n));
+  }
+  return new File([wavBytes(mono, audio.sampleRate)], `${file.name.replace(/\.[^.]*$/, "")}.${VOICE_TYPES[WAV]}`, { type: WAV });
 }
 
 /** The media stream for `kind`, or the note for why there is none. */
@@ -141,37 +218,328 @@ async function streamFor(win: Window, kind: "audio" | "video"): Promise<MediaStr
   }
 }
 
-type Recorder = ReturnType<typeof recorder>;
+const stopTracks = (stream: MediaStream | string | null | undefined) => {
+  if (stream && typeof stream !== "string") for (const t of stream.getTracks()) t.stop();
+};
+
+/** Where a recording's note goes (the button that opened it); `signal` stops it, nothing kept. */
+interface RecordOptions {
+  anchor: Element;
+  signal?: AbortSignal;
+}
+
 /**
- * A document's recordings. They outlive a bind: useOfChat rebinds the same frame document when the chat's details
- * change (its name, mute state, tips flag), and a recording (or a permission prompt) must go on through that. Only when
- * no bind of the same draft takes the document back (by the end of the task) is it stopped, nothing kept.
+ * Record a voice message in OF's audio record panel (`.js-chat__audiorecord-panel`, in `doc`): the panel opens asking
+ * nothing; its record button asks for the microphone and starts, and again stops and keeps; the timer runs to OF's 30:00
+ * cap, which stops and keeps. Back (the default header's) and the recording header's close keep nothing. Resolves the
+ * recorded File (OF's mp3 or ogg where MediaRecorder records them, else the browser's own, which the upload re-encodes:
+ * `voiceFile`), or null: cancelled, aborted, no panel, or the microphone refused (a red note at `anchor` names why).
+ */
+function startVoiceRecorder(doc: Document, { anchor, signal }: RecordOptions): Promise<File | null> {
+  const win = doc.defaultView!;
+  const panel = doc.querySelector<HTMLElement>(AUDIO_PANEL);
+  if (!panel || signal?.aborted) return Promise.resolve(null);
+  return new Promise<File | null>((resolve) => {
+    let rec: Recorder | null = null;
+    let at = 0;
+    let tick = 0;
+    let asking = false;
+    let over = false;
+    const parts = () => ({
+      idleHead: panel.querySelector<HTMLElement>(".js-message-header-default"),
+      recHead: panel.querySelector<HTMLElement>(".js-message-header-recording"),
+      timer: panel.querySelector<HTMLElement>(".js-chat__audio-record-timer"),
+      button: panel.querySelector<HTMLButtonElement>(".b-float-panel__btn-record"),
+      stopIcon: panel.querySelector<HTMLElement>(".js-chat__audio-record-state-stop"),
+      recIcon: panel.querySelector<HTMLElement>(".js-chat__audio-record-state-rec"),
+    });
+    const show = (recording: boolean) => {
+      const p = parts();
+      p.idleHead?.classList.toggle("g-hidden", recording);
+      p.recHead?.classList.toggle("g-hidden", !recording);
+      p.stopIcon?.classList.toggle("g-hidden", !recording);
+      p.recIcon?.classList.toggle("g-hidden", recording);
+      if (p.timer) p.timer.textContent = ` ${clock(recording ? Date.now() - at : 0)} / ${clock(VOICE_MAX_MS)} `;
+    };
+    const finish = (file: File | null) => {
+      if (over) return;
+      over = true;
+      resolve(file);
+    };
+    const close = (save: boolean) => {
+      win.clearInterval(tick);
+      const r = rec;
+      rec = null;
+      panel.style.display = "none";
+      doc.body.classList.remove("open-panel");
+      doc.removeEventListener("click", onClick, true);
+      signal?.removeEventListener("abort", onAbort);
+      if (!r?.stop(save)) finish(null);
+    };
+    const start = async () => {
+      asking = true;
+      const stream = await streamFor(win, "audio").finally(() => (asking = false));
+      if (over || panel.style.display === "none") return stopTracks(stream);
+      if (typeof stream === "string") {
+        close(false);
+        return note(doc, anchor, stream, true);
+      }
+      rec = recorder(win, stream, "audio", (blob, type) => finish(new File([blob], `voice-${Date.now()}.${VOICE_TYPES[type] ?? (/mp4/.test(type) ? "m4a" : "webm")}`, { type })));
+      rec.start();
+      at = Date.now();
+      show(true);
+      tick = win.setInterval(() => {
+        if (Date.now() - at >= VOICE_MAX_MS) return close(true);
+        show(true);
+      }, 250);
+    };
+    const onClick = (ev: MouseEvent) => {
+      const t = ev.target as Element | null;
+      if (!t?.closest || !panel.contains(t)) return;
+      const button = parts().button;
+      if (button && t.closest(".b-float-panel__btn-record") === button) {
+        ev.preventDefault();
+        if (rec) return close(true);
+        if (!asking) void start();
+        return;
+      }
+      // The default header's Back and the recording header's close: nothing is kept.
+      if (t.closest("a[aria-label='Back'], .js-message-header-recording button")) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        close(false);
+      }
+    };
+    const onAbort = () => close(false);
+    panel.style.display = "";
+    doc.body.classList.add("open-panel");
+    // Its record and close buttons are this recorder's: Wired, so bindWrites' fallback never notes them Read-only (a
+    // trusted click runs this capture listener's microtasks first, so a later Read-only note would hide its own).
+    for (const b of panel.querySelectorAll(".b-float-panel__btn-record, .js-message-header-recording button")) b.setAttribute("data-oi-wired", "");
+    show(false);
+    doc.addEventListener("click", onClick, true);
+    signal?.addEventListener("abort", onAbort);
+  });
+}
+
+/**
+ * Record a video message in OF's video-js recorder (`.b-chat__video-message__preview`, in `doc`): asks for the camera at
+ * once and previews it; its Record button starts, and again stops and keeps; OF's 05:00 cap stops and keeps; its close
+ * keeps nothing. Resolves the recorded File (mp4 where MediaRecorder records it, else webm), or null: closed, aborted,
+ * no recorder, or the camera refused (a red note at `anchor` names why).
+ */
+function startVideoRecorder(doc: Document, { anchor, signal }: RecordOptions): Promise<File | null> {
+  const win = doc.defaultView!;
+  const box = doc.querySelector<HTMLElement>(VIDEO_BOX);
+  if (!box || signal?.aborted) return Promise.resolve(null);
+  return new Promise<File | null>((resolve) => {
+    let stream: MediaStream | null = null;
+    let rec: Recorder | null = null;
+    let timer = 0;
+    let over = false;
+    const parts = () => ({
+      tech: box.querySelector<HTMLVideoElement>("video.vjs-tech"),
+      button: box.querySelector<HTMLButtonElement>(".vjs-record-button"),
+      indicator: box.querySelector<HTMLElement>(".vjs-record-indicator"),
+      liveIcon: box.querySelector<HTMLElement>(".b-chat__videorec-live-icon"),
+      liveLabel: box.querySelector<HTMLElement>(".b-chat__videorec-live-label"),
+    });
+    const show = (recording: boolean) => {
+      const p = parts();
+      p.button?.classList.toggle("vjs-icon-record-start", !recording);
+      p.button?.classList.toggle("vjs-icon-record-stop", recording);
+      if (p.button) {
+        p.button.title = recording ? "Stop" : "Record";
+        const t = p.button.querySelector(".vjs-control-text");
+        if (t) t.textContent = recording ? "Stop" : "Record";
+      }
+      p.indicator?.classList.toggle("vjs-hidden", !recording);
+      p.liveIcon?.classList.toggle("g-hidden", !recording);
+      p.liveLabel?.classList.toggle("g-hidden", !recording);
+    };
+    const finish = (file: File | null) => {
+      if (over) return;
+      over = true;
+      resolve(file);
+    };
+    const close = (save: boolean) => {
+      win.clearTimeout(timer);
+      doc.removeEventListener("click", onClick, true);
+      signal?.removeEventListener("abort", onAbort);
+      const r = rec;
+      rec = null;
+      const pending = r ? r.stop(save) : (stopTracks(stream), false);
+      stream = null;
+      const p = parts();
+      if (p.tech) p.tech.srcObject = null;
+      show(false);
+      p.button?.classList.add("vjs-hidden");
+      box.classList.add("g-hidden");
+      if (!pending) finish(null);
+    };
+    const toggle = () => {
+      if (!stream) return;
+      if (rec) return close(true);
+      rec = recorder(win, stream, "video", (blob, type) => finish(new File([blob], `video-${Date.now()}.${/mp4/.test(type) ? "mp4" : "webm"}`, { type })));
+      rec.start();
+      show(true);
+      timer = win.setTimeout(() => close(true), VIDEO_MAX_MS);
+    };
+    const onClick = (ev: MouseEvent) => {
+      const t = ev.target as Element | null;
+      if (!t?.closest || !box.contains(t)) return;
+      if (t.closest(".js-video-message-close")) {
+        ev.preventDefault();
+        return close(false);
+      }
+      if (t.closest(".vjs-record-button")) {
+        ev.preventDefault();
+        toggle();
+      }
+    };
+    const onAbort = () => {
+      if (stream || rec) return close(false);
+      // Still asking: the stream granted later is stopped at once.
+      signal?.removeEventListener("abort", onAbort);
+      finish(null);
+    };
+    signal?.addEventListener("abort", onAbort);
+    void streamFor(win, "video").then((got) => {
+      if (over) return stopTracks(got);
+      if (typeof got === "string") {
+        signal?.removeEventListener("abort", onAbort);
+        note(doc, anchor, got, true);
+        return finish(null);
+      }
+      stream = got;
+      const p = parts();
+      box.classList.remove("g-hidden");
+      p.button?.classList.remove("vjs-hidden");
+      p.button?.setAttribute("data-oi-wired", "");
+      if (p.tech) {
+        p.tech.muted = true;
+        p.tech.srcObject = got;
+        void p.tech.play?.()?.catch?.(() => {});
+      }
+      show(false);
+      doc.addEventListener("click", onClick, true);
+    });
+  });
+}
+
+type Recorder = ReturnType<typeof recorder>;
+
+/** The capture whose recorder markup (OF's audio record panel, the video-js recorder) a page without it borrows. */
+const RECORDER_PAGE = "/of-mirror/pages/new-post/index.html";
+
+/**
+ * Put OF's recorder markup into `doc` when it has none (Home's captures: OF renders it with the composer, the capture did
+ * not keep it): the audio record panel and the video-js recorder from New post's capture (fetched same-origin, never the
+ * Relay, parsed inertly; one Record at a time, so once per page load), after the composer's form as there, with the
+ * stylesheets and icons they use that `doc` lacks.
+ */
+async function ensureRecorder(doc: Document): Promise<void> {
+  if (doc.querySelector(AUDIO_PANEL) && doc.querySelector(VIDEO_BOX)) return;
+  const win = doc.defaultView!;
+  const res = await win.fetch(RECORDER_PAGE);
+  if (!res.ok) throw new Error(`recorder markup: ${res.status}`);
+  const from = new DOMParser().parseFromString(await res.text(), "text/html");
+  if (doc.querySelector(AUDIO_PANEL) && doc.querySelector(VIDEO_BOX)) return;
+  const form = doc.querySelector("form.b-create-post-form");
+  const audio = from.querySelector(AUDIO_PANEL);
+  const video = from.querySelector(VIDEO_BOX)?.parentElement;
+  if (!form || !audio || !video) throw new Error("no recorder markup");
+  const nodes = [audio, video].map((n) => doc.importNode(n, true) as HTMLElement);
+  form.after(...nodes);
+  const head = doc.head;
+  const have = new Set([...doc.querySelectorAll("link[rel='stylesheet']")].map((l) => l.getAttribute("href")));
+  for (const link of from.querySelectorAll("link[rel='stylesheet']")) if (!have.has(link.getAttribute("href"))) head.append(doc.importNode(link, true));
+  const sprite = doc.querySelector("svg symbol")?.parentElement;
+  for (const use of nodes.flatMap((n) => [...n.querySelectorAll("use")])) {
+    const id = (use.getAttribute("href") ?? use.getAttribute("xlink:href") ?? "").replace(/^#/, "");
+    const symbol = id && !doc.getElementById(id) ? from.getElementById(id) : null;
+    if (symbol && sprite) sprite.append(doc.importNode(symbol, true));
+  }
+}
+
+/** Where a kept recording goes: its File, and the button that started it (for an upload's note). */
+export type TakeRecording = (files: File[], anchor: Element) => void;
+
+/**
+ * A document's recordings (the voice and video recorders' sessions). They outlive a bind: useOfChat rebinds the same
+ * frame document when the chat's details change (its name, mute state, tips flag), useOfPost when the model's details
+ * load, and a recording (or a permission prompt) must go on through that, its File going to the latest bind's `take`.
+ * Only when no bind of the same draft takes the document back (by the end of the task) is it aborted, nothing kept.
  */
 interface Live {
   key: string;
   owners: number;
   dead: boolean;
-  take: (files: File[]) => void;
-  voice: Recorder | null;
-  voiceAt: number;
-  voiceTick: number;
-  asking: boolean;
-  video: Recorder | null;
-  videoStream: MediaStream | null;
-  videoTimer: number;
-  videoAsking: boolean;
+  take: TakeRecording;
+  stop: AbortController;
+  voice: boolean;
+  video: boolean;
 }
 const LIVE = new WeakMap<Document, Live>();
-/** Stop `live`'s recordings, keeping nothing (no DOM work: its document is gone or another draft's). */
-function stopLive(win: Window, live: Live) {
+/** Stop `live`'s recordings, keeping nothing. */
+function stopLive(live: Live) {
   live.dead = true;
-  win.clearInterval(live.voiceTick);
-  win.clearTimeout(live.videoTimer);
-  live.voice?.stop(false);
-  if (live.video) live.video.stop(false);
-  else for (const t of live.videoStream?.getTracks() ?? []) t.stop();
-  live.voice = live.video = null;
-  live.videoStream = null;
+  live.stop.abort();
+}
+
+/** A bind's handle on its document's recordings (recordSession). */
+export interface RecordSession {
+  /** Whether a `kind` recording is going (no `kind`: either). */
+  busy(kind?: "voice" | "video"): boolean;
+  /**
+   * Record a `kind` message in OF's recorder (its note at `anchor`); a kept File goes to the latest bind's take. `borrow`:
+   * first put OF's recorder markup into the document when it has none (Home); a failure there is a red note at `anchor`.
+   */
+  record(kind: "voice" | "video", anchor: Element, borrow?: boolean): void;
+  /** This bind is over: unless a bind of the same draft takes the document back in this task, its recordings stop. */
+  release(): void;
+}
+
+/** Join `doc`'s recordings for draft `key` (another draft's stop, nothing kept); this bind's `take` gets what is kept. */
+export function recordSession(doc: Document, key: string, take: TakeRecording): RecordSession {
+  let live = LIVE.get(doc);
+  if (live && (live.dead || live.key !== key)) {
+    if (!live.dead) stopLive(live);
+    live = undefined;
+  }
+  if (!live) {
+    live = { key, owners: 0, dead: false, take, stop: new AbortController(), voice: false, video: false };
+    LIVE.set(doc, live);
+  }
+  const L: Live = live;
+  L.owners++;
+  L.take = take;
+  return {
+    busy: (kind) => (kind ? L[kind] : L.voice || L.video),
+    record(kind, anchor, borrow = false) {
+      L[kind] = true;
+      const opts = { anchor, signal: L.stop.signal };
+      const start = () => (kind === "voice" ? startVoiceRecorder(doc, opts) : startVideoRecorder(doc, opts));
+      void (borrow ? ensureRecorder(doc).then(start) : start()).then(
+        (file) => {
+          L[kind] = false;
+          if (file && !L.dead) L.take([file], anchor);
+        },
+        (e) => {
+          L[kind] = false;
+          note(doc, anchor, `Could not record: ${message(e)}`, true);
+        },
+      );
+    },
+    release() {
+      L.owners--;
+      queueMicrotask(() => {
+        if (L.owners > 0 || L.dead) return;
+        stopLive(L);
+        if (LIVE.get(doc) === L) LIVE.delete(doc);
+      });
+    },
+  };
 }
 
 /** Wire the chat composer's tools in `doc`. `sync` re-applies OF's rules (bindChat calls it on every draft change). */
@@ -196,19 +564,7 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
   const vaultBtn = q(VAULT_BTN);
   const tagBtn = q(TAG_BTN);
   const cleanups: Array<() => void> = [];
-  const key = tools.key ?? "";
-  let live = LIVE.get(doc);
-  if (live && (live.dead || live.key !== key)) {
-    if (!live.dead) stopLive(win, live);
-    live = undefined;
-  }
-  if (!live) {
-    live = { key, owners: 0, dead: false, take: tools.take, voice: null, voiceAt: 0, voiceTick: 0, asking: false, video: null, videoStream: null, videoTimer: 0, videoAsking: false };
-    LIVE.set(doc, live);
-  }
-  const L: Live = live;
-  L.owners++;
-  L.take = tools.take;
+  const rec = recordSession(doc, tools.key ?? "", tools.take);
 
   // Send tip: only where OF shows it.
   if (tipBtn) tipBtn.style.display = tools.tipsEnabled === true ? "" : "none";
@@ -328,121 +684,6 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
     if (!old) (gifBox ?? editor).after(el);
   };
 
-  // ---- Voice (its state is the document's, L)
-  const voiceParts = () => ({
-    idleHead: audioPanel?.querySelector<HTMLElement>(".js-message-header-default"),
-    recHead: audioPanel?.querySelector<HTMLElement>(".js-message-header-recording"),
-    timer: audioPanel?.querySelector<HTMLElement>(".js-chat__audio-record-timer"),
-    rec: audioPanel?.querySelector<HTMLButtonElement>(".b-float-panel__btn-record"),
-    stopIcon: audioPanel?.querySelector<HTMLElement>(".js-chat__audio-record-state-stop"),
-    recIcon: audioPanel?.querySelector<HTMLElement>(".js-chat__audio-record-state-rec"),
-  });
-  const voiceState = (recording: boolean) => {
-    const p = voiceParts();
-    p.idleHead?.classList.toggle("g-hidden", recording);
-    p.recHead?.classList.toggle("g-hidden", !recording);
-    p.stopIcon?.classList.toggle("g-hidden", !recording);
-    p.recIcon?.classList.toggle("g-hidden", recording);
-    if (p.timer) p.timer.textContent = ` ${clock(recording ? Date.now() - L.voiceAt : 0)} / ${clock(VOICE_MAX_MS)} `;
-  };
-  const closeVoice = (save: boolean) => {
-    win.clearInterval(L.voiceTick);
-    L.voice?.stop(save);
-    L.voice = null;
-    if (audioPanel) audioPanel.style.display = "none";
-    doc.body.classList.remove("open-panel");
-  };
-  const openVoice = () => {
-    if (!audioPanel) return;
-    audioPanel.style.display = "";
-    doc.body.classList.add("open-panel");
-    voiceState(false);
-  };
-  const startVoice = async () => {
-    const anchor = voiceBtn ?? editor;
-    L.asking = true;
-    const stream = await streamFor(win, "audio").finally(() => (L.asking = false));
-    if (L.dead || audioPanel?.style.display === "none") {
-      if (typeof stream !== "string") for (const t of stream.getTracks()) t.stop();
-      return;
-    }
-    if (typeof stream === "string") {
-      closeVoice(false);
-      return note(doc, anchor, stream, true);
-    }
-    L.voice = recorder(win, stream, "audio", (blob, type) => L.take([new File([blob], `voice-${Date.now()}.${/ogg/.test(type) ? "ogg" : /mp4/.test(type) ? "m4a" : "webm"}`, { type })]));
-    L.voice.start();
-    L.voiceAt = Date.now();
-    voiceState(true);
-    L.voiceTick = win.setInterval(() => {
-      if (Date.now() - L.voiceAt >= VOICE_MAX_MS) return closeVoice(true);
-      voiceState(true);
-    }, 250);
-  };
-
-  // ---- Video (its state is the document's, L)
-  const videoParts = () => ({
-    tech: videoBox?.querySelector<HTMLVideoElement>("video.vjs-tech"),
-    rec: videoBox?.querySelector<HTMLButtonElement>(".vjs-record-button"),
-    indicator: videoBox?.querySelector<HTMLElement>(".vjs-record-indicator"),
-    liveIcon: videoBox?.querySelector<HTMLElement>(".b-chat__videorec-live-icon"),
-    liveLabel: videoBox?.querySelector<HTMLElement>(".b-chat__videorec-live-label"),
-  });
-  const videoState = (recording: boolean) => {
-    const p = videoParts();
-    p.rec?.classList.toggle("vjs-icon-record-start", !recording);
-    p.rec?.classList.toggle("vjs-icon-record-stop", recording);
-    if (p.rec) {
-      p.rec.title = recording ? "Stop" : "Record";
-      const t = p.rec.querySelector(".vjs-control-text");
-      if (t) t.textContent = recording ? "Stop" : "Record";
-    }
-    p.indicator?.classList.toggle("vjs-hidden", !recording);
-    p.liveIcon?.classList.toggle("g-hidden", !recording);
-    p.liveLabel?.classList.toggle("g-hidden", !recording);
-  };
-  const closeVideo = (save: boolean) => {
-    win.clearTimeout(L.videoTimer);
-    if (L.video) L.video.stop(save);
-    else for (const t of L.videoStream?.getTracks() ?? []) t.stop();
-    L.video = null;
-    L.videoStream = null;
-    const p = videoParts();
-    if (p.tech) p.tech.srcObject = null;
-    videoState(false);
-    p.rec?.classList.add("vjs-hidden");
-    videoBox?.classList.add("g-hidden");
-  };
-  const openVideo = async () => {
-    const anchor = videoBtn ?? editor;
-    L.videoAsking = true;
-    const stream = await streamFor(win, "video").finally(() => (L.videoAsking = false));
-    if (L.dead) {
-      if (typeof stream !== "string") for (const t of stream.getTracks()) t.stop();
-      return;
-    }
-    if (typeof stream === "string") return note(doc, anchor, stream, true);
-    L.videoStream = stream;
-    const p = videoParts();
-    videoBox?.classList.remove("g-hidden");
-    p.rec?.classList.remove("vjs-hidden");
-    if (p.rec) p.rec.setAttribute("data-oi-wired", "");
-    if (p.tech) {
-      p.tech.muted = true;
-      p.tech.srcObject = stream;
-      void p.tech.play?.()?.catch?.(() => {});
-    }
-    videoState(false);
-  };
-  const toggleVideoRec = () => {
-    if (!L.videoStream) return;
-    if (L.video) return closeVideo(true);
-    L.video = recorder(win, L.videoStream, "video", (blob, type) => L.take([new File([blob], `video-${Date.now()}.${/mp4/.test(type) ? "mp4" : "webm"}`, { type })]));
-    L.video.start();
-    videoState(true);
-    L.videoTimer = win.setTimeout(() => closeVideo(true), VIDEO_MAX_MS);
-  };
-
   // ---- OF's rules between the tools
   const sync = () => {
     const d = draftOf();
@@ -509,37 +750,13 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
     }
     if (voiceBtn && t.closest(VOICE_BTN) === voiceBtn) {
       ev.preventDefault();
-      if (voiceBtn.disabled || !ready(voiceBtn)) return;
-      return openVoice();
-    }
-    if (audioPanel?.contains(t)) {
-      const p = voiceParts();
-      if (p.rec && t.closest(".b-float-panel__btn-record") === p.rec) {
-        ev.preventDefault();
-        if (L.voice) return closeVoice(true);
-        if (!L.asking) void startVoice();
-        return;
-      }
-      // The default header's Back and the recording header's close: nothing is kept.
-      if (t.closest("a[aria-label='Back'], .js-message-header-recording button")) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        return closeVoice(false);
-      }
+      if (voiceBtn.disabled || rec.busy("voice") || !audioPanel || !ready(voiceBtn)) return;
+      return rec.record("voice", voiceBtn);
     }
     if (videoBtn && t.closest(VIDEO_BTN) === videoBtn) {
       ev.preventDefault();
-      if (videoBtn.disabled || L.videoStream || L.videoAsking || !ready(videoBtn)) return;
-      void openVideo();
-      return;
-    }
-    if (videoBox && t.closest(".js-video-message-close") && videoBox.contains(t)) {
-      ev.preventDefault();
-      return closeVideo(false);
-    }
-    if (videoBox && t.closest(".vjs-record-button") && videoBox.contains(t)) {
-      ev.preventDefault();
-      return toggleVideoRec();
+      if (videoBtn.disabled || rec.busy("video") || !videoBox || !ready(videoBtn)) return;
+      return rec.record("video", videoBtn);
     }
   };
   const onInput = (ev: Event) => {
@@ -586,14 +803,7 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
     unbind() {
       win.clearTimeout(gifTimer);
       // A rebind of the same draft in this task keeps the recordings; otherwise they stop, nothing kept.
-      L.owners--;
-      queueMicrotask(() => {
-        if (L.owners > 0 || L.dead) return;
-        closeVoice(false);
-        closeVideo(false);
-        stopLive(win, L);
-        if (LIVE.get(doc) === L) LIVE.delete(doc);
-      });
+      rec.release();
       for (const type of DRAG) area?.removeEventListener(type, onDrag as EventListener);
       doc.removeEventListener("click", onClick, true);
       doc.removeEventListener("input", onInput);

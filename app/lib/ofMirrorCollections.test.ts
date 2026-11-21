@@ -81,7 +81,7 @@ const cardCtx = (uid: string): FanToolsContext => ({
 function listPage(h: CollectionsHandlers | null, lists: CollectionList[] = LISTS, page = "collections/user-lists/list") {
   const doc = load(page);
   applyData(doc, page, { list: "31", userLists: lists, listUsers: PEOPLE });
-  bindWrites(doc, page, null);
+  bindWrites(doc, page, null, true);
   bindCollections(doc, page, { lists, list: "31" }, h);
   return { doc };
 }
@@ -166,7 +166,7 @@ describe("Create new list", () => {
     const doc = load("collections/index");
     const h = handlers({ createList: vi.fn(() => Promise.reject(new Error("Name taken"))) });
     bindCollections(doc, "collections/index", { lists: null, list: null }, h);
-    bindWrites(doc, "collections/index", null);
+    bindWrites(doc, "collections/index", null, true);
     doc.querySelector<HTMLButtonElement>(CREATE_LIST)!.click();
     const input = field(doc);
     input.value = "Dupe";
@@ -195,7 +195,7 @@ describe("Create new list", () => {
 
   it("all models: Select a model, no dialog, no Read-only note", () => {
     const doc = load("collections/index");
-    bindWrites(doc, "collections/index", null);
+    bindWrites(doc, "collections/index", null, true);
     bindCollections(doc, "collections/index", { lists: null, list: null }, null);
     doc.querySelector<HTMLButtonElement>(CREATE_LIST)!.click();
     expect(noteText(doc)).toBe(SELECT_MODEL);
@@ -347,7 +347,7 @@ describe("a real user card's Lists", () => {
   it("a card cloned after binding is still wired at its click (never the Read-only note)", () => {
     const h = handlers();
     const doc = load("collections/user-lists/list");
-    bindWrites(doc, "collections/user-lists/list", null);
+    bindWrites(doc, "collections/user-lists/list", null, true);
     bindCollections(doc, "collections/user-lists/list", { lists: LISTS, list: "31" }, h);
     applyData(doc, "collections/user-lists/list", { list: "31", userLists: LISTS, listUsers: PEOPLE });
     doc.querySelector<HTMLButtonElement>(`[data-oi-user='201'] button[at-attr='add_to_list']`)!.click();

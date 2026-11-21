@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { applyData, DATA_PAGES, mirrorQuery, nextOffset, partsOf, rowsOf, pageRows, uniqueRows } from "./ofMirrorData";
 import { vaultMediaOf } from "./ofMirrorDataQueries";
-import { LIST_POSTS, listPostsPath, listSubline, postTypeOf } from "./ofMirrorDataLists";
+import { LIST_POSTS, listPostsPath, listSubline, postTypeOf, subscribersPath } from "./ofMirrorDataLists";
 import { toggleTile } from "./ofMirrorDom";
 import { TEMPLATES, type MirrorPost } from "./ofMirrorFeedsShared";
 import type { OFMessage, VaultMedia } from "./relay";
@@ -438,6 +438,17 @@ describe("applyData", () => {
     expect(cards[0].querySelector("a[href^='/of-manager/messages/chat']")!.getAttribute("href")).toBe("/of-manager/messages/chat?chat=201");
   });
 
+  // ticket 18: Fans' Expired tab is the page's ?type=expired; any other (or none) is OF's active subscribers.
+  it.each([
+    [null, "/api/of/v2/subscribers?type=active&limit=50"],
+    ["expired", "/api/of/v2/subscribers?type=expired&limit=50"],
+    ["active", "/api/of/v2/subscribers?type=active&limit=50"],
+    ["muted", "/api/of/v2/subscribers?type=active&limit=50"],
+    ["", "/api/of/v2/subscribers?type=active&limit=50"],
+  ])("Fans: ?type=%j reads %s", (type, path) => {
+    expect(subscribersPath(type)).toBe(path);
+  });
+
   it("Post Labels: the Creator's labels (name, posts), the open one marked and titled; its posts stay OF's empty state", () => {
     const doc = load("collections/post-labels/archived");
     const labels = [{ id: 7, name: "Beach", postsCount: 3 }, { id: 8, name: "Gym", postsCount: 0 }];
@@ -546,7 +557,7 @@ describe.each(["profile/index", "profile/state-more-menu"])("%s: the Creator's w
   it("a post's More click notes Read-only, calls nothing and is not marked wired", () => {
     const doc = load(p);
     applyData(doc, p, { posts: POSTS });
-    const unbind = bindWrites(doc, p, null); // its click fallback, in either scope
+    const unbind = bindWrites(doc, p, null, true); // its click fallback, in either scope
     const fetch = vi.spyOn(globalThis, "fetch");
     const more = posts(doc)[1].querySelector<HTMLButtonElement>(".b-post__tools__more button[aria-label='More']")!;
     more.click();
@@ -754,7 +765,7 @@ describe("collections/bookmarks/all: the Creator's bookmarked posts", () => {
     const doc = load(BOOKMARKS_PAGE);
     // The Creator's own bookmarked post (its More is OF's own-post menu; another's, or an unproven one's, is disabled).
     applyData(doc, BOOKMARKS_PAGE, { bookmarks: BOOKMARKS, templates: { post: POST_TPL }, me: { id: 51 } });
-    const unbind = bindWrites(doc, BOOKMARKS_PAGE, null);
+    const unbind = bindWrites(doc, BOOKMARKS_PAGE, null, true);
     const fetch = vi.spyOn(globalThis, "fetch");
     const more = marks(doc)[0].querySelector<HTMLButtonElement>(".b-post__tools__more button[aria-label='More']")!;
     more.click();
@@ -769,7 +780,7 @@ describe("collections/bookmarks/all: the Creator's bookmarked posts", () => {
 describe("collections/index: Create new list", () => {
   it("notes Read-only, calls nothing, carries no data-oi-wired, and stops with the unbind", () => {
     const doc = load("collections/index");
-    const unbind = bindWrites(doc, "collections/index", null);
+    const unbind = bindWrites(doc, "collections/index", null, true);
     const fetch = vi.spyOn(globalThis, "fetch");
     const create = doc.querySelector<HTMLButtonElement>("button[aria-label='Create new list']")!;
     create.click();

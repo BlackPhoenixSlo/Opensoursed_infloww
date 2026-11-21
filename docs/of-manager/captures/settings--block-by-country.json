@@ -1,0 +1,32 @@
+{
+  "id": "settings--block-by-country",
+  "section": "settings",
+  "label": "[INPUT]",
+  "pages": [
+    "settings/security/block_by_country"
+  ],
+  "phase": 3,
+  "source": "of-js",
+  "of_js": {
+    "bundle": "settings-country.js",
+    "symbol": "save()",
+    "evidence": "save() PUTs /users/me/settings/security {blockedCountries, blockedStates}, the whole lists; the picker reads GET /countries?all=1 [{code, name}]"
+  },
+  "request": {
+    "method": "PUT",
+    "path": "/api2/v2/users/me/settings/security",
+    "query": {},
+    "body": {
+      "blockedCountries": [
+        "AQ"
+      ],
+      "blockedStates": []
+    }
+  },
+  "proof": {
+    "kind": "live",
+    "verdict": "pass",
+    "evidence": "slop/evidence/20261121T141805Z-ofm-live-6507b42ae",
+    "undo": "undone"
+  }
+}

@@ -304,7 +304,7 @@ describe("Add to story (story strip)", () => {
       const d = load("profile/index");
       const addStory = vi.fn((_file: File) => Promise.resolve({}));
       const unbind = bindStory(d, single ? { addStory } : null);
-      const unbindWrites = bindWrites(d, "profile/index", null);
+      const unbindWrites = bindWrites(d, "profile/index", null, true);
       const [archive, create, live] = others(d);
       expect(archive.hasAttribute("data-oi-wired")).toBe(true);
       expect(create.disabled).toBe(true);

@@ -12,6 +12,9 @@ declare global {
       version?: string;
       /** Native OS notification (lib/osNotify); resolves true when it was shown. */
       notify?: (n: { id: string; title: string; body: string; href: string }) => Promise<boolean>;
+      /** Go live (ticket 127): open OnlyFans's own Go live page for this Creator in a desktop window. Only the id
+       *  crosses; `signIn` = the Relay had no session, so it opened OF's login page for a person to sign in. */
+      openGoLive?: (creatorId: string) => Promise<{ ok: boolean; signIn?: boolean; error?: string }>;
     };
   }
 }

@@ -1,0 +1,15 @@
+{
+ "id": "settings--streaming-copy-link",
+ "section": "settings",
+ "label": "Copy link",
+ "pages": [
+  "settings/streaming"
+ ],
+ "phase": 3,
+ "proof": {
+  "kind": "live",
+  "verdict": "pass",
+  "evidence": "slop/evidence/20261121T115303Z-ofm-live-bf521a5ba",
+  "undo": "none"
+ }
+}

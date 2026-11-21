@@ -1,0 +1,54 @@
+{
+ "id": "collections--post-labels-tabs-page",
+ "section": "collections",
+ "label": "Post-labels extra tabs",
+ "pages": [
+  "/my/collections/post-labels"
+ ],
+ "phase": "P2 s49",
+ "source": "live",
+ "of_rev": "202611201129-df73dce944",
+ "captured": "2026-11-21",
+ "request": {
+  "method": "GET",
+  "path": "/api2/v2/users/{creator}/posts",
+  "query": {
+   "limit": "10",
+   "order": "publish_date_desc",
+   "skip_users": "all",
+   "format": "infinite",
+   "label": "<label id | archived | private_archived>",
+   "counters": "1"
+  },
+  "content_type": null,
+  "body": null
+ },
+ "response": {
+  "status": 200,
+  "keys": [
+   "counters",
+   "hasMore",
+   "headMarker",
+   "list",
+   "tailMarker"
+  ]
+ },
+ "facts": {
+  "tabs": [
+   "Archive",
+   "Private Archive",
+   "1.Label",
+   "AIimage"
+  ],
+  "label_list_read": "GET /api2/v2/labels?offset=0&limit=10",
+  "access": "read: only GETs were sent, no write",
+  "capture_verdict": "pass",
+  "capture_undo": "none",
+  "live_proof_on_app": "pending: only an app Live proof run writes record.proof (D1)"
+ },
+ "evidence": [
+  "r03-post-labels-private-archive.html",
+  "r03-post-labels-1-label.html",
+  "r03-post-labels-aiimage.html"
+ ]
+}

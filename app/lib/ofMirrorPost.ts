@@ -67,7 +67,10 @@
  * whose Save sends POST /api/of/v2/labels {name} and picks the new label. The Relay maps these names to OF's own keys.
  *
  * OF's own tools: the Format text panel (bindFormat: Bold, Italic, Text Color, Clear Formatting, Text Size; the post text is
- * then OF's composer markup, ofMirrorFormat), Record video and Record voice (a "not supported here" popup), the poll and
+ * then OF's composer markup, ofMirrorFormat), Record video and Record voice (the chat composer's recorders,
+ * ofMirrorComposer's recordSession, in OF's recorder markup, which Home borrows from New post's
+ * capture; the File goes up as Add media's and joins the draft; OFM_NEW_WRITES_ENABLED off, ofMirrorNewWrites: Home's
+ * stay as captured, disabled with the Not-yet title, and New post's open the "not supported here" popup), the poll and
  * quiz drag handles, the tag dialog's search, Sort, Release form tab, row More and Invite new user, the vault dialog's folder
  * Search and Sort and media Sort, ADD LABELS' Sort and the right column's search (bindFeedSearch: OF's users and posts
  * search, each result a link to its OF Manager page). Sort menus are ofMirrorMenu's.
@@ -81,22 +84,24 @@ import { relay, toChoice, type TaggedFriendUser, type TaggedFriendUsersResp, typ
 import { proxyImage } from "@/lib/mediaUrl";
 import { mirrorQuery, plain, rowsOf } from "@/lib/ofMirrorData";
 import { VAULT_LISTS, vaultMediaOf } from "@/lib/ofMirrorDataQueries";
-import { linkUser, toggleTile, userHref } from "@/lib/ofMirrorDom";
+import { floatLabel, linkUser, toggleTile, userHref } from "@/lib/ofMirrorDom";
 import { sortOfFolders } from "@/hooks/useVaultCache";
 import { HOME_VAULT, homeDraft, VAULT_DIALOG } from "@/lib/ofMirrorRow";
 import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
-import { floatLabel } from "@/lib/ofMirrorSettings";
 import { FIELDS, LIST_SORTS, markTypeTabs, TYPES, vaultHref, viewOf } from "@/lib/ofMirrorVault";
 import { applyFormat, COLORS, hasFormatting, ofHtml, setOfHtml, SIZES, type FormatCommand } from "@/lib/ofMirrorFormat";
 import { formatAtCaret, tidy } from "@/lib/ofRichTextEditor";
 import { closeMenu, ORDER_GROUP, showMenu } from "@/lib/ofMirrorMenu";
 import { GREY, localIso, message, note, NOTE_STYLE, QUEUE, READ_ONLY, schedulePill, SELECT_MODEL, textOf } from "@/lib/ofMirrorWrites";
+import { markNotYet, markWired } from "@/lib/ofMirrorTooltip";
 import { useAgencyZone, wallClock } from "@/lib/ofMirrorFeedsShared";
 import { ofPrice } from "@/lib/ofMirrorPostCard";
 import { bindSchedule, clearDraft, clock, collectPost, COMPOSER, type CreatePostBody, draftOf, EMPTY_TEXT, keepOf, loadDraft, mergeSendWith, MONTHS, type PostContext, type PostDraft, type PostHandlers, type PriceLimits, saveDraft, type SearchPost, type SearchUser, type UploadsInFlight, VOTING_DAYS, WEEKDAYS } from "@/lib/ofMirrorPostDraft";
 import { bindLabels, bindTags, labelsOf, type PostLabelsResp, tagsRoute, type TagView, tagViewOf } from "@/lib/ofMirrorPostTags";
 import { refetchOwnStories, vaultStoryBody, type VaultStoryBody } from "@/lib/ofMirrorStory";
 import { lock, RECORD_POPUP, recordPopup, toast } from "@/lib/ofMirrorToast";
+import { useOfmNewWrites } from "@/lib/ofMirrorNewWrites";
+import { recordSession, refusedAudio, voiceFile, type TakeRecording } from "@/lib/ofMirrorComposer";
 
 /** Split out of this file; importers keep importing them from here. */
 export { clearDraft, collectPost, collectSchedule, type CreatePostBody, draftKey, loadDraft, mergeSendWith, type PostContext, type PostDraft, type PostHandlers, type PriceLimits, renderCalendar, saveDraft, type SearchPost, type SearchUser, type UploadsInFlight, type Voting } from "@/lib/ofMirrorPostDraft";
@@ -147,6 +152,7 @@ const NO_EXTRAS: Partial<PostDraft> = {
   fund_raising_target: undefined,
   label_ids: undefined,
   price: undefined,
+  upload_failed: undefined,
 };
 /** OF's composer editor and its Post button (every new-post page has both). */
 const EDITOR = "[contenteditable][aria-label='Textbox field']";
@@ -788,14 +794,14 @@ export function bindVaultTools(
  * `media_files` (`mergeSendWith`), each entry with a thumb from the file's object URL, made in the app's window (the
  * frame's document is replaced on every State page). The picker is cleared so the same file can be picked again, and
  * further picks are allowed while one uploads; `uploading` is told when each upload starts (+1) and settles (-1).
- * A refused upload (`ready` not true) or a thrown one shows a red "Could not upload: …" note and attaches nothing.
- * Returns an unbind, which removes the picker.
+ * A refused upload (`ready` not true) or a thrown one shows a red "Could not upload: …" note, attaches nothing and is
+ * kept on the draft (`mediaTaker`). Returns an unbind, which removes the picker.
  */
 export function bindAddMedia(
   doc: Document,
   ctx: { handlers: Pick<PostHandlers, "upload"> | null; accountId: string | null },
-  media: () => Pick<PostDraft, "media_files" | "thumbs">,
-  update: (patch: Pick<PostDraft, "media_files" | "thumbs">) => void,
+  media: () => TakenMedia,
+  update: (patch: Partial<TakenMedia>) => void,
   uploading: (n: 1 | -1) => void,
   /** The note when nothing can be sent (`ctx.handlers` null): All-Creators scope's by default. */
   none: string = SELECT_MODEL,
@@ -837,37 +843,62 @@ export function bindAddMedia(
   };
 }
 
+/** What Add media's uploads read and write on a draft (a post's, a chat's, a mass message's). */
+type TakenMedia = Pick<PostDraft, "media_files" | "thumbs" | "upload_failed">;
+/** Which media a failed upload was (a recording's kind, else the file's name): its re-upload forgets the failure. */
+export const mediaKey = (file: File) => /^(voice|video)-\d+\./.exec(file.name)?.[1] ?? file.name;
+/** The draft's failed uploads with `key` failed for `why`, or forgotten (no `why`); undefined once none are left. */
+function failedWith(failed: Record<string, string> | undefined, key: string, why?: string) {
+  const next = { ...failed };
+  if (why) next[key] = why;
+  else delete next[key];
+  return Object.keys(next).length ? next : undefined;
+}
+/** The confirm before a send while the draft has failed uploads: OK sends without them, Cancel sends nothing. */
+export const uploadFailed = (failed: Record<string, string>) => `Upload failed: ${[...new Set(Object.values(failed))].join("; ")}. Send without it?`;
+
 /**
  * Add media's upload of `files` (a pick, a drop, a recording): each file goes to POST /api/of/v2/upload, one after
- * another (the draft keeps their order), and an accepted upload's `send_with` is appended to the draft's `media_files`
- * with a thumb from the file's object URL; `done` is told of each attached file. Every file counts as in flight
- * (`uploading`) from the start. A refused or failed upload shows a red "Could not upload: …" note after `anchor` and
- * attaches nothing. No `ctx.handlers` (or no files): nothing is sent.
+ * another (the draft keeps their order), audio OF's upload refuses re-encoded to WAV first (`voiceFile`), and an
+ * accepted upload's `send_with` is appended to the draft's `media_files` with a thumb from the file's object URL;
+ * `done` is told of each attached file. Every file counts as in flight (`uploading`) from the start. A refused, failed
+ * or undecodable upload shows a red "Could not upload: …" note after `anchor`, attaches nothing, and is kept on the
+ * draft's `upload_failed` by `mediaKey` (live 2026-11-21: a refused voice note was followed by a text-only post; the
+ * send now asks first, `uploadFailed`); the same media's accepted upload forgets it. No `ctx.handlers` (or no files):
+ * nothing is sent.
  */
 export function mediaTaker(
   doc: Document,
   anchor: Element,
   ctx: { handlers: Pick<PostHandlers, "upload"> | null; accountId: string | null },
-  media: () => Pick<PostDraft, "media_files" | "thumbs">,
-  update: (patch: Pick<PostDraft, "media_files" | "thumbs">) => void,
+  media: () => TakenMedia,
+  update: (patch: Partial<TakenMedia>) => void,
   uploading: (n: 1 | -1) => void,
   done?: (file: File) => void,
 ): (files: File[]) => void {
-  const send = (file: File) =>
-    ctx
-      .handlers!.upload(file)
+  const send = (file: File) => {
+    const key = mediaKey(file);
+    const fail = (why: string) => {
+      update({ upload_failed: failedWith(media().upload_failed, key, why) });
+      note(doc, anchor, `Could not upload: ${why}`, true);
+    };
+    const upload = (up: File) => ctx.handlers!.upload(up).then((r) => ({ ...r, up }));
+    // Anything but refused audio goes up at once (as before); refused audio once re-encoded.
+    return (refusedAudio(file) ? voiceFile(file).then(upload) : upload(file))
       .then(
-        ({ ready, send_with, note: why }) => {
-          if (ready !== true) return note(doc, anchor, `Could not upload: ${why || "upload not ready"}`, true);
-          if (!send_with.length) return;
-          const { media_files, thumbs } = media();
-          const thumb = proxyImage(URL.createObjectURL(file), ctx.accountId);
-          update({ media_files: mergeSendWith(media_files, send_with), thumbs: [...thumbs, ...send_with.map(() => thumb)] });
-          done?.(file);
+        ({ ready, send_with, note: why, up }) => {
+          if (ready !== true) return fail(why || "upload not ready");
+          const { media_files, thumbs, upload_failed } = media();
+          const kept = { upload_failed: failedWith(upload_failed, key) };
+          if (!send_with.length) return update(kept);
+          const thumb = proxyImage(URL.createObjectURL(up), ctx.accountId);
+          update({ media_files: mergeSendWith(media_files, send_with), thumbs: [...thumbs, ...send_with.map(() => thumb)], ...kept });
+          done?.(up);
         },
-        (e) => note(doc, anchor, `Could not upload: ${message(e)}`, true),
+        (e) => fail(message(e)),
       )
       .finally(() => uploading(-1));
+  };
   return (files) => {
     if (!files.length || !ctx.handlers) return;
     // Every file counts as in flight at once (Post waits for all); they upload one after another.
@@ -1000,6 +1031,7 @@ const DIALOGS: Record<string, DialogBinder> = {
 
 /** The composer's Record video and Record voice buttons. */
 const RECORD = "button.b-chat__video-record-btn, button[aria-label='Record voice']";
+const RECORD_VIDEO = "button.b-chat__video-record-btn";
 
 /** The right column's search box (OF's "Search users or posts"), its submit, and the results list under it. */
 const FEED_SEARCH = "input[name='feed-search-input']";
@@ -1013,17 +1045,28 @@ export function searchHref(kind: "user" | "post", item: SearchUser | SearchPost,
 }
 
 /** A search response's rows: a bare array, or OF's `{list}` / `{items}`. */
-const rowsIn = <T,>(r: unknown): T[] => (Array.isArray(r) ? (r as T[]) : ((r as { list?: T[]; items?: T[] } | null)?.list ?? (r as { items?: T[] } | null)?.items ?? []));
+export const rowsIn = <T,>(r: unknown): T[] => (Array.isArray(r) ? (r as T[]) : ((r as { list?: T[]; items?: T[] } | null)?.list ?? (r as { items?: T[] } | null)?.items ?? []));
+
+/** The aside's Search users or posts handlers (Home, Notifications): OF's users and posts searches, 5 of each. */
+export type FeedSearchHandlers = Required<Pick<PostHandlers, "searchUsers" | "searchPosts">>;
+export function feedSearchHandlers(accountId: string | null): FeedSearchHandlers {
+  return {
+    searchUsers: (q) => relay.get<SearchUser[]>(`/api/of/v2/users/search?q=${encodeURIComponent(q)}&limit=5`, { accountId }),
+    searchPosts: (q) => relay.get<SearchPost[]>(`/api/of/v2/posts/search?query=${encodeURIComponent(q)}&limit=5`, { accountId }),
+  };
+}
 
 /**
  * Wire the right column's search (New post's and Home's): typing (400 ms after it stops) runs OF's users search and posts
  * search, and a list under the box shows "Users" and "Posts" rows, each a link to its OF profile or My profile (searchHref); the
  * submit (Enter or the search button) runs it at once and never reloads the frame; an empty box clears the list.
- * All-Creators: the select-a-model note. Returns an unbind.
+ * All-Creators: the select-a-model note. Notifications' aside (ticket 17) and the stream schedule form's (ticket 84) too:
+ * their box comes disabled and is enabled here. Returns an unbind.
  */
-function bindFeedSearch(doc: Document, ctx: PostContext): () => void {
+export function bindFeedSearch(doc: Document, ctx: { handlers: Pick<PostHandlers, "searchUsers" | "searchPosts"> | null; meId?: number | string }): () => void {
   const input = doc.querySelector<HTMLInputElement>(FEED_SEARCH);
   if (!input) return () => {};
+  input.disabled = false; // the schedule form's and Notifications' asides come baked disabled
   const form = input.closest("form");
   const submit = form?.querySelector<HTMLButtonElement>("button[type='submit']") ?? null;
   for (const el of [input, submit, form]) el?.setAttribute("data-oi-wired", "");
@@ -1104,6 +1147,54 @@ function bindFeedSearch(doc: Document, ctx: PostContext): () => void {
     doc.removeEventListener("input", onInput);
     doc.removeEventListener("submit", onSubmit);
     results()?.remove();
+  };
+}
+
+/** New post's Record video and Record voice: OF records in the browser, which the mirror does not (the popup says so). Returns an unbind. */
+function bindRecordPopup(doc: Document): () => void {
+  const records = [...doc.querySelectorAll<HTMLButtonElement>(RECORD)];
+  // As captured (enabled, untitled); again so after the switch flips off over bindRecorder's unbind.
+  for (const b of records) markWired(b, true);
+  const onRecord = (ev: Event) => {
+    ev.preventDefault();
+    const b = ev.currentTarget as HTMLButtonElement;
+    b.setAttribute("aria-expanded", "true");
+    recordPopup(doc, () => b.removeAttribute("aria-expanded"));
+  };
+  for (const b of records) b.addEventListener("click", onRecord);
+  return () => {
+    for (const b of records) b.removeEventListener("click", onRecord);
+    doc.getElementById(RECORD_POPUP)?.remove();
+  };
+}
+
+/**
+ * Record video and Record voice (Home and New post) as the chat composer's recorders, its File going to `take` (Add
+ * media's upload). Home's captures have them disabled with the Not-yet title: enabled here, the title dropped (D1: Live
+ * proofs p2.record-video and p2.record-voice passed, docs/of-manager/captures/home--record-video.json,
+ * home--record-voice.json); unbound, Not yet again (New post's popup re-enables its own). No Creator picked (`selected`
+ * false): a click says so. Returns an unbind.
+ */
+function bindRecorder(doc: Document, key: string, take: TakeRecording, selected: boolean): () => void {
+  const records = [...doc.querySelectorAll<HTMLButtonElement>(RECORD)];
+  for (const b of records) markWired(b, true);
+  // One Record at a time; a rebind of the same draft keeps it going, its File going to this (the latest) bind's upload.
+  const rec = recordSession(doc, key, take);
+  const onRecord = (ev: Event) => {
+    ev.preventDefault();
+    const b = ev.currentTarget as HTMLButtonElement;
+    if (!selected) return note(doc, b, SELECT_MODEL);
+    if (b.disabled || rec.busy()) return;
+    rec.record(b.matches(RECORD_VIDEO) ? "video" : "voice", b, true);
+  };
+  for (const b of records) b.addEventListener("click", onRecord);
+  return () => {
+    for (const b of records) {
+      b.removeEventListener("click", onRecord);
+      markNotYet(b);
+    }
+    // A rebind of the same draft in this task keeps a recording going (its File goes to that bind); otherwise it stops.
+    rec.release();
   };
 }
 
@@ -1314,6 +1405,9 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
     if (post.disabled) return;
     const body = collectPost(textOf(editor), { ...draftOf(ctx), html: html() });
     if (typeof body === "string") return note(doc, post, body, true);
+    // A failed upload's media would be missing: OK posts without it (a successful send forgets it), Cancel keeps everything.
+    const failed = draftOf(ctx).upload_failed;
+    if (failed && !(handlers.confirm?.(uploadFailed(failed)) ?? false)) return;
     const editing = draftOf(ctx).edit_id;
     // An edited post with no date and not saved for later goes out at once: OF asks too (confirm_post_right_now).
     if (editing && !body.posted_at && !body.save_for_later && !(handlers.confirm?.(PUBLISH_EDITED) ?? false)) return;
@@ -1348,16 +1442,15 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
   // A poll's duration opens the period dialog only straight from its panel.
   if (!page.endsWith(`/${PERIOD_PAGE}`) && draftOf(ctx).period_for) update({ period_for: undefined });
   const unbindDialog = Object.hasOwn(DIALOGS, page) ? DIALOGS[page](doc, ctx, update, page) : () => {};
-  // New post's Record video and Record voice: OF records in the browser, which the mirror does not (the popup says so).
-  const records = home ? [] : [...doc.querySelectorAll<HTMLButtonElement>(RECORD)];
-  for (const b of records) b.setAttribute("data-oi-wired", "");
-  const onRecord = (ev: Event) => {
-    ev.preventDefault();
-    const b = ev.currentTarget as HTMLButtonElement;
-    b.setAttribute("aria-expanded", "true");
-    recordPopup(doc, () => b.removeAttribute("aria-expanded"));
-  };
-  for (const b of records) b.addEventListener("click", onRecord);
+  // Record video and Record voice: OFM_NEW_WRITES_ENABLED on (ctx.newWrites), the chat composer's recorders (Home and
+  // New post); off, as main: New post's open the "not supported here" popup and Home's stay as captured (Not yet; after a
+  // flip off, bindRecorder's unbind put them back).
+  const unbindRecord =
+    ctx.newWrites
+      ? bindRecorder(doc, ctx.draftId ?? ctx.accountId ?? "", (files, anchor) => mediaTaker(doc, anchor, ctx, () => draftOf(ctx), update, uploading)(files), !!handlers)
+      : home
+        ? () => {}
+        : bindRecordPopup(doc);
   const unbindSearch = bindFeedSearch(doc, ctx);
   // Every composer page: the State pages' toolbar sits under their panel, and OF's Add media works there too.
   const unbindAddMedia = bindAddMedia(doc, ctx, () => draftOf(ctx), update, uploading, SELECT_MODEL, POST_PICK);
@@ -1367,8 +1460,7 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
   return () => {
     if (flight.refresh === refresh) flight.refresh = undefined;
     doc.getElementById(POST_AS)?.remove();
-    for (const b of records) b.removeEventListener("click", onRecord);
-    doc.getElementById(RECORD_POPUP)?.remove();
+    unbindRecord();
     unbindSearch();
     unbindDialog();
     unbindAddMedia();
@@ -1408,7 +1500,8 @@ export function bindActionsOverflow(doc: Document): () => void {
     more.remove();
   };
   const layout = () => {
-    closeMenu(doc);
+    // Only More's own menu (its rows change): a resize must not close another menu just opened (Text Color's, ticket 132).
+    if (more.getAttribute("aria-expanded") === "true") closeMenu(doc);
     restore();
     if (actions.offsetWidth <= box.clientWidth) return;
     btns.append(more);
@@ -1498,6 +1591,7 @@ export function useOfPost(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const meId = me?.id ?? undefined;
   const tagKey = JSON.stringify(tagView);
   const sortKey = JSON.stringify([labelSort, folderSort]);
+  const newWrites = useOfmNewWrites(!!path); // OFM_NEW_WRITES_ENABLED off: Record video and Record voice stay as on main
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -1517,8 +1611,7 @@ export function useOfPost(frameRef: RefObject<HTMLIFrameElement | null>, src: st
         sortFolders: (sort, order) => sortOfFolders(accountId!, { sort, order }).then(refetch(VAULT_LISTS)),
         toggleTag: (body) => relay.patch("/api/of/v2/release-forms/toggle-show", body, { accountId }),
         inviteGuest: (name) => relay.post("/api/of/v2/guests", { name }, { accountId }),
-        searchUsers: (q) => relay.get<SearchUser[]>(`/api/of/v2/users/search?q=${encodeURIComponent(q)}&limit=5`, { accountId }),
-        searchPosts: (q) => relay.get<SearchPost[]>(`/api/of/v2/posts/search?query=${encodeURIComponent(q)}&limit=5`, { accountId }),
+        ...feedSearchHandlers(accountId),
       };
       unbind = doc?.body
         ? bindPost(doc, path, {
@@ -1540,6 +1633,7 @@ export function useOfPost(frameRef: RefObject<HTMLIFrameElement | null>, src: st
             tagView: JSON.parse(tagKey) as TagView,
             labelSort: sorts[0] ?? undefined,
             folderSort: sorts[1] ?? undefined,
+            newWrites,
           })
         : undefined;
     };
@@ -1549,6 +1643,6 @@ export function useOfPost(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       frame.removeEventListener("load", bind);
       unbind?.();
     };
-  }, [frameRef, src, path, accountId, draftId, qc, createPost, savePost, createLabel, addVaultStory, router, tagItems, labelItems, vaultItems, params, priceLimits, postAs, zone, meId, tagKey, sortKey]);
+  }, [frameRef, src, path, accountId, draftId, qc, createPost, savePost, createLabel, addVaultStory, router, tagItems, labelItems, vaultItems, params, priceLimits, postAs, zone, meId, tagKey, sortKey, newWrites]);
 }
 
