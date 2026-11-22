@@ -534,6 +534,8 @@ describe("Full AI Chat page › Test chat", () => {
 
 // ── Settings column (ticket 39) ──────────────────────────────────────────────────────────────────────────────────
 const putCalls = () => relayPut.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/config/draft");
+/** The first draft write; under a loaded run it can land after the click's act() settles. */
+const firstPut = () => waitFor(() => { expect(putCalls().length).toBeGreaterThan(0); return putCalls()[0][1]; });
 const postsTo = (path: string) => relayPost.mock.calls.filter((c) => String(c[0]) === path);
 const AUDIENCE = "/admin/full-ai/config/audience";
 const blockers = () => screen.queryByRole("list", { name: "Live blockers" });
@@ -669,7 +671,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(sendBtn().disabled).toBe(false);
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "GIFs" })); });
     expect(putCalls().length).toBe(1);
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true }, rev: 3 });
+    expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true }, rev: 3 });
     expect(sendBtn().disabled).toBe(true);
     expect(screen.getAllByText("Saving draft…").length).toBe(2);   // the settings column's status and Send's block
     await act(async () => { store(configBody({ draft: { ...CONFIG, gifs: true }, rev: 4 })); });
@@ -686,7 +688,7 @@ describe("Full AI Chat page › Settings", () => {
     await loadedConfig();
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Typos" })); });
     const style = { texting: true, nonnative: true, spacing: true, typos: false, painful: true };
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, text_style: undefined, style }, rev: 3 });
+    expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, text_style: undefined, style }, rev: 3 });
     await waitFor(() => expect(settings().getByRole("switch", { name: "Typos" }).getAttribute("aria-checked")).toBe("false"));
     expect(settings().getByRole("switch", { name: "Human style" }).getAttribute("aria-checked")).toBe("true");
     expect(settings().getByText("Mixed: typos off. Tap for all off.")).toBeTruthy();
@@ -702,7 +704,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(putCalls().length).toBe(0);
     expect(box().value).toBe("");
     await act(async () => { fireEvent.change(box(), { target: { value: "30" } }); fireEvent.blur(box()); });
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, typo_pct: 30 }, rev: 3 });
+    expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, typo_pct: 30 }, rev: 3 });
     await waitFor(() => expect(box().value).toBe("30"));
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Typos" })); });
     await waitFor(() => expect(settings().queryByRole("spinbutton", { name: "Typos %" })).toBeNull());
@@ -717,7 +719,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(putCalls().length).toBe(0);
     expect(box().value).toBe("");
     await act(async () => { fireEvent.change(box(), { target: { value: "25" } }); fireEvent.blur(box()); });
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true, gif_pct: 25 }, rev: 3 });
+    expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true, gif_pct: 25 }, rev: 3 });
     await waitFor(() => expect(box().value).toBe("25"));
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "GIFs" })); });
     await waitFor(() => expect(settings().queryByRole("spinbutton", { name: "GIFs %" })).toBeNull());
@@ -732,7 +734,7 @@ describe("Full AI Chat page › Settings", () => {
     mountSettings();
     await loadedConfig();
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name })); });
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, ...patch }, rev: 3 });
+    expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, ...patch }, rev: 3 });
   });
 
   it.each<[string, string, Record<string, unknown>]>([
@@ -742,7 +744,7 @@ describe("Full AI Chat page › Settings", () => {
     mountSettings();
     await loadedConfig();
     await act(async () => { fireEvent.click(within(settings().getByRole("radiogroup", { name: group })).getByRole("radio", { name: radio })); });
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, ...patch }, rev: 3 });
+    expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, ...patch }, rev: 3 });
   });
 
   it("Top spend limit: shows dollars, stores cents on blur through the audience write (never the draft), 0 = no limit, empty / bad snaps back", async () => {
@@ -851,7 +853,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(["euryale-v2.3", "hermes-4-405b", "deepseek-v4-flash"].map((m) => box(m).checked)).toEqual([true, true, false]);
     expect(settings().getByText("#2")).toBeTruthy();
     await act(async () => { fireEvent.click(box("deepseek-v4-flash")); });
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a",
+    expect(await firstPut()).toEqual({ account_id: "acc-a",
       draft: { ...CONFIG, writers: ["euryale-v2.3", "hermes-4-405b", "deepseek-v4-flash"] }, rev: 3 });
     await waitFor(() => expect(box("deepseek-v4-flash").checked).toBe(true));
     expect(win("Draft").getByText("Writers euryale-v2.3 → hermes-4-405b → deepseek-v4-flash")).toBeTruthy();
@@ -987,7 +989,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(JSON.parse(box.value)).toEqual(CONFIG);
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, writer_timeout_s: 1 }) } });
     await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save draft" })); });
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, writer_timeout_s: 1 }, rev: 3 });
+    expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, writer_timeout_s: 1 }, rev: 3 });
     expect(await within(screen.getByRole("dialog")).findByText(/writer_timeout_s: must be a number of seconds from 5 to 60/)).toBeTruthy();
     fireEvent.change(box, { target: { value: JSON.stringify({ ...CONFIG, writer_timeout_s: 30 }) } });
     await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save draft" })); });
@@ -1057,7 +1059,7 @@ describe("Full AI Chat page › applied draft", () => {
     expect(sendBtn().disabled).toBe(false);
     expect(btn("Make draft live").disabled).toBe(false);
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "GIFs" })); });
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...slower, gifs: true }, rev: 4 });
+    expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...slower, gifs: true }, rev: 4 });
   });
 
   it("with an unsaved edit, raises Keep mine / Take theirs and keeps the page's draft; Send and Save off", async () => {
@@ -1204,7 +1206,7 @@ describe("Full AI Chat page › Selling settings", () => {
     mountSell();
     await loadedConfig();
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "Sell" })); });
-    expect(putCalls()[0][1]).toEqual({ account_id: "acc-a", draft: { ...CONFIG, folders: FOLDERS, sell_on: true }, rev: 3 });
+    expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, folders: FOLDERS, sell_on: true }, rev: 3 });
   });
 
   it("the Sell settings group shows only with Sell on: eight switches, all on by default; a click stores its off value", async () => {
@@ -1258,7 +1260,7 @@ describe("Full AI Chat page › Selling settings", () => {
     expect(dialog.getByText("pick at least one folder, or All")).toBeTruthy();
     fireEvent.click(dialog.getByRole("checkbox", { name: /AI-lingerie/ }));
     await act(async () => { fireEvent.click(dialog.getByRole("button", { name: "Save" })); });
-    expect(putCalls()[0][1]).toEqual({
+    expect(await firstPut()).toEqual({
       account_id: "acc-a", draft: { ...CONFIG, folders: { include: ["vf:4"], exclude: ["of:9"] } }, rev: 3,
     });
     expect(screen.queryByRole("dialog")).toBeNull();

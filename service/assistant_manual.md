@@ -29,8 +29,10 @@ The sidebar, top to bottom:
   Customs, Posts, My Feed and Top Posts. The customs queue is **Analytics →
   Message dashboard → Customs**.
 - **Messages Pro** — the chat workspace. It opens in a window of its own.
-- **Growth** — Smart Messages, Smart lists, Auto-follow, Vault Pro, Scripts,
-  Profile promotion, Free trial links, Tracking links and Sensitive words.
+- **Vault Pro** — the vault manager: folders, media, Drive import and Describe
+  all (owner only).
+- **Growth** — Smart Messages, Smart lists, Auto-follow, Scripts, Profile
+  promotion, Free trial links, Tracking links and Sensitive words.
 - **Share for Share** — Discover creators, Requests, S4S schedule and S4S
   settings.
 - **My Automations** — Auto Mass, Auto Post, Auto Story, Auto Funnel and
@@ -66,7 +68,7 @@ There are two kinds of login: the **owner** (the agency's own account) and an
 **employee** (a login the owner made, with a role — a chatter, for example).
 
 An employee sees what their role grants. Out of the box an employee does
-**not** see Growth's owner pages (Smart lists, Auto-follow, Vault Pro, Profile
+**not** see Vault Pro or Growth's owner pages (Smart lists, Auto-follow, Profile
 promotion, Free trial links, Tracking links, Sensitive words), Share for Share,
 Creators or Employees. On Growth they keep **Smart Messages** and **Scripts**.
 They see **Get to know fans**; every My Automations page and **Auto-reply**
@@ -108,7 +110,7 @@ fans** rule and, where the owner switched it Live, **Full AI Chat**, and every A
 (**Growth → Scripts** is the saved script library chatters paste from, not an
 automation.)
 
-Describing media runs **on demand**: on **Growth → Vault Pro**, **Describe all**
+Describing media runs **on demand**: on **Vault Pro**, **Describe all**
 (or describing one item) has an image-reading AI write down what is in each
 photo or video. It sends nothing to fans, needs a DeepInfra key, and refuses to
 start once the account's daily AI cap is used up.
@@ -133,7 +135,7 @@ one.
 | A repeating `send_mass_message` rule | Operator-only. | Auto Mass; a one-off from Messages Pro → **+** → Mass message |
 | A run log, or a per-tick log of why a fan was or was not picked | There is no run log an owner can open; the deployment operator reads it. Nothing records a per-fan decision. | The checklist in "I turned it on and nothing happened" |
 | AI Chatter, AI Upseller, Tip Reward, tip requests, Make It Right | Removed. Older message rows can carry its label, **"AI Chatter"**. | Auto-reply and Get to know fans (see "Which autochat is which") |
-| 💸 PPV Library rotator, 🧠 Vault AI (arc teases, the daily vault reminder, applying approved items, the background describe sweep) | Removed. | Growth → Vault Pro → **Describe all**; Auto Post and Auto Mass to sell the vault |
+| 💸 PPV Library rotator, 🧠 Vault AI (arc teases, the daily vault reminder, applying approved items, the background describe sweep) | Removed. | **Describe all** on Vault Pro; Auto Post and Auto Mass to sell the vault |
 | **Restrict from automations**, the Restrictions list in Settings | Removed. A fan restricted that way earlier stays skipped. | "Stopping the bot on one fan" |
 | The MASSppvEXCLUDE list | Merged into MASSdmEXCLUDE on 2026-10-21. A MASSppvEXCLUDE list may still sit on OnlyFans; nothing reads it. | MASSdmEXCLUDE |
 | Auto-follow's like or "ping" (unfollow + re-follow) mode | Removed. A rule saved with one, or with no action, is skipped and does nothing. | Growth → Auto-follow (follow only) |
