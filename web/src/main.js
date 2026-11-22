@@ -125,3 +125,9 @@ for (const form of document.querySelectorAll("[data-auth-form]")) {
   const retype = code === "taken" || code === "reserved" || !username?.value ? username : password;
   retype?.focus();
 }
+
+// Chrome's smooth scroll to a load-time fragment (/#deploy from another page) stops short as images and the
+// video lay out; re-land it once the page has loaded.
+if (location.hash.length > 1) {
+  addEventListener("load", () => document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: "instant" }));
+}
