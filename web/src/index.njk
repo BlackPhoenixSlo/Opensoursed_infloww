@@ -403,6 +403,9 @@ ogDescription: "Two ways, both $0 a month: our hosted app is free for agencies u
   <code>git clone</code>, downloads the project's source folder. Docker Engine 25+
   with Compose 2.20+. (The network name comes from the maintainer's own Traefik setup; you don't need n8n.)
 </p>
+<div class="mx-auto mt-8 max-w-2xl [&_figcaption]:text-white/60">
+  {% set key = "install-walkthrough" %}{% set title = "" %}{% include "video-slot.njk" %}
+</div>
 {% endset %}
 {%- set deployCmd %}{% include "quickstart-cmd.njk" %}{% endset %}
 {%- set deployNotes %}
