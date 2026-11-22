@@ -126,6 +126,20 @@ for (const form of document.querySelectorAll("[data-auth-form]")) {
   retype?.focus();
 }
 
-// Smooth scrolling starts after load: Chrome's smooth scroll to a load-time fragment (/#deploy from another page)
-// stops short as images and the video lay out (measured 12202px short on live).
-addEventListener("load", () => document.documentElement.classList.add("smooth-scroll"));
+// The demo app focuses an input on load, and a focused iframe scrolls the page to itself. Loading it only once a
+// visitor has stopped on it keeps a smooth scroll passing through (e.g. to /#deploy) from being yanked back.
+const demoFrame = document.querySelector("iframe[data-src]");
+if (demoFrame) {
+  let timer;
+  new IntersectionObserver(
+    ([entry], observer) => {
+      clearTimeout(timer);
+      if (!entry.isIntersecting) return;
+      timer = setTimeout(() => {
+        demoFrame.src = demoFrame.dataset.src;
+        observer.disconnect();
+      }, 400);
+    },
+    { threshold: 0.2 },
+  ).observe(demoFrame);
+}
