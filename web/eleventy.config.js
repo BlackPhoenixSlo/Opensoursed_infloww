@@ -81,12 +81,18 @@ export default function (eleventyConfig) {
   eleventyConfig.addPassthroughCopy({ "src/main.js": "assets/main.js" });
   // The host caches /assets/* for a week, so base.njk appends ?v=<hash of both files>: a deploy that
   // changes them changes the URL (else old CSS lingers, e.g. the #demo iframe fell back to 150px).
+  // `build` runs Tailwind first, so a missing main.css there is a broken build: fail. `dev` starts both at
+  // once (the CSS may not exist yet): warn and use a throwaway version.
   eleventyConfig.addGlobalData("assetVersion", () => {
     const hash = createHash("sha256");
     for (const file of ["./dist/assets/main.css", "./src/main.js"]) {
       try {
         hash.update(readFileSync(new URL(file, import.meta.url)));
-      } catch {
+      } catch (err) {
+        if (process.env.ELEVENTY_RUN_MODE === "build") {
+          throw new Error(`assetVersion: ${file} missing (run Tailwind before eleventy: pnpm build)`, { cause: err });
+        }
+        console.warn(`[assetVersion] ${file} missing: using a throwaway version (fine while dev starts)`);
         hash.update(String(Date.now()));
       }
     }
