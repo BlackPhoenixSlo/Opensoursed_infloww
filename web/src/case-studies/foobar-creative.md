@@ -5,8 +5,8 @@ date: 2026-10-12
 agency: "Foobar Creative"
 tagline: "Eighteen chatters, a five-criterion rubric, and one coaching conversation a week."
 stats:
-  - value: "$0"
-    label: "Per creator per month x 30 creators = $0"
+  - value: "$0/m"
+    label: "Per creator per month x 30 creators = $0/m"
   - value: "10"
     label: "Threads reviewed per chatter per week"
   - value: "5"

@@ -69,4 +69,4 @@ Every stream has a cost. Ours is the one that rounds to zero.
 
 For agencies running photo-only creators, the Message dashboard (`/analytics/message-dashboard`) logs PPV and tips, and Creator reports (`/analytics/creator-reports`) show revenue per creator, so you can see which themes sell.
 
-> **The pitch.** Photos are cheaper to make than video, and Inflowwww is cheaper to run than either: $0 per creator, MIT-licensed, and self-hosted with Docker Compose. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Photos are cheaper to make than video, and Inflowwww is cheaper to run than either: $0 a month per creator, MIT-licensed, and self-hosted with Docker Compose. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -69,7 +69,7 @@ A team that shares its best lines writes faster and sounds more like the creator
 
 ## The one sure saving
 
-Inflowwww is $0 per creator per month, at any earnings level. Your costs are the server and, if you choose to add them, optional LLM provider keys billed by the provider.
+Inflowwww is $0 a month per creator, at any earnings level. Your costs are the server and, if you choose to add them, optional LLM provider keys billed by the provider.
 
 We will not tell you the tool raises revenue. We can tell you the software line goes to zero, and you can check that yourself.
 

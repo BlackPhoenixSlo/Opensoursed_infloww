@@ -51,4 +51,4 @@ Then diagnose by pattern. Strong subscribers with weak sales point at chat. Stro
 
 Inflowwww covers OnlyFans, through captured web sessions. A Fansly client lives in the repo; the Docker image does not ship it yet. There is no mym client in the repository. If you need mym in a CRM today, you will need a different tool or mym's own dashboard for that part of the roster.
 
-> **The pitch.** For your OnlyFans creators: one self-hosted app at $0 per creator. For your mym creators: this page and mym's own dashboard. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** For your OnlyFans creators: one self-hosted app at $0 a month per creator. For your mym creators: this page and mym's own dashboard. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -1,6 +1,6 @@
 ---
 title: "5 reasons to use Inflowwww when chatting with fans. Reason 5 is the price."
-description: "Five ways Inflowwww's Messages Pro, Vault Pro, Scripts and fan insights help a team chat with fans. Reason five: it costs $0."
+description: "Five ways Inflowwww's Messages Pro, Vault Pro, Scripts and fan insights help a team chat with fans. Reason five: it costs $0 a month."
 date: 2026-10-12
 tags: ["product", "messages-pro", "chatting"]
 parodyOf: "5-reasons-to-use-infloww-when-chatting"
@@ -58,7 +58,7 @@ The fan insights rail shows what a chatter needs before they type: **Lifetime sp
 
 Use notes for facts the fan has told you: time zone, what they like to talk about, what they asked you not to bring up. Use tags for anything you want to filter on later. A good handover note is two lines long.
 
-## 5. It costs $0
+## 5. It costs $0 a month
 
 Inflowwww is MIT-licensed and runs on your own server with Docker Compose. There is no per-creator fee, so adding a fifth or a fiftieth creator does not change the software bill.
 

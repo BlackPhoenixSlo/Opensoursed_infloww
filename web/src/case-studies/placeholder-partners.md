@@ -5,8 +5,8 @@ date: 2026-10-12
 agency: "Placeholder Partners"
 tagline: "Three shifts a day and one five-line note per shift."
 stats:
-  - value: "$0"
-    label: "Per creator per month x 8 creators = $0"
+  - value: "$0/m"
+    label: "Per creator per month x 8 creators = $0/m"
   - value: "5"
     label: "Lines in the handover note template"
   - value: "10 min"

@@ -45,7 +45,7 @@ There is no hourly earnings view, and **Employees > Shift schedule** is a placeh
 2. Divide by the hours your team covered that account. Your own rota is the source.
 3. Divide that by the hourly cost of the people on it.
 
-If a creator earns $200 an hour of coverage and the team costs $40 an hour, the return is 5x. Close to 1x means the hours need a look before the headcount does. The software line in this calculation is $0, which keeps the arithmetic short.
+If a creator earns $200 an hour of coverage and the team costs $40 an hour, the return is 5x. Close to 1x means the hours need a look before the headcount does. The software line in this calculation is $0 a month, which keeps the arithmetic short.
 
 ## Messages against earnings
 
@@ -80,4 +80,4 @@ For fans who rarely hear from you, build a Smart list of active subscribers who 
 4. Pick one creator to improve and one change to try.
 5. Check the same numbers a month later.
 
-> **The pitch.** Creator reports reads from a SQLite file on your own server, and the report is the same price for every creator: $0. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Creator reports reads from a SQLite file on your own server, and the report is the same price for every creator: $0 a month. [Deploy it yourself]({{ '/#deploy' | url }}).

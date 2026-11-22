@@ -65,4 +65,4 @@ The best-performing chat sales feel like part of the conversation, not an interr
 
 A Fansly client lives in the repo; the Docker image does not ship it yet. Once it is wired in, Fansly chats sit in Messages Pro next to your OnlyFans accounts, with fan notes beside the thread. How complete each Fansly feature is gets tracked in `fansly/FANSLY_PARITY_STATUS.md`.
 
-> **The pitch.** For the OnlyFans side of the roster, Inflowwww runs on your own server at $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** For the OnlyFans side of the roster, Inflowwww runs on your own server at $0 a month per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

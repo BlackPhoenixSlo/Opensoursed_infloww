@@ -75,4 +75,4 @@ Chatters type the prefix in the picker and follow the numbers. Write a branch fo
 - **Don't over-script.** If every message is a template, fans notice. Aim for templates as openers and offers, and people for everything in between.
 - **Check the welcome message monthly.** It is the first thing every new subscriber reads.
 
-> **The pitch.** Scripts, for every chatter and every creator, saved in a database you can open, at $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Scripts, for every chatter and every creator, saved in a database you can open, at $0 a month per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

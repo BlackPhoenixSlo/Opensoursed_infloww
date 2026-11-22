@@ -1,5 +1,5 @@
 ---
-title: "How Vault Pro makes content management easy, at $0 for every creator"
+title: "How Vault Pro makes content management easy, at $0/m for every creator"
 description: "A walkthrough of Inflowwww's Vault Pro: bulk import from files or Google Drive, folders, tags, captions and duplicate cleanup."
 date: 2026-10-12
 tags: ["product", "vault-pro", "content-management"]

@@ -67,4 +67,4 @@ Give Auto Story its own folder, such as "story pool", with 30 or more photos. A 
 3. Write five posts for Auto Post and run them once in dry run.
 4. Check **Analytics > Creator reports** after two weeks.
 
-> **The pitch.** Two automations, both on your own server, both $0 per creator. Both start with a dry run that posts nothing. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Two automations, both on your own server, both $0 a month per creator. Both start with a dry run that posts nothing. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -61,4 +61,4 @@ Whatever you send, by hand or in bulk:
 3. Build an "active in the last 3 days" Smart list and send one mass message at your peak hour.
 4. Compare replies in the **Message dashboard** a week later.
 
-> **The pitch.** Every message in this post is written by a person and sent from Messages Pro or Smart Messages, at $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Every message in this post is written by a person and sent from Messages Pro or Smart Messages, at $0 a month per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

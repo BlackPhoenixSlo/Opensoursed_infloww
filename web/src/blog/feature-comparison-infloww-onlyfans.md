@@ -79,4 +79,4 @@ Every Infloww cell on our [comparison page]({{ '/openinflowwww-vs-infloww/' | ur
 3. Spend a week in Messages Pro and the reports before you move the whole team.
 4. Invite chatters one at a time from **Employees > Manage employees**.
 
-> **The pitch.** The comparison above is checkable against the code, because the code is one repository you can read. $0 per creator, on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** The comparison above is checkable against the code, because the code is one repository you can read. $0 a month per creator, on your own server. [Deploy it yourself]({{ '/#deploy' | url }}).

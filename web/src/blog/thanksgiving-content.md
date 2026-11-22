@@ -64,4 +64,4 @@ We would offer a Thanksgiving discount too, but $0 does not go lower.
 
 For agencies running several creators, the segments do the heavy lifting. If you run Inflowwww, Smart lists (`/growth/smart-lists`) build the "has not bought" list, Smart Messages (`/growth/smart-messages`) schedules the sends, and Free trial links (`/growth/free-trial-links`) cover the early-bird offer.
 
-> **The pitch.** Be thankful for your fans. Be slightly less thankful for per-creator software fees: Inflowwww is $0 per creator, MIT-licensed and self-hosted. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Be thankful for your fans. Be slightly less thankful for per-creator software fees: Inflowwww is $0 a month per creator, MIT-licensed and self-hosted. [Deploy it yourself]({{ '/#deploy' | url }}).

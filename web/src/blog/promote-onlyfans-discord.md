@@ -67,4 +67,4 @@ Use a dedicated OnlyFans tracking link for Discord in your server's announcement
 
 If you run Inflowwww, make them in **Tracking links** (`/growth/tracking-links`) and **Free trial links** (`/growth/free-trial-links`). Check them monthly next to your server's activity. If Discord brings few new subscribers but your VIPs renew reliably, it is still doing its job: retention.
 
-> **The pitch.** Discord keeps your community talking, and Messages Pro keeps up with the fans it sends, at $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Discord keeps your community talking, and Messages Pro keeps up with the fans it sends, at $0 a month per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

@@ -276,7 +276,7 @@
     @apply inline-flex rounded-full bg-white px-2 py-0.5 text-xs font-medium whitespace-nowrap text-ink ring-1 ring-black/20;
 
     &[data-status="Built"],
-    &[data-status="$0"] {
+    &[data-status="$0/m"] {
       @apply bg-mint ring-0;
     }
 

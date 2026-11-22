@@ -1,5 +1,5 @@
 ---
-title: "Vault Pro bulk actions: one import for the whole batch, at $0 per creator"
+title: "Vault Pro bulk actions: one import for the whole batch, at $0 a month per creator"
 description: "A bulk workflow for Inflowwww's Vault Pro: prepare files, import a batch from disk or Google Drive, sort, label and dedupe it."
 date: 2026-10-12
 tags: ["product", "vault-pro", "workflow"]

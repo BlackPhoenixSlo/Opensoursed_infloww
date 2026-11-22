@@ -10,7 +10,7 @@ image: "dashboard-combo.webp"
 imageAlt: "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month"
 ---
 
-Inflowwww is a free, open-source, self-hosted alternative to Infloww for OnlyFans agencies. You run it on your own server, your team uses it in a browser, and it costs $0 per creator. This page explains what that means in practice.
+Inflowwww is a free, open-source, self-hosted alternative to Infloww for OnlyFans agencies. You run it on your own server, your team uses it in a browser, and it costs $0 a month per creator. This page explains what that means in practice.
 
 ## What it does
 

@@ -5,8 +5,8 @@ date: 2026-10-12
 agency: "Lorem Ipsum Management"
 tagline: "One SQLite file, a nightly copy, and a monthly restore test, all for the price of the disk it sits on."
 stats:
-  - value: "$0"
-    label: "Per creator per month x 22 creators = $0"
+  - value: "$0/m"
+    label: "Per creator per month x 22 creators = $0/m"
   - value: "7 + 4"
     label: "Daily and weekly backups kept"
   - value: "1"

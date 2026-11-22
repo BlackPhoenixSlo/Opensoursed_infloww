@@ -1,11 +1,11 @@
 ---
 title: "How Example Talent Co. onboards a new creator in one afternoon, with a checklist"
-description: "A fictional 14-creator agency writes its onboarding down as a 12-step checklist. The steps work in any tool; the software bill stays at $0."
+description: "A fictional 14-creator agency writes its onboarding down as a 12-step checklist. The steps work in any tool; the software bill stays at $0 a month."
 date: 2026-10-12
 agency: "Example Talent Co."
 tagline: "14 creators, one checklist, and a software line item that rounds to zero because it is zero."
 stats:
-  - value: "$0"
+  - value: "$0/m"
     label: "Per creator per month, times 14 creators, times 12 months"
   - value: "12"
     label: "Steps on the onboarding checklist, all of them below"

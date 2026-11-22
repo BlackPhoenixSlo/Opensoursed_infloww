@@ -77,4 +77,4 @@ Write your custom menu down with what is included, and stick to it. Customs take
 
 **Track which channel works.** Inflowwww's Tracking links (`/growth/tracking-links`) and Free trial links (`/growth/free-trial-links`) let you give each promo channel its own link, so you can see which one brings subscribers.
 
-> **The pitch.** A niche business needs low overheads. Inflowwww is self-hosted and costs $0 per creator, whatever the creator earns. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** A niche business needs low overheads. Inflowwww is self-hosted and costs $0 a month per creator, whatever the creator earns. [Deploy it yourself]({{ '/#deploy' | url }}).

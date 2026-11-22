@@ -58,4 +58,4 @@ Your wellbeing is part of the business, not a distraction from it.
 
 If an agency or a solo creator runs Inflowwww, revenue per creator is at `/analytics/creator-reports` and per-employee output at `/analytics/employee-reports`, which helps when you calculate costs and hours. Tracking links at `/growth/tracking-links` show which promotion channels pay for themselves.
 
-> **The pitch.** Your margin is revenue minus costs, and Inflowwww keeps one cost line at $0: the only cost is the server you run it on. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Your margin is revenue minus costs, and Inflowwww keeps one cost line at $0 a month: the only cost is the server you run it on. [Deploy it yourself]({{ '/#deploy' | url }}).

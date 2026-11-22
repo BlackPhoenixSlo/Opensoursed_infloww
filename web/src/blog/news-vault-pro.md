@@ -75,4 +75,4 @@ Bookmarks to `/vault` redirect automatically.
 3. Tag, describe and caption it.
 4. Ask a chatter to find it from Messages Pro.
 
-> **The pitch.** Vault Pro ships to every creator on your roster, on your own server, at $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Vault Pro ships to every creator on your roster, on your own server, at $0 a month per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

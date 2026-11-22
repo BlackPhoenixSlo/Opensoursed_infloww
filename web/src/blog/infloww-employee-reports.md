@@ -73,4 +73,4 @@ People improve faster against their own history than against a leaderboard. Keep
 3. Attribute the leftovers and read the table.
 4. Hold the first review using your own medians as the bar.
 
-> **The pitch.** Employee reports covers every employee and every creator, on your own server, at $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Employee reports covers every employee and every creator, on your own server, at $0 a month per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

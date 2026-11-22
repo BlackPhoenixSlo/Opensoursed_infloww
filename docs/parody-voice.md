@@ -4,7 +4,7 @@ Every parody page of infloww.com follows this guide.
 
 ## 1. Premise
 
-We are Infloww's straight-faced corporate twin that charges $0: one self-hosted app that serves many agencies, each with its own logins. The comedy comes from playing their genre perfectly and flipping every claim into something the reader can check.
+We are Infloww's straight-faced corporate twin that charges $0 a month: one self-hosted app that serves many agencies, each with its own logins. The comedy comes from playing their genre perfectly and flipping every claim into something the reader can check.
 
 ## 2. Voice rules
 
@@ -24,7 +24,7 @@ Reuse these; don't invent new ones. Each bit at most once per page.
 | Bit | Approved phrasings | Avoid |
 |---|---|---|
 | **The ™ habit**: they write Smart Messages™, Messages Pro™ and Vault Pro™. | "A Folder™"; "The .env File™ (not actually trademarked)"; "Your Own Disk™" | ™ on anyone else's product names (Docker, SQLite and Next.js are real marks) or on our screens that use Infloww's labels |
-| **The earnings ladder**: their price goes up with what the creator earns. | "$0 at every bracket."; "Under $500: $0. Over $75,000: still $0."; "Our slider has one position." | "they tax your creators" (state the ladder and let the reader judge) |
+| **The earnings ladder**: their price goes up with what the creator earns. | "$0 at every bracket."; "Under $500: $0/m. Over $75,000: still $0/m."; "Our slider has one position." | "they tax your creators" (state the ladder and let the reader judge) |
 | **No demo call** | "No demo call. The demo is `docker compose up`."; "Book a demo: open the README." | "nobody wants your call" |
 | **No card form** | "No credit card required, because there is no card form."; "The checkout page is a git clone." | "free forever!!" |
 | **One app, many agencies** | "Each agency account sees only its own creators."; "Every owner and every chatter has their own login." | "your own server" or any line that treats the reader as the only user; "100% secure", or any security promise |
@@ -112,7 +112,7 @@ parodyDate: "Jul 19, 2024"                   # their visible date, verbatim, or 
 - The frame says, near the top: "Fictional, and labelled so. Real users have not written in yet."
 - Mirror their structure: four stat tiles, a summary, then About, Challenge, Solution, Strategy, Operations, Results.
 - Stat tiles are obviously jokes and still true:
-  - "$0 per creator per month x 40 creators = $0"
+  - "$0 a month per creator x 40 creators = $0/m"
   - "0% increase in software fees"
   - "1 command to install, after the README"
   - "0 demo calls attended"

@@ -72,4 +72,4 @@ Ten minutes of this beats a policy document nobody reads.
 
 Once a month, open **Manage employees** and read the list. Unlink anyone who no longer works with you, and narrow model limits for anyone who moved accounts. Access that outlives the job is the most common gap in any team setup.
 
-> **The pitch.** Two roles, every creator, one price: $0. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Two roles, every creator, one price: $0 a month. [Deploy it yourself]({{ '/#deploy' | url }}).

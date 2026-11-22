@@ -82,4 +82,4 @@ If you run PPV through messages, Inflowwww's Message dashboard (`/analytics/mess
 5. View all three at phone size. Keep the clearest.
 6. Export as JPG (or PNG with text), name it after the video, and file it next to the video.
 
-> **The pitch.** A good thumbnail costs ten minutes. A good CRM can cost nothing at all: Inflowwww is MIT-licensed, self-hosted with Docker Compose, and $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** A good thumbnail costs ten minutes. A good CRM can cost nothing at all: Inflowwww is MIT-licensed, self-hosted with Docker Compose, and $0 a month per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

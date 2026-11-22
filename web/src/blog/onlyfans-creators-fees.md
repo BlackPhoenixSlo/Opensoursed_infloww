@@ -36,7 +36,7 @@ Write each as a monthly figure or a percentage of revenue. If you work alone, li
 
 Watch for any cost that grows as revenue grows, because it eats the upside. Some agency software is priced per creator profile per month, and the price can rise with the creator's earnings. Infloww's pricing page, for example, says "Monthly pricing per creator profile" and lists brackets that rise with "Creator's monthly earnings", "Starting at just $40" (infloww.com, captured 2026-10-11).
 
-When you compare tools, put the price at your current earnings and at double your earnings side by side. Under $500, Inflowwww costs $0. Over $75,000, still $0. You still pay for the server it runs on. Every Infloww cell on our [comparison page]({{ '/openinflowwww-vs-infloww/' | url }}) says where we read it and when.
+When you compare tools, put the price at your current earnings and at double your earnings side by side. Under $500, Inflowwww costs $0 a month. Over $75,000, still $0 a month. You still pay for the server it runs on. Every Infloww cell on our [comparison page]({{ '/openinflowwww-vs-infloww/' | url }}) says where we read it and when.
 
 ## Price with the fees in mind
 

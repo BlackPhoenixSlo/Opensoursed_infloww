@@ -57,4 +57,4 @@ Add one new stream per month. After a month, check what it earned against the ti
 
 Track each new stream on OnlyFans' Statistics page for a month before you add another. If a team runs your page, Inflowwww's Message dashboard (`/analytics/message-dashboard`) logs PPV, tips and messages, with a customs tab, and Creator reports (`/analytics/creator-reports`) break revenue down per creator, from a SQLite database you own.
 
-> **The pitch.** Ten streams, tried one at a time, and none of them needs a CRM; agencies that want one can run Inflowwww at $0 per creator. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Ten streams, tried one at a time, and none of them needs a CRM; agencies that want one can run Inflowwww at $0 a month per creator. [Deploy it yourself]({{ '/#deploy' | url }}).

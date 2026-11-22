@@ -5,8 +5,8 @@ date: 2026-10-12
 agency: "Sample Size Studio"
 tagline: "Nine creators, one review meeting a month, and a price log that is longer than its software invoice."
 stats:
-  - value: "$0"
-    label: "Per creator per month x 9 creators = $0"
+  - value: "$0/m"
+    label: "Per creator per month x 9 creators = $0/m"
   - value: "1st Monday"
     label: "Of each month: the only day PPV prices change"
   - value: "1"

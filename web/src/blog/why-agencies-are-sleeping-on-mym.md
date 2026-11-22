@@ -52,4 +52,4 @@ Write the answers in one place with the date you checked. Terms change.
 
 If the creator beats the target, add a second one. If not, write down why and move on. A test that ends cleanly is still useful.
 
-> **The pitch.** While we both sleep on mym, your OnlyFans creators can run on your own server for $0. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** While we both sleep on mym, your OnlyFans creators can run on your own server for $0 a month. [Deploy it yourself]({{ '/#deploy' | url }}).

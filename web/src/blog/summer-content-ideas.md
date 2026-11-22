@@ -74,4 +74,4 @@ Heat is a real risk. Shoot active content early or late, drink water, take break
 
 To spread them without posting by hand, Inflowwww's Auto Post (`/growth/auto-post`) releases a list of ready posts one at a time on a delay you choose, and Auto Story (`/growth/auto-story`) posts photos from a vault folder as stories. Run either with a dry run first.
 
-> **The pitch.** Peak season should raise your earnings, not your software bill: Inflowwww is $0 per creator, MIT-licensed, and self-hosted with Docker Compose. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** Peak season should raise your earnings, not your software bill: Inflowwww is $0 a month per creator, MIT-licensed, and self-hosted with Docker Compose. [Deploy it yourself]({{ '/#deploy' | url }}).

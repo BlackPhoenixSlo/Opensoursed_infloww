@@ -1,5 +1,5 @@
 ---
-title: "19 OnlyFans birthday content ideas, and somewhere to keep 300 fan birthdays for $0"
+title: "19 OnlyFans birthday content ideas, and somewhere to keep 300 fan birthdays for $0/m"
 description: "Nineteen birthday content ideas for your own birthday and your fans', from themed sets to tip prompts, and a way to track dates."
 date: 2026-10-12
 tags: ["content-ideas", "birthdays", "fan-engagement"]

@@ -1,13 +1,13 @@
 ---
 layout: base.njk
-title: "Pricing: $0 per creator, at any earnings"
-description: "Inflowwww costs $0 per creator profile per month, at any earnings. One card per platform, and Infloww's earnings-based price ladder as captured from infloww.com/pricing."
+title: "Pricing: $0 a month per creator, at any earnings"
+description: "Inflowwww costs $0 a month per creator profile, at any earnings. One card per platform, and Infloww's earnings-based price ladder as captured from infloww.com/pricing."
 ---
 {#- Follows infloww.com/pricing (captured 2026-10-11): plans, earnings slider, questions, trial. The FAQ is wired in separately.
     The real cost sits above the four $0 cards on purpose: it is what a visitor searching for pricing came for. -#}
 <section id="plans" aria-labelledby="plans-title" class="wrap pt-16 max-lg:pb-16 sm:pt-24">
   <p class="eyebrow">Pricing</p>
-  <h1 id="plans-title" class="h-page mt-2">Manage all your creators with one CRM, for $0 per creator</h1>
+  <h1 id="plans-title" class="h-page mt-2">Manage all your creators with one CRM, for $0 a month per creator</h1>
   <p class="lede">
     Every Inflowwww plan is the same repository (the project's source folder): every feature it has, under the MIT license, on your own server.
   </p>
@@ -48,7 +48,7 @@ description: "Inflowwww costs $0 per creator profile per month, at any earnings.
       {#- grid-cols-1 below lg: an implicit auto track grows to the ladder table's min-content width and pushes the page sideways at 320px. -#}
       <div class="mt-10 grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]" data-earnings-slider>
         {%- set sliderTableWhere = "beside this panel, or below it on phones" %}
-        {%- set sliderNote = "Under $500: $0. Over $75,000: still $0." %}
+        {%- set sliderNote = "Under $500: $0/m. Over $75,000: still $0/m." %}
         {% include "pricing-block.njk" %}
       </div>
     </div>

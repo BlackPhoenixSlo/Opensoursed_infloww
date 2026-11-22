@@ -81,4 +81,4 @@ Post by hand if you prefer. If you would rather queue the month, Inflowwww's Aut
 
 Before any of it goes out, check each frame for anything that identifies your home: mail, windows, reflections.
 
-> **The pitch.** A whole month of content, queued from a server you control. Inflowwww is MIT-licensed, $0 per creator, and runs with Docker Compose. [Deploy it yourself]({{ '/#deploy' | url }}).
+> **The pitch.** A whole month of content, queued from a server you control. Inflowwww is MIT-licensed, $0 a month per creator, and runs with Docker Compose. [Deploy it yourself]({{ '/#deploy' | url }}).

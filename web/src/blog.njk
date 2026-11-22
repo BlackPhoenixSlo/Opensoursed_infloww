@@ -7,7 +7,7 @@ pagination:
   addAllPagesToCollections: true
 permalink: "blog/{% if pagination.pageNumber > 0 %}page/{{ pagination.pageNumber + 1 }}/{% endif %}"
 eleventyComputed:
-  title: "{% if pagination.pageNumber > 0 %}Inflowwww Blog, page {{ pagination.pageNumber + 1 }}{% else %}Inflowwww Blog: OnlyFans, Fansly and agency guides for $0{% endif %}"
+  title: "{% if pagination.pageNumber > 0 %}Inflowwww Blog, page {{ pagination.pageNumber + 1 }}{% else %}Inflowwww Blog: OnlyFans, Fansly and agency guides, CRM $0/m{% endif %}"
   description: "{% if pagination.pageNumber > 0 %}Page {{ pagination.pageNumber + 1 }} of the Inflowwww blog: creator and agency guides from the free, self-hosted alternative to Infloww.{% else %}Guides on money, content, promotion, chatting and agency operations, each one answering a post on the Infloww blog. Written by the free, self-hosted alternative.{% endif %}"
 ---
 {#- Title, category row and, on page 1, the featured post; then on page 1 a cream "Start here" band with a row
@@ -15,7 +15,7 @@ eleventyComputed:
 {%- set featured = collections.featuredPost %}
 <section class="wrap pt-16 sm:pt-24">
   <h1 class="h-page">Inflowwww Blog</h1>
-  <p class="lede">Guides for creators and agencies on money, content, promotion and chatting. Each one answers a post on the Infloww blog, then tells you the software bill: $0, whatever your creators earn.</p>
+  <p class="lede">Guides for creators and agencies on money, content, promotion and chatting. Each one answers a post on the Infloww blog, then tells you the software bill: $0 a month, whatever your creators earn.</p>
 
   {%- if collections.bucketHubs.length %}
   <nav aria-label="Blog categories" class="mt-8">
