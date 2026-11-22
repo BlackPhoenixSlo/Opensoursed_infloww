@@ -126,8 +126,6 @@ for (const form of document.querySelectorAll("[data-auth-form]")) {
   retype?.focus();
 }
 
-// Chrome's smooth scroll to a load-time fragment (/#deploy from another page) stops short as images and the
-// video lay out; re-land it once the page has loaded.
-if (location.hash.length > 1) {
-  addEventListener("load", () => document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: "instant" }));
-}
+// Smooth scrolling starts after load: Chrome's smooth scroll to a load-time fragment (/#deploy from another page)
+// stops short as images and the video lay out (measured 12202px short on live).
+addEventListener("load", () => document.documentElement.classList.add("smooth-scroll"));
