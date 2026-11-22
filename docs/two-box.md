@@ -105,8 +105,8 @@ small wrapper instead. The wrapper:
 - prints `active=yes` / `active=no` for `owner`
 - refuses anything else
 
-On the standby, rotate from cron: keep 48 hourly bundles, and hardlink the
-first bundle of each UTC day into `daily/` (keep 30).
+On the standby, rotate with `deploy/fleet/bin/prune-backups`: keep the newest
+bundle, one ≥1 day old and one ≥1 week old (owner 2026-11-22).
 
 ### 2.3 Checkpointed stop (before anything that recreates the relay)
 
