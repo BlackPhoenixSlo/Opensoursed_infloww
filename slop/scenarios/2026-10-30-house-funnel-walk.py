@@ -438,7 +438,8 @@ async def _kill_phase(ctx, w, fan_by: dict) -> None:
     ticks.append(await kill.tick_all())
     listed, get_status = await kill.unconfirmed()
     retry_fans = sorted(k for k in hang if k[0] != landed_aid)
-    retried = await kill.retry(con, {(a, f): {"kind": "funnel", "fan_id": f, "mass_run_id": kruns[a]}
+    retried = await kill.retry(con, {(a, f): {"kind": "funnel", "fan_id": f, "mass_run_id": kruns[a],
+                                              "since": (listed.get((a, f)) or {}).get("since", "")}
                                   for a, f in retry_fans})
     t_retry = kill.t_retry
     ticks.append(await kill.tick_all())

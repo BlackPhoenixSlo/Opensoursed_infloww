@@ -23,6 +23,7 @@
 import { type VaultSource } from "@/hooks/vaultRefresh";
 import { relay, type VaultMedia, type VaultMediaResp } from "@/lib/relay";
 import { resolveShareToken } from "@/lib/shareToken";
+import { withinMs } from "@/lib/withinMs";
 import { buildLinksFile, downloadPath, type LinksFile } from "@/components/vault/vaultLinksFile";
 
 import {
@@ -44,8 +45,14 @@ export type Send = (a: Action) => void;
  *  LOW_SPEED_TIME = its timeout), so a stall upstream of the relay reads as stalled too; healthy reads are
  *  sub-second apart (spec, measured 2026-11-08). */
 export const STALL_MS = 20000;
-/** No response headers for this long ends an item `stalled` (the relay's own upstream timeout is 30 s). */
-export const HEAD_MS = 60000;
+/** No response headers for this long ends an item `stalled`. Outlasts the relay's worst wait before its first byte:
+ *  the slot (SLOT_WAIT_S 45 s, vault_download_api.py) + a re-sign (an OF 429 waited out, up to 10 s) + upstream
+ *  headers; below that a busy relay read as a stall instead of its own 503 (#443 review F17). */
+export const HEAD_MS = 90000;
+/** The run's setup reads (the account's direct check, each listing page, the links file write) end within this: a
+ *  stall before the first item goes on without it (direct off, links file not saved) or ends the run "listing
+ *  stalled", never holding the queue behind it. */
+export const SETUP_MS = HEAD_MS;
 
 /** The relay's slot wait ran out (503 download_busy): the item fails, the card's Retry takes it again. */
 export const RELAY_BUSY = "relay busy (503): Retry takes it again";
@@ -123,12 +130,12 @@ export async function showSavedFolder(at: SavedAt): Promise<void> {
   }
 }
 
-/** May the browser fetch this account's CDN urls itself (no proxy)? A failure reads as no: the relay always works.
- *  `signal`: the run's (a cancel ends the wait). */
-export async function directAllowed(accountId: string, signal?: AbortSignal): Promise<boolean> {
+/** May the browser fetch this account's CDN urls itself (no proxy)? A failure, or no answer within SETUP_MS, reads
+ *  as no: the relay always works. `signal`: the run's (a cancel ends the wait). */
+export async function directAllowed(accountId: string, signal: AbortSignal): Promise<boolean> {
   try {
-    const r = await relay.get<{ direct: boolean }>(
-      `/admin/vault-ai/download/info?account_id=${encodeURIComponent(accountId)}`, undefined, signal);
+    const r = await withinMs(SETUP_MS, signal, (s) => relay.get<{ direct: boolean }>(
+      `/admin/vault-ai/download/info?account_id=${encodeURIComponent(accountId)}`, undefined, s));
     return !!r.direct;
   } catch {
     return false;
@@ -149,7 +156,9 @@ export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 /** Every media of a folder (`folderId`) or of the whole vault (null), paged through `source` (`vaultWholeSource`:
  *  a partial mirror would list part of it). The whole vault is soft-denied (empty) to a folder-limited chatter on
  *  both sources; the manager keeps that download off for it. A page with nothing new while `hasMore` (a stuck
- *  cursor), or more than LIST_MAX_PAGES pages, throws "listing incomplete": never a partial list read as the whole. */
+ *  cursor, or an empty page), or more than LIST_MAX_PAGES pages, throws "listing incomplete": never a partial list
+ *  read as the whole.
+ *  A page with no answer within SETUP_MS throws "listing stalled". */
 export async function listAll(
   accountId: string, folderId: string | number | null, source: VaultSource, signal: AbortSignal,
   sleep: (ms: number) => Promise<void> = (ms) => abortableSleep(ms, signal),
@@ -173,14 +182,24 @@ export async function listAll(
       if (folderId != null) p.set("list_id", String(folderId));
       path = `/api/of/v2/vault/media?${p}`;
     }
-    const r = await relay.get<VaultMediaResp>(path, { accountId }, signal);
+    let r: VaultMediaResp;
+    try {
+      r = await withinMs(SETUP_MS, signal, (s) => relay.get<VaultMediaResp>(path, { accountId }, s));
+    } catch (e) {
+      if ((e as DOMException)?.name === "TimeoutError" && !signal.aborted) {
+        throw new Error(`listing stalled: no answer for ${SETUP_MS / 1000} s`);
+      }
+      throw e;
+    }
     const page = r.list ?? [];
     const fresh = page.filter((m) => !seen.has(m.id));
     for (const m of fresh) seen.add(m.id);
     out.push(...fresh);
     if (!r.hasMore) return out;
-    if (page.length > 0 && fresh.length === 0) throw new Error("listing incomplete: the same page came back again");
-    if (page.length === 0) return out;
+    if (fresh.length === 0) {
+      throw new Error(page.length ? "listing incomplete: the same page came back again"
+        : "listing incomplete: an empty page while more were promised");
+    }
     offset += page.length;
     if (source === "live") await sleep(LIVE_PAGE_GAP_MS);
   }
@@ -208,38 +227,64 @@ async function resign(accountId: string, it: DlItem, signal: AbortSignal): Promi
 export type Sink = (it: DlItem, body: ReadableStream<Uint8Array>, signal: AbortSignal, tick?: () => void)
   => Promise<File | null>;
 
+type Owner = { by: object; made: boolean };
+/** Per picked folder (`root`), which attempt last opened each file (`<creator>/<folder>/<name>`) and whether this
+ *  download made it: a stalled attempt still winding down after its replacement (Retry, a retry job: another sink on
+ *  the same folder) took the file over must not remove it; the replacement inherits `made`, so its own failure does.
+ *  Another picked folder's file is never this one's (its own map). */
+const fileOwners = new WeakMap<FileSystemDirectoryHandle, Map<string, Owner>>();
+
 /** Each item as `<creator>/<folder>/<id>.<ext>` under `root`, then a copy in each of `it.copies` (read back from disk,
  *  each chunk a `tick`). `creator`: the run's own, fixed at its start (never shared state: another run may hold that
- *  by then). Any failure removes every file this attempt created (`getFileHandle` makes it, empty, at once); a file
- *  that was there before is left. */
+ *  by then). Any failure removes every file this attempt created (`getFileHandle` makes it, empty, at once) or took
+ *  over from a live attempt that created it, and still owns (`fileOwners`: no later attempt opened it since); a file
+ *  that was there before the download is left. An attempt already aborted (stalled, cancelled) opens nothing more:
+ *  it never takes a file over from its replacement, so its cleanup can't remove that one's file. */
 export function folderSink(root: FileSystemDirectoryHandle, creator: string): Sink {
   return async (it, body, signal, tick = () => {}) => {
+    const me = {};
+    const owners = fileOwners.get(root) ?? new Map<string, Owner>();
+    fileOwners.set(root, owners);
     const c = await root.getDirectoryHandle(creator, { create: true });
-    const made: FileSystemDirectoryHandle[] = [];
-    const open = async (d: FileSystemDirectoryHandle) => {
+    const opened: { d: FileSystemDirectoryHandle; key: string; own: Owner }[] = [];
+    const open = async (d: FileSystemDirectoryHandle, folder: string) => {
+      signal.throwIfAborted();   // after the lookups' awaits: an aborted attempt never takes a file over
+      const key = `${creator}/${folder}/${it.name}`;
+      const live = owners.get(key);   // an attempt still on it (stalled, winding down): its file is ours now
+      const own = { by: me, made: false };
+      owners.set(key, own);
+      opened.push({ d, key, own });
       try {
-        return await d.getFileHandle(it.name);
+        const h = await d.getFileHandle(it.name);
+        own.made = !!live?.made;
+        return h;
       } catch {
         const h = await d.getFileHandle(it.name, { create: true });
-        made.push(d);
+        own.made = true;
         return h;
       }
     };
+    const release = () => {
+      for (const o of opened) if (owners.get(o.key) === o.own) owners.delete(o.key);
+    };
     try {
-      const fh = await open(await c.getDirectoryHandle(it.folder, { create: true }));
+      const fh = await open(await c.getDirectoryHandle(it.folder, { create: true }), it.folder);
       await body.pipeTo(await fh.createWritable(), { signal });
       for (const name of it.copies ?? []) {
         tick();
-        const ch = await open(await c.getDirectoryHandle(name, { create: true }));
+        const ch = await open(await c.getDirectoryHandle(name, { create: true }), name);
         const ticking = new TransformStream<Uint8Array, Uint8Array>({ transform(x, ctl) { tick(); ctl.enqueue(x); } });
         await (await fh.getFile()).stream().pipeThrough(ticking, { signal }).pipeTo(await ch.createWritable(), { signal });
       }
     } catch (e) {
-      for (const d of made) {
-        if (typeof d.removeEntry === "function") await d.removeEntry(it.name).catch(() => {});
+      for (const o of opened) {
+        if (!o.own.made || owners.get(o.key) !== o.own || typeof o.d.removeEntry !== "function") continue;
+        await o.d.removeEntry(it.name).catch(() => {});
       }
+      release();
       throw e;
     }
+    release();
     return null;
   };
 }
@@ -259,15 +304,45 @@ export function linksFor(s: DlState, now = Date.now()): LinksFile {
                                    label: s.label, direct: s.directAllowed, now, token: resolveShareToken() });
 }
 
+/** Past this many pairs of one name in one folder the last one is overwritten (no endless probing). */
+const LINKS_COPIES_MAX = 100;
+
+/** Links file paths (`<dirs>/<name>`) written into each picked folder (the queue's jobs share one) this page-load. */
+const linksWritten = new WeakMap<FileSystemDirectoryHandle, Set<string>>();
+
 /** Desktop: both links files into `<root>/<creator>/` (a folder download: its `<folder>/`), before any media.
+ *  A pair another job wrote there this page-load (two selections of one Creator, queued) is kept: this run's names
+ *  get `-2`, `-3`, … Any other pair of that name (an earlier visit's) is overwritten, as a re-download replaces it.
+ *  The pair's names are taken before either file opens, and `signal` (the run's cancel, its SETUP_MS deadline) ends
+ *  every write: a write left behind never lands, nor over a later run's pair.
  *  A failure here never stops the download; false tells the card not to point at the file. */
-export async function writeLinks(root: FileSystemDirectoryHandle, dirs: string[], f: LinksFile): Promise<boolean> {
+export async function writeLinks(
+  root: FileSystemDirectoryHandle, dirs: string[], f: LinksFile, signal: AbortSignal,
+): Promise<boolean> {
   try {
     let d = root;
     for (const n of dirs) d = await d.getDirectoryHandle(n, { create: true });
-    for (const [name, body] of [[f.txtName, f.txt], [f.htmlName, f.html]]) {
+    signal.throwIfAborted();
+    const written = linksWritten.get(root) ?? new Set<string>();
+    linksWritten.set(root, written);
+    const path = (n: string) => [...dirs, n].join("/");
+    const named = (n: string, k: number) => k === 1 ? n : n.replace(/(\.[^.]+)$/, `-${k}$1`);
+    let k = 1;
+    while (k < LINKS_COPIES_MAX && (written.has(path(named(f.txtName, k))) || written.has(path(named(f.htmlName, k))))) k++;
+    const pair = [[named(f.txtName, k), f.txt], [named(f.htmlName, k), f.html]];
+    for (const [name] of pair) written.add(path(name));   // reserved: a later run picks the next names
+    for (const [name, body] of pair) {
+      signal.throwIfAborted();
       const fh = await d.getFileHandle(name, { create: true });
-      await new Blob([body], { type: "text/plain" }).stream().pipeTo(await fh.createWritable());   // as the media sink
+      const w = (await fh.createWritable()).getWriter();
+      try {
+        await w.write(new TextEncoder().encode(body));
+        signal.throwIfAborted();   // cancelled meanwhile: abort, never close (the swap file is dropped, nothing lands)
+        await w.close();
+      } catch (e) {
+        await w.abort(e).catch(() => {});
+        throw e;
+      }
     }
     return true;
   } catch (e) {
@@ -328,7 +403,9 @@ async function save(
 async function directFetch(url: string, signal: AbortSignal): Promise<Response | null> {
   try {
     const r = await fetch(url, { signal, credentials: "omit", cache: "no-store" });
-    return r.ok ? r : null;
+    if (r.ok) return r;
+    await r.body?.cancel();   // a non-2xx body unread holds its connection
+    return null;
   } catch (e) {
     if (signal.aborted) throw e;
     return null;   // CloudFront's 403 has no CORS header: a TypeError here
@@ -463,6 +540,7 @@ export type StartArgs = DlJobArgs & { qid?: number };
 /** One whole run into `kind` (the browser's `downloadSink()`): the sink (folder: `root` when the queue reuses its
  *  folder, else the picker, `pick` / `pickClosed`; a picker that throws is `pickClosed` with its error), `start`,
  *  direct check, listing (a retry job's items are not listed again), links file, queue.
+ *  Each setup read (direct check, listing page, links file) is bounded by SETUP_MS.
  *  `started` gets the Sink, the attempt `start` actually made and the folder (Retry reuses the Sink, also after a
  *  Cancel while the workers still wind down; the caller pins its failure handler to the attempt). The share sink
  *  dispatches `start` before any await, so a second tap finds the run already going. A refused `start` (another run
@@ -478,14 +556,16 @@ export async function startDownload(
   if (kind === "share") sink = shareSink();
   else {
     if (!root) {
-      d.send({ type: "pick" });
+      d.send({ type: "pick", accountId: a.accountId });
       try {
         root = await pickRoot();
       } catch (e) {
         d.send({ type: "pickClosed", error: (e as Error)?.message || String(e) });
         return;
       }
-      if (!root) {
+      // Closed, or the run was ended meanwhile (sign-out, Cancel): nothing starts. Access to the model removed while
+      // the picker was open: its `start` below is refused (`pickFor`), before any write.
+      if (!root || d.signal.aborted) {
         d.send({ type: "pickClosed" });
         return;
       }
@@ -496,7 +576,8 @@ export async function startDownload(
   const savedAt = root ? { root, dirs: a.folder ? [a.creator, safeName(a.folder.name)] : [a.creator] } : null;
   const before = d.get().attempt;
   d.send({ type: "start", mode: a.mode, label: a.label, accountId: a.accountId, creator: a.creator, sink: kind,
-           savedAt, folder: a.folder ?? null, ...(a.qid != null ? { qid: a.qid } : {}) });
+           savedAt, folder: a.folder ?? null, ...(a.qid != null ? { qid: a.qid } : {}),
+           ...(a.retryOf != null ? { retryOf: a.retryOf } : {}) });
   const attempt = d.get().attempt;
   if (attempt === before) return;   // refused: another run holds files, or the queued job is gone
   started(sink, attempt, root);
@@ -509,8 +590,10 @@ export async function startDownload(
   const media = a.media ?? await listAll(a.accountId, a.folder?.id ?? null, a.source, d.signal);
   d.send({ type: "listed", items: toItems(media, a.folder?.name ?? null), attempt });
   if (savedAt && d.get().attempt === attempt && d.get().items.length) {
-    const ok = await writeLinks(savedAt.root, savedAt.dirs, linksFor(d.get()));
-    d.send({ type: "links", ok, attempt });
+    // A write that hangs is left behind after SETUP_MS (not saved); the media go on.
+    const ok = await withinMs(SETUP_MS, d.signal, (s) => writeLinks(savedAt.root, savedAt.dirs, linksFor(d.get()), s))
+      .catch(() => false);
+    if (!d.signal.aborted) d.send({ type: "links", ok, attempt });
   }
   await runQueue({ ...d, sink });
 }

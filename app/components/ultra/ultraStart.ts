@@ -12,11 +12,19 @@ export const ULTRA_PLAN_KEY = "chatterly:ultra_plan";
 
 let pending: Promise<PlanView> | null = null;
 
+/** The one writer of ULTRA_PLAN_KEY (null = forget it): the start's answer and the panel's plan id. */
+export function keepPlanId(id: string | null): void {
+  try {
+    if (id) window.localStorage.setItem(ULTRA_PLAN_KEY, id);
+    else window.localStorage.removeItem(ULTRA_PLAN_KEY);
+  } catch { /* quota, safari private */ }
+}
+
 /** Post the request; the plan id is kept before anyone hears the answer. */
 export function beginStart(body: { request: string }): Promise<PlanView> {
   const p: Promise<PlanView> = relay.post<PlanView>("/admin/ultra/plans", body)
     .then((plan) => {
-      try { window.localStorage.setItem(ULTRA_PLAN_KEY, plan.id); } catch { /* quota */ }
+      keepPlanId(plan.id);
       return plan;
     })
     .finally(() => { if (pending === p) pending = null; });

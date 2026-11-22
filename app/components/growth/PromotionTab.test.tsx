@@ -26,7 +26,7 @@ const put = relay.put as unknown as Mock;
 const promo = (over: Record<string, unknown>) => ({
   id: null, of_promo_id: null, name: "Promo", discount_percent: null, price_cents: 0, subscribe_counts: 10,
   subscribe_days: 7, message: "", promo_type: "all", status: "active", subscriber_count: 0, auto_reactivate: false,
-  reactivate_count: 0, last_reactivated_at: null, created_at: null, source: "mirror", ...over,
+  reactivate_count: 0, last_reactivated_at: null, keep_lines: [], created_at: null, source: "mirror", ...over,
 });
 const CAMPAIGNS = [
   promo({ id: 1, of_promo_id: 501, name: "Live week", discount_percent: 100, subscriber_count: 2, auto_reactivate: true,
@@ -181,8 +181,27 @@ describe("PromotionTab", () => {
     expect(await screen.findByText("Created. Took Keep running from “Live week”.")).toBeTruthy();
   });
 
+  it("W30 F14 Create promotion waits for the campaigns, so the Takeover it sends is the Kept one", async () => {
+    let answer: (v: unknown) => void = () => {};
+    get.mockImplementation((path: string) => path.startsWith("/admin/promotions")
+      ? new Promise((r) => { answer = r; }) : Promise.resolve({}));
+    post.mockResolvedValue({ id: 3, auto_reactivate: true, keep_running_taken_from: { id: 1, name: "Live week" } });
+    mount(<PromotionTab accountId="a1" />);
+    const open = screen.getByRole("button", { name: "Create promotion" }) as HTMLButtonElement;
+    expect(open.disabled).toBe(true);
+    answer({ campaigns: CAMPAIGNS, of_available: true });
+    await waitFor(() => expect(open.disabled).toBe(false));
+    fireEvent.click(open);
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    fireEvent.click(within(dlg).getByLabelText("First-month discount"));
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", expect.objectContaining({ expect_taken_from: 1 })));
+  });
+
   it("a Free trial with unlimited claims can't keep running: refused before any create", async () => {
     mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
     fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
     const dlg = screen.getByRole("dialog", { name: "Create promotion" });
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
@@ -214,6 +233,7 @@ describe("PromotionTab", () => {
   it("a create the relay could not arm still closes, and says why Keep running is off", async () => {
     post.mockResolvedValue({ id: 3, auto_reactivate: false, auto_reactivate_refused: "this campaign isn't linked to an OnlyFans promo" });
     mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
     fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
     const dlg = screen.getByRole("dialog", { name: "Create promotion" });
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
@@ -233,6 +253,7 @@ describe("PromotionTab", () => {
     post.mockResolvedValue({ id: null, of_promo_id: null, name: "Week", create: "unknown", auto_reactivate: false,
       ...(refused ? { auto_reactivate_refused: refused } : {}) });
     mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
     fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
     const dlg = screen.getByRole("dialog", { name: "Create promotion" });
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
@@ -246,6 +267,7 @@ describe("PromotionTab", () => {
       "If it did not go through, create anyway.";
     post.mockRejectedValueOnce(new RelayError(409, { detail: { reason: "create_unresolved", id: 7, message, terms: {} } }));
     mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
     fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
     const dlg = screen.getByRole("dialog", { name: "Create promotion" });
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
@@ -256,6 +278,38 @@ describe("PromotionTab", () => {
     await waitFor(() => expect(post).toHaveBeenLastCalledWith("/admin/promotions",
       expect.objectContaining({ name: "Week", resolve_open: 7 })));
     expect(post.mock.calls[0][1]).not.toHaveProperty("resolve_open");
+  });
+
+  it("W30 F20 an earlier create the relay found on OnlyFans (409 create_landed): the dialog closes, its line shows, the list refreshes", async () => {
+    const message = "The earlier create (30% off, 5 claims) did go through on OnlyFans — it's on the list now, so nothing new was sent.";
+    post.mockRejectedValueOnce(new RelayError(409, { detail: { reason: "create_landed", id: 7, of_promo_id: 900, message } }));
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
+    const reads = () => get.mock.calls.filter(([p]) => String(p).startsWith("/admin/promotions")).length;
+    const before = reads();
+    fireEvent.click(screen.getByRole("button", { name: "Create promotion" }));
+    const dlg = screen.getByRole("dialog", { name: "Create promotion" });
+    fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Create promotion" })).toBeNull();
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("W30 F24 a Delete the relay refuses while a create is out (409 create_in_flight) shows its line", async () => {
+    const message = "A promotion create for this Creator is still waiting on OnlyFans.";
+    const del = relay.delete as unknown as Mock;
+    del.mockReset();
+    del.mockRejectedValueOnce(new RelayError(409, { detail: { reason: "create_in_flight", message } }));
+    mount(<PromotionTab accountId="a1" />);
+    await screen.findByText("Live week");
+    fireEvent.click(screen.getByRole("switch", { name: "Show expired" }));
+    await screen.findByText("Old one");
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/promotions/2"));
+    expect(await screen.findByText(message)).toBeTruthy();
   });
 
   it("lists only campaigns on offer until Show expired, in Infloww's table with bundles under it", async () => {
@@ -335,6 +389,22 @@ describe("PromotionTab", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /Keep running/ }));
     await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { auto_reactivate: false }));
     expect(post).not.toHaveBeenCalledWith("/admin/automation-rules", expect.anything());
+  });
+
+  it("W30 F12 a row tick the relay refuses says why beside that row", async () => {
+    const message = "“Live week” is already set to keep running. OnlyFans only runs one promotion at a time, so turn that one off first.";
+    get.mockImplementation((path: string) => path.startsWith("/admin/promotions")
+      ? Promise.resolve({ campaigns: [CAMPAIGNS[0], promo({ id: 3, of_promo_id: 503, name: "Other", discount_percent: 30 })],
+        of_available: true }) : Promise.resolve({}));
+    patch.mockRejectedValueOnce(new RelayError(409, { detail: message }, message));
+    mount(<PromotionTab accountId="a1" />);
+    const row = (await screen.findByText("Other")).closest("tr")!;
+    fireEvent.click(within(row).getByRole("checkbox", { name: /Keep running/ }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/3", { auto_reactivate: true }));
+    const alert = await within(row).findByRole("alert");
+    expect(alert.textContent).toBe(message);
+    expect(alert.className).toContain("break-words");
+    expect(within(screen.getByText("Live week").closest("tr")!).queryByRole("alert")).toBeNull();
   });
 
   it("a kept row's Re-create at 90% filled PATCHes the second tick alone", async () => {

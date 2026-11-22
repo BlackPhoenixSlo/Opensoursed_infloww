@@ -6,6 +6,10 @@ finished crawls alone. NULL on every older row (no crawl verdict). The relay DB 
 its additive-column catch-up (`db.engine.init_db`) adds this column too. Self-contained (no app
 import), inspector-guarded + idempotent.
 
+RETIRED: the Audience crawl was deleted 2026-11-12 (docs/spec/phase-02-audience-crawl.md); nothing
+writes or reads this column since. It stays mapped (db/models.py) and this migration stays as is —
+no drop migration.
+
 Revision ID: 0112_mass_run_crawl_outcome
 Revises: 0111_tx_scan_full_walk_failures
 Create Date: 2026-11-11

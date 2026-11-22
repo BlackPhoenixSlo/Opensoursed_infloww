@@ -69,6 +69,14 @@ describe("IfDateInput", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("leaves F4 / Alt+Down to the browser's own picker: no themed pop-over, default not prevented", () => {
+    render(<IfDateInput aria-label="When" type="date" defaultValue="" />);
+    const input = screen.getByLabelText("When");
+    expect(fireEvent.keyDown(input, { key: "F4" })).toBe(true);
+    expect(fireEvent.keyDown(input, { key: "ArrowDown", altKey: true })).toBe(true);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("stays shut when disabled", () => {
     render(<IfDateInput aria-label="When" type="date" disabled defaultValue="" />);
     fireEvent.click(screen.getByLabelText("When"));

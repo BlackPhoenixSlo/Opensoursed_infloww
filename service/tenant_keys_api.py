@@ -25,6 +25,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 import tenant_keys
+from audit_log import credential_write
 from auth import (
     _assert_admin_password, require_master, require_user,
 )
@@ -51,7 +52,7 @@ async def my_llm_keys_status() -> dict[str, Any]:
     }
 
 
-@router.put("")
+@router.put("", dependencies=[Depends(credential_write)])
 async def my_llm_keys_set(request: Request) -> dict[str, Any]:
     """Set or clear this agency's keys. Body is {provider: value, …}; an empty
     string clears that provider. Send ONLY the providers you changed — an absent
@@ -163,7 +164,7 @@ async def agency_llm_keys_status(user_id: str) -> dict[str, Any]:
     return {"user_id": user_id, "providers": await tenant_keys.status(user_id)}
 
 
-@admin_router.put("/{user_id}/llm-keys")
+@admin_router.put("/{user_id}/llm-keys", dependencies=[Depends(credential_write)])
 async def agency_llm_keys_set(
     user_id: str, body: AgencyKeysBody = Body(...),
 ) -> dict[str, Any]:
@@ -194,6 +195,16 @@ _KIND_PURPOSE = {
     "send_followup": "followup", "gen_info": "gen_info",
     "describe_media": "describe_media",
 }
+
+
+async def _funnel_needs_key(account_id: str) -> bool:
+    # The walker bills only a generated step: all-written funnels need no key.
+    from automations.reply_mass_funnel import needs_llm
+    return await needs_llm(account_id)
+
+
+# kind → does it call an LLM right now? Absent: always (while it has a purpose).
+_KIND_NEEDS_KEY = {"reply_mass_funnel": _funnel_needs_key}
 
 
 async def _last_key_error(account_id: str, kind: str, owners: list[str]) -> dict | None:
@@ -244,10 +255,15 @@ async def _kind_provider(account_id: str, kind: str, purpose: str) -> str:
 async def require_llm_key(account_id: str, kind: str) -> None:
     """Refuse switching an AI automation ON while it has no usable key: raises
     `LLMKeyError("missing")` → the app-wide 424 + "add a key" toast. Kinds that
-    call no LLM pass. Live presence only (a rejected key is the run's notice)."""
+    call no LLM pass, and so does a kind whose `_KIND_NEEDS_KEY` says it calls
+    none right now (the funnel walker with no generated step on the runs it
+    walks). Live presence only (a rejected key is the run's notice)."""
     import llm_client
     purpose = _KIND_PURPOSE.get(kind)
     if not purpose:
+        return
+    needs_key = _KIND_NEEDS_KEY.get(kind)
+    if needs_key is not None and not await needs_key(account_id):
         return
     provider = await _kind_provider(account_id, kind, purpose)
     if not await llm_client.llm_key_available(account_id, provider, purpose):

@@ -31,7 +31,8 @@ import { RotateCw } from "lucide-react";
 
 import { Badge, ExtraTag, Input } from "@/components/ui/primitives";
 import { HbButton, HbModal, HB_TABLE } from "@/components/ui/infloww";
-import { CopyButton, SelectInput, errMsg } from "@/components/growth/_bits";
+import { SelectInput, errMsg } from "@/components/growth/_bits";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { useTrialLinks, useCreateTrialLink, useDeleteTrialLink, type TrialLink } from "@/hooks/useGrowth";
 import { useGrowthCreator } from "@/hooks/useAccounts";
 import { useUser } from "@/contexts/UserContext";

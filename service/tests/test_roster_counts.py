@@ -623,6 +623,59 @@ async def case_roster_counts_never_read_a_dead_creator():
         accounts_admin_api._roster_last.pop(D, None)
 
 
+async def case_roster_counts_dead_session_flags_only_the_client_the_read_started_on():
+    """W30-mu #5: a dead-session answer on a client a re-bootstrap replaced mid-read keeps the fresh client pooled
+    and marks nothing; on the still-pooled client it evicts it and marks the Creator dead. Real client_pool."""
+    import client_pool
+    from of_client import OFAPIError
+    import account_health
+
+    class _User:
+        account_ids: list = []
+
+    class _Resp:
+        def __init__(self):
+            self.headers: dict[str, str] = {}
+
+    class _Pooled:
+        def __init__(self, aid, swap_to=None):
+            self.aid, self.swap_to, self.closed, self.user_id = aid, swap_to, False, 9
+
+        def list_chats(self, **_kw):
+            if self.swap_to is not None:
+                client_pool._POOL[self.aid] = self.swap_to
+            raise OFAPIError('400 {"error":{"code":301,"message":"Wrong user."}}')
+
+        def close_signed_sessions(self):
+            self.closed = True
+
+    orig_user = server._get_request_user
+    server._get_request_user = lambda: _User()
+    try:
+        for aid, swap in (("acct-swap", True), ("acct-same", False)):
+            _User.account_ids = [aid]
+            for ns in ("list_chats", "roster_count"):
+                server.relay_cache.invalidate(ns, aid)
+            fresh = _Pooled(aid) if swap else None
+            stale = client_pool._POOL[aid] = _Pooled(aid, swap_to=fresh)
+            _lease(aid)
+            r = (await accounts_admin_api.admin_accounts_roster_counts(_Resp(), bust=aid))["counts"]
+            assert _bare(r[aid]) == {"unread": 0, "owe_reply": 0}, r
+            dead = await account_health.dead_session_map()
+            if swap:
+                assert client_pool._POOL.get(aid) is fresh and not fresh.closed, client_pool._POOL.get(aid)
+                assert aid not in dead, dead
+            else:
+                assert client_pool._POOL.get(aid) is None and stale.closed
+                assert aid in dead and dead[aid].reason == "wrong_user", dead
+            client_pool._POOL.pop(aid, None)
+    finally:
+        _lease()
+        server._get_request_user = orig_user
+        accounts_admin_api._roster_last.pop("acct-swap", None)
+        accounts_admin_api._roster_last.pop("acct-same", None)
+
+
 async def case_every_answer_carries_server_now():
     """Every roster-counts answer carries `now` (server epoch ms): the tab measures its clock skew off it, so a
     count's `as_of` and its own patch stamps compare in one clock (app hooks/useRosterCounts.ts)."""
@@ -680,5 +733,6 @@ _harness.run(
     case_bust_rewarms_shared_list_window,
     case_roster_counts_read_of_only_for_leased_creators,
     case_roster_counts_never_read_a_dead_creator,
+    case_roster_counts_dead_session_flags_only_the_client_the_read_started_on,
     case_every_answer_carries_server_now,
 )

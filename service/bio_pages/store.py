@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from itertools import islice
 from typing import Literal
 
-from bio_pages.decide import HostKind
+from bio_pages.decide import VERIFIED, HostKind
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError, ProgrammingError, TimeoutError
@@ -81,18 +81,21 @@ async def link_profile_id(row_id: str) -> str | None:
         return (await s.execute(text("SELECT profile_id FROM bio_links WHERE id = :i"), {"i": row_id})).scalar()
 
 
+_HOST_ROW = text(
+    "SELECT k, username FROM ("
+    " SELECT 0 AS k, NULL AS username FROM bio_spare_domains WHERE domain = :d"
+    " UNION ALL"
+    " SELECT CASE c.status WHEN 'live' THEN 1 ELSE 2 END AS k, p.username FROM bio_custom_domains c"
+    " JOIN bio_profiles p ON p.id = c.profile_id"
+    " WHERE c.domain = :d AND c.status IN :verified"
+    ") ORDER BY k LIMIT 1").bindparams(bindparam("verified", expanding=True))
+
+
 async def resolve_host_row(name: str) -> tuple[HostKind, str | None]:
     """A spare domain, else the Custom Domain's one Profile once DNS proved it (`pending_cert`: its certificate is
     still being issued, which needs the host served; `live`). A `pending` one names nobody."""
     async with get_session() as s:
-        row = (await s.execute(text(
-            "SELECT k, username FROM ("
-            " SELECT 0 AS k, NULL AS username FROM bio_spare_domains WHERE domain = :d"
-            " UNION ALL"
-            " SELECT CASE c.status WHEN 'live' THEN 1 ELSE 2 END AS k, p.username FROM bio_custom_domains c"
-            " JOIN bio_profiles p ON p.id = c.profile_id"
-            " WHERE c.domain = :d AND c.status IN ('pending_cert', 'live')"
-            ") ORDER BY k LIMIT 1"), {"d": name})).first()
+        row = (await s.execute(_HOST_ROW, {"d": name, "verified": VERIFIED})).first()
     if row is None:
         return "unknown", None
     return ("spare", None) if row.k == 0 else ("custom", row.username)

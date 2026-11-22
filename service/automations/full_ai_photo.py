@@ -1,6 +1,7 @@
 """automations/full_ai_photo.py — Full AI Chat reads the photo he sends (side key `describe_fan_photos`).
 
-Off by default: with the key off nothing here runs and every line reads as before.
+On by default (owner 2026-11-15, `full_ai_config.DEFAULTS`): with the key off nothing here runs and
+every line reads as before.
 
   describe_turn(account_id, turn, client) -> record | None
       The real-messages step (Auto-reply's lazy rule): the newest inbound media row of his Turn with

@@ -501,8 +501,8 @@ def case_unconfirmed_send_dismiss_is_auto_funnels_like_retry_and_agency_scoped()
     from db.models import FollowupState
     denied = {"detail": "Your role does not allow Auto Funnel"}
     q = f"?account_id={IDS['creator_a']}"
-    body = {"kind": "followup", "fan_id": 424242}
     marked_at = datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)   # past the lease
+    body = {"kind": "followup", "fan_id": 424242, "since": marked_at.isoformat() + "Z"}
 
     async def _seed():
         async with get_session() as s:
@@ -960,6 +960,35 @@ def case_a_smart_messages_only_chatter_loads_and_saves_the_nudge_config_and_a_ro
                _role("role-none", _all_but("/growth/smart-messages", "/growth/auto-post")))
         for r in (CHATTER_A.get(read), CHATTER_A.put("/admin/nudge-config", json=save)):
             assert r.status_code == 403 and r.json() == denied, f"{r.status_code} {r.text}"
+        assert fake.calls == []
+    try:
+        _with_fake_of(_check)
+    finally:
+        _reset()
+
+
+def case_nudge_config_bulk_checks_the_page_for_every_named_creator():
+    # W30-SM F4: the role middleware reads only ?account_id= / X-Account-Id; the share's body names more
+    # Creators. A chatter granted Smart Messages in Agency A, refused it in Agency B, cannot switch Agency B's
+    # Creator's nudge on by naming Agency A's in the query: 403 before any write.
+    q = f"?account_id={IDS['creator_a']}"
+    body = {"account_ids": [IDS["creator_a"], IDS["creator_b"]], "config": {"enabled": False}}
+    read_b = f"/admin/nudge-config?account_id={IDS['creator_b']}"
+
+    def _check(fake):
+        _roles(OWNER_A, True, {EMP_AB_A: "role-sm"}, _role("role-sm", _only("/growth/smart-messages")))
+        before = OWNER_B.get(read_b).json()["config"]
+        _roles(OWNER_B, True, {EMP_AB_B: "role-none"},
+               _role("role-none", _all_but("/growth/smart-messages", "/growth/auto-post")))
+        r = CHATTER_AB.put(f"/admin/nudge-config/bulk{q}", json=body)
+        assert r.status_code == 403, f"{r.status_code} {r.text}"
+        assert OWNER_B.get(read_b).json()["config"] == before, "refused: Agency B's Creator untouched"
+        r = CHATTER_AB.put(f"/admin/nudge-config/bulk{q}", json={**body, "account_ids": [IDS["creator_a"]]})
+        assert r.status_code == 200, f"{r.status_code} {r.text}"
+        _reset()   # Agency B's page check off: the same two-Creator share goes through (ownership is not the 403)
+        _roles(OWNER_A, True, {EMP_AB_A: "role-sm"}, _role("role-sm", _only("/growth/smart-messages")))
+        r = CHATTER_AB.put(f"/admin/nudge-config/bulk{q}", json=body)
+        assert r.status_code == 200, f"{r.status_code} {r.text}"
         assert fake.calls == []
     try:
         _with_fake_of(_check)
@@ -2246,6 +2275,75 @@ def case_home_alone_reads_the_pin_to_home_lists_and_a_role_with_no_lists_page_is
         _reset()
 
 
+# #915 deferred: Home only reads /lists (its Pin to home dialog), so its grant is GET-only (permissions.READ_ONLY_GRANTS);
+# Collections, which creates and fills lists, keeps the write.
+def case_home_grants_the_lists_read_only_and_collections_keeps_the_write():
+    """Home serves GET /lists but no write under it; a Home-only chatter's create list is refused (403, OnlyFans never
+    called), a Collections-only chatter's is served."""
+    home, coll = "/of-manager/home", "/of-manager/collections"
+    assert home in permissions.route_pages("/api/of/v2/lists", "GET")
+    for method, path in (("POST", "/api/of/v2/lists"), ("POST", "/api/of/v2/lists/7/users/9"),
+                         ("DELETE", "/api/of/v2/lists/7"), ("PATCH", "/api/of/v2/lists/7")):
+        pages = permissions.route_pages(path, method)
+        assert home not in pages and coll in pages, (method, path, pages)
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-home"}, _role("role-home", _only(home)))
+
+        def _refused(fake):
+            r = CHATTER_A.post("/api/of/v2/lists", json={"name": "x"})
+            first = permissions.route_pages("/api/of/v2/lists", "POST")[0]
+            assert r.status_code == 403 and r.json() == {"detail": f"Your role does not allow {permissions.PAGE_MAP[first][0]}"}, r.text
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
+        _roles(OWNER_A, True, {EMP_A: "role-coll"}, _role("role-coll", _only(coll)))
+
+        def _served(fake):
+            r = CHATTER_A.post("/api/of/v2/lists", json={"name": "x"})
+            assert r.status_code != 403, f"{r.status_code} {r.text}"
+        _with_fake_of(_served)
+    finally:
+        _reset()
+
+
+# W30 W9: Tracking links only reads /lists (its List select; the claimers' add-to-list runs inside /admin/link-meta),
+# so its grant is GET-only too; before, a Tracking-links-only chatter could delete a fan list.
+def case_tracking_links_grants_the_lists_read_only():
+    """Tracking links serves GET /lists but no write under it: a Tracking-links-only chatter's list delete is refused
+    (403, OnlyFans never called); its read is still served (case_a_growth_link_page_alone_reads_…)."""
+    page = "/growth/tracking-links"
+    assert page in permissions.route_pages("/api/of/v2/lists", "GET")
+    for method, path in (("POST", "/api/of/v2/lists"), ("DELETE", "/api/of/v2/lists/7"),
+                         ("PATCH", "/api/of/v2/lists/7"), ("DELETE", "/api/of/v2/lists/7/users/9")):
+        assert page not in permissions.route_pages(path, method), (method, path)
+    try:
+        _roles(OWNER_A, True, {EMP_A: "role-tl"}, _role("role-tl", _only(page)))
+
+        def _refused(fake):
+            r = CHATTER_A.delete("/api/of/v2/lists/7")
+            assert r.status_code == 403, f"{r.status_code} {r.text}"
+            assert fake.calls == [], fake.calls
+        _with_fake_of(_refused)
+    finally:
+        _reset()
+
+
+def case_a_read_only_grant_on_every_page_of_a_prefix_fails_the_import():
+    """Follow-up #12: no `or pages` fallback; permissions.py refuses to import when READ_ONLY_GRANTS would leave a
+    mapped prefix with no page serving its writes (route_pages would answer (), which passes it)."""
+    import types
+    src = Path(permissions.__file__).read_text()
+    line = '    "/of-manager/home": frozenset({"/api/of/v2/lists"}),\n'
+    assert src.count(line) == 1
+    every = permissions.route_pages("/api/of/v2/lists", "GET")
+    bad = src.replace(line, "".join(f'    {h!r}: frozenset({{"/api/of/v2/lists"}}),\n' for h in every))
+    try:
+        exec(compile(bad, permissions.__file__, "exec"), types.ModuleType("permissions_planted").__dict__)
+        raise AssertionError("a prefix granted read-only on every page must fail the import")
+    except AssertionError as e:
+        assert "/api/of/v2/lists" in str(e), e
+    exec(compile(src, permissions.__file__, "exec"), types.ModuleType("permissions_as_is").__dict__)
+
+
 # ticket 20: Statements' Earning statistics bounds its From … To picker by the Creator's start (the same read Statistics
 # makes, /users/me/start-date-model).
 def case_statements_alone_reads_the_creator_start_and_a_role_with_neither_page_is_refused():
@@ -2320,6 +2418,85 @@ def case_statements_alone_reads_the_payout_stats_and_a_role_with_neither_page_is
         _with_fake_of(_refused)
     finally:
         _reset()
+
+
+def case_chats_readable_fails_closed_when_no_page_serves_the_chat_history():
+    """W30-mu #34: if the page map ever stops mapping a chat's history read (unmapped `()` or unknown None),
+    `/events` grants a chatter's stream no reply text, even with enforcement off (`route_refusal` passes an
+    unmapped route)."""
+    a = IDS["creator_a"]
+    real = permissions.route_pages
+    try:
+        _reset()
+        assert asyncio.run(server._chats_readable(frozenset({a}))) is None, "mapped, enforcement off: every one"
+        for unmapped in ((), None):
+            permissions.route_pages = lambda _p, _m, _v=unmapped: _v
+            assert asyncio.run(server._chats_readable(frozenset({a}))) == frozenset(), f"unmapped {unmapped!r}: none"
+    finally:
+        permissions.route_pages = real
+        _reset()
+
+
+def case_events_strip_reply_text_for_creators_whose_chats_the_role_does_not_grant():
+    """W30-mu #25: `GET /events` for a chatter carries `chat_responded`'s `message` (reply text, price) only for
+    Creators whose chat history its role grants (Messages Basic or Pro); the rest get the bell's announcement
+    without it. Enforcement off: every Creator whole. Per Creator: chatter_ab denied in Agency A, granted in B."""
+    import json as _json
+    import chatters
+    import events
+
+    class _Req:
+        headers: dict = {}
+
+        async def is_disconnected(self) -> bool:
+            return False
+
+    a, b = IDS["creator_a"], IDS["creator_b"]
+
+    def ident(name: str, owners: tuple[str, ...], accounts: frozenset) -> chatters.ChatterIdentity:
+        return chatters.ChatterIdentity(id_=IDS[name], username=name, display_name=None, color=None,
+                                        owner_user_ids=frozenset(IDS[o] for o in owners), account_ids=accounts)
+
+    def texts(who: chatters.ChatterIdentity) -> dict[str, bool]:
+        """Creator -> whether its `chat_responded` reached this chatter's stream with `message`."""
+        async def run():
+            tok = chatters._request_chatter.set(who)
+            try:
+                gen = (await server.sse_events(_Req(), scope="all", last_event_id=None)).body_iterator
+            finally:
+                chatters._request_chatter.reset(tok)
+            await gen.__anext__(), await gen.__anext__()        # connected, head
+            for aid in sorted(who.account_ids):
+                events.publish({"chat_responded": {"fan_id": 1, "by": "", "at": 1,
+                                                   "message": {"id": 2, "text": "t", "price": 9.0}},
+                                "__account_id": aid})
+            out = {}
+            for _ in who.account_ids:
+                raw = (await asyncio.wait_for(gen.__anext__(), 3)).decode()
+                data = _json.loads(next(ln[6:] for ln in raw.split("\n") if ln.startswith("data: ")))
+                for d in (m["data"] for m in data) if isinstance(data, list) else (data,):
+                    out[d["__account_id"]] = "message" in d["chat_responded"]
+            await gen.aclose()
+            return out
+        return asyncio.run(run())
+
+    solo = ident("chatter_a", ("agency_a_owner",), frozenset({a}))
+    both = ident("chatter_ab", ("agency_a_owner", "agency_b_owner"), frozenset({a, b}))
+    try:
+        _reset()
+        assert texts(solo) == {a: True}, "enforcement off: whole"
+        _roles(OWNER_A, True, {EMP_A: "role-msg"}, _role("role-msg", _only("/of-manager/messages")))
+        assert texts(solo) == {a: True}, "Messages Basic grants the chat history"
+        _roles(OWNER_A, True, {EMP_A: "role-pro"}, _role("role-pro", _only("/messages-pro")))
+        assert texts(solo) == {a: True}, "so does Messages Pro"
+        _roles(OWNER_A, True, {EMP_A: "role-ap"}, _role("role-ap", _only("/growth/auto-post")))
+        assert texts(solo) == {a: False}, "a role without a messages page: no reply text"
+        _roles(OWNER_A, True, {EMP_AB_A: "role-ap"}, _role("role-ap", _only("/growth/auto-post")))
+        _roles(OWNER_B, True, {EMP_AB_B: "role-msg"}, _role("role-msg", _only("/of-manager/messages")))
+        assert texts(both) == {a: False, b: True}, "per Creator: its own Agency's role decides"
+    finally:
+        _reset()
+        events._subs.clear()
 
 
 _harness.run()

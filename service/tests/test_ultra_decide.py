@@ -10,10 +10,14 @@ Cases:
                            Agency's Creator → PlanError naming step + field.
   case_send_literal_only — a reference in EVERY field of mass_send / post_create (and " $x.y" with a leading
                            space) → refused naming step + field; nothing recorded for a send.
+  case_send_args_coerced — W30 F1: a send's args are stored as its model reads them ("false" → False, "10" → 10,
+                           " fans " → "fans"): the card, the sha and the request read the same values; a judge
+                           ref stays its "$j.ids" string.
   case_substitute        — recorded references filled from earlier results (dotted keys, list index); a missing
                            path → KeyError; an unrecorded "$x.y" string and " $x.y" untouched; a send step's args
                            come back unchanged even when they read like references.
-  case_digest            — sha256 over canonical JSON: key order does not matter, any change does.
+  case_digest            — sha256 over canonical JSON: key order does not matter, any change (or another
+                           plan id) does.
   case_outcome           — done / failed / uncertain per effect: a send with no answer, a 5xx or an echo-check
                            502 is uncertain, a write with no answer too (m6); a send 4xx, a write's 4xx/5xx and
                            a read's failure are failed.
@@ -132,6 +136,21 @@ def case_send_literal_only() -> None:
                 assert any(x["error"] == ud.SEND_LITERAL for x in e.errors if x["field"] == want), e.errors
 
 
+def case_send_args_coerced() -> None:
+    rule = {"id": "rule", "tool": "auto_mass",
+            "args": {"account_id": CA, "text": "hi", "every_hours": "6", "media_folder_id": 7,
+                     "user_lists": [" fans "], "online_only": "false"}}
+    args = ud.validate_plan(_plan(rule), OWNED).steps[0]["args"]
+    assert args["online_only"] is False and args["every_hours"] == 6 and args["user_lists"] == ["fans"], args
+    rows = dict(map(tuple, uc.card(ud.validate_plan(_plan(rule), OWNED), {})[0]["rows"]))
+    assert "online now only" not in rows["Audience"], rows
+    judge = {"id": "j", "question": "best", "candidates": "$pick.data_only.list", "pick_n": 1,
+             "confirm": False}
+    send = {**SEND, "args": {**SEND["args"], "price": "10", "media_files": "$j.ids"}}
+    got = ud.validate_plan(_plan(READ, judge, send), OWNED).steps[2]
+    assert got["args"]["price"] == 10.0 and got["args"]["media_files"] == "$j.ids", got
+
+
 def case_substitute() -> None:
     results = {"pick": {"data_only": {"list": [{"id": 77}, {"id": 78}]}}, "folder": {"id": 9}}
     step = {"id": "add", "tool": "of_folder_add",
@@ -165,8 +184,9 @@ def case_substitute() -> None:
 def case_digest() -> None:
     a = {"summary": "s", "steps": [{"id": "a", "tool": "t", "args": {"x": 1, "y": "é"}}]}
     b = {"steps": [{"args": {"y": "é", "x": 1}, "tool": "t", "id": "a"}], "summary": "s"}
-    assert ud.digest(a) == ud.digest(b) and len(ud.digest(a)) == 64
-    assert ud.digest(a) != ud.digest({**a, "summary": "s2"})
+    assert ud.digest(a, "p1") == ud.digest(b, "p1") and len(ud.digest(a, "p1")) == 64
+    assert ud.digest(a, "p1") != ud.digest({**a, "summary": "s2"}, "p1")
+    assert ud.digest(a, "p1") != ud.digest(a, "p2")  # W30 F8: two identical plans never share an OK
 
 
 def case_outcome() -> None:

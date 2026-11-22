@@ -114,11 +114,11 @@ export default function NotificationsPage() {
     return next;
   });
   const showAccountTag = targetAccountIds.length > 1;
-  const { marking, markAll } = useMarkAllOfNotifsRead();
+  const { marking, markAll, status: markStatus } = useMarkAllOfNotifsRead();
   const liveIds = targetAccountIds.filter((aid) => !activeAccounts.some((a) => a.id === aid && a.session_dead_at));
+  // The arrival badges clear once every write landed, not before (a failed one leaves them).
   const markAllRead = async () => {
-    dispatchNotifCleared();
-    await markAll(liveIds);
+    if (await markAll(liveIds)) dispatchNotifCleared();
   };
 
   return (
@@ -133,6 +133,7 @@ export default function NotificationsPage() {
               <CheckCheck aria-hidden className="h-4 w-4 sm:hidden" />
               <span className="max-sm:hidden">Mark all read</span>
             </IfButton>
+            {markStatus && <span role="status" className="text-xs text-err">{markStatus}</span>}
             <button
               type="button"
               disabled

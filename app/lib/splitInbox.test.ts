@@ -1,46 +1,36 @@
 import { describe, expect, it } from "vitest";
 
-import type { OFChatItem } from "@/lib/relay";
-
-import { filterByInbox, groupOf, splitInboxKey, type InboxSplit } from "./splitInbox";
+import { groupOf, inboxGate, splitInboxKey, type InboxSplit } from "./splitInbox";
 
 // Fan ids are moved explicitly, so each one's group is known: f1, f3 in 1; f2 in 2.
 const config = { group_count: 2, assignments: { f1: 1, f2: 2, f3: 1 } };
-const row = (aid: string, fid: string) => ({ __accountId: aid, withUser: { id: fid } }) as unknown as OFChatItem;
-const rows = [row("a", "f1"), row("a", "f2"), row("a", "f3"), row("b", "f1"), row("b", "f2")];
+const FANS: [string, string][] = [["a", "f1"], ["a", "f2"], ["a", "f3"], ["b", "f1"], ["b", "f2"]];
 const ok: InboxSplit = { status: "success", config };
-const ids = (rs: readonly OFChatItem[]) => rs.map((c) => `${c.__accountId}:${c.withUser.id}`);
-const sets = (m: ReadonlyMap<string, ReadonlySet<string>>) =>
-  Object.fromEntries([...m].map(([k, v]) => [k, [...v].sort()]));
 
-describe("filterByInbox", () => {
+describe("inboxGate", () => {
   it.each<[string, Record<string, number>, [string, InboxSplit][], {
-    rows: string[]; out?: Record<string, string[]>; pending?: string[]; failed?: string[];
+    in: string[]; out?: string[]; pending?: string[]; failed?: string[];
   }]>([
-    ["no pick keeps every row", {}, [], { rows: ids(rows) }],
-    ["the picked group only", { a: 1 }, [["a", ok]], { rows: ["a:f1", "a:f3", "b:f1", "b:f2"], out: { a: ["f2"] } }],
-    ["group 2", { a: 2 }, [["a", ok]], { rows: ["a:f2", "b:f1", "b:f2"], out: { a: ["f1", "f3"] } }],
+    ["no pick serves every Fan", {}, [], { in: FANS.map(([a, f]) => `${a}:${f}`) }],
+    ["the picked group only", { a: 1 }, [["a", ok]], { in: ["a:f1", "a:f3", "b:f1", "b:f2"], out: ["a:f2"] }],
+    ["group 2", { a: 2 }, [["a", ok]], { in: ["a:f2", "b:f1", "b:f2"], out: ["a:f1", "a:f3"] }],
     ["both Creators picked", { a: 1, b: 2 }, [["a", ok], ["b", ok]],
-      { rows: ["a:f1", "a:f3", "b:f2"], out: { a: ["f2"], b: ["f1"] } }],
-    ["split not read yet: rows held back, nothing out", { a: 1 }, [],
-      { rows: ["b:f1", "b:f2"], pending: ["a"] }],
-    ["split loading", { a: 1 }, [["a", { status: "pending" }]], { rows: ["b:f1", "b:f2"], pending: ["a"] }],
-    ["split read failed: rows held back, Creator failed", { a: 1 }, [["a", { status: "error" }]],
-      { rows: ["b:f1", "b:f2"], failed: ["a"] }],
-    ["pick above the count: no rows, every row out", { a: 3 }, [["a", ok]],
-      { rows: ["b:f1", "b:f2"], out: { a: ["f1", "f2", "f3"] } }],
+      { in: ["a:f1", "a:f3", "b:f2"], out: ["a:f2", "b:f1"] }],
+    ["split not read yet: held, nothing out", { a: 1 }, [], { in: ["b:f1", "b:f2"], pending: ["a"] }],
+    ["split loading", { a: 1 }, [["a", { status: "pending" }]], { in: ["b:f1", "b:f2"], pending: ["a"] }],
+    ["split read failed: held, Creator failed", { a: 1 }, [["a", { status: "error" }]],
+      { in: ["b:f1", "b:f2"], failed: ["a"] }],
+    ["pick above the count: every Fan out", { a: 3 }, [["a", ok]],
+      { in: ["b:f1", "b:f2"], out: ["a:f1", "a:f2", "a:f3"] }],
   ])("%s", (_name, picks, splits, want) => {
-    const got = filterByInbox(rows, picks, new Map(splits));
-    expect(ids(got.rows)).toEqual(want.rows);
-    expect(sets(got.out)).toEqual(want.out ?? {});
-    expect([...got.pending]).toEqual(want.pending ?? []);
-    expect([...got.failed]).toEqual(want.failed ?? []);
-  });
-
-  it("returns the same rows when none is dropped", () => {
-    expect(filterByInbox(rows, {}, new Map()).rows).toBe(rows);
-    const one = [row("a", "f1")];
-    expect(filterByInbox(one, { a: 1 }, new Map([["a", ok]])).rows).toBe(one);
+    const gate = inboxGate(picks, new Map(splits));
+    const by = (v: string) => FANS.filter(([a, f]) => gate.of(a, f) === v).map(([a, f]) => `${a}:${f}`);
+    expect(by("in")).toEqual(want.in);
+    expect(by("out")).toEqual(want.out ?? []);
+    const held = [...(want.pending ?? []), ...(want.failed ?? [])];
+    expect(by("held")).toEqual(FANS.filter(([a]) => held.includes(a)).map(([a, f]) => `${a}:${f}`));
+    expect([...gate.pending]).toEqual(want.pending ?? []);
+    expect([...gate.failed]).toEqual(want.failed ?? []);
   });
 });
 

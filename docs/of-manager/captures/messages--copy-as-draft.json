@@ -1,0 +1,15 @@
+{
+  "id": "messages--copy-as-draft",
+  "section": "messages",
+  "label": "Copy as draft",
+  "phase": 2,
+  "pages": [
+    "messages/chat"
+  ],
+  "note": "Infloww's own bubble extra (not OF's): on my own priced bubble, fills this chat's Chat draft (oi:chat:<account>:<chat>) with the bubble's text, price, media ids, free previews and tags (OF's releaseForms: creators, guests, release forms), as applying a script writes it; the draft's reply and schedule stay; nothing is sent (ofMirrorBubbleExtras scriptFromMessage).",
+  "proof": {
+    "kind": "mocked",
+    "verdict": "parked",
+    "reason": "Mocked: writes nothing on OF; its screenshot comes from the Unsend PPV Live proof; Live proof pending (ticket 54)"
+  }
+}

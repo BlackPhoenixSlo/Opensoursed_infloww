@@ -7,7 +7,7 @@
  * reads and writes nothing.
  */
 
-import { CopyButton } from "@/components/growth/_bits";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { Section, SettingsPanel } from "@/components/settings/SettingsPanel";
 import { BRAND_NAME } from "@/lib/brand";
 

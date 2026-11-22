@@ -44,7 +44,9 @@ phrase matcher `sensitive_hits` also stops it), `{name}`, and the OF word restri
 A vault id OF refuses stops the run (`error`): every later fan would fail too.
 Another 4xx marks the fan `failed`; a timeout, dropped connection or 5xx may
 have sent, so the fan turns `unknown`. A leg past `_LEG_BUDGET_S` stops early
-and chains, so it never holds a bulk slot long. Each send writes the outbound
+and chains, so it never holds a bulk slot long. A run no fan of which left
+pending for `_STALL_DEADLINE` (deferred leg after leg) skips its pending fans
+("deadline") and is done. Each send writes the outbound
 `messages` row (automation_kind "priority_mass", the launching Employee) and
 rests the fan `_REST_S` (`start_fan_cooldown`, which creates a missing row).
 
@@ -65,8 +67,8 @@ from attribution import write_outbound_attribution
 from automation_registry import register
 from automations._common import (
     apply_word_restriction, is_media_rejected_error, load_hard_skip_ids,
-    quarantine_if_undeliverable, should_skip_muted_creator, skip_unreachable_fan,
-    substitute_placeholders, template_fan_name,
+    quarantine_if_undeliverable, schedule_recheck_rejected_media, should_skip_muted_creator,
+    skip_unreachable_fan, substitute_placeholders, template_fan_name,
 )
 from automations._wordfilter import banned_hit_summary, filter_banned, load_banned_words, sensitive_hits
 from db.engine import get_session
@@ -84,6 +86,12 @@ _LEG_BUDGET_S = 180          # a leg slowed by the shared write gap stops here a
 _DEFER_S = 60                # the next leg's wait after a rate limit or an all-deferred leg
 _REST_S = 45                 # as lifecycle_messages: a short rest after a send
 _PAUSED_SKIP = timedelta(minutes=15)   # paused longer than this = quarantined, skipped
+# A run with no progress this long (no fan left pending: sent, skipped, failed
+# or unknown; since it was made when none has yet) ends: its pending fans are
+# skipped ("deadline"). Progress, not age: a big run that keeps sending never
+# stops. A guess: only a rate limit / busy pool deferring every fan leg after
+# leg goes 48 h without one.
+_STALL_DEADLINE = timedelta(hours=48)
 
 # Run statuses.
 RESOLVING, RUNNING, DONE, CANCELLED, ERROR = "resolving", "running", "done", "cancelled", "error"
@@ -268,18 +276,34 @@ async def _leg(run: PriorityMassRun) -> dict:
     aid, rid = run.account_id, run.id
     async with get_session() as s:
         # A claim this leg did not make was left by a crash mid-send: unknown, never resent.
+        # Its updated_at stays the claim's: the sweep is no progress (the deadline below).
         stale = await s.execute(update(PriorityMassRecipient).where(
             PriorityMassRecipient.run_id == rid, PriorityMassRecipient.status == CLAIMED,
-        ).values(status=UNKNOWN, reason="interrupted", updated_at=datetime.utcnow()))
-        batch = list((await s.execute(select(PriorityMassRecipient.fan_id).where(
-            PriorityMassRecipient.run_id == rid, PriorityMassRecipient.status == PENDING,
-        ).order_by(PriorityMassRecipient.updated_at, PriorityMassRecipient.fan_id)
-            .limit(_LEG))).scalars())
-        fans = {int(f.fan_id): f for f in (await s.execute(select(Fan).where(
-            Fan.account_id == aid, Fan.fan_id.in_(batch or [-1])))).scalars()}
+        ).values(status=UNKNOWN, reason="interrupted"))
+        moved = (await s.execute(select(func.max(PriorityMassRecipient.updated_at)).where(
+            PriorityMassRecipient.run_id == rid,
+            PriorityMassRecipient.status.not_in((PENDING, CLAIMED))))).scalar()
+        last = max((t for t in (moved, run.created_at) if t is not None), default=None)
+        late = None
+        if last is not None and datetime.utcnow() - last > _STALL_DEADLINE:
+            late = await s.execute(update(PriorityMassRecipient).where(
+                PriorityMassRecipient.run_id == rid, PriorityMassRecipient.status == PENDING,
+            ).values(status=SKIPPED, reason="deadline", updated_at=datetime.utcnow()))
+            batch, fans = [], {}
+        else:
+            batch = list((await s.execute(select(PriorityMassRecipient.fan_id).where(
+                PriorityMassRecipient.run_id == rid, PriorityMassRecipient.status == PENDING,
+            ).order_by(PriorityMassRecipient.updated_at, PriorityMassRecipient.fan_id)
+                .limit(_LEG))).scalars())
+            fans = {int(f.fan_id): f for f in (await s.execute(select(Fan).where(
+                Fan.account_id == aid, Fan.fan_id.in_(batch or [-1])))).scalars()}
         s.expunge_all()
     stats = {"interrupted": int(stale.rowcount or 0), "sent": 0, "skipped": 0,
              "failed": 0, "unknown": 0, "deferred": 0}
+    if late is not None:
+        log.warning("priority_mass run=%s account=%s no progress for %s: %s fan(s) skipped",
+                    rid, aid, _STALL_DEADLINE, late.rowcount)
+        stats["skipped"] = int(late.rowcount or 0)
     if not batch:
         await _set_status(rid, DONE, only_from=(RUNNING,))
         return {**stats, "status": "ok", "done": True}
@@ -363,6 +387,8 @@ async def _leg(run: PriorityMassRun) -> dict:
                     await _set_recipient(rid, fid, PENDING)
                     await _set_status(rid, ERROR, error=(
                         "OnlyFans refused the attached media; stopped"))
+                    # A media the creator deleted on OF leaves the mirror.
+                    schedule_recheck_rejected_media(aid, client, media + previews, log=log)
                     return {**stats, "status": "error", "reason": "media_rejected"}
                 if _refused(exc):
                     await _set_recipient(rid, fid, FAILED, reason="error")

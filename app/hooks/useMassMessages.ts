@@ -247,17 +247,23 @@ export function useMassQueueProgress(accountIds: string[], daysBack: number, lim
   return [...inFlight.values()];
 }
 
+/** Unsend one broadcast, then flip its row's `isCanceled` in the caches so
+ *  the UI stops showing it as unsendable without waiting for the refetch.
+ *  Takes the client, not a hook, so a bulk run outlives the tab (useBulkUnsend). */
+export async function cancelMassMessage(
+  qc: QueryClient,
+  { id, accountId }: { id: number; accountId: string },
+): Promise<unknown> {
+  const res = await relay.delete(`/api/of/v2/messages/queue/${id}`, { accountId });
+  patchRowInCaches(qc, accountId, id);
+  qc.invalidateQueries({ queryKey: [KEY_PREFIX, accountId] });
+  return res;
+}
+
 export function useCancelMassMessage() {
   const qc = useQueryClient();
   return useMutation<unknown, Error, { id: number; accountId: string }>({
-    mutationFn: ({ id, accountId }) =>
-      relay.delete(`/api/of/v2/messages/queue/${id}`, { accountId }),
-    onSuccess: (_data, { accountId, id }) => {
-      // Optimistically flip the row's `isCanceled` so the UI stops
-      // showing it as unsendable without waiting for the refetch.
-      patchRowInCaches(qc, accountId, id);
-      qc.invalidateQueries({ queryKey: [KEY_PREFIX, accountId] });
-    },
+    mutationFn: (vars) => cancelMassMessage(qc, vars),
   });
 }
 

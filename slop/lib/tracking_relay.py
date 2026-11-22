@@ -20,7 +20,7 @@ Each call waits `latency_s` (a guess at OF's latency); the reads are counted per
 
 Cloudflare Turnstile's siteverify (custom redirect links' "Bot check before redirect") is faked at its
 wire: when the relay has TURNSTILE_SECRET_KEY (a scenario's RELAY_ENV) and no TURNSTILE_VERIFY_URL,
-`wire` points the product's TURNSTILE_VERIFY_URL env seam (read per call by tracking_links_api) at
+`wire` points the product's TURNSTILE_VERIFY_URL env seam (read per call by turnstile.verify_url) at
 
   POST /__slop/fake/turnstile-siteverify  Cloudflare's form body (secret, response, remoteip) -> {success}:
                                success iff the secret is the relay's and the token starts with "pass-"

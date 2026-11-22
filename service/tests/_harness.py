@@ -109,6 +109,10 @@ def bootstrap() -> None:
     llm_providers._api_key = _api_key
 
     asyncio.run(init_db())
+    # Server boot's runtime_switches.load() (startup early-returns in test mode): an off_only switch reads off
+    # until the table is read, so env-on suites need the (empty) table loaded as a booted Relay has it.
+    import runtime_switches
+    asyncio.run(runtime_switches.load())
 
 
 def make_client():

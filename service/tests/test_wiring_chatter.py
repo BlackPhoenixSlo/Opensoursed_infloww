@@ -142,4 +142,31 @@ async def case_autoreply_on_schedules():
     assert await _schedules(aid, "autoreply")
 
 
+
+async def case_autoreply_on_with_no_source_is_refused():
+    """W30-SM F12: a fan qualifies through folders OR new fans; enabled with both off
+    (as saved: the posted blob over the defaults, folders on / new fans off — a save
+    replaces the stored blob) would reply to nobody → 422, the blob and the rule
+    untouched. Off with both off saves."""
+    from fastapi import HTTPException
+    aid = "wire_ar_nosrc"
+    await _seed(aid)
+    put = lambda cfg: autoreply_config_api.put_autoreply_config(  # noqa: E731
+        autoreply_config_api._ConfigBody(account_id=aid, config=cfg))
+    await put({"enabled": False, "folders_enabled": False, "new_fans_enabled": False})
+    for cfg in ({"enabled": True, "folders_enabled": False, "new_fans_enabled": False},
+                {"enabled": True, "folders_enabled": False}):   # new fans default off
+        try:
+            await put(cfg)
+            raise AssertionError(f"accepted {cfg}")
+        except HTTPException as e:
+            assert e.status_code == 422, (cfg, e.status_code)
+    assert (await _stored(aid, "autoreply_config_json")).get("enabled") is False
+    assert not [r for r in await _rules(aid, "autoreply") if r.is_enabled]
+    await put({"enabled": True, "new_fans_enabled": True, "folders_enabled": False})
+    assert (await _stored(aid, "autoreply_config_json")).get("enabled") is True
+    await put({"enabled": True})   # folders default on
+    assert (await _stored(aid, "autoreply_config_json")) == {"enabled": True}
+
+
 _harness.run()

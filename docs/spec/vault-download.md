@@ -24,13 +24,15 @@ list of items without a file and Retry.
   downloads any folder without selecting it first (always listed; off with the gate's reason). Row menu and Extras item
   start through one `scopeArgs` in `VaultManagePanel`. The toolbar's whole-vault icon is gone.
 - **Gate**: `downloadGate(state, sink, mode, count, access)` in `vaultDownloadReducer.ts` is the one rule for all
-  three: no sink → `DOWNLOAD_OFF`; a picker open → `BUSY_OFF`; a phone run listing / running → `busyOff` (a folder
-  run busy is not off: the press queues); a finished phone run's
+  three: no sink → `DOWNLOAD_OFF`; a picker open, or a held slot with nothing to queue behind (`claim`: a start or
+  Retry's permission ask still pending) → `BUSY_OFF`; a full queue (`JOBS_MAX` = 20 waiting) → `QUEUE_FULL_OFF`; a
+  phone run listing / running → `busyOff` (a folder run busy is not off: the press queues); a finished phone run's
   unsaved batches → `UNSAVED_OFF`; phone and
   not a selection → `SHARE_MODE_OFF` (`desktopOnly`, the rail item reads "Download folder (desktop only)"); phone
   over 20 → `SHARE_COUNT_OFF`; whole vault for a folder-limited chatter, or one whose folder access is not read yet
   or failed (`dlAccess`) → `RESTRICTED_OFF` ("Your access is by folder: download a folder"). The reason is the
-  disabled control's `title`.
+  disabled control's `title`. The gate also says whether a press queues; every label comes from `downloadLabel(gate,
+  noun)`: "Download <noun>", "Add <noun> to queue", or on a phone "Download <noun> (desktop only)" (visible text).
 
 ## Findings, 2026-11-08, a real account (no proxy), Chromium (Playwright) on http://127.0.0.1:3001
 
@@ -57,7 +59,7 @@ GETs only). Each Policy names `AWS:SourceIp` = this machine's public IP /32 (the
   memory. Chromium/Edge only. Elsewhere the button says why it's off.
 - **Source per item** (the reducer's `sourceFor`): **direct by default** when `GET /admin/vault-ai/download/info`
   says `direct` (the account's egress is Direct, no proxy). Measured above: CDN CORS allows it, and the bytes skip the
-  relay. On a direct failure (TypeError / non-2xx) it calls `GET /admin/vault-ai/download/resign` (one OF listing read per 100-item window, else by id,
+  relay. On a direct failure (TypeError / non-2xx, whose body is cancelled) it calls `GET /admin/vault-ai/download/resign` (one OF listing read per 100-item window, else by id,
   `cdn_resign`, no bytes) and retries direct once. Then it uses `GET /admin/vault-ai/download` (relay stream through
   the account's client/proxy, `Content-Disposition: attachment`, a 403 re-signs once, never read whole, one
   `VAULT_DOWNLOAD` slot per stream). The slot: waited for at most `SLOT_WAIT_S` (45 s, under a 60 s proxy read timeout), then 503 `download_busy`
@@ -66,8 +68,10 @@ GETs only). Each Policy names `AWS:SourceIp` = this machine's public IP /32 (the
   loop) has finished, so ended streams never let new ones past the cap while their transfers still close; a stalled
   client send (`SEND_IDLE_S` 120 s) or a stream older than `MAX_STREAM_S` (2 h) ends it. The upstream idle bound is
   curl's low-speed limit. **Resign** follows `/download`'s url rule: a passed `u` is used only when it names this
-  media (same file) or, for an unrestricted caller with no mirror row, is on an OF CDN host; else the mirror/by-id
-  read. All three download routes 422 an empty `account_id`. After 2 items fail direct even after a re-sign, direct turns off for the rest of
+  media (same file) or, for an unrestricted caller with no mirror row, is on an OF CDN host; else the mirror row's own
+  url is the failed one, so either way it goes through `cdn_resign`'s window read and fail cache; by id only with no
+  row. A cached window that still holds the failed url (signed for an earlier egress IP) is re-read once before any
+  by-id read. All three download routes 422 an empty `account_id`. After 2 items fail direct even after a re-sign, direct turns off for the rest of
   the run (no 2 OF reads per item on a box whose IP doesn't match). Proxied account: relay only, and the browser never
   touches the CDN. Each item records `direct` or `relay`.
 - **Listing**: selection = the grid's ticked tiles. Folder / whole vault page the same source the grid reads: the
@@ -75,6 +79,8 @@ GETs only). Each Policy names `AWS:SourceIp` = this machine's public IP /32 (the
   `LIVE_PAGE_GAP_MS` = 1.5 s between pages). A `hasMore` page that adds no new id, or more than `LIST_MAX_PAGES`
   (1000) pages, fails the run "listing incomplete" rather than download part of it as the whole. Both are folder-gated server-side for restricted chatters, and the
   download routes 404 a media outside the chatter's folders.
+- **Creator in the path**: the model's name (`creatorDir`); only when two of the operator's models (the whole
+  `GET /admin/accounts` registry) name the same folder, case-insensitive, does each get ` (<account id>)`.
 - **Folder in the path**: the folder downloaded. For a selection or the whole vault, the item's first custom OF
   folder (`listStates`), else `Unfiled`. The whole vault keeps one copy per media.
 - **State**: `app/components/vault/vaultDownloadReducer.ts` (pure, typed `Action` union, vitest tables). The runner
@@ -98,20 +104,30 @@ said "A download is running", switching Creator lost the grid's folder / ticks.
 - **Lifetime**: `VaultDownloadProvider` sits in `app/layout.tsx` (inside AuthGate), above every route, so navigating
   never unmounts the run; the card (`aria-label="Vault download"`) shows on every page, with "Open Vault Pro" off
   that page. Each run carries its own Creator (account id, name); picking another Creator never touches it. Sign-out
-  unmounts the provider: the run is aborted and the queue dropped. An account leaving `GET /admin/accounts`
-  (`VaultDownloadAccountGuard` -> `keepAccounts`) drops its queued jobs and aborts its running one. Nothing survives a
+  unmounts the provider: the run is aborted and the queue dropped. An account leaving `GET /admin/accounts` (the
+  provider reads it itself -> `keepAccounts`) drops its queued jobs, aborts its running one and drops that run's
+  files, links and Retry (unsaved phone files of a removed Creator are never shared). Nothing survives a
   reload (no persistence; no beforeunload guard).
 - **Queue** (folder sink only): a start while a run is busy is `enqueue`d (the buttons read "Add selected / folder to queue",
   the Extras drawer item "Add full vault / folder to queue"; the same job queued twice is ignored, a selection never counts as a duplicate). Jobs run one
   at a time in order, each into the same picked folder (the handle is kept); `queryPermission` before each queued job,
   and a lapsed one pauses the queue with Resume (`requestPermission` needs the click). The card names the next jobs
-  ("Next: Ava: Beach · …"), "Cancel current" (the queue goes on) and "Clear queue (N)". The share sink has no queue:
+  ("Next: Ava: Beach · …"), "Cancel current" (the queue goes on) and "Clear queue (N)". At most `JOBS_MAX` (20)
+  wait; one more is refused with a note and every Download reads `QUEUE_FULL_OFF`. A run that ends short with jobs
+  waiting puts its retryable items at the queue's end as one retry job (none into a full queue: the card keeps its
+  manual Retry); a retry job's own failures never queue again
+  (they stay on its card line for a manual Retry), so the queue always drains. The share sink has no queue:
   its buttons stay off with "A download is running: Ava · 12/40". Not built: reorder, per-job cancel, parallel jobs,
   adding to the running job.
 - **Stall watchdog** (`vaultDownload.ts`): each item has its own AbortController chained to the run's. No response
-  headers within `HEAD_MS` (60 s) or no bytes for `STALL_MS` (20 s, under the relay's 30 s curl low-speed limit) aborts
-  that item only: it ends `stalled` and the worker takes the next. The sink write is raced against it too (a hung
-  write can't hold the run). A file the item created is removed (`removeEntry`); Chromium's `.crswap` goes on abort.
+  headers within `HEAD_MS` (90 s: outlasts the relay's slot wait `SLOT_WAIT_S` 45 s + a re-sign with an OF 429 waited
+  out, so a busy relay answers its own 503) or no bytes for `STALL_MS` (20 s, under the relay's 30 s curl low-speed
+  limit) aborts that item only: it ends `stalled` and the worker takes the next. The sink write is raced against it
+  too (a hung write can't hold the run). A file the item created is removed (`removeEntry`) only while that attempt
+  still owns the path (a replacement attempt's finished file stays); Chromium's `.crswap` goes on abort. The run's
+  setup reads (the account's direct check, each listing page, the links file write) end within `SETUP_MS`
+  (= `HEAD_MS`): no direct answer → relay only, a hung links write → "Links file not saved", a hung listing page →
+  the run fails "listing stalled"; none of them holds the queue.
 - **Outcomes** per item: `done`, `failed`, `stalled`, `cancelled`, `drm`. Retry takes failed + stalled + cancelled,
   never `drm`. The title reads "Partly downloaded: …" when short; the counts name each kind; "N without a file"
   lists them with the reason. Finished jobs stay as one line each under the card (last 5); the card is compact and
@@ -119,14 +135,20 @@ said "A download is running", switching Creator lost the grid's folder / ticks.
 - **Browse memory**: `VaultBrowseMemory` (above VaultProPage's per-Creator remount) keeps each Creator's folder, type,
   search, select mode and ticks for the page's life (`browseMapReducer`). The Photo / Video filter keeps the ticks
   (they hold the media, so hidden ticks still download); a folder or search change clears them; a started (or queued)
-  selection clears them. Escape closes the folder ⋯ menu.
+  selection clears them. Escape closes the folder ⋯ menu. While the live grid still shows the previous folder's tiles
+  (react-query placeholder) none can be ticked and Select all is off, so a folder's ticks never save under another.
+  `useVaultBrowse` throws without the provider (no silent local fallback). "Searching OnlyFans" ends within
+  `OF_SEARCH_MS` (60 s, the request aborted with the picker / term); a failure or timeout reads "OnlyFans search
+  failed" with Retry, never "No media".
 
 ## Links file (open items on a computer)
 
 - **What**: `vaultLinksFile.buildLinksFile` (pure): `links-….txt` (`<id>.<ext>  <link>` per item, `#` header) and
   `links-….html` (self-contained, a table, each link `target=_blank`, all text escaped). Same rows.
 - **When / where**: right after listing, before the first media. Desktop: into `<creator>/` (a folder download:
-  `<creator>/<folder>/`) of the picked folder; a write error never stops the download. Phone: its own "Save links"
+  `<creator>/<folder>/`) of the picked folder; a write error never stops the download. A pair of the same name another
+  job wrote into that picked folder this page-load (two queued selections of one Creator) is kept: this run's pair is
+  named `…-2`, `…-3`; an older pair of that name (an earlier visit's) is overwritten. Phone: its own "Save links"
   share (txt `text/plain` + html `text/html`; txt only if `canShare` refuses html), not in a media batch (a non-media
   file in a mixed share would cost iOS its Save Image/Video), outside the 20 cap and the batch budget.
 - **Link per item**: direct account and the url has > 10 min left: its signed CDN url (opens with no login, but
@@ -171,7 +193,8 @@ said "A download is running", switching Creator lost the grid's folder / ticks.
   upstream cut mid-body ends short with no Traceback), `app/components/vault/vaultDownloadReducer.test.ts` (attempts,
   outcomes, queue, retry jobs), `vaultDownload.test.ts` (source chain, strikes, proxied relay-only, short body,
   cancel, retry, paging, stall watchdog, no partial file), `VaultDownloadPanel.test.tsx` (queue into one folder,
-  permission pause, unmount aborts, accounts guard), `vaultBrowseReducer.test.ts`.
+  permission pause, unmount aborts, the provider dropping a removed model's run, Retry's pending ask shown as busy),
+  `service/tests/test_cdn_resign_page.py` (window reads, a stale cached window re-read once), `vaultBrowseReducer.test.ts`.
 - Slop: `slop/scenarios/2026-11-08-vault-download.py` (README.vault.md): all 3 modes through the UI (whole vault and
   the pick hint via the Extras drawer item) on a fake CDN; the header-folder phase (rail folder selected, the drawer
   item reads "Download full folder", listing requests carry that folder's id, exactly its media saved: HEADER_SCOPE,

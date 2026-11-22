@@ -209,6 +209,9 @@ Cases:
       one closer borrowed from outside every kept script — same colour before
       same room, clip first — appended last, `borrowed`, health says so; none
       to borrow → "no closer".
+  case_a_borrowed_closer_keeps_the_cap_and_skips_pruned_frames:
+      W30 F12: a full ladder (10) that borrows stays at SCRIPT_SIZE (a non-closer goes to overflow);
+      a frame the script pruned as a near-dupe is never the one borrowed back.
   case_script_names_and_health:
       `AI-<colour garment> · <room> · <Mon D>`, capped; health phrase table.
   case_renamed_scripts_reuse_on_rerun_and_retire_the_old_names:
@@ -1675,6 +1678,8 @@ def case_an_unasked_item_is_never_solo() -> None:
     assert not vault_scripts.is_solo({"acts": ["posing"]}), \
         "no evidence read as solo — the whole vault would be a solo folder"
     assert vault_scripts.is_solo({"partner_visible": False}), "asked, and answered"
+    jev = {**_jev_photo(), "tags": {"people_count": "two_or_more"}}
+    assert not vault_scripts.is_solo({"partner_visible": False, "_jev": jev}), "Jev's head count is a vote"
 
     cov = asyncio.run(vault_scripts.solo_coverage(aid))
     assert cov == {"described": 2, "known": 1, "unknown": 1, "solo": 1,
@@ -1848,14 +1853,19 @@ def case_a_duplicate_set_is_one_item_in_every_folder() -> None:
 
 
 def case_collapse_keeps_the_original_unless_it_has_no_reading() -> None:
-    rows = [{"media_id": 1, "fields": {}}, {"media_id": 2, "fields": {"x": 1}},
-            {"media_id": 3, "fields": {"x": 1}}, {"media_id": 4, "fields": {"x": 1}},
-            {"media_id": 5, "fields": {"x": 1}}]
+    d = "described"
+    rows = [{"media_id": 1, "fields": {}}, {"media_id": 2, "fields": {"x": 1}, "describe_status": d},
+            {"media_id": 3, "fields": {"x": 1}, "describe_status": d},
+            {"media_id": 4, "fields": {"x": 1}, "describe_status": d},
+            {"media_id": 5, "fields": {"x": 1}, "describe_status": d},
+            {"media_id": 6, "fields": {"x": 1}, "describe_status": "failed"}]
     for name, groups, want_kept, want_drop in (
-        ("original kept", [[2, 3]], [1, 2, 4, 5], [3]),
-        ("unread original gives way to the first read copy", [[1, 2, 3]], [2, 4, 5], [1, 3]),
-        ("a set with one live member is no set", [[4, 99]], [1, 2, 3, 4, 5], []),
-        ("two sets", [[2, 3], [4, 5]], [1, 2, 4], [3, 5]),
+        ("original kept", [[2, 3]], [1, 2, 4, 5, 6], [3]),
+        # W30 F23: a failed row's leftover fields are no reading; the described copy is kept.
+        ("failed copy is passed over for the described one", [[1, 6, 4]], [2, 3, 4, 5], [1, 6]),
+        ("unread original gives way to the first read copy", [[1, 2, 3]], [2, 4, 5, 6], [1, 3]),
+        ("a set with one live member is no set", [[4, 99]], [1, 2, 3, 4, 5, 6], []),
+        ("two sets", [[2, 3], [4, 5]], [1, 2, 4, 6], [3, 5]),
     ):
         kept, dropped = vault_scripts.collapse_dupes(rows, groups)
         assert [r["media_id"] for r in kept] == want_kept and dropped == want_drop, \
@@ -2272,6 +2282,26 @@ def case_a_script_with_no_closer_borrows_one() -> None:
     assert s["health"][0] == "no closer" and not any(r.get("borrowed") for r in s["items"]), s
 
 
+def case_a_borrowed_closer_keeps_the_cap_and_skips_pruned_frames() -> None:
+    aid = _next_account()
+    rows = [(3501 + i, 0.0, _bra("sfw", ["posing"], "dressed", room="bedroom"), "photo") for i in range(3)]
+    rows += [(3511 + i, 0.0, _bra("suggestive", ["tease"], room="bedroom"), "photo") for i in range(9)]
+    # Kitchen: two closers, one rung — no script of their own, both borrowable (same colour).
+    rows += [(3591, 5.0, _bra("explicit", ["fingering"], "fully_nude", room="kitchen"), "photo"),
+             (3592, 5.0, _bra("explicit", ["fingering"], "fully_nude", room="kitchen"), "photo")]
+    asyncio.run(_seed(aid, rows))
+    pool, _ = asyncio.run(vault_scripts._grouping_rows(aid))
+    (s,) = asyncio.run(vault_scripts.collect_outfit_scripts(aid, rows=pool, prints={}))
+    assert s["size"] == vault_scripts.SCRIPT_SIZE and not s["closes_on_own"], s["size"]
+    s["near_dupes"] = [*s["near_dupes"], 3591]   # pruned as a burst frame of a kept item
+    vault_scripts.borrow_closers([s], pool)
+    assert s["borrowed"] == 3592, s["borrowed"]
+    ladder = [r for r in s["items"] if r["why"]["rung"] is not None]
+    assert len(ladder) == s["size"] == vault_scripts.SCRIPT_SIZE, (len(ladder), s["size"])
+    assert ladder[-1]["media_id"] == 3592 and s["closes_on_own"] == 1
+    assert len(s["overflow"]) == 3, s["overflow"]
+
+
 def case_script_names_and_health() -> None:
     """`AI-<colour garment> · <room> · <Mon D>`, no counts, capped at the
     folder-name max; health lists what to know, worst first, [] when clean."""
@@ -2336,6 +2366,7 @@ _harness.run(
     case_a_room_too_small_falls_back_to_the_whole_shoot,
     case_a_skipped_rung_ranks_below_a_full_ladder,
     case_a_script_with_no_closer_borrows_one,
+    case_a_borrowed_closer_keeps_the_cap_and_skips_pruned_frames,
     case_script_names_and_health,
     case_renamed_scripts_reuse_on_rerun_and_retire_the_old_names,
     case_a_duplicate_set_is_one_item_in_every_folder,

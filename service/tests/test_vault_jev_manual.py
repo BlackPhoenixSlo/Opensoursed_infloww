@@ -267,6 +267,7 @@ async def case_patch_picks():
     f = json.loads(it.ai_fields_json)
     assert f[J]["lane5"] == "$10" and f["breasts_vis"] == "bare" and it.explicitness_tier == "explicit", f
     assert res["item"]["jev_picks"] == {"lane": "$10", "watermark": "y"}, res["item"]
+    assert res["item"]["jev_ai"] == {}, "W30 F30: nothing read, the AI says nothing"
     assert res["item"]["fields"][J]["lane5"] == "$10"
     assert jf.row_in_sync(it.ai_fields_json, it.locked_fields_json, tier=it.explicitness_tier)
     # a cleared key is removed; a non-body pick leaves the locks alone
@@ -303,6 +304,31 @@ async def case_patch_picks():
     assert f[J]["lane5"] == "$50" and f["vulva_vis"] == "bare", f
     assert "vulva_vis" not in json.loads(it.locked_fields_json or "[]")
     assert it.explicitness_tier == "explicit"
+    # W30 F16: clearing a body pick keeps the vis locks; a butt pick frees anus_vis only
+    locks = ["breasts_vis", "anus_vis"]
+    aid, _ = await _seed(ai={J: photo_jev("free")}, locked=locks,
+                         overrides={"breasts_vis": "covered", "anus_vis": "covered"})
+    await _patch(aid, {"jev": {"breasts": None, "lane": None}})
+    assert set(json.loads((await _row(aid)).locked_fields_json)) == set(locks)
+    await _patch(aid, {"jev": {"butt": "bare"}})
+    it = await _row(aid)
+    assert set(json.loads(it.locked_fields_json)) == {"breasts_vis"}, it.locked_fields_json
+    assert json.loads(it.operator_overrides_json)["breasts_vis"] == "covered"
+
+
+def case_ai_reading_table():
+    """W30 F30: the popup's AI answers are the server's (`jev_ai`), not decoded from the blob in the browser."""
+    for name, jev, want in (
+        ("the reading", {"lane5": "$50", "state": {"butt": "bare"}, "tags": {"watermark": "n"}},
+         {"lane": "$50", "butt": "bare", "watermark": "n"}),
+        ("a picked key: the AI's own answer", {"lane5": "$100", "op": ["lane"], "ai": {"lane": "free"}},
+         {"lane": "free"}),
+        ("picked, nothing read", {"lane5": "$10", "op": ["lane"], "ai": {}, "made": m.MANUAL}, {}),
+        ("a manual blob reads nothing", {"made": m.MANUAL, "lane5": "$10"}, {}),
+        ("no blob", None, {}),
+        ("not a dict", "x", {}),
+    ):
+        assert m.ai_reading(jev) == want, (name, m.ai_reading(jev))
 
 
 def case_failed_reading_lane_pick_is_current():
@@ -334,6 +360,10 @@ def case_copy_keeps_own_picks():
     assert bare == photo_jev("$10") and "op" not in bare and "undo" not in bare, bare
     assert m.overlay(bare, {"outfit": "nude"}, "photo")["lane5"] == "$10"
     assert decide.jev_for_copy({J: {"status": "error"}}, {J: own}, {"lane": "$50"}) is own
+    # W30 R4: a gave-up hold in its legacy shape (status ok, review held, no frames, `retries`) is no good answer
+    legacy = {"status": "ok", "kind": "video", "review": "fetch_failed", "frames": [], "retries": 3, "lane5": "review"}
+    assert rules.gave_up({J: legacy}), legacy
+    assert decide.jev_for_copy({J: legacy}, {J: own}, {"lane": "$50"}) is own
     # through the copy builders: the flags follow the copy's picks
     f = decide.build_flags_copy({J: manual}, jf.apply({**src}, src[J]), locked=set(), src_id=7,
                                 picks={"lane": "free"})

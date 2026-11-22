@@ -95,8 +95,8 @@ from attribution import _MASS_PLACEHOLDER_BASE, write_outbound_attribution
 from automation_registry import register
 from automations._common import (
     apply_word_restriction, load_hard_skip_ids, quarantine_if_undeliverable,
-    send_dropping_bad_media_sync, should_skip_muted_creator, skip_unreachable_fan,
-    substitute_placeholders, template_fan_name,
+    schedule_recheck_rejected_media, send_dropping_bad_media_sync, should_skip_muted_creator,
+    skip_unreachable_fan, substitute_placeholders, template_fan_name,
 )
 from db.engine import get_session
 from db.models import (
@@ -458,6 +458,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             account_id, fid, claimed, exc_info=True)
                 continue
             result = outcome.result
+            if fan_media and not outcome.media_landed:
+                # OF refused the media (resent text-only): a deleted id leaves the mirror.
+                schedule_recheck_rejected_media(account_id, client, fan_media, log=log)
             msg_id = result.get("id") if isinstance(result, dict) else None
             if not msg_id:
                 no_id += 1

@@ -46,7 +46,9 @@ export function heldTotal(state: CreatorFreshnessState, accountId: string): { n:
 }
 
 /** One counted Creator's confirmation time: `at` = the later of its Last refresh and its total's own `at` (epoch ms,
- *  Relay clock; null: neither). Never `creator_warmed`'s (a reused warm republishes it with no read). */
+ *  Relay clock; null: neither). Never `creator_warmed`'s (a reused warm republishes it with no read). That is the
+ *  total's own confirmation time: every Last refresh is a landed `/users/me`, which confirms the total or, carrying no
+ *  counter, drops it (service unread_total.observe), and an unchanged total publishes no new `at`. */
 export interface BadgeSource { account_id: string; at: number | null }
 
 /** The confirmation time of each of `accountIds` (Phase 2's `fromTotal`), in that order. */

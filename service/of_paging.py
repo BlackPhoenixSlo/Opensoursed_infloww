@@ -55,9 +55,9 @@ def int_ids(rows) -> set[int]:
 
 def page_all_checked(fetch, max_pages: int | None = None) -> tuple[list[dict], bool]:
     """`page_all` plus an explicit INCOMPLETE flag: (rows, incomplete).
-    Incomplete = the crawl hit the backstop, or OF answered a non-empty page
-    that added nothing new (a repeated page: offset ignored), so rows past it
-    were never read. Callers that act on "everyone else" (the audience fence,
+    Incomplete = the crawl hit the backstop, OF answered a non-empty page
+    that added nothing new (a repeated page: offset ignored), or an empty page
+    that still says `hasMore: true`, so rows past it were never read. Callers that act on "everyone else" (the audience fence,
     the include mirror, Auto_Exclude removals, "Dismiss the rest") must treat
     it as a FAILED / partial read, never as a complete snapshot — a silently
     short read would drop every unread member and un-fence / dismiss them.
@@ -67,9 +67,14 @@ def page_all_checked(fetch, max_pages: int | None = None) -> tuple[list[dict], b
     seen_ids: set = set()
     offset = 0
     for page in range(cap):
-        rows, n, more = take_page(fetch(offset), seen_ids)
+        r = fetch(offset)
+        rows, n, more = take_page(r, seen_ids)
         out.extend(rows)
-        if not n:                                    # exhausted
+        if not n:                                    # exhausted, unless OF says more
+            if isinstance(r, dict) and r.get("hasMore"):
+                log.warning("page_all_checked: page %d (offset %d) empty with hasMore (%d rows "
+                            "read) — read marked incomplete", page, offset, len(out))
+                return out, True
             return out, False
         if not rows:                                 # repeated page: no progress
             log.warning("page_all_checked: page %d (offset %d) added nothing new (%d rows "
@@ -133,17 +138,44 @@ def list_member_ids(client, list_id, **paging) -> tuple[set[int], bool]:
     """(member ids, incomplete) of an OF custom list (`/lists/{id}/users`). Blocking.
     `paging`: `page_all_checked`'s keywords; Auto_Exclude's background refresh
     crawls past 20k with `max_pages` (audiences `_refresh_auto_exclude`).
-    An incomplete read (a repeated page or the backstop) holding exactly OF's `usersCount`
-    (list_size: one more GET, only then) is complete: OF answers an offset past a list's end
-    with its page again (measured on AE 2026-11-11: lists of 10 and 16 members, every read),
-    not an empty one. A lagging count can only mis-flag a read that missed rows; removals
-    stay `members - ids`, so nothing unread is removed on the strength of it."""
-    ids, incomplete = ids_from_pages(
-        lambda off: client.list_users_in(list_id, limit=LIST_PAGE, offset=off), **paging)
-    if incomplete and list_size(client, list_id) == len(ids):
+    An incomplete read whose last page is the page before it again (a TAIL repeat) holding
+    exactly OF's `usersCount` (list_size: one more GET, only then) is complete: OF answers an
+    offset past a list's end with its last page again (measured on AE 2026-11-11: lists of 10
+    and 16 members, every read), not an empty one. Any other incomplete read (the backstop, a
+    repeat of an earlier page, an empty page with hasMore) stays incomplete whatever the count.
+    A lagging count can only mis-flag a read that missed rows; removals stay `members - ids`,
+    so nothing unread is removed on the strength of it."""
+    pages: list = []                # the row ids of the last two pages OF answered
+
+    def fetch(off):
+        r = client.list_users_in(list_id, limit=LIST_PAGE, offset=off)
+        items = (r.get("list") or []) if isinstance(r, dict) else (r or [])
+        # Ids only: a re-served page's other fields (an envelope's offset, a
+        # user's lastSeen) may differ between two answers.
+        pages[:] = [*pages[-1:], [it.get("id") for it in items if isinstance(it, dict)]]
+        return r
+    ids, incomplete = ids_from_pages(fetch, **paging)
+    tail_repeat = (len(pages) == 2 and any(i is not None for i in pages[1])
+                   and pages[0] == pages[1])
+    if incomplete and tail_repeat and list_size(client, list_id) == len(ids):
         log.info("list_member_ids list=%s: all %d members read (usersCount) — complete", list_id, len(ids))
         incomplete = False
     return ids, incomplete
+
+
+# OF's answers to adding a fan it will not put on any list: a fan who left the
+# audience (403) and a deleted account (404; measured on AE 2026-11-12).
+UNLISTABLE = {403: "Unable to add user to user list", 404: "User not found"}
+
+
+def unlistable(e: Exception) -> bool:
+    """OF's 403 "Unable to add user to user list" or 404 "User not found" (an
+    `OFAPIError` carries its response), and no other error: a 429, a 5xx or
+    a timeout is not it. A list add that failed with it is a permanent
+    refusal for that fan; any other failure may be transient."""
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    want = UNLISTABLE.get(code)
+    return want is not None and want in str(e)
 
 
 class ListLookupIncomplete(RuntimeError):
@@ -173,9 +205,10 @@ def find_list_id(client, name: str) -> int | None:
 # undated "saved for later" list). OF honours the publishDate range, IGNORES
 # `offset` and `limit`, and sends no hasMore/total/cursor: one read returns the
 # whole range. So a window is walked in date chunks, never in offset pages.
-# ASSUMPTION: a read of >= SCHEDULE_PAGE rows may be cut short by a server cap
-# nobody has seen (none seen at 100) — such a 7-day chunk is re-read one day at
-# a time, and only a full single day makes the listing incomplete.
+# ASSUMPTION: a read of >= SCHEDULE_PAGE rows, or one that says hasMore, may be
+# cut short by a server cap nobody has seen (none seen at 100) — such a 7-day
+# chunk is re-read one day at a time, and only such a single day makes the
+# listing incomplete.
 SCHEDULE_PAGE = 100
 # ASSUMPTION: 7-day chunks keep most chunks under SCHEDULE_PAGE in one read.
 SCHEDULE_CHUNK_DAYS = 7
@@ -213,20 +246,33 @@ def schedule_row_key(row) -> str:
     return f"{row.get('type')}:{row.get('id')}:{eid}"
 
 
-def _schedule_read(client, lo, hi, page: int) -> tuple[list, str | None]:
-    """One /schedules read for lo..hi: (rows, why it cannot be trusted | None).
-    A reply that is not `{list: [...]}`, or says OF is still syncing, is NOT
-    an empty range — reading it as one is how an orphan goes unlisted."""
+def _has_text(row) -> bool:
+    """Whether a /schedules row's post carries its text (rawText or text)."""
+    ent = row.get("entity") if isinstance(row, dict) else None
+    return isinstance(ent, dict) and any(
+        isinstance(ent.get(f), str) for f in ("rawText", "text"))
+
+
+def _schedule_read(client, lo, hi, page: int) -> tuple[list, str | None, str | None]:
+    """One /schedules read for lo..hi: (rows, why it cannot be trusted | None,
+    why it may be cut short | None). A reply that is not `{list: [...]}`, or
+    says OF is still syncing, is NOT a complete range — reading it as one is
+    how an orphan goes unlisted. One that says hasMore (OF pages /schedules by
+    date only, there is no next page to ask for) or holds `page` rows may be
+    cut short: a narrower range is read instead. The rows of a readable list
+    are still returned: they exist on OF even when the range may hold more."""
     resp = client.schedules(publish_date=lo.isoformat(),
                             publish_date_end=hi.isoformat(), limit=page)
     if not isinstance(resp, dict):
-        return [], f"reply is {type(resp).__name__}, not an object"
+        return [], f"reply is {type(resp).__name__}, not an object", None
     batch = resp.get("list")
     if not isinstance(batch, list):
-        return [], "reply has no list" if "list" not in resp else "list is not a list"
+        return [], "reply has no list" if "list" not in resp else "list is not a list", None
     if resp.get("syncInProcess"):
-        return [], "OF says syncInProcess"
-    return batch, None
+        return batch, "OF says syncInProcess", None
+    if resp.get("hasMore"):
+        return batch, None, "OF says hasMore"
+    return batch, None, f"{len(batch)} rows (maybe truncated)" if len(batch) >= page else None
 
 
 def schedules_in_window(client, days: int, *, page: int = SCHEDULE_PAGE,
@@ -234,38 +280,49 @@ def schedules_in_window(client, days: int, *, page: int = SCHEDULE_PAGE,
                         today=None) -> tuple[list, str | None]:
     """Every /schedules row (posts AND chats) from today-pad to
     today+days+pad: (deduped rows, why the listing is INCOMPLETE | None).
-    Blocking; a client exception propagates. Callers that delete what they do
-    not find recorded must act on nothing when the second value is set."""
+    Every chunk is read even after one fails — a carrier sits ~days out, in
+    the LAST chunk, so stopping at the first bad chunk never reaches it — and
+    the rows are everything that could be read. A read that raises (an HTTP
+    502, a timeout) is a gap like a bad reply: the walk goes on. Blocking; at
+    most one read per chunk plus one per day of a cut chunk. A row read twice
+    keeps the copy whose post carries text: a cut chunk may list a post bare
+    while its day re-read lists it whole. When the second value is set, absence
+    from the rows proves nothing: callers may act on what was listed, never on
+    what was not."""
     from datetime import timedelta
-    rows: list = []
-    seen: set[str] = set()
+    rows: dict[str, object] = {}
+    gaps: list[str] = []
 
     def add(batch):
         for r in batch:
             k = schedule_row_key(r)
-            if k not in seen:
-                seen.add(k)
-                rows.append(r)
+            if k not in rows or (_has_text(r) and not _has_text(rows[k])):
+                rows[k] = r
+
+    def read(lo, hi):
+        try:
+            return _schedule_read(client, lo, hi, page)
+        except Exception as e:  # noqa: BLE001 — one failed range is a gap, not the end
+            return [], f"read failed: {e}", None
 
     for lo, hi in schedule_chunks(days, chunk_days=chunk_days, today=today):
-        batch, why = _schedule_read(client, lo, hi, page)
+        batch, why, cut = read(lo, hi)
+        add(batch)
         if why:
-            return rows, f"{lo}..{hi}: {why}"
-        if len(batch) < page:
-            add(batch)
+            gaps.append(f"{lo}..{hi}: {why}")
+            continue
+        if not cut:
             continue
         # Maybe truncated: re-read the chunk a day at a time. Each day range
         # (d, d+1) overlaps the next, so it is gap-free either way publishDateEnd
         # is read, exactly like the chunks.
-        log.warning("schedules_in_window: %s..%s returned %d rows — re-reading "
-                    "it day by day", lo, hi, len(batch))
+        log.warning("schedules_in_window: %s..%s %s — re-reading it day by day",
+                    lo, hi, cut)
         d = lo
         while d < hi:
-            day, why = _schedule_read(client, d, d + timedelta(days=1), page)
-            if why:
-                return rows, f"{d}: {why}"
-            if len(day) >= page:
-                return rows, f"{d}: {len(day)} rows in one day (maybe truncated)"
+            day, why, cut = read(d, d + timedelta(days=1))
             add(day)
+            if why or cut:
+                gaps.append(f"{d}: {why or cut} in one day")
             d += timedelta(days=1)
-    return rows, None
+    return list(rows.values()), "; ".join(gaps) or None

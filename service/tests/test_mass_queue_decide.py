@@ -7,6 +7,7 @@ No DB, no OF: every row is (request values) -> value.
   case_threshold_refusal_table:     schedule / save-later × thresholds × online × expired
                                     -> the two 422 texts, byte-identical, or None.
   case_threshold_count_refusal_table: 0 ids / over the cap -> 422 text; 1..cap -> None.
+  case_nobody_left_refusal_table:   excluded lists held them / guards skipped them / none picked.
   case_strip_excluded_table:        order kept, strings-as-ints dropped, elements as given.
   case_strip_excluded_same_object:  either side empty -> the very same list (`is`).
   case_needs_exclude_list_table:    ids-only audience needs no list; list/online/filters do.
@@ -65,6 +66,19 @@ def case_threshold_count_refusal_table():
                                      "one send takes at most 500. Raise a "
                                      "threshold or pick a smaller list — nothing was sent."),
     ], mqd.threshold_count_refusal)
+
+
+def case_nobody_left_refusal_table():
+    # (asked, listed_out)
+    _table([
+        ("excluded lists held them", (3, 2), "nobody left to send to: the excluded lists hold all 2 "
+                                             "fan(s) left after the opt-out and already-queued checks; "
+                                             "nothing was sent"),
+        ("guards skipped them", (2, 0), "nobody left to send to: 2 of 2 fan(s) skipped "
+                                        "(opted out or already queued); nothing was sent"),
+        ("nothing picked", (0, 0), "nobody left to send to: no fan, list or online audience "
+                                   "picked; nothing was sent"),
+    ], mqd.nobody_left_refusal)
 
 
 def case_strip_excluded_table():

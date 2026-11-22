@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,15 +85,41 @@ def test_map_pick_cap_and_order(n_unmapped, ages_of, want, due):
 
 
 def test_map_pick_rotates_over_nights():
-    """Re-mapped entries are fresh next night: 25 stale entries are all refreshed within 3 nights."""
-    mapped = {f"s{i:02d}": {"sha": "old"} for i in range(25)}
-    done = set()
+    """The map phase restores slop/map.json: entries stay stale, so the rotation comes from `tried` alone. 25
+    stale entries (one fails every night) are all tried within 3 nights; consecutive nights differ."""
+    mapped = {f"s{i:02d}": {"sha": "old" if i else "older"} for i in range(25)}  # s00 the most behind
+    ages = {"old": 500, "older": 900}
+    nights, done = [], set()
     for _night in range(3):
-        got, _ = nt.map_pick(sorted(mapped), mapped, {"old": 500, "new": 0})
+        tried = {n: i for i, got in reversed(list(enumerate(reversed(nights)))) for n in got}  # newest try wins
+        got, due = nt.map_pick(sorted(mapped), mapped, ages, tried=tried)
+        assert due == 25 and len(got) == nt.MAP_PER_NIGHT
+        nights.append(got)
         done |= set(got)
-        for n in got:
-            mapped[n] = {"sha": "new"}
-    assert done == set(mapped)
+    assert done == set(mapped) and set(nights[0]).isdisjoint(nights[1]) and "s00" in nights[0]
+    # night 3 = 5 untried + the 5 oldest tries (s00-s04, the most behind first); then s05.. (tried 2 nights ago)
+    assert nights[2] == [f"s{i:02d}" for i in (20, 21, 22, 23, 24, 0, 1, 2, 3, 4)]
+    tried = {n: i for i, got in reversed(list(enumerate(reversed(nights)))) for n in got}
+    assert nt.map_pick(sorted(mapped), mapped, ages, tried=tried)[0] == [f"s{i:02d}" for i in range(5, 15)]
+    assert nt.map_pick(sorted(mapped), mapped, ages)[0] == nights[0]  # no history: as before
+
+
+def test_map_attempts(tmp_path, monkeypatch):
+    monkeypatch.setattr(nt, "EVIDENCE", tmp_path)
+
+    def night(name, rows, done=True):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "summary.json").write_text(json.dumps({"sha": "s", "rows": rows, "phase_names": ["map"]}))
+        if done:
+            (d / "done").write_text("")
+    night("20261101T000000Z-nightly-aaaa", [_row("map", "a", "OK"), _row("map", "b", "FAIL")])
+    night("20261102T000000Z-nightly-bbbb", [_row("all", "z", "OK")])  # no map rows: not counted
+    night("20261103T000000Z-nightly-cccc", [_row("map", "b", "INFRA"), _row("map", "c", "SKIP", cut=nt.CUT_NOT_RUN)])
+    night("20261104T000000Z-nightly-dddd", [_row("map", "d", "OK")], done=False)  # unfinished: never
+    assert nt.map_attempts("20261105T000000Z-nightly-ffff") == {"b": 0, "a": 1}
+    assert nt.map_attempts("20261105T000000Z-nightly-ffff", lookback=1) == {"b": 0}
+    assert nt.map_attempts("20261101T000000Z-nightly-aaaa") == {}
 
 
 ALL = ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "a-ui", "b-vol", "c-vol", "d-new", "e-ok",
@@ -115,12 +142,12 @@ LAYOUT = [("layout", "app: every page <- app/app/layout.tsx")]
 
 
 @pytest.mark.parametrize("prev,picked,fallback,want_run,want_why,wide", [
-    # each source: canary always, carry-over = prev all/volume not OK (map rows and removed scenarios not),
-    # changed = own/flow picks only, unmapped; e-ok / f-gone-ok unaffected: left out
+    # each source: canary always, carry-over = prev `all` not OK (volume rows: volume_carry; map rows and removed
+    # scenarios not), changed = own/flow picks only, unmapped; c-vol / e-ok / f-gone-ok unaffected: left out
     (PREV, {"e-ok": [("flow", "service/x.py::f (hunk @ L3; run by 1/8)")]}, None,
-     ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "a-ui", "b-vol", "c-vol", "d-new", "e-ok"],
+     ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "a-ui", "b-vol", "d-new", "e-ok"],
      {"a-ui": ["carry-over (all FAIL)"], "b-vol": [f"carry-over (all SKIP: {nt.CUT_NOT_RUN})"],
-      "c-vol": ["carry-over (volume INFRA)"], "d-new": ["unmapped"],
+      "d-new": ["unmapped"],
       "e-ok": ["changed (flow: service/x.py::f (hunk @ L3; run by 1/8))"],
       "2026-11-03-os-ping-push": ["canary"], "2026-10-23-inbox-unread-fan-burst": ["canary"]}, 0),
     # shared/layout picks (owner 2026-11-21): left out, counted; one that is also canary/carry-over still runs
@@ -160,31 +187,111 @@ def test_smoke_canaries_include_electron_notification_click():
 def test_last_nightly_and_relevance(tmp_path, monkeypatch):
     monkeypatch.setattr(nt, "EVIDENCE", tmp_path)
 
-    def night(name, **s):
+    def night(name, done=True, **s):
         d = tmp_path / name
         d.mkdir()
         if s:
             (d / "summary.json").write_text(json.dumps({"sha": "abc", "rows": [], "phase_names": ["all"], **s}))
+        if done:
+            (d / "done").write_text("")
     night("20261101T000000Z-nightly-aaaa", sha="old")
     night("20261102T000000Z-nightly-bbbb", smoke=True)  # smoke: never the base
     night("20261103T000000Z-nightly-cccc", phase_names=["map"])  # no all phase
     night("20261104T000000Z-nightly-dddd")  # no summary.json (crashed)
+    night("20261104T120000Z-nightly-dddd", done=False, sha="unfinished")  # no `done`: never the base
     night("20261109T000000Z-nightly-eeee", sha="later")  # this night or later: never
     got = nt.last_nightly("20261105T000000Z-nightly-ffff")
     assert (got["name"], got["sha"]) == ("20261101T000000Z-nightly-aaaa", "old")
     assert nt.last_nightly(None)["sha"] == "later"
     assert nt.last_nightly("20261101T000000Z-nightly-aaaa") is None
     doc = {"scenarios": {"a": {"sha": "x"}}}
-    assert nt.relevance({"scenarios": {}}, None) == (None, None, "no map")
-    assert nt.relevance(doc, "20261101T000000Z-nightly-aaaa")[2] == "no previous nightly with summary.json"
+    old, later = nt.last_nightly("20261105T000000Z-nightly-ffff"), nt.last_nightly(None)
+    assert nt.relevance({"scenarios": {}}, later) == (None, "no map")
+    assert nt.relevance(doc, None) == (None, "no previous nightly with summary.json")
 
     def boom(_doc, since):
         raise SystemExit(f"slop: --since={since}: not a commit")
     monkeypatch.setattr(nt.covmap, "pick_changed", boom)
-    prev, picked, why = nt.relevance(doc, "20261105T000000Z-nightly-ffff")
-    assert prev["sha"] == "old" and picked is None and why.startswith("pick since old failed: SystemExit")
-    monkeypatch.setattr(nt.covmap, "pick_changed", lambda _d, since: ({}, {"a": [("own", since)]}, []))
-    assert nt.relevance(doc, None)[1:] == ({"a": [("own", "later")]}, None)
+    picked, why = nt.relevance(doc, old)
+    assert picked is None and why.startswith("pick since old failed: SystemExit")
+    g0 = {"changed": {"x": ["service/a.py"]}, "untracked": [], "map_missing": {}}
+    monkeypatch.setattr(nt.covmap, "pick_changed", lambda _d, since: (g0, {"a": [("own", since)]}, []))
+    assert nt.relevance(doc, later) == ({"a": [("own", "later")]}, None)
+    # a changed file the map cannot judge (selection.unjudged: absent at an entry's sha; picked `shared`, left
+    # out by the nightly): every scenario, named. Judged from the gather dict, never from warning text.
+    blind = [f"service/f{i}.py" for i in range(5)]
+    g = {"changed": {"x": blind + ["service/a.py"]}, "untracked": [], "map_missing": {"x": set(blind)}}
+    monkeypatch.setattr(nt.covmap, "pick_changed", lambda _d, since: (g, {"a": [("shared", "x")]}, ["WARN x"]))
+    picked, why = nt.relevance(doc, later)
+    assert why == ("map cannot judge 5 file(s) changed since later: service/f0.py, service/f1.py, service/f2.py "
+                   "(+2 more); refresh: slop/run all --map")
+    run, notes = nt.all_plan(["a", "b"], doc["scenarios"], later, picked, why)
+    assert run == ["a", "b"] and "every scenario (fallback: map cannot judge 5" in notes["line"]
+
+
+def test_plan_no_map_still_carries_volume_reds(monkeypatch):
+    """No map (relevance falls back): `all` runs everything, and last night's non-OK volume rows still run
+    again in the volume phase (prev is fetched once, not through relevance)."""
+    vol = {"b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"}
+    monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in vol)
+    monkeypatch.setattr(nt.covmap, "load_map", lambda: {})
+    monkeypatch.setattr(nt.covmap, "map_ages", lambda doc: {})
+    monkeypatch.setattr(nt.covmap, "git", lambda *a: "abc\n")
+    monkeypatch.setattr(nt, "last_nightly", lambda before, phase="all": {"name": "N", "sha": "s",
+                                                                         "rows": [_row("volume", "c-vol", "FAIL")]})
+    monkeypatch.setattr(nt, "map_attempts", lambda before: {})
+    day0 = SimpleNamespace(toordinal=lambda: 0)  # day 0's slice: the first 3 sorted, c-vol is not in it
+    monkeypatch.setattr(nt, "datetime", SimpleNamespace(date=SimpleNamespace(today=lambda: day0)))
+    paths = {n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}
+    plan, _why, _sha, notes = nt._plan(argparse.Namespace(smoke=False), ["volume", "all"], paths)
+    assert notes["line"] == "every scenario (fallback: no map)" and plan["all"] == NAMES
+    assert notes["volume_carry"] == ["c-vol"] and plan["volume"][-1] == "c-vol"
+
+
+@pytest.mark.parametrize("history", [
+    # a failed volume-only run after the last `all` night: its reds carry
+    [(["volume", "all"], [_row("volume", "c-vol", "OK")]), (["volume"], [_row("volume", "c-vol", "FAIL")])],
+    # an all-only night after a volume red: it does not erase the carry
+    [(["volume", "all"], [_row("volume", "c-vol", "FAIL")]), (["all"], [_row("all", "a-ui", "OK")])],
+])
+def test_volume_carry_reads_the_newest_volume_night(history, tmp_path, monkeypatch):
+    monkeypatch.setattr(nt, "EVIDENCE", tmp_path)
+    for i, (phases, rows) in enumerate(history + [(["volume"], [_row("volume", "c-vol", "OK")])]):
+        d = tmp_path / f"2026110{i + 1}T000000Z-nightly-aaaa"
+        d.mkdir()
+        smoke = i == len(history)  # the newest: a smoke volume night, never the carry source
+        (d / "summary.json").write_text(json.dumps({"sha": "s", "rows": rows, "phase_names": phases,
+                                                    "smoke": smoke}))
+        (d / "done").write_text("")
+    vol = {"b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"}
+    monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in vol)
+    monkeypatch.setattr(nt.covmap, "load_map", lambda: {})
+    monkeypatch.setattr(nt.covmap, "map_ages", lambda doc: {})
+    monkeypatch.setattr(nt.covmap, "git", lambda *a: "abc\n")
+    day0 = SimpleNamespace(toordinal=lambda: 0)  # day 0's slice: the first 3 sorted, c-vol is not in it
+    monkeypatch.setattr(nt, "datetime", SimpleNamespace(date=SimpleNamespace(today=lambda: day0)))
+    paths = {n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}
+    _plan, _why, _sha, notes = nt._plan(argparse.Namespace(smoke=False), ["volume", "all"], paths,
+                                        "20261109T000000Z-nightly-ffff")
+    assert notes["volume_carry"] == ["c-vol"]
+
+
+def test_volume_carry_runs_at_volume(monkeypatch):
+    """A volume row not OK last night runs again in tonight's volume phase (after the rotation slice), not in
+    `all` at small scale."""
+    vol = {"b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"}
+    monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in vol)
+    prev = {"name": "N", "sha": "s", "rows": [_row("volume", "c-vol", "INFRA"), _row("volume", "b-vol", "FAIL"),
+                                              _row("volume", "a-ui", "FAIL"), _row("volume", "gone", "FAIL"),
+                                              _row("volume", "2026-11-03-os-ping-push", "OK")]}
+    paths = {n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}
+    plan, _why, notes = nt.build_plan(paths, DOC, ["all", "volume"], False, {"x": 3}, prev=prev, picked={},
+                                      vol_prev=prev)
+    # day 0 slice: notifications, os-ping, b-vol; b-vol already in it; a-ui no longer volume, gone removed
+    assert plan["volume"] == ["2026-11-01-notifications-feed-volume", "2026-11-03-os-ping-push", "b-vol", "c-vol"]
+    assert notes["volume_carry"] == ["c-vol"] and "c-vol" not in plan["all"]
+    txt = nt._plan_text("S", "abc", False, plan, "r", notes)
+    assert "+ 1 not OK last night: c-vol" in txt
 
 
 def test_plan_text_and_digest_record_why():
@@ -279,7 +386,7 @@ def test_merge_rerun(again, verdict, folder, failed, infra):
 
 @pytest.mark.parametrize("vs,code,word", [
     (["OK", "OK"], 0, "OK"), (["OK", "FLAKY", "SKIP"], 0, "OK"), (["OK", "FAIL", "FLAKY"], 1, "RED"),
-    (["FAIL", "INFRA"], 3, "INFRA"), ([], 0, "OK"), (["OK", "RED (coverage)"], 0, "OK"),
+    (["FAIL", "INFRA"], 3, "INFRA"), ([], 3, "SKIPPED"), (["OK", "RED (coverage)"], 0, "OK"),  # nothing ran: no work
     (["SKIP", "SKIP"], 3, "SKIPPED"),  # every check skipped everywhere: nothing proved, never OK
 ])
 def test_exit_and_headline(vs, code, word):
@@ -288,7 +395,8 @@ def test_exit_and_headline(vs, code, word):
     h = nt.headline("20261105T000000Z", vs)
     assert h.startswith(f"NIGHTLY {word} 20261105T000000Z: ")
     counts = h.split(": ")[1].split(" of ")[0].split("/")
-    assert sum(map(int, counts)) == len(vs) and h.endswith(f" of {len(vs)}")
+    assert sum(map(int, counts)) == len(vs)
+    assert h.endswith(f" of {len(vs)}" + ("" if vs else " (no work: nothing planned ran)"))
 
 
 @pytest.mark.parametrize("cur,names,replaced,added,missing,keep", [

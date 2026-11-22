@@ -19,6 +19,13 @@ owner and chatter, Agency B's Creator); the live job body through `run_once` wit
                                       set then cleared reads back both ways (flip.md rollback 1-2)
   case_off_then_live_drops_the_old_job  Off then Live inside the reply wait: the job queued before Off is
                                       cancelled, never runs
+  case_shared_off_then_live_drops_the_old_job  the same Off through the rules routes (PATCH is_enabled
+                                      false, switch enable false, DELETE): cancelled, never runs
+  case_mode_off_drops_rule_less_one_shot  a rule-less full_ai_chat one-shot (/admin/automation/enqueue,
+                                      run_at ahead): Mode Off cancels it (W30 #17)
+  case_cancel_queued_reads_payload_rule  `_cancel_queued`: payload `_rule_id` 7 / "7" / 7.9 and the row's
+                                      rule_id cancelled; another rule, none, bad JSON, "7abc", running stay;
+                                      another account's job (tagged 7 or "7abc") stays (W30 #18)
   case_two_rules_of_the_kind          Live leaves one enabled; Off parks both, trigger {"every_seconds": 300}
   case_live_with_no_fans_list         no Fans list = every Fan (owner 2026-11-15): Live goes on with none,
                                       the audience PUT to none while Live is 200; checkpoint PUT / rollback
@@ -237,6 +244,81 @@ def case_off_then_live_drops_the_old_job():
     assert (job.status, job.last_error) == ("cancelled", "rule switched off"), (job.status, job.last_error)
 
 
+def case_shared_off_then_live_drops_the_old_job():
+    # W30 #3: Off through the shared rules routes (PATCH, switch, DELETE) then Live inside the reply
+    # wait: the hook job (its rule only in the payload) queued before Off is cancelled, never runs.
+    def patch_off(rid):
+        return OWNER.patch(f"/admin/automation-rules/{rid}", json={"is_enabled": False})
+
+    def switch_off(_rid):
+        return OWNER.post("/admin/automation-rules/switch", json={"account_id": AID, "kind": KIND, "enable": False})
+
+    def delete(rid):
+        return OWNER.delete(f"/admin/automation-rules/{rid}")
+    for off in (patch_off, switch_off, delete):
+        _run(_reset())
+        assert _put("live").status_code == 200
+        rid = _run(_rules())[0].id
+
+        async def off_then_live():
+            assert off(rid).status_code == 200 and _put("live").status_code == 200
+        fake, _res, job = _run(_dm_and_claim(5102, 81002, before_claim=off_then_live))   # its hold: well ahead
+        assert fake.sent == [] and _run(_decisions()) == [], (off.__name__, fake.sent, _run(_decisions()))
+        assert (job.status, job.last_error) == ("cancelled", "rule switched off"), (off.__name__, job.status)
+
+
+def case_mode_off_drops_rule_less_one_shot():
+    # W30 #17: a rule-less, untagged full_ai_chat one-shot (POST /admin/automation/enqueue, run_at ahead)
+    # is Full AI work too: Mode Off cancels it, so Off then Live never runs it (live run = a send).
+    _run(_reset())
+    assert _put("live").status_code == 200
+    r = OWNER.post("/admin/automation/enqueue", json={
+        "account_id": AID, "kind": KIND, "payload": {"only_fan_ids": [5103], "anchor": 81003},
+        "run_at": (datetime.utcnow() + timedelta(hours=1)).isoformat()})
+    assert r.status_code == 200, r.text
+    jid = r.json()["enqueued_job_id"]
+    assert _put("off").status_code == 200 and _put("live").status_code == 200
+
+    async def job():
+        async with get_session() as s:
+            return await s.get(ScheduledJob, jid)
+    j = _run(job())
+    assert (j.rule_id, j.status, j.last_error) == (None, "cancelled", "rule switched off"), (j.status, j.last_error)
+
+
+def case_cancel_queued_reads_payload_rule():
+    # W30 #14/#18: `_cancel_queued` reads payload `_rule_id` exactly as run_decide.payload_rule_id does
+    # (7, "7", 7.9 -> 7; "7abc" -> None), only on the rule's own account; another rule's, none,
+    # malformed JSON, a running job or another account's job stay.
+    from automation_rules_api import _cancel_queued
+    _run(_reset())
+    rid = _run(_add_rule(LIVE, True))
+    payloads = {"int": {"_rule_id": rid}, "str": {"_rule_id": str(rid)}, "float": {"_rule_id": rid + 0.9},
+                "other": {"_rule_id": rid + 1}, "none": {"only_fan_ids": [1]}, "bad": "{not json _rule_id",
+                "running": {"_rule_id": rid}, "garbage": {"_rule_id": f"{rid}abc"},
+                "theirs": {"_rule_id": rid}, "theirs_garbage": {"_rule_id": f"{rid}abc"}}
+
+    async def go():
+        async with get_session() as s:
+            jobs = {k: ScheduledJob(account_id=THEIRS if k.startswith("theirs") else AID, kind=KIND, status="running" if k == "running" else "pending",
+                                    run_at=datetime.utcnow(), payload_json=p if isinstance(p, str) else json.dumps(p))
+                    for k, p in payloads.items()}
+            jobs["row"] = ScheduledJob(account_id=AID, kind=KIND, status="pending", run_at=datetime.utcnow(),
+                                       payload_json="{}", rule_id=rid)
+            s.add_all(jobs.values())
+            await s.flush()
+            n = await _cancel_queued(s, [rid])
+        async with get_session() as s:
+            got = {k: (await s.get(ScheduledJob, j.id)).status for k, j in jobs.items()}
+            await s.execute(delete(ScheduledJob).where(ScheduledJob.id.in_([j.id for j in jobs.values()])))
+            return n, got
+    n, got = _run(go())
+    want = {"int": "cancelled", "str": "cancelled", "float": "cancelled", "other": "pending", "none": "pending",
+            "bad": "pending", "running": "running", "row": "cancelled", "garbage": "pending",
+            "theirs": "pending", "theirs_garbage": "pending"}
+    assert (n, got) == (4, want), (n, got)
+
+
 def case_two_rules_of_the_kind():
     _run(_reset())
     a = _run(_add_rule({"every_seconds": 86400}, True))
@@ -294,7 +376,8 @@ def case_blocker_read_fails_closed():
     try:
         g = _get()
         assert g.status_code == 200 and g.json()["mode"] == "off", g.text
-        assert len(g.json()["blockers"]) == 1 and g.json()["blockers"][0].startswith("Couldn't check"), g.text
+        # W30 #10: the gate is the AI keys only; no Fans list gate since #786.
+        assert g.json()["blockers"] == ["Couldn't check the AI keys. Reload to try again"], g.text
         r = _put("live")
         assert r.status_code == 409 and "Couldn't check" in r.json()["detail"], r.text
         assert _run(_rules()) == []

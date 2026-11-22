@@ -52,7 +52,6 @@ Sends nothing itself: no direct import of an OF client, executor, lease, DM rate
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random
 import time
@@ -82,7 +81,7 @@ from automations.full_ai_writers import (
 from automations.full_ai_writers import (
     implied_flag, is_ride, likes_flag, spacing_flag, tease_flag, tease_turn, wide_flag,
 )
-from automations.full_ai_config import merged, turn_bound_s
+from automations.full_ai_config import loaded, turn_bound_s
 from automations.rhythm import INLINE_MAX_S
 from automations.welcome_chatter_for_info import _HISTORY_TAIL, _REPLY_MAX_CHARS
 from db.engine import get_session
@@ -165,11 +164,14 @@ class TurnResult:
 
 async def stored_config(account_id: str) -> dict:
     """The Creator's Full AI config through the pure merge: an empty store gives `DEFAULTS` on
-    both sides."""
+    both sides. A blob that will not read (`full_ai_config.loaded`) raises ValueError (live claims nobody
+    then: `full_ai_owner_io._checkpoint`)."""
     async with get_session() as s:
         row = await s.get(AccountAiConfig, str(account_id))
-    raw = row.full_ai_config_json if row is not None else None
-    return merged(json.loads(raw) if raw else {})
+    got = loaded(row.full_ai_config_json if row is not None else None)
+    if got is None:
+        raise ValueError(f"unreadable Full AI config account={account_id}")
+    return got
 
 
 async def load_turn_facts(account, fan, anchor, mode, *, session=None, side=None, photo=None,
@@ -647,7 +649,7 @@ async def _claim_audit(d: Decision, facts: TurnFacts, reply: dict, writer: str, 
 
     def ok(ps: list[str]) -> bool:
         text = "\n".join(ps)
-        fails = full_ai_sell.caption_fails(text, pick, price)
+        fails = full_ai_sell.caption_fails(text, pick, price, differs=False)   # rides chat bubbles: no "terms"
         reply["claim_fail"] = reply["claim_fail"] + [{"check": c, "text": text} for c in fails]
         return not fails
 
@@ -751,10 +753,12 @@ def _ppv_turn(d: Decision, facts: TurnFacts) -> bool:
             and ((d.route == "sell_now" and p.price_cents > 0) or (d.route == "make_right" and not p.price_cents)))
 
 
-async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadline: float) -> str | None:
+async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadline: float,
+                   differs: bool) -> str | None:
     """`caption_writer` "caption": the separate caption call (`full_ai_caption`), keeping one
     `writer_timeout_s` of the Turn for the chat Writer, through the shared chain as one bubble
-    (`_chain(single=True)`), then the Claim audit's checks (claim_ok + price_ok + discloses). Fail -> one rewrite
+    (`_chain(single=True)`), then the Claim audit's checks (claim_ok + price_ok + discloses; `differs`, a
+    Pick not what he asked for, `states_terms` too: "terms"). Fail -> one rewrite
     by the Writer that answered (same messages) when two `writer_timeout_s` are left; still failing
     -> None, and the Turn runs today's path (the chat Writer's caption). Sets `reply["caption"]` =
     {writer: caption | chat, model, outcome, ms, attempts, rejected?} (`rejected`: one {checks, text}
@@ -762,8 +766,10 @@ async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadl
     what he asked for, as the fallback caption) and, on a pass, `reply["typo_state"]`
     to the state the caption's chain left (the chat bubbles' chain then starts from it).
     Outcomes: ok | rewrite_ok | no_description | no_writer | failed | late; `run_turn` sets "alone"
-    when it ships without chat bubbles. A passed caption on a Pick not what he asked for
-    (`nearest_line`) is the only message: the chat Writer is not called (its lead-in said yes to his
+    when it ships without chat bubbles. `differs` (`run_turn`: `nearest_line` set, W30 #4c) decides
+    the "terms" check and the alone ship alike; the typo pass is off on any tagged Pick (`facts["asked"]`,
+    "plain" too: W30 #21). A passed caption on a Pick not what he
+    asked for is the only message: the chat Writer is not called (its lead-in said yes to his
     ask over a caption saying no); a failed one leaves today's path (NEAREST_NOTE in the sell block).
     ASSUMPTION: "no Writer answered" goes straight to today's path (no rewrite: nothing to redo).
     Overturned if the owner wants a second walk."""
@@ -781,10 +787,11 @@ async def _caption(d: Decision, facts: TurnFacts, reply: dict, pick: Pick, deadl
 
     async def shaped(text: str) -> tuple[str | None, dict]:
         scratch = {"leak": [], "dropped_reason": None, "typo_state": dict(facts.typo_state)}
-        # A Pick not what he asked for: no typo pass ("phtoo" / "fete" voided its disclosure).
+        # A Pick not what he asked for (tagged, "plain" too, W30 #21): no typo pass ("phtoo" / "fete"
+        # voided its disclosure). With `differs` it ships alone, so it states the deal (the locked count, the price).
         parts = await _chain(text, facts, scratch, single=True, typos="asked" not in pick.facts)
         line = parts[0] if len(parts) == 1 and not scratch["leak"] else None
-        fails = ["chain"] if line is None else full_ai_sell.caption_fails(line, pick, price)
+        fails = ["chain"] if line is None else full_ai_sell.caption_fails(line, pick, price, differs=differs)
         if fails:
             cap["rejected"] = cap.get("rejected", []) + [{"checks": fails, "text": (line or text)[:400]}]
         return (None if fails else line), scratch
@@ -824,7 +831,7 @@ def _with_caption(reply: dict, parts: list[str], caption: str, pick: Pick, typo_
     Overturned if the owner prefers today's path then."""
     reply["caption_fallback"] = False
     joined = "\n".join([*parts, caption])
-    if not full_ai_sell.caption_fails(joined, pick, pick.price_cents or None):
+    if not full_ai_sell.caption_fails(joined, pick, pick.price_cents or None, differs=False):
         return [*parts, caption]
     reply["caption"]["outcome"] = "alone"
     reply["typo_state"] = typo_state
@@ -911,11 +918,13 @@ async def run_turn(facts: TurnFacts, io: TurnIO | None = None) -> TurnResult:
             if isinstance(facts.pick, Refusal):
                 reply["refusal"] = facts.pick.reason
         pick = facts.pick if isinstance(facts.pick, Pick) else None
-        caption = await _caption(d, facts, reply, pick, deadline) if _ppv_turn(d, facts) else None
+        # A Pick not what he asked for (one test: the terms check, the alone ship)
+        differs = nearest_line(facts, pick) is not None
+        caption = await _caption(d, facts, reply, pick, deadline, differs) if _ppv_turn(d, facts) else None
         caption_typos = dict(reply["typo_state"])
         # A Pick not what he asked for: its passed caption says so and ships alone, no chat Writer
         # call (owner 2026-11-17: a lead-in "u got it babe" over "not the feet vid you asked for").
-        alone = caption is not None and nearest_line(facts, pick) is not None
+        alone = caption is not None and differs
         res = (WriteResult(None, reply["caption"]["model"]) if alone
                else await _capped(write(d, facts, deadline=deadline, plain=caption is not None), deadline))
         reply["attempts"], reply["floor_reason"] = res.attempts, res.floor_reason

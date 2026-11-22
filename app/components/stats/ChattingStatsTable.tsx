@@ -127,17 +127,20 @@ const pctOf = (num: number, den: number) => (den > 0 ? `${((num / den) * 100).to
  *  Employee's Sales (pending sales included, as the Sales Settings rules count them); Unlock rate is the pooled
  *  ratio, PPVs unlocked over direct PPVs sent; the response time (all replies) is each Employee's average weighted
  *  by its replies. Total number of scheduled hours sums the Timesheet's `scheduled_minutes` (null: no Timesheet read,
- *  Not wired); with `chatterOnly`, only the Employees in `rows`. `sheetNote` is the Timesheet's refusal (its 422 text,
+ *  Not wired); with `chatterOnly`, only the Chatter role's Employees (`roster`, the read's `chatter_ids`; "…" until
+ *  this read's roster arrives, never a sum over nobody). `sheetNote` is the Timesheet's refusal (its 422 text,
  *  "the range is at most 42 days"): the card stays "-" and says why under its label. The scheduled-hours response
  *  time is Not wired: the reply read has no shift filter. */
 export function chattingKpis(
   rows: ChattingStatsRow[], sheet: TimesheetRow[] | null = null, chatterOnly = false, sheetNote: string | null = null,
+  roster: number[] | null = null,
 ): { label: string; tip: string; value: string; wired: boolean; note?: string }[] {
   const sum = (f: (r: ChattingStatsRow) => number) => rows.reduce((s, r) => s + f(r), 0);
   const timed = rows.filter((r) => r.avg_reply_seconds != null && r.replies > 0);
   const replies = timed.reduce((s, r) => s + r.replies, 0);
-  const ids = new Set(rows.map((r) => r.employee_id));
-  const scheduled = sheet?.filter((t) => !chatterOnly || (t.employee_id != null && ids.has(t.employee_id)))
+  const ids = new Set(roster);
+  const waiting = chatterOnly && sheet != null && roster == null;
+  const scheduled = waiting ? undefined : sheet?.filter((t) => !chatterOnly || (t.employee_id != null && ids.has(t.employee_id)))
     .reduce((s, t) => s + t.scheduled_minutes, 0);
   return [
     { label: "Total sales", tip: "Total sales generated, according to your sales settings",
@@ -153,8 +156,8 @@ export function chattingKpis(
       wired: true },
     { label: "Total number of scheduled hours", tip: "Hours of the shifts scheduled in the time frame",
       // Decimal hours ("3,425.9h"), so the 28px figure keeps to one line in the card.
-      value: scheduled == null ? "-" : `${(scheduled / 60).toLocaleString("en-US", { maximumFractionDigits: 1 })}h`,
-      wired: scheduled != null, ...(scheduled == null && sheetNote ? { note: `Not shown: ${sheetNote}.` } : {}) },
+      value: waiting ? "…" : scheduled == null ? "-" : `${(scheduled / 60).toLocaleString("en-US", { maximumFractionDigits: 1 })}h`,
+      wired: waiting || scheduled != null, ...(scheduled == null && sheetNote ? { note: `Not shown: ${sheetNote}.` } : {}) },
   ];
 }
 
@@ -259,7 +262,8 @@ export default function ChattingStatsTable({
       ) : (
         <>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
-            {chattingKpis(rows, sheet.data?.rows ?? null, chatterOnly, sheetNote).map((k) => <KpiCard key={k.label} {...k} />)}
+            {chattingKpis(rows, sheet.data?.rows ?? null, chatterOnly, sheetNote,
+              q.isPlaceholderData ? null : q.data?.chatter_ids ?? null).map((k) => <KpiCard key={k.label} {...k} />)}
           </div>
           {rows.length === 0 ? (
             <EmptyState size="sm" text="No chatting in this window." />

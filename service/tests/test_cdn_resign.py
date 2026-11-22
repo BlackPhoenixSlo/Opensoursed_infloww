@@ -42,6 +42,7 @@ import anyio.to_thread  # noqa: E402
 
 import cdn_resign  # noqa: E402
 import img_api  # noqa: E402
+import of_pacing  # noqa: E402
 import server  # noqa: E402 — after _harness (DB) + the dirs are bound
 import storyboard  # noqa: E402
 
@@ -75,6 +76,7 @@ class _Client:
         self.gets: list[str] = []
         self.resps: list[_Resp] = []
         self.byid: list[int] = []
+        self.walks: list[str | None] = []   # the of_pacing walk each by-id read ran in
         self.fresh_media = fresh_media
         self.lock = threading.Lock()
 
@@ -90,6 +92,7 @@ class _Client:
         time.sleep(0.05)  # a real OF round trip: concurrent callers overlap
         with self.lock:
             self.byid.append(int(media_id))
+            self.walks.append(getattr(of_pacing._WALK.get(), "kind", None))
         return self.fresh_media
 
 
@@ -127,6 +130,7 @@ def case_img_stale_url_resigns_once():
     assert _img(STALE, MID) == 200
     assert c.gets == [STALE, FRESH], c.gets
     assert c.byid == [MID], c.byid
+    assert c.walks == ["img_resign"], ("the re-sign's OF read is paced on the Creator", c.walks)
     c.gets.clear()
     shutil.rmtree(_TMP / "cache", ignore_errors=True)   # else the next range is a disk hit, upstream untouched
     # The next <video> range with the browser's stale url: no 403 round trip, no OF call.
@@ -204,7 +208,7 @@ def case_herd_shares_one_read():
     _reset(c)
 
     async def herd() -> list:
-        return await asyncio.gather(*(cdn_resign.resign("acct-1", MID, STALE, c) for _ in range(12)))
+        return await asyncio.gather(*(cdn_resign.resign("acct-1", MID, STALE, c, "t") for _ in range(12)))
     got = asyncio.run(herd())
     assert got == [FRESH] * 12, got
     assert c.byid == [MID], c.byid

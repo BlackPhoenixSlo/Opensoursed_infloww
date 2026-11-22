@@ -198,17 +198,16 @@ describe("Jev picks", () => {
     expect(picksFromAi({})).toEqual({});
   });
 
+  // The server decides what the AI said (`vault_jev_manual.ai_reading`, its table in test_vault_jev_manual.py).
   it.each<[string, unknown, JevKey, string | null, string]>([
-    ["the reading", { lane5: "$50", state: { butt: "bare" } }, "butt", "bare", "AI: bare"],
-    ["the lane", { lane5: "$50" }, "lane", "$50", "auto: $50"],
-    ["a tag y/n", { tags: { watermark: "n" } }, "watermark", "n", "AI: no"],
-    ["a picked key: the AI's own answer", { lane5: "$100", op: ["lane"], ai: { lane: "free" } }, "lane", "free",
-      "auto: free"],
-    ["a manual blob reads nothing", { made: "manual", lane5: "$10" }, "lane", null, "auto"],
+    ["a region", { butt: "bare" }, "butt", "bare", "AI: bare"],
+    ["the lane", { lane: "$50" }, "lane", "$50", "auto: $50"],
+    ["a tag y/n", { watermark: "n" }, "watermark", "n", "AI: no"],
+    ["nothing read for the lane", {}, "lane", null, "auto"],
     ["feet with nothing read", null, "wears_socks", null, "None"],
-    ["no blob", undefined, "outfit", null, "—"],
-  ])("aiValue / unsetLabel: %s", (_n, jev, key, ai, label) => {
-    expect(aiValue(jev, key)).toBe(ai);
+    ["no reading", undefined, "outfit", null, "—"],
+  ])("aiValue / unsetLabel: %s", (_n, reading, key, ai, label) => {
+    expect(aiValue({ jev_ai: reading }, key)).toBe(ai);
     expect(unsetLabel(key, ai)).toBe(label);
   });
 });

@@ -144,6 +144,9 @@ export interface PickedScript {
   media: { id: number }[];
   previews: number[];
   taggedUsers: number[];
+  /** Every tag as the draft keeps it (creators, guests, release forms; a sent message's OF releaseForms): replaces
+   *  `taggedUsers` when set. */
+  tags?: ChatDraft["tags"];
   gifId?: string | null;
   gifUrl?: string | null;
 }
@@ -169,7 +172,7 @@ export function applyScript(storage: Storage, accountId: string, chat: string, t
     audio: undefined,
     previews: priced && t.previews.length ? t.previews : undefined,
     locked_text: priced && t.lockedText ? true : undefined,
-    tags: t.taggedUsers.length ? t.taggedUsers.map((id) => ({ id, type: "user", name: "" })) : undefined,
+    tags: t.tags?.length ? t.tags : t.taggedUsers.length ? t.taggedUsers.map((id) => ({ id, type: "user", name: "" })) : undefined,
     giphy_id: t.gifId ?? undefined,
     giphy_thumb: t.gifId ? (t.gifUrl ?? undefined) : undefined,
   };
@@ -235,6 +238,8 @@ export function bindChat(doc: Document, page: string, ctx: ChatContext): () => v
   if (page !== CHAT_VAULT && ctx.storage && ctx.accountId) ctx.storage.removeItem(vaultPickKey(ctx.accountId, CHAT_VAULT, chat));
   const back = chat ? `${CHAT_PAGE}?chat=${encodeURIComponent(chat)}` : CHAT_PAGE;
   send.setAttribute("data-oi-wired", "");
+  // ticket 33: the composer is a Wired field (Copy as draft and a picked script put the cursor there, dead.py's focus outcome).
+  editor.setAttribute("data-oi-wired", "");
 
   const summary = () => {
     const { price, scheduled_date: at, media_files: media, reply_to: reply, reply_text: quoted, giphy_id: gif, tags = [] } = draftOf();

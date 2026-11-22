@@ -22,8 +22,10 @@
  * discount (OF's PERSONAL_OFFER dialog: percent 5..max in 5s, 1..12 months, Clear; PUT /subscriptions/<fan>/discount
  * {discount, period}), View user's comments (the commented notifications for this fan), Purchases (no such page here:
  * disabled), Hide chat and Mute (ofMirrorChat's), Restrict / Unrestrict @user (POST|DELETE /users/<fan>/restrict, the
- * Relay's extras off: ?ack=false&hide=false), Block / Unblock (Block asks first). Report is disabled (NOT_YET): OF's report form
- * (report-abuse.js) sends its captcha data (captchaMixin) and per-reason fields (details-options) the mirror cannot fill.
+ * Relay's extras off: ?ack=false&hide=false), Block / Unblock (Block asks first). Report (ticket 42, D22) opens the chat's
+ * onlyfans.com page in a new tab (ofMirrorHandoffs reportHandoffUrl, measured), titled "opens onlyfans.com", nothing
+ * through the Relay, both scopes: OF's report form (report-abuse.js) sends captcha data (captchaMixin) and per-reason
+ * fields (details-options) the mirror cannot fill, so the operator reports there. With no chat open it stays disabled (NOT_YET).
  * A menu dialog opens over the page with the menu closed; done or cancelled, the chat page comes back (a toast carried
  * to it). Errors show in place. With no model (All models) nothing is sent: "Select a model to save changes".
  * OF has no "Pin chat" and no menu "Mark read/unread" (ledger); mark read/unread is the chat row's swipe (ofMirrorChats).
@@ -42,6 +44,7 @@ import { afterChatWrite } from "@/lib/ofMirrorKeys";
 import { frameNavigate, takeCarried, toast } from "@/lib/ofMirrorPost";
 import { setIconName } from "@/lib/ofMirrorThread";
 import { ELSEWHERE } from "@/lib/ofMirrorTooltip";
+import { asHandoff, HANDOFF_TITLE, reportHandoffUrl } from "@/lib/ofMirrorHandoffs";
 import { message, modalButton, note, NOT_YET, openModal, SELECT_MODEL } from "@/lib/ofMirrorWrites";
 import { proxyImage } from "@/lib/mediaUrl";
 import {
@@ -465,8 +468,16 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
   };
   for (const el of items) el.setAttribute("data-oi-wired", "");
   // Report: OF's form sends its captcha data and per-reason fields, which the mirror cannot fill (ledger).
+  // ticket 42: so the item becomes OF's link to the chat's onlyfans.com page, a new tab (ofMirrorHandoffs); no chat: disabled.
   const reportItem = onMenu ? item("report") : null;
-  if (reportItem) {
+  if (reportItem && ctx.chat) {
+    reportItem.querySelector("a.of-state-link")?.remove();
+    const a = asHandoff(reportItem, reportHandoffUrl("chat", { fanId: ctx.chat }));
+    a.title = HANDOFF_TITLE;
+    a.classList.remove("v-list-item--disabled");
+  } else if (reportItem) {
+    // A rebind with no chat after one: the link goes too (an <a> with no href, so the click guard below prevents it).
+    for (const attr of ["href", "target", "rel"]) reportItem.removeAttribute(attr);
     reportItem.querySelector("a.of-state-link")?.remove();
     reportItem.classList.add("v-list-item--disabled");
     reportItem.setAttribute("aria-disabled", "true");
@@ -528,8 +539,8 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
     }
     const el = t.closest<HTMLElement>(MENU_ITEM);
     const key = el?.dataset.oiMenu;
-    // Hide chat and Mute are ofMirrorChat's.
-    if (!el || !key || key === "hide" || key === "mute") return;
+    // Hide chat and Mute are ofMirrorChat's; Report's link (ticket 42) is the browser's (a disabled one: nothing).
+    if (!el || !key || key === "hide" || key === "mute" || (key === "report" && el.matches("a[href]"))) return;
     ev.preventDefault();
     ev.stopPropagation();
     if (key === "purchases" || key === "report") return;

@@ -45,7 +45,7 @@ import { applyOverview, overviewRekey } from "@/lib/ofMirrorStatsOverview";
 import { applyEngagement, applyEngagementPosts, applyMassMessages, messagesRekey, postsRekey } from "@/lib/ofMirrorStatsEngagement";
 import { applyCampaignSummary, applyReach, applyVisitors, type ProfileStats } from "@/lib/ofMirrorStatsReach";
 import { applyFans, subsRekey } from "@/lib/ofMirrorStatsFans";
-import { lastGoodKey, shownFor } from "@/lib/ofMirrorStatsLastGood";
+import { lastGoodKey, selectionOf, shownFor } from "@/lib/ofMirrorStatsLastGood";
 
 export { wallOf } from "@/lib/ofMirrorStatsDom";
 export * from "@/lib/ofMirrorStatsPeriod";
@@ -293,7 +293,7 @@ const RETRY = { retry: (n: number, err: unknown) => n < 2 && retryable(err), ret
  * with it. `skip`: while every row read is newer than the period, the next page is read (at most SKIP_PAGES); then the
  * next page waits for OF's infinite loading (the last row scrolling into view).
  */
-function usePaged(accountId: string | null, route: ((param: PageParam) => string) | null, next: (last: unknown, pages: unknown[]) => PageParam | undefined, p: Period, skip: boolean) {
+export function usePaged(accountId: string | null, route: ((param: PageParam) => string) | null, next: (last: unknown, pages: unknown[]) => PageParam | undefined, p: Period, skip: boolean) {
   const q = useInfiniteQuery({
     queryKey: ["of-mirror-data", accountId, route ? route({ offset: 0 }) : null, "pages"],
     queryFn: ({ pageParam }) => relay.get<unknown>(route!(pageParam), { accountId }),
@@ -308,14 +308,17 @@ function usePaged(accountId: string | null, route: ((param: PageParam) => string
   const reached = !!list?.some((r) => (timeOf(r) ?? Infinity) < p.start.getTime());
   const ahead = !!list?.length && list.every((r) => (timeOf(r) ?? -Infinity) > p.end.getTime());
   const { hasNextPage, isFetching, fetchNextPage } = q;
+  // A next page still failing after its retries: no more automatic or scroll paging; Retry asks that page again.
+  const pageFailed = q.isFetchNextPageError;
   useEffect(() => {
-    if (skip && ahead && hasNextPage && !isFetching && (pages?.length ?? 0) < SKIP_PAGES) void fetchNextPage();
-  }, [skip, ahead, hasNextPage, isFetching, pages?.length, fetchNextPage]);
-  // Stopped short of the period: the cap reached while every row is still newer, or the Relay repeated a page.
-  const stalled = (!!pages && nothingNew(pages.at(-1), pages)) || (skip && ahead && !!hasNextPage && (pages?.length ?? 0) >= SKIP_PAGES);
+    if (skip && ahead && hasNextPage && !isFetching && !pageFailed && (pages?.length ?? 0) < SKIP_PAGES) void fetchNextPage();
+  }, [skip, ahead, hasNextPage, isFetching, pageFailed, pages?.length, fetchNextPage]);
+  // Stopped short of the period: the cap reached while every row is still newer, the Relay repeated a page, or a page failed.
+  const stalled = (!!pages && nothingNew(pages.at(-1), pages)) || (skip && ahead && !!hasNextPage && (pages?.length ?? 0) >= SKIP_PAGES) || pageFailed;
   const more = !!hasNextPage && !(skip && reached) && !stalled;
   const body: PagedBody | undefined = list && { list, hasMore: more, loading: isFetching, more: more && !isFetching ? () => void fetchNextPage() : null, stalled };
-  return { body, stamp: `${q.dataUpdatedAt}:${q.status}:${isFetching}:${pages?.length ?? 0}`, error: q.isError, refetch: q.refetch, at: q.dataUpdatedAt, route: route ? route({ offset: 0 }) : null };
+  const refetch = pageFailed ? () => fetchNextPage() : q.refetch;
+  return { body, stamp: `${q.dataUpdatedAt}:${q.status}:${isFetching}:${pages?.length ?? 0}`, error: q.isError, failure: q.error, refetch, at: q.dataUpdatedAt, route: route ? route({ offset: 0 }) : null };
 }
 
 /**
@@ -395,18 +398,19 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     const data: StatsData = {};
     // A read that failed keeps its last good answer for this Creator and period; the notice says as of when.
     let asOf: number | null = null;
-    const shown = (s: StatSource, route: string | null, r: { data: unknown; failed: boolean; at: number }) => {
-      const got = shownFor(lastGoodKey(accountId, key, route), r);
+    const selection = selectionOf(p);
+    const shown = (s: StatSource, route: string | null, r: { data: unknown; failed: boolean; at: number; error: unknown }) => {
+      const got = shownFor(lastGoodKey(accountId, selection, route), { ...r, permanent: r.failed && !retryable(r.error) });
       if (got.asOf && sources.includes(s)) asOf = Math.min(asOf ?? Infinity, got.asOf);
       return got.data;
     };
     if (accountId) {
-      ALL_SOURCES.forEach((s, i) => (data[s] = shown(s, routes[i], { data: results[i].data, failed: results[i].isError, at: results[i].dataUpdatedAt })));
+      ALL_SOURCES.forEach((s, i) => (data[s] = shown(s, routes[i], { data: results[i].data, failed: results[i].isError, at: results[i].dataUpdatedAt, error: results[i].error })));
       PAGED.forEach((s, i) => {
         const l = lists[i];
         // Remembered without its live paging: the next page is asked again once a read answers.
         const body = l.body && !l.error ? { ...l.body, loading: false, more: null } : l.body;
-        const got = shown(s, l.route, { data: body, failed: l.error, at: l.at });
+        const got = shown(s, l.route, { data: body, failed: l.error, at: l.at, error: l.failure });
         data[s] = l.body && !l.error ? l.body : got;
       });
     }

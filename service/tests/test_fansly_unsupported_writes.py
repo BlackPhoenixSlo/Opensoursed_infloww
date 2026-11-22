@@ -48,7 +48,7 @@ class _FakeOF:
         return {"success": True}
 
 
-async def _record_local(account_id, *, fan_id, value):
+async def _record_local(account_id, *, fan_id, value, at=None):
     _local.append((account_id, fan_id, value))
 
 server._resolve_account_id = lambda _req=None: _AID  # type: ignore[assignment]

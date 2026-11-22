@@ -26,7 +26,7 @@ from starlette.responses import FileResponse, Response
 import turnstile
 from bio_pages import assets, decide, files, guard, hono, store
 from bio_pages.config import BioConfig
-from client_addr import client_address, trusted_peer
+from client_addr import client_address, from_edge, trusted_peer
 
 log = logging.getLogger("of-relay.bio")
 
@@ -134,6 +134,17 @@ async def _profile_json(q: _Req, file: str) -> Response:
     return _json(200, decide.public_profile(*found, _site_key(), q.prefix), MR)
 
 
+def _no_header(_name: str) -> None:
+    return None
+
+
+def _geo(q: _Req) -> decide.Header:
+    """The headers the location is read from (CF-IPCountry, X-Country, the region ones): the request's only from an
+    EDGE_PROXIES hop, as client_addr.edge's country; any other request's are the client's own, so none is read
+    (event country XX, visitor_location's default)."""
+    return q.hdr if from_edge(q.request) else _no_header
+
+
 async def _ping(q: _Req, username: str) -> Response:
     cc = "no-store"
     name = decide.lookup_username(username)
@@ -144,7 +155,7 @@ async def _ping(q: _Req, username: str) -> Response:
     profile = await store.profile_at(name) if name else None
     if not profile:
         return _json(404, {"error": "Profile not found"}, cc)
-    await store.record("view", profile["id"], "", decide.event_country(q.hdr), decide.in_app(q.hdr), "")
+    await store.record("view", profile["id"], "", decide.event_country(_geo(q)), decide.in_app(q.hdr), "")
     return _r(204, b"", {"cache-control": cc})
 
 
@@ -154,7 +165,7 @@ async def _reveal(q: _Req) -> Response:
         return _json(403, {"error": "Cross-origin request refused"}, cc)
     if not guard.allow(str(client_address(q.request))):
         return _json(429, {"error": "Too many requests"}, cc)
-    location = decide.visitor_location(q.hdr)
+    location = decide.visitor_location(_geo(q))
     link_id = q.query("id")
     link = await store.link_by_link_id(link_id) if link_id and decide.LINK_ID.fullmatch(link_id) else None
     if link and await q.foreign_owner(link["profile_id"]):
@@ -168,7 +179,7 @@ async def _reveal(q: _Req) -> Response:
     url, code = decide.reveal(link, q.query("trackingId"), location)
     if not url:
         return _json(404, {"error": "Link not found"}, cc)
-    await store.record("click", link["profile_id"], link["id"], decide.event_country(q.hdr), decide.in_app(q.hdr),
+    await store.record("click", link["profile_id"], link["id"], decide.event_country(_geo(q)), decide.in_app(q.hdr),
                        code if link["tracking"] else "")
     return _json(200, {"realUrl": url}, cc)
 
@@ -185,13 +196,16 @@ async def _file(q: _Req, collection: str, record_id: str, filename: str) -> Resp
 
 
 async def _tls_ask(q: _Req) -> Response:
+    """v2's on-demand-TLS ask endpoint (200 = a host this service serves), kept for the v2 contract
+    (scripts/bio-contract-diff/corpus.py's tls-ask cases). No caller here: Traefik's route file
+    (deploy/bio/sync-custom-domains.py) decides which hosts get a certificate."""
     cc = {"cache-control": "no-store"}
     domain = q.query("domain")
     if not domain or not decide.is_askable(domain, PRIMARY):
         return _r(400, b"", cc)
     try:
         kind, _ = await _resolve(domain)
-    except Exception:  # noqa: BLE001  a DB that cannot be read is Caddy's "no" too
+    except Exception:  # noqa: BLE001  a DB that cannot be read answers no (503)
         return _r(503, b"", cc)
     return _r(404 if kind == "unknown" else 200, b"", cc)
 

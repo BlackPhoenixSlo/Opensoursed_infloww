@@ -92,7 +92,8 @@ budget goes red as noise.
 
 ## Fast local feedback
 
-The loop while developing, all of it already here (no other selection exists):
+The loop while developing, all of it already here (no other selection exists), once the owner opted in to a
+slop run for this change (root `CLAUDE.md` "Slop tests — opt-in only": never by default, no answer = no slop):
 
 ```sh
 slop/run --changed --dry          # what the diff reaches, with estimates; runs nothing, takes no gate slot
@@ -232,8 +233,8 @@ built: no list to curate. `all` stays for deploys and harness-wide changes.
 
 **Nightly.** `slop/run nightly [--dry] [--phases=all,volume,map] [--smoke] [--detach]`
 (`lib/nightly.py`, tables in `lib/test_nightly.py`) is the daily sweep, notifications
-and Electron included: phase `volume` first (3 of the scenarios declaring a volume gate at `--scale=medium --users=120 --no-ui`, a dated rotation over the sorted list so each runs every ceil(n/3) nights: owner 2026-11-12 cut volume ~95% after 54 exclusive medium runs could not finish in a night; `VOLUME_PER_NIGHT`), `all` (small, UI on; relevant only, owner 2026-11-21 after a night under load 25-30 hit the 8 h wall with its map phase unrun: the union, in scenario order, of `changed` = what `--changed` would pick since the previous nightly's sha (newest earlier non-smoke `*-nightly-*` folder that ran `all` and wrote summary.json; same `covmap.pick_changed`, `own` and `flow` tiers only (`NIGHTLY_TIERS`), no budget: a `shared`/`layout` pick, e.g. a module-level import every scenario loads, would make each night a full sweep, so those scenarios are left out and counted as such), `carry-over` = that night's `all`/`volume` rows not OK (FAIL, FLAKY, INFRA, SKIP incl. 8 h cuts; a volume row re-runs here at small), `unmapped`, and the `canary` set `SMOKE["all"]` (os-ping-push + inbox-unread-fan-burst, which drives the Electron notification click); no map, no previous nightly or a failed pick = every scenario, the reason in plan.txt), `map` (`--map` for at most 10 (`MAP_PER_NIGHT`) of the unmapped scenarios and the
-entries whose sha is > 200 commits behind HEAD or not an ancestor of HEAD: unmapped first, then no / unknown / divergent sha, then most behind; a re-mapped entry is fresh the next night, so the cap rotates through the stale list over nights; no Sunday full refresh). plan.txt lists each `all` scenario with its source(s) and how many were left out as unaffected; summary.md the same per source. Each scenario is its own
+and Electron included: phase `volume` first (3 of the scenarios declaring a volume gate at `--scale=medium --users=120 --no-ui`, a dated rotation over the sorted list so each runs every ceil(n/3) nights, plus the volume rows not OK of the newest finished non-smoke nightly that ran `volume` (a volume-only run included), at the same knobs: owner 2026-11-12 cut volume ~95% after 54 exclusive medium runs could not finish in a night; `VOLUME_PER_NIGHT`), `all` (small, UI on; relevant only, owner 2026-11-21 after a night under load 25-30 hit the 8 h wall with its map phase unrun: the union, in scenario order, of `changed` = what `--changed` would pick since the previous nightly's sha (newest earlier finished (`done`) non-smoke `*-nightly-*` folder that ran `all` and wrote summary.json; same `covmap.pick_changed`, `own` and `flow` tiers only (`NIGHTLY_TIERS`), no budget: a `shared`/`layout` pick, e.g. a module-level import every scenario loads, would make each night a full sweep, so those scenarios are left out and counted as such), `carry-over` = that night's `all` rows not OK (FAIL, FLAKY, INFRA, SKIP incl. 8 h cuts), `unmapped`, and the `canary` set `SMOKE["all"]` (os-ping-push + inbox-unread-fan-burst, which drives the Electron notification click); no map, no previous nightly, a failed pick or a changed file the map cannot judge (absent at its sha) = every scenario, the reason in plan.txt), `map` (`--map` for at most 10 (`MAP_PER_NIGHT`) of the unmapped scenarios and the
+entries whose sha is > 200 commits behind HEAD or not an ancestor of HEAD: the ones the last 40 finished nightlies with a map phase (`PREV_LOOKBACK`) did not `--map` first, then the oldest try (a failing entry does not starve the rest; the phase restores slop/map.json, so an entry stays due until `--apply-map`); within each: unmapped, then no / unknown / divergent sha, then most behind; no Sunday full refresh). A night with nothing to run exits 3 (`NIGHTLY SKIPPED ... of 0 (no work ...)`), as an all-SKIP night. plan.txt lists each `all` scenario with its source(s) and how many were left out as unaffected; summary.md the same per source. Each scenario is its own
 `slop/run <name> <knobs>`, its verdict that run's exit code (0 OK, 1 FAIL, 3 INFRA, 2 refused = INFRA
 with its printed reason, 1 without invariants.json = INFRA; invariants.json only names the failed checks); a FAIL in `all` or `volume`
 re-runs once (green = `FLAKY`, INFRA stays INFRA); a `--map` run red only on budgets is `RED (coverage)` (counted as ok).
@@ -550,8 +551,9 @@ is compared only when both runs have >= n samples (the others are listed as skip
 5. **New fault:** add it to `lib/faults.py` (a flow kept in files of its own: its
    `lib/<flow>_faults.py`) with the exact check names it `targets`.
    It patches the product function whose bug class the scenario claims to catch.
-   Then run `slop/run <slug> --break`. The task is not done until it prints `CAUGHT`.
-6. Run `--scale=small` while iterating and before you call it done; the medium/volume run
+   Once the owner opted in (step 6): run `slop/run <slug> --break`; the task is not done until it prints `CAUGHT`.
+6. Running anything here needs the owner's opt-in for this change (root `CLAUDE.md` "Slop tests — opt-in
+   only": never by default, no answer = no slop). Then: `--scale=small` while iterating and before you call it done; the medium/volume run
    happens only in the nightly sweep. Quote the evidence folder.
 
 `ctx` gives a scenario: `ctx.build(profile)`, `ctx.world` (`.data`, `.rng`, `.sql()`),

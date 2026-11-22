@@ -10,7 +10,7 @@ import { useId, useReducer } from "react";
 
 import { IfButton, IfCard, IfHelp, IfInput, IfLabel, ifButtonClass } from "@/components/ui/infloww";
 import { ifConfirm } from "@/components/ui/ifConfirm";
-import { CopyButton } from "@/components/growth/_bits";
+import { CopyButton } from "@/components/ui/CopyButton";
 import {
   bioFailure, useCheckBioDomain, useRemoveBioDomain, useSetBioDomain, type BioDomain, type BioDomainRecord,
   type BioProfile,
@@ -109,6 +109,10 @@ export function BioDomainSection({ profile }: { profile: BioProfile }) {
             minutes, sometimes a few hours.
           </p>
           <Records records={dom.records ?? []} labelledBy={`${id}-rt`} />
+          <IfHelp>
+            Name is what most DNS hosts want in Host (@ = the domain itself). If yours wants the full name, or your
+            domain ends in two parts like .co.uk, use the full name under it.
+          </IfHelp>
           <IfHelp>Delete any other A or AAAA record for this name. On Cloudflare, set the cloud to DNS only (grey).</IfHelp>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <IfButton variant="primary" onClick={runCheck} disabled={form.busy !== null}>
@@ -160,7 +164,7 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-/** v2's records table: Type, Name, Value; each name and value copyable. */
+/** v2's records table: Type, Name, Value; each name and value copyable, the full name under a relative one. */
 function Records({ records, labelledBy }: { records: BioDomainRecord[]; labelledBy: string }) {
   return (
     <table className="mt-2 w-full table-fixed text-[13px]" aria-labelledby={labelledBy} data-dns-records>
@@ -175,7 +179,14 @@ function Records({ records, labelledBy }: { records: BioDomainRecord[]; labelled
         {records.map((r) => (
           <tr key={`${r.type} ${r.name}`} className="align-middle" data-dns-record={r.type}>
             <th scope="row" className="py-1 text-left font-normal text-fg">{r.type}</th>
-            <td className="py-1 pr-2"><Copyable text={r.name} /></td>
+            <td className="py-1 pr-2">
+              <Copyable text={r.name} />
+              {r.fqdn && r.fqdn !== r.name && (
+                <div className="mt-0.5 text-[12px] text-fg-dim" data-dns-fqdn>
+                  Full name: <Copyable text={r.fqdn} />
+                </div>
+              )}
+            </td>
             <td className="py-1"><Copyable text={r.value} /></td>
           </tr>
         ))}

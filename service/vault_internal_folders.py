@@ -75,12 +75,12 @@ def reserved_name(name: str) -> bool:
     return any(low == n.lower() for c in vault_pack_picker.CATEGORIES.values() for n in c.folder_names)
 
 
-def listing_sort_key(media_id: int, manual_order: int | None, created_at: datetime | None) -> tuple:
-    """The folder listing's order (`vault_ai_api.local_items`): 0,1,2… first, then unordered newest
-    first, then …-2,-1; ties by date then id, newest first."""
-    bucket = 1 if manual_order is None else (0 if manual_order >= 0 else 2)
-    age = -created_at.timestamp() if created_at is not None else float("inf")
-    return (bucket, manual_order or 0, age, -media_id)
+def listing_order(manual_order, created_at, media_id) -> tuple:
+    """ORDER BY clauses of a folder listing (`vault_ai_api.local_items`, and the reorder here reads
+    the same): 0,1,2… first, then unordered newest first, then …-2,-1; ties by date then id, newest
+    first (no date last)."""
+    bucket = case((manual_order.is_(None), 1), (manual_order >= 0, 0), else_=2)
+    return (bucket, manual_order, created_at.desc(), media_id.desc())
 
 
 def place_before(order: list[int], moved: list[int], before: int | None) -> list[int]:
@@ -162,16 +162,19 @@ async def _name_free(s, account_id: str, name: str, *, but: int | None = None) -
             "error": "name_taken", "message": f"A folder named {name} already exists."})
 
 
+def _not_in_mirror(media_ids: list[int]) -> HTTPException:
+    """The one answer for media that are not this account's live vault items (a stale tab, another model):
+    404 not_in_mirror, from the folder editor and the pack triage alike."""
+    return HTTPException(status_code=404, detail={
+        "error": "not_in_mirror", "media_ids": media_ids[:20],
+        "message": f"{len(media_ids)} of these are not in this model's vault. Reload and try again."})
+
+
 async def _in_mirror(s, account_id: str, media_ids: list[int]) -> None:
-    """404 media that are not this account's live vault items (a stale tab on another model)."""
-    known = set((await s.execute(select(VaultItem.media_id).where(
-        VaultItem.account_id == account_id, VaultItem.media_id.in_(media_ids),
-        VaultItem.removed_at.is_(None)))).scalars().all())
-    foreign = [m for m in media_ids if m not in known]
+    """404 media that are not this account's live vault items (`vault_pack_picker.not_in_mirror`)."""
+    foreign = await vault_pack_picker.not_in_mirror(s, account_id, media_ids)
     if foreign:
-        raise HTTPException(status_code=404, detail={
-            "error": "not_in_mirror", "media_ids": foreign[:20],
-            "detail": "these media are not in this model's vault"})
+        raise _not_in_mirror(foreign)
 
 
 def _adopt(folder: VaultFolder) -> bool:
@@ -188,15 +191,19 @@ async def _members(s, account_id: str, folder_id: int, media_ids: list[int]) -> 
         VaultFolderItem.media_id.in_(media_ids)))).scalars().all())
 
 
-async def _triage(account_id: str, cat: vault_pack_picker.Category, verdicts: dict[int, str | None]) -> None:
-    """The pack picker's save, with its refusals as the picker's own 400s. Nothing written on a refusal."""
+async def triage_or_400(account_id: str, cat: vault_pack_picker.Category, verdicts: dict[int, str | None],
+                        allowed: frozenset[int] | None = None) -> dict[str, Any]:
+    """The pack picker's save (`vault_pack_picker.triage`, its folders back), with its refusals as the
+    picker's own 400s; shared by the picker's route and this editor. Nothing written on a refusal."""
     try:
-        await vault_pack_picker.triage(account_id, cat, verdicts)
+        return await vault_pack_picker.triage(account_id, cat, verdicts, allowed=allowed)
     except vault_pack_picker.NotFreeSafe as e:
         raise HTTPException(status_code=400, detail={
             "error": "not_free_safe", "rung": cat.free_rung, "media_ids": e.media_ids,
             "message": f"{len(e.media_ids)} of these may not ride the free rung "
                        f"({cat.folder_name(cat.free_rung)}): Jev does not read the body as safe."}) from None
+    except vault_pack_picker.NotInMirror as e:
+        raise _not_in_mirror(e.media_ids) from None
     except vault_pack_picker.PhotosOnly as e:
         raise HTTPException(status_code=400, detail={
             "error": f"{cat.name}_photos_only", "media_ids": e.media_ids,
@@ -207,33 +214,33 @@ def _rung(cat: vault_pack_picker.Category, name: str) -> str:
     return next(r for r in cat.rungs if cat.folder_name(r) == name)
 
 
-async def _take_out(account_id: str, folder_id: int, name: str, media_ids: list[int]) -> int:
-    """Remove `media_ids` from the folder (a pack rung: through `triage`). Returns how many were in it."""
+async def _drop(s, account_id: str, folder: VaultFolder, media_ids: list[int]) -> tuple[list[int], bool]:
+    """A plain (non-rung) folder: remove `media_ids` and adopt it if any were in it, in the CALLER's
+    session, so the edit and the adopt commit as one unit and a rebuild cannot land between them.
+    Returns (the ids that were in it, whether the folder changed hands)."""
+    inside = sorted(await _members(s, account_id, folder.id, media_ids))
+    if not inside:
+        return [], False
+    await vault_standard_folders.remember(s, account_id, folder, inside, False)
+    await s.execute(delete(VaultFolderItem).where(
+        VaultFolderItem.account_id == account_id, VaultFolderItem.folder_id == folder.id,
+        VaultFolderItem.media_id.in_(inside)))
+    return inside, _adopt(folder)
+
+
+async def _take_out(account_id: str, folder_id: int, name: str, media_ids: list[int]) -> tuple[int, list[int]]:
+    """Remove `media_ids` from the folder (a pack rung: through `triage`). Returns (how many were in it,
+    `[folder_id]` if a plain generated folder changed hands in the same commit)."""
+    cat = vault_pack_picker.pack_rung_category(name)
     async with get_session() as s:
-        inside = sorted(await _members(s, account_id, folder_id, media_ids))
-        cat = vault_pack_picker.pack_rung_category(name)
-        if inside and cat is None:
-            folder = await _folder(s, account_id, folder_id)
-            await vault_standard_folders.remember(s, account_id, folder, inside, False)
-            await s.execute(delete(VaultFolderItem).where(
-                VaultFolderItem.account_id == account_id, VaultFolderItem.folder_id == folder_id,
-                VaultFolderItem.media_id.in_(inside)))
+        if cat is None:
+            inside, adopted = await _drop(s, account_id, await _folder(s, account_id, folder_id), media_ids)
             await s.commit()
-    if inside and cat is not None:
-        await _triage(account_id, cat, dict.fromkeys(inside))
-    return len(inside)
-
-
-async def _mark_edited(account_id: str, *folder_ids: int) -> list[int]:
-    """Adopt the edited folders; the ids that changed hands."""
-    out: list[int] = []
-    async with get_session() as s:
-        for fid in folder_ids:
-            folder = await s.get(VaultFolder, fid)
-            if folder is not None and folder.account_id == account_id and _adopt(folder):
-                out.append(fid)
-        await s.commit()
-    return out
+            return len(inside), [folder_id] if adopted else []
+        inside = sorted(await _members(s, account_id, folder_id, media_ids))
+    if inside:
+        await triage_or_400(account_id, cat, dict.fromkeys(inside))
+    return len(inside), []
 
 
 # ── Routes ───────────────────────────────────────────────────────────
@@ -337,7 +344,11 @@ async def add_to_internal_folder(folder_id: int, payload: dict = Body(...)) -> d
         already = await _members(s, account_id, folder_id, media_ids)
         in_source = len(await _members(s, account_id, source_id, media_ids)) if source is not None else 0
         target_name, source_name = target.name, source.name if source else None
+        standard = bool(parse_key(target.created_by) or (source is not None and parse_key(source.created_by)))
         cat = vault_pack_picker.pack_rung_category(target_name)
+        src_cat = vault_pack_picker.pack_rung_category(source_name) if source_name is not None else None
+        added = len(media_ids) - len(already)
+        adopted: list[int] = []
         if cat is None:
             try:
                 await vault_standard_folders.remember(s, account_id, target, media_ids, True)
@@ -347,19 +358,24 @@ async def add_to_internal_folder(folder_id: int, payload: dict = Body(...)) -> d
                 await s.execute(sqlite_insert(VaultFolderItem)
                                 .values(account_id=account_id, folder_id=folder_id, media_id=m)
                                 .on_conflict_do_nothing(index_elements=["account_id", "folder_id", "media_id"]))
+            # The add, a plain source's take-out and both adopts commit as ONE unit: split, a rebuild
+            # landing between them rewrote the still-generated folder over the operator's edit.
+            if added and _adopt(target):
+                adopted.append(folder_id)
+            if source is not None and src_cat is None and (await _drop(s, account_id, source, media_ids))[1]:
+                adopted.append(source_id)
             await s.commit()
     if cat is not None:
         # Only the new ones: the picker re-files what it is handed, which would drop a member's place in the rung.
         fresh = [m for m in media_ids if m not in already]
         if fresh:
-            await _triage(account_id, cat, dict.fromkeys(fresh, _rung(cat, target_name)))
-    # A move between two rungs of one category is already done: filing is exclusive there.
-    if source_name is not None and not (cat is not None and vault_pack_picker.pack_rung_category(source_name) is cat):
-        await _take_out(account_id, source_id, source_name, media_ids)
-    if parse_key(target.created_by) or (source is not None and parse_key(source.created_by)):
+            await triage_or_400(account_id, cat, dict.fromkeys(fresh, _rung(cat, target_name)))
+    # A plain → plain move is done (the commit above); so is one between two rungs of one category: filing is
+    # exclusive there.
+    if source_name is not None and not (cat is None and src_cat is None) and not (cat is not None and src_cat is cat):
+        adopted += (await _take_out(account_id, source_id, source_name, media_ids))[1]
+    if standard:
         await vault_standard_folders.sync(account_id, media_ids)
-    added = len(media_ids) - len(already)
-    adopted = await _mark_edited(account_id, *([folder_id] if added else []), *([source_id] if in_source else []))
     return {"account_id": account_id, "folder_id": folder_id, "added": added,
             "already": len(already), "moved": in_source, "adopted": adopted}
 
@@ -372,10 +388,9 @@ async def remove_from_internal_folder(folder_id: int, payload: dict = Body(...))
     async with get_session() as s:
         folder = await _folder(s, account_id, folder_id)
         name, standard = folder.name, parse_key(folder.created_by)
-    removed = await _take_out(account_id, folder_id, name, media_ids)
+    removed, adopted = await _take_out(account_id, folder_id, name, media_ids)
     if standard:
         await vault_standard_folders.sync(account_id, media_ids)
-    adopted = await _mark_edited(account_id, folder_id) if removed else []
     return {"account_id": account_id, "folder_id": folder_id, "removed": removed, "adopted": adopted}
 
 
@@ -394,9 +409,11 @@ async def reorder_internal_folder(folder_id: int, payload: dict = Body(...)) -> 
             select(VaultFolderItem.media_id, VaultFolderItem.manual_order, VaultItem.created_at)
             .outerjoin(VaultItem, (VaultItem.account_id == VaultFolderItem.account_id)
                        & (VaultItem.media_id == VaultFolderItem.media_id))
-            .where(VaultFolderItem.account_id == account_id, VaultFolderItem.folder_id == folder_id))).all()
+            .where(VaultFolderItem.account_id == account_id, VaultFolderItem.folder_id == folder_id)
+            .order_by(*listing_order(VaultFolderItem.manual_order, VaultItem.created_at,
+                                     VaultFolderItem.media_id)))).all()
         current = {int(m): mo for m, mo, _ in rows}
-        order = [int(m) for m, _, _ in sorted(rows, key=lambda r: listing_sort_key(int(r[0]), r[1], r[2]))]
+        order = [int(m) for m, _, _ in rows]
         try:
             placed = place_before(order, media_ids, before)
         except ValueError:

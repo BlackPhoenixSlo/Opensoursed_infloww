@@ -130,8 +130,13 @@ class _AutoExcludeWalker:
         _counts[(aid, f"adds_{via}" if ok else f"refused_{via}")] += 1
         if uid in _drops.get(aid, ()):
             _line({"ev": "add", "t": time.time(), "account_id": aid, "uid": uid, "ok": ok, "via": via})
-        if not ok:
-            raise RuntimeError("OF 403: Unable to add user to user list")
+        if not ok:   # as of_client raises OF's answer: an OFAPIError carrying the 403
+            from types import SimpleNamespace
+
+            from of_client import OFAPIError
+            raise OFAPIError("403 for https://onlyfans.com/api2/v2/lists/{}/users/{}\n"
+                             '{{"message":"Unable to add user to user list"}}'.format(list_id, uid),
+                             response=SimpleNamespace(status_code=403))
         return super().add_user_to_list(list_id, user_id)
 
     def remove_user_from_list(self, list_id, user_id) -> dict:

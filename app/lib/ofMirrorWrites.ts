@@ -839,7 +839,7 @@ export function useOfWrites(frameRef: RefObject<HTMLIFrameElement | null>, src: 
   const stream = path === "streaming/dashboard/create";
   const streamDate = stream ? params.get("date") : null;
   const streamTime = stream ? params.get("time") : null;
-  const newWrites = useOfmNewWrites(settingsPage(path) === "profile"); // OFM_NEW_WRITES_ENABLED: the cover and avatar
+  const newWrites = useOfmNewWrites(settingsPage(path) === "profile", accountId); // OFM_NEW_WRITES_ENABLED: the cover and avatar
   const refresh = () => {
     // ticket 67: the refetched users/me saved now, not 4 s later: a reload right after Save showed the old cover
     // (the persisted snapshot, fresh for 5 min).

@@ -16,7 +16,7 @@
  * State and rules: `internalFoldersState.ts`.
  */
 
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, Folder, FolderPen, FolderPlus, Images, Pencil, Sparkles, Tag, Trash2, X } from "lucide-react";
@@ -29,6 +29,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { formatPrice } from "@/components/vault/folderPriceForm";
 import { FolderPriceModal } from "@/components/vault/VaultFolderRail";
 import VaultCategoryIconDialog from "@/components/vault/VaultCategoryIconDialog";
+import { INITIAL_VIEWER, viewerReducer } from "@/components/vault/itemViewer";
 import VaultItemModal from "@/components/vault/VaultItemModal";
 import VaultTile from "@/components/vault/VaultTile";
 import { type Tile } from "@/components/vault/vaultManageActions";
@@ -263,10 +264,11 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
     return () => window.clearTimeout(t);
   }, [draft]);
 
-  // The viewer and the full-screen player over it.
-  const [preview, setPreview] = useState<Tile | null>(null);
-  const [playMedia, setPlayMedia] = useState<Tile | null>(null);
+  // The viewer and the full-screen player over it (`itemViewer`).
+  const [viewer, view] = useReducer(viewerReducer, INITIAL_VIEWER);
+  const { preview, play: playMedia } = viewer;
   const previewIdx = preview ? items.findIndex((m) => m.id === preview.id) : -1;
+  const onStep = useCallback((media: Tile) => view({ type: "open", media }), []);
 
   const boxRef = useRef<HTMLDivElement>(null);
   // Escape steps back one view: the folder (on a phone that is the whole screen), then the editor.
@@ -603,8 +605,8 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
                             <VaultTile
                               media={m}
                               accountId={accountId}
-                              onClick={(x) => setPreview(x as Tile)}
-                              onPlay={(x) => setPlayMedia(x as Tile)}
+                              onClick={(x) => view({ type: "open", media: x as Tile })}
+                              onPlay={(x) => view({ type: "play", media: x as Tile })}
                               selectMode={selectMode}
                               checked={selected.has(m.id)}
                               onCheck={(x) => dispatch({ type: "toggle", media: x })}
@@ -741,19 +743,19 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
           accountId={accountId}
           prev={previewIdx > 0 ? items[previewIdx - 1] : null}
           next={previewIdx >= 0 && previewIdx < items.length - 1 ? items[previewIdx + 1] : null}
-          onStep={setPreview}
-          onClose={() => setPreview(null)}
-          onEscape={() => (playMedia ? setPlayMedia(null) : setPreview(null))}
+          onStep={onStep}
+          onClose={() => view({ type: "close" })}
+          onEscape={() => view({ type: "escape" })}
           keysOff={!!playMedia}
-          onExpand={() => setPlayMedia(preview)}
+          onExpand={() => view({ type: "expand" })}
           onSaved={(updated) => {
-            setPreview((p) => (p ? { ...p, _ai: { ...(p._ai ?? {}), ...updated } } : p));
+            view({ type: "saved", mediaId: Number(updated.media_id), updated });
             void qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
           }}
           describeSlot={null}
         />
       )}
-      {playMedia && <VaultVideoPreview media={playMedia} accountId={accountId} onClose={() => setPlayMedia(null)} />}
+      {playMedia && <VaultVideoPreview media={playMedia} accountId={accountId} onClose={() => view({ type: "closePlayer" })} />}
     </div>
   );
 }

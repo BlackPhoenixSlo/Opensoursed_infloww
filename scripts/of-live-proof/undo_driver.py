@@ -22,6 +22,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import quote
 
 from proof_core import NOT_REVERSIBLE_REFUSED, _api, _template, fill, read_keys_for
@@ -259,6 +260,30 @@ def _ok(status) -> bool:
     return isinstance(status, int) and 200 <= status < 300
 
 
+def _shows_id(v, of_id: str) -> bool:
+    """Whether a read holds `of_id` anywhere as a whole value (a row's id field or column). A `_` key is the read's
+    own bookkeeping (phase2 read_marked_messages' `_page` bounds), never an item: skipped (W30 S3)."""
+    if isinstance(v, Mapping):
+        return any(_shows_id(x, of_id) for k, x in v.items() if not str(k).startswith("_"))
+    if isinstance(v, (list, tuple)):
+        return any(_shows_id(x, of_id) for x in v)
+    return not isinstance(v, bool) and v is not None and str(v) == of_id
+
+
+def still_shown(read, of_id) -> bool:
+    """Follow-up #6: whether a fresh read (tagged `before-undo-retry`) still shows the row's own item by its OnlyFans
+    id. False when there is no read, no id, or the read failed: the driver then sends nothing of its own.
+    ASSUMPTION: the proof's read names its items by id (p2.bubble-unsend-ppv's marked (id, text, price) rows; W30 W2:
+    a PPV pushed past the read's page is not shown here, and its row closes FAILED on ppv_gone/ppv_same); overturned by
+    a trigger-reversing proof whose read carries no id, whose failed in-page reversal then closes FAILED unretried."""
+    if read is None or of_id is None:
+        return False
+    try:
+        return _shows_id(read("before-undo-retry"), str(of_id))
+    except Exception:  # noqa: BLE001  (unknown: nothing sent, the failed reversal stays the record)
+        return False
+
+
 def _send_one(w, route, body, call, wire, creator, values, start=None) -> dict:
     """One undo Write's Relay call (the Relay's method, `relay_method`, else the Write's); the last wire line of the
     Write's own OnlyFans method after it gives the path, status and seq verify_undo checks (ticket 131; None: none).
@@ -301,13 +326,17 @@ def _put_back(w, i, values, call, creator, kept, at) -> tuple[dict | None, dict]
     return None, {**values, "upload": item}
 
 
-def _send_all(proof, rows, call, wire, values, sent, creator, before, kept=None) -> list:
+def _send_all(proof, rows, call, wire, values, sent, creator, before, kept=None, read=None) -> list:
     """Each row's undo Writes (`row_undos`), by undo Write then row: [(reversals, the first Write not sent or None)]
     per row. A Write whose placeholders are not all known is not sent, nor any of that row after it. A request another
     row already sent (`sent`: ticket 30's hide, for the upload row and a second post) is not sent again; the row takes
-    its record; nor one the trigger already sent (`trigger_reversal`, ticket 34). A picture put back (ticket 67) goes
-    through `_put_back` first. Each record names the wire seq its call caused (None: none), the line verify_undo checks
-    (ticket 131)."""
+    its record; nor one the trigger already sent 2xx (`trigger_reversal`, ticket 34). Follow-up #6 / round 2 #21: where
+    the Write's `max` leaves the guard room for a second one (the PPV's 2), the trigger's reversal is the undo only
+    while a fresh read no longer shows the row's item (`still_shown`): still shown (a non-2xx, or a 2xx such as OF's
+    `{"success": false}`), the driver sends its own; gone, or the read failed, the trigger's line stays the record
+    (non-2xx: the row closes FAILED for the owner; a second DELETE of an item already gone would only answer 404).
+    A picture put back (ticket 67) goes through `_put_back` first. Each record names the wire seq its call caused
+    (None: none), the line verify_undo checks (ticket 131)."""
     out = [([], None) for _ in rows]
     for i, w in enumerate(proof.undo):
         for n, r in enumerate(rows):
@@ -321,6 +350,9 @@ def _send_all(proof, rows, call, wire, values, sent, creator, before, kept=None)
                 continue
             method = (w.relay_method or w.method).upper()
             made = None if (method, route) in sent else trigger_reversal(w, r, fill(w.path, v), wire())
+            if made is not None and w.max > 1 and still_shown(read, r.get("of_id")):
+                made = None   # follow-up #6 / round 2 #21: the item is still there (in-page reply failed, or 2xx with
+                #               `success: false`): send our own
             if made is not None:   # the trigger's own reversal is the record; nothing is sent again (ticket 34)
                 sent[method, route] = {"method": made["method"], "path": made["path"], "status": made["status"],
                                        "seq": made["seq"], "relay": None, "relay_status": None, "by": "trigger"}
@@ -446,7 +478,7 @@ def settle_rows(proof, rows, call, wire, read, *, creator, before, after, effect
                           earlier.get("reason", "")))
     else:
         for r, (revs, unsent) in zip(rows, _send_all(proof, rows, call, wire, values, sent, creator, before,
-                                                     kept)):
+                                                     kept, read)):
             miss = ([f"row {r['row']}: undo {unsent.method.upper()} {unsent.path} not sent: its ids are unknown"]
                     if unsent is not None and revs else [])   # none sent: verify_undo already names it
             plans.append((revs, {}, miss, ""))

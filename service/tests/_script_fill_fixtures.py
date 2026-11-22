@@ -15,6 +15,7 @@ from sqlalchemy import insert
 
 import vault_ai_brief
 import vault_dupes
+import vault_jev_flags
 import vault_jev_rules
 from db.engine import get_session
 from db.models import SavedReply, VaultFolderPrice, VaultItem
@@ -54,6 +55,9 @@ TIERS = {
 def fields(tier: str, kind: str = "photo", lane: str = "$10", colour: str = "white") -> dict[str, Any]:
     raw = {**TIERS[tier], "clothing_items": [f"{colour} bra"], **SOLO,
            vault_jev_rules.JEV_KEY: _jev(lane, kind, "y" if tier == "explicit" else "n")}
+    if lane in vault_jev_rules.PAID:   # the flags + tier the mapper writes a paid lane, never sfw / suggestive (W30 D1)
+        m = vault_jev_flags.apply(raw, raw[vault_jev_rules.JEV_KEY])
+        raw.update({k: m[k] for k in ("explicitness", "breasts_vis", "vulva_vis", "anus_vis")})
     return vault_ai_brief.settled_reading(raw)
 
 

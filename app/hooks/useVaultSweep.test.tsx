@@ -191,6 +191,26 @@ describe("label maths", () => {
     expect(title).toContain("cannot identify image file");
   });
 
+  it("names the Jev cap on its own line even when another failure came first (W30 R5)", () => {
+    const cap = "Jev daily cap reached earlier in this sweep — Jev skipped";
+    const p = { total: 9, done: 9, failed: 5, error: "frame decode failed", notice: cap };
+    expect(describeSweepText(p).title).toContain(cap);
+    const now = Date.parse("2026-11-14T12:00:00Z");
+    const note = sweepAbortedNote({ ...p, finished_at: new Date(now - 60e3).toISOString() }, now);
+    expect(note?.detail).toBe(`First error: frame decode failed\n${cap}`);
+    expect(sweepAbortedNote({ ...p, error: cap, finished_at: new Date(now - 60e3).toISOString() }, now)?.detail)
+      .toBe(`First error: ${cap}`);
+  });
+
+  it("keeps a recorded Jev cap line when a later stop or death ends the sweep (W30 C7)", () => {
+    const cap = "Jev daily cap reached earlier in this sweep — Jev skipped";
+    const stop = { message: "Stopped: Jev (TypeSafe) failed 3 calls in a row.", fix: "Try again later." };
+    const p = { total: 9, done: 4, failed: 3, error: "ConnectError: down", notice: cap };
+    expect(sweepAbortedNote({ ...p, stop })?.detail).toBe(`Try again later.\n${cap}`);
+    expect(sweepAbortedNote({ ...p, aborted: true })?.detail).toBe(`ConnectError: down\n${cap}`);
+    expect(sweepAbortedNote({ ...p, stop, notice: undefined })?.detail).toBe("Try again later.");
+  });
+
   it("marks a cap hit on the button, where it changes what you do next", () => {
     expect(describeSweepText({ total: 500, done: 232, capped: true }).label)
       .toBe("232/500 (cap hit)");

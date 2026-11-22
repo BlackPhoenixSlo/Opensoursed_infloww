@@ -22,6 +22,7 @@ from sqlalchemy import Select, or_, select, tuple_, update
 
 from db.engine import get_session
 from db.models import MassBroadcastCache, MassRun, Message
+from of_shapes import queue_id as _frame_queue_id   # `queue_id` is a parameter name here
 
 
 # ── OF unsend → local mirror ────────────────────────────────────────
@@ -235,19 +236,11 @@ def _queue_id_of(raw_json: str | None) -> int | None:
         obj = json.loads(raw_json)
     except (ValueError, TypeError):
         return None
-    if not isinstance(obj, dict):
-        return None
-    qid = obj.get("queueId")
-    if isinstance(qid, bool) or qid is None:
-        return None
-    try:
-        return int(qid)
-    except (TypeError, ValueError):
-        return None
+    return _frame_queue_id(obj)
 
 
 def unsent_targets(
-    queue_id: int,
+    queue_id: int | None,
     rows: Iterable[tuple[int, int, str | None, datetime | None, str | None]],
     *,
     body: str | None,
@@ -263,16 +256,20 @@ def unsent_targets(
     its `raw_json.queueId == queue_id` (exact, any age), or its normalized body
     equals `body`'s inside ±`_BLAST_COPY_SLACK` of `sent_at`. The body branch is
     only honest INSIDE the window — the same text three hours later is a chatter
-    typing, not OF delivering. An empty key (no body, a media-only blast) or an
-    unknown `sent_at` leaves only the id branch."""
+    typing, not OF delivering — and only for a row with no queueId: a row whose
+    queueId names another blast is that blast's copy, same text or not. An
+    empty key (no body, a media-only blast) or an unknown `sent_at` leaves only
+    the id branch; a None `queue_id` only the body one."""
     # local: keeps attribution off messages' import path.
     from attribution import _BLAST_COPY_SLACK, _norm_body
     slack = _BLAST_COPY_SLACK.total_seconds()
     key = _norm_body(body) if body else ""
     hits: list[tuple[int, int]] = []
     for fan_id, message_id, row_body, created_at, raw_json in rows:
-        if _queue_id_of(raw_json) == int(queue_id):
-            hits.append((int(fan_id), int(message_id)))
+        row_qid = _queue_id_of(raw_json)
+        if queue_id is not None and row_qid is not None:
+            if row_qid == int(queue_id):
+                hits.append((int(fan_id), int(message_id)))
             continue
         if not key or sent_at is None or created_at is None:
             continue

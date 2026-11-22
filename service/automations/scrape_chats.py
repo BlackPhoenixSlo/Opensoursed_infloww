@@ -18,8 +18,9 @@ Env knobs (read at call time):
                              on every first scrape
   SCRAPE_SWEEP_BUDGET_S=900  a sweep (no chat/fan ids) starts no new chat after this many
                              seconds: it ends ok (a `{}` run still marks full_sweep, so the
-                             4h cadence holds) with `budget_stopped`; per-chat cursors carry
-                             the rest to the next sweep. Bounds how long one big creator
+                             4h cadence holds) with `budget_stopped`; a budgeted sweep scrapes
+                             never-scraped chats first, then the oldest `last_scrape_at`, so the
+                             next sweeps reach the rest. Bounds how long one big creator
                              holds a bulk slot (public 3536964: 4900 s runs, 11-18). 0 = no cap
 """
 from __future__ import annotations
@@ -78,6 +79,11 @@ def _sweep_budget_s() -> float:
 
 
 _clock = time.monotonic   # seam: tests patch automations.scrape_chats._clock
+
+# (account, chat) -> utc time a sweep last FAILED it (a scrape or a 404 stamps scrape_history and drops
+# the entry): a budgeted sweep orders by the later of this and the scrape stamp, so chats that fail
+# (no stamp) don't stay first. Process memory, bounded by the chats failing now.
+_attempted_at: dict[tuple[str, int], datetime] = {}
 
 
 def _eager_history() -> bool:
@@ -175,6 +181,12 @@ async def _upsert_message(
         )
     )
     await s.execute(stmt)
+
+
+async def upsert_message(account_id: str, fan_id: int, own_user_id: str, m: dict) -> None:
+    """`_upsert_message` in its own session: one OF chat item another reader got (Full AI's last look)."""
+    async with get_session() as s:
+        await _upsert_message(s, account_id, fan_id, own_user_id, m)
 
 
 async def _upsert_fan_identity(
@@ -460,7 +472,8 @@ async def _fetch_oldest_end(
     return collected
 
 
-async def _stamp_scrape_history(account_id: str, fan_id: int, *, gone: bool = False) -> None:
+async def _stamp_scrape_history(account_id: str, fan_id: int, *, gone: bool = False,
+                                clear_deferred: bool = False) -> None:
     """Record "we scraped this fan at T" even when the scrape yielded NOTHING —
     an empty chat, a full fast-skip, or a chat that's GONE on OF (404 from a
     deleted/deactivated fan). gen_info's autoscrape re-enqueue gate is exactly
@@ -469,9 +482,11 @@ async def _stamp_scrape_history(account_id: str, fan_id: int, *, gone: bool = Fa
     (the 2026-07-04 storm: ~24 dead fans × 12 404s/hour, every day). The upsert
     leaves last_message_id/text alone so the fast-skip cursor survives."""
     now = datetime.utcnow()
-    # gone (404): also drop the deferral — gen_info treats a deferred row's stamp as
-    # "never scraped", so a kept marker re-enqueued the dead chat every pass.
-    set_ = {"last_scrape_at": now, "history_deferred_at": None} if gone else {"last_scrape_at": now}
+    # gone (404), or `clear_deferred` (a non-deferring scrape found the chat empty): also
+    # drop the deferral — gen_info treats a deferred row's stamp as "never scraped", so a
+    # kept marker re-enqueued the chat every pass.
+    set_ = ({"last_scrape_at": now, "history_deferred_at": None} if gone or clear_deferred
+            else {"last_scrape_at": now})
     async with get_session() as s:
         await s.execute(
             sqlite_insert(ScrapeHistory)
@@ -560,8 +575,9 @@ async def _scrape_one_chat(
     if not collected:
         # Empty chat or complete fast-skip — still a successful "we looked at OF
         # at T" observation. Stamping keeps gen_info's autoscrape from re-deferring
-        # this fan on every pass (see _stamp_scrape_history).
-        await _stamp_scrape_history(account_id, fan_id)
+        # this fan on every pass (see _stamp_scrape_history). A non-deferring scrape's
+        # empty answer is the whole history: no deferral left to keep.
+        await _stamp_scrape_history(account_id, fan_id, clear_deferred=not may_defer)
         # The mute flag still changes without new messages (un-mute an idle
         # chat): reconcile it here too, or the skip outlives the mute. Update
         # only — an empty chat must not mint a fans row.
@@ -655,10 +671,15 @@ async def _automation_scrape_chats(
     client = await asyncio.to_thread(ax._make_client, account_id)
     own_user_id = client.user_id
 
-    page_size = int(payload.get("page_size") or _SCRAPE_PAGE_SIZE)
-    max_pages = int(payload.get("max_pages") or _SCRAPE_MAX_PAGES)
-    recent_cap = int(payload.get("recent_cap") or _SCRAPE_RECENT_CAP)
-    oldest_cap = int(payload.get("oldest_cap") or _SCRAPE_OLDEST_CAP)
+    def _limit(name: str, default: int) -> int:
+        # Missing, 0 or negative: the default. A non-positive cap read nothing, yet counted the chat
+        # scanned and cleared its deferred mark.
+        v = int(payload.get(name) or 0)
+        return v if v > 0 else default
+    page_size = _limit("page_size", _SCRAPE_PAGE_SIZE)
+    max_pages = _limit("max_pages", _SCRAPE_MAX_PAGES)
+    recent_cap = _limit("recent_cap", _SCRAPE_RECENT_CAP)
+    oldest_cap = _limit("oldest_cap", _SCRAPE_OLDEST_CAP)
 
     explicit = payload.get("chat_ids") or payload.get("fan_ids")
     # (chat_id, withUser, is_muted) — is_muted is the chat-level
@@ -706,6 +727,7 @@ async def _automation_scrape_chats(
     chats_scanned = 0
     chats_failed = 0
     chats_broken = 0   # failures other than OF's 404 "fan gone" (handled: stamped, skipped)
+    broken_err: Exception | None = None   # the last of them
     systemic_run = 0   # systemic failures in a row (a scraped chat or another failure resets; 404 leaves it)
     fail_fast = _sweep_fail_fast()
     may_defer = not payload and not _eager_history()   # explicit scrapes never defer
@@ -715,6 +737,21 @@ async def _automation_scrape_chats(
     budget_s = 0.0 if explicit else _sweep_budget_s()
     started = _clock()
     chats_left = 0
+    if budget_s > 0 and targets:
+        # Budget-limited sweep: never-tried chats first, then the oldest try (scrape stamp or
+        # `_attempted_at`), so a creator too big for one budget reaches its tail on the next
+        # sweeps instead of re-reading the newest (or failing) chats every time. Stable: ties
+        # keep OF's recent order.
+        async with get_session() as s:
+            last = dict((await s.execute(select(ScrapeHistory.fan_id, ScrapeHistory.last_scrape_at).where(
+                ScrapeHistory.account_id == account_id,
+                ScrapeHistory.fan_id.in_([c for c, _w, _m in targets]),
+            ))).all())
+        for c, _w, _m in targets:
+            tried = _attempted_at.get((account_id, c))
+            if tried is not None and (last.get(c) is None or tried > last[c]):
+                last[c] = tried
+        targets.sort(key=lambda t: (t[0] in last, last.get(t[0]) or datetime.min))
     if explicit and targets:
         async with get_session() as s:
             deferred_ids = set((await s.execute(select(ScrapeHistory.fan_id).where(
@@ -741,6 +778,7 @@ async def _automation_scrape_chats(
             messages_seen += seen
             chats_scanned += 1
             systemic_run = 0
+            _attempted_at.pop((account_id, chat_id), None)
         except Exception as e:
             chats_failed += 1
             # 404 = the chat no longer exists on OF (fan deleted/deactivated).
@@ -751,6 +789,7 @@ async def _automation_scrape_chats(
             if isinstance(e, OFAPIError) and status == 404:
                 log.info("scrape_chat_gone account=%s chat=%s (404 — fan gone; "
                          "stamping scrape_history)", account_id, chat_id)
+                _attempted_at.pop((account_id, chat_id), None)
                 try:
                     await _stamp_scrape_history(account_id, int(chat_id), gone=True)
                 except Exception:
@@ -758,6 +797,8 @@ async def _automation_scrape_chats(
                                 account_id, chat_id, exc_info=True)
             else:
                 chats_broken += 1
+                broken_err = e
+                _attempted_at[(account_id, chat_id)] = datetime.utcnow()
                 systemic_run = systemic_run + 1 if _systemic_failure(e) else 0
                 log.warning(
                     "scrape_chat_failed account=%s chat=%s",
@@ -780,14 +821,17 @@ async def _automation_scrape_chats(
     if chats_left:
         out["budget_stopped"] = True
         out["chats_left"] = chats_left
+    # Nothing scraped and a chat failed for a reason other than OF's 404 (fan gone): raise,
+    # so the job retries, then parks 'error' (a sweep: the cadence's backoff; a one-fan
+    # deferred-history backfill: its bounded retry, not a silent success).
+    if chats_broken and not chats_scanned:
+        if payload and len(targets) == 1 and broken_err is not None:
+            raise broken_err   # the one fan's own error, typed: the executor reads a dead session off it
+        raise RuntimeError(f"{'full sweep' if not payload else 'scrape'} scraped 0 of {len(targets)} chats: "
+                           f"{chats_broken} failed of the first {chats_failed} of {len(targets)}")
     if not payload:
         # Payload exactly `{}`: sweep_cadence anchors the next full sweep on this run
-        # (`{"limit": 50}`, a per-fan job, ... never count). Nothing scraped and a chat
-        # failed for a reason other than OF's 404 (fan gone): not a sweep. Raise, so the
-        # job retries, then parks 'error' (the cadence's backoff).
-        if chats_broken and not chats_scanned:
-            raise RuntimeError(f"full sweep scraped 0 of {len(targets)} chats: "
-                               f"{chats_broken} failed of the first {chats_failed} of {len(targets)}")
+        # (`{"limit": 50}`, a per-fan job, ... never count).
         if systemic_run >= fail_fast:
             # Broken off after a scraped chat: what it scraped stays, but not a full sweep.
             raise RuntimeError(f"full sweep stopped after {systemic_run} systemic failures in a row: "

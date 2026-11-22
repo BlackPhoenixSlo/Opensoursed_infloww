@@ -1,5 +1,5 @@
 """The Model-call cap: one Relay-wide bound on automation `llm_client.chat` calls in flight
-while their run has handed its Run slot back (spec docs/spec/ingest-llm-caps/phase-0B).
+while their run has handed its Run slot back.
 
 WHY. A run gives its slot back while a model answers (`run_slot.freed`: Full AI Turns, the
 model-reply senders, free masses), so the run slots bound only slot work. Model waits were
@@ -15,7 +15,8 @@ WHO WAITS (`applies`): only a call from an automation run whose slot is given ba
 
 THE WAIT has a deadline: `WAIT_S`, cut to the call's own model timeout. Past it
 `ModelCapTimeout` (llm_client re-raises it as `LLMModelCapTimeout`, read by callers as a model
-timeout). llm_client enters `call()` before any spend reservation, audit row or request, and
+timeout). The wait and the model timeout ADD: the request still gets its full timeout after the
+permit, so a capped call can take up to wait + model timeout (+ retries) end to end. llm_client enters `call()` before any spend reservation, audit row or request, and
 holds the permit through the request and its retries (one permit per `chat`).
 
 The bound is the Concurrency panel knob `AUTOMATION_MAX_MODEL_CALLS` (env > stored > default),
@@ -80,7 +81,8 @@ def _log(outcome: str, purpose: str, waited_s: float, cap: int) -> None:
 @contextlib.asynccontextmanager
 async def call(wait_s: float, *, purpose: str) -> AsyncIterator[None]:
     """Hold one permit for the body when `applies()`; else a pass-through. Waits at most
-    `min(wait_s, WAIT_S)`, then raises `ModelCapTimeout`. The permit goes back on any exit."""
+    `min(wait_s, WAIT_S)`, then raises `ModelCapTimeout`. The permit goes back on any exit.
+    The wait does not shorten the body's own timeout: the two add."""
     if not applies():
         yield
         return

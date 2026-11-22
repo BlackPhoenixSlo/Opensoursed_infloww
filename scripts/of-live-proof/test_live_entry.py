@@ -92,7 +92,8 @@ def test_live_never_defaults_the_proof_fan(monkeypatch, tmp_path):
     sess = _session_dir(tmp_path)
     assert prove.main(["--of", "live", "--session-dir", str(sess)]) == 0
     assert got == {"fan": None, "capture": None, "of": "live", "session_src": sess, "serve": False,
-                   "expected": PROOF_CREATOR, "lockout": False, "reverify": None}
+                   "expected": PROOF_CREATOR, "lockout": False, "reverify": None,
+                   "cotag_partner": None}   # ticket 98: live never defaults the Co-tag partner either
 
 
 def test_reverify_needs_an_evidence_folder_and_runs_no_proof(monkeypatch, capsys, tmp_path):
@@ -350,7 +351,8 @@ def test_a_live_run_starts_reading_and_writing_proofs(monkeypatch, tmp_path):
     """Ticket 11: with the live reader built, a proof that writes or reads OnlyFans arms under --of live."""
     run, armed = _stub_live_run(monkeypatch, tmp_path)
     _, rep = run(["p.write", "p.read"])
-    assert armed == ["p.write", "p.read"] and rep["refused"] == [] and rep["parked"] == []
+    # ofm-not-yet ticket 101: the read runs first, whatever the given order
+    assert armed == ["p.read", "p.write"] and rep["refused"] == [] and rep["parked"] == []
 
 
 # ── the live reader (ticket 11): Stack.of_get is a GET through the run's Relay, the same path in both modes ──
@@ -413,7 +415,7 @@ def test_a_live_capture_browser_never_opens_for_a_refused_proof(monkeypatch, tmp
 def test_a_live_browser_step_proof_that_may_start_opens_it(monkeypatch, tmp_path):
     run, armed = _stub_live_run(monkeypatch, tmp_path)
     run(["p.write", "p.bread"])
-    assert armed == ["capture browser", "p.write", "p.bread"]   # ticket 11: p.write starts live too
+    assert armed == ["capture browser", "p.bread", "p.write"]   # ticket 11: p.write starts live too; 101: read first
 
 
 def test_an_interrupt_before_serve_waits_is_not_a_pass(monkeypatch, tmp_path):

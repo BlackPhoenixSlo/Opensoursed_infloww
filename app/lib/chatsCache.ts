@@ -12,12 +12,20 @@
  * vs the loops this replaced: the patched row is the fan's FIRST copy (the one
  * useChatList's first-seen-wins flatten shows; the live handler patched the
  * last), and a lift drops EVERY other copy (the send path kept later ones).
+ *
+ * Every live write to these caches goes through `patchChatCaches`, which also
+ * journals it per QueryClient; each chats query's commit (`commitChatPages`)
+ * re-applies the journal to the pages read before a write, so no read in
+ * flight undoes one (W30-mu #12).
  */
 
-import type { InfiniteData } from "@tanstack/react-query";
+import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 
+import { patchQueryData } from "@/lib/cacheWrite";
+import { isUnreadChat } from "@/lib/chatUnread";
 import type { OFChatItem } from "@/lib/relay";
 import { compareFanIds, sameUserId, type FanId } from "@/lib/fanId";
+import { toUtcIso } from "@/lib/threadCache";
 
 export interface ChatPage { rows: OFChatItem[]; hasMore: boolean }
 export type ChatPages = InfiniteData<ChatPage>;
@@ -159,7 +167,8 @@ function repliedRow(target: OFChatItem, msg: SentMessage, id: number | string, c
  *  already there, never a new one) gets the message as its preview with
  *  unread cleared; the unfiltered list lifts it to the top, a filtered /
  *  folder / search view patches it in place (reordering it would shuffle
- *  rows the user didn't touch). Same `data` when the fan isn't in it. */
+ *  rows the user didn't touch). Same `data` when the fan isn't in it, or
+ *  his row shows a message newer than `nowIso` (`rowNewerThan`: stamp it on the Relay's clock, `relayNow()`). */
 export function bumpAfterSend(
   key: readonly unknown[],
   data: ChatPages,
@@ -171,10 +180,19 @@ export function bumpAfterSend(
   const pages = bumpChatPages(
     data.pages,
     fanRowMatcher(accountId, fanId),
-    (target) => target && repliedRow(target, msg, target.lastMessage?.id ?? 0, nowIso),
+    (target) => target && !rowNewerThan(target, Date.parse(nowIso))
+      ? repliedRow(target, msg, target.lastMessage?.id ?? 0, nowIso) : null,
     { inPlace: !decodeChatsKey(key).unfiltered },
   );
   return pages === data.pages ? data : { ...data, pages };
+}
+
+/** Whether the row shows a message newer than `ms` (epoch ms on the Relay's clock: an event's `at`, OF's
+ *  `createdAt`, `relayNow()`; never the tab's clock). The one rule by which a late or replayed write leaves a
+ *  row alone. */
+export function rowNewerThan(c: OFChatItem | null | undefined, ms: number): boolean {
+  const at = c?.lastMessage?.createdAt;
+  return !!at && Date.parse(toUtcIso(at)) > ms;
 }
 
 /** A person's DM through the relay (`chat_responded`, from any tab): the fan, OF's message, and when the
@@ -224,7 +242,7 @@ export function applyReply<T extends ChatPages | undefined>(
   const isRow = fanRowMatcher(accountId, reply.fanId);
   const holders = pages.filter((p) => p.rows.some(isRow));
   if (!holders.length) return data;
-  if (reply.at != null && holders.some((p) => p.askedAt != null && p.askedAt > reply.at!)) return data;
+  if (reply.at != null && holders.some((p) => relayAskedAt(p) > reply.at!)) return data;
   const sent = Date.parse(reply.createdAt);
   const msg: SentMessage = {
     fromUserId: accountId, fromUserName: "", text: reply.text, mediaCount: reply.mediaCount, price: reply.price,
@@ -234,7 +252,7 @@ export function applyReply<T extends ChatPages | undefined>(
     (target) => {
       const last = target?.lastMessage;
       if (!target || (last?.id != null && String(last.id) === String(reply.id))) return null;
-      if (Date.parse(last?.createdAt ?? "") > sent) return null;
+      if (rowNewerThan(target, sent)) return null;
       return repliedRow(target, msg, reply.id, reply.createdAt);
     },
     { inPlace: !decodeChatsKey(key).unfiltered },
@@ -247,14 +265,16 @@ export function applyReply<T extends ChatPages | undefined>(
  *  oldest page (ms). */
 export interface UnreadView { rows: OFChatItem[]; asOf: number }
 
-function chatId(c: OFChatItem): string {
-  return `${c.__accountId ?? ""}:${String(c.withUser?.id)}`;
+/** A chat row's identity in the lists, (accountId, fanId): useChatList's flatten de-dupes by it, and the Fan List
+ *  keys its picks by it. */
+export function chatRowKey(c: OFChatItem): string {
+  return `${c.__accountId ?? ""}:${c.withUser?.id}`;
 }
 
 /** The predicate "unread here, not in the complete Unread view". */
 export function unreadOutsideView(view: UnreadView): (c: OFChatItem) => boolean {
-  const inView = new Set(view.rows.map(chatId));
-  return (c) => (c.hasUnread || (c.unreadMessagesCount ?? 0) > 0) && !inView.has(chatId(c));
+  const inView = new Set(view.rows.map(chatRowKey));
+  return (c) => isUnreadChat(c) && !inView.has(chatRowKey(c));
 }
 
 /** The predicate "read elsewhere": unread here, not in the complete Unread
@@ -271,13 +291,24 @@ export function readElsewhere(view: UnreadView): (c: OFChatItem) => boolean {
 }
 
 /** A chats page as useChatList stamps it. */
-interface StampedPage extends ChatPage {
+export interface StampedPage extends ChatPage {
   /** The page load that read it from OF. */
   session?: string;
-  /** When OF was asked for it (ms). */
+  /** When OF was asked for it (ms, the Relay's clock as the tab estimated it: lib/ageClock `relayNow`). */
   askedAt?: number;
+  /** `askedAt` was taken before any Relay time set the tab's offset: a guess, never compared with a Relay time. */
+  askedAtGuess?: true;
+  /** When it was asked on the tab's own order (`localSeq`): the live writes journaled after it are re-applied to it
+   *  at its commit (`commitChatPages`). */
+  askedSeq?: number;
   /** All Models: a Creator's call failed, its rows are missing. */
   partial?: boolean;
+}
+
+/** A page's ask time to hold against a Relay time (an event's `at`): -Infinity when unknown or a guess, so the
+ *  event is applied. */
+function relayAskedAt(p: StampedPage): number {
+  return p.askedAt == null || p.askedAtGuess ? -Infinity : p.askedAt;
 }
 
 /** The cached Unread list (`data`) as an `UnreadView` while it is the whole
@@ -295,7 +326,7 @@ export function completeUnreadView(
   const rows: OFChatItem[] = [];
   const seen = new Set<string>();
   for (const p of pages) for (const c of p.rows) {
-    const k = chatId(c);
+    const k = chatRowKey(c);
     if (seen.has(k)) continue;
     seen.add(k);
     rows.push(c);
@@ -348,8 +379,6 @@ export function isUnreadList(key: readonly unknown[]): boolean {
   return k.filter === "unread" && k.listId === null && k.query === null && (key[7] ?? "recent") === "recent";
 }
 
-const isUnreadRow = (c: OFChatItem) => !!c.hasUnread || (c.unreadMessagesCount ?? 0) > 0;
-
 /** One chats cache after a read flip on `accountId`. A page read after the
  *  flip (`askedAt` > `flip.at`) already holds it and is left alone (a replayed
  *  event never undoes newer data).
@@ -365,20 +394,21 @@ const isUnreadRow = (c: OFChatItem) => !!c.hasUnread || (c.unreadMessagesCount ?
  *  and the event, either first) is a no-op. */
 export function applyReadFlip<T extends ChatPages | undefined>(
   data: T, accountId: string, flip: ReadFlip,
-  opts: { unreadList?: boolean; keepRows?: boolean; source?: OFChatItem | null } = {},
+  opts: { unreadList?: boolean; keepRows?: boolean; source?: OFChatItem | null; skip?: ReadonlySet<string> } = {},
 ): T {
   if (!data?.pages) return data;
   const pages = data.pages as StampedPage[];
-  const fresh = (p: StampedPage) => flip.at == null || p.askedAt == null || flip.at >= p.askedAt;
+  const fresh = (p: StampedPage) => flip.at == null || flip.at >= relayAskedAt(p);
   const ofFlip = flip.fanId === null
     ? (c: OFChatItem) => (c.__accountId ?? "") === accountId
     : fanRowMatcher(accountId, flip.fanId);
   // A read flip never clears a message newer than it (a fan wrote while the write was in flight).
-  const newer = (c: OFChatItem) => !flip.unread && flip.at != null && Date.parse(c.lastMessage?.createdAt ?? "") > flip.at;
-  const isRow = (c: OFChatItem) => ofFlip(c) && !newer(c);
+  const newer = (c: OFChatItem) => !flip.unread && flip.at != null && rowNewerThan(c, flip.at);
+  // A fan flipped after an account-wide flip (`skip`, its fan ids as text) keeps that newer flip.
+  const isRow = (c: OFChatItem) => ofFlip(c) && !newer(c) && !opts.skip?.has(String(c.withUser?.id));
   const drop = !!opts.unreadList && !flip.unread && !opts.keepRows;
   const flipped = (c: OFChatItem): OFChatItem | null => {
-    if (!flip.unread) return isUnreadRow(c) ? { ...c, hasUnread: false, unreadMessagesCount: 0 } : null;
+    if (!flip.unread) return isUnreadChat(c) ? { ...c, hasUnread: false, unreadMessagesCount: 0 } : null;
     return c.hasUnread ? null : { ...c, hasUnread: true, unreadMessagesCount: Math.max(1, c.unreadMessagesCount ?? 0) };
   };
   let changed = false;
@@ -416,5 +446,89 @@ export function patchFanRows<T extends ChatPages | undefined>(
   return {
     ...data,
     pages: data.pages.map((p) => ({ ...p, rows: p.rows.map((c) => (isRow(c) ? { ...c, ...patch } : c)) })),
+  };
+}
+
+/** One live write to a chats cache's rows: `data` after it, the SAME `data` when nothing changes. `key` is the
+ *  cache's; `observed`: a list on screen; `replay`: re-applied at a commit to pages read before it
+ *  (`commitChatPages`), where it adds no row (the live write already placed one where it belonged) and leaves a row
+ *  showing a newer message alone. */
+export type ChatsPatch = (data: ChatPages, ctx: { key: readonly unknown[]; observed: boolean; replay: boolean }) => ChatPages;
+
+/** A journaled live write: its account, its place in the tab's order, the patch. */
+interface ChatsFact { accountId: string; seq: number; patch: ChatsPatch }
+
+/** How long a live write is kept for re-applying: longer than any chat-list read (a Refresh walks pages one by one). */
+export const JOURNAL_MS = 10 * 60_000;
+const JOURNAL_MAX = 1_000;
+const journals = new WeakMap<QueryClient, ChatsFact[]>();
+/** Each committed page object: the tab order (`localSeq`) every live write up to which it holds. */
+const seen = new WeakMap<object, number>();
+let lastSeq = 0;
+
+/** The tab's own order for chat-list reads and live writes: strictly increasing, from the tab's clock (so a page
+ *  persisted by an earlier load sorts before this load's writes). Never compared with a Relay time. */
+export function localSeq(): number {
+  lastSeq = Math.max(lastSeq + 1, Date.now());
+  return lastSeq;
+}
+
+/** Write `patch` into every cached chat list holding `accountId` (a live write, not a read: `patchQueryData`) and
+ *  journal it for this QueryClient, so a page read before it and committed after (a Refresh, a loadMore, the head
+ *  poll, a first load) gets it at that commit (`commitChatPages`). Every live write to a chats cache goes through
+ *  here: the journal replays in order, so it must hold them all. */
+export function patchChatCaches(qc: QueryClient, accountId: string, patch: ChatsPatch): void {
+  const floor = Date.now() - JOURNAL_MS;
+  const journal = (journals.get(qc) ?? []).filter((f) => f.seq > floor).slice(-(JOURNAL_MAX - 1));
+  journal.push({ accountId, seq: localSeq(), patch });
+  journals.set(qc, journal);
+  for (const q of qc.getQueryCache().findAll({ queryKey: ["chats"] })) {
+    if (!keyHoldsAccount(decodeChatsKey(q.queryKey), accountId)) continue;
+    const data = q.state.data as ChatPages | undefined;
+    if (!data?.pages?.length) continue;
+    const next = patch(data, { key: q.queryKey, observed: q.getObserversCount() > 0, replay: false });
+    if (next === data) continue;
+    // Its pages hold every write so far: the commit this triggers (`commitChatPages`) re-applies nothing.
+    for (const p of next.pages) seen.set(p, lastSeq);
+    patchQueryData<ChatPages>(qc, q.queryKey, () => next);
+  }
+}
+
+/** `next` with the journaled writes re-applied: each page not known to hold them (a page fresh off the wire: since
+ *  its `askedSeq`; a page object a read captured and commits again, as a loadMore does: since its last commit)
+ *  gets, in their order, the writes of the Creators the key holds made after that, each applied to the pages that
+ *  predate it, none older than `JOURNAL_MS` (a page with no `askedSeq`, persisted by an earlier load, gets only the
+ *  writes kept). The SAME `next` when nothing applies.
+ *  The pages predating a write are always a run from page 0 (a refetch reads its pages in order; a loadMore's
+ *  captured pages and its new one all predate it; the head poll re-reads page 0), so a patch that lifts a row to
+ *  the top of the pages it gets lifts it to the list's top, never onto a later page. */
+function replayJournal(qc: QueryClient, key: readonly unknown[], next: unknown): unknown {
+  const data = next as InfiniteData<StampedPage> | undefined;
+  if (!data?.pages?.length) return next;
+  const k = decodeChatsKey(key);
+  const since = data.pages.map((p) => seen.get(p) ?? p.askedSeq ?? -Infinity);
+  const floor = Math.max(Math.min(...since), Date.now() - JOURNAL_MS);
+  const facts = (journals.get(qc) ?? []).filter((f) => f.seq > floor && keyHoldsAccount(k, f.accountId));
+  if (!facts.length) return next;
+  const pages = data.pages.slice();
+  const ctx = { key, observed: (qc.getQueryCache().find({ queryKey: key, exact: true })?.getObserversCount() ?? 0) > 0, replay: true };
+  for (const f of facts) {
+    const at = pages.flatMap((_, i) => (since[i] < f.seq ? [i] : []));
+    const sub = { pages: at.map((i) => pages[i]), pageParams: at.map((i) => data.pageParams[i]) };
+    const out = f.patch(sub, ctx);
+    if (out !== sub && out.pages.length === at.length) at.forEach((i, j) => { pages[i] = out.pages[j]; });
+  }
+  return pages.every((p, i) => p === data.pages[i]) ? next : { ...data, pages };
+}
+
+/** A chats query's commit (its `structuralSharing`; every chats query sets it, a prefetch too: a query keeps the
+ *  options of its last fetch): the journaled live writes re-applied (`replayJournal`), so a read started before a
+ *  read flip, a reply or a live message never undoes it, whichever page of a multi-page refetch it lands between;
+ *  then `share` (useChatList's row-wise sharing); every page committed is then known to hold every write so far. */
+export function commitChatPages(qc: QueryClient, key: readonly unknown[], share: (prev: unknown, next: unknown) => unknown) {
+  return (prev: unknown, next: unknown): unknown => {
+    const out = share(prev, replayJournal(qc, key, next)) as ChatPages | undefined;
+    for (const p of out?.pages ?? []) seen.set(p, lastSeq);
+    return out;
   };
 }

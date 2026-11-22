@@ -24,7 +24,8 @@ vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => ACCOUNTS }));
 vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => ({ data: undefined }) }));
 
 import MassMessagesTab from "@/components/settings/MassMessagesTab";
-import { SM_MASS_ACTIONS } from "@/components/growth/smartMessagesControls";
+import { SM, SM_MASS_ACTIONS } from "@/components/growth/smartMessagesControls";
+import { BULK_ACTIONS } from "@/components/settings/massUnsendRules";
 import { relay } from "@/lib/relay";
 
 const relayGet = relay.get as unknown as Mock;
@@ -109,7 +110,7 @@ describe("bulk unsend on the Mass messages tab", () => {
     expect(button(name).textContent).toContain(`(${want.length})`);
     await act(async () => { fireEvent.click(button(name)); });
     expect(relayDelete).not.toHaveBeenCalled();
-    expect(await answer("Unsend")).toContain(`Unsend ${want.length} broadcast`);
+    expect(await answer("Unsend")).toContain(`Unsend ${want.length} broadcast${want.length === 1 ? "" : "s"} of Model A from EVERY recipient`);
     await waitFor(() => expect(relayDelete).toHaveBeenCalledTimes(want.length));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(cancels().sort()).toEqual([...want].sort());
@@ -122,6 +123,22 @@ describe("bulk unsend on the Mass messages tab", () => {
     await answer("Unsend");
     await waitFor(() => expect(relayDelete).toHaveBeenCalledTimes(3));
     expect(cancels().sort()).toEqual(["acc-a:101", "acc-a:102", "acc-b:201"]);
+  });
+
+  it("a search over a Creator's full read (100 newest) says older matches may be hidden", async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ id: 1000 + i, date: ago((i + 1) * H), text: `promo ${i}`, canUnsend: false }));
+    const base = relayGet.getMockImplementation()!;
+    relayGet.mockImplementation((path: string) => String(path).includes("account_id=acc-b")
+      ? Promise.resolve({ account_id: "acc-b", days_back: 30, items: [...ITEMS["acc-b"], ...full].slice(0, 100) })
+      : base(path));
+    await mount();
+    expect(screen.queryByText(/older matches may be hidden/)).toBeNull();
+    await act(async () => { fireEvent.change(screen.getByRole("textbox", { name: SM.search.label }), { target: { value: "promo" } }); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: SM.searchButton.label })); });
+    expect(screen.getByText("Showing the newest 100 per Creator: older matches may be hidden.")).toBeTruthy();
+    // Model A's read is not full: picking only it drops the line.
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Model A" })); });
+    expect(screen.queryByText(/older matches may be hidden/)).toBeNull();
   });
 
   it("a declined confirm sends nothing", async () => {
@@ -220,13 +237,30 @@ describe("bulk unsend on the Mass messages tab", () => {
     expect(closeIsWarned()).toBe(false);
   });
 
-  it("leaving the tab mid-run drops the close warning", async () => {
-    heldDeletes();
+  it("leaving the tab mid-run keeps the run: back on it, live N of M, buttons held, no second run", async () => {
+    const release = heldDeletes();
     await mount();
-    await act(async () => { fireEvent.click(button(/^Unsend all/)); });
+    await act(async () => { fireEvent.click(button(/^Unsend free text >4h/)); });
     await answer("Unsend");
-    await waitFor(() => expect(closeIsWarned()).toBe(true));
+    await release();
+    await waitFor(() => expect(relayDelete).toHaveBeenCalledTimes(2));
+    // A tab switch or route change unmounts the tab; the run and its close warning go on.
     cleanup();
+    expect(closeIsWarned()).toBe(true);
+    await mount();
+    expect(screen.getByRole("status")).toHaveTextContent("Unsending 1 of 3…");
+    const bar = screen.getAllByRole("button").filter((b) => /^(Unsend |Unsending)/.test(b.textContent ?? ""));
+    expect(bar).toHaveLength(BULK_ACTIONS.length);
+    for (const b of bar) expect((b as HTMLButtonElement).disabled).toBe(true);
+    const row = screen.getByText("b paid text old").closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
+    expect((screen.getByRole("menuitem", { name: SM_MASS_ACTIONS.unsend.label }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(document, { key: "Escape" });
+    await release();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Unsending 2 of 3…"));
+    await release();
+    await waitFor(() => expect(screen.queryByText(/^Unsending \d+ of/)).toBeNull());
+    expect(relayDelete).toHaveBeenCalledTimes(3);
     expect(closeIsWarned()).toBe(false);
   });
 

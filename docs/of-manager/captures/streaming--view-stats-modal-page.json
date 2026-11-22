@@ -39,5 +39,11 @@
  },
  "evidence": [
   "r15-streaming-view-stats-modal.html"
- ]
+ ],
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "page capture for ticket 28 (the View stats modal's State page); the stats read answered 403 on the Proof Creator (streaming off); View stats keeps its Not-yet title (ticket 88, blocked by 28); Live proof pending (ticket 92)"
+ }
 }

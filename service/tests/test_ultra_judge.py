@@ -15,6 +15,8 @@ Cases:
   case_too_few_fails       — fewer than pick_n valid ids: judge failed, plan failed, send skipped, OF never called.
   case_confirm_pick        — confirm → needs_you (≤6 candidates with thumbs, AI picks, one ultra_needs_you notice);
                              a foreign id / wrong count → 422, bearer → 403, B → 404; the owner's pick runs the send.
+  case_stale_pick_refused  — W30 F6: a pick read before an earlier pick landed (2nd tab) never overwrites the next
+                             judge's needs_you: 409, the later judge still waits.
   case_cancel_needs_you    — cancel in needs_you → cancelled, judge + send skipped, a later pick → 409, OF untouched.
   case_judge_error_fails   — the judge call raises a non-LLM error: judge failed (never uncertain), plan failed.
   case_cancel_during_judge — cancel while the judge call runs: cancelled, no needs_you, no notification.
@@ -383,6 +385,41 @@ async def case_confirm_pick() -> None:
     assert len(mine) == 1 and mine[0].agency_user_id == OWNER_A and "Halloween-looking" in mine[0].text
 
 
+async def case_stale_pick_refused() -> None:
+    OF.calls.clear()
+    LLM.reset(_res([9403]))
+    async with _client() as c:
+        pid = await _start(c, FIND, _judge("one", n=1, confirm=True), _judge("two", n=1, confirm=True),
+                           _mass(media="$two.ids"))
+        v = await _until(c, pid, {"needs_you"})
+        stale = await ultra_run._row(pid, OWNER_A)  # the 2nd tab's read: "one" waiting
+        first = v["step_states"][1]["candidates"][0]["id"]
+        assert (await _pick(c, pid, [first], step="one")).status_code == 200
+        for _ in range(200):
+            v = await _get(c, pid)
+            if v["status"] == "needs_you" and v["step_states"][2]["state"] == "needs_you":
+                break
+            await asyncio.sleep(0.05)
+        real = ultra_run._row
+
+        async def stale_once(*_a):
+            ultra_run._row = real
+            return stale
+        ultra_run._row = stale_once
+        try:
+            await ultra_run.pick(pid, OWNER_A, "one", [first])
+            raise AssertionError("a stale pick must refuse")
+        except ultra_run.Refused as e:
+            assert e.status == 409, e.detail
+        finally:
+            ultra_run._row = real
+        v = await _get(c, pid)
+        assert v["status"] == "needs_you" and _states(v)[1:] == ["done", "needs_you", "pending"], v
+        assert (await c.post(f"/admin/ultra/plans/{pid}/cancel", headers=COOKIE_A)).status_code == 200
+        await _until(c, pid, ud.FINAL)
+    assert OF.calls == []
+
+
 async def case_cancel_needs_you() -> None:
     OF.calls.clear()
     LLM.reset(_res([9403]))
@@ -437,7 +474,7 @@ async def case_restart_needs_you() -> None:
     async with get_session() as s:
         for pid in ("e" * 32, "d" * 32):
             s.add(UltraPlan(id=pid, owner_user_id=OWNER_A, source="mcp", plan_json=json.dumps(plan),
-                            plan_sha256=ud.digest(plan), status="needs_you", step_states=json.dumps(states)))
+                            plan_sha256=ud.digest(plan, pid), status="needs_you", step_states=json.dumps(states)))
     async with _client() as c:  # no run in this process: the cancel ends it
         assert (await c.post(f"/admin/ultra/plans/{'d' * 32}/cancel", headers=COOKIE_A)).status_code == 200
         assert (await _get(c, "d" * 32))["status"] == "interrupted"

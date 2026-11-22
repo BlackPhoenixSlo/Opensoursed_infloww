@@ -292,6 +292,12 @@ CONTRADICTIONS: dict[str, str] = {
     # Not two passes disagreeing: Jev read a clip off frames that can miss what the 720p ones show (no 720p
     # rendition, over the download cap, or OF's posters only; `_jev.review`, D54), so its lane may be too low.
     "jev_review": "Jev read this clip off low-res, partial or poster frames, so its lane may be too low",
+    # A current Jev reading against the stored flags / tier (what the flags mapper stamps, `vault_jev_flags.apply`):
+    # flags or a tier stamped before that reading (a stale `covered`, pre-F1a; a pre-Jev describe's sfw /
+    # suggestive beside a paid lane) until the sweep re-stamps them, or a clip whose stored frames do not decode
+    # (`vault_jev_rules.UNDECODED`) until Jev re-reads it.
+    "jev_bare_unflagged": "Jev reads a region bare or a paid lane (or its stored frames do not decode), yet the "
+                          "stored flags / tier do not say so",
 }
 
 # The `acts` values that assert something is inside her, and the `penetration`
@@ -383,10 +389,33 @@ def _contradictions(fields: dict[str, Any] | None) -> list[str]:
 
     Only fires where BOTH sides of the check were actually answered, so an
     unflagged or half-described row scores clean rather than noisy — this
-    measures disagreement, not coverage.
+    measures disagreement, not coverage. Exceptions, disputes with or without
+    flags: a Jev reading held for review (`_jev.review`, e.g. a clip whose
+    frames failed), so a legacy row with no current flags still never rides a
+    free / mass lane (F21); and `jev_bare_unflagged` (W30 C1 / D1), a current
+    Jev reading the stored fields do not match the way the flags mapper
+    (`vault_jev_flags.apply`) would stamp them: a region it reads bare
+    (`vault_jev_rules.bare_regions`: by the lane, or a firm body "y" unless
+    the operator picked the lane) that the flags do not say bare (none
+    stamped yet included), a paid lane beside an sfw / suggestive
+    `explicitness`, or a clip whose stored frames do not decode
+    (`vault_jev_rules.UNDECODED`).
     """
-    if not isinstance(fields, dict) or not flags_known(fields):
+    if not isinstance(fields, dict):
         return []
+    jev = fields.get(vault_jev_rules.JEV_KEY)
+    review = ["jev_review"] if isinstance(jev, dict) and jev.get("review") else []
+    if vault_jev_rules.current(fields):
+        body = vault_jev_rules.body(jev)   # once: a stored clip's re-derives its frames (W30 D4)
+        jev_bare = vault_jev_rules.bare_regions(jev, body)
+        if jev_bare is not None and (
+                vault_jev_rules.UNDECODED in body.values()
+                or any(b and not is_bare(fields, r) for r, b in jev_bare.items())
+                or (vault_jev_rules.read_lane(jev) in vault_jev_rules.PAID
+                    and _scalar(fields, "explicitness").lower() in _FREE_TIERS)):
+            review.append("jev_bare_unflagged")
+    if not flags_known(fields):
+        return review
     cl = _scalar(fields, "clothing_state").lower()
     tier = _scalar(fields, "explicitness").lower()
     garment = fields.get("underwear_visible")
@@ -406,10 +435,7 @@ def _contradictions(fields: dict[str, Any] | None) -> list[str]:
             and vis(fields, "vulva_vis") == "not_in_frame" \
             and vis(fields, "anus_vis") == "not_in_frame":
         out.append("penetration_offscreen")
-    jev = fields.get(vault_jev_rules.JEV_KEY)
-    if isinstance(jev, dict) and jev.get("review"):
-        out.append("jev_review")
-    return out
+    return out + review
 
 
 # ── Settling a dispute without a human ──────────────────────────────
@@ -431,6 +457,9 @@ def _contradictions(fields: dict[str, Any] | None) -> list[str]:
 #       nudity: only the describe pass vouches for what is covered.
 #   penetration_offscreen — the acts stay (they are what keeps the item out of
 #       the mass-safe lane), but the copy claims no genital act.
+#   jev_bare_unflagged — a current Jev reading the stored flags / tier do not
+#       match (a region it reads bare not flagged bare, a paid lane beside an
+#       sfw / suggestive tier, or frames that do not decode): no free lane.
 #
 # And for every code: a disputed item is never in a free lane.
 #
@@ -443,6 +472,7 @@ def _contradictions(fields: dict[str, Any] | None) -> list[str]:
 SETTLED_KEY = "_settled"
 
 _PAID_TIERS = ("explicit", "hardcore")
+_FREE_TIERS = ("sfw", "suggestive")   # a tier no paid Jev lane may sit beside (`jev_bare_unflagged`)
 
 # The clothing state that matches what is on show: (breasts bare?, vulva bare?).
 # Never `fully_nude`, so a disputed item's copy never claims full nudity.
@@ -522,6 +552,13 @@ def is_disputed(fields: dict[str, Any] | None) -> bool:
     return bool(settled_codes(fields))
 
 
+def free_vetoed(fields: dict[str, Any] | None) -> bool:
+    """No free topic split or free pack rung may hold this item, whatever Jev's
+    lane says: the passes disagree (`is_disputed`) or a region reads bare
+    (`any_bare`, an operator-locked flag included)."""
+    return is_disputed(fields) or any_bare(fields)
+
+
 def claimed_acts(fields: dict[str, Any] | None) -> list[str]:
     """The acts the copy may claim: all of them, unless the genitals are out of
     frame on both passes' combined reading (penetration_offscreen), when no
@@ -557,6 +594,8 @@ def settled_notes(fields: dict[str, Any] | None) -> list[str]:
         "sfw_but_bare": f"priced as {s.get('explicitness')}, copy claims no nudity",
         "penetration_offscreen": "copy claims no genital act",
         "jev_review": f"priced as {s.get('explicitness')}, describe hedged",
+        "jev_bare_unflagged": ("never free until Jev re-reads it" if vault_jev_rules.undecoded(
+            fields.get(vault_jev_rules.JEV_KEY)) else "never free until the flags re-stamp from Jev"),
     }
     out = [f"{CONTRADICTIONS[c]} → {how[c]}" for c in codes]
     if codes:

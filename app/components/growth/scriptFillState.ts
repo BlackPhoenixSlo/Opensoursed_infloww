@@ -7,6 +7,10 @@
  *   • One press fills: `press` records the request (the page sends at most one per (Creator, Sequence) at a time,
  *     Fill and Undo share it: its synchronous guard is the only one); `applied` records the notice, `answered` (any
  *     non-`ok` status) and `failed` open the dialog.
+ *   • A request locks its whole Sequence until its answer (`inflight[fillKey]`): the page opens no edit on a row of
+ *     it meanwhile, however the row got there (a Load more after the press too). A Scripts list whose last load
+ *     failed locks too (the caller passes the query's error state): its rows may still show the values from before
+ *     a write, until a reload succeeds; read off the query cache, so it survives a remount. `isLocked` is the rule.
  *   • Requests, notices and left notes are kept per (Creator, Sequence) (`fillKey`). Every answer carries the
  *     Creator, Sequence and request id it was made for, and acts only while that request is the one in flight for
  *     that key; otherwise it is dropped. A dialog opens only over the open Sequence of the Creator shown (`show`):
@@ -90,7 +94,8 @@ export interface ScriptFillState {
   account: string | null;
   /** The open Sequence (`show`); null on the Tag view. */
   open: string | null;
-  /** The request id in flight per `fillKey` (Fill or Undo). */
+  /** The request id in flight per `fillKey` (Fill or Undo): the Sequence's rows take no edit until it ends, so no
+   *  whole-row PUT can race the write. */
   inflight: Readonly<Record<string, number>>;
   dialog: FillDialogState | null;
   /** Per `fillKey`. */
@@ -130,6 +135,12 @@ export const INITIAL_FILL: ScriptFillState = {
 /** The key of one Creator's Sequence: requests, notices and left notes are kept under it. */
 export function fillKey(account: string | null, sequence: string): string {
   return JSON.stringify([account, sequence]);
+}
+
+/** Whether a Creator's Sequence takes no edit: a Fill or Undo on it is in flight, or `listFailed` (that Creator's
+ *  Scripts list query is in error: its rows may still show the values from before a write, W30 F41/F50). */
+export function isLocked(s: ScriptFillState, account: string | null, sequence: string, listFailed: boolean): boolean {
+  return listFailed || s.inflight[fillKey(account, sequence)] != null;
 }
 
 function without<T>(map: Readonly<Record<string, T>>, key: string): Record<string, T> {
@@ -241,14 +252,21 @@ export function undoPayload(notice: FillNotice): { sequence: string; undo: FillU
 }
 
 /** The rows an Undo left, by reason (`edited` → changed since the Fill; `moved` / `missing` → moved or deleted;
- *  `reserved` → a script-generated Sequence; anything else → other). */
+ *  `reserved` → a script-generated Sequence; a reason this build doesn't know → other). */
 export function leftNote(result: FillUndoResult): LeftCounts {
   const c: LeftCounts = { changed: 0, moved: 0, reserved: 0, other: 0 };
   for (const k of result.kept) {
-    if (k.reason === "edited") c.changed++;
-    else if (k.reason === "moved" || k.reason === "missing") c.moved++;
-    else if (k.reason === "reserved") c.reserved++;
-    else c.other++;
+    switch (k.reason) {
+      case "edited": c.changed++; break;
+      case "moved":
+      case "missing": c.moved++; break;
+      case "reserved": c.reserved++; break;
+      default: {
+        const unknown: never = k.reason;   // a new server reason fails tsc here; at runtime it counts as other
+        void unknown;
+        c.other++;
+      }
+    }
   }
   return c;
 }
@@ -287,9 +305,10 @@ export function conflictLines(
   const nearestLaterBelow = (cents: number) =>
     fixed.filter((o) => o.step > s && o.price_cents < cents).sort((a, b) => a.step - b.step)[0];
   let line: string;
-  if (rule === "under_min") line = `Step ${s}: ${usd(p)} is under OnlyFans' $3 minimum`;
-  else if (rule === "over_max") line = `Step ${s}: ${usd(p)} is over the $200 cap`;
-  else if (rule === "below_earlier") {
+  switch (rule) {
+  case "under_min": line = `Step ${s}: ${usd(p)} is under OnlyFans' $3 minimum`; break;
+  case "over_max": line = `Step ${s}: ${usd(p)} is over the $200 cap`; break;
+  case "below_earlier": {
     const ownFixed = fixed.some((o) => o.step === s && o.price_cents === p);
     const above = ownFixed ? nearestEarlierAbove(p) : undefined;
     if (above) line = `Step ${s} is priced below step ${above.step}`;
@@ -301,13 +320,22 @@ export function conflictLines(
         ? `Step ${floor.step} is priced above step ${ceiling.step}`
         : `Step ${s} cannot be priced between the steps around it`;
     }
-  } else {
-    // `quote_unholdable`: a price Fill would set from the step's text (or a borrowed one) breaks the order.
+    break;
+  }
+  case "quote_unholdable": {
+    // A price Fill would set from the step's text (or a borrowed one) breaks the order.
     const above = nearestEarlierAbove(p);
     const below = nearestLaterBelow(p);
     line = above ? `Step ${s}: ${usd(p)} is priced below step ${above.step}`
       : below ? `Step ${s}: ${usd(p)} is priced above step ${below.step}`
         : `Step ${s}: ${usd(p)} is out of step order`;
+    break;
+  }
+  default: {
+    const unknown: never = rule;   // a new server rule fails tsc here; at runtime it gets a neutral line
+    void unknown;
+    line = `Step ${s}: ${usd(p)} breaks a price rule`;
+  }
   }
   return [line + FIX];
 }
@@ -337,11 +365,13 @@ export interface DialogCopy {
 const TITLE = "Fill with content";
 
 const STATUS_LINE: Partial<Record<FillStatus, string>> = {
-  no_fit: "No single set in this Creator's described content fits these steps.",
+  no_fit: "This Creator's described content cannot fill every paid step of this sequence.",
   no_paid_steps: "No step in this sequence sells anything yet. Put a price on the steps that sell, then fill again.",
   already_filled: "Every step already has its content.",
   reserved: "This sequence is generated by a script source and is not filled.",
 };
+const FREE_UNFILLED_LINE =
+  "Every paid step already has its content. No photo left is safe to send free, so the free steps stay empty.";
 
 /** The Fill dialog's copy and button. Precedence: a refusal sentence; a running sweep (its progress); otherwise
  *  the fresh Fill plan's status (else the apply answer's), with the settled sweep's note above it. No dollar
@@ -351,7 +381,7 @@ export function dialogFor(p: {
   plan: FillPlan | null | undefined;
   sweep: SweepView;
   refusal: string | null;
-  now?: number;
+  now: number;
 }): DialogCopy {
   const { plan, sweep, refusal } = p;
   if (refusal) return { title: TITLE, lines: [refusal], note: null, button: null };
@@ -370,7 +400,7 @@ export function dialogFor(p: {
   if (status === "ok") return { title: TITLE, lines: ["Ready to fill."], note, button: "fill" };
   if (status === "not_enough_content" && plan) {
     const d = plan.describe;
-    if (d.remaining > 0 && d.can_describe) {
+    if (canDescribe(plan)) {
       return {
         title: "Describe content first?",
         lines: [
@@ -381,25 +411,23 @@ export function dialogFor(p: {
         button: "describe",
       };
     }
-    if (d.remaining > 0 && d.blocked_reason) {
-      return {
-        title: TITLE,
-        lines: [`This sequence needs more described vault content. ${d.described} of ${d.target} done.`, d.blocked_reason],
-        note,
-        button: null,
-      };
+    if (d.remaining > 0) {   // can't describe now: its reason when the relay gave one, else just the count
+      const count = `This sequence needs more described vault content. ${d.described} of ${d.target} done.`;
+      return { title: TITLE, lines: d.blocked_reason ? [count, d.blocked_reason] : [count], note, button: null };
     }
     return {
       title: TITLE,
-      lines: [
-        `Not enough content. ${d.described} items are described and there is nothing left to describe under the ${TARGET_TEXT} limit.`,
-      ],
+      lines: [`Not enough content. ${d.described} of ${d.target} items are described and there is nothing left to describe.`],
       note,
       button: null,
     };
   }
   if ((status === "price_conflict" || status === "price_out_of_range") && plan) {
     return { title: TITLE, lines: conflictLines(plan.conflict, plan.options), note, button: null };
+  }
+  // already_filled also covers "every paid step kept, the free ones left empty" (no free-safe photo left)
+  if (status === "already_filled" && plan?.options.some((o) => o.flags.includes("free_unfilled"))) {
+    return { title: TITLE, lines: [FREE_UNFILLED_LINE], note, button: null };
   }
   const line = status ? STATUS_LINE[status] : undefined;
   return { title: TITLE, lines: [line ?? "Loading…"], note, button: null };

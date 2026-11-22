@@ -29,7 +29,10 @@ PROVIDER_TROUBLE = "The AI provider is having trouble — try again in a minute.
 RUN_SPEND_CAPPED = f"stopped: this run's {MAX_SPEND_MC // 100}¢ AI budget is used up"
 FAILURE_TEXT = {"capped_text": DAILY_CAPPED, "provider_text": PROVIDER_TROUBLE}  # llm_client.failure's wording
 
-READ_TOOLS: dict[str, td.Tool] = {t.name: t for t in td.TOOLS if t.effect == "read"}
+# A read that writes: report_file holds a file (the Agency's report lock, evicts the owner's oldest held file and
+# its live Download link), so it is a plan step the owner OKs, never run while planning.
+STEP_ONLY = frozenset({"report_file"})
+READ_TOOLS: dict[str, td.Tool] = {t.name: t for t in td.TOOLS if t.effect == "read" and t.name not in STEP_ONLY}
 
 # Ticket 10: old fastt caption rules, verbatim (OLD-OTH-26 ground truth + mass audience + "house" rule with
 # tone = teasing from OLD-OTH-25; OLD-OTH-43's one line). "The facts above" = the line before them.
@@ -73,10 +76,10 @@ NUDGE = f"Answer with tool calls only: read with a tool, or call {SUBMIT} with t
 
 
 def _step_tool_lines() -> str:
-    """Each write and send tool with its args schema: they are steps, never called while planning."""
+    """Each write and send tool (and STEP_ONLY) with its args schema: they are steps, never called while planning."""
     return " ".join(f"{t.name} ({t.effect}): {t.description.replace('propose_plan', SUBMIT)} "
                     f"Args schema: {json.dumps(td.args_schema(t.args), ensure_ascii=False)}"
-                    for t in td.TOOLS if t.effect != "read")
+                    for t in td.TOOLS if t.name not in READ_TOOLS)
 
 
 SUBMIT_DESCRIPTION = (

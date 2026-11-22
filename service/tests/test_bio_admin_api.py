@@ -696,7 +696,51 @@ def case_vault_avatar_photo_only_and_owned():
         assert owner.post(f"{BASE}/{bare}/background/vault", json={"media_id": 9001}).status_code == 409
         assert other.post(purl, json={"media_id": 9001}).status_code == 404
         assert other.post(burl, json={"media_id": 9001}).status_code == 404
+        # a photo removed from the vault (soft-deleted mirror row) is gone, even with its still on disk
+        sql("INSERT INTO vault_items(account_id, media_id, kind, tags, send_count, created_at, removed_at) VALUES "
+            "(?, 9004, 'photo', '[]', 0, '2026-11-01 00:00:00', '2026-11-02 00:00:00')", aid)
+        path = vault_stills.image_path(aid, 9004)
+        path.write_bytes(img("JPEG", (1200, 900)))
+        for u in (url, burl, purl):
+            r = owner.post(u, json={"media_id": 9004})
+            assert r.status_code == 404 and r.json()["detail"] == "That vault item is gone.", (u, r.text)
     finally:
+        vault_stills.IMAGE_DIR = real_dir
+
+
+def case_vault_photo_creator_relinked_mid_fetch():
+    # W30 C4: the page is relinked to another Creator (here: none) while the vault photo loads: 409, nothing
+    # written (the previous Creator's photo never lands on the page), for the avatar, background and link background
+    import vault_stills
+    vault_dir = Path(tempfile.mkdtemp(prefix="bio_vault_relink_"))
+    real_dir, vault_stills.IMAGE_DIR = vault_stills.IMAGE_DIR, vault_dir
+    real_still = bio_admin._vault_still
+    aid = IDS["creator_a"]
+    sql("INSERT INTO vault_items(account_id, media_id, kind, tags, send_count, created_at) VALUES "
+        "(?, 9101, 'photo', '[]', 0, '2026-11-01 00:00:00')", aid)
+    path = vault_stills.image_path(aid, 9101)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(img("JPEG", (1200, 900)))
+    pid = create(owner, "vault_relink", account_id=aid)["profile"]["id"]
+    lid = add_link(owner, pid)["links"][-1]["id"]
+
+    async def relinked(account_id, media_id):
+        data = await real_still(account_id, media_id)
+        sql("UPDATE bio_profiles SET account_id = NULL WHERE id = ?", pid)
+        return data
+    bio_admin._vault_still = relinked
+    try:
+        for u in (f"{BASE}/{pid}/avatar/vault", f"{BASE}/{pid}/background/vault",
+                  f"{BASE}/{pid}/links/{lid}/background/vault"):
+            sql("UPDATE bio_profiles SET account_id = ? WHERE id = ?", aid, pid)
+            r = owner.post(u, json={"media_id": 9101})
+            assert r.status_code == 409 and "Creator changed" in r.json()["detail"], (u, r.text)
+        page = owner.get(f"{BASE}/{pid}").json()
+        assert not page["profile"]["avatar"] and not page["profile"]["background_url"], page["profile"]
+        assert not next(x for x in page["links"] if x["id"] == lid)["background_image"], page["links"]
+        assert not (FILES / "profiles" / pid).exists() or not any((FILES / "profiles" / pid).iterdir())
+    finally:
+        bio_admin._vault_still = real_still
         vault_stills.IMAGE_DIR = real_dir
 
 
@@ -752,13 +796,15 @@ def case_domain_pure_tables():
     assert domains.host_of("https://Ofl.Test:8443/p") == "ofl.test" and domains.host_of(None) is None
     assert domains._txt_value('"ab" "cd"') == "abcd" and domains._txt_value("plain") == "plain"
     assert domains._caa_entry('0 issue "letsencrypt.org"') == ("issue", "letsencrypt.org")
-    # v2's relativeName and recordsFor
-    assert [domains.relative_name(d, pre) for d, pre in (("a.com", ""), ("a.com", "_oflink"), ("x.y.a.com", ""),
-                                                          ("x.a.com", "_oflink"))] == ["@", "_oflink", "x.y",
-                                                                                         "_oflink.x"]
+    # v2's recordsFor: names relative to a two-label zone (v2's relativeName), full names beside them (x.co.uk's
+    # zone is not co.uk: its owner needs the full name)
     assert domains.records_for("www.a.com", "t", IP, "2001:db8::1") == [
-        {"type": "A", "name": "www", "value": IP}, {"type": "AAAA", "name": "www", "value": "2001:db8::1"},
-        {"type": "TXT", "name": "_oflink.www", "value": "oflink-verify=t"}]
+        {"type": "A", "name": "www", "fqdn": "www.a.com", "value": IP},
+        {"type": "AAAA", "name": "www", "fqdn": "www.a.com", "value": "2001:db8::1"},
+        {"type": "TXT", "name": "_oflink.www", "fqdn": "_oflink.www.a.com", "value": "oflink-verify=t"}]
+    assert [(r["name"], r["fqdn"]) for r in domains.records_for("a.com", "t", IP, None)] == [
+        ("@", "a.com"), ("_oflink", "_oflink.a.com")]
+    assert [r["fqdn"] for r in domains.records_for("x.co.uk", "t", IP, None)] == ["x.co.uk", "_oflink.x.co.uk"]
     assert [r["type"] for r in domains.records_for("a.com", "t", IP, None)] == ["A", "TXT"]
     # v2's checks (b)-(e), its sentences
     v6 = "2001:db8::1"
@@ -779,6 +825,16 @@ def case_domain_pure_tables():
             (domains.Dns((IP,), (), proof, (("iodef", "mailto:x@y"),)), None, [])]
     for dns, ipv6, want in rows:
         assert domains.problems("d.example", "tok", IP, ipv6, dns) == want, (dns, ipv6)
+    # contested (another page serves the domain): the proof must be the TXT's only oflink-verify= value
+    both = domains.Dns((IP,), (), ("oflink-verify=tok", "oflink-verify=other", "v=spf1 -all"))
+    assert domains.problems("d.example", "tok", IP, None, both) == []
+    assert domains.problems("d.example", "tok", IP, None, both, sole=True) == [
+        "The TXT record _oflink.d.example holds another oflink-verify= value too. Keep only oflink-verify=tok."]
+    assert domains.problems("d.example", "tok", IP, None, domains.Dns((IP,), (), ("oflink-verify=tok", "x")),
+                            sole=True) == []
+    with _FakeNet() as net:
+        assert asyncio.run(domains.check("c.example", "tok", "live", IP, None)) == ("live", []) and net.calls == 0
+        assert asyncio.run(domains.check("c.example", "tok", "pending_cert", IP, None))[0] == "pending_cert"
 
 
 class _FakeNet:
@@ -846,15 +902,16 @@ def case_domain_set_validation_and_replace():
     assert d["domain"] == "links.example.com" and d["status"] == "pending" and d["checked"] is None, d
     tok = _tok(page)
     assert len(tok) == 32 and tok.isalnum() and tok == tok.lower(), tok
-    assert d["records"] == [{"type": "A", "name": "links", "value": IP},
-                            {"type": "TXT", "name": "_oflink.links", "value": f"oflink-verify={tok}"}], d
+    assert d["records"] == [{"type": "A", "name": "links", "fqdn": "links.example.com", "value": IP},
+                            {"type": "TXT", "name": "_oflink.links", "fqdn": "_oflink.links.example.com",
+                             "value": f"oflink-verify={tok}"}], d
     assert "token" not in d
     again = owner.put(f"{BASE}/{pid}/domain", json={"domain": "links.example.com"}).json()
     assert _tok(again) == tok, "the same domain keeps its row and token"
     os.environ["BIO_SERVER_IPV6"] = "2001:DB8::1"
     try:
         recs = owner.get(f"{BASE}/{pid}").json()["profile"]["custom_domain"]["records"]
-        assert recs[1] == {"type": "AAAA", "name": "links", "value": "2001:db8::1"}, recs
+        assert recs[1] == {"type": "AAAA", "name": "links", "fqdn": "links.example.com", "value": "2001:db8::1"}, recs
     finally:
         os.environ.pop("BIO_SERVER_IPV6")
     new = owner.put(f"{BASE}/{pid}/domain", json={"domain": "other.example.com"}).json()
@@ -930,14 +987,16 @@ def case_domain_check_transitions_and_uniqueness():
         assert _tls_ask(D) == 200
         assert bio_get("/api/profiles/dom_check.json", host=D).status_code == 200
         assert bio_get("/api/profiles/dom_rival.json", host=D).status_code == 404
-        # the rival proves the same DNS too: v2's "taken" problem, the rival stays pending
+        # the rival's token is in the TXT too, beside the serving page's: ambiguous, the rival stays pending
         body = check(owner, rival).json()
-        assert body["check"] == {"status": "pending", "problems": ["Another Profile already uses shop.example."]}, body
+        assert body["check"] == {"status": "pending", "problems": [
+            f"The TXT record _oflink.shop.example holds another oflink-verify= value too. Keep only {rproof}."]}, body
         assert sql("SELECT status FROM bio_custom_domains WHERE profile_id = ?", rival) == [("pending",)]
         third = create(other, "dom_third")["profile"]["id"]
         r = other.put(f"{BASE}/{third}/domain", json={"domain": D})
-        assert r.status_code == 409 and r.json()["detail"] == {
-            "field": "domain", "msg": "Another Profile already uses shop.example."}, r.text
+        assert r.status_code == 200 and r.json()["profile"]["custom_domain"]["status"] == "pending", \
+            "another Agency may save a served domain: its own pending row, the serving page unchanged"
+        assert bio_get("/api/profiles/dom_check.json", host=D).status_code == 200
         # the certificate answers: live
         net.certs.add(D)
         body = check(owner, pid).json()
@@ -967,7 +1026,7 @@ def case_domain_check_transitions_and_uniqueness():
         net.dns[D] = domains.Dns((IP,), (), (proof,))
         real = domains.check
 
-        async def swap(*a):
+        async def swap(*a, **kw):
             sql("DELETE FROM bio_custom_domains WHERE profile_id = ?", pid)
             return "live", []
         domains.check = swap
@@ -980,6 +1039,103 @@ def case_domain_check_transitions_and_uniqueness():
     for p in (rival,):
         owner.delete(f"{BASE}/{p}/domain")
     other.delete(f"{BASE}/{third}")
+
+
+def case_domain_current_dns_wins():
+    """A domain another Agency's page serves moves only on a fresh DNS read whose TXT holds the new page's token alone:
+    the serving page keeps it through the save, a missing / ambiguous proof and a DNS failure; then it moves, the old
+    page back to `pending` with a fresh token, and a check of the old page that read DNS before the move but writes
+    after it can't flip it back (409, one serving row); nor can a challenger whose proof was read before a third page
+    moved the domain."""
+    D = "moved.example"
+    apid = create(owner, "dns_win_a")["profile"]["id"]
+    bpid = create(other, "dns_win_b")["profile"]["id"]
+    atok = _tok(owner.put(f"{BASE}/{apid}/domain", json={"domain": D}).json())
+    aproof = f"oflink-verify={atok}"
+
+    def serving():
+        return [u for u in ("dns_win_a", "dns_win_b") if bio_get(f"/api/profiles/{u}.json", host=D).status_code == 200]
+
+    def row(pid):
+        return sql("SELECT status, token FROM bio_custom_domains WHERE profile_id = ?", pid)[0]
+    with _FakeNet() as net:
+        net.dns[D] = domains.Dns((IP,), (), (aproof,))
+        assert check(owner, apid).json()["check"]["status"] == "pending_cert"
+        r = other.put(f"{BASE}/{bpid}/domain", json={"domain": D})
+        assert r.status_code == 200, r.text
+        btok = _tok(r.json())
+        bproof = f"oflink-verify={btok}"
+        assert btok != atok and r.json()["profile"]["custom_domain"]["status"] == "pending", r.json()
+        assert row(apid) == ("pending_cert", atok) and serving() == ["dns_win_a"]
+        for dns, msg in ((domains.Dns((IP,), (), (aproof,)), f"does not hold {bproof} yet"),
+                         (domains.Dns((IP,), (), (aproof, bproof, "v=spf1 -all")),
+                          f"holds another oflink-verify= value too. Keep only {bproof}."),
+                         (None, "The DNS lookup for moved.example did not answer.")):
+            net.dns[D] = dns
+            body = check(other, bpid).json()
+            assert body["check"]["status"] == "pending" and msg in _problems(body), (dns, body["check"])
+            assert row(apid) == ("pending_cert", atok) and row(bpid) == ("pending", btok), dns
+            assert serving() == ["dns_win_a"], dns
+        net.dns[D] = domains.Dns((IP,), (), (aproof,))
+        real = domains.check
+
+        async def stale(domain, token, *a, **kw):
+            """A's check reads DNS (its token alone: pending_cert), then B's check moves the domain, then A writes."""
+            got = await real(domain, token, *a, **kw)
+            if token == atok:
+                net.dns[D] = domains.Dns((IP,), (), (bproof, "v=spf1 -all"))  # B's token alone; other TXT is fine
+                net.certs.add(D)
+                moved = await asyncio.to_thread(check, other, bpid)
+                assert moved.status_code == 200 and moved.json()["check"]["status"] == "live", moved.text
+            return got
+        domains.check = stale
+        try:
+            r = check(owner, apid)
+        finally:
+            domains.check = real
+        assert r.status_code == 409, r.text
+        astatus, atok2 = row(apid)
+        assert row(bpid) == ("live", btok) and astatus == "pending" and atok2 not in (atok, btok), (row(apid), btok)
+        assert serving() == ["dns_win_b"]
+        assert sql("SELECT COUNT(*) FROM bio_custom_domains WHERE domain = ? AND status != 'pending'", D) == [(1,)]
+        apage = owner.get(f"{BASE}/{apid}").json()
+        assert _tok(apage) == atok2 and apage["profile"]["public_url"] != f"https://{D}/", apage["profile"]
+        body = check(owner, apid).json()  # A now contests B: B's sole token is not A's
+        assert body["check"]["status"] == "pending" and serving() == ["dns_win_b"], body["check"]
+        # A's sole proof over B, but a third page C moves the domain off B before A writes: 409, C alone serves
+        cpid = create(owner, "dns_win_c")["profile"]["id"]
+        ctok = _tok(owner.put(f"{BASE}/{cpid}/domain", json={"domain": D}).json())
+        net.certs.discard(D)  # no certificate: a second winner would be pending_cert, which no index refuses
+        net.dns[D] = domains.Dns((IP,), (), (f"oflink-verify={atok2}",))
+
+        async def overtaken(domain, token, *a, **kw):
+            got = await real(domain, token, *a, **kw)
+            if token == atok2:
+                net.dns[D] = domains.Dns((IP,), (), (f"oflink-verify={ctok}",))
+                moved = await asyncio.to_thread(check, owner, cpid)
+                assert moved.status_code == 200 and moved.json()["check"]["status"] == "pending_cert", moved.text
+            return got
+        domains.check = overtaken
+        try:
+            r = check(owner, apid)
+        finally:
+            domains.check = real
+        assert r.status_code == 409, r.text
+        assert row(apid) == ("pending", atok2) and row(bpid)[0] == "pending", (row(apid), row(bpid))
+        assert sql("SELECT profile_id FROM bio_custom_domains WHERE domain = ? AND status != 'pending'", D) == [
+            (cpid,)]
+    for pid in (apid, cpid):
+        assert owner.delete(f"{BASE}/{pid}").status_code == 204
+    assert other.delete(f"{BASE}/{bpid}").status_code == 204
+
+
+def case_relay_gets_the_bio_primary_hosts():
+    """The editor refuses this box's own hosts as a custom domain (_own_hosts reads BIO_PRIMARY_HOSTS in the relay):
+    compose hands the relay the same BIO_PRIMARY_HOSTS as the bio service."""
+    import yaml
+    svc = yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text())["services"]
+    relay = svc["openinflowwww-relay"]["environment"].get("BIO_PRIMARY_HOSTS")
+    assert relay and relay == svc["openinflowwww-bio"]["environment"]["BIO_PRIMARY_HOSTS"], relay
 
 
 def case_domain_off_without_server_ip():

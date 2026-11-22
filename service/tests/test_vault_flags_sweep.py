@@ -69,8 +69,8 @@ import vault_jev_pass  # noqa: E402
 from _jev_fixtures import video_jev  # noqa: E402
 
 
-# flags-all pre-flights the vision key (a missing one is the typed 424, pinned
-# in test_api_key_errors). These cases fake the vision pass, so a key is present.
+# A DeepInfra key is present for any describe path these cases touch; flags-all itself no longer needs one
+# (`case_flags_need_no_deepinfra_key`, W30 F9).
 async def _key_present(*_a, **_k) -> bool:
     return True
 
@@ -278,6 +278,24 @@ async def case_named_ids_stay_inline():
         vault_jev_pass.safe = orig
 
 
+async def case_flags_need_no_deepinfra_key():
+    """Flags make no DeepInfra call: a TypeSafe-only account (no DeepInfra key) runs them, no 424. W30 F9."""
+    aid = _next_account()
+    await _seed(aid, [(680, None)])
+    gate = _Gate()
+    orig, vault_jev_pass.safe = vault_jev_pass.safe, gate
+
+    async def no_key(*_a, **_k) -> bool:
+        return False
+    llm_client.llm_key_available = no_key
+    try:
+        out = await vault_ai_vision.flags_all({"account_id": aid, "media_ids": [680]})
+        assert out["flagged"] == 1 and gate.calls == [680], out
+    finally:
+        vault_jev_pass.safe = orig
+        llm_client.llm_key_available = _key_present
+
+
 async def case_a_failing_item_does_not_stop_the_sweep():
     aid = _next_account()
     await _seed(aid, [(i, None) for i in range(680, 685)])
@@ -335,6 +353,7 @@ _harness.run(
     case_status_reports_progress_and_db_coverage,
     case_todo_skips_current_and_keeps_stale,
     case_named_ids_stay_inline,
+    case_flags_need_no_deepinfra_key,
     case_a_failing_item_does_not_stop_the_sweep,
     case_done_counts_visits_so_a_finished_pass_reads_as_finished,
 )

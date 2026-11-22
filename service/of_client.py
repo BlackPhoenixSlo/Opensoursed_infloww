@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import random
+import sys
 import tempfile
 import threading
 import time
@@ -253,12 +254,13 @@ def _observe_consent(account_id: str, method: str, url: str, json_body: dict | N
 
 
 def _observe_unread_total(account_id: str, method: str, url: str, r, asked_at: int) -> None:
-    """unread_total.observe_response (a `/users/me` OF returned confirms the Unread total; off: returns at once);
-    never raises (lazy: keeps the client importable on its own)."""
-    if not os.environ.get("UNREAD_TOTAL"):   # knob unset: no import (unread_total pulls in the relay's modules)
+    """unread_total.observe_response (a `/users/me` OF returned confirms the Unread total); never raises. The one
+    Knob is `unread_total.ENABLED`, read where the Relay loaded the module (server imports it); a process without it
+    (a script, a test that never loads it) observes nothing and imports nothing (it pulls in the relay's modules)."""
+    unread_total = sys.modules.get("unread_total")
+    if unread_total is None or not unread_total.ENABLED:
         return
     try:
-        import unread_total
         unread_total.observe_response(account_id, method, url, r, asked_at)
     except Exception:  # noqa: BLE001
         log_of.warning("unread_total_observe_failed account=%s", account_id, exc_info=True)
@@ -302,10 +304,12 @@ _SIGNED_RETIRED = "signed session retired; retry with current account session"
 
 
 class OFAPIError(Exception):
-    """Non-2xx from OF (or upstream Cloudflare). Carries the raw response."""
+    """Non-2xx from OF (or upstream Cloudflare). Carries the raw response. `of_client`: the client that issued the
+    call, set by server._proxy (server.flag_dead_session evicts only that one); None elsewhere."""
     def __init__(self, message: str, response=None):
         super().__init__(message)
         self.response = response
+        self.of_client = None
 
 
 class FanSendRefused(Exception):
@@ -376,9 +380,10 @@ def _denied(method: str, url: str) -> str | None:
 # Creator still gets, because it takes something OFF its OnlyFans.
 _CARRIER_REMOVAL: ContextVar[bool] = ContextVar("of_carrier_removal", default=False)
 
-# Set around one guarded write (promo_create_guard.send): called on a write right before its
-# request leaves the box, after the signed-slot wait and the x-hash warm-up; a reason it
-# returns refuses the write (OFDispatchRefused), None sends it.
+# Set around one guarded write (promo_create_guard.send): called on every attempt of a write
+# (the first and each _proxy_retry retry) as its last step before the request leaves the box,
+# after every wait (signed slot, x-hash warm-up, back-off pause, telemetry, signing); a reason
+# it returns refuses the write (OFDispatchRefused), None sends it.
 PRE_DISPATCH: ContextVar[Callable[[], str | None] | None] = ContextVar("of_pre_dispatch", default=None)
 
 
@@ -766,6 +771,8 @@ class _Transport:
             # under load; the same IP works again moments later. _proxy_retry()
             # retries with growing pauses against the SAME self.http session (sticky IP,
             # no rotation) — shared with every raw self.http call in the OFClient mixins.
+            check = PRE_DISPATCH.get() if method != "GET" else None
+
             def _do() -> requests.Response:
                 # Signed per attempt: a retry can come seconds later, and Sign/Time must be fresh.
                 headers = self._signed_headers(url)
@@ -773,19 +780,22 @@ class _Transport:
                     headers["Content-Type"] = "application/json"
                 if method == "GET":
                     return self.http.get(url, headers=headers, timeout=self.timeout_s)
+                # A guarded write's last check, on every attempt, after every wait (slot, warm-up,
+                # back-off pause, telemetry, signing): a refusal sends nothing.
+                if check is not None and (why := check()):
+                    raise OFDispatchRefused(why)
                 return self.http.request(method, url, json=json_body,
                                          headers=headers, timeout=self.timeout_s)
             with self._signed_slot():
                 # The x-hash warmup runs its own _proxy_retry here, never nested in the one below.
                 self._ensure_x_hash(policy=policy)
-                # A guarded write's last check, after every wait above: a refusal sends nothing.
-                if method != "GET" and (check := PRE_DISPATCH.get()) is not None and (why := check()):
-                    raise OFDispatchRefused(why)
                 # The OF call counter: one count per request sent, its answer's status or `error`
                 # when none came back (CONNECT retries inside _proxy_retry are one request).
                 asked_at = int(time.time() * 1000)      # the read's ask time (the Unread total's `at`)
                 try:
                     r = self._proxy_retry(_do, what=f"{method} {_short_path(url)}", policy=policy)
+                except OFDispatchRefused:
+                    raise                       # refused right before an attempt: never sent
                 except Exception:
                     of_call_counter.record(self.account_id, method, url, None)
                     raise

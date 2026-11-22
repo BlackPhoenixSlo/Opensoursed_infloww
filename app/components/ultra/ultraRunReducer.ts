@@ -4,7 +4,8 @@
  * went, the one OK / Cancel / pick in flight and the owner's ticks on a `needs_you` pick card. A pure reducer (the
  * components only dispatch) plus `canApprove` / `canCancel` / `okPayload` (the OK posts the hash the owner was
  * shown), `actRequest` (what each action posts), `canPick` / `buildPickPayload` (exactly pick_n ticked), `planActions`
- * (the buttons both surfaces draw), `pollMs` and `statusNote` / `STEP_LABEL`. Every word about a step comes from the server's card; nothing is recomposed here.
+ * (the buttons both surfaces draw), `pollMs` and `statusNote` / `STEP_LABEL`. A step's title, rows and text come
+ * from the server's card; the only words made here are `statusNote`'s line (status + step ids) and `STEP_LABEL`.
  */
 
 export type PlanStatus = "planning" | "awaiting_ok" | "running" | "needs_you" | "done" | "failed" | "cancelled"
@@ -61,6 +62,8 @@ export interface StepStatus {
   pick_n?: number;
   candidates?: Candidate[];
   picks?: number[];
+  /** When its call answered (service/ultra_decide.py step_end): a report file's link dies 15 minutes after. */
+  ended_at?: string;
 }
 
 /** An in-app plan still planning (ultra_plan_decide.progress): progress only, never model text. */
@@ -288,5 +291,7 @@ export function statusNote(plan: PlanView): string {
         : `The server restarted while this plan ran, so it stopped.${unsure} The steps marked Not run did not run.`;
     case "expired":
       return `Expired: it was not approved ${ttl ? `within ${ttl}` : "in time"}, so nothing ran. Ask for a new plan.`;
+    default:  // a status this build does not know (a newer server): statusRow keeps re-reading
+      return `Status: ${String(plan.status)}. This page updates by itself; reload it if that stays.`;
   }
 }

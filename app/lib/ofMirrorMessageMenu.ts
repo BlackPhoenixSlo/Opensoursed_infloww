@@ -12,12 +12,16 @@
  * - Add to collection (bookmarked): OF's bookmark collections are not in OF Manager: disabled.
  * - Pin / Unpin (canBePinned): POST / DELETE /messages/{id}/pin/user/{fan}; the header's pin and the pinned page follow.
  * - Hide (the fan's message): PUT /messages/{id}/hide {withUserId}; it leaves the thread.
- * - Report (the fan's message, canReport): disabled (NOT_YET): OF's report form sends captcha data and per-reason
- *   fields the mirror cannot fill (ledger).
+ * - Report (the fan's message, canReport; ticket 42, D22): opens the chat's onlyfans.com page in a new tab
+ *   (ofMirrorHandoffs reportHandoffUrl, measured), titled "opens onlyfans.com", nothing through the Relay: OF's report
+ *   form sends captcha data and per-reason fields the mirror cannot fill (ledger). With no chat: disabled (NOT_YET).
  * - Forward and Add a tag (the Creator's message): New message has no forward body and the release-form picker is the
  *   composer's: disabled.
  * - Unsend (the Creator's message while OF's cancelSeconds last; the item counts them down): asks, then DELETE
  *   /messages/{id} {withUserId} (Messages Pro's useUnsendMessage: the bubble goes at once, back on an error).
+ * Infloww's own bubble extras (ticket 33, not OF's): Countdown, Copy as draft and Unsend PPV (ofMirrorBubbleExtras), bound
+ * only with OFM_NEW_WRITES_ENABLED on (ofMirrorNewWrites, UI-only: Unsend PPV is the menu's Unsend request); off, none
+ * is bound or drawn (main).
  * OF has no Delete and no Edit for a sent message (ledger). The pinned page's ⋮: Unpin all messages (asks first;
  * DELETE /chats/{id}/messages/pin), off while there is no pin. Errors show in place; with no model nothing is sent.
  * The chat's State pages (menu, price, schedule, tag people, vault) draw the same thread: each ⋮ there is the same menu
@@ -34,10 +38,13 @@ import { chatPath, usersListPath } from "@/lib/ofMirrorDataQueries";
 import { chatDraftKey, DRAFT_EVENT, loadChatDraft } from "@/lib/ofMirrorChat";
 import { dialog, dialogError, FLAT, type FanState } from "@/lib/ofMirrorChatTools";
 import { toast } from "@/lib/ofMirrorPost";
-import { type ThreadMessage } from "@/lib/ofMirrorThread";
+import { countdown, plainText, type ThreadMessage } from "@/lib/ofMirrorThread";
 import { message, modalButton, note, NOT_YET, SELECT_MODEL } from "@/lib/ofMirrorWrites";
+import { bindBubbleExtras, type UnsendAction } from "@/lib/ofMirrorBubbleExtras";
+import { asHandoff, HANDOFF_TITLE, reportHandoffUrl } from "@/lib/ofMirrorHandoffs";
 import { fanIdFromParam } from "@/lib/fanId";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
+import { useOfmNewWrites } from "@/lib/ofMirrorNewWrites";
 import { useChatPinned } from "@/hooks/useChatPinned";
 
 export type MessageAction = "copy" | "like" | "reply" | "bookmark" | "collection" | "pin" | "hide" | "report" | "forward" | "tag" | "unsend";
@@ -46,6 +53,8 @@ export interface MessageItem {
   label: string;
   /** Not in OF Manager (NOT_YET as its tooltip). */
   off?: boolean;
+  /** ticket 42: a hand-off, OF's page it opens in a new tab (ofMirrorHandoffs). */
+  href?: string;
 }
 
 /** OF's message as the menu reads it. */
@@ -59,20 +68,11 @@ export type MenuMessage = ThreadMessage & {
   cancelSeconds?: number | null;
 };
 
-const plainText = (html: string | null | undefined) => {
-  const el = (typeof document !== "undefined" ? document : null)?.createElement("div");
-  if (!el) return (html ?? "").replace(/<[^>]+>/g, "");
-  el.innerHTML = (html ?? "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>\s*<p[^>]*>/gi, "\n");
-  return (el.textContent ?? "").trim();
-};
-/** OF's unsend countdown: m:ss. */
-export const countdown = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-
 /**
  * OF's ItemActions for message `m` (13560, in its order): `mine` the Creator's own, `limited` the fan restricted or
- * blocked, `left` the seconds the unsend window still has.
+ * blocked, `left` the seconds the unsend window still has, `chat` the open chat's fan (Report's hand-off, ticket 42).
  */
-export function messageItems(m: MenuMessage, o: { mine: boolean; limited: boolean; left: number }): MessageItem[] {
+export function messageItems(m: MenuMessage, o: { mine: boolean; limited: boolean; left: number; chat: string | null }): MessageItem[] {
   const items: MessageItem[] = [];
   if (plainText(m.text) && !m.lockedText) items.push({ key: "copy", label: "Copy message text" });
   if (!o.mine && !o.limited) items.push({ key: "like", label: m.isLiked ? "Unlike" : "Like" });
@@ -81,7 +81,7 @@ export function messageItems(m: MenuMessage, o: { mine: boolean; limited: boolea
   if (m.isAddedToBookmarks) items.push({ key: "collection", label: "Add to collection", off: true });
   if (m.canBePinned) items.push({ key: "pin", label: m.isPinned ? "Unpin" : "Pin" });
   if (!o.mine) items.push({ key: "hide", label: "Hide" });
-  if (!o.mine && !!m.canReport) items.push({ key: "report", label: "Report", off: true });
+  if (!o.mine && !!m.canReport) items.push(o.chat ? { key: "report", label: "Report", href: reportHandoffUrl("message", { fanId: o.chat }) } : { key: "report", label: "Report", off: true });
   if (o.mine && !m.isTip && m.isMediaReady !== false) items.push({ key: "forward", label: "Forward", off: true });
   if (o.mine && (m.media?.length ?? 0) > 0 && !m.giphyId) items.push({ key: "tag", label: "Add a tag", off: true });
   if (o.mine && o.left > 0) items.push({ key: "unsend", label: `Unsend ${countdown(o.left)}` });
@@ -113,6 +113,9 @@ export interface MessageMenuContext {
   storage: Storage | null;
   accountId: string | null;
   copy(text: string): Promise<void>;
+  /** OFM_NEW_WRITES_ENABLED (useOfmNewWrites): on, the own bubbles' extras are bound (ofMirrorBubbleExtras); off, not
+   *  at all (ticket 33; switch-off == main). */
+  newWrites: boolean;
 }
 
 const MENU_BTN = "button[data-oi-msg-menu]";
@@ -136,7 +139,8 @@ function dropdown(doc: Document, btn: HTMLElement, items: MessageItem[], alignRi
   const list = doc.createElement("div");
   list.className = "v-list m-dropdown-v-list v-sheet theme--light shown";
   for (const it of items) {
-    const el = doc.createElement("div");
+    const el = it.href ? asHandoff(doc.createElement("a"), it.href) : doc.createElement("div");  // ticket 42: a hand-off is OF's link
+    if (it.href) el.title = HANDOFF_TITLE;
     el.setAttribute("role", "menuitem");
     el.tabIndex = it.off ? -1 : 0;
     el.className = `v-list-item v-list-item--link theme--light m-with-rectangle-hover m-tb-sm${it.off ? " v-list-item--disabled" : ""}${it.key === "unsend" || it.key === "hide" || it.key === "report" ? " m-danger" : ""}`;
@@ -199,7 +203,7 @@ export function bindMessageMenu(doc: Document, ctx: MessageMenuContext): () => v
     if (!writes) return note(doc, anchor, SELECT_MODEL), null;
     return writes;
   };
-  const confirm = (title: string, text: string, yes: string, go: (fail: (e: unknown) => void, done: () => void) => void, opener: Element) => {
+  const confirm = (title: string, text: string, yes: string, go: (fail: (e: unknown) => void, done: () => void) => void, opener: Element): { close(): void } => {
     const m = dialog(doc, CONFIRM_ID, title, (body) => {
       const p = doc.createElement("p");
       p.textContent = text;
@@ -214,9 +218,26 @@ export function bindMessageMenu(doc: Document, ctx: MessageMenuContext): () => v
       },
     });
     m.modal.querySelector("footer")!.append(modalButton(doc, { text: "Cancel", className: FLAT, onClick: () => m.close() }), btn);
+    return m;
   };
 
-  const act = (key: MessageAction, m: MenuMessage, anchor: HTMLElement) => {
+  const send = () => doc.querySelector("button[at-attr='send_btn']") ?? doc.body;
+  const node = (id: string) => doc.querySelector(`[data-oi-msg="${CSS.escape(id)}"]`);
+  // A failed write's red note, under its message's node once drawn: an unsend's undo draws the bubble again only on
+  // the next redraw (useUnsendMessage restores the thread), so the note waits for it (draw) up to 2s, then the anchor.
+  let pending: { id: string; text: string; anchor: Element; until: number } | null = null;
+  const placePending = () => {
+    if (!pending) return;
+    const b = node(pending.id);
+    if (!b && Date.now() < pending.until) return;
+    const p = pending;
+    pending = null;
+    note(doc, b ?? (p.anchor.isConnected ? p.anchor : send()), p.text, true);
+  };
+  let pendingTimer: number | undefined;
+
+  /** `live`: the opener still bound (Unsend PPV's extras); false by the time Unsend is clicked, nothing is sent. */
+  const act = (key: MessageAction, m: MenuMessage, anchor: HTMLElement, live: () => boolean = () => true): { close(): void } | null | void => {
     const id = String(m.id);
     if (key === "copy") {
       return void ctx.copy(plainText(m.text)).then(
@@ -231,9 +252,13 @@ export function bindMessageMenu(doc: Document, ctx: MessageMenuContext): () => v
       return void doc.dispatchEvent(new Event(DRAFT_EVENT));
     }
     const w = ready(anchor);
-    if (!w) return;
-    // Under the message's node as drawn now (the write's patch redrew the thread; useOfData keeps it there on the undo's).
-    const failed = (what: string) => (e: unknown) => note(doc, doc.querySelector(`[data-oi-msg="${CSS.escape(id)}"]`) ?? anchor, `Could not ${what}: ${message(e)}`, true);
+    if (!w) return null;
+    // Under the message's node as drawn (the write's patch redrew the thread; useOfData keeps it there on the undo's).
+    const failed = (what: string) => (e: unknown) => {
+      pending = { id, text: `Could not ${what}: ${message(e)}`, anchor, until: Date.now() + 2000 };
+      placePending();
+      if (pending) pendingTimer = doc.defaultView?.setTimeout(placePending, 2050);
+    };
     if (key === "like") return void w.like(id, !m.isLiked).catch(failed(m.isLiked ? "unlike" : "like"));
     if (key === "pin") return void w.pin(id, !m.isPinned).catch(failed(m.isPinned ? "unpin" : "pin"));
     if (key === "bookmark") {
@@ -242,14 +267,43 @@ export function bindMessageMenu(doc: Document, ctx: MessageMenuContext): () => v
     }
     if (key === "hide") return void w.hide(id).catch(failed("hide the message"));
     if (key === "unsend") {
-      return confirm("Unsend message", "Unsend this message? It is removed from the chat for both of you.", "Unsend", (fail, done) => void w.unsend(m).then(done, fail), anchor);
+      // The dialog closes either way (ticket 33): "Unsent" by Send, or the red note under the bubble that stays.
+      return confirm("Unsend message", "Unsend this message? It is removed from the chat for both of you.", "Unsend", (_inDialog, done) => {
+        if (!live()) return void done();   // its opener was unbound (the switch went off) while the dialog stood open
+        // The window may have closed while the dialog stood open: no request then, the note says why.
+        if (ctx.left(ctx.message(id) ?? m) <= 0) return void (done(), note(doc, anchor.isConnected ? anchor : send(), "The unsend window has closed", true));
+        // useUnsendMessage answers null when it sent nothing (no fan, an invalid id) and throws unless OF said success.
+        void w.unsend(m).then(
+          (r) => {
+            done();
+            if (r != null) note(doc, send(), "Unsent");
+            else failed("unsend")(new Error("nothing was sent"));
+          },
+          (e) => (done(), failed("unsend")(e)),
+        );
+      }, anchor);
     }
   };
+
+  // The thread's redraws (records of its own draw dropped): the ⋮ drawn since the bind and a waiting red note.
+  const redraws = doc.defaultView ? new doc.defaultView.MutationObserver(() => draw()) : null;
+  const draw = () => {
+    // The thread's ⋮ drawn since the bind (its redraws clone the tagged template) are Wired as the bind's.
+    for (const b of doc.querySelectorAll(`${MENU_BTN}:not([data-oi-wired])`)) b.setAttribute("data-oi-wired", "");
+    placePending();
+    redraws?.takeRecords();
+  };
+  draw();
+  redraws?.observe(doc.querySelector(".b-chat__messages-wrapper") ?? doc.body, { childList: true, subtree: true });
+  const unsendFromExtras: UnsendAction = (m, anchor, live) => act("unsend", m, anchor, live) ?? null;
+  const unbindExtras = ctx.newWrites ? bindBubbleExtras(doc, { ...ctx, unsend: unsendFromExtras }) : undefined;
 
   const onClick = (ev: MouseEvent) => {
     const t = ev.target as Element | null;
     if (!t?.closest) return;
     const item = t.closest<HTMLElement>(`#${MENU_ID} [data-oi-msg-action]`);
+    // ticket 42: a hand-off's click is the browser's (a new tab); the menu closes after it.
+    if (item?.matches("a[href]")) return void doc.defaultView?.setTimeout(close, 0);
     if (item) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -284,12 +338,11 @@ export function bindMessageMenu(doc: Document, ctx: MessageMenuContext): () => v
       const m = id ? ctx.message(id) : undefined;
       if (!host || !m) return note(doc, btn, "This message has not loaded yet");
       const mine = host.classList.contains("m-from-me");
-      const draw = () => dropdown(doc, btn, messageItems(m, { mine, limited: ctx.limited, left: ctx.left(m) }), mine);
-      draw();
-      // Unsend's countdown, as OF's item ticks.
+      dropdown(doc, btn, messageItems(m, { mine, limited: ctx.limited, left: ctx.left(m), chat: ctx.chat }), mine);
+      // Unsend's countdown, as OF's item ticks (only while this menu is open).
       const timer = mine && ctx.left(m) > 0 ? doc.defaultView?.setInterval(() => {
         const el = doc.querySelector<HTMLElement>(`#${MENU_ID} [data-oi-msg-action='unsend']`);
-        const left = ctx.left(m);
+        const left = ctx.left(ctx.message(id!) ?? m);
         if (el && left > 0) el.textContent = ` Unsend ${countdown(left)} `;
         else el?.remove();
       }, 1000) : undefined;
@@ -318,6 +371,9 @@ export function bindMessageMenu(doc: Document, ctx: MessageMenuContext): () => v
   doc.addEventListener("scroll", onScroll, true);
   return () => {
     close();
+    unbindExtras?.();
+    doc.defaultView?.clearTimeout(pendingTimer);
+    redraws?.disconnect();
     doc.removeEventListener("click", onClick, true);
     doc.removeEventListener("keydown", onKey);
     doc.removeEventListener("scroll", onScroll, true);
@@ -365,7 +421,17 @@ export function messageWrites(accountId: string, chat: string, qc: QueryClient, 
         return on ? relay.post(`/api/of/v2/messages/${id}/bookmark`, body, opts) : relay.delete(`/api/of/v2/messages/${id}/bookmark`, opts, body);
       }),
     hide: (id) => write(id, null, null, () => relay.put(`/api/of/v2/messages/${id}/hide`, { withUserId: fanId }, opts)),
-    unsend: (m) => unsend(m).then((r) => (void qc.invalidateQueries({ queryKey: ["chats"] }), r)),
+    // On success the pinned page's cache drops it too, or its bubble and Unsend PPV stay for another DELETE (W30 W3);
+    // useUnsendMessage keeps it to one DELETE per message in flight, across every caller.
+    unsend: (m) =>
+      unsend(m).then((r) => {
+        if (r != null) {
+          patch(String(m.id), null);
+          void qc.invalidateQueries({ queryKey: pinnedKey });
+        }
+        void qc.invalidateQueries({ queryKey: ["chats"] });
+        return r;
+      }),
     unpinAll: () => relay.delete(`/api/of/v2/chats/${enc}/messages/pin`, opts).then((r) => (patchAllUnpinned(), pinsChanged(), r)),
   };
   function patchAllUnpinned() {
@@ -416,6 +482,7 @@ export function useOfMessageMenu(frameRef: RefObject<HTMLIFrameElement | null>, 
   // The pins (the pinned page's thread): their count turns Unpin all on or off.
   const pinned = useChatPinned(accountId, fanId, isPinned);
   const pins = isPinned ? pinned.data?.length : undefined;
+  const newWrites = useOfmNewWrites(!!page, accountId);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -439,6 +506,7 @@ export function useOfMessageMenu(frameRef: RefObject<HTMLIFrameElement | null>, 
         storage: window.sessionStorage,
         accountId,
         copy: (text) => frame.contentWindow?.navigator.clipboard?.writeText(text) ?? Promise.reject(new Error("no clipboard")),
+        newWrites,
       });
     };
     // When each message's cancelSeconds was read (an older page read later must not restart the newer ones' clocks).
@@ -455,5 +523,5 @@ export function useOfMessageMenu(frameRef: RefObject<HTMLIFrameElement | null>, 
       frame.removeEventListener("load", bind);
       unbind?.();
     };
-  }, [frameRef, src, page, accountId, chat, fanId, isPinned, limited, pins, qc]);
+  }, [frameRef, src, page, accountId, chat, fanId, isPinned, limited, pins, qc, newWrites]);
 }

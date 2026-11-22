@@ -30,7 +30,7 @@ export interface CreatePromotionState {
   unresolved: number | null;
 }
 
-/** The relay's bounds for a Free trial's Re-create limit. */
+/** The relay's bounds for a Free trial's Re-create limit (mirrors service/promotions_api RECREATE_MAX). */
 export const RECREATE_MIN = 1;
 export const RECREATE_MAX = 10;
 
@@ -78,7 +78,8 @@ export function keepRunningOn(s: CreatePromotionState): boolean {
   return s.keepRunning ?? s.form.kind !== "trial";
 }
 
-/** The smallest Claim cap that pre-empts (the relay's: 90% of a smaller cap leaves no room); 0 is unlimited. */
+/** The smallest Claim cap that pre-empts (mirrors service/promo_keep_decide PREEMPT_MIN_CAP: 90% of a smaller cap
+ *  leaves no room); 0 is unlimited. */
 export const PREEMPT_MIN_CAP = 10;
 
 /** Re-create at 90% filled can act on this Claim cap; under it the promo re-creates after it ends. */
@@ -142,6 +143,11 @@ export function buildPayload(s: CreatePromotionState, resolve = false): CreatePr
     ...(keepRunningOn(s) ? { expect_taken_from: s.takenFrom?.id ?? null, preempt: preemptOn(s) } : {}),
     ...(resolve && s.unresolved !== null ? { resolve_open: s.unresolved } : {}),
   };
+}
+
+/** The relay's 409 `create_landed` body: the earlier create it met is on OnlyFans, nothing new was sent. */
+export function landed(body: unknown): boolean {
+  return (body as { detail?: { reason?: unknown } } | null)?.detail?.reason === "create_landed";
 }
 
 /** The relay's 409 `keep_running_moved` body → the campaign keeping running now (`kept`, null: none), else undefined. */

@@ -71,10 +71,10 @@ const typeText = (d: Document, text: string) => {
   editor(d).innerHTML = `<p>${text}</p>`;
   editor(d).dispatchEvent(new Event("input", { bubbles: true }));
 };
-/** Pick `file` in Add media's hidden picker. */
-const pick = (d: Document, file: File) => {
+/** Pick `files` (one pick) in Add media's hidden picker. */
+const pick = (d: Document, ...files: File[]) => {
   const input = $<HTMLInputElement>(d, "input[type='file'][data-oi-wired]");
-  Object.defineProperty(input, "files", { value: [file], configurable: true });
+  Object.defineProperty(input, "files", { value: files, configurable: true });
   input.dispatchEvent(new Event("change"));
 };
 /** Nothing but the asked-for calls reached the Relay. */
@@ -523,6 +523,32 @@ describe("Record voice and Record video", () => {
     send(b).click();
     expect(h.confirm).not.toHaveBeenCalled();
     expect(h.send).toHaveBeenCalledWith("/api/of/v2/chats/9002/messages", { text: "hi B", price: 0, media_files: [] });
+    un();
+  });
+
+  it("two same-named files in one pick: the first's failure stays when the second uploads, so Send still asks", async () => {
+    const s = memoryStorage();
+    const upload = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Invalid file type"))
+      .mockResolvedValueOnce({ ready: true, deduped: false, vault_id: null, send_with: [{ processId: "p2" }] });
+    const h = handlers({ upload, confirm: vi.fn(() => false) });
+    const d = loadPage("chat");
+    const un = bindChat(d, "messages/chat", ctxOf(h, s));
+    typeText(d, "hello");
+    pick(d, new File(["x"], "a.jpg", { type: "image/jpeg" }), new File(["y"], "a.jpg", { type: "image/jpeg" }));
+    await flush();
+    await flush();
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(loadChatDraft(s, ACCOUNT, CHAT).media_files).toEqual([{ processId: "p2" }]);
+    send(d).click();
+    expect(h.confirm).toHaveBeenCalledWith(uploadFailed({ "a.jpg": "Invalid file type" }));
+    expect(h.send).not.toHaveBeenCalled();
+    // A later pick of the same file that uploads forgets it.
+    upload.mockResolvedValueOnce({ ready: true, deduped: false, vault_id: null, send_with: [{ processId: "p3" }] });
+    pick(d, new File(["x"], "a.jpg", { type: "image/jpeg" }));
+    await flush();
+    expect(loadChatDraft(s, ACCOUNT, CHAT).upload_failed).toBeUndefined();
     un();
   });
 

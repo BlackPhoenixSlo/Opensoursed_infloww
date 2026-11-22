@@ -9,8 +9,9 @@ import {
   creatorFreshnessReducer, type CreatorFreshnessState, type Freshness, type HeldFreshness,
 } from "@/lib/creatorFreshness";
 import {
-  asOfText, badgeAge, DOWN_GRACE_MS, liveMark, serverOffset, SLACK_MS, type BadgeAge, type LiveMark,
+  asOfText, badgeAge, DOWN_GRACE_MS, liveMark, SLACK_MS, type BadgeAge, type LiveMark,
 } from "./dataAge";
+import { serverOffset } from "@/lib/ageClock";
 import { badgeUnread, unreadBadgeSources } from "./unreadBadge";
 
 const T = 1_800_000_000_000; // the Relay's now in every row unless skewed

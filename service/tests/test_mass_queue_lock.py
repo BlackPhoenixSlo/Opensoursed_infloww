@@ -9,6 +9,13 @@ Auto_Exclude sync through the OF POST (W24), as automation sends do.
       an explicit-ids blast needs no list, so never takes the lock.
   case_failed_post_releases_the_lock:
       OF raising on the POST still frees the lock.
+  case_a_may_have_sent_post_refuses_the_same_retry:
+      a timed-out POST (OF may have taken it): the identical payload is a 409,
+      no second POST; another payload, or a retry after OF's 400, sends.
+  case_an_identical_send_while_the_first_is_in_flight_is_refused:
+      a twin of a send whose POST is still out (queued behind the lock, or an
+      explicit-ids one with no lock) is a 409 with no POST; after the first
+      times out the key stays held; a send that went through frees it.
   case_concurrent_rewrite_waits_for_the_post:
       a task that takes the lock and clears Auto_Exclude (another blast's sync,
       a refresh) cannot run between this blast's sync and OF reading the list.
@@ -222,6 +229,100 @@ async def case_concurrent_rewrite_waits_for_the_post():
         await asyncio.gather(mass_queue_api.of_send_or_schedule_mass(None, _list_blast()), rewrite())
     assert fake.posts == [("send", True, {7, 8})], f"OF read a rewritten Auto_Exclude: {fake.posts}"
     assert fake.members[AUTO_LID] == set(), "the rewrite ran, after the POST"
+
+
+async def case_a_may_have_sent_post_refuses_the_same_retry():
+    """OF may have taken a timed-out POST (the run stays 'running'): the same
+    payload again on that account is a 409 with no OF call; a different payload
+    still sends. A POST OF surely refused (400) leaves the retry free."""
+    aid = "acc_lock_retry"
+    await _account(aid)
+    fake = FakeOF(aid)
+    def timeout(*_a, **_k):
+        raise curl.exceptions.ReadTimeout("timeout")
+    fake.send_mass_message = timeout
+    body = lambda text="hey": mass_queue_api._MassScheduleBody(text=text, user_ids=[1])  # noqa: E731
+    with _Patch(fake):
+        try:
+            await mass_queue_api.of_send_or_schedule_mass(None, body())
+        except HTTPException:
+            pass
+        else:
+            raise AssertionError("the timeout surfaces")
+        sent = []
+        fake.send_mass_message = lambda text, **kw: sent.append(text) or {"id": 9002}
+        try:
+            await mass_queue_api.of_send_or_schedule_mass(None, body())
+        except HTTPException as e:
+            assert e.status_code == 409, e.status_code
+        else:
+            raise AssertionError("the identical retry must be refused")
+        assert sent == [], sent
+        await mass_queue_api.of_send_or_schedule_mass(None, body("other"))
+        assert sent == ["other"], sent
+
+    aid = "acc_lock_retry400"
+    await _account(aid)
+    fake = FakeOF(aid)
+    def of400(*_a, **_k):
+        response = type("Response", (), {"status_code": 400, "text": "rejected"})()
+        raise OFAPIError("rejected", response=response)
+    fake.send_mass_message = of400
+    with _Patch(fake):
+        try:
+            await mass_queue_api.of_send_or_schedule_mass(None, body())
+        except HTTPException:
+            pass
+        sent = []
+        fake.send_mass_message = lambda text, **kw: sent.append(text) or {"id": 9003}
+        await mass_queue_api.of_send_or_schedule_mass(None, body())
+        assert sent == ["hey"], sent
+
+
+async def case_an_identical_send_while_the_first_is_in_flight_is_refused():
+    """The first POST hangs then times out. Its twin, started while it is out,
+    is a 409 at once and never POSTs, whether it would have waited on the
+    broadcast lock (list blast) or not (explicit ids); a later twin is a 409
+    too (may have sent). A send OF answered frees the payload at once."""
+    import threading
+    for aid, mk in (("acc_inflight_list", _list_blast),
+                    ("acc_inflight_ids",
+                     lambda: mass_queue_api._MassScheduleBody(text="hey", user_ids=[1]))):
+        await _account(aid)
+        fake = FakeOF(aid)
+        entered, go, posts = threading.Event(), threading.Event(), []
+
+        def hang(text, **_kw):
+            posts.append(text)
+            entered.set()
+            go.wait(5)
+            raise curl.exceptions.ReadTimeout("timeout")
+        fake.send_mass_message = hang
+        with _Patch(fake):
+            first = asyncio.create_task(mass_queue_api.of_send_or_schedule_mass(None, mk()))
+            assert await asyncio.to_thread(entered.wait, 5), "the first POST started"
+            twin = asyncio.create_task(mass_queue_api.of_send_or_schedule_mass(None, mk()))
+            await asyncio.sleep(0.05)
+            go.set()
+            r1, r2 = await asyncio.gather(first, twin, return_exceptions=True)
+            assert isinstance(r1, HTTPException) and r1.status_code != 409, (aid, r1)
+            assert isinstance(r2, HTTPException) and r2.status_code == 409, (aid, r2)
+            assert posts == ["hey"], (aid, posts)
+            try:
+                await mass_queue_api.of_send_or_schedule_mass(None, mk())
+            except HTTPException as e:
+                assert e.status_code == 409, (aid, e.status_code)
+            else:
+                raise AssertionError("a retry after the timeout must be refused")
+            assert posts == ["hey"], (aid, posts)
+
+    aid = "acc_inflight_ok"
+    await _account(aid)
+    fake = FakeOF(aid)
+    with _Patch(fake):
+        await mass_queue_api.of_send_or_schedule_mass(None, _list_blast())
+        await mass_queue_api.of_send_or_schedule_mass(None, _list_blast())
+    assert [k for k, _, _ in fake.posts] == ["send", "send"], fake.posts
 
 
 _harness.run()

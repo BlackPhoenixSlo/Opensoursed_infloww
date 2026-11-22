@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 
 import { relay } from "@/lib/relay";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
-import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
-import KeyLink from "@/components/setup/KeyLink";
+import { LABELS, clearConfirm } from "@/components/setup/providerFields";
+import KeyFieldHint from "@/components/setup/KeyFieldHint";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { errText } from "@/lib/errText";
 import { ifConfirm } from "@/components/ui/ifConfirm";
@@ -99,10 +99,10 @@ export function AgencyKeysForm(
                 disabled={busy}
                 className="text-[11px] text-err hover:text-err disabled:opacity-40"
                 onClick={async () => {
-                  // Someone ELSE's credential: every automation on every account
-                  // they own fails closed the moment this lands, and they get no
-                  // notification. Same beat the owner's own card takes.
-                  if (await ifConfirm(`Remove @${user.username}'s ${name} key? Their models stop replying until one is added.`, { danger: true })) {
+                  // Someone ELSE's credential: their automations can fail closed the
+                  // moment this lands, and they get no notification. Same beat (and
+                  // words, clearConfirm) the owner's own card takes.
+                  if (await ifConfirm(clearConfirm(name, user.username), { danger: true })) {
                     void clear(name);
                   }
                 }}
@@ -111,14 +111,7 @@ export function AgencyKeysForm(
               </button>
             )}
           </div>
-          {wrongFieldWarning(name, draft[name] ?? "") ? (
-            <p className="text-[11px] text-warn" role="alert">
-              {wrongFieldWarning(name, draft[name] ?? "")}
-            </p>
-          ) : (
-            HELP[name] && <p className="text-[11px] text-fg-dim">{HELP[name]}</p>
-          )}
-          <KeyLink name={name} />
+          <KeyFieldHint name={name} value={draft[name] ?? ""} />
           </div>
         ))
       )}

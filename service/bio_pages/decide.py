@@ -31,11 +31,13 @@ FILENAME = re.compile(r"[A-Za-z0-9_.-]+")
 _DIGITS = re.compile(r"[0-9]+")
 
 CODE_MAX = 12  # the longest code a bio_daily row keeps (A10); a longer one is stored as ''
+VERIFIED = ("pending_cert", "live")  # custom-domain statuses that serve it (store, admin; sync script copy pinned)
 
 
 def reveal(link: Mapping | None, tracking_id: str | None, location: Mapping) -> tuple[str | None, str]:
-    """destination.js:24-35: (the URL Reveal answers or None, the code it appended for bio_daily or '')."""
-    if not link or not link.get("destination"):
+    """destination.js:24-35: (the URL Reveal answers or None, the code it appended for bio_daily or ''). A stored
+    destination the editor's DESTINATION rule refuses (a javascript:/data: scheme, say) is None too: never answered."""
+    if not link or not isinstance(link.get("destination"), str) or not DESTINATION.fullmatch(link["destination"]):
         return None, ""
     url = link["destination"]
     code: Any = None
@@ -172,6 +174,8 @@ def host_kind(host: str | None, primary: frozenset[str]) -> tuple[HostKind, str]
 
 
 def is_askable(domain: str, primary: frozenset[str]) -> bool:
+    """/internal/tls-ask's input check (v2's): a primary host or a valid hostname. That endpoint is kept only for
+    the v2 contract; nothing here asks it."""
     name = normalize_host(domain)
     return name in primary or bool(HOSTNAME.fullmatch(name))
 

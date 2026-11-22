@@ -48,6 +48,7 @@ _harness.bootstrap()
 # 3b30b486. This is the documented escape hatch (read per call), scoped to this
 # test process.
 import os  # noqa: E402
+from _of_fixtures import UNLISTABLE_403, of_error  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
@@ -62,7 +63,6 @@ from db.engine import get_session, merge_ppv_exclude_into_dm  # noqa: E402
 from db.models import Account, List, ListMember  # noqa: E402
 
 PPV = "MASSppvEXCLUDE"  # the retired twin, as it still sits in an unmerged DB
-
 
 class FakeOFClient:
     _next_id = 7000
@@ -119,7 +119,7 @@ class ReadFailOFClient(FakeOFClient):
 class AddFailOFClient(FakeOFClient):
     """create/pin/find work but every member add raises (systemic per-user 403)."""
     def add_user_to_list(self, list_id, user_id):
-        raise RuntimeError("403 Unable to add user to user list")
+        raise of_error(403, UNLISTABLE_403)
 
 
 _fakes: dict[str, FakeOFClient] = {}

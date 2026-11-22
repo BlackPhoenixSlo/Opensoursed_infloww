@@ -4,6 +4,7 @@ import { RelayError } from "@/lib/relay";
 
 import {
   assistantReducer,
+  cardFocus,
   initialAssistantState,
   settledFrom,
   settledFromError,
@@ -69,6 +70,38 @@ describe("assistantReducer", () => {
     expect(s.turns.map((t) => [t.id, t.answer, t.error])).toEqual([[0, "x", "cap"], [1, "a1", null]]);
   });
 
+  // rwl W30 M18: "sent by do-mode" is the turn's own bit (was a Set in the widget beside this reducer)
+  it("an ask do-mode sent carries fromDo through its answer; a plain one has none; another identity drops both", () => {
+    const s = run([ask(0), { type: "asked", id: 1, question: "q1", ts: TS, thread: "tN", accountId: null, fromDo: true },
+      answer(1), { type: "asked", id: 2, question: "q2", ts: TS, thread: "tN", accountId: null, fromDo: false }],
+    hydratedState(true));
+    expect(s.turns.map((t) => [t.id, t.fromDo, t.answer])).toEqual([[0, undefined, null], [1, true, "a1"], [2, undefined, null]]);
+    expect("fromDo" in s.turns[2]).toBe(false);
+    expect(run([{ type: "principal", id: "u1" }, { type: "principal", id: "u2" }], s).turns).toEqual([]);
+  });
+
+  // rwl W30 F9: impersonation start / end (or signing in as another) never shows nor continues the last one's chat.
+  describe("principal", () => {
+    const who = (id: string | null): AssistantAction => ({ type: "principal", id });
+    const owner = run([who("u1"), scope("A"), roster(["A", "B"]), ask(0, "q", "A", "t1"),
+      { type: "history_loaded", turns: [{ id: -1, rowId: 3, question: "old", answer: "x", error: null, ts: TS, thread: "t0",
+        accountId: "A" }], principal: "u1" }], hydratedState(true));
+    it("the first identity just lands", () => {
+      expect(owner).toMatchObject({ principal: "u1", active: "t1", historyStatus: "loaded" });
+      expect(owner.turns).toHaveLength(1);
+    });
+    it("the same identity again is the same object", () => expect(assistantReducer(owner, who("u1"))).toBe(owner));
+    it("another identity: turns, history, thread and unread cleared; the surface and app model kept", () => {
+      const s = run([who("u2")], { ...owner, unread: true });
+      expect(s).toMatchObject({ principal: "u2", turns: [], history: [], historyStatus: "idle", active: null, unread: false,
+        held: false, open: true, hydrated: true, appFocus: "A", focus: "A" });
+    });
+    it("the last identity's late answer and history read are dropped", () => {
+      const s = run([who("u2"), answer(0, 7), { type: "history_loaded", turns: [], principal: "u1" }], { ...owner, open: false });
+      expect(s).toMatchObject({ turns: [], unread: false, historyStatus: "idle" });
+    });
+  });
+
   it("is pure: never mutates the state it is given", () => {
     // Deep-frozen: in strict mode (ES modules) any write throws.
     const from = Object.freeze(run([ask(0), ask(1)], hydratedState(false)));
@@ -77,6 +110,19 @@ describe("assistantReducer", () => {
     const snapshot = structuredClone(from);
     run([route(true), answer(1), route(false), answer(0), ask(2), { type: "toggle" }, { type: "hydrate", open: false }], from);
     expect(from).toEqual(snapshot);
+  });
+});
+
+describe("cardFocus (rwl W30 C3: live cards fetch the model the answer is about)", () => {
+  it.each<[string, Parameters<typeof settledFrom>[1], Focus]>([
+    ["the server resolved another of the asker's models", { answer: "a", error: null, id: 1, about: "solar" }, "solar"],
+    ["the server says the focused model", { answer: "a", error: null, id: 1, about: "lunar" }, "lunar"],
+    ["General (about null): the asked focus", { answer: "a", error: null, id: 1, about: null }, "lunar"],
+    ["an older server (no about): the asked focus", { answer: "a", error: null, id: 1 }, "lunar"],
+    ["a blank about: the asked focus", { answer: "a", error: null, id: 1, about: "" }, "lunar"],
+  ])("%s", (_name, r, want) => {
+    const s = run([ask(1, "q", "lunar"), settledFrom(1, r)]);
+    expect(cardFocus(s.turns[0])).toBe(want);
   });
 });
 
@@ -107,7 +153,7 @@ describe("history", () => {
     id, rowId: -1 - id, question: `q${id}`, answer: `a${id}`, error: null, ts: "2026-11-07T10:00:00Z",
     thread: "tOld", accountId: null, ...over,
   });
-  const loaded = (turns: EarlierTurn[]): AssistantAction => ({ type: "history_loaded", turns });
+  const loaded = (turns: EarlierTurn[]): AssistantAction => ({ type: "history_loaded", turns, principal: undefined });
 
   it.each<[string, AssistantAction[], Partial<AssistantCore>]>([
     ["request: idle → loading", [{ type: "history_requested" }], { historyStatus: "loading" }],
@@ -192,7 +238,7 @@ describe("threads", () => {
     const s = run([
       { type: "history_loaded", turns: [
         h(1, "t1", "2026-11-08T10:00:00Z"), h(2, "t2", "2026-11-09T10:00:00Z", null), h(3, "t1", "2026-11-09T11:00:00Z"),
-      ] },
+      ], principal: undefined },
       ask(0, "new one", "B", "t9"),
     ], hydratedState(true));
     expect(threadsOf(s.history, s.turns)).toEqual([

@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { boundFlow, PLAN_NOTE, type DoDraft } from "./doFlows";
+import { boundFlow, leftFilled, PLAN_NOTE, stoppedLine, type DoDraft } from "./doFlows";
 import { exportPlanText, type ExportSlots } from "./doExport";
 import { diffLine, type FullAiConfigSlots } from "./fullAiConfigEdit";
 import { canStart, type DoOutcome, type DoRun } from "./doRunReducer";
@@ -207,7 +207,7 @@ function ExportThread({ run, draft, slots, on, request }: {
 }
 
 /** The fixed note under a full_ai_config card: the assistant only edits the draft. */
-export const CONFIG_NOTE = "Only the Draft changes. Make draft live on the Full AI Chat page sends it to fans.";
+export const CONFIG_NOTE = "Only the Draft changes. Make draft live on the Full AI Chat page copies it to the Live settings.";
 
 /** The full_ai_config card: the Creator, each changed setting before → after. */
 function ConfigCard({ draft, slots, children }: { draft: DoDraft; slots: FullAiConfigSlots; children?: ReactNode }) {
@@ -337,9 +337,7 @@ export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text:
       {(run.phase === "aborted" || run.phase === "failed") && (
         <>
           <div className={cn(BUBBLE_BOT, "text-fg-dim")} role="status">
-            {run.phase === "aborted"
-              ? `${run.reason}. The page is left as it was — nothing more is filled in or saved.`
-              : `Couldn't finish: ${run.msg.trim().replace(/[.\s]*$/, ".")} The editor is left open for you.`}
+            {stoppedLine(run.phase === "aborted" ? { aborted: run.reason } : { failed: run.msg }, leftFilled(flow.steps, run.step))}
           </div>
           <div className="flex flex-wrap gap-2">
             <button type="button" className={BTN_MAIN} onClick={on.start}>Do it again</button>

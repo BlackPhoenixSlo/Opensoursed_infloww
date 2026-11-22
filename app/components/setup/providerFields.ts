@@ -51,10 +51,24 @@ export const HELP: Record<string, string> = {
   deepinfra: "Vision — vault image describes and inbound-photo replies. deepinfra.com.",
   zai: "Chat replies only — GLM models. Not used for vault or photo describes. z.ai.",
   anthropic: "Help assistant answers (Claude Opus). console.anthropic.com.",
-  typesafe: "Vault Jev (reading vault items). Blank = this server's key, if it has one. console.typesafe.ai.",
+  // tenant_keys.typesafe_key_for: an agency with no key of its own runs Jev on the server's (it pays).
+  typesafe: "Jev — the FM auto-reply's off-script check, Full AI's Router, the vault AI's Jev pass. Blank = they run on this server's key, if it has one, and the server pays. console.typesafe.ai.",
   nanogpt: "Full AI Chat's first Writer (Euryale v2.3). nano-gpt.com.",
   openrouter: "Full AI Chat's second Writer (Hermes 4 405B). openrouter.ai.",
 };
+
+/** The clear link's confirm: the owner's own card (no `username`) or the founder's form for @`username`. A
+ *  cleared TypeSafe key does not stop anything: Jev falls back to the server's key (`tenant_keys.typesafe_key_for`). */
+export function clearConfirm(name: string, username?: string): string {
+  const label = LABELS[name] ?? name;
+  const whose = username === undefined ? "your" : `@${username}'s`;
+  if (name === "typesafe") {
+    return `Remove ${whose} ${label}? Jev then runs on this server's key and the server pays; with no server key, the off-script check is skipped and Full AI can't go Live.`;
+  }
+  return username === undefined
+    ? `Remove your ${label}? Your models stop replying until you add one.`
+    : `Remove ${whose} ${label}? Their models stop replying until one is added.`;
+}
 
 /** Provider id → the vendor page where you create / copy an API key (not the
  *  sign-up page), linked under every key field so nobody has to search for it.
@@ -64,7 +78,7 @@ export const KEY_URLS: Record<string, string> = {
   deepinfra: "https://deepinfra.com/dash/api_keys",
   zai: "https://z.ai/manage-apikey/apikey-list",
   anthropic: "https://console.anthropic.com/settings/keys",
-  typesafe: "https://console.typesafe.ai/home",
+  typesafe: "https://console.typesafe.ai/keys",   // docs.typesafe.ai/quickstart "Get an API key"
   nanogpt: "https://nano-gpt.com/api",
   openrouter: "https://openrouter.ai/settings/keys",
   google: "https://console.cloud.google.com/apis/credentials",

@@ -235,10 +235,12 @@ const JEV_LABEL: Partial<Record<JevKey, string>> = {
 
 /** The operator's Jev answers (`jevPicks`): one select per key, unset = the AI's reading (shown in the blank
  *  option). Content and Feet up front; the rest behind "Details". Only dispatches. */
-function JevPicker({ jev, picks, onPick }: { jev: unknown; picks: JevPicks; onPick: (k: JevKey, v: string | null) => void }) {
+function JevPicker({ ai, picks, onPick }: {
+  ai: Record<string, unknown>; picks: JevPicks; onPick: (k: JevKey, v: string | null) => void;
+}) {
   const [details, setDetails] = useState(false);
   const one = (k: JevKey) => {
-    const unset = unsetLabel(k, aiValue(jev, k));
+    const unset = unsetLabel(k, aiValue(ai, k));
     return (
     <label key={k} className="min-w-0">
       <span className="text-[10px] text-fg-dim">{JEV_LABEL[k] ?? words(k)}</span>
@@ -365,10 +367,13 @@ export function VaultItemEditor({
   describeSlot,
   more,
   onToggleMore,
+  onDirtyChange,
 }: {
   media: Tile;
   accountId: string;
   onSaved: (updated: Record<string, unknown>) => void;
+  /** Told whenever the draft gains or loses unsaved edits (the popup asks before discarding them). */
+  onDirtyChange: (dirty: boolean) => void;
   /** The media pane: left on desktop, on top (42% of the sheet, so it shrinks with the keyboard) on a phone. */
   mediaSlot?: ReactNode;
   deleteSlot?: ReactNode;
@@ -395,6 +400,9 @@ export function VaultItemEditor({
   const { draft, saved, err, locked } = ed;
   const saving = ed.pending !== null;
   const dirty = isDirty(ed);
+  useEffect(() => {
+    onDirtyChange(dirty);
+  }, [dirty, onDirtyChange]);
   const set = (field: EditorField) => (value: string) => dispatch({ type: "edit", field, value });
 
   async function onSave() {
@@ -493,7 +501,7 @@ export function VaultItemEditor({
           {more && (
             <div className="space-y-3.5">
               <JevPicker
-                jev={aiFields?._jev}
+                ai={ai}
                 picks={ed.jev}
                 onPick={(key, value) => dispatch({ type: "pick", key, value })}
               />

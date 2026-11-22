@@ -1,0 +1,15 @@
+{
+  "id": "messages--countdown",
+  "section": "messages",
+  "label": "Countdown",
+  "phase": 2,
+  "pages": [
+    "messages/chat"
+  ],
+  "note": "Infloww's own bubble extra (not OF's): on my own bubble while OF's unsend window is open (the message's cancelSeconds, the message menu's \"Unsend m:ss\" timer), m:ss ticking each second; gone when the window closes (ofMirrorMessageMenu bindMessageMenu drawExtras). Display only: no request.",
+  "proof": {
+    "kind": "mocked",
+    "verdict": "parked",
+    "reason": "Mocked: writes nothing on OF; its screenshot comes from the Unsend PPV Live proof; Live proof pending (ticket 54)"
+  }
+}

@@ -97,6 +97,12 @@ class Fill:
         """The relay pause rules before a Creator's work (`/livez`, errors in a row)."""
         return rd.pause_reason({"livez": self.relay.livez(), "errors_in_a_row": self.relay.errors_in_a_row})
 
+    def halt(self, new_creator: bool) -> str | None:
+        """Why a write loop stops before its next POST: the pause rules on a Creator's first one, then errors in
+        a row before every one."""
+        why = self.pause() if new_creator else None
+        return why or ("errors" if self.relay.errors_in_a_row >= rd.ERRORS_IN_A_ROW else None)
+
     def paused(self, reason: str, creator: str | None = None, **fields: Any) -> int:
         self.j.write("pause", creator, reason=reason, **fields)
         say(f"paused: {reason}" + (f" ({creator} {fields.get('sequence')})" if creator else ""))
@@ -141,15 +147,15 @@ class Fill:
     def refuse(self, cid: str, seq: str, plan: dict, before: list[dict]) -> str | None:
         """Last checks before any apply POST, for every plan (journaled, 409 fresh, reconcile re-plan): a
         fingerprint to send (without one the server skips its staleness check) and every row about to be
-        written in the backup with its current values (one indexed read; the full check ran at start)."""
+        written in the backup with its current values (one indexed read; the file check ran at start). A row
+        mismatch skips this Sequence (`backup:row_values` etc.); its plan stays pending for the next run."""
         if not plan.get("fingerprint"):
             say(f"apply {cid} {seq}: the plan has no fingerprint; not sent")
             return "no_fingerprint"
-        why = backup_rows(self.backup, _expected_rows(cid, plan, before))
-        if why:
-            say(f"apply {cid} {seq}: the backup does not hold the rows to write ({why}); not sent")
-            return f"backup:{why.split(':')[0]}"
-        return None
+        skip = backup_skip(self.backup, cid, plan, before)
+        if skip:
+            say(f"apply {cid} {seq}: the backup does not hold the rows to write ({skip}); not sent")
+        return skip
 
     def apply_one(self, cid: str, seq: str, plan: dict, before: list[dict]) -> str:
         """Apply one gated plan (spec › Apply). Returns the Sequence's end for this run."""
@@ -207,12 +213,13 @@ class Fill:
 
     def read_back(self, cid: str, seq: str, op: str, plan: dict, before: list[dict], undo: list[dict],
                   rows: list[dict] | None = None) -> str:
-        """`filled`, or `readback_mismatch` (journaled; the caller pauses the wave: a server fault behind a short
-        Undo list or wrong values would hit every later Sequence)."""
+        """`filled`, `readback_mismatch` (journaled; the caller pauses the wave: a server fault behind a short
+        Undo list or wrong values would hit every later Sequence) or `unverified` (Scripts list unreadable, no
+        readback line: the caller pauses, the next apply run reads it back; never counted filled)."""
         rows = rows if rows is not None else scripts_rows(self.ctx, cid)
         if rows is None:
-            say(f"readback {cid} {seq}: Scripts list unreadable; the next apply run reads it back")
-            return "filled"
+            say(f"readback {cid} {seq}: Scripts list unreadable; unverified, the next apply run reads it back")
+            return "unverified"
         reasons = rd.readback(plan, before, undo, rows)
         self.j.write("readback", cid, sequence=seq, op=op, ok=not reasons, reasons=reasons)
         if reasons:
@@ -277,10 +284,10 @@ def mode_plan(ctx: Ctx) -> int:
     return EXIT_DONE
 
 
-def check_backup(path: str | None, expected: list[dict], ts: float) -> tuple[bool, str | None, dict]:
-    """(ok, reason, info) for --backup (spec › Backup): exists, under 6 h old, opened read-only it passes
-    `PRAGMA integrity_check`, has saved_replies and vault_items, and holds every expected row ({creator, row}) with
-    its before values. info: path, size, sha256. The driver never opens the live DB."""
+def check_backup(path: str | None, ts: float) -> tuple[bool, str | None, dict]:
+    """(ok, reason, info) for the --backup FILE (spec › Backup): exists, under 6 h old, opened read-only it passes
+    `PRAGMA integrity_check`, has saved_replies and vault_items. Rows are checked per Sequence (`backup_skip`).
+    info: path, size, sha256. The driver never opens the live DB."""
     if not path:
         return False, "no --backup", {}
     p = Path(path).expanduser().resolve()
@@ -297,7 +304,7 @@ def check_backup(path: str | None, expected: list[dict], ts: float) -> tuple[boo
             h.update(chunk)
     info["sha256"] = h.hexdigest()
     try:
-        con = sqlite3.connect(f"{p.as_uri()}?mode=ro", uri=True)
+        con = _open_ro(p)
     except sqlite3.Error as e:
         return False, f"unopenable:{type(e).__name__}", info
     try:
@@ -307,9 +314,6 @@ def check_backup(path: str | None, expected: list[dict], ts: float) -> tuple[boo
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if not set(rd.BACKUP_TABLES) <= tables:
             return False, "tables_missing", info
-        why = _rows_mismatch(con, expected)
-        if why:
-            return False, why, info
     except sqlite3.DatabaseError as e:
         return False, f"unreadable:{type(e).__name__}", info
     finally:
@@ -318,14 +322,14 @@ def check_backup(path: str | None, expected: list[dict], ts: float) -> tuple[boo
 
 
 def backup_rows(path: str | None, expected: list[dict]) -> str | None:
-    """None when the backup (fully checked at the run's start) holds these rows with their before values; else
-    the reason. The cheap re-check for a fresh plan's write set (409 stale, reconcile re-plan)."""
+    """None when the backup (file checked at the run's start) holds these rows with their before values; else
+    the reason. Run per Sequence before every apply POST (`refuse`): a mismatch skips that Sequence only."""
     if not expected:
         return None
     if not path:
         return "no --backup"
     try:
-        con = sqlite3.connect(f"{Path(path).expanduser().resolve().as_uri()}?mode=ro", uri=True)
+        con = _open_ro(Path(path))
     except sqlite3.Error as e:
         return f"unopenable:{type(e).__name__}"
     try:
@@ -334,6 +338,18 @@ def backup_rows(path: str | None, expected: list[dict]) -> str | None:
         return f"unreadable:{type(e).__name__}"
     finally:
         con.close()
+
+
+def backup_skip(path: str | None, cid: str, plan: dict, before: list[dict]) -> str | None:
+    """`backup:<reason>` when the backup does not hold the rows `plan` writes with their `before` values: that
+    Sequence is skipped (live: `refuse`; dry run: "would skip"). None when it does."""
+    why = backup_rows(path, _expected_rows(cid, plan, before))
+    return f"backup:{why.split(':')[0]}" if why else None
+
+
+def _open_ro(path: Path) -> sqlite3.Connection:
+    """The backup, opened read-only (never the live DB)."""
+    return sqlite3.connect(f"{path.expanduser().resolve().as_uri()}?mode=ro", uri=True)
 
 
 def _rows_mismatch(con: sqlite3.Connection, expected: list[dict]) -> str | None:
@@ -385,46 +401,42 @@ def mode_apply(ctx: Ctx) -> int:
             say(f"apply {c} {s}: not sent ({rd.fill_outcome(e)})")
             continue
         work.setdefault(c, []).append((act, e))
-    expected = []
-    for c, items in work.items():
-        for act, e in items:
-            if act == "apply":
-                expected += _expected_rows(c, e["plan"]["plan"], e["plan"]["before"])
-            elif act == "reconcile":
-                expected += [x for op in e["ops"] if rd.orphan(op)
-                             for x in _expected_rows(c, op["intent"].get("plan") or {}, op["intent"].get("before")
-                                                     or [])]
+    # The start-of-run check is the FILE (exists, fresh, integrity, tables). Rows are checked per Sequence by
+    # `refuse` right before its POST, against the rows that Sequence is about to write: a backup taken after a
+    # crash holds an orphan's landed values, and one hand-edited row must skip its Sequence, not the whole run.
     if not ctx.live:
         for c in order:
             for act, e in sorted(work.get(c, []), key=lambda x: (RANK[x[0]], x[1]["sequence"])):
                 what = {"reconcile": "would reconcile a lost apply response", "read_back": "would read back",
                         "apply": f"would write {e['plan'].get('writes')} Option(s)"}[act]
+                skip = (backup_skip(ctx.args.backup, c, e["plan"]["plan"], e["plan"]["before"])
+                        if act == "apply" and ctx.args.backup else None)
+                if skip:
+                    what = f"would skip ({skip})"
                 say(f"apply {c} {e['sequence']}: {what} [dry run]")
         # ASSUMPTION (rung 4): a dry apply given --backup verifies it and exits 2 when bad, so the canary's dry run
         # surfaces a bad backup before --live. Overturned if dry runs must always exit 0.
         if ctx.args.backup:
-            ok, why, _info = check_backup(ctx.args.backup, expected, core.now())
+            ok, why, _info = check_backup(ctx.args.backup, core.now())
             say(f"backup: {'ok' if ok else 'refused: ' + str(why)}")
             if not ok:
                 return EXIT_REFUSED
         return EXIT_DONE
-    ok, why, info = check_backup(ctx.args.backup, expected, core.now())
-    ctx.journal.write("backup", None, ok=ok, reason=why, rows=len(expected), **info)
+    ok, why, info = check_backup(ctx.args.backup, core.now())
+    ctx.journal.write("backup", None, ok=ok, reason=why, **info)
     if not ok:
-        raise Refused(f"backup: {why} (live apply needs a fresh, integrity-checked --backup holding every row "
-                      "about to be written)")
+        raise Refused(f"backup: {why} (live apply needs a --backup file under 6 h old that passes integrity_check "
+                      "and has the saved_replies and vault_items tables)")
     say(f"backup ok: {info.get('path')} {info.get('size')} bytes sha256 {info.get('sha256')}")
     ends: dict[str, int] = {}
     for cid in order:
         items = sorted(work.get(cid, []), key=lambda x: (RANK[x[0]], x[1]["sequence"]))
         if not items:
             continue
-        why = f.pause()
-        if why:
-            return f.paused(why)
-        for act, e in items:
-            if f.relay.errors_in_a_row >= rd.ERRORS_IN_A_ROW:
-                return f.paused("errors")
+        for i, (act, e) in enumerate(items):
+            why = f.halt(new_creator=i == 0)
+            if why:
+                return f.paused(why)
             seq, got = e["sequence"], []
             if act == "reconcile":
                 for op in filter(rd.orphan, e["ops"]):
@@ -441,7 +453,11 @@ def mode_apply(ctx: Ctx) -> int:
                 ends[end] = ends.get(end, 0) + 1
             if "readback_mismatch" in got:
                 return f.paused("readback_mismatch", cid, sequence=seq)
+            if "unverified" in got:   # an unattended run never ends green with a write not read back
+                return f.paused("unverified", cid, sequence=seq)
     say("apply: " + (", ".join(f"{k} {v}" for k, v in sorted(ends.items())) or "nothing to apply"))
+    if ends.get("in_flight"):   # W30 F43: a lost apply not yet settled is never a green run
+        return f.paused("in_flight", count=ends["in_flight"])
     return EXIT_DONE
 
 
@@ -456,19 +472,16 @@ def mode_undo(ctx: Ctx) -> int:
     if not ops:
         say("undo: nothing to undo")
         return EXIT_DONE
-    last = None
+    last, unsettled = None, 0
     for op in ops:
         cid, seq, entries = op["creator"], op["sequence"], op["apply"]["undo"]
         if not ctx.live:
             say(f"undo {cid} {seq}: would undo {len(entries)} Option(s) [dry run]")
             continue
-        if cid != last:   # the relay pause rules before each Creator's run of undos
-            why = f.pause()
-            if why:
-                return f.paused(why)
-            last = cid
-        if ctx.relay.errors_in_a_row >= rd.ERRORS_IN_A_ROW:
-            return f.paused("errors")
+        why = f.halt(new_creator=cid != last)   # the relay pause rules before each Creator's run of undos
+        if why:
+            return f.paused(why)
+        last = cid
         r = ctx.relay.call("POST", f"{FILL}/undo", {"account_id": cid}, {"sequence": seq, "undo": entries})
         if r.ok:
             undone, kept = list(r.json.get("undone") or []), list(r.json.get("kept") or [])
@@ -476,9 +489,10 @@ def mode_undo(ctx: Ctx) -> int:
             say(f"undo {cid} {seq}: {len(undone)} undone, {len(kept)} left")
             for k in kept:
                 say(f"  left {cid} {seq} row {k.get('id')}: {k.get('reason')}")
-        # ASSUMPTION (rung 4): 404 (Sequence gone) settles the undo; other refusals are re-sent by the next undo run;
-        # a lost answer is settled by read-back only when every entry's row is empty. Overturned by the canary.
-        elif r.status == 404:   # the Sequence is gone: nothing left to undo, settled
+        # ASSUMPTION (rung 4): 404 `sequence_not_found` (Sequence gone) settles the undo; any other refusal, a bare
+        # 404 included, is re-sent by the next undo run; a lost answer is settled by read-back only when every
+        # entry's row is empty. Overturned by the canary.
+        elif r.status == 404 and r.error() == "sequence_not_found":   # nothing left to undo, settled
             ctx.journal.write("undo", cid, sequence=seq, op=op["op"], undone=[], kept=[], left=[],
                               status="http_404", error=r.error() or None)
             say(f"undo {cid} {seq}: Sequence not found, nothing undone")
@@ -491,9 +505,13 @@ def mode_undo(ctx: Ctx) -> int:
                                   kept=[], left=[], reconciled=True)
                 say(f"undo {cid} {seq}: HTTP {r.status}, read back: undone")
             else:
+                unsettled += 1
                 say(f"undo {cid} {seq}: HTTP {r.status}; the next undo run sends it again")
         else:
+            unsettled += 1
             say(f"undo {cid} {seq}: refused HTTP {r.status} {r.error()}; the next undo run sends it again")
+    if unsettled:   # W30 F43: an undo the next run must send again is never a green run
+        return f.paused("undo_unsettled", count=unsettled)
     return EXIT_DONE
 
 

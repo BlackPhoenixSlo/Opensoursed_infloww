@@ -186,7 +186,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   const [extrasOpen, setExtrasOpen] = useState(false);
   // #105: the Creator statistics columns shown, in order: the Agency's layout (the owner saves it), else the
   // capture's defaults.
-  const [colKeys, setColKeys] = useCreatorCols();
+  const [colKeys, setColKeys, retryCols] = useCreatorCols();
   // Creator performance: the Earnings channel (#161), the picked Creator (#156), and ours, "Hide $0 creators" (on, as
   // the Clone has it). The "Shown by" bucket (#27) is the toolbar's one `gran`.
   const [perfChan, setPerfChan] = useState<Chan | "all">("all");
@@ -586,7 +586,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           totalGrowth={totalGrowth}
           trendPoints={trendPoints} chanPick={chanPick} setChanPick={setChanPick} channelLines={channelLines}
           from={from} to={to} net={net} buildExport={buildExport} perModel={perModel} visibleCreators={visibleCreators}
-          colKeys={colKeys} setColKeys={setColKeys} orderedCols={orderedCols} colCtx={colCtx}
+          colKeys={colKeys} setColKeys={setColKeys} retryCols={retryCols} orderedCols={orderedCols} colCtx={colCtx}
           grossCents={grossCents} netLedger={netLedger} chargebacksCents={cbCents}
           chargebacksView={chargebacksView} referralsGap={refGap}
           referralsShown={refsShown}

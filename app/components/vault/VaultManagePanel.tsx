@@ -22,7 +22,10 @@ import { EmptyState, IfModal } from "@/components/ui/infloww";
 import { VaultVideoPreview } from "@/components/chat/VaultPicker";
 import { useVaultAccount, useVaultAccountId } from "@/components/vault/VaultAccount";
 import { useVaultDownloadContext } from "@/components/vault/VaultDownloadPanel";
-import { dlAccess, downloadGate, safeName, type DlMode } from "@/components/vault/vaultDownloadReducer";
+import {
+  creatorDir, dlAccess, downloadGate, downloadLabel, type DlGate, type DlMode,
+} from "@/components/vault/vaultDownloadReducer";
+import { useAccounts } from "@/hooks/useAccounts";
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
 import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
 import VaultInternalFoldersModal from "@/components/vault/VaultInternalFoldersModal";
@@ -80,6 +83,8 @@ export const VAULT_PANES_CLASS =
 export const VAULT_GRID_CLASS = "px-3 md:px-6 flex-1 min-h-0 overflow-y-auto";
 /** The Extras drawer's Download while the open folder is not in the loaded folder list yet (#29): never a guessed scope. */
 export const FOLDER_LOADING = "The folder list is still loading";
+/** A control off for its own scope (not the download's state): that reason alone. */
+const scopeOff = (reason: string): DlGate => ({ reason, desktopOnly: false, queues: false });
 
 export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = () => {} }: {
   /** The Extras drawer is open (the page header's overflow button). */
@@ -96,9 +101,11 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // Ours: download (selection / folder / whole vault) into a folder the user picks, or (phones) a selection of up to
   // 20 to the share sheet; see `vaultDownloadReducer`. The app's one download (`VaultDownloadProvider`, in the root
   // layout); a run started (or queued) here is for this model (`who`). One gate (`downloadGate`) for every control:
-  // a folder-sink press while a run is busy queues (`dl.queueing`: "Add … to queue").
+  // a folder-sink press while a run is busy queues ("Add … to queue"), every label from `downloadLabel`.
   const dl = useVaultDownloadContext();
-  const who = { accountId, creator: safeName(account?.nickname || account?.name || accountId) };
+  // The run's `<creator>/` folder; an id suffix only when two of the operator's models share a name (`creatorDir`).
+  const registry = useAccounts().data?.accounts;
+  const who = { accountId, creator: creatorDir(accountId, account, registry) };
   // A folder-limited chatter can't download the whole vault (`RESTRICTED_OFF`), nor while its access is unread.
   const access = dlAccess(useChatterFolderAccess(accountId));
   const dlGate = (mode: DlMode, count = 0) => downloadGate(dl.state, dl.sink, mode, count, access);
@@ -202,7 +209,8 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // On a search over the mirror, harvest OF's own results in the BACKGROUND and merge them in; while that runs the
   // grid says "Searching OnlyFans…" rather than "No data". Not on the live path: that listing IS OF's search, and the
   // harvest only tags media the mirror already holds.
-  const searchingOf = useOfSearch(accountId, query, useLocal && standardFolderId == null);
+  const ofSearch = useOfSearch(accountId, query, useLocal && standardFolderId == null);
+  const searchingOf = ofSearch.searching;
   const isCollecting = !!summary.data?.running;
   const run = summary.data?.last_run;
   // The plan's counts come from the DB, so they stand in when the relay's
@@ -270,6 +278,11 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   const selectedFolder = ofFolderId == null ? null : folders.find((f) => f.id === ofFolderId) ?? null;
   // The full download's scope (Extras drawer): the open folder, else the whole vault; a folder not resolved yet: off (null).
   const fullScope = standardFolderId != null || (ofFolderId != null && !selectedFolder) ? null : scopeArgs(selectedFolder);
+  // One gate per control, its label and title both from it: a scope that is off (a category, the folder not resolved
+  // yet, never a guessed one, #29) is that control's gate, never "Add … to queue" for a press that does nothing.
+  const fullGate = fullScope ? dlGate(fullScope.mode)
+    : scopeOff(standardFolderId != null ? "Select media to download from this category" : FOLDER_LOADING);
+  const selGate = !fullScope && !standardFolder ? scopeOff(FOLDER_LOADING) : dlGate("selection", selected.size);
 
   // Everything is served from the mirror once collected (instant, incl. OF
   // folders + reorder): `vaultBrowseSource`, a partial mirror too. Before the
@@ -298,6 +311,10 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // source is fetching — never flash an empty state during the swap.
   const showLoading = summary.isLoading || src.isLoading;
   const items = src.items as Tile[];
+  // The live grid keeps the previous view's pages while a new folder/filter loads (`useVaultMedia` placeholderData):
+  // those tiles are not in the open folder, so nothing can be ticked until its own page lands (#430). The mirror
+  // keeps no placeholders.
+  const gridStale = !useLocal && !!live.isPlaceholderData;
   // The open item's place in the grid, for the popup's ‹ › (-1: not in the grid as loaded now).
   const previewIdx = preview ? items.findIndex((m) => m.id === preview.id) : -1;
   const pageFetching = src.isFetchingNextPage;
@@ -433,9 +450,9 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           foldersAllowed={access === "all"}
           settings={access === "all" && <VaultSettingsSwitches accountId={accountId} />}
           download={{
-            // While a run is busy, a folder-sink press queues (`dl.queueing`).
-            label: `${dl.queueing ? "Add" : "Download"} full ${fullScope?.mode === "vault" ? "vault" : "folder"}${dl.queueing ? " to queue" : ""}`,
-            reason: fullScope ? dlGate(fullScope.mode).reason : standardFolderId != null ? "Select media to download from this category" : FOLDER_LOADING,
+            // While a run is busy, a folder-sink press queues; a phone says "(desktop only)" in the label itself.
+            label: downloadLabel(fullGate, `full ${fullScope?.mode === "vault" ? "vault" : "folder"}`),
+            reason: fullGate.reason,
             // Closes the drawer so the download card (or Chrome's picker hint) is in view.
             onStart: () => {
               if (!fullScope) return;
@@ -462,7 +479,6 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           onChanged={refreshAll}
           onDownloadFolder={(f) => void dl.start(scopeArgs(f))}
           downloadFolderGate={dlGate("folder")}
-          downloadQueues={dl.queueing}
         />
 
         {/* RIGHT grid */}
@@ -483,6 +499,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
             refreshing={ofRefresh.isPending || standard.syncing}
             refreshNote={ofRefresh.note}
             onSelectAll={() => dispatchBrowse({ type: "selectAll", media: items })}
+            selectAllOff={gridStale}
             selectMode={selectMode}
             onToggleSelect={() => dispatchBrowse({ type: "toggleSelectMode" })}
           />
@@ -514,6 +531,12 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
               <div role="status" className="flex flex-col items-center justify-center gap-2 py-16 text-[14px] text-muted">
                 <Loader2 className="h-6 w-6 animate-spin text-[#2d74ff]" />
                 Searching OnlyFans…
+              </div>
+            ) : items.length === 0 && ofSearch.failed ? (
+              // Ours: OF's own search failed or ran out of time, so an empty grid is not "No data" (#429).
+              <div role="alert" className="flex flex-col items-center justify-center gap-2 py-16 text-[14px] text-muted">
+                OnlyFans search failed
+                <button type="button" onClick={ofSearch.retry} className="text-[#2d74ff] hover:underline">Retry</button>
               </div>
             ) : items.length === 0 && pageError ? (
               // #72: the grid's error, which Refresh above answers.
@@ -552,7 +575,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
                       selected={preview?.id === m.id}
                       selectMode={selectMode}
                       checked={selected.has(m.id)}
-                      onCheck={() => dispatchBrowse({ type: "toggle", media: m })}
+                      onCheck={() => { if (!gridStale) dispatchBrowse({ type: "toggle", media: m }); }}
                       showOrder={usingFolder}
                       onOrder={(m, value) => setOrder(m, value, { accountId, qc, ofFolderId })}
                       thumbs={thumbs}
@@ -604,8 +627,8 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
                 }).then((ok) => { if (ok) dispatchBrowse({ type: "clearSelection" }); });
               }}
               // The open folder not resolved yet: off, never a guessed scope (as the Extras drawer's full download, #29).
-              downloadOff={!fullScope && !standardFolder ? FOLDER_LOADING : dlGate("selection", selected.size).reason}
-              downloadQueues={dl.queueing}
+              downloadOff={selGate.reason}
+              downloadLabel={downloadLabel(selGate, "selected")}
             />
           )}
         </section>

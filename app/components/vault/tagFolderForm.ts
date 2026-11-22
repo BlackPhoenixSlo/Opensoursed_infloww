@@ -111,8 +111,9 @@ export function capText(total: number): string | null {
     : null;
 }
 
-export function canSubmit(s: TagFolderForm, tags: readonly string[], total: number): boolean {
-  return s.open && !s.saving && tags.length > 0 && total > 0 && total <= TAG_FOLDER_MAX
+/** `total` null: the count for these chips is still loading (the shown one is the previous view's). */
+export function canSubmit(s: TagFolderForm, tags: readonly string[], total: number | null): boolean {
+  return s.open && !s.saving && tags.length > 0 && total != null && total > 0 && total <= TAG_FOLDER_MAX
     && folderName(s, tags).trim().length > 0;
 }
 

@@ -59,6 +59,7 @@ import {
   ChartColumn,
   Database,
   FileCheck,
+  PenLine,
   Heart,
   History,
   Images,
@@ -376,6 +377,9 @@ export const SETTINGS_TABS: NavLink[] = [
   { label: "Co-creator tag", href: "/settings/cotag", icon: AtSign, chatterHidden: true },
   // A creator's "Auto-accept OnlyFans consent" switch (owner-only PUT); a consent notice links here.
   { label: "OnlyFans consent", href: "/settings/consent", icon: FileCheck, chatterHidden: true },
+  // A creator's OF Manager new writes force-off (owner-only PUT): the server's env turns them on, this only keeps
+  // them off for one creator.
+  { label: "OF Manager writes", href: "/settings/ofm-writes", icon: PenLine, chatterHidden: true },
   { label: "AI keys", href: "/settings/ai-keys", icon: KeyRound, chatterHidden: true },
   // The `actions` log with readable names and a date filter (roadmap W6 6.16); its route is owner-only.
   { label: "Audit log", href: "/settings/audit", icon: History, chatterHidden: true },

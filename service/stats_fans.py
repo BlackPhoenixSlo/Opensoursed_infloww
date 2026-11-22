@@ -156,7 +156,8 @@ async def fan_report(
                 `subscribe_at`, each fan once, on his first day; per-model's
                 new subs), and `renewed_fans`, the fans with a rebill; per
                 Creator and day each raised to OF's own count when larger
-                (`of_stats_daily` new_subs / renewals, UTC days).
+                (`of_stats_daily` new_subs / renewals, UTC days; a Creator
+                with OF days in the window has its own rows on UTC days).
 
     `format=csv` streams the whole top_fans ranking instead, `limit` aside,
     under the shared CSV cap (csv_export.CSV_MAX_ROWS).
@@ -261,12 +262,24 @@ async def fan_report(
         renew_rows = (await s.execute(renew_q)).all()
         traffic = await _link_names(s, traffic_rows)
 
-    def _day(at: Any) -> str:
+    # OF's own daily counts (of_stats_daily) fill what we never see: free and trial subs leave no sale and
+    # the roster is only crawled under a lifecycle Trigger. Per Creator and day the larger of the two, as
+    # the earnings top-ups; OF's days are UTC days, taken as the report day of the same date. A Creator
+    # with OF days in the window has its own rows on UTC days too, so one fan lands on one day each side;
+    # a row whose UTC day is off the report's days (at its edge) keeps its report-zone day, so it stays shown.
+    of_rows = await _of_growth(account_ids, start, end)
+    of_creators = {r[0] for r in of_rows}
+
+    def _local(at: datetime) -> str:
+        return (at.replace(tzinfo=timezone.utc).astimezone(zone) if zone is not None else at).date().isoformat()
+
+    first_day, last_day = _local(start), _local(end)
+
+    def _day(aid: str, at: Any) -> str:
         if isinstance(at, str):  # the text() union hands back SQLite's stored string
             at = datetime.fromisoformat(at)
-        if zone is not None:
-            at = at.replace(tzinfo=timezone.utc).astimezone(zone)
-        return at.date().isoformat()
+        utc = at.date().isoformat()
+        return utc if aid in of_creators and first_day <= utc <= last_day else _local(at)
 
     per: dict[tuple[str, str], dict[str, int]] = {}  # (account_id, day) -> counts
 
@@ -274,14 +287,11 @@ async def fan_report(
         per.setdefault((aid, day), {"new_fans": 0, "renewed_fans": 0})[key] += 1
 
     for r in new_rows:
-        _bump(r.account_id, _day(r.at), "new_fans")
+        _bump(r.account_id, _day(r.account_id, r.at), "new_fans")
     # A fan billed twice in a day (a re-sub after a chargeback) renewed once.
-    for day, aid, _fid in {(_day(r.occurred_at), r.account_id, r.fan_id) for r in renew_rows}:
+    for day, aid, _fid in {(_day(r.account_id, r.occurred_at), r.account_id, r.fan_id) for r in renew_rows}:
         _bump(aid, day, "renewed_fans")
-    # OF's own daily counts (of_stats_daily) fill what we never see: free and trial subs leave no sale and
-    # the roster is only crawled under a lifecycle Trigger. Per Creator and day the larger of the two, as
-    # the earnings top-ups; OF's days are UTC days, taken as the report day of the same date.
-    for aid, day, of_new, of_renew in await _of_growth(account_ids, start, end):
+    for aid, day, of_new, of_renew in of_rows:
         c = per.setdefault((aid, day), {"new_fans": 0, "renewed_fans": 0})
         c["new_fans"] = max(c["new_fans"], of_new or 0)
         c["renewed_fans"] = max(c["renewed_fans"], of_renew or 0)

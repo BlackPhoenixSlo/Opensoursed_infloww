@@ -119,11 +119,19 @@ export const DRAWN_TOGGLES: Record<string, Record<string, string>> = {
   security: { setting_isPrivate: "isPrivate" },
 };
 
-/**
- * The "Update frequency" choices: the stored hours and OF's default 24. OF's own list is not in this tree (the
- * committed page's menu is empty): needs capture (ticket 12 sitting); that Page capture replaces this list.
- */
-export const frequencyChoices = (stored: number): number[] => [...new Set([stored, 24])].sort((a, b) => a - b);
+/** OF's "Update frequency" menu, in order (live 2026-11-21, docs/of-manager/captures/settings--email-frequency-menu-page.json). */
+const OF_FREQUENCIES: { value: number; label: string }[] = [
+  { value: 1, label: "Every Hour" },
+  { value: 3, label: "3 Hours" },
+  { value: 6, label: "6 Hours" },
+  { value: 12, label: "12 Hours" },
+  { value: 24, label: "24 Hours" },
+];
+/** The "Update frequency" choices: OF's menu, plus the stored hours (`frequencyLabel`) when OF's list lacks them. */
+export const frequencyChoices = (stored: number): { value: number; label: string }[] =>
+  OF_FREQUENCIES.some((c) => c.value === stored)
+    ? OF_FREQUENCIES
+    : [...OF_FREQUENCIES, { value: stored, label: frequencyLabel(stored) }].sort((a, b) => a.value - b.value);
 
 /** New Likes Summary's frequency save: the notifications PATCH the email digest toggle sends, with the picked hours. */
 export const frequencyWrite = (hours: number): SettingsWrite => ({
@@ -402,7 +410,7 @@ function bindFrequency({ doc, data, handlers }: NewWriteEnv): NewWriteBinding {
     if (freq.classList.contains("v-input--is-disabled")) return;
     const was = shownHours();
     const stored = digestHours(data()["notifications:email"], "new_likes_digest");
-    const options = frequencyChoices(stored).map((h) => ({ value: String(h), label: frequencyLabel(h) }));
+    const options = frequencyChoices(stored).map((c) => ({ value: String(c.value), label: c.label }));
     showMenu(doc, freq, [{ name: "frequency", radio: false, value: String(was), options }], (_g, v) => {
       const hours = Number(v);
       if (hours === was) return;
@@ -500,7 +508,7 @@ export function useOfSettingsWrites(frameRef: RefObject<HTMLIFrameElement | null
   const path = /^\/of-mirror\/pages\/(.+)\.html$/.exec(src)?.[1] ?? "";
   // The price needs /users/me (useOfIdentity's cache entry); rebinding when it lands fills the field.
   const { data: me } = useQuery({ ...ofMeQuery(accountId), enabled: !!accountId && isPricePage(path) });
-  const newWrites = useOfmNewWrites(path.startsWith("settings/")); // OFM_NEW_WRITES_ENABLED (ofMirrorNewWrites)
+  const newWrites = useOfmNewWrites(path.startsWith("settings/"), accountId); // OFM_NEW_WRITES_ENABLED (ofMirrorNewWrites)
 
   useEffect(() => {
     const frame = frameRef.current;

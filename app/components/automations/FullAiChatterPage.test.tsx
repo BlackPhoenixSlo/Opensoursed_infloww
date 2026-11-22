@@ -893,12 +893,12 @@ describe("Full AI Chat page › Settings", () => {
     expect(btn("Roll back").disabled).toBe(true);
     await waitFor(() => expect(btn("Make draft live").disabled).toBe(false));
     expect(screen.getByText(
-      "Draft differs from the Live settings in 1: gifs. Fans keep the Live ones until you tap Make draft live.")).toBeTruthy();
+      "Draft differs from the Live settings in 1: gifs. The Live settings stay until you tap Make draft live.")).toBeTruthy();
     await act(async () => { fireEvent.click(btn("Make draft live")); });
     expect(postsTo("/admin/full-ai/config/save").map((c) => c[1])).toEqual([{ account_id: "acc-a", rev: 3 }]);
     await waitFor(() => expect(btn("Roll back").disabled).toBe(false));
     expect(btn("Make draft live").disabled).toBe(true);
-    expect(screen.getByText("Draft = Live settings. Fans get exactly what you see below.")).toBeTruthy();
+    expect(screen.getByText("Draft matches the saved Live settings.")).toBeTruthy();
     await act(async () => { fireEvent.click(btn("Roll back")); });
     expect(postsTo("/admin/full-ai/config/rollback").map((c) => c[1])).toEqual([{ account_id: "acc-a", rev: 4 }]);
     await waitFor(() => expect(btn("Make draft live").disabled).toBe(false)); // the draft differs from the restored checkpoint again

@@ -29,9 +29,6 @@ export const DOWN_GRACE_MS = 60_000;
  *  D7's letter is "older than one cycle" (slack 0); one constant until the owner rules. */
 export const SLACK_MS = 40_000;
 
-/** The tab's clock minus the Relay's, from a Relay time (`now`, epoch ms) and the tab time it arrived at. */
-export const serverOffset = (serverMs: number, receivedAt: number): number => receivedAt - serverMs;
-
 export interface LiveMark {
   kind: "down" | "dead";
   /** The short form: "No live connection" / "Disconnected". */

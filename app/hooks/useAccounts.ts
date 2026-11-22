@@ -37,8 +37,7 @@ import { chatterAccountsQuery } from "@/lib/chatterAccounts";
 import { accountPlatform, usePlatform } from "@/lib/platform";
 import type { SeedRow } from "@/lib/creatorFreshness";
 import { dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
-import { setRelayOffset } from "@/lib/ageClock";
-import { serverOffset } from "@/components/chat/dataAge";
+import { serverOffset, setRelayOffset } from "@/lib/ageClock";
 
 /** Answers updated before this (the persisted copy, restored at boot) are not network answers of this page. */
 const PAGE_LOADED_AT = Date.now();

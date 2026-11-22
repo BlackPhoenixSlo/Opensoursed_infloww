@@ -358,16 +358,32 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
             return {"status": "skipped", "reason": "audience_empty",
                     **audience_stats}
 
-    # ── Dry run (O3): forks after every read a real run makes (plan, word
-    # filter, fence intersection), before its first write ──────────────────
+    # ── Dry run (O3): forks after the plan, word filter and fence
+    # intersection, before its first write and before the exclude-list read
+    # below (it reads no OF list: `smd.dry_run_result`) ─────────────────────
     if dry:
         return await _dry_run(account_id, run_id, p, client, audience_pol, audience_stats)
+
+    # An explicit send subtracts its exclude lists' members itself
+    # (`audiences.drop_exclude_list_members`), and refuses when OF won't page one.
+    if not is_list_audience and p.excluded_user_lists and p.recipients:
+        from audiences import AudienceUnknown, drop_exclude_list_members
+        try:
+            kept = await drop_exclude_list_members(client, p.recipients, p.excluded_user_lists)
+        except AudienceUnknown:
+            log.warning("send_mass_message: exclude list(s) %s unreadable — skipping "
+                        "explicit send account=%s", p.excluded_user_lists, account_id)
+            return {"status": "error", "reason": "excluded_lists_unreadable"}
+        p = replace(p, recipients=kept)
+        if not p.recipients:
+            return {"status": "skipped", "reason": "audience_empty"}
 
     # Did the AUTOFENCE list get attached to this send? Recorded on the run's
     # audience_filter for forensics — "was this blast fenced" is the first
     # question asked of any audience surprise, and the fence list id alone does
     # not answer it.
     fence_attached = False
+    auto_lid = None   # the Auto_Exclude list attached below, recorded on the run
     async with broadcast_lock(account_id):
         if audience_pol.mode != "off" and is_list_audience:
             try:
@@ -407,7 +423,8 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # (`before_write` below): a run row means "handed to OF", never "still
         # waiting for the 11 s spacing", so a restart in that wait mints nothing.
         # Recorded for forensics only — see smd.audience_filter.
-        audience_filter = smd.audience_filter(p, ref=attr_ref, fence=fence_attached)
+        audience_filter = smd.audience_filter(p, ref=attr_ref, fence=fence_attached,
+                                              auto_exclude=auto_lid)
         mass_run_id = 0
 
         async def _mint() -> None:

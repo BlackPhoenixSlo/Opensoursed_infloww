@@ -158,20 +158,28 @@ describe("UltraPlanPage", () => {
       expect(screen.getByRole("link", { name: "Download file" })).toBeInTheDocument();
     });
 
-    it("finished_at arriving later (same card, no remount) flips it to the expired line", () => {
-      const { rerender } = render(<ReportDownload fileId="f1" finishedAt={null} fallbackName="report.csv" />);
+    it("an end time arriving later (same card, no remount) flips it to the expired line", () => {
+      const { rerender } = render(<ReportDownload fileId="f1" endedAt={null} fallbackName="report.csv" />);
       expect(screen.getByRole("link", { name: "Download file" })).toBeInTheDocument();
-      rerender(<ReportDownload fileId="f1" finishedAt={new Date(Date.now() - 16 * 60_000).toISOString()} fallbackName="report.csv" />);
+      rerender(<ReportDownload fileId="f1" endedAt={new Date(Date.now() - 16 * 60_000).toISOString()} fallbackName="report.csv" />);
       expect(screen.getByText(EXPIRED)).toBeInTheDocument();
       expect(screen.queryByRole("link", { name: "Download file" })).toBeNull();
     });
 
-    it("15 minutes after the plan finished: the expired line, no link, no request", async () => {
-      getImpl = async () => done(new Date(Date.now() - 16 * 60_000).toISOString());
+    it("W30 F14: 15 minutes after its step ended, while the plan still waits (no finished_at): expired, no request", async () => {
+      getImpl = async () => view({ status: "needs_you", card, finished_at: null,
+        step_states: [{ id: "r1", state: "done", result: { id: "f1" }, ended_at: new Date(Date.now() - 16 * 60_000).toISOString() }] });
       render(<UltraPlanPage planId="p1" />);
       expect(await screen.findByText(EXPIRED)).toBeInTheDocument();
       expect(screen.queryByRole("link", { name: "Download file" })).toBeNull();
       expect(relayFile).not.toHaveBeenCalled();
+    });
+
+    it("a step that just ended keeps its link though the plan finished long ago", async () => {
+      getImpl = async () => view({ status: "done", card, finished_at: new Date(Date.now() - 16 * 60_000).toISOString(),
+        step_states: [{ id: "r1", state: "done", result: { id: "f1" }, ended_at: new Date().toISOString() }] });
+      render(<UltraPlanPage planId="p1" />);
+      expect(await screen.findByRole("link", { name: "Download file" })).toBeInTheDocument();
     });
   });
 

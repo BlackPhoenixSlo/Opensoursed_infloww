@@ -122,6 +122,9 @@ log = logging.getLogger("of-relay.assistant_draft")
 router = APIRouter()
 
 PURPOSE = "help_assistant_do"       # grok_calls tag + model_by_purpose key
+# The draft's output cap, sent and reserved against (rwl W30 F11): a draft is one JSON object (captions included) far
+# under it; the native Claude lane's own cap (llm_anthropic.MAX_TOKENS), so a thinking model keeps its room.
+DRAFT_MAX_TOKENS = 4096
 FLOW = "mass_premade"
 EDIT_FLOW = assistant_edit.EDIT_FLOW   # bulk edit of existing Auto mass rules (spec D11)
 STORY_FLOW = "auto_story"             # a new Auto Story rule (spec D13)
@@ -1245,43 +1248,14 @@ def resolve_edit(intent: Intent, *, request: str = "", refine: bool = False) -> 
         assumptions.append("Every model you manage that has Auto mass rules.")
     assumptions += _clean_notes(intent.assumptions)
     unresolved += _clean_notes(intent.unresolved)
-    slots = {"scope": scope, "match": match, "changes": changes, "rules": [], "already": 0,
-             "skipped": []}
+    slots = {"scope": scope, "match": match, "changes": changes,
+             "change_lines": assistant_edit.change_lines(changes), "rules": [], "already": 0, "skipped": []}
     return Draft(slots, _dedupe(assumptions), _dedupe(unresolved), {})
-
-
-def _hours(h: float) -> str:
-    return f"{_fmt_num(round(h * 60))} min" if h < 1 else f"{_fmt_num(h)}h"
-
-
-def _every_text(sec: int) -> str:
-    return _hours(sec / 3600) if sec % 60 == 0 else f"{sec}s"
-
-
-def change_phrases(changes: dict[str, Any]) -> list[str]:
-    out = []
-    if "unsend_after_hours" in changes:
-        u = changes["unsend_after_hours"]
-        out.append(f"unsend after {_hours(u)}" if u else "unsend off")
-    if "every_seconds" in changes:
-        out.append(f"every {_every_text(changes['every_seconds'])}")
-    if "online_only" in changes:
-        out.append("online fans only" if changes["online_only"] else "online or not")
-    if "exclude_last_chat_hours" in changes:
-        h = changes["exclude_last_chat_hours"]
-        out.append(f"skip fans chatted with in the last {_hours(h)}" if h else "skip-recent-chats off")
-    if "price" in changes:
-        out.append(f"price ${_fmt_num(changes['price'])}" if changes["price"] else "free")
-    if "media_count" in changes:
-        out.append(f"{changes['media_count']} photos per mass")
-    if changes.get("disable_rule"):
-        out.append("switched off")
-    return out
 
 
 def edit_summary(slots: dict[str, Any]) -> str:
     rules = slots.get("rules") or []
-    what = ", ".join(change_phrases(slots["changes"]))
+    what = "; ".join(assistant_edit.change_lines(slots["changes"]))
     where = "on every model" if slots["scope"] == "all" else "on this model"
     if not rules:
         return f"Change Auto mass rules {where}: {what}. Nothing gets switched on."
@@ -1291,17 +1265,24 @@ def edit_summary(slots: dict[str, Any]) -> str:
 
 
 def edit_nothing_answer(slots: dict[str, Any]) -> str:
-    """No rule needs the change: say why (none matched / all already set / all skipped)."""
-    what = ", ".join(change_phrases(slots["changes"]))
+    """No rule needs the change: say why — already set and skipped both counted, the skips with
+    their reasons (rwl W30 M15: an "already" used to hide every skip)."""
+    what = "; ".join(assistant_edit.change_lines(slots["changes"]))
     where = "on any model" if slots["scope"] == "all" else "on this model"
     named = f' called "{slots["match"]}"' if slots.get("match") else ""
+    skipped = slots.get("skipped") or []
+    reasons = "; ".join(f'"{x["name"]}": {x["reason"]}' for x in skipped[:3])
+    more = f" (+{len(skipped) - 3} more)" if len(skipped) > 3 else ""
     if slots.get("already"):
         n = slots["already"]
-        return (f"Nothing to change — {n} Auto mass rule{'s' if n != 1 else ''}{named} "
-                f"already {'have' if n != 1 else 'has'} {what}.")
-    if slots.get("skipped"):
-        reasons = "; ".join(f'"{x["name"]}": {x["reason"]}' for x in slots["skipped"][:3])
-        return f"I couldn't change any rule — {reasons}."
+        out = (f"Nothing to change — {n} Auto mass rule{'s' if n != 1 else ''}{named} "
+               f"already {'have' if n != 1 else 'has'} {what}.")
+        if skipped:
+            k = len(skipped)
+            out += f" {k} rule{'s' if k != 1 else ''} skipped — {reasons}{more}."
+        return out
+    if skipped:
+        return f"I couldn't change any rule — {reasons}{more}."
     return f"No Auto mass rule{named} {where} to change."
 
 
@@ -1352,6 +1333,13 @@ async def _existing_names(account_id: str) -> list[str]:
 # model into padding captions (eval 2026-11-11: refine 49% exact, all count).
 PREVIOUS_KEYS = ("name", "interval", "captions", "folder", "online_only", "includes", "excludes",
                  "unsend_after_hours", "exclude_last_chat_hours")
+
+
+def refinable(previous: dict | None) -> dict | None:
+    """`previous` when it is an Auto mass plan's slots (any PREVIOUS_KEYS key), else None: a mass_edit,
+    full_ai_config, story or report plan is never refined (rwl W30 M19: was guessed from a "changes" /
+    "after" key, so any other shape counted as a refine)."""
+    return previous if previous and any(k in previous for k in PREVIOUS_KEYS) else None
 
 
 def previous_for_prompt(previous: dict, lists: list[dict] | None) -> dict:
@@ -1413,9 +1401,16 @@ async def _may_create(kind: str, account_id: str) -> bool:
         return False
 
 
+async def may_mass(account_id: str) -> bool:
+    """The Auto Mass opt-in on `account_id`: the gate for a mass create AND for
+    every rule a mass_edit plans or applies (never `can_do`'s any-flow yes)."""
+    return await _may_create(OPT_IN_KINDS[FLOW], account_id)
+
+
 async def can_do(account_id: str) -> bool:
     """Any account do-mode flow for this session: Auto mass, Auto Story or a
-    Full AI config change. Each flow is re-checked after the draft (`_gate`).
+    Full AI config change — only whether "Do it for me" shows. Each flow is
+    re-checked after the draft (`_gate`); an edit's rules by `may_mass`.
     An owner's export is not gated here (`assistant_report.report_ctx`)."""
     return (await _may_create(OPT_IN_KINDS[FLOW], account_id)
             or await _may_create(OPT_IN_KINDS[STORY_KIND], account_id)
@@ -1479,9 +1474,8 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
         return _out(aid, row_id=None, answer="Tell me what to set up.", error="empty_request")
     role = assistant_api._asker_role()
     thread_id = body.thread_id or assistant_api._new_thread_id()
-    # A mass_edit or full_ai_config plan is never refined (the widget sends none); a stray one is ignored.
-    previous = (body.previous if body.previous and "changes" not in body.previous
-                and "after" not in body.previous else None)
+    # Only an Auto mass plan is refined (the widget sends no other); a stray one is ignored.
+    previous = refinable(body.previous)
 
     async def record(reply: assistant_api.Reply) -> int | None:
         return await assistant_api._record_turn(
@@ -1522,7 +1516,7 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
     async def complete() -> assistant_api.Reply:
         return await assistant_api._complete(
             model, block, account_id=aid, user_id=user_id, fallback=fallback, purpose=PURPOSE,
-            system=system_prompt(), response_format=response_format_for(model))
+            system=system_prompt(), response_format=response_format_for(model), max_tokens=DRAFT_MAX_TOKENS)
 
     def read(r: assistant_api.Reply) -> Outcome:
         return interpret(r.answer, request=request, lists=lists, folders=folders, existing=existing,
@@ -1556,7 +1550,7 @@ async def _gate(aid: str | None, o: Outcome, allowed: bool, may_config: bool,
         return no_creator(o)
     if not allowed:
         return Outcome(NOT_ALLOWED_ANSWER, error="not_allowed")
-    if o.flow in (FLOW, EDIT_FLOW) and not await _may_create(OPT_IN_KINDS[FLOW], aid):
+    if o.flow in (FLOW, EDIT_FLOW) and not await may_mass(aid):
         return Outcome(NOT_ALLOWED_ANSWER, error="not_allowed")
     if o.flow == EDIT_FLOW and o.draft is not None:
         return await _with_rules(aid, o)
@@ -1617,16 +1611,19 @@ async def _with_rules(account_id: str, o: Outcome) -> Outcome:
     sl = o.draft.slots
     try:
         plan = await assistant_edit.resolve_rules(sl["scope"], account_id, sl["changes"], sl["match"],
-                                                  can_do)
+                                                  may_mass)
     except HTTPException:
         raise
     except Exception:
         log.warning("assistant_draft: edit rules read failed account=%s", account_id, exc_info=True)
         return Outcome("Couldn't read your Auto mass rules — try again.", error="read_failed")
     slots = {**sl, "rules": plan.rules, "already": plan.already, "skipped": plan.skipped}
+    left = [assistant_edit.left_out_note(plan.left_out)] if plan.left_out else []
     if not plan.rules:
-        return Outcome(edit_nothing_answer(slots))
-    return Outcome(edit_summary(slots), flow=EDIT_FLOW, draft=replace(o.draft, slots=slots))
+        return Outcome(" ".join([edit_nothing_answer(slots), *left]))
+    unresolved = (o.draft.unresolved + left
+                  + ([assistant_edit.overflow_note(plan.overflow)] if plan.overflow else []))
+    return Outcome(edit_summary(slots), flow=EDIT_FLOW, draft=replace(o.draft, slots=slots, unresolved=unresolved))
 
 
 class _RuleRef(BaseModel):
@@ -1646,7 +1643,7 @@ async def edit_apply(body: EditApplyBody = Body(...)) -> dict[str, Any]:
     fine). The draft's gates (account reach, Auto Mass opt-in), the change
     spec clamped again; each rule re-checked in assistant_edit.apply_one."""
     assert_account_owned(body.account_id)
-    if not await can_do(body.account_id):
+    if not await may_mass(body.account_id):
         raise HTTPException(403, NOT_ALLOWED_ANSWER)
     changes = assistant_edit.clean_changes(body.changes)
     if not changes:
@@ -1654,7 +1651,7 @@ async def edit_apply(body: EditApplyBody = Body(...)) -> dict[str, Any]:
     versions: dict[int, str] = {}
     for r in body.rules:
         versions.setdefault(r.id, r.version)
-    results = [await assistant_edit.apply_one(rid, v, changes, home=body.account_id, allowed=can_do)
+    results = [await assistant_edit.apply_one(rid, v, changes, home=body.account_id, allowed=may_mass)
                for rid, v in versions.items()]
     changed = sum(1 for r in results if r["ok"] and r.get("diffs"))
     log.info("assistant_edit_apply account=%s rules=%d changed=%d skipped=%d", body.account_id,
@@ -1695,12 +1692,13 @@ async def draft_for_eval(request: str, ctx: EvalContext, model: str,
     llm_client's own cap/audit rows. Errors come back as the route's: `error`
     "cap" | "config" | "provider" | "empty_answer" | "bad_draft"."""
     request = request.strip()
+    previous = refinable(previous)
     lists, folders, existing = ctx.lists, list(ctx.folders), list(ctx.existing_names)
     rf = response_format_for(model)
     result = None
     try:
         result = await llm_client.chat(
-            model=model, purpose=PURPOSE, account_id=None, temperature=0.3,
+            model=model, purpose=PURPOSE, account_id=None, temperature=0.3, max_tokens=DRAFT_MAX_TOKENS,
             messages=[{"role": "system", "content": system_prompt()},
                       {"role": "user", "content": user_block(
                           request, lists=lists, folders=folders, existing=existing,
@@ -1724,9 +1722,10 @@ async def draft_for_eval(request: str, ctx: EvalContext, model: str,
 
 @router.get("/admin/assistant/do-caps")
 async def do_caps(account_id: str = Query(..., min_length=1)) -> dict[str, Any]:
-    """Whether the widget shows "Do it for me" for this account: the draft's
-    gates (account reach, then the Auto Mass opt-in), then a usable key for
-    the draft's model. `reason`: null | "not_allowed" | "no_key"."""
+    """Whether the widget shows "Do it for me" for this account: account
+    reach, then any do-mode flow's opt-in (`can_do`: Auto mass, Auto Story or
+    Full AI), then a usable key for the draft's model. Each flow is gated
+    again after the draft. `reason`: null | "not_allowed" | "no_key"."""
     assert_account_owned(account_id)
     reason = (None if await can_do(account_id) else "not_allowed")
     if reason is None and not await has_key(account_id):

@@ -105,23 +105,6 @@ _ACTS: dict[str, int] = {
     "cumshot": 98,
 }
 
-# The model does not always return the menu spelling. Observed on a real graded
-# batches: `stripping` for strip, `rubbing_breasts` for groping_own_breasts.
-# Unknown acts are ignored rather than guessed at, so drift silently costs
-# signal — these are the spellings actually seen, not speculative synonyms.
-_ACT_ALIASES: dict[str, str] = {
-    "stripping": "strip",
-    "undressing": "undress",
-    "rubbing_breasts": "groping_own_breasts",
-    "groping_breasts": "groping_own_breasts",
-    "twerking": "twerk",
-    "teasing": "tease",
-    "posing_for_camera": "posing",
-    "masturbation": "masturbation_orgasm",
-    "orgasm": "masturbation_orgasm",
-    "squirting": "squirt",
-}
-
 _PENETRATION: dict[str, int] = {
     "none": 0, "fingers": 70, "toy": 85, "penis": 95,
 }
@@ -161,7 +144,7 @@ def escalation_score(fields: dict[str, Any]) -> int | None:
     act_rungs = []
     for raw_act in acts or []:
         a = _norm(raw_act)
-        a = _ACT_ALIASES.get(a, a)
+        a = vault_topic_folders.ACT_ALIASES.get(a, a)   # off-menu spellings seen
         if a in _ACTS:
             act_rungs.append(_ACTS[a])
     if act_rungs:
@@ -236,16 +219,19 @@ def collapse_dupes(rows: list[dict[str, Any]], groups: list[list[int]],
     """`rows` with each duplicate set down to its kept item, + the dropped ids.
 
     The kept item is the set's original (earliest upload — the copy the
-    Duplicates screen never hides), unless it carries no reading and a later
-    copy does: then the earliest copy that does, so a set is never lost to the
-    one member the describe pass skipped. Rows keep their order."""
+    Duplicates screen never hides), unless it carries no finished reading and a
+    later copy does: then the earliest copy that does (describe_status
+    "described" with fields; a failed/refused row's leftover fields don't count),
+    so a set is never lost to the one member the describe pass skipped. Rows
+    keep their order."""
     by_id = {r["media_id"]: r for r in rows}
     drop: set[int] = set()
     for group in groups:
         present = [m for m in group if m in by_id]
         if len(present) < 2:
             continue
-        keeper = next((m for m in present if by_id[m].get("fields")), present[0])
+        keeper = next((m for m in present if by_id[m].get("fields")
+                       and by_id[m].get("describe_status") == "described"), present[0])
         drop.update(m for m in present if m != keeper)
     return [r for r in rows if r["media_id"] not in drop], sorted(drop)
 
@@ -310,7 +296,7 @@ _REVEAL_REGIONS = (("breasts_vis", "breasts_bare"), ("vulva_vis", "crotch_bare")
 def _jev_tag(fields: dict[str, Any], q: str) -> str:
     """Jev's answer to choice question `q` on a current `_jev`, else ''."""
     jev = vault_topic_folders.jev_of(fields)
-    return _norm(vault_topic_folders._tag(jev, q)) if jev else ""
+    return _norm(vault_topic_folders.jev_tag(jev, q)) if jev else ""
 
 
 def reveal_strength(fields: dict[str, Any]) -> int:
@@ -609,20 +595,6 @@ async def _fingerprints(account_id: str) -> dict[int, dict[str, Any]]:
     return {int(fp["media_id"]): fp for fp in items}
 
 
-def _near(a: dict[str, Any] | None, b: dict[str, Any] | None, threshold: int) -> bool:
-    """Same kind, within `threshold` on dhash AND ahash (clips: duration ±1s too),
-    as `vault_dupes.cluster` compares."""
-    if not a or not b or a["kind"] != b["kind"]:
-        return False
-    if a["kind"] == "video" and abs((a.get("duration") or 0) - (b.get("duration") or 0)) > \
-            vault_dupes._VIDEO_DUR_TOLERANCE_S:
-        return False
-    if a["md5"] == b["md5"]:
-        return True
-    return (vault_dupes.hamming(a["dhash"], b["dhash"]) <= threshold
-            and vault_dupes.hamming(a["ahash"], b["ahash"]) <= threshold)
-
-
 def collapse_near_dupes(items: list[dict[str, Any]], prints: dict[int, dict[str, Any]],
                         threshold: int = NEAR_DUPE_THRESHOLD,
                         ) -> tuple[list[dict[str, Any]], list[int]]:
@@ -638,7 +610,7 @@ def collapse_near_dupes(items: list[dict[str, Any]], prints: dict[int, dict[str,
         fp = prints.get(r["media_id"])
         if fp is not None and any(
                 items[j]["why"]["rung"] == r["why"]["rung"]
-                and _near(fp, prints.get(items[j]["media_id"]), threshold) for j in kept):
+                and vault_dupes.near(fp, prints.get(items[j]["media_id"]), threshold) for j in kept):
             dropped.append(r["media_id"])
             continue
         kept.append(i)
@@ -934,8 +906,12 @@ def borrow_closers(kept: list[dict[str, Any]], rows: list[dict[str, Any]]) -> No
     outside every kept script: same outfit colour first, else same room; then
     a clip; then nearest in created_at. On the script's top rung or above, so it
     still sends last. Appended last, marked `borrowed`; counts, rungs and health
-    recomputed. In rank order, so the best script borrows first. Mutates `kept`."""
+    recomputed. A full ladder is re-capped (`cap_ladder`) so it stays at
+    SCRIPT_SIZE, the cut item joining `overflow`; a frame a script pruned as a
+    near-dupe is never borrowed back. In rank order, so the best script borrows
+    first. Mutates `kept`."""
     taken = {r["media_id"] for s in kept for r in s["items"]}
+    taken |= {int(m) for s in kept for m in s.get("near_dupes") or []}
     pool = [r for r in map(_with_script_why, rows)
             if r["why"]["closes"] and r["why"]["rung"] is not None
             and not _unpriced_dispute(r) and r["media_id"] not in taken]
@@ -962,6 +938,9 @@ def borrow_closers(kept: list[dict[str, Any]], rows: list[dict[str, Any]]) -> No
         ladder = [r for r in s["items"] if r["why"]["rung"] is not None]
         tail = [r for r in s["items"] if r["why"]["rung"] is None]
         ladder.append({**pick, "borrowed": True})
+        if len(ladder) > SCRIPT_SIZE:
+            ladder, cut = cap_ladder(ladder)
+            s["overflow"] = [*(s.get("overflow") or []), *cut]
         items = ladder + tail
         kinds, tiers, closes = _tally(items)
         s.update(items=_ordered_items(items), size=len(ladder), kinds=kinds, tiers=tiers,
@@ -1113,6 +1092,10 @@ def _partner_evidence(fields: dict) -> bool:
     if {_norm(a) for a in (fields.get("acts") or [])} & _PARTNER_ACTS:
         return True
     if _norm(fields.get("primary_folder")) in _PARTNER_FOLDERS:
+        return True
+    # Jev's own head count: a second vote that sees what the describe text missed.
+    jev = vault_topic_folders.jev_of(fields)
+    if jev and vault_topic_folders.jev_tag(jev, "people_count") == "two_or_more":
         return True
     # A penis is only ever inserted BY someone. Fingers and toys are not
     # evidence either way, and are deliberately not read here.
@@ -1650,8 +1633,8 @@ async def plan_ai_folders(
     unique = {r["media_id"] for f in folders for r in f["items"]}
 
     # What Confirm would do to the folders already there — the same match
-    # `apply_ai_folders` makes (`_assign_folders`), so the preview's counts are
-    # the apply's. Retiring a folder bound to an OF list unlinks that list
+    # `apply_ai_folders` makes (`_assign_folders`) on the vault as it is now; the
+    # apply re-plans and retires only folders listed here (`expected_retire`). Retiring a folder bound to an OF list unlinks that list
     # (apply never deletes it on OF), which is why those are counted apart.
     async with get_session() as s:
         owned = await _owned_ai_folders(s, account_id)
@@ -1676,10 +1659,9 @@ async def plan_ai_folders(
     # Only when asked: it is a second full read of the vault, and it answers a
     # question nobody has posed unless the box is ticked.
     solo_cov = await solo_coverage(account_id) if solo else None
-    # Topic folders read Jev only: whether it is on for the account, how many photos + clips carry it, and every
-    # topic's size (ticked or not — the checklist shows them all).
-    jev = {"enabled": True,  # Jev v8 is the default for every photo (#511)
-           **vault_topic_folders.coverage(rows)}
+    # Topic folders read Jev only (v8, on for every photo since #511): how many photos + clips carry it, and
+    # every topic's size (ticked or not — the checklist shows them all).
+    jev = vault_topic_folders.coverage(rows)
 
     return {
         "account_id": account_id,
@@ -1721,48 +1703,77 @@ async def plan_ai_folders(
     }
 
 
-async def _owned_ai_folders(s, account_id: str) -> dict[str, list[VaultFolder]]:
-    """Every live folder this module made, by name, oldest first per name."""
-    owned: dict[str, list[VaultFolder]] = {}
+async def _owned_ai_folders(s, account_id: str) -> tuple[dict[str, list[VaultFolder]], dict[str, VaultFolder]]:
+    """Every folder this module made, by name: (the live ones, oldest first per name; the newest retired one
+    per name)."""
+    live: dict[str, list[VaultFolder]] = {}
+    retired: dict[str, VaultFolder] = {}
     for folder in (await s.execute(
         select(VaultFolder).where(
             VaultFolder.account_id == account_id,
             VaultFolder.created_by == AI_FOLDER_CREATOR,
-            VaultFolder.deleted_at.is_(None),
         ).order_by(VaultFolder.id)
     )).scalars().all():
-        owned.setdefault(folder.name, []).append(folder)
-    return owned
+        if folder.deleted_at is None:
+            live.setdefault(folder.name, []).append(folder)
+        else:
+            retired[folder.name] = folder
+    return live, retired
 
 
-def _assign_folders(names: list[str], owned: dict[str, list[VaultFolder]],
+def _assign_folders(names: list[str], owned: tuple[dict[str, list[VaultFolder]], dict[str, VaultFolder]],
                     ) -> tuple[list[VaultFolder | None], list[VaultFolder]]:
     """(per planned name the generated folder it reuses, or None = new; the
-    generated folders left over, by id — the ones a rebuild retires).
+    live generated folders left over, by id — the ones a rebuild retires).
 
-    Each name takes at most one folder, the oldest of that name. Only AI-
-    prefixed leftovers are retired: scoped hard, so an operator's own folder is
-    never reached even if it collides on name. The preview and the apply both
-    call this, so what the modal says is what Confirm does."""
-    left = {name: list(rows) for name, rows in owned.items()}
-    reuse = [left[n].pop(0) if left.get(n) else None for n in names]
+    Each name takes at most one folder: the oldest live one of that name, else
+    the newest retired one (the apply revives it; it keeps its `of_list_id`, so a
+    toggle back — split on → off → on — tops up the SAME OF list instead of
+    minting a second one with the same name). Only AI-prefixed leftovers are
+    retired: scoped hard, so an operator's own folder is never reached even if it
+    collides on name. The preview and the apply both call this; the apply retires
+    only the stale folders the preview listed (`apply_ai_folders(expected_retire=)`)."""
+    live, retired = owned
+    left = {name: list(rows) for name, rows in live.items()}
+    reuse = [left[n].pop(0) if left.get(n) else retired.get(n) for n in names]
     stale = sorted((f for rows in left.values() for f in rows
                     if f.name.startswith(AI_FOLDER_PREFIX)), key=lambda f: f.id)
     return reuse, stale
 
 
-async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+async def _set_deleted_if_ai(s, folder_id: int, deleted_at: datetime | None) -> bool:
+    """Set a folder's `deleted_at` only while it is still generated (`AI_FOLDER_CREATOR`), in one statement.
+    An operator edit can adopt it (`vault_internal_folders._adopt`) after the rebuild read ownership; this is the
+    re-check, and its write holds the DB write lock to commit, so no adopt lands between it and the membership
+    rewrite. False: it changed hands, leave it alone."""
+    return (await s.execute(VaultFolder.__table__.update().where(
+        (VaultFolder.id == folder_id) & (VaultFolder.created_by == AI_FOLDER_CREATOR)
+    ).values(deleted_at=deleted_at))).rowcount == 1
+
+
+async def apply_ai_folders(account_id: str, plan: dict[str, Any], *,
+                           expected_retire: set[int] | None = None) -> dict[str, Any]:
     """Create the planned folders and fill them, in send order.
+
+    `expected_retire`: the folder ids the operator's preview showed under
+    `retired`. Given, only stale folders in it are retired; any other stale one
+    (the vault changed between preview and apply) stays live and is reported
+    under `skipped_retire`, so Confirm never retires a folder the operator was
+    not shown. None (prepare content, no preview): every stale folder retires.
 
     Re-runnable: a live folder this module made (`AI_FOLDER_CREATOR`) under the
     same name is REUSED and its membership rewritten, so pressing the button
-    twice refreshes rather than piling up duplicates. A folder an operator made
+    twice refreshes rather than piling up duplicates; with no live one, the
+    newest retired one of that name is revived (keeps its OF binding). A folder an operator made
     is never reused, even on a name clash; the generated one is made beside it.
+    One adopted by an operator edit after this read (`_set_deleted_if_ai`) is neither rewritten nor retired:
+    it comes back under `skipped_adopted` (its planned items wait for the next rebuild).
     Names come from the plan as-is — `plan_ai_folders` keeps them unique.
 
     Internal folders only. No OF writes, nothing sent.
     """
     created: list[dict[str, Any]] = []
+    adopted: list[dict[str, Any]] = []
     specs = plan.get("folders") or []
     async with get_session() as s:
         # Each spec takes at most one live generated folder of its name;
@@ -1772,6 +1783,11 @@ async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, A
 
         for spec, name, existing in zip(specs, names, reuse):
             if existing is not None:
+                # A retired one revives (`_assign_folders`), only if still generated.
+                if not await _set_deleted_if_ai(s, existing.id, None):
+                    adopted.append({"folder_id": existing.id, "name": existing.name,
+                                    "of_list_id": existing.of_list_id})
+                    continue
                 folder_id = existing.id
                 reused = True
                 # Wipe only THIS folder's membership so the rewrite is clean;
@@ -1808,10 +1824,16 @@ async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, A
         # the AI- prefix are ever retired, and only by soft-delete. An operator's
         # own folder cannot be reached by this even if it collides on name.
         retired: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
         for folder in stale:
-            folder.deleted_at = datetime.utcnow()
-            retired.append({"folder_id": folder.id, "name": folder.name,
-                            "of_list_id": folder.of_list_id})
+            entry = {"folder_id": folder.id, "name": folder.name, "of_list_id": folder.of_list_id}
+            if expected_retire is not None and folder.id not in expected_retire:
+                skipped.append(entry)
+                continue
+            if not await _set_deleted_if_ai(s, folder.id, datetime.utcnow()):
+                adopted.append(entry)
+                continue
+            retired.append(entry)
         await s.commit()
 
     log.info("AI folders applied account=%s folders=%d items=%d retired=%d",
@@ -1826,4 +1848,8 @@ async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, A
         # alone: deleting a folder on her real account is not something a
         # rename in our rules should trigger.
         "retired": retired,
+        # Stale but not in the preview's `retired` (`expected_retire`): left live.
+        "skipped_retire": skipped,
+        # Adopted by an operator edit mid-rebuild: left as the operator has it.
+        "skipped_adopted": adopted,
     }

@@ -125,8 +125,9 @@ def due(state: PollState | None, t: Tier, now: float) -> bool:
 
 
 def ladder_s(step: int) -> float:
-    """The hold after `step` failures in a row with no Retry-After: 30, 60, 120, 240, 480, 900, 900..."""
-    return min(BACKOFF_BASE_S * 2 ** max(0, step - 1), BACKOFF_MAX_S)
+    """The hold after `step` failures in a row with no Retry-After: 30, 60, 120, 240, 480, 900, 900... The exponent
+    is capped (60: past any BACKOFF_MAX_S) so a Creator failing for weeks never overflows the float (step ~1025)."""
+    return min(BACKOFF_BASE_S * 2 ** min(max(0, step - 1), 60), BACKOFF_MAX_S)
 
 
 def after(state: PollState | None, outcome: Outcome, started: float, answered: float) -> PollState:

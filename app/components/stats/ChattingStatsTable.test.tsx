@@ -260,14 +260,42 @@ describe("ChattingStatsTable", () => {
       .toHaveAttribute("title", "not wired");
   });
 
+  it("chatter role only: scheduled hours of every Chatter-role Employee, one with no chatting too (not only the rows')", async () => {
+    owner = true;
+    const base = fetchMock.getMockImplementation() as (url: string) => Promise<Response>;
+    // Employee 9 holds the Chatter role and has a 30-minute shift, but chatted nothing: no row of its own.
+    fetchMock.mockImplementation(async (url: string) => String(url).split("?")[0] === "/admin/stats/chatting-stats"
+      ? jsonRes({ employees: [ROW], attribution_fallback: null, chatter_ids: [1, 9] }) : base(url));
+    renderWithProviders(<ChattingStatsTable from={FROM} to={TO} chatterOnly />);
+    const card = () => screen.getByRole("group", { name: "Total number of scheduled hours" });
+    await waitFor(() => expect(within(card()).getByText("352h")).toBeInTheDocument()); // 21,090 + 30 minutes
+  });
+
+  it("ticking chatter role only: scheduled hours wait for the Chatter roster (loading), never 0h from the last read", async () => {
+    owner = true;
+    const base = fetchMock.getMockImplementation() as (url: string) => Promise<Response>;
+    let answer: (r: Response) => void = () => {};
+    fetchMock.mockImplementation(async (url: string) => String(url).includes("chatter_only=true")
+      ? new Promise<Response>((resolve) => { answer = resolve; }) : base(url));
+    const { rerender } = renderWithProviders(<ChattingStatsTable from={FROM} to={TO} />);
+    const card = () => screen.getByRole("group", { name: "Total number of scheduled hours" });
+    await waitFor(() => expect(within(card()).getByText("352h")).toBeInTheDocument());
+    rerender(<ChattingStatsTable from={FROM} to={TO} chatterOnly />);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes("chatter_only=true"))).toBe(true));
+    expect(within(card()).getByText("…")).toBeInTheDocument();
+    expect(within(card()).queryByText("0h")).toBeNull();
+    answer(jsonRes({ employees: [ROW], attribution_fallback: null, chatter_ids: [1] }));
+    await waitFor(() => expect(within(card()).getByText("351.5h")).toBeInTheDocument()); // Employee 1's 21,090 minutes
+  });
+
   it.each([
     [null, false, "-", false],
     [[] as TimesheetRow[], false, "0h", true],
     [[SHEET(1, 90), SHEET(9, 60)], false, "2.5h", true],
-    [[SHEET(1, 90), SHEET(9, 60)], true, "1.5h", true], // chatter-only: Employee 9 is not among the rows
+    [[SHEET(1, 90), SHEET(9, 60)], true, "1.5h", true], // chatter-only: the roster is Employee 1, not 9
     [[SHEET(1, 205_551)], false, "3,425.9h", true],
   ])("scheduled hours from %j (chatterOnly %s) -> %s", (sheet, chatterOnly, value, wired) => {
-    const k = chattingKpis([ROW], sheet, chatterOnly).find((c) => c.label === "Total number of scheduled hours")!;
+    const k = chattingKpis([ROW], sheet, chatterOnly, null, [1]).find((c) => c.label === "Total number of scheduled hours")!;
     expect([k.value, k.wired]).toEqual([value, wired]);
   });
 

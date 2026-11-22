@@ -170,8 +170,14 @@ class Registry:
     def run(self):
         while not self.stop_event.wait(self.interval):
             for s in self.snapshot():
+                if self.stop_event.is_set():   # a timed-out drain: no retire during the rest of shutdown
+                    break
                 try:
                     self.retire(s, terminal=s.life.closed or s.orphan)
+                except Exception:
+                    # retire() already recorded it; one bad handle must not
+                    # end idle reclaim for the whole process.
+                    continue
                 except BaseException:
                     self.stop_event.set()
                     break
@@ -205,23 +211,33 @@ class Registry:
         with self.admission_lock:
             self.accepting = False
 
-    def drain(self):
-        """Terminal only: wait for native owners, never force-close active handles."""
+    def drain(self, timeout=None):
+        """Terminal only: wait for native owners, never force-close active handles.
+        `timeout` (s): give up waiting then and return False (no shutdown), so a stuck
+        native worker can't hold process stop past the container's grace (the idle sweeper
+        stops too: no retires during the rest of shutdown). True: drained."""
         self.stop_admission()
+        until = None if timeout is None else time.monotonic() + timeout
         with self.admission_lock:
             sessions = list(self.sessions)
         for session in sessions:
             session.close()
+        if self.stop_event.is_set():
+            return False   # the caller gave up while a close blocked: no shutdown()/retire after it
         while True:
             self.finish_completed_streams()
             if not any(
                 slot.active or slot.pins or slot.retiring for slot in self.snapshot()
             ):
                 break
+            if until is not None and time.monotonic() >= until:
+                self.stop_event.set()
+                return False
             time.sleep(0.01)
         for session in sessions:
             session.drain(timeout=None)
         self.shutdown()
+        return True
 
     def shutdown(self):
         # Never force close an active worker; caller must drain first.

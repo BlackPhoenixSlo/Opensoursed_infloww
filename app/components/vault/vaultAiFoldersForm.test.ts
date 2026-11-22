@@ -31,12 +31,18 @@ describe("aiFoldersFormReducer", () => {
   });
 
   it("buildPayload is exactly the preview's options", () => {
-    expect(buildPayload(run([{ type: "keep", keep: 0 }, { type: "solo", on: true }])))
-      .toEqual({ keep: 0, solo: true, mirrorToOf: true, topics: [], split: true });
-    expect(buildPayload(run([{ type: "topic", slug: "spread", on: true }, { type: "topic", slug: "bikini", on: true }])))
-      .toEqual({ keep: 10, solo: false, mirrorToOf: true, topics: ["bikini", "spread"], split: true });
-    expect(buildPayload(run([{ type: "split", on: false }, { type: "topic", slug: "bikini", on: true }])))
-      .toEqual({ keep: 10, solo: false, mirrorToOf: true, topics: ["bikini"], split: false });
+    expect(buildPayload(run([{ type: "keep", keep: 0 }, { type: "solo", on: true }]), null))
+      .toEqual({ keep: 0, solo: true, mirrorToOf: true, topics: [], split: true, expectedRetire: [] });
+    expect(buildPayload(run([{ type: "topic", slug: "spread", on: true }, { type: "topic", slug: "bikini", on: true }]), null))
+      .toEqual({ keep: 10, solo: false, mirrorToOf: true, topics: ["bikini", "spread"], split: true, expectedRetire: [] });
+    expect(buildPayload(run([{ type: "split", on: false }, { type: "topic", slug: "bikini", on: true }]), null))
+      .toEqual({ keep: 10, solo: false, mirrorToOf: true, topics: ["bikini"], split: false, expectedRetire: [] });
+  });
+
+  it("buildPayload posts back the folder ids the preview showed retiring (W30 F3)", () => {
+    const retired = [{ folder_id: 7, name: "AI-a", of_list_id: 77 }, { folder_id: 8, name: "AI-b", of_list_id: null }];
+    expect(buildPayload(INITIAL_FORM, changes({ retire: 2, retired })).expectedRetire).toEqual([7, 8]);
+    expect(buildPayload(INITIAL_FORM, null).expectedRetire).toEqual([]);
   });
 });
 
@@ -73,9 +79,8 @@ describe("topics", () => {
   });
 
   it.each<[string, Parameters<typeof topicsUsable>[0], boolean]>([
-    ["Jev on with data", { enabled: true, with_jev: 3 }, true],
-    ["Jev on, nothing read yet", { enabled: true, with_jev: 0 }, false],
-    ["Jev off, old data", { enabled: false, with_jev: 9 }, false],
+    ["Jev data", { with_jev: 3 }, true],
+    ["nothing read yet", { with_jev: 0 }, false],
     ["no plan yet", undefined, false],
   ])("topicsUsable: %s", (_n, jev, want) => {
     expect(topicsUsable(jev)).toBe(want);

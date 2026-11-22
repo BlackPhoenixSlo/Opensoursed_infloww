@@ -3,8 +3,8 @@
 /**
  * AiSpendCapCard — Settings → AI keys, one Creator's daily AI spend limit
  * (`account_ai_config.daily_cost_cap_cents`, the account-config PUT; rules in
- * aiSpendCap.ts). llm_client reserves every AI call of the Creator (chat,
- * automations, vault describes) against it, per provider per UTC day, and reads
+ * aiSpendCap.ts). llm_client reserves the Creator's paid model calls (chat,
+ * automations, vault describes; not TypeSafe/Jev checks) against it, per provider per UTC day, and reads
  * it per call, so a raise lets the very next call through.
  *
  * Owner-only: the tab is hidden from a Chatter, and the relay ignores a
@@ -36,8 +36,8 @@ export default function AiSpendCapCard() {
         <div className="min-w-0 flex-1">
           <h2 className="text-lg font-semibold">Daily AI spend limit</h2>
           <p className="text-sm text-fg-dim">
-            Per creator. Covers every AI call for this creator: chat replies, automations and vault photo
-            describes.
+            Per creator. Covers this creator&apos;s paid model calls: chat replies, automations and vault photo
+            describes. TypeSafe checks are not counted.
           </p>
         </div>
         <IfCreatorSelect accounts={accounts} value={accountId} onChange={setPicked} />
@@ -59,7 +59,7 @@ function CapLoader({ accountId }: { accountId: string }) {
 }
 
 function CapForm({ accountId, resp }: { accountId: string; resp: AccountConfigResp }) {
-  const saveM = useSaveAccountConfig(accountId);
+  const saveM = useSaveAccountConfig(accountId, { cap: true });
   const stored = resp.config.daily_cost_cap_cents;
   const [raw, setRaw] = useState(() => centsToDollars(stored));
   const err = capError(raw, stored);
@@ -84,7 +84,7 @@ function CapForm({ accountId, resp }: { accountId: string; resp: AccountConfigRe
           <span className="text-muted">per day</span>
         </div>
         <IfHelp id={`${inputId}-help`}>
-          Vault describe and chats / other AI can each spend up to this much per day; resets at 00:00 UTC. 0 pauses all AI for this creator. A change
+          Vault describe and chats / other AI can each spend up to this much per day; resets at 00:00 UTC. 0 pauses paid model calls (chat replies, automations, vault describes) for this creator; TypeSafe checks still run. A change
           applies to the next AI call. Up to $100.
         </IfHelp>
       </div>

@@ -10,7 +10,8 @@
           subscribe_at, else first sighting, then id), named by the trial mirror and the promotion's campaign (through
           link_meta.campaign_id); the rest as no link.
   growth  new fans per report-zone day (a subscription sale or the roster's subscribe_at, each fan once) and
-          renewed fans (a rebill), each per Creator and day raised to OF's own stored count when larger.
+          renewed fans (a rebill), each per Creator and day raised to OF's own stored count when larger; a
+          Creator with OF days in the window has its own rows on UTC days too (OF's), so one fan counts once.
   scope   another Agency's Creator is 403.
 
 Seeded straight into the temp DB; no network.
@@ -201,6 +202,42 @@ def case_growth_takes_ofs_daily_counts_when_larger():
     growth = _get(f"/admin/stats/fan-report?account_id={C6}&from=2026-03-01&to=2026-03-31").json()["growth"]
     assert growth == [{"day": "2026-03-12", "new_fans": 155, "renewed_fans": 3},
                       {"day": "2026-03-13", "new_fans": 1, "renewed_fans": 0}], growth
+
+
+def case_growth_with_of_days_buckets_local_rows_by_utc_day_not_twice():
+    # New York report zone. Both Creators gain one fan at 03:00 UTC on the 12th (22:00 on the 11th in New York).
+    # with_of has OF's own day for it (UTC days): its local row goes on that UTC day, one fan, not one per side.
+    # no_of has no OF days: its local row stays on the report-zone day.
+    with_of, no_of = _creator("5600017"), _creator("5600018")
+    at = datetime(2026, 3, 12, 3, 0)
+    _sale(with_of, 1, "subscription", 1000, at)
+    _sale(with_of, 2, "rebill", 1000, at)
+    _sale(no_of, 1, "subscription", 1000, at)
+    _add(OfStatsDaily(account_id=with_of, day="2026-03-12", new_subs=1, renewals=1))
+    assert OWNER_A.put("/admin/settings/preferences", json={"report_tz": "America/New_York"}).status_code == 200
+    try:
+        growth = _get(f"/admin/stats/fan-report?account_id={with_of},{no_of}&{MARCH}").json()["growth"]
+    finally:
+        OWNER_A.put("/admin/settings/preferences", json={})
+    assert growth == [{"day": "2026-03-11", "new_fans": 1, "renewed_fans": 0},
+                      {"day": "2026-03-12", "new_fans": 1, "renewed_fans": 1}], growth
+
+
+def case_growth_edge_row_whose_utc_day_is_off_the_report_stays_on_its_report_day():
+    # Ljubljana report of Mar 12 only. A fan subs and renews at 00:30 local on the 12th (23:30 UTC on the 11th), on a
+    # Creator OF covers (its Mar 12 day: 1 new, 0 renewals). The rows' UTC day (Mar 11) is off the report's days, so
+    # they stay on the report-zone day: Mar 12, per-day max with OF's, nothing on Mar 11, no double count.
+    aid = _creator("5600019")
+    at = datetime(2026, 3, 11, 23, 30)
+    _sale(aid, 1, "subscription", 1000, at)
+    _sale(aid, 2, "rebill", 1000, at)
+    _add(OfStatsDaily(account_id=aid, day="2026-03-12", new_subs=1, renewals=0))
+    assert OWNER_A.put("/admin/settings/preferences", json={"report_tz": "Europe/Ljubljana"}).status_code == 200
+    try:
+        growth = _get(f"/admin/stats/fan-report?account_id={aid}&from=2026-03-12&to=2026-03-12").json()["growth"]
+    finally:
+        OWNER_A.put("/admin/settings/preferences", json={})
+    assert growth == [{"day": "2026-03-12", "new_fans": 1, "renewed_fans": 1}], growth
 
 
 def case_another_agencys_creator_is_refused():

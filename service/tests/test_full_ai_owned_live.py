@@ -3,7 +3,8 @@
 24 h open Offer (phase 05, ticket 87). Pure tables over hand-built rows, then a seeded temp DB.
 
   case_pure_tables              owned_live / sent_live / open_offer_live over a Free item, a cleared
-                                row, an unconfirmed row and a superseded Offer
+                                row, an unconfirmed row and a superseded Offer; a Free item with no OF
+                                id (reaped, never confirmed) is not Owned (W30 F12)
   case_age_bounds               open_offer_live at 24 h -/+ 1 min and with no offer_message_id;
                                 unconfirmed_of at 899 / 901 s and `but`
   case_offer_still_valid        owned preview / locked id, another unconfirmed row at 100 / 1000 s,
@@ -70,7 +71,8 @@ def _row(rid: int, age_s: float, *, price=5000, locked=(), previews=(), msg_id=N
 
 
 def case_pure_tables():
-    free = _row(1, 3600, price=0, locked=[11], kind="free")
+    free = _row(1, 3600, price=0, locked=[11], kind="free", msg_id=101)
+    assert o.owned_live([_row(1, 3600, price=0, locked=[11], kind="free")], set()) == set()  # no OF id
     cleared = _row(2, 3000, cleared=True)
     unconf = _row(3, 600, locked=[31], previews=[32])
     bought = _row(4, 500, locked=[41], msg_id=401, outcome="bought")

@@ -24,7 +24,8 @@ Mirror rows: 201 photo in folder 12, 202 video in folder 99, 203 a DRM-only vide
   case_transient_resign_failure_retries_soon — a window read that failed in transit is remembered (no by-id read)
                                           FAIL_TRANSIENT_S, not FAIL_TTL_S: the panel's Retry re-asks OF.
   case_resign_ignores_foreign_u         — the chatter's resign with a `u` of a hidden media: that media's fresh url
-                                          (cached) never comes back; the visible media's own fresh url does.
+                                          (cached) never comes back; the visible media's own fresh url does, re-signed
+                                          from its mirror row's url through the listing window (not by id).
   case_empty_account_id_is_422          — `account_id=` on every route: 422, never an anonymous answer.
   case_video_is_not_gzipped             — a `video/mp4` upstream streams with its Content-Length, no Content-Encoding.
   case_disconnect_before_body_frees_slot — the client is gone before the body generator starts: slot back, the
@@ -376,9 +377,9 @@ def case_transient_resign_failure_retries_soon():
     assert _dl(owner, 201).status_code == 403 and c.reads == ["p0"], "a hover's frames: one OF call, no by-id"
     until = cdn_resign._failed[(AID, 201)]
     assert until - time.monotonic() <= cdn_resign.FAIL_TRANSIENT_S, until
-    assert cdn_resign._pages[(AID, 0)][0] - time.monotonic() <= cdn_resign.FAIL_TRANSIENT_S
+    assert cdn_resign._pages[(AID, 0)].until - time.monotonic() <= cdn_resign.FAIL_TRANSIENT_S
     cdn_resign._failed[(AID, 201)] = time.monotonic() - 1   # FAIL_TRANSIENT_S later
-    cdn_resign._pages[(AID, 0)] = (time.monotonic() - 1, None)
+    cdn_resign._pages[(AID, 0)] = cdn_resign._pages[(AID, 0)]._replace(until=time.monotonic() - 1)
     del c.vault_media                                        # OF answers again
     assert _dl(owner, 201).status_code == 200 and c.reads == ["p0", "p0"], c.reads
 
@@ -392,7 +393,7 @@ def case_resign_ignores_foreign_u():
                     params={"account_id": AID, "media_id": 201, "u": _full(202, "video") + SIG_OLD})
     assert r.status_code == 200, (r.status_code, r.text)
     assert r.json() == {"url": _full(201, "photo") + SIG_NEW}, ("201's own url, never 202's", r.json())
-    assert c.reads == [201], c.reads
+    assert c.reads == ["p0"], ("the row's url through the window cache, not a by-id read", c.reads)
     assert (AID, 201) not in cdn_resign._failed, "a mismatched u must not mark the visible media failed"
 
 

@@ -5,7 +5,8 @@ import { initRuleEditor, ruleEditorReducer, buildBody, derive } from "@/componen
 import { autoStoriesReducer, buildPayload as storyPayload, buildTrigger as storyTrigger, DEFAULT_FORM as STORY_BLANK }
   from "@/components/settings/autoStoriesForm";
 import {
-  boundFlow, DO_FLOWS, flowForHref, folderLine, typingFrames, type AgentStep, type AutoStorySlots, type MassPremadeSlots,
+  boundFlow, DO_FLOWS, flowForHref, folderLine, leftFilled, stoppedLine, typingFrames, type AgentStep, type AutoStorySlots,
+  type MassPremadeSlots,
 } from "./doFlows";
 
 const flow = DO_FLOWS.mass_premade;
@@ -33,6 +34,7 @@ describe("mass_premade toActions", () => {
     const row = (patch: object) => ({ type: "row", a: { type: "patch", patch } });
     expect(shape(flow.toActions(PILOT))).toEqual([
       ["rm-mass_premade-new", "open"],
+      ["rm-mass_premade-enabled", { type: "field", patch: { enabled: false, dryRun: false } }],
       ["rm-mass_premade-name", { type: "field", patch: { name: "Hourly SFW tease" } }],
       ["rm-mass_premade-every", { type: "field", patch: { intervalValue: 1 } }],
       // unit "hours" is the blank form's: no step
@@ -42,7 +44,6 @@ describe("mass_premade toActions", () => {
       ["pm-mass_premade-unsend", row({ unsendAfterHours: "8" })],
       // exclude_last_chat_hours null, includes = the default audience: no steps
       ["pm-mass_premade-lists-panel", row({ excludes: ["9001"] })],
-      ["rm-mass_premade-enabled", { type: "field", patch: { enabled: false, dryRun: false } }],
       ["rm-mass_premade-save", "save"],
     ]);
   });
@@ -58,26 +59,37 @@ describe("mass_premade toActions", () => {
   };
 
   it.each<[string, Partial<MassPremadeSlots>, string[]]>([
-    ["all defaults: open, one caption, OFF, save", {}, ["rm-mass_premade-new", "pm-mass_premade-text-0", "rm-mass_premade-enabled", "rm-mass_premade-save"]],
+    ["all defaults: open, OFF, one caption, save", {}, ["rm-mass_premade-new", "rm-mass_premade-enabled", "pm-mass_premade-text-0", "rm-mass_premade-save"]],
     ["minutes: value and unit", { interval: { value: 30, unit: "minutes" } },
-      ["rm-mass_premade-new", "rm-mass_premade-every", "rm-mass_premade-unit", "pm-mass_premade-text-0", "rm-mass_premade-enabled", "rm-mass_premade-save"]],
+      ["rm-mass_premade-new", "rm-mass_premade-enabled", "rm-mass_premade-every", "rm-mass_premade-unit", "pm-mass_premade-text-0", "rm-mass_premade-save"]],
     ["skip-chat 3h", { exclude_last_chat_hours: 3 },
-      ["rm-mass_premade-new", "pm-mass_premade-text-0", "pm-mass_premade-last-chat", "rm-mass_premade-enabled", "rm-mass_premade-save"]],
+      ["rm-mass_premade-new", "rm-mass_premade-enabled", "pm-mass_premade-text-0", "pm-mass_premade-last-chat", "rm-mass_premade-save"]],
     ["a custom include list", { includes: ["fans", "555"] },
-      ["rm-mass_premade-new", "pm-mass_premade-text-0", "pm-mass_premade-lists-panel", "rm-mass_premade-enabled", "rm-mass_premade-save"]],
+      ["rm-mass_premade-new", "rm-mass_premade-enabled", "pm-mass_premade-text-0", "pm-mass_premade-lists-panel", "rm-mass_premade-save"]],
     ["includes in another order = default", { includes: ["following", "fans"] },
-      ["rm-mass_premade-new", "pm-mass_premade-text-0", "rm-mass_premade-enabled", "rm-mass_premade-save"]],
+      ["rm-mass_premade-new", "rm-mass_premade-enabled", "pm-mass_premade-text-0", "rm-mass_premade-save"]],
     ["blank captions dropped", { captions: ["  ", "x"] },
-      ["rm-mass_premade-new", "pm-mass_premade-text-0", "rm-mass_premade-enabled", "rm-mass_premade-save"]],
+      ["rm-mass_premade-new", "rm-mass_premade-enabled", "pm-mass_premade-text-0", "rm-mass_premade-save"]],
   ])("%s", (_, patch, targets) => {
     expect(flow.toActions({ ...BARE, ...patch }).map((s) => s.target)).toEqual(targets);
   });
 
-  it.each([PILOT, BARE])("always ends with Enabled off + Dry run off, right before Save", (slots) => {
+  // rwl W30 F2: a run stopped halfway must never leave a filled form ON for the user's own Save.
+  it.each([PILOT, BARE])("Enabled off + Dry run off right after open, before any content step; Save last", (slots) => {
     const steps = flow.toActions(slots);
+    expect(steps[0].action).toBe("open");
+    expect(steps[1].action).toEqual({ type: "field", patch: { enabled: false, dryRun: false } });
     expect(steps.at(-1)!.action).toBe("save");
-    expect(steps.at(-2)!.action).toEqual({ type: "field", patch: { enabled: false, dryRun: false } });
     expect(steps.filter((s) => s.action === "save")).toHaveLength(1);
+    // every prefix stopped after a content step is OFF when played into the editor's reducer
+    for (let i = 2; i < steps.length - 1; i++) {
+      let s = initRuleEditor("mass_premade", null);
+      for (const st of steps.slice(0, i + 1)) if (typeof st.action !== "string") s = ruleEditorReducer(s, st.action);
+      expect(s.enabled).toBe(false);
+      expect(leftFilled(steps, i)).toBe(true);
+    }
+    expect(leftFilled(steps, 0)).toBe(false);
+    expect(leftFilled(steps, 1)).toBe(false);
   });
 
   it("played into the editor's own reducer, the pilot saves OFF with the asked-for payload", () => {
@@ -107,9 +119,9 @@ describe("mass_premade extras (price, photo count, More settings)", () => {
     recent_chat_hours: 12, recent_chat_limit: 20,
   };
 
-  it("steps after the folder; More settings opened (reveal) before its fields; OFF + save stay last", () => {
+  it("steps after the folder; More settings opened (reveal) before its fields; OFF first, save last", () => {
     const steps = flow.toActions(XTRA);
-    expect(shape(steps).slice(4, -2)).toEqual([
+    expect(shape(steps).slice(5, -1)).toEqual([
       ["pm-mass_premade-media-count", row({ mediaCount: "3" })],
       ["pm-mass_premade-price", row({ price: "15" })],
       ["pm-mass_premade-more-toggle", "reveal"],
@@ -119,7 +131,7 @@ describe("mass_premade extras (price, photo count, More settings)", () => {
       ["pm-mass_premade-recent-limit", row({ recentChatLimit: "20" })],
       ["pm-mass_premade-unread", row({ unreadLimit: "50" })],
     ]);
-    expect(steps.at(-2)!.action).toEqual({ type: "field", patch: { enabled: false, dryRun: false } });
+    expect(steps[1].action).toEqual({ type: "field", patch: { enabled: false, dryRun: false } });
   });
 
   it.each<[string, Partial<MassPremadeSlots>, string[]]>([
@@ -254,22 +266,27 @@ describe("auto_story toActions", () => {
   };
 
   it.each<[string, Partial<AutoStorySlots>, string[]]>([
-    ["blank-form values make no steps but folder, OFF and Save", {}, ["story-folder", "story-enabled", "story-save"]],
+    ["blank-form values make no steps but OFF, folder and Save", {}, ["story-enabled", "story-folder", "story-save"]],
     ["no folder: the form keeps its own gap", { folder: null }, ["story-enabled", "story-save"]],
-    ["clock times", { times: ["09:00", "20:00"] }, ["story-folder", "story-time-0", "story-enabled", "story-save"]],
-    ["interval at the default 6h: mode only", { mode: "interval" }, ["story-folder", "story-mode-interval", "story-enabled", "story-save"]],
+    ["clock times", { times: ["09:00", "20:00"] }, ["story-enabled", "story-folder", "story-time-0", "story-save"]],
+    ["interval at the default 6h: mode only", { mode: "interval" }, ["story-enabled", "story-folder", "story-mode-interval", "story-save"]],
     ["interval every 4h, 2 per run, keep, 30 runs", { mode: "interval", every_hours: 4, per_run: 2, hours_to_live: 0, max_runs: 30 },
-      ["story-folder", "story-mode-interval", "story-every", "story-per-run", "story-ttl", "story-max-runs", "story-enabled", "story-save"]],
+      ["story-enabled", "story-folder", "story-mode-interval", "story-every", "story-per-run", "story-ttl", "story-max-runs", "story-save"]],
   ])("%s", (_name, over, targets) => {
     expect(story.toActions({ ...BLANK, ...over }).map((s) => s.target)).toEqual(targets);
   });
 
   it.each<Partial<AutoStorySlots>>([{}, { mode: "interval", every_hours: 3 }, { folder: null, max_runs: 5 }])(
-    "always ends with Enabled off, right before one Save %#", (over) => {
+    "starts with Enabled off, before any content step; one Save last %#", (over) => {
       const steps = story.toActions({ ...BLANK, ...over });
+      expect(steps[0]).toMatchObject({ target: "story-enabled", action: { type: "set", patch: { enabled: false } } });
       expect(steps.at(-1)!.action).toBe("save");
-      expect(steps.at(-2)).toMatchObject({ target: "story-enabled", action: { type: "set", patch: { enabled: false } } });
       expect(steps.filter((s) => s.action === "save")).toHaveLength(1);
+      for (let i = 1; i < steps.length - 1; i++) {
+        let f = STORY_BLANK;
+        for (const st of steps.slice(0, i + 1)) if (typeof st.action !== "string") f = autoStoriesReducer(f, st.action);
+        expect(f.enabled).toBe(false);
+      }
     });
 
   it("played into the page's own reducer, it saves OFF with the asked-for trigger and payload", () => {
@@ -299,5 +316,39 @@ describe("auto_story toActions", () => {
     expect(b.route("7")).toBe("/growth/auto-story?creator=7");
     expect(b.savedSwitch).toBe("Auto Story");
     expect(b.steps[0].action).not.toBe("open");
+  });
+});
+
+// rwl W30 F2 + M17: the stopped-run line says what the page holds — filled + OFF, or untouched; "left open" only then.
+describe("stoppedLine", () => {
+  it.each<[string, Parameters<typeof stoppedLine>[0], boolean, string]>([
+    ["aborted before filling", { aborted: "Stopped with Esc" }, false,
+      "Stopped with Esc. The page is left as it was — nothing more is filled in or saved."],
+    ["aborted mid-fill", { aborted: "Stopped — you took over" }, true,
+      "Stopped — you took over. The form is partly filled and switched OFF — nothing was saved."],
+    ["failed before the form opened", { failed: "The Auto Mass page didn't open in time — try again." }, false,
+      "Couldn't finish: The Auto Mass page didn't open in time — try again."],
+    ["failed at Save", { failed: "Add text to enable Create" }, true,
+      "Couldn't finish: Add text to enable Create. The form is left open for you, switched OFF."],
+  ])("%s", (_n, how, filled, want) => {
+    expect(stoppedLine(how, filled)).toBe(want);
+  });
+  // rwl W30 S4: the OFF step is the one the builder marks, not any patch that happens to hold enabled:false.
+  it("leftFilled reads the builder's off marker", () => {
+    const field = { target: "x", action: { type: "field", patch: { enabled: false } }, label: "" } as AgentStep;
+    const save: AgentStep = { target: "s", action: "save", label: "" };
+    expect(leftFilled([field, save], 1)).toBe(false);
+    expect(leftFilled([{ target: "o", action: "open", label: "", off: true }, save], 1)).toBe(true);
+    for (const steps of [flow.toActions({ ...PILOT }), DO_FLOWS.auto_story.toActions({
+      folder: { id: "11", name: "Daytime", photos: 8 }, mode: "clock", times: ["09:00"], every_hours: 6, per_run: 1,
+      hours_to_live: 6, max_runs: null })]) {
+      expect(steps.filter((st) => st.off).length).toBe(1);
+    }
+  });
+  it("leftFilled: no step / no OFF step = not filled", () => {
+    const steps = flow.toActions({ ...PILOT });
+    expect(leftFilled(steps, undefined)).toBe(false);
+    expect(leftFilled([], 5)).toBe(false);
+    expect(leftFilled(steps, steps.length - 1)).toBe(true);
   });
 });

@@ -335,8 +335,8 @@ def case_verify_is_throttled_per_client_before_lookup_and_siteverify():
 
 
 def case_verify_url_seam_is_loopback_only():
-    import tracking_links_api as tla
-    real = tla.TURNSTILE_VERIFY_URL
+    import turnstile as ts
+    real = ts.VERIFY_URL
     saved = os.environ.get("TURNSTILE_VERIFY_URL")
     try:
         for raw, want in [
@@ -350,7 +350,7 @@ def case_verify_url_seam_is_loopback_only():
             ("http://127.0.0.1:99999/x", real),
         ]:
             os.environ["TURNSTILE_VERIFY_URL"] = raw
-            assert tla._verify_url() == want, (raw, tla._verify_url())
+            assert ts.verify_url() == want, (raw, ts.verify_url())
     finally:
         if saved is None:
             os.environ.pop("TURNSTILE_VERIFY_URL", None)

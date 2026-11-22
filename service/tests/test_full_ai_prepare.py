@@ -174,9 +174,9 @@ _applied: list[str] = []
 _real_apply = vault_scripts.apply_ai_folders
 
 
-async def _apply_spy(account_id, plan):
+async def _apply_spy(account_id, plan, **kw):
     _applied.append(account_id)
-    return await _real_apply(account_id, plan)
+    return await _real_apply(account_id, plan, **kw)
 
 
 vault_scripts.apply_ai_folders = _apply_spy
@@ -407,7 +407,7 @@ async def case_click_while_running_same_run():
 
 async def case_walk_error_fails_harvest():
     aid = await _account()
-    _CLIENTS[aid] = FakeOF(aid, 250, fail_at_offset=100)
+    _CLIENTS[aid] = FakeOF(aid, 250, fail_at_offset=99)   # the second All page (cursors step 99)
     _reset_spies()
     await full_ai_api.prepare_content_start({"account_id": aid})
     run = await _settle(aid)

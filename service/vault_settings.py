@@ -1,4 +1,4 @@
-"""vault_settings — two per-Creator vault switches, both OFF until an owner turns them on.
+"""vault_settings — three per-Creator vault switches: two OFF, one ON, until an owner flips them.
 
 `folder_price_final`: a saved folder price is the final price of a paid Full AI offer (no price
 Jev, no tease price, no haggle on folder-priced media). Off: Jev decides the price and the folder
@@ -8,8 +8,12 @@ analysis and shown in the vault; media in its Needs Review folder is not for sal
 folder is created or placed, none is listed (vault, Full AI Content folders picker) or editable
 (`vault_internal_folders` 404s it), and Needs Review keeps nothing from sale. Folders and memberships
 made while on are kept for the next turn-on.
+`solo_sequences` (ON by default, client rule): Script Fill puts only solo media into Sequences; partner
+(BG/GG) media is `not_solo` (`script_fill_decide._gate`). Off: partner media may be Filled, the other
+gates still apply.
 
-No row = both off. Routes: `vault_ai_api` GET / PUT /admin/vault-ai/settings (owner scope).
+No row = the first two off, `solo_sequences` on; a NULL column reads as its default (`DEFAULTS`).
+Routes: `vault_ai_api` GET / PUT /admin/vault-ai/settings (owner scope).
 """
 from __future__ import annotations
 
@@ -21,16 +25,18 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from db.engine import get_session
 from db.models import VaultAccountSetting
 
-KEYS = ("folder_price_final", "standard_folders")
-OFF = {k: False for k in KEYS}
+KEYS = ("folder_price_final", "standard_folders", "solo_sequences")
+DEFAULTS = {"folder_price_final": False, "standard_folders": False, "solo_sequences": True}
 
 
 async def load(account_id: str) -> dict[str, bool]:
     async with get_session() as s:
         row = (await s.execute(
-            select(VaultAccountSetting.folder_price_final, VaultAccountSetting.standard_folders)
+            select(*(getattr(VaultAccountSetting, k) for k in KEYS))
             .where(VaultAccountSetting.account_id == account_id))).first()
-    return dict(OFF) if row is None else {k: bool(v) for k, v in zip(KEYS, row)}
+    if row is None:
+        return dict(DEFAULTS)
+    return {k: DEFAULTS[k] if v is None else bool(v) for k, v in zip(KEYS, row)}
 
 
 async def on(account_id: str, key: str) -> bool:
@@ -38,7 +44,7 @@ async def on(account_id: str, key: str) -> bool:
 
 
 async def put(account_id: str, **changes: bool) -> dict[str, bool]:
-    """Set the named switches, keep the others; returns the stored pair."""
+    """Set the named switches, keep the others; returns every stored switch."""
     vals = {**await load(account_id), **{k: bool(v) for k, v in changes.items() if k in KEYS}}
     async with get_session() as s:
         await s.execute(sqlite_insert(VaultAccountSetting)

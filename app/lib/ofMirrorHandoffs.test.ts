@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { bindHandoffs, HANDOFFS, handoffsFor } from "./ofMirrorHandoffs";
+import { asHandoff, bindHandoffs, HANDOFF_TITLE, HANDOFFS, handoffsFor, reportHandoffUrl } from "./ofMirrorHandoffs";
 import { NOT_YET } from "./ofMirrorWrites";
 
 const page = (p: string) => {
@@ -154,5 +154,46 @@ describe("bindHandoffs", () => {
       expect(bindHandoffs(d, p)).toBeTypeOf("function");
       expect(d.querySelector("#content [data-oi-wired]"), p).toBeNull();
     }
+  });
+});
+
+// ticket 42: the three Reports' hand-offs (D22), from a fixture post (ofMirrorHome.test's another creator's post 11 by
+// @deltafour) and chat (fan 2014, ofMirrorChatTools.test's).
+describe("reportHandoffUrl", () => {
+  it.each([
+    ["post", reportHandoffUrl("post", { postId: 11, username: "deltafour" }), "https://onlyfans.com/11/deltafour", "/11/deltafour"],
+    ["chat", reportHandoffUrl("chat", { fanId: "2014" }), "https://onlyfans.com/my/chats/chat/2014/", "/my/chats/chat/2014/"],
+    ["message", reportHandoffUrl("message", { fanId: 2014 }), "https://onlyfans.com/my/chats/chat/2014/", "/my/chats/chat/2014/"],
+  ])("Report on a %s opens %s", (_place, got, want, path) => {
+    expect(got).toBe(want);
+    const u = new URL(got);
+    expect([u.protocol, u.host, u.pathname, u.search, u.hash]).toEqual(["https:", "onlyfans.com", path, "", ""]);
+  });
+
+  it("escapes its ids, so a handle never leaves the path", () => {
+    expect(reportHandoffUrl("post", { postId: "7", username: "a/b?c" })).toBe("https://onlyfans.com/7/a%2Fb%3Fc");
+  });
+
+  it("asHandoff: an anchor in place; any other element swapped for one (its attributes but `drop`, its content); a new tab, noopener noreferrer, Wired, not disabled; the title is the caller's", () => {
+    const a = document.createElement("a");
+    a.setAttribute("aria-disabled", "true");
+    a.title = "kept";
+    document.body.append(a);
+    expect(asHandoff(a, "https://onlyfans.com/my/chats/chat/2014/")).toBe(a);
+    expect([a.href, a.target, a.rel, a.hasAttribute("data-oi-wired"), a.getAttribute("aria-disabled"), a.title])
+      .toEqual(["https://onlyfans.com/my/chats/chat/2014/", "_blank", "noopener noreferrer", true, null, "kept"]);
+    const div = document.createElement("div");
+    div.className = "v-list-item";
+    div.setAttribute("data-oi-menu", "report");
+    div.setAttribute("aria-disabled", "true");
+    div.setAttribute("data-drop", "x");
+    div.textContent = " Report ";
+    document.body.append(div);
+    const b = asHandoff(div, "https://onlyfans.com/11/deltafour", ["data-drop"]);
+    expect([b.tagName, b.isConnected, div.isConnected, b.className, b.dataset.oiMenu, b.hasAttribute("data-drop"), b.textContent, b.href, b.getAttribute("aria-disabled"), b.title])
+      .toEqual(["A", true, false, "v-list-item", "report", false, " Report ", "https://onlyfans.com/11/deltafour", null, ""]);
+    expect(HANDOFF_TITLE).toBe("opens onlyfans.com");
+    a.remove();
+    b.remove();
   });
 });

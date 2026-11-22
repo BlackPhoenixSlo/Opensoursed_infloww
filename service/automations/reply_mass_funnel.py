@@ -153,7 +153,7 @@ from ._funnel_signals import (
 )
 from db.engine import get_session
 from db.models import (
-    MASS_RUN_OK, AccountAiConfig, FunnelAccountMedia, FunnelResponder, FunnelState,
+    MASS_RUN_OK, MASS_RUN_RUNNING, AccountAiConfig, FunnelAccountMedia, FunnelResponder, FunnelState,
     MassMessageFunnel, MassRun, Message,
 )
 from llm_client import LLMCapExceeded
@@ -603,9 +603,12 @@ async def _replay_landed(account_id: str, cs: FunnelState, now: datetime, *,
         return False
     script = fd.Script(steps=steps, num_to_idx=step_number_index(steps), max_hops=_MAX_HOPS)
     e, _fx = fd.decide(fd.Entry.from_row(cs), fd.Sent(cs.sending_at, fd.Facts(**ctx)), script)
+    # `confirmed_sent_at`: the next reply cutoff's floor when no out row carries
+    # this step's tags (a confirm with no hint).
     return await smst.clear(FunnelState, _keys(cs.mass_run_id, cs.fan_id),
                             if_sending_at=cs.sending_at,
-                            **{**_state_values(e, now), "last_error": None})
+                            **{**_state_values(e, now), "last_error": None,
+                               "confirmed_sent_at": cs.sending_at})
 
 
 async def settle_landed(account_id: str, boot_ts: datetime, now: datetime) -> None:
@@ -675,9 +678,22 @@ async def dismiss_sent(account_id: str, fan_id: int, mass_run_id: int | None,
             funnel_step=fd.step_number(steps[int(rows[0].current_step)]))
     if await _replay_landed(account_id, rows[0], now, confirmed=True):
         return True
-    if tagged:
+    # Lost the clear. A settle that saved THIS attempt (its replay stamps the
+    # mark) may have found the step by our tag: it stays. Else take it back.
+    if tagged and not await attempt_saved(account_id, fan_id, mass_run_id, sending_at):
         await smst.untag_out(account_id, hint_message_id, _PURPOSE)
     return False
+
+
+async def attempt_saved(account_id: str, fan_id: int, mass_run_id: int | None,
+                        since: datetime) -> bool:
+    """Was the attempt marked at `since` saved as sent? Its replay stamps
+    `confirmed_sent_at` with the mark; a Retry's clear does not."""
+    if mass_run_id is None:
+        return False
+    async with get_session() as s:
+        cs = await s.get(FunnelState, (int(mass_run_id), int(fan_id)))
+    return cs is not None and cs.confirmed_sent_at == since
 
 
 # ── Step text (static verbatim, or generate via llm_client) ──────────
@@ -687,6 +703,25 @@ def _is_generated(step: dict) -> bool:
     if isinstance(msgs, list) and any(str(m).strip() for m in msgs):
         return False  # static messages win — DOM parity, reference funnel verbatim
     return bool(step.get("generate") or step.get("prompt"))
+
+
+async def needs_llm(account_id: str) -> bool:
+    """Would walking this account's funnel broadcasts call an LLM? Only a
+    generated step does (written messages are sent verbatim). Only the broadcasts
+    the walker walks now (`_active_mass_runs`), plus one still sending inside
+    the discovery window (the broadcast turns the walker on before it closes its
+    run): a later generated one, or an edit, surfaces as the run's key notice."""
+    now = datetime.utcnow()
+    fids = [a.funnel_id for a in await _active_mass_runs(account_id, None, now)]
+    async with get_session() as s:
+        fids += (await s.execute(select(MassRun.funnel_id).where(
+            MassRun.account_id == str(account_id), MassRun.status == MASS_RUN_RUNNING,
+            MassRun.funnel_id.is_not(None),
+            MassRun.started_at >= now - timedelta(days=DISCOVERY_WINDOW_DAYS)))).scalars().all()
+    for fid in dict.fromkeys(fids):
+        if any(_is_generated(st) for st in await _load_funnel_steps(int(fid))):
+            return True
+    return False
 
 
 async def _history_block(account_id: str, fan_id: int) -> str:
@@ -980,8 +1015,15 @@ async def _facts(t: _Tick, entry: fd.Entry, fan_id: int, a: _Anchor) -> fd.Facts
     bought = bool(paid_since is not None and await has_fan_paid_ppv(
         t.account_id, fan_id, paid_since))
     last_out = await last_funnel_out_at(t.account_id, fan_id, a.mass_run_id)
+    # A step confirmed with no tagged out row ("It went through", no hint) floors
+    # the cutoff at its Sent time: an older reply is no reply to it. A tagged row
+    # inside the attempt's window is that send (OF's clock may read before our
+    # mark): it is the cutoff, as for any landed step.
+    cutoff, sent_at = last_out, entry.confirmed_sent_at
+    if sent_at is not None and (last_out is None or last_out < smd.lookup_since(sent_at)):
+        cutoff = sent_at
     # One query answers both "replied since?" and "with what text?".
-    replied, reply_text = await latest_reply(t.account_id, fan_id, last_out)
+    replied, reply_text = await latest_reply(t.account_id, fan_id, cutoff)
     substantive = is_substantive_msg(reply_text) if reply_text else False
     return fd.Facts(replied=replied, bought=bought, substantive=substantive,
                     reply_text=reply_text)

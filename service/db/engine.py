@@ -184,6 +184,9 @@ def _make_engine(url: str, pooled: bool) -> AsyncEngine:
     made = create_async_engine(
         url,
         echo=os.environ.get("DB_ECHO") == "1",
+        # A failed statement's text otherwise carries its bound values ("[parameters: ...]"), and the
+        # 500 handler (server.py) stores str(exc) in /admin/errors: a 2FA seed, a key (W30 F9).
+        hide_parameters=True,
         connect_args={"check_same_thread": False} if url.startswith("sqlite") else {},
         future=True,
         **(_POOL_ARGS if pooled else {}),
@@ -366,6 +369,7 @@ async def init_db() -> None:
 
         inspector = inspect(sync_engine)
         has_alembic = "alembic_version" in inspector.get_table_names()
+        added: set[tuple[str, str]] = set()   # (table, column) the catch-up below added this boot
 
         if not has_alembic:
             from .models import Base
@@ -379,12 +383,6 @@ async def init_db() -> None:
                 conn.execute(text(
                     "INSERT INTO alembic_version (version_num) VALUES ('0001_initial')"
                 ))
-                # A fresh DB has nothing to compact: mark the one-time vault step
-                # done, else the box's SECOND boot (catch-up branch) wipes the
-                # vault cache its first run just filled.
-                conn.execute(text(_DATA_MIGRATIONS_DDL))
-                conn.execute(text("INSERT OR IGNORE INTO data_migrations (name) VALUES (:n)"),
-                             {"n": _VAULT_LIST_STATES_COMPACT})
         else:
             # Cheap idempotent catch-up for additive schema changes: any new
             # tables defined in models.py that aren't in the DB yet get
@@ -426,6 +424,7 @@ async def init_db() -> None:
                             f"ALTER TABLE {table_name} "
                             f"ADD COLUMN {col.name} {col_type}{default_clause}{null_clause}"
                         ))
+                        added.add((table_name, col.name))
 
             # Additive-INDEX catch-up. `create_all()` adds indexes for
             # newly-created tables but does NOT retroactively add new
@@ -502,14 +501,17 @@ async def init_db() -> None:
                 except Exception:
                     _log.exception("MASSppvEXCLUDE → MASSdmEXCLUDE merge failed")
 
-            # One-way DATA catch-up (11-17 Twin OOM): vault_response_cache
-            # wiped, vault_items.raw_json listStates cut to the hasMedia
-            # entries. Marker-guarded, batched.
-            if _is_sqlite:
-                try:
-                    compact_vault_list_states_once(sync_engine)
-                except Exception:
-                    _log.exception("vault listStates compact failed")
+        # Both branches — one-way DATA catch-up (11-17 Twin OOM): vault_response_cache
+        # wiped, vault_items.raw_json listStates cut to the hasMedia entries.
+        # Marker-guarded, batched. A fresh (empty) DB only gets the marker, so its
+        # second boot keeps the cache its first run filled; a populated DB with no
+        # alembic stamp still compacts (W30 F15/F24).
+        if _is_sqlite:
+            try:
+                compact_vault_list_states_once(sync_engine)
+            except Exception:
+                import logging as _logging
+                _logging.getLogger("of-relay.engine").exception("vault listStates compact failed")
 
         # Both branches: create_all builds no views, and nothing here runs
         # alembic, so the attribution view would otherwise exist only on a box
@@ -541,6 +543,18 @@ async def init_db() -> None:
         except Exception:
             import logging as _logging
             _logging.getLogger("of-relay.engine").exception("keep running rules heal failed")
+
+        try:
+            backfill_offer_attempt_once(sync_engine, ("ai_decisions", "offer_attempt_at") in added)
+        except Exception:
+            import logging as _logging
+            _logging.getLogger("of-relay.engine").exception("full ai offer attempt backfill failed")
+
+        try:
+            scrub_audit_credentials_once(sync_engine)
+        except Exception:
+            import logging as _logging
+            _logging.getLogger("of-relay.engine").exception("audit credential scrub failed")
 
         # Planner statistics, once per boot after the schema catch-up. Without
         # them (no sqlite_stat1 existed on any DB we checked) the planner guesses
@@ -772,29 +786,64 @@ _KEEP_RULES_HEAL = "20261121_keep_running_rules_heal"
 _KEEP_RULES_HEAL_MIGRATION = "20261121_0100_keep_running_rules_heal.py"
 
 
-def heal_keep_running_rules_once(sync_engine) -> int:
-    """ONE-TIME (2026-11-21, owner: Keep running is indefinite by default): each account
-    with a Kept campaign gets exactly one enabled, live `promo_reactivate` rule (migration
-    0129's `heal`: Kept campaigns ticked before PR #850 had none, or a disabled / dry-run
-    one). Guarded by a `data_migrations` marker, written in the same transaction (a fresh
-    box stamps it too). Returns rules created or changed."""
+def _data_step_once(sync_engine, marker: str, migration: str, step: str, done: str, run: bool = True) -> int:
+    """A ONE-TIME data step: migration file `migration`'s `step(conn)` (its SQL has one definition), guarded
+    by the `data_migrations` marker `marker`, written in the same transaction (a fresh box stamps it too).
+    `run` False stamps the marker only. Logs `done` % the step's count; returns it."""
     import importlib.util
     import logging
     from sqlalchemy import text
 
     with sync_engine.begin() as conn:
         conn.execute(text(_DATA_MIGRATIONS_DDL))
-        if conn.execute(text("SELECT 1 FROM data_migrations WHERE name = :n"),
-                        {"n": _KEEP_RULES_HEAL}).first() is not None:
+        if conn.execute(text("SELECT 1 FROM data_migrations WHERE name = :n"), {"n": marker}).first() is not None:
             return 0
-        path = HERE / "migrations" / "versions" / _KEEP_RULES_HEAL_MIGRATION
-        spec = importlib.util.spec_from_file_location("_keep_rules_heal", path)
-        mig = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mig)
-        n = mig.heal(conn)
-        conn.execute(text("INSERT INTO data_migrations (name) VALUES (:n)"), {"n": _KEEP_RULES_HEAL})
-    logging.getLogger("of-relay.engine").info("keep running rules heal: %d rule(s) created or fixed", n)
+        n = 0
+        if run:
+            spec = importlib.util.spec_from_file_location(
+                "_data_step_" + step, HERE / "migrations" / "versions" / migration)
+            mig = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mig)
+            n = getattr(mig, step)(conn)
+        conn.execute(text("INSERT INTO data_migrations (name) VALUES (:n)"), {"n": marker})
+    logging.getLogger("of-relay.engine").info(done, n)
     return n
+
+
+def heal_keep_running_rules_once(sync_engine) -> int:
+    """ONE-TIME (2026-11-21, owner: Keep running is indefinite by default): each account
+    with a Kept campaign gets exactly one enabled, live `promo_reactivate` rule (migration
+    0129's `heal`: Kept campaigns ticked before PR #850 had none, or a disabled / dry-run
+    one). `_data_step_once`. Returns rules created or changed."""
+    return _data_step_once(sync_engine, _KEEP_RULES_HEAL, _KEEP_RULES_HEAL_MIGRATION, "heal",
+                           "keep running rules heal: %d rule(s) created or fixed")
+
+
+_OFFER_ATTEMPT_BACKFILL = "20261122_full_ai_offer_attempt"
+_OFFER_ATTEMPT_MIGRATION = "20261122_0100_ai_decisions_offer_attempt.py"
+
+
+def backfill_offer_attempt_once(sync_engine, column_added: bool) -> int:
+    """ONE-TIME (2026-11-22, W30): legacy Full AI live priced rows that may have POSTed get
+    `offer_attempt_at = created_at` (migration 0130's `backfill`), so reap keeps them and settle
+    may still link them. Only on the boot whose column catch-up added the column (`column_added`):
+    a DB that already had it (fresh, upgraded, or a dev DB new code wrote) holds no legacy row, and
+    its new-code `sending` rows are not stamped; the marker is written either way
+    (`_data_step_once`). Returns rows stamped."""
+    return _data_step_once(sync_engine, _OFFER_ATTEMPT_BACKFILL, _OFFER_ATTEMPT_MIGRATION, "backfill",
+                           "full ai offer attempt backfill: %d row(s) stamped", run=column_added)
+
+
+_AUDIT_CREDENTIAL_SCRUB = "20261122_audit_credential_scrub"
+_AUDIT_CREDENTIAL_SCRUB_MIGRATION = "20261122_0400_audit_credential_scrub.py"
+
+
+def scrub_audit_credentials_once(sync_engine) -> int:
+    """ONE-TIME (2026-11-22, W30 F1): key values the audit snapshot stored before
+    `audit_log.credential_write` come out of `actions.payload_json` (migration 0134's
+    `scrub`). `_data_step_once`. Returns rows scrubbed."""
+    return _data_step_once(sync_engine, _AUDIT_CREDENTIAL_SCRUB, _AUDIT_CREDENTIAL_SCRUB_MIGRATION, "scrub",
+                           "audit credential scrub: %d row(s) scrubbed")
 
 
 _VAULT_LIST_STATES_COMPACT = "20261117_vault_list_states_compact"

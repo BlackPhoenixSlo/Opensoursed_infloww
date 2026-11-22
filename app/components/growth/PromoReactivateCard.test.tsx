@@ -1,8 +1,8 @@
 /**
  * PromoReactivateCard (Keep running's status row, docs/spec/phase-01-promo-preempt.md): ticked campaigns read
- * "Re-creates after it ends"; a campaign Inflowwww turned off stays listed with its reason (`keep_warning`) and who
- * fixes it; a held one says why (`keep_blocked`). With Re-create at 90% filled (`preempt`, cap 10 or more) it reads
- * "Re-creates at 90% filled or shortly before it ends" unless the server switch is off or it waits (`keep_wait`).
+ * "Re-creates after it ends"; a campaign Inflowwww turned off stays listed with its reason and who
+ * fixes it, a held one says why; the lines' text is the relay's (`keep_lines`). With Re-create at 90% filled (`preempt`, cap 10 or more) it
+ * reads "Re-creates at 90% filled or shortly before it ends" unless the server switch is off or it waits (`keep_wait`).
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
@@ -22,9 +22,10 @@ const get = relay.get as unknown as Mock;
 const promo = (over: Partial<PromoCampaign>): PromoCampaign => ({
   id: 1, of_promo_id: 501, name: "Promo", discount_percent: 50, price_cents: 0, subscribe_counts: 10,
   subscribe_days: 30, message: "", promo_type: "all", status: "active", subscriber_count: 0, auto_reactivate: false,
-  reactivate_count: 0, last_reactivated_at: null, keep_warning: null, keep_blocked: null, created_at: null,
+  reactivate_count: 0, last_reactivated_at: null, keep_blocked: null, keep_lines: [], created_at: null,
   source: "mirror", ...over,
 });
+const line = (lead: string | null, text: string, off = false, until: string | null = null) => ({ lead, text, off, until });
 const RULE = { id: 9, kind: "promo_reactivate", is_enabled: true, every_seconds: 3600,
   payload: { dry_run: false }, last_run: null };
 
@@ -77,84 +78,48 @@ describe("PromoReactivateCard", () => {
 
   it("a waiting campaign says why in a line that wraps on a phone", async () => {
     campaigns = [promo({ name: "Week", auto_reactivate: true, preempt: true, subscribe_counts: 50, keep_wait: "clock",
-      keep_blocked: "clock" })];
+      keep_blocked: "clock", keep_lines: [line("Waiting", "will re-create after it ends (OnlyFans' clock doesn't match ours)")] })];
     mount();
-    const line = await screen.findByRole("status");
-    expect(line.textContent).toBe("“Week”: Waiting: will re-create after it ends (OnlyFans' clock doesn't match ours)");
-    expect(line.className).toContain("break-words");
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toBe("“Week”: Waiting: will re-create after it ends (OnlyFans' clock doesn't match ours)");
+    expect(status.className).toContain("break-words");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it.each<[string, RegExp]>([
-    ["breaker", /3 promos in a row got no new claims or never went live — check the offer, then tick Keep running again/],
-    ["create_unknown", /never showed up — check the promos on OnlyFans, then tick Keep running again/],
-    ["price_free", /the page is free — set a subscription price on OnlyFans/],
-    ["captcha", /asked for a captcha/],
-    ["rate_limited", /refused two promo creates in a row/],
-    ["create_refused", /refused the promo create — check the offer/],
-    ["deactivated", /this Creator is deactivated/],
-    ["limit_reached", /the free trial used up its Re-create limit — tick Keep running again to set a new one/],
-    ["limit_needed", /this free trial has no Offer limit \(or was ticked under an older rule\) — set an Offer limit if it has none, then tick Keep running again/],
-    ["kept_duplicate", /only one can be — tick Keep running again on the one you want/],
-  ])("a campaign Inflowwww turned off (%s) stays listed with its reason and who fixes it", async (warning, text) => {
-    campaigns = [promo({ name: "Week", auto_reactivate: false, keep_warning: warning })];
+  it("a campaign Inflowwww turned off stays listed with the relay's reason, as an alert that wraps", async () => {
+    campaigns = [promo({ name: "Week", auto_reactivate: false,
+      keep_lines: [line("Keep running is off", "3 promos in a row … then tick Keep running again", true)] })];
     mount();
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("“Week”: Keep running is off:");
-    expect(alert.textContent).toMatch(text);
+    expect(alert.textContent).toBe("“Week”: Keep running is off: 3 promos in a row … then tick Keep running again");
     expect(alert.className).toContain("break-words");   // wraps on a 390 px phone
     expect(screen.getByText("No campaign is set to keep running")).toBeTruthy();
   });
 
-  it("a fenced ticked campaign names the owner as the fix, as an alert that wraps", async () => {
-    campaigns = [promo({ name: "Week", auto_reactivate: true, keep_blocked: "fence" })];
+  it("W30 F29 promises a check at least hourly, never a re-create within the hour", async () => {
+    campaigns = [];
     mount();
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("“Week”: Not re-creating: This server is not set to create promos — ask the owner to set it up");
-    expect(alert.className).toContain("break-words");
+    expect(await screen.findByText(/usually within minutes, checked at least hourly/)).toBeTruthy();
+    expect(screen.queryByText(/at most an hour/)).toBeNull();
   });
 
-  it("a create OnlyFans has not shown yet holds a ticked campaign, nothing to fix", async () => {
-    campaigns = [promo({ name: "Week", auto_reactivate: true, keep_blocked: "unknown" })];
+  it("a row with no lines (an OnlyFans-only promo) says nothing", async () => {
+    campaigns = [promo({ name: "Week", auto_reactivate: true, keep_lines: [] })];
     mount();
-    const held = await screen.findByRole("status");
-    expect(held.textContent).toContain("“Week”: Paused: waiting for OnlyFans to show the last re-create");
+    expect(await screen.findByText("Keeping “Week” running")).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it.each<[Partial<PromoCampaign>, { text: string; off: boolean }[]]>([
-    [{}, []],
-    [{ keep_warning: "something_new" }, [{ text: "Keep running is off: tick Keep running again", off: true }]],
-    [{ keep_blocked: "unknown" }, [{ text: expect.stringMatching(/^Paused: waiting/), off: false }]],
-    [{ keep_blocked: "backoff", keep_blocked_until: "2099-01-02T10:05:00" },
-      [{ text: expect.stringMatching(/^Paused until Jan 2, .+: the last re-create failed, so Inflowwww waits/), off: false }]],
-    [{ keep_blocked: "budget", keep_blocked_until: null },
-      [{ text: expect.stringMatching(/^Paused: 3 re-creates this hour \(or 8 today\)/), off: false }]],
-    [{ auto_reactivate: true, keep_blocked: "fence" },
-      [{ text: "Not re-creating: This server is not set to create promos — ask the owner to set it up", off: true }]],
-    [{ auto_reactivate: true, keep_blocked: "retick" }, [{ text: "Not re-creating: Tick Keep running again", off: true }]],
-    [{ auto_reactivate: true, recreates_left: 1 }, [{ text: "1 re-create left, then Keep running turns off", off: false }]],
-    [{ auto_reactivate: true, recreates_left: 3 }, [{ text: "3 re-creates left, then Keep running turns off", off: false }]],
-    [{ auto_reactivate: false, recreates_left: 3 }, []],
-    [{ auto_reactivate: true, preempt: true, keep_blocked: "switch" },
-      [{ text: "Re-create at 90% filled is off on this server — ask the owner", off: false }]],
-    [{ auto_reactivate: true, preempt: true, keep_blocked: "switch", subscribe_counts: 9 }, []],
-    // "clock" is the waiting line's reason, never a second line.
-    [{ auto_reactivate: true, keep_blocked: "clock", keep_wait: "clock" },
-      [{ text: "Waiting: will re-create after it ends (OnlyFans' clock doesn't match ours)", off: false }]],
-    ...([
-      ["count_untrusted", "the claim count isn't reliable yet"],
-      ["end_unconfirmed", "OnlyFans' end time isn't confirmed yet"],
-      ["second_live", "another promo is live too"],
-      ["breaker_hold", "the last re-create hasn't shown up on OnlyFans yet"],
-      ["backoff", "the last re-create failed"],
-      ["budget", "3 re-creates this hour (or 8 today) reached"],
-      ["no_recovery_slot", "keeping a re-create spare in case one fails"],
-      ["cooldown", "the last re-create was moments ago"],
-    ] as const).map(([wait, why]): [Partial<PromoCampaign>, { text: string; off: boolean }[]] =>
-      [{ auto_reactivate: true, keep_wait: wait }, [{ text: `Waiting: will re-create after it ends (${why})`, off: false }]]),
-    [{ auto_reactivate: true, keep_wait: "something_new" }, [{ text: "Waiting: will re-create after it ends", off: false }]],
-  ])("keepLines(%o)", (over, want) => {
-    expect(keepLines(promo(over))).toEqual(want);
+  // The text is the relay's (service/tests/test_promotions.py case_w30_f6_keep_lines); the card adds the lead and time.
+  it.each<[PromoCampaign["keep_lines"], { text: string; off: boolean }[]]>([
+    [[], []],
+    [[line("Not re-creating", "Tick Keep running again", true)], [{ text: "Not re-creating: Tick Keep running again", off: true }]],
+    [[line("Paused", "the last re-create failed", false, "2099-01-02T10:05:00")],
+      [{ text: expect.stringMatching(/^Paused until Jan 2, .+: the last re-create failed$/), off: false }]],
+    [[line(null, "1 re-create left, then Keep running turns off")],
+      [{ text: "1 re-create left, then Keep running turns off", off: false }]],
+  ])("keepLines(%o)", (lines, want) => {
+    expect(keepLines(promo({ keep_lines: lines }))).toEqual(want);
   });
 });

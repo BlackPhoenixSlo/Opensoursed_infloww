@@ -4,7 +4,8 @@ For each theme (`chatterly:theme` in localStorage, as useTheme persists it) open
 messages/chat, settings/fans and settings/display and checks the frame's <html> has
 `m-mode-dark` exactly when ours is dark, with OF's body background to match, and had it
 already when the parser finished (readyState "interactive") and at DOMContentLoaded, before
-any load event, where only the generator's boot script can have set it (no light first paint);
+any load event, where only the generator's boot script can have set it (no light first paint;
+recorded by a script a route puts first in each mirror page's <head>);
 then, on display, OF's "Dark mode" switch flips our theme and the frame with it.
 Live first-paint proof, in dark: a CDP screencast (every frame) runs from navigation start until
 the mirror frame has loaded, for each page; every frame after the <iframe> element exists must have
@@ -35,18 +36,17 @@ def mock(route):
     elif "/chatter/me" in u: body="null"
     else: body="[]"
     route.fulfill(status=200, content_type="application/json", body=body)
-# In every frame: the <html> class when the parser finishes (readyState "interactive", before DOMContentLoaded
-# and load) and at DOMContentLoaded. Window-level capture listeners, because an iframe's real page reuses the
-# window of its initial about:blank, where alone Playwright runs the init script.
-BOOT="""
-const rec = (e) => {
-  if (location.href === 'about:blank') return;
-  if (e.type === 'DOMContentLoaded') window.__ofBootClass = document.documentElement.className;
-  else if (document.readyState === 'interactive') window.__ofInteractiveClass = document.documentElement.className;
-};
-addEventListener('readystatechange', rec, true);
-addEventListener('DOMContentLoaded', rec, true);
-"""
+# In every mirror page, first in its <head> (put in by a route on the page's HTML): the <html> class when the parser
+# finishes (readyState "interactive", before DOMContentLoaded and load) and at DOMContentLoaded, on the page's own
+# document. Not an init script: the frame's page reuses the window of its initial about:blank, where alone Playwright
+# runs init scripts, and window listeners added there recorded nothing on home, fans and display (measured 2026-11-21).
+BOOT="""<script>
+document.addEventListener('readystatechange', () => { if (document.readyState === 'interactive') window.__ofInteractiveClass = document.documentElement.className; });
+document.addEventListener('DOMContentLoaded', () => { window.__ofBootClass = document.documentElement.className; });
+</script>"""
+def inject_boot(route):
+    r=route.fetch()
+    route.fulfill(status=r.status, content_type=r.headers.get("content-type"), body=r.text().replace("<head>", "<head>"+BOOT, 1))
 # In the app page: when (epoch ms, as the screencast's timestamps) the mirror <iframe> element first exists.
 IFRAME_SEEN="""
 if (window.top === window) new MutationObserver((_, o) => {
@@ -119,7 +119,7 @@ with sync_playwright() as p:
     for theme in ["dark","light"]:
         ctx=b.new_context(viewport={"width":1440,"height":900})
         ctx.add_init_script(f"localStorage.setItem('chatterly:theme','{theme}')")
-        ctx.add_init_script(BOOT)
+        ctx.route("**/of-mirror/pages/**", inject_boot)
         ctx.add_init_script(IFRAME_SEEN)
         pg=ctx.new_page()
         for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)

@@ -433,17 +433,43 @@ type Recorder = ReturnType<typeof recorder>;
 const RECORDER_PAGE = "/of-mirror/pages/new-post/index.html";
 
 /**
+ * `doc`'s copy of New post's capture (fetched same-origin, never the Relay, parsed inertly), once per page load: keyed
+ * by the page's body, so markup put in anew fetches again. A failed fetch is dropped, so the next Record asks again.
+ */
+const RECORDER_SRC = new WeakMap<HTMLElement, Promise<Document>>();
+function recorderSource(doc: Document): Promise<Document> {
+  const page = doc.body;
+  let src = RECORDER_SRC.get(page);
+  if (!src) {
+    src = doc.defaultView!.fetch(RECORDER_PAGE).then(async (res) => {
+      if (!res.ok) throw new Error(`recorder markup: ${res.status}`);
+      return new DOMParser().parseFromString(await res.text(), "text/html");
+    });
+    const mine = src;
+    RECORDER_SRC.set(page, mine);
+    mine.catch(() => RECORDER_SRC.get(page) === mine && RECORDER_SRC.delete(page));
+  }
+  return src;
+}
+
+/**
+ * Fetch the recorder markup a page without it borrows (Home) ahead of a Record click, so the click draws OF's recorder
+ * at once, as OF (which renders it with the composer) does, not one round trip later. A failure here is silent: the
+ * click asks again and notes it.
+ */
+export function prefetchRecorder(doc: Document): void {
+  if (doc.querySelector(AUDIO_PANEL) && doc.querySelector(VIDEO_BOX)) return;
+  recorderSource(doc).catch(() => {});
+}
+
+/**
  * Put OF's recorder markup into `doc` when it has none (Home's captures: OF renders it with the composer, the capture did
- * not keep it): the audio record panel and the video-js recorder from New post's capture (fetched same-origin, never the
- * Relay, parsed inertly; one Record at a time, so once per page load), after the composer's form as there, with the
- * stylesheets and icons they use that `doc` lacks.
+ * not keep it): the audio record panel and the video-js recorder from New post's capture (recorderSource), after the
+ * composer's form as there, with the stylesheets and icons they use that `doc` lacks.
  */
 async function ensureRecorder(doc: Document): Promise<void> {
   if (doc.querySelector(AUDIO_PANEL) && doc.querySelector(VIDEO_BOX)) return;
-  const win = doc.defaultView!;
-  const res = await win.fetch(RECORDER_PAGE);
-  if (!res.ok) throw new Error(`recorder markup: ${res.status}`);
-  const from = new DOMParser().parseFromString(await res.text(), "text/html");
+  const from = await recorderSource(doc);
   if (doc.querySelector(AUDIO_PANEL) && doc.querySelector(VIDEO_BOX)) return;
   const form = doc.querySelector("form.b-create-post-form");
   const audio = from.querySelector(AUDIO_PANEL);

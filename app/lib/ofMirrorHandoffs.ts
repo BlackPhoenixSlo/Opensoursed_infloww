@@ -74,6 +74,27 @@ export const HANDOFFS: readonly Handoff[] = [
 export const handoffsFor = (path: string): Handoff[] => HANDOFFS.filter((h) => h.page === path);
 
 /**
+ * `el` as a hand-off to `url`, the one place a hand-off is made: an <a> already is one; any other element is swapped
+ * for an <a> with its attributes (but `drop`) and content. A new tab, `noopener noreferrer`, not aria-disabled, Wired.
+ * The caller sets the title (the Not-yet one kept, D1; or HANDOFF_TITLE, ticket 42). Returns the anchor.
+ */
+export function asHandoff(el: HTMLElement, url: string, drop: readonly string[] = []): HTMLAnchorElement {
+  let a = el as HTMLAnchorElement;
+  if (el.tagName !== "A") {  // not instanceof: the frame's elements are of its own realm
+    a = el.ownerDocument.createElement("a");
+    for (const { name, value } of [...el.attributes]) if (!drop.includes(name)) a.setAttribute(name, value);
+    a.append(...el.childNodes);
+    el.replaceWith(a);
+  }
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.removeAttribute("aria-disabled");
+  a.setAttribute("data-oi-wired", "");
+  return a;
+}
+
+/**
  * Each hand-off control on `path` in `doc` opens its URL in a new tab, `noopener noreferrer`, Wired, title kept until
  * its Live pass (D1; a `live` entry's title dropped):
  * a captured `href="#"` anchor is wired in place; a disabled button is swapped for an anchor with its classes and
@@ -85,22 +106,16 @@ export function bindHandoffs(doc: Document, path: string): () => void {
   for (const h of handoffsFor(path)) {
     const found = [...doc.querySelectorAll<HTMLElement>("#content a[href='#'], #content button")].find((e) => e.textContent?.trim() === h.text);
     if (!found) continue;
-    let a: HTMLAnchorElement;
-    if (found.tagName === "BUTTON") {  // not instanceof: the frame's elements are of its own realm
-      a = doc.createElement("a");
-      for (const { name, value } of [...found.attributes]) if (name !== "disabled" && name !== "type") a.setAttribute(name, value);
-      if (h.live) a.removeAttribute("title");
-      else if (!a.title) a.title = NOT_YET;
-      a.append(...found.childNodes);
-      found.replaceWith(a);
+    const [rel, target, title] = [found.getAttribute("rel"), found.getAttribute("target"), found.getAttribute("title")];
+    const a = asHandoff(found, h.url, ["disabled", "type"]);
+    if (h.live) a.removeAttribute("title");
+    else if (a !== found && !a.title) a.title = NOT_YET;
+    if (a !== found) {
       undos.push(() => {
         found.append(...a.childNodes);
         a.replaceWith(found);
       });
     } else {
-      a = found as HTMLAnchorElement;
-      const [rel, target, title] = [a.getAttribute("rel"), a.getAttribute("target"), a.getAttribute("title")];
-      if (h.live) a.removeAttribute("title");
       undos.push(() => {
         if (title !== null) a.setAttribute("title", title);
         a.setAttribute("href", "#");
@@ -112,11 +127,6 @@ export function bindHandoffs(doc: Document, path: string): () => void {
         a.removeAttribute("data-oi-wired");
       });
     }
-    a.href = h.url;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.removeAttribute("aria-disabled");
-    a.setAttribute("data-oi-wired", "");
     const field = h.field ? doc.querySelector<HTMLInputElement>(`#content ${h.field}`) : null;
     if (field) {
       const [disabled, readOnly, title] = [field.disabled, field.readOnly, field.getAttribute("title")];
@@ -142,4 +152,26 @@ export function bindHandoffs(doc: Document, path: string): () => void {
   return () => {
     for (const undo of undos.reverse()) undo();
   };
+}
+
+// ticket 42: the three Reports (D22, superseding D12 for Report) hand off to the matching onlyfans.com page, where the
+// operator reports in OnlyFans's own form: another creator's post menu opens that post's page (OF's post address, as the
+// post's date link and Copy link to post, ofMirrorFeedsPosts/ofMirrorHome); the chat header menu (the chat page's menu
+// State page) and a fan message's menu open that chat's page. A new tab, nothing through the Relay, both scopes; the
+// "opens onlyfans.com" title stands in place of the Not-yet one.
+// The chat address is measured (2026-11-21, OF's captured JS router: parent path "/my/chats", child "chat/:chatId").
+// ASSUMPTION (`inferred`): the post address. OF's router names the route "Post" with params {postId, userId: username}
+// (its router-link use), its path string not found; main's "Copy link to post" builds the same URL (rung 3). Overturned
+// if a Page capture shows another address: reportHandoffUrl is the one place to correct it. OF's own ReportAbuse route
+// (/report_details/:reasonId/:type/:id/:chatId?) needs a reason picked in OF's modal, so it is no direct hand-off.
+
+/** A hand-off's title, in place of the Not-yet one (ticket 42). */
+export const HANDOFF_TITLE = "opens onlyfans.com";
+
+/** Where Report hands off: another creator's post (its id and author's handle), or a chat / fan message (the fan's id). */
+export function reportHandoffUrl(place: "post", ids: { postId: string | number; username: string }): string;
+export function reportHandoffUrl(place: "chat" | "message", ids: { fanId: string | number }): string;
+export function reportHandoffUrl(place: "post" | "chat" | "message", ids: { postId?: string | number; username?: string; fanId?: string | number }): string {
+  const e = (v: string | number | undefined) => encodeURIComponent(String(v));
+  return place === "post" ? `https://onlyfans.com/${e(ids.postId)}/${e(ids.username)}` : `https://onlyfans.com/my/chats/chat/${e(ids.fanId)}/`; // post inferred, chat measured (above)
 }

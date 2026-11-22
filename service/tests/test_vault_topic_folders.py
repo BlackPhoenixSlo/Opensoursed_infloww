@@ -11,11 +11,17 @@ Cases:
       a split topic lands in free / $10 / $50 / $100 by `lane5`; review or unknown → no folder.
   case_explicit_ladder:
       explicit topics (toy play, masturbation, blowjob, sex): lane $10 → $50, $50 → $100, $100 → $150, free → none.
+  case_explicit_sell_price_matches_folder:
+      W30 F10: every explicit topic hit lists (`full_ai_sell.list_price_cents`) at its ladder folder's price,
+      the masturbation Jev self_touch read too ($50 lane → `masturbation $100` → 10000).
   case_videos_land_and_review_clips_never_free:
       a clip's current `_jev` lands like a photo's on its read lane; a review clip only on its paid read lane, never
       free (a review photo nowhere).
   case_free_guard_keeps_bare_and_unsure_out_of_free:
       a lane5-free item with breasts / crotch / penetration "y" or "unsure" is in NO free split.
+  case_free_vetoed_by_flags_never_free:
+      W30 F1: Jev free + body "n" but a region flag bare (operator lock / disputed) → no free topic split, free
+      pack rung or free script lane.
   case_paid_only_and_free_only_topics:
       explicit topics are never free; good morning, clean for promo and clothed tease are never paid.
   case_stale_failed_and_old_video_jev_ignored:
@@ -29,8 +35,13 @@ Cases:
   case_preview_equals_apply_and_mirror:
       the apply (through the route, OF mirror on) creates exactly the previewed topic folders, same members
       and order, and pushes them to OF under the same names.
+  case_mirror_reports_items_left_on_of:
+      W30 F4: the OF mirror only adds; a reused list's items the build dropped are counted as `of_stale`.
   case_untick_retires_topic_folders_and_preview_says_so:
       a later build without the topic shows its folders under `retired` and retires them.
+  case_apply_retires_only_what_the_preview_showed:
+      W30 F3: the apply retires only the preview's `retired` ids (`expected_retire`); the rest `skipped_retire`.
+      W30 F15: split / solo / mirror_to_of not a JSON boolean → 400 `bad_<field>`.
   case_split_off_one_folder_per_topic_and_retire:
       split off: one `AI-<name>` per topic, the union of its splits, through the GET and the apply;
       flipping it retires the other naming's folders (both ways).
@@ -55,7 +66,10 @@ from datetime import datetime, timedelta  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
+import vault_ai_brief  # noqa: E402
+import vault_jev_flags  # noqa: E402
 import vault_jev_rules  # noqa: E402
+import vault_pack_picker  # noqa: E402
 import vault_of_folders  # noqa: E402
 import vault_scripts  # noqa: E402
 import vault_topic_folders as vt  # noqa: E402
@@ -219,6 +233,27 @@ def case_free_guard_keeps_bare_and_unsure_out_of_free() -> None:
     assert vt.split(_t("bikini"), jev("$10", bb="y", outfit="swimwear")) == "$10"
 
 
+def case_free_vetoed_by_flags_never_free() -> None:
+    """W30 F1: Jev reads free with every body answer "n", but the flags read a region bare (an operator lock,
+    disputed once settled) → no free topic split, no free pack rung, no free script lane (stories / mass /
+    safe explicit). The same Jev with covered flags still lands free (the guard bites only the veto)."""
+    j = jev("free", outfit="everyday_clothes")
+    locked = vault_jev_flags.apply({"_jev": j, "breasts_vis": "bare"}, j, locked={"breasts_vis"})
+    settled = vault_ai_brief.settled_reading(locked)
+    assert vault_ai_brief.is_disputed(settled)
+    clean = vault_jev_flags.apply({"_jev": j}, j)
+    assert not vault_ai_brief.free_vetoed(clean)
+    for name, fields, free in (("locked raw", locked, False), ("locked settled", settled, False),
+                               ("clean", clean, True)):
+        row = {"media_id": 1, "kind": "photo", "fields": fields}
+        got = [f["name"] for f in vault_scripts.collect_topic_folders([row], ["clothed_tease"])]
+        assert got == (["AI-clothed tease free"] if free else []), (name, got)
+        assert vault_pack_picker.free_ok(fields) is free, name
+        lanes = {f["lane"] for f in asyncio.run(vault_scripts.collect_purpose_folders("x", rows=[row]))}
+        if not free:
+            assert not lanes & {"stories", "mass", "covered_explicit"}, (name, lanes)
+
+
 def case_explicit_ladder() -> None:
     assert {t.slug for t in vt.TOPICS if t.price == "explicit"} == {"toy_play", "masturbation", "blowjob", "sex"}
     assert not any(t.price == "paid" for t in vt.TOPICS)
@@ -231,6 +266,17 @@ def case_explicit_ladder() -> None:
         assert vt.folder_name(t, "$150") == f"{t.name} $150"
     # Free with a plain free_ok body is still not free for an explicit topic.
     assert vt.split(_t("blowjob"), jev("free"), {"acts": ["blowjob"]}) is None
+
+
+def case_explicit_sell_price_matches_folder() -> None:
+    from automations import full_ai_sell
+    for slug, hits, _ in EXPLICIT_RULES:
+        for kw, f in hits:
+            for lane in ("$10", "$50", "$100"):
+                j = jev(lane, **kw)
+                name = vt.folder_name(_t(slug), vt.split(_t(slug), j, f))
+                cents = full_ai_sell.list_price_cents(j, f, "photo")
+                assert cents == int(name.rsplit(" $", 1)[1]) * 100, (slug, kw, f, lane, name, cents)
 
 
 def case_paid_only_and_free_only_topics() -> None:
@@ -408,7 +454,7 @@ def case_unticked_builds_no_topic_folders() -> None:
     asyncio.run(_seed(aid, list(_vault().items())))
     plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=0))
     assert plan["topics"] == [] and _topic_folders(plan) == {} and plan["summary"]["topics"] == 0
-    assert plan["jev"] == {"enabled": True, "items": len(_vault()), "with_jev": len(_vault()) - 1}, plan["jev"]
+    assert plan["jev"] == {"items": len(_vault()), "with_jev": len(_vault()) - 1}, plan["jev"]
     cat = {c["slug"]: c["count"] for c in plan["topic_catalogue"]}
     assert set(cat) == set(vt.SLUGS)
     # split topics: 4 prices (+ the clip and the $50 review clip); free-only: 1; toy play: its $50 + toy tease's
@@ -441,7 +487,8 @@ class _FakeOF:
         return {"list": [{"id": m} for m in ids[offset:offset + limit]]}
 
 
-async def _apply(aid: str, topics: list[str], fake: _FakeOF | None = None, *, split: bool = True) -> dict:
+async def _apply(aid: str, topics: list[str], fake: _FakeOF | None = None, *, split: bool = True,
+                 **extra) -> dict:
     import automation_executor as ax
     orig = ax._make_client
     if fake is not None:
@@ -450,7 +497,7 @@ async def _apply(aid: str, topics: list[str], fake: _FakeOF | None = None, *, sp
     try:
         res = await vault_of_folders.apply_folder_plan(
             {"account_id": aid, "confirm": True, "keep": 0, "topics": topics, "mirror_to_of": fake is not None,
-             "split": split})
+             "split": split, **extra})
     finally:
         ax._make_client = orig
     await asyncio.wait_for(asyncio.gather(*(asyncio.all_tasks() - before)), timeout=10)
@@ -488,6 +535,32 @@ def case_preview_equals_apply_and_mirror() -> None:
     assert again["changes"]["create"] == 0 and again["changes"]["retire"] == 0, again["changes"]
 
 
+def case_mirror_reports_items_left_on_of() -> None:
+    """W30 F4: the OF mirror only adds. A photo reclassed free → $10 is planned out of `AI-bikini free` but stays on
+    that reused OF list; the result counts it (`of_stale`) instead of reading as an exact copy."""
+    aid = _aid()
+    asyncio.run(_seed(aid, [(1, jev("free", outfit="swimwear")), (2, jev("free", outfit="swimwear"))]))
+    fake = _FakeOF()
+    first = asyncio.run(_apply(aid, ["bikini"], fake))
+    assert first["of_stale"] == 0, first
+    free_list = {c["name"]: c["of_list_id"] for c in first["created"]}["AI-bikini free"]
+
+    async def reclass() -> None:
+        async with get_session() as s:
+            row = await s.get(VaultItem, (aid, 2))
+            j = jev("$10", outfit="swimwear")   # stamped as the mapper writes a $10 (W30 D1)
+            row.ai_fields_json = json.dumps(vault_jev_flags.apply(
+                {"clothing_state": "lingerie_on", "explicitness": "suggestive", "_jev": j}, j))
+            await s.commit()
+    asyncio.run(reclass())
+    again = asyncio.run(_apply(aid, ["bikini"], fake))
+    by = {c["name"]: c for c in again["created"]}
+    assert by["AI-bikini free"]["of_list_id"] == free_list
+    # a $10 leaves every free folder it was in: AI-stories and AI-mass too (W30 D1)
+    assert by["AI-bikini free"]["of_stale"] == 1 and again["of_stale"] == 3, again["created"]
+    assert 2 in fake.members[free_list], "OF list still holds it: adds only"
+
+
 def case_untick_retires_topic_folders_and_preview_says_so() -> None:
     aid = _aid()
     asyncio.run(_seed(aid, list(_vault().items())))
@@ -500,6 +573,39 @@ def case_untick_retires_topic_folders_and_preview_says_so() -> None:
     assert not any(n.startswith("AI-bikini") for n in live) and "AI-spread free" in live
     asyncio.run(_apply(aid, []))
     assert not any(n.startswith(("AI-bikini", "AI-spread")) for n in asyncio.run(_db_folders(aid)))
+
+
+def case_apply_retires_only_what_the_preview_showed() -> None:
+    """W30 F3: the apply re-plans, but retires only the stale folders the preview listed (`expected_retire`); a
+    folder that went stale after the preview stays live under `skipped_retire`. Absent field: every stale retires."""
+    aid = _aid()
+    asyncio.run(_seed(aid, list(_vault().items())))
+    asyncio.run(_apply(aid, ["bikini", "spread"]))
+    # Preview (spread only) shows the bikini folders retiring; the operator's apply drops spread too, so the
+    # spread folders go stale without ever having been shown under `retired`.
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=0, topics=["spread"]))
+    shown = [r["folder_id"] for r in plan["changes"]["retired"]]
+    res = asyncio.run(_apply(aid, [], expected_retire=shown))
+    assert sorted(r["name"] for r in res["retired"]) == sorted(r["name"] for r in plan["changes"]["retired"])
+    skipped = sorted(r["name"] for r in res["skipped_retire"])
+    assert skipped and all(n.startswith("AI-spread") for n in skipped), skipped
+    live = asyncio.run(_db_folders(aid))
+    assert not any(n.startswith("AI-bikini") for n in live) and set(skipped) <= set(live), sorted(live)
+    try:
+        asyncio.run(_apply(aid, [], expected_retire=["1"]))
+        raise AssertionError("bad expected_retire accepted")
+    except HTTPException as e:
+        assert e.status_code == 400 and e.detail == {"error": "bad_expected_retire"}, e.detail
+    # W30 F15: the options are JSON booleans; a string ("false" reads True through bool()) is refused.
+    for key in ("split", "solo", "mirror_to_of"):
+        try:
+            asyncio.run(_apply(aid, [], **{key: "false"}))
+            raise AssertionError(f"string {key} accepted")
+        except HTTPException as e:
+            assert e.status_code == 400 and e.detail == {"error": f"bad_{key}"}, (key, e.detail)
+    # No field (prepare content): today's behaviour, every stale folder retires.
+    res = asyncio.run(_apply(aid, []))
+    assert sorted(r["name"] for r in res["retired"]) == skipped and res["skipped_retire"] == []
 
 
 def case_split_off_one_folder_per_topic_and_retire() -> None:
@@ -543,17 +649,102 @@ def case_split_off_one_folder_per_topic_and_retire() -> None:
     assert topic_live == set(by_split), sorted(topic_live)
 
 
+def case_split_flip_back_reuses_the_same_of_list() -> None:
+    """W30 F5: split on → off → on revives the retired `AI-bikini free` row with its `of_list_id`, so OF gets no
+    second list of that name; a kept binding whose list was deleted on OF (404) rebinds to a fresh one, once."""
+    import threading
+    from curl_cffi.requests import Response
+    import of_client
+
+    def _of_404(list_id: int, media_ids: list[int]) -> dict:
+        """The real `OFClient.add_media_to_vault_list` → `request_json`, OF answering 404 at the wire."""
+        r = Response()
+        r.status_code, r.ok, r.url, r.content = 404, False, f"https://onlyfans.com/api2/v2/vault/lists/{list_id}/media", b"{}"
+        c = object.__new__(of_client.OFClient)
+        c.account_id = aid
+        c._http_call = lambda method, url, json_body=None: r
+        return c.add_media_to_vault_list(list_id, media_ids)
+
+    aid = _aid()
+    asyncio.run(_seed(aid, [(1, jev("free", outfit="swimwear")), (2, jev("$10", outfit="swimwear"))]))
+    fake = _FakeOF()
+    first = {c["name"]: c for c in asyncio.run(_apply(aid, ["bikini"], fake))["created"]}
+    asyncio.run(_apply(aid, ["bikini"], fake, split=False))
+    # W30 N3: the preview reports the revive as apply does it (a kept folder, nothing new).
+    seen = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=0, topics=["bikini"]))
+    assert {f["name"]: f["change"] for f in seen["folders"] if "bikini" in f["name"]} == \
+        {"AI-bikini free": "keep", "AI-bikini $10": "keep"}, [(f["name"], f["change"]) for f in seen["folders"]]
+    assert seen["changes"]["create"] == 0, seen["changes"]
+    back = {c["name"]: c for c in asyncio.run(_apply(aid, ["bikini"], fake))["created"]}
+    dupes = sorted(n for n in set(fake.created) if fake.created.count(n) > 1)
+    assert not dupes, dupes
+    for n in ("AI-bikini free", "AI-bikini $10"):
+        assert back[n]["folder_id"] == first[n]["folder_id"] and back[n]["of_list_id"] == first[n]["of_list_id"], n
+
+    class _Gone(_FakeOF):
+        def add_media_to_vault_list(self, list_id: int, media_ids: list[int]) -> dict:
+            if int(list_id) <= 510:
+                return _of_404(list_id, media_ids)
+            return super().add_media_to_vault_list(list_id, media_ids)
+    gone = _Gone()
+    gone._next = 600
+    fid = back["AI-bikini free"]["folder_id"]
+    out = asyncio.run(vault_of_folders._push_folder_to_of(gone, fid, "AI-bikini free", [1]))
+    assert out == {"of_list_id": 601, "created": True} and gone.created == ["AI-bikini free"], (out, gone.created)
+
+    async def bound() -> int | None:
+        async with get_session() as s:
+            return (await s.get(VaultFolder, fid)).of_list_id
+    assert asyncio.run(bound()) == 601
+
+    # Disconnect between the OF create and the bind: the binding still lands.
+    class _Slow(_FakeOF):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered, self.release = threading.Event(), threading.Event()
+
+        def create_vault_list(self, name: str) -> dict:
+            self.entered.set()
+            self.release.wait(5)
+            return super().create_vault_list(name)
+    slow = _Slow()
+    slow._next = 700
+
+    async def cut() -> None:
+        async with get_session() as s:
+            await s.execute(vault_of_folders.update(VaultFolder).where(VaultFolder.id == fid).values(of_list_id=None))
+            await s.commit()
+        before = asyncio.all_tasks()
+        t = asyncio.create_task(vault_of_folders._push_folder_to_of(slow, fid, "AI-bikini free", [1]))
+        await asyncio.to_thread(slow.entered.wait, 5)
+        t.cancel()
+        slow.release.set()
+        try:
+            await t
+            raise AssertionError("not cancelled")
+        except asyncio.CancelledError:
+            pass
+        await asyncio.wait_for(asyncio.gather(*(asyncio.all_tasks() - before - {asyncio.current_task()})), 5)
+    asyncio.run(cut())
+    assert asyncio.run(bound()) == 701, "created on OF but never bound"
+
+
 _harness.run(
     case_every_topic_rule_matches_and_misses,
     case_price_split_follows_lane5,
     case_free_guard_keeps_bare_and_unsure_out_of_free,
+    case_free_vetoed_by_flags_never_free,
     case_explicit_ladder,
+    case_explicit_sell_price_matches_folder,
     case_paid_only_and_free_only_topics,
     case_stale_failed_and_old_video_jev_ignored,
     case_videos_land_and_review_clips_never_free,
     case_topics_whitelist,
     case_unticked_builds_no_topic_folders,
     case_preview_equals_apply_and_mirror,
+    case_mirror_reports_items_left_on_of,
     case_untick_retires_topic_folders_and_preview_says_so,
+    case_apply_retires_only_what_the_preview_showed,
     case_split_off_one_folder_per_topic_and_retire,
+    case_split_flip_back_reuses_the_same_of_list,
 )

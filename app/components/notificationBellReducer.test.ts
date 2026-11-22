@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  BADGE_MAX, cachedCountSum, initialBellState, markAllTargets, notificationBellReducer, ofListOnScreen,
-  type BellAction, type BellState,
+  BADGE_MAX, cachedCountSum, initialBellState, initialMarkAll, markAllReducer, markAllTargets, markAllStatus,
+  notificationBellReducer, ofListOnScreen, type BellAction, type BellState, type MarkAllAction, type MarkAllState,
 } from "./notificationBellReducer";
 
 const run = (actions: BellAction[], from: BellState = initialBellState): BellState =>
@@ -113,6 +113,36 @@ describe("All Models counts", () => {
     ["only unknown", ["u", "v"], 0, ["u", "v"]],
   ])("%s", (_n, ids, sum, targets) => {
     expect(cachedCountSum(ids, countOf)).toBe(sum);
-    expect(markAllTargets(ids, countOf)).toEqual(targets);
+    expect(markAllTargets(ids, countOf, () => 2_000, 1_000)).toEqual(targets);
+  });
+
+  it.each<[string, number, number, string[]]>([
+    ["a 0 read after the last arrival is skipped", 2_000, 1_000, ["a", "c"]],
+    ["a 0 read before the last arrival is written (it may be stale)", 500, 1_000, ["a", "b", "c"]],
+    ["a 0 read at the arrival's ms is written", 1_000, 1_000, ["a", "b", "c"]],
+  ])("%s", (_n, readAt, since, targets) => {
+    expect(markAllTargets(["a", "b", "c"], countOf, () => readAt, since)).toEqual(targets);
+  });
+
+  it.each<[number, number, string | null]>([
+    [0, 3, null], [1, 3, "1 of 3 Creators failed"], [1, 1, "1 of 1 Creator failed"],
+  ])("status: %i of %i failed → %s", (failed, of, want) => {
+    expect(markAllStatus(failed, of)).toBe(want);
+  });
+});
+
+describe("markAllReducer (W30-mu #32)", () => {
+  it.each<[string, MarkAllAction[], MarkAllState]>([
+    ["idle", [], { marking: false, status: null }],
+    ["a run going", [{ type: "start" }], { marking: true, status: null }],
+    ["every write went through", [{ type: "start" }, { type: "done", failed: 0, of: 3 }], { marking: false, status: null }],
+    ["some failed", [{ type: "start" }, { type: "done", failed: 2, of: 3 }], { marking: false, status: "2 of 3 Creators failed" }],
+    ["the next run clears the last outcome while it goes",
+      [{ type: "start" }, { type: "done", failed: 1, of: 1 }, { type: "start" }], { marking: true, status: null }],
+    ["the next run's outcome replaces it",
+      [{ type: "start" }, { type: "done", failed: 1, of: 1 }, { type: "start" }, { type: "done", failed: 0, of: 1 }],
+      { marking: false, status: null }],
+  ])("%s", (_n, actions, want) => {
+    expect(actions.reduce(markAllReducer, initialMarkAll)).toEqual(want);
   });
 });

@@ -29,10 +29,25 @@ unconfirmed_sends_api — the Creator's maybe-sent funnel / follow-up steps and 
       the clear lost a race: re-read → `already_sent` when unmarked, else 409.
   case_retry_followup_row_is_retried:
       a follow-up row past the lease → `retried`, the three columns cleared.
+  case_retry_from_a_stale_tab_after_a_retry_is_refused:
+      Retry with the listed `since` after the row was retried and re-marked by a
+      newer attempt → 409 (refresh), the newer mark untouched; same instant written
+      with an offset → retried. Both kinds.
   case_dismiss_saves_the_step_sent_like_the_settle_and_never_resends:
       "It went through": the step saved exactly as the settle saves a landed one
       (same columns), `dismissed`, the confirmed hint row tagged as a sent step's;
       the next tick sends nothing; again → `already_sent`.
+  case_dismiss_race_with_the_settle_keeps_the_winners_tag:
+      the tick's settle saves the step through the dismiss's own tag first: the
+      dismiss loses the clear but keeps that tag; the next tick sends nothing.
+  case_dismiss_without_hint_waits_for_a_new_reply:
+      "It went through" with no hint row → saved at its mark; the reply before the
+      mark is no reply to it: the next tick sends nothing.
+  case_settled_send_stamped_before_the_mark_counts_a_reply_after_it:
+      the landed step's tagged row reads 10 s before the mark (OF clock); a reply
+      5 s after it still counts: the next step sends.
+  case_dismiss_after_a_retry_is_refused_not_already_sent:
+      Retry cleared the row; a stale "It went through" → 409, not already_sent.
   case_dismiss_followup_saves_the_nudge_sent:
       a follow-up row → `dismissed`, its step in messages_sent at the mark, never resent.
   case_dismiss_refusals:
@@ -302,6 +317,38 @@ async def case_retry_followup_row_is_retried():
     assert json.loads(r.messages_sent) == {"1": "2026-10-01T00:00:00"}, r.messages_sent
 
 
+async def case_retry_from_a_stale_tab_after_a_retry_is_refused():
+    """F30: tab 1 lists attempt A; tab 2 retries it and the resend (attempt B) is
+    marked too; tab 1's Retry (since A) must not clear B → no second resend."""
+    aid = "acc_us_retry_stale"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 161, aid=aid, unconfirmed_at=OLD + timedelta(seconds=5))
+    await _seed_followup(aid, 162)
+    listed = {r["fan_id"]: r["since"] for r in await _get(aid)}
+    assert await _retry(aid, kind="funnel", fan_id=161, mass_run_id=mr, since=listed["161"]) == \
+        {"status": "retried"}
+    assert await _retry(aid, kind="followup", fan_id=162, since=listed["162"]) == {"status": "retried"}
+    newer = OLD + timedelta(seconds=60)                 # attempt B, also past the lease
+    async with get_session() as s:
+        st = await s.get(FunnelState, (mr, 161))
+        st.sending_at, st.sending_ctx, st.unconfirmed_at = newer, CTX, newer + timedelta(seconds=5)
+        fu = await s.get(FollowupState, (aid, 162))
+        fu.sending_at, fu.sending_ctx = newer, json.dumps({"step": 2})
+    for body in ({"kind": "funnel", "fan_id": 161, "mass_run_id": mr, "since": listed["161"]},
+                 {"kind": "followup", "fan_id": 162, "since": listed["162"]}):
+        try:
+            await _retry(aid, **body)
+            raise AssertionError(("a stale Retry cleared a newer attempt", body))
+        except HTTPException as e:
+            assert (e.status_code, e.detail) == (409, "this row changed since it was listed: refresh"), e
+    assert (await _row(mr, 161)).sending_at == newer, "attempt B's mark untouched"
+    async with get_session() as s:
+        assert (await s.get(FollowupState, (aid, 162))).sending_at == newer
+    assert await _status(_retry(aid, kind="followup", fan_id=162, since="not a time")) == 422
+    b = (newer + timedelta(hours=2)).isoformat() + "+02:00"   # B, written another way
+    assert await _retry(aid, kind="followup", fan_id=162, since=b) == {"status": "retried"}
+
+
 async def _dismiss(aid: str, *, as_=None, **body) -> dict:
     tok = _owner(*(as_ or (aid,)))
     try:
@@ -329,7 +376,7 @@ async def case_dismiss_saves_the_step_sent_like_the_settle_and_never_resends():
     hint = next(r["hint"] for r in await _get(aid) if r["fan_id"] == "111")
     assert hint and hint["message_id"] == "4200111", hint
     fake = _fake()
-    assert await _dismiss(aid, kind="funnel", fan_id=111, mass_run_id=mr,
+    assert await _dismiss(aid, kind="funnel", fan_id=111, mass_run_id=mr, since=OLD.isoformat() + "Z",
                           hint_message_id=hint["message_id"]) == {"status": "dismissed"}
     assert await _retry(aid, kind="funnel", fan_id=112, mass_run_id=mr) == {"status": "already_sent"}
     async with get_session() as s:
@@ -343,9 +390,125 @@ async def case_dismiss_saves_the_step_sent_like_the_settle_and_never_resends():
         (None, None, 1, 0), got.__dict__
     await run_once(aid, "reply_mass_funnel", payload={})
     assert fake.sent == [], ("dismissed: never re-sent, the next step waits for a reply", fake.sent)
-    assert await _dismiss(aid, kind="funnel", fan_id=111, mass_run_id=mr) == \
+    assert await _dismiss(aid, kind="funnel", fan_id=111, mass_run_id=mr, since=OLD.isoformat() + "Z") == \
         {"status": "already_sent"}, "idempotent"
     assert await _get(aid) == []
+
+
+async def case_dismiss_race_with_the_settle_keeps_the_winners_tag():
+    """F1: the tick's settle saves the step through the dismiss's own tag between its
+    tag_out and its replay → the dismiss loses the clear, but the tag the winner saved
+    by stays (it is this step's row): the next step's reply baseline sits after it."""
+    aid = "acc_us_dismiss_race"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 151, aid=aid, unconfirmed_at=OLD + timedelta(seconds=5))
+    async with get_session() as s:
+        s.add(Message(account_id=aid, fan_id=151, message_id=4_200_151, direction="out",
+                      body="m1", created_at=OLD + timedelta(seconds=1)))
+    since = next(r["since"] for r in await _get(aid) if r["fan_id"] == "151")
+    real = a11.smst.tag_out
+
+    async def _tag_then_settle(*a, **kw):
+        ok = await real(*a, **kw)
+        await a11.settle_landed(aid, smd.BOOT_TS, datetime.utcnow())   # the tick wins
+        return ok
+    a11.smst.tag_out = _tag_then_settle
+    try:
+        got = await _dismiss(aid, kind="funnel", fan_id=151, mass_run_id=mr, since=since,
+                             hint_message_id="4200151")
+    finally:
+        a11.smst.tag_out = real
+    assert got == {"status": "already_sent"}, got
+    async with get_session() as s:
+        m = await s.get(Message, (aid, 151, 4_200_151))
+    assert (m.automation_kind, m.mass_run_id, m.funnel_step) == ("reply_mass_funnel", mr, 1), \
+        ("the settle saved the step by this tag: it stays", m.__dict__)
+    r = await _row(mr, 151)
+    assert (r.sending_at, r.current_step, r.last_sent_step) == (None, 1, 0), r.__dict__
+    fake = _fake()
+    await run_once(aid, "reply_mass_funnel", payload={})
+    assert fake.sent == [], ("no reply after the confirmed step: nothing sent", fake.sent)
+
+
+async def case_dismiss_without_hint_waits_for_a_new_reply():
+    """F2: "It went through" with no hint row to tag → the step saved as Sent at its
+    mark; the reply that triggered it (before the mark) is no reply to it: the next
+    tick sends nothing."""
+    aid = "acc_us_dismiss_nohint"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 152, aid=aid, unconfirmed_at=OLD + timedelta(seconds=5))
+    since = next(r["since"] for r in await _get(aid) if r["fan_id"] == "152")
+    assert await _dismiss(aid, kind="funnel", fan_id=152, mass_run_id=mr, since=since) == \
+        {"status": "dismissed"}
+    r = await _row(mr, 152)
+    assert (r.sending_at, r.current_step, r.last_sent_step) == (None, 1, 0), r.__dict__
+    fake = _fake()
+    await run_once(aid, "reply_mass_funnel", payload={})
+    assert fake.sent == [], ("the old reply is not one to the confirmed step", fake.sent)
+
+
+async def case_settled_send_stamped_before_the_mark_counts_a_reply_after_it():
+    """F32: OF stamped the landed step 10 s before our mark (its clock); the fan
+    replied 5 s later (still before the mark). Its tagged out row is the cutoff,
+    not the mark: the reply counts and the next step sends."""
+    aid = "acc_us_skewed_out"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 155, aid=aid, unconfirmed_at=OLD + timedelta(seconds=5))
+    async with get_session() as s:
+        s.add(Message(account_id=aid, fan_id=155, message_id=4_200_155, direction="out",
+                      body="m1", automation_kind="reply_mass_funnel", mass_run_id=mr,
+                      funnel_step=1, created_at=OLD - timedelta(seconds=10)))
+        s.add(Message(account_id=aid, fan_id=155, message_id=4_300_155, direction="in",
+                      body="sure, tell me more", created_at=OLD - timedelta(seconds=5)))
+    fake = _fake()
+    assert await _retry(aid, kind="funnel", fan_id=155, mass_run_id=mr) == {"status": "already_sent"}
+    r = await _row(mr, 155)
+    assert (r.sending_at, r.current_step, r.confirmed_sent_at) == (None, 1, OLD), r.__dict__
+    await run_once(aid, "reply_mass_funnel", payload={})
+    assert fake.sent == ["m2"], ("the reply after the step's own row is one to it", fake.sent)
+
+
+async def case_dismiss_after_a_retry_is_refused_not_already_sent():
+    """F3: Retry clears the row for a resend; a stale "It went through" (another tab,
+    the listed `since`) then finds it unmarked → 409 (refresh), never `already_sent`
+    (the UI would drop the row as done while the step resends). Both kinds."""
+    aid = "acc_us_dismiss_retried"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 153, aid=aid, unconfirmed_at=OLD + timedelta(seconds=5))
+    await _seed_followup(aid, 154)
+    listed = {r["fan_id"]: r["since"] for r in await _get(aid)}
+    assert await _retry(aid, kind="funnel", fan_id=153, mass_run_id=mr) == {"status": "retried"}
+    assert await _retry(aid, kind="followup", fan_id=154) == {"status": "retried"}
+    assert await _status(_dismiss(aid, kind="funnel", fan_id=153, mass_run_id=mr,
+                                  since=listed["153"])) == 409
+    try:
+        await _dismiss(aid, kind="followup", fan_id=154, since=listed["154"])
+        raise AssertionError("a retried row dismissed")
+    except HTTPException as e:
+        # F29: also what a late live save looks like here: no claim it was retried.
+        assert (e.status_code, e.detail) == (409, "this row changed since it was listed: refresh"), e
+    r = await _row(mr, 153)
+    assert (r.current_step, r.status, r.confirmed_sent_at) == (0, "pending", None), r.__dict__
+    async with get_session() as s:
+        fu = await s.get(FollowupState, (aid, 154))
+    assert json.loads(fu.messages_sent) == {"1": "2026-10-01T00:00:00"}, fu.messages_sent
+
+
+async def case_dismiss_compares_since_as_a_time_not_a_string():
+    """F24: `since` is the same instant written another way (an offset, not Z) →
+    still this attempt: dismissed, then already_sent (never a false 409). Both kinds."""
+    aid = "acc_us_dismiss_since_fmt"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 155, aid=aid, unconfirmed_at=OLD + timedelta(seconds=5))
+    await _seed_followup(aid, 156)
+    since = (OLD + timedelta(hours=2)).isoformat() + "+02:00"
+    assert await _dismiss(aid, kind="funnel", fan_id=155, mass_run_id=mr, since=since) == \
+        {"status": "dismissed"}
+    assert await _dismiss(aid, kind="funnel", fan_id=155, mass_run_id=mr, since=since) == \
+        {"status": "already_sent"}
+    assert await _dismiss(aid, kind="followup", fan_id=156, since=since) == {"status": "dismissed"}
+    assert await _dismiss(aid, kind="followup", fan_id=156, since=since) == {"status": "already_sent"}
+    assert await _status(_dismiss(aid, kind="followup", fan_id=156, since="not a time")) == 422
 
 
 async def case_dismiss_followup_saves_the_nudge_sent():
@@ -364,7 +527,7 @@ async def case_dismiss_followup_saves_the_nudge_sent():
     assert (r.sending_at, r.sending_ctx, r.unconfirmed_at) == (None, None, None), r.__dict__
     sent = json.loads(r.messages_sent)
     assert sent["1"] == "2026-10-01T00:00:00" and sent["2"].startswith(OLD.isoformat()), sent
-    assert await _dismiss(aid, kind="followup", fan_id=121) == {"status": "already_sent"}
+    assert await _dismiss(aid, kind="followup", fan_id=121, since=listed) == {"status": "already_sent"}
 
 
 async def case_dismiss_refusals():
@@ -372,20 +535,23 @@ async def case_dismiss_refusals():
     mr = await _funnel_run(aid)
     now = datetime.utcnow()
     await _marked(mr, 131, sending_at=now)
-    assert await _status(_dismiss(aid, kind="funnel", fan_id=131, mass_run_id=mr)) == 409
+    assert await _status(_dismiss(aid, kind="funnel", fan_id=131, mass_run_id=mr,
+                                  since=now.isoformat() + "Z")) == 409
     assert (await _row(mr, 131)).sending_at == now
     short_aid = "acc_us_dismiss_short"
     short = await _funnel_run(short_aid, [{"step": 1, "messages": ["m1"]}])
     await _marked(short, 132, step=3, unconfirmed_at=OLD)
-    assert await _status(_dismiss(short_aid, kind="funnel", fan_id=132, mass_run_id=short)) == 409
+    assert await _status(_dismiss(short_aid, kind="funnel", fan_id=132, mass_run_id=short,
+                                  since=OLD.isoformat() + "Z")) == 409
     assert (await _row(short, 132)).sending_at == OLD, "a step it can't save stays listed"
-    assert await _status(_dismiss(aid, kind="funnel", fan_id=133, mass_run_id=mr)) == 404
-    assert await _status(_dismiss(aid, kind="funnel", fan_id=133)) == 422
+    assert await _status(_dismiss(aid, kind="funnel", fan_id=133, mass_run_id=mr, since=OLD.isoformat() + "Z")) == 404
+    assert await _status(_dismiss(aid, kind="funnel", fan_id=133, since=OLD.isoformat() + "Z")) == 422
     other = await _funnel_run("acc_us_dismiss_other")
     await _marked(other, 134, unconfirmed_at=OLD)
     assert await _status(_dismiss("acc_us_dismiss_other", as_=(aid,), kind="funnel",
-                                  fan_id=134, mass_run_id=other)) == 403
-    assert await _status(_dismiss(aid, kind="funnel", fan_id=134, mass_run_id=other)) == 404, \
+                                  fan_id=134, mass_run_id=other, since=OLD.isoformat() + "Z")) == 403
+    assert await _status(_dismiss(aid, kind="funnel", fan_id=134, mass_run_id=other,
+                                  since=OLD.isoformat() + "Z")) == 404, \
         "another Creator's run is not this Creator's row"
     assert (await _row(other, 134)).sending_at == OLD
 
@@ -423,7 +589,8 @@ async def case_get_hint_is_the_first_untagged_send_since_the_mark():
                      "142": None}, hints
     # A hint id that is not an untagged outbound row of that fan since the mark is never tagged.
     for bad in (4_300_006, 4_300_007, 4_300_001, 4_300_003, 4_300_004, 4_300_005):   # the first one dismisses
-        got = await _dismiss(aid, kind="funnel", fan_id=142, mass_run_id=mr, hint_message_id=bad)
+        got = await _dismiss(aid, kind="funnel", fan_id=142, mass_run_id=mr, hint_message_id=bad,
+                             since=OLD.isoformat() + "Z")
         assert got["status"] in ("dismissed", "already_sent"), got
     async with get_session() as s:
         tags = {m.message_id: (m.automation_kind, m.mass_run_id) for m in (await s.execute(
@@ -450,16 +617,25 @@ def case_http_wiring():
                             "last_error", "state", "hint"}, row
         r = c.post("/admin/unconfirmed-sends/retry", params={"account_id": aid},
                    json={"kind": "funnel", "fan_id": "99", "mass_run_id": mr})
+        assert r.status_code == 422, ("`since` is required", r.text)
+        r = c.post("/admin/unconfirmed-sends/retry", params={"account_id": aid},
+                   json={"kind": "funnel", "fan_id": "99", "mass_run_id": mr, "since": row["since"]})
         assert (r.status_code, r.json()) == (200, {"status": "retried"}), r.text
         r = c.post("/admin/unconfirmed-sends/retry", params={"account_id": aid},
-                   json={"kind": "funnel", "fan_id": "98", "mass_run_id": mr})
+                   json={"kind": "funnel", "fan_id": "98", "mass_run_id": mr,
+                         "since": OLD.isoformat() + "Z"})
         assert r.status_code == 404, r.text
         asyncio.run(_marked(mr, 97, unconfirmed_at=OLD))
         r = c.post("/admin/unconfirmed-sends/dismiss", params={"account_id": aid},
                    json={"kind": "funnel", "fan_id": "97", "mass_run_id": mr})
+        assert r.status_code == 422, ("`since` is required", r.text)
+        r = c.post("/admin/unconfirmed-sends/dismiss", params={"account_id": aid},
+                   json={"kind": "funnel", "fan_id": "97", "mass_run_id": mr,
+                         "since": OLD.isoformat() + "Z"})
         assert (r.status_code, r.json()) == (200, {"status": "dismissed"}), r.text
         r = c.post("/admin/unconfirmed-sends/dismiss", params={"account_id": aid},
-                   json={"kind": "funnel", "fan_id": "98", "mass_run_id": mr})
+                   json={"kind": "funnel", "fan_id": "98", "mass_run_id": mr,
+                         "since": OLD.isoformat() + "Z"})
         assert r.status_code == 404, r.text
     finally:
         os.environ.pop("ALLOW_ANONYMOUS_ADMIN", None)

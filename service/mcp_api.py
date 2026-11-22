@@ -435,15 +435,16 @@ async def _run_builtin(b: Builtin, args: dict[str, Any] | None, creds: toolbox.C
     return await b.run(creds, parsed)
 
 
-async def _body(request: Request) -> bytes | None:
-    """The request body, or None once it passes MAX_BODY (announced or streamed)."""
+async def capped_body(request: Request, cap: int) -> bytes | None:
+    """The request body, or None once it passes `cap` bytes (announced: refused unread; or streamed).
+    Also mcp_oauth's form / JSON bodies."""
     cl = request.headers.get("content-length")
-    if cl is not None and cl.isdigit() and int(cl) > MAX_BODY:
+    if cl is not None and cl.isdigit() and int(cl) > cap:
         return None
     buf = bytearray()
     async for chunk in request.stream():
         buf += chunk
-        if len(buf) > MAX_BODY:
+        if len(buf) > cap:
             return None
     return bytes(buf)
 
@@ -513,7 +514,7 @@ async def mcp_post(request: Request) -> Response:
         # A browser session or a foreign scheme: refused, never served as the anonymous surface.
         return _rpc_error(-32001, "use an access token: Authorization: Bearer ifw_…", status=401,
                           **{"WWW-Authenticate": token_auth.challenge(h, request.url.scheme)})
-    body = await _body(request)
+    body = await capped_body(request, MAX_BODY)
     if body is None:
         return _rpc_error(-32600, f"request body over {MAX_BODY // 1024} KB", status=413)
     try:

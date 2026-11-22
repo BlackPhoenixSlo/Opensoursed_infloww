@@ -36,6 +36,8 @@ Cases:
   case_publish_binds_then_adds_...     — the happy path against a fake OF: create
       precedes add, of_list_id is persisted, and a re-publish reuses the list
       instead of minting a twin.
+  case_triage_refuses_ids_not_in_mirror — W30 F14/N1: no live mirror row → 404
+      not_in_mirror on any rung, nothing written; a reject still goes through.
   case_publish_reports_what_of_still_holds — publish is ADDITIVE, so an item
       removed from the rung stays on OF; `stale_on_of` must surface it.
   case_publish_surfaces_an_of_failure  — an OF error is a 502 that leaves the
@@ -803,8 +805,16 @@ def case_jev_free_ok_table():
         ("jev free, breasts y", {"_jev": _jev_blob(breasts_bare="y")}, False),
         ("jev free, crotch unsure", {"_jev": _jev_blob(crotch_bare="unsure")}, False),
         ("jev free, penetration unsure", {"_jev": _jev_blob(penetration="unsure")}, False),
+        # W30 F1: the describe/flags side vetoes (an operator-locked bare region; a disputed item).
+        ("jev safe free, breasts_vis bare (locked)", {"_jev": _jev_blob(), **_flags(breasts_vis="bare")}, False),
+        ("jev safe free, dressed but vulva bare", {"_jev": _jev_blob(), **_flags(vulva_vis="bare"),
+                                                   "clothing_state": "dressed"}, False),
+        ("jev safe free, flags covered", {"_jev": _jev_blob(), **_flags(breasts_vis="covered")}, True),
         ("jev failed", {"_jev": {**_jev_blob(), "status": "error"}}, None),
         ("no jev", _flags(), None),
+        # W30 C3: the veto holds without a usable Jev too (triage refuses only False).
+        ("no jev, breasts_vis bare", _flags(breasts_vis="bare"), False),
+        ("jev failed, vulva bare", {"_jev": {**_jev_blob(), "status": "error"}, **_flags(vulva_vis="bare")}, False),
         ("not a dict", None, None),
     ]
     for name, fields, want in rows:
@@ -842,6 +852,9 @@ async def case_candidates_jev_selects_and_ranks():
         # At FEET_POSSIBLE_MIN (.3): possible, last; just below it (.29): out.
         408: {"description": "on the rug", "_jev": _jev_blob(feet_subject=0.3)},
         409: {"description": "on the rug", "_jev": _jev_blob(feet_subject=0.29)},
+        # W30 F1: Jev free + socks (the free rung) but the flags read her breasts bare: never prefilled free.
+        412: {"description": "socks on the bed", **_flags(breasts_vis="bare"),
+              "_jev": _jev_blob(feet_subject=0.9)},
     }
     for mid, fields in seeds.items():
         await _seed_item(_JEV, mid, fields=fields)
@@ -854,7 +867,8 @@ async def case_candidates_jev_selects_and_ranks():
     by = {x["media_id"]: x for x in r.json()["candidates"]}
     order = [x["media_id"] for x in r.json()["candidates"]]
     # The confident Jev photos, then the possible ones by score; no unseen, no qwen, no failed Jev, none < .3.
-    assert order == [404, 401, 407, 408], order
+    assert order == [404, 412, 401, 407, 408], order
+    assert (by[412]["suggested"], by[412]["free_ok"], by[412]["preselect"]) == (None, False, False), by[412]
     for m in (404, 401):
         assert by[m]["possible"] is False, by[m]
     assert (by[407]["possible"], by[407]["preselect"], by[407]["suggested"], by[407]["score"]) == \
@@ -924,7 +938,7 @@ async def case_video_never_feet():
         r = _triage(c, [{"media_id": 401, "rung": "nude"}, {"media_id": 420, "rung": rung},
                         {"media_id": 421, "rung": rung}], aid=_JEV)
         assert r.status_code == 400, r.text
-        assert r.json()["detail"] == {"error": "feet_photos_only", "media_ids": [420, 421]}, r.text
+        assert {k: r.json()["detail"][k] for k in ("error", "media_ids")} == {"error": "feet_photos_only", "media_ids": [420, 421]}, r.text
         assert not any((await _membership(_JEV)).values()), "a refused triage writes nothing"
 
     # Filed before the rule: it comes back on its rung (so it can be unfiled), and a reject is allowed.
@@ -937,6 +951,25 @@ async def case_video_never_feet():
     assert r.status_code == 200 and r.json()["rejected"] == 1, r.text
     assert (await _membership(_JEV))["feet-nude"] == {401}
     assert 420 not in ids()
+    await _wipe_folders(_JEV)
+
+
+async def case_triage_refuses_ids_not_in_mirror():
+    """W30 F14: an id with no live row in this model's mirror (unknown, removed, another model's) is refused on
+    every rung (404 not_in_mirror, the folder editor's answer; nothing written); rejecting one (rung None) still goes through."""
+    await _wipe_folders(_JEV)
+    c = _login(_OWNER_USER)
+    await _seed_item(_JEV, 430, fields={"description": "feet", "_jev": _jev_blob()})
+    async with get_session() as s:
+        (await s.get(VaultItem, (_JEV, 430))).removed_at = datetime.utcnow()
+    r = _triage(c, [{"media_id": 401, "rung": "nude"}, {"media_id": 430, "rung": "nude"},
+                    {"media_id": 101, "rung": "nude"}, {"media_id": 99999, "rung": "nude"}], aid=_JEV)
+    assert r.status_code == 404, r.text
+    assert {k: r.json()["detail"][k] for k in ("error", "media_ids")} == {"error": "not_in_mirror", "media_ids": [101, 430, 99999]}, r.text
+    assert not any((await _membership(_JEV)).values()), "a refused triage writes nothing"
+    r = _triage(c, [{"media_id": 401, "rung": "nude"}, {"media_id": 99999, "rung": None}], aid=_JEV)
+    assert r.status_code == 200, r.text
+    assert (await _membership(_JEV))["feet-nude"] == {401}
     await _wipe_folders(_JEV)
 
 
@@ -1108,5 +1141,6 @@ _harness.run(
     case_candidates_jev_selects_and_ranks,
     case_triage_refuses_unsafe_free,
     case_video_never_feet,
+    case_triage_refuses_ids_not_in_mirror,
     case_publish_free_rung_skips_unsafe,
 )

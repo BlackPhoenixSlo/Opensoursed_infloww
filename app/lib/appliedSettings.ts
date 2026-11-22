@@ -18,6 +18,7 @@
  * writes only under its own principal, never into this one's settings.
  */
 
+import { useCallback } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
@@ -79,12 +80,15 @@ export function useAppliedSettings() {
  *  saved snapshot must not drive: a restored answer counts as fresh for 60 s, and
  *  another tab may have re-saved one from before a save. `settings` is undefined
  *  until this mount's own read lands (never restored or placeholder data);
- *  `failed` once it failed. Off while `enabled` is false. */
-export function useAppliedSettingsAfterMount(enabled: boolean): { settings?: AppliedSettings; failed: boolean } {
+ *  `failed` once it failed (`retry` asks again); `key` names the read (principal + Creator in scope). Off while `enabled` is false. */
+export function useAppliedSettingsAfterMount(enabled: boolean): { settings?: AppliedSettings; failed: boolean; retry: () => void; key: string } {
   const { accountId } = useScope();
-  const q = useQuery<AppliedSettings>({ ...appliedQuery(usePrincipalId(), accountId), staleTime: 0, enabled });
+  const query = appliedQuery(usePrincipalId(), accountId);
+  const q = useQuery<AppliedSettings>({ ...query, staleTime: 0, enabled });
   const answered = !q.isError && q.isFetchedAfterMount && !q.isPlaceholderData;
-  return { settings: answered ? q.data : undefined, failed: q.isError };
+  const { refetch } = q;
+  const retry = useCallback(() => void refetch(), [refetch]);
+  return { settings: answered ? q.data : undefined, failed: q.isError, retry, key: JSON.stringify(query.queryKey) };
 }
 
 /** Whether this session may use AI translation in a chat with the Creator

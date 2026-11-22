@@ -26,6 +26,9 @@ is linked to A and restricted to OF folder 12 on accV. Mirror rows:
                               chatter gets no whole-vault totals / hit count
   /admin/vault-ai/sync        chatter 403 outside its folders; on All only the cache
                               drop (200, seen/new null, no OF walk)
+  OF-search harvest          pages paced; an OF error mid-walk folds what it got but
+                              writes no cache row; a 240 row is legacy only if stamped
+                              before the new cap shipped; a cache hit matches whole terms
 
 Run: ./venv/bin/python service/tests/test_vault_chatter_folders.py   (exit 0 = pass)
 """
@@ -36,6 +39,7 @@ _harness.bootstrap()
 
 import json  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 import uuid  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -376,17 +380,17 @@ def case_review_writes_404_outside_folders():
     """flags-review/grade, pack-triage: the chatter may write
     only folder 12's media; outside (102), unfiled (103), unknown (999) and a
     verdict list naming one of them 404 as a still does. The owner is unchanged:
-    200, and 400 not_in_mirror for 999 (triage never looks the media up)."""
+    200, and 404 not_in_mirror for 999 (W30 F14/N1: triage files live mirror rows only)."""
     owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
 
     def triage(*mids):
         return {"account_id": AID, "category": "feet",
-                "verdicts": [{"media_id": m, "rung": "tease"} for m in mids]}
+                "verdicts": [{"media_id": m, "rung": "nude"} for m in mids]}
 
     posts = (
         ("/admin/vault-ai/flags-review/grade",
          lambda m: {"account_id": AID, "media_id": m, "corrections": {}}, 400),
-        ("/admin/vault-ai/pack-triage", triage, 200),
+        ("/admin/vault-ai/pack-triage", triage, 404),
     )
     for path, body, owner_999 in posts:
         for mid, want in ((102, 404), (103, 404), (999, 404), (101, 200)):
@@ -400,15 +404,16 @@ def case_review_writes_404_outside_folders():
 
 
 def case_pack_shelf_counts_scoped():
-    """After the triage above filed 101 (chatter) and 102 + 999 (owner) on "tease":
-    the owner's shelf counts all three, the chatter's only 101."""
+    """After the triage above filed 101 (chatter) and 102 (owner; 999 refused, W30 F14) on "nude"
+    (the seed is breasts-bare + disputed, so never the free "tease" rung — W30 F1):
+    the owner's shelf counts both, the chatter's only 101."""
     owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
     q = f"/admin/vault-ai/pack-candidates?account_id={AID}&category=feet"
 
-    def tease(r):
+    def nude(r):
         assert r.status_code == 200, (r.status_code, r.text[:200])
-        return next(x["count"] for x in r.json()["folders"] if x["rung"] == "tease")
-    assert (tease(owner.get(q)), tease(chatter.get(q))) == (3, 1)
+        return next(x["count"] for x in r.json()["folders"] if x["rung"] == "nude")
+    assert (nude(owner.get(q)), nude(chatter.get(q))) == (2, 1)
 
 
 def case_by_id_edit_hide_reorder_gated():
@@ -504,6 +509,63 @@ def case_sync_needs_an_allowed_folder():
         vault_ingest.has_live_mirror = saved
         vault_cache.invalidate = saved_inv
     assert vault_ai_api.vault_ingest is vault_ingest
+
+
+async def case_harvest_paced_partial_uncached_legacy_by_date():
+    class _OF:
+        def __init__(self, fail_at: int | None = None) -> None:
+            self.fail_at, self.at = fail_at, []
+
+        def vault_media(self, *, limit, offset, type, sort, query):
+            self.at.append(time.monotonic())
+            if self.fail_at is not None and len(self.at) > self.fail_at:
+                raise RuntimeError("OF 429")
+            page = len(self.at)
+            return {"list": [{"id": 100 + page}], "hasMore": page < 3}
+
+    async def _log(q: str):
+        async with get_session() as s:
+            return await s.get(VaultOfQueryLog, (AID, q))
+
+    saved = vault_ai_api._PAGE_SLEEP_S
+    vault_ai_api._PAGE_SLEEP_S = 0.05
+    try:
+        of = _OF()
+        r = await vault_ai_api._harvest_query(AID, "lace", client=of)
+        assert r["source"] == "of" and sorted(r["ids"]) == [101, 102, 103], r
+        gaps = [b - a for a, b in zip(of.at, of.at[1:])]
+        assert len(gaps) == 2 and min(gaps) >= 0.04, gaps
+        assert (await _log("lace")).match_count == 3
+
+        of = _OF(fail_at=1)
+        r = await vault_ai_api._harvest_query(AID, "satin", client=of)
+        assert r["source"] == "of_partial" and r["ids"] == [101], r
+        assert await _log("satin") is None, "a cut-short walk must not be cached"
+        async with get_session() as s:
+            assert "satin" in json.loads((await s.get(VaultItem, (AID, 101))).of_terms)
+
+        async with get_session() as s:
+            s.add(VaultOfQueryLog(account_id=AID, query="heels", match_count=240,
+                                  fetched_at=datetime.utcnow()))
+            s.add(VaultOfQueryLog(account_id=AID, query="boots", match_count=240,
+                                  fetched_at=datetime(2026, 11, 12)))
+        of = _OF()
+        r = await vault_ai_api._harvest_query(AID, "heels", client=of)
+        assert r["source"] == "cache" and of.at == [], (r, of.at)
+        r = await vault_ai_api._harvest_query(AID, "boots", client=of)
+        assert r["source"] == "of" and len(of.at) == 3, (r, of.at)
+    finally:
+        vault_ai_api._PAGE_SLEEP_S = saved
+
+
+async def case_harvest_cache_matches_whole_terms():
+    """W30 F18: a cache hit matches the whole stored term ("ace" is not "lace", folded above)."""
+    async with get_session() as s:
+        s.add(VaultOfQueryLog(account_id=AID, query="ace", match_count=0, fetched_at=datetime.utcnow()))
+    r = await vault_ai_api._harvest_query(AID, "ace")
+    assert r["source"] == "cache" and r["ids"] == [], r
+    r = await vault_ai_api._harvest_query(AID, "lace")
+    assert r["source"] == "cache" and sorted(r["ids"]) == [101, 102, 103], r
 
 
 _harness.run()

@@ -71,6 +71,11 @@ export interface Turn {
   accountId: Focus;
   /** ISO time it was asked (the server's `ts` for an earlier one). */
   ts: string;
+  /** Do-mode sent it ("Ask as a question"): no swap chip on it — it would bounce straight back. */
+  fromDo?: true;
+  /** The account the answer's data is about (the server resolved it; a paste can name another of the
+   *  asker's models than `accountId`). Its live cards fetch this one (rwl W30 C3). */
+  about?: string;
 }
 
 /** Who the help bot answers about: an account id, or null = General. */
@@ -104,6 +109,8 @@ export interface AskResponse {
   error: string | null;
   /** The turn row the server wrote (null when the write failed). */
   id: number | null;
+  /** The account the answer is about (null = General); absent from an older server. */
+  about?: string | null;
 }
 
 export interface AssistantCore {
@@ -126,7 +133,12 @@ export interface AssistantCore {
   /** The switcher moved off `focus` while a started thread locked it. */
   held: boolean;
   roster: Roster;
+  /** Who is asking (user id, or the chatter's); undefined before the first `principal`. */
+  principal: Principal | undefined;
 }
+
+/** The effective signed-in identity: an impersonated user's id while impersonating. */
+export type Principal = string | null;
 
 /** Who the widget may focus: the owned account ids (null while they load)
  *  and whether the asker is a signed-in user (General is theirs). */
@@ -144,11 +156,12 @@ export type AssistantAction =
   | { type: "toggle" }
   /** `thread`: the open one, or the new one this first ask names (the provider's, made once).
    *  `accountId`: the focus the ask went out with (sendFocusOf). */
-  | { type: "asked"; id: number; question: string; ts: string; thread: string; accountId: Focus }
+  | { type: "asked"; id: number; question: string; ts: string; thread: string; accountId: Focus; fromDo?: boolean }
   | { type: "route"; onHelpPage: boolean }
-  | { type: "settled"; id: number; answer: string; error: string | null; rowId: number | null }
+  | { type: "settled"; id: number; answer: string; error: string | null; rowId: number | null; about?: string }
   | { type: "history_requested" }
-  | { type: "history_loaded"; turns: EarlierTurn[] }
+  /** `principal`: who the read went out as — another one's answer is dropped. */
+  | { type: "history_loaded"; turns: EarlierTurn[]; principal: Principal | undefined }
   | { type: "history_failed" }
   /** The app's model switcher: a model, or null = all models (→ General). */
   | { type: "scope"; focus: Focus }
@@ -156,7 +169,9 @@ export type AssistantAction =
   | { type: "new_chat" }
   | { type: "open_thread"; thread: string; focus: Focus }
   /** The owned accounts (null while loading) and whether the asker is a user. */
-  | { type: "roster"; ids: string[] | null; isUser: boolean };
+  | { type: "roster"; ids: string[] | null; isUser: boolean }
+  /** The effective identity (impersonation start / end, sign-in as another): a new one starts a clean conversation. */
+  | { type: "principal"; id: Principal };
 
 export const initialAssistantState: AssistantCore = {
   hydrated: false,
@@ -171,6 +186,7 @@ export const initialAssistantState: AssistantCore = {
   appFocus: undefined,
   held: false,
   roster: { ids: null, isUser: false },
+  principal: undefined,
 };
 
 /** Opening reads every reply; closing leaves `unread` as it was (false).
@@ -195,17 +211,20 @@ export function assistantReducer(state: AssistantCore, action: AssistantAction):
         turns: [...state.turns, {
           id: action.id, question: action.question, answer: null, error: null, rowId: null,
           thread: action.thread, accountId: action.accountId, ts: action.ts,
+          ...(action.fromDo ? { fromDo: true as const } : {}),
         }],
       };
     case "route":
       // Same page kind (every pathname change, and the mount): same object, no re-render.
       return state.onHelpPage === action.onHelpPage ? state : { ...state, onHelpPage: action.onHelpPage };
     case "settled": {
-      const { id, answer, error, rowId } = action;
+      const { id, answer, error, rowId, about } = action;
+      // A turn the state no longer holds (asked as another identity, rwl W30 F9) is dropped.
+      if (!state.turns.some((t) => t.id === id)) return state;
       const seen = state.open || state.onHelpPage;
       return {
         ...state,
-        turns: state.turns.map((t) => (t.id === id ? { ...t, answer, error, rowId } : t)),
+        turns: state.turns.map((t) => (t.id === id ? { ...t, answer, error, rowId, ...(about ? { about } : {}) } : t)),
         // A history load that landed first already holds this row.
         history: state.history.filter((h) => h.rowId !== rowId),
         unread: state.unread || !seen,
@@ -214,6 +233,7 @@ export function assistantReducer(state: AssistantCore, action: AssistantAction):
     case "history_requested":
       return state.historyStatus === "idle" ? { ...state, historyStatus: "loading" } : state;
     case "history_loaded": {
+      if (action.principal !== state.principal) return state;
       const mine = new Set(state.turns.map((t) => t.rowId));
       return { ...state, history: action.turns.filter((h) => !mine.has(h.rowId)), historyStatus: "loaded" };
     }
@@ -252,6 +272,16 @@ export function assistantReducer(state: AssistantCore, action: AssistantAction):
       const s = guardThread({ ...state, roster });
       // A hold the new roster resolves away is no offer any more (never raised here).
       return s.held && !heldOf(s) ? { ...s, held: false } : s;
+    }
+    case "principal": {
+      if (state.principal === action.id) return state;
+      if (state.principal === undefined) return { ...state, principal: action.id };
+      // rwl W30 F9: another identity never sees (or continues) this one's conversation. The surface bits stay; the
+      // roster and the app's model re-arrive by their own actions.
+      return {
+        ...initialAssistantState, hydrated: state.hydrated, open: state.open, onHelpPage: state.onHelpPage,
+        appFocus: state.appFocus, focus: state.appFocus ?? null, roster: state.roster, principal: action.id,
+      };
     }
   }
 }
@@ -372,6 +402,10 @@ export function groupByDay(threads: ThreadSummary[], now: Date): Array<{ label: 
   return out.map(({ label, threads }) => ({ label, threads }));
 }
 
+/** The account a turn's live cards fetch: the one the server said the answer is about, else the
+ *  focus it was asked with (rwl W30 C3). */
+export const cardFocus = (t: Pick<Turn, "about" | "accountId">): Focus => t.about ?? t.accountId;
+
 type Settled = Extract<AssistantAction, { type: "settled" }>;
 
 /** The POST's 200 as a `settled` action: a blank answer is "empty_answer"
@@ -383,6 +417,7 @@ export function settledFrom(id: number, r: AskResponse | null | undefined): Sett
     answer: answer || "The assistant came back empty — try asking again.",
     error: answer ? (r?.error ?? null) : "empty_answer",
     rowId: r?.id ?? null,
+    ...(typeof r?.about === "string" && r.about ? { about: r.about } : {}),
   };
 }
 

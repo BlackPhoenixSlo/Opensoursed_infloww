@@ -26,7 +26,8 @@ Cases:
       marker stops a second run; vault_response_cache emptied.
   case_init_db_compacts_at_boot — a fresh box (init_db's create_all branch) is
       marked done; a pre-#816 box's boot (catch-up branch, no marker) applies
-      both (row compacted, cache wiped, marker written).
+      both (row compacted, cache wiped, marker written); a populated box with no
+      alembic stamp (create_all branch) compacts too (W30 F24).
 
 Run: cd service/tests && \
   PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_list_states_compact.py
@@ -217,6 +218,19 @@ def case_init_db_compacts_at_boot():
     assert marked is not None, "marker written"
     with eng.connect() as c:
         assert c.execute(sa.text("SELECT count(*) FROM vault_response_cache")).scalar() == 0, "cache wiped"
+
+    # W30 F24: a POPULATED box with no alembic stamp takes the create_all branch — it still compacts.
+    with eng.begin() as c:
+        c.execute(sa.text("DELETE FROM data_migrations WHERE name = :n"), {"n": db_engine._VAULT_LIST_STATES_COMPACT})
+        c.execute(sa.text("DROP TABLE alembic_version"))
+        c.execute(sa.text("UPDATE vault_items SET raw_json = :r WHERE media_id = 77"), {"r": raw})
+    asyncio.run(db_engine.init_db())
+    with eng.connect() as c:
+        stored = c.execute(sa.text("SELECT raw_json FROM vault_items WHERE media_id = 77")).scalar()
+        marked = c.execute(sa.text("SELECT 1 FROM data_migrations WHERE name = :n"),
+                           {"n": db_engine._VAULT_LIST_STATES_COMPACT}).first()
+    assert [x["id"] for x in json.loads(stored)["listStates"]] == [110], "unstamped populated DB compacted"
+    assert marked is not None, "marker written"
     eng.dispose()
 
 

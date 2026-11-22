@@ -6,6 +6,7 @@ import { TEMPLATES, type MirrorPost, type QueueItem } from "./ofMirrorFeedsShare
 import { promotionTitle, type Promotion } from "./ofMirrorFeedsStrip";
 import { ARM, bindPostActions as bindActions, type PostHandlers } from "./ofMirrorHome";
 import { bindWrites, localIso, NOT_YET, SELECT_MODEL } from "./ofMirrorWrites";
+import { HANDOFF_TITLE } from "./ofMirrorHandoffs";
 import { bindPost, POSTED_TOAST, type PostHandlers as ComposerHandlers } from "./ofMirrorPost";
 import { applyIdentity } from "./ofMirrorIdentity";
 import { HOME_VAULT } from "./ofMirrorRow";
@@ -832,7 +833,7 @@ describe("bindPostActions: the Creator's own post's More menu", () => {
 });
 
 describe("bindPostActions with bindWrites", () => {
-  it("its clicks never get the Read-only note; another creator's More has Copy link to post only; unbind stops it", async () => {
+  it("its clicks never get the Read-only note; another creator's More has Copy link to post and Report; unbind stops it", async () => {
     const doc = home();
     const h = handlers();
     const unbindWrites = bindWrites(doc, "home/index", null, true);
@@ -849,13 +850,29 @@ describe("bindPostActions with bindWrites", () => {
     const writeText = vi.fn(async (_t: string) => {});
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     (more(row(doc, 0)) as HTMLButtonElement).click();
-    expect(menuItems(row(doc, 0)).map((i) => i.textContent!.trim())).toEqual(["Copy link to post"]);
+    expect(menuItems(row(doc, 0)).map((i) => i.textContent!.trim())).toEqual(["Copy link to post", "Report"]);
     click(item(row(doc, 0), "Copy link to post"));
     await flush();
     expect(writeText).toHaveBeenCalledWith("https://onlyfans.com/11/deltafour");
     expect(doc.getElementById("oi-note")!.textContent).toBe("Link copied");
     expect(h.write).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/posts/11/"), expect.anything());
     Reflect.deleteProperty(navigator, "clipboard");
+    // ticket 42 (D22): Report is OF's link to the post's onlyfans.com page, a new tab, Wired, "opens onlyfans.com", not
+    // disabled; its click reaches the browser (bindWrites' fallback and this binder leave it), sends nothing, closes the menu.
+    h.write.mockClear();
+    doc.getElementById("oi-note")?.remove();   // Copy link's "Link copied"
+    (more(row(doc, 0)) as HTMLButtonElement).click();
+    const report = item(row(doc, 0), "Report") as HTMLAnchorElement;
+    expect([report.tagName, report.href, report.target, report.rel, report.hasAttribute("data-oi-wired"), report.title]).toEqual(["A", "https://onlyfans.com/11/deltafour", "_blank", "noopener noreferrer", true, HANDOFF_TITLE]);
+    expect([report.getAttribute("aria-disabled"), report.classList.contains("v-list-item--disabled")]).toEqual([null, false]);
+    let prevented: boolean | null = null;
+    const seen = (ev: Event) => { prevented = ev.defaultPrevented; ev.preventDefault(); };
+    doc.addEventListener("click", seen);
+    click(report);
+    doc.removeEventListener("click", seen);
+    await flush();
+    expect([prevented, doc.getElementById("oi-note"), menuItems(row(doc, 0))]).toEqual([false, null, []]);
+    expect(h.write).not.toHaveBeenCalled();
     unbind();
     h.write.mockClear();
     click(row(doc, 0).querySelector(".set-favorite-btn")!);

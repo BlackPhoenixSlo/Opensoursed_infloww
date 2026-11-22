@@ -34,7 +34,7 @@ import { useInDesktopApp } from "@/hooks/useInDesktopApp";
 import { TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 import TwoFactorStep from "@/components/auth/TwoFactorStep";
 import { Bang, EyeIcon, EyeOffIcon, HINT, INPUT, Logo, Notice, PINK, WRAP } from "@/components/auth/SiteLook";
-import { BRAND_NAME } from "@/lib/brand";
+import { BRAND_NAME, DESKTOP_PLATFORMS, DESKTOP_URL } from "@/lib/brand";
 import { errText } from "@/lib/errText";
 
 interface InvitePreview {
@@ -325,14 +325,14 @@ export default function ChatterLogin() {
           {/* Desktop app. Gated behind sm: an installer is no use on a phone,
               and offering one there is just a dead end. Not in the app itself. */}
           {!inApp && <a
-            href="/download"
+            href={DESKTOP_URL}
             className="mt-8 hidden w-full items-center gap-4 rounded-2xl bg-white/[0.06] px-5 py-4 hover:bg-white/[0.09] focus-visible:outline-2 focus-visible:outline-accent sm:flex"
           >
             <span aria-hidden="true" className="text-xl leading-none text-accent">&#8595;</span>
             <span className="grid gap-0.5">
               <span className="text-base font-medium">Get the desktop app</span>
               <span className="text-sm text-fg-dim">
-                Mac &amp; Windows &mdash; keeps your inbox live in the background.
+                {DESKTOP_PLATFORMS} &mdash; keeps your inbox live in the background.
               </span>
             </span>
           </a>}

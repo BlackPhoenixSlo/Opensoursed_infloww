@@ -154,6 +154,11 @@ describe("statusNote", () => {
     expect(statusNote(plan(status, steps))).toContain(words);
   });
 
+  it("a status this build does not know still gets a line (W30 F17)", () => {
+    expect(statusNote(plan("rerouting" as PlanStatus))).toBe(
+      "Status: rerouting. This page updates by itself; reload it if that stays.");
+  });
+
   it("an uncertain non-send write is not told to check OnlyFans", () => {
     const card = (effect: "write" | "send") => [{ id: "folder", tool: "of_folder_create", effect, title: "", rows: [] }];
     const steps: StepStatus[] = [{ id: "folder", state: "uncertain" }, { id: "mass", state: "skipped" }];

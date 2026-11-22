@@ -30,7 +30,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from auth import assert_account_owned, clamp_account_filter
 # The kind catalog lives in automation_catalog; re-exported here, as its
@@ -45,6 +45,7 @@ from dispatch_plan import TZ_MAX, TZ_MIN, Interval, next_due, trigger_of, tz_off
 from isotime import iso_plain
 from job_queue import rule_last_fired_at
 from permissions import require_opt_in_kind
+from run_decide import payload_rule_id
 
 log = logging.getLogger("of-relay.automation.rules_api")
 
@@ -373,17 +374,29 @@ async def _cancel_queued(s, ids) -> int:
 
     Switching a rule off used to stop only the NEXT materialization: a job it
     had already queued (a retry in backoff, one waiting out the in-flight lock,
-    a drip's follow-on) still ran. Filtered by `rule_id`, never by kind — a
+    a drip's follow-on) still ran. Filtered by rule, never by kind — a
     rule-less one-shot of the same kind (auto_stories' delete-later cleanup,
-    an "Unsend this" press) is not this rule's work and must survive. A job
+    an "Unsend this" press) is not this rule's work and must survive. A job's
+    rule is its `rule_id`, or for a hook job (`rule_id` NULL) the payload's
+    `_rule_id` read by the claim's own parser (`run_decide.payload_rule_id`), only among the
+    rules' accounts' jobs (W30 #18: a SQL CAST read another account's "7abc" as rule 7): Off then
+    On again inside its wait would otherwise wake it under the same rule id (W30 #3). A job
     already `running` is left to finish; the executor won't requeue it.
     Callers own the transaction. Returns the number cancelled."""
     ids = [int(i) for i in ids if i is not None]
     if not ids:
         return 0
+    wanted = set(ids)
+    accounts = select(AutomationRule.account_id).where(AutomationRule.id.in_(ids))
+    hooked = [jid for jid, pj in (await s.execute(
+        select(ScheduledJob.id, ScheduledJob.payload_json).where(
+            ScheduledJob.rule_id.is_(None), ScheduledJob.status == "pending",
+            ScheduledJob.account_id.in_(accounts)))).all()
+        if payload_rule_id(pj) in wanted]
     res = await s.execute(
         update(ScheduledJob)
-        .where(ScheduledJob.rule_id.in_(ids), ScheduledJob.status == "pending")
+        .where(or_(ScheduledJob.rule_id.in_(ids), ScheduledJob.id.in_(hooked)),
+               ScheduledJob.status == "pending")
         .values(status="cancelled", last_error="rule switched off")
     )
     if res.rowcount:

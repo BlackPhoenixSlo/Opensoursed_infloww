@@ -14,8 +14,10 @@ through each Lane's real job `run` (run_once) with a faked OF client and a patch
   case_off_is_today                rule off, FULL_AI_CHAT_OFF on, `_live` false: both Lanes send and report exactly
                                    what they do with no Stand-down at all (same sends, same stats dict)
   case_claimed_ids_raising         the Lane treats nobody as claimed and logs once
+  case_bad_config_claims_nobody    an unparsable Full AI config: nobody claimed, both Lanes answer, live stands down
   case_stand_down_reuses_client    Auto-reply's folder client is handed to the Fans list read
-  case_no_forbidden_edits          webhook_dispatch / funnel / wcfi_decide unchanged vs origin/main
+  case_no_forbidden_edits          funnel / wcfi_decide unchanged vs origin/main (webhook_dispatch left the
+                                   list in W30: the sweep's batch pending-job read lives beside the one-fan one)
 
 Run: ./venv/bin/python service/tests/test_full_ai_stand_down.py  (exit 0 = pass)
 """
@@ -316,6 +318,26 @@ async def case_claimed_ids_raising():
         assert len(h.hits) == 1 and "full_ai_claimed" not in res, (kind, h.hits, res)
 
 
+async def case_bad_config_claims_nobody():
+    """F13: a stored Full AI blob that will not parse claims nobody (one reader, `full_ai_config.loaded`):
+    both Lanes answer him, `load` lists nobody, the live job stands down without raising."""
+    from automations import full_ai_live
+    for blob in ("{not json", "[1, 2]"):
+        for kind in ("welcome_chatter_for_info", "autoreply"):
+            aid = await _account()
+            async with get_session() as s:
+                (await s.get(AccountAiConfig, aid)).full_ai_config_json = blob
+            await _waiting(aid, 701, "bad config fff")
+            with _world(members=[701]) as (fake, _c):
+                res = await run_once(aid, kind, payload={})
+            assert fake.fans() == {701} and "full_ai_claimed" not in res, (blob, kind, fake.sent, res)
+        with _world(members=[701]):
+            assert await io.claimed_ids(aid, [701]) == set(), blob
+            facts = await io.load(aid, 701, datetime.utcnow())
+            assert facts.off is None and facts.listed is False, (blob, facts)
+            assert await full_ai_live._run(aid, {"only_fan_ids": [701]}) == {"skipped": "bad_config"}, blob
+
+
 async def case_stand_down_reuses_client():
     """Auto-reply hands its folder client on: the Fans list read builds no second OF client."""
     real, seen = io.claimed_ids, []
@@ -336,10 +358,9 @@ async def case_stand_down_reuses_client():
 
 
 def case_no_forbidden_edits():
-    files = ["service/webhook_dispatch.py", "service/automations/reply_mass_funnel.py",
-             "service/automations/wcfi_decide.py"]
+    files = ["service/automations/reply_mass_funnel.py", "service/automations/wcfi_decide.py"]
     r = subprocess.run(["git", "diff", "--quiet", "origin/main", "--", *files], cwd=_harness._REPO_ROOT)
-    assert r.returncode == 0, "webhook_dispatch / funnel / wcfi_decide differs from origin/main"
+    assert r.returncode == 0, "funnel / wcfi_decide differs from origin/main"
 
 
 if __name__ == "__main__":

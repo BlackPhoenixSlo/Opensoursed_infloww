@@ -36,7 +36,8 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { relay, RelayError, type OFMedia, type OFMessage, type SendMessageBody, type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
-import { bumpAfterSend, type ChatPages, type SentMessage } from "@/lib/chatsCache";
+import { relayNow } from "@/lib/ageClock";
+import { bumpAfterSend, patchChatCaches, type SentMessage } from "@/lib/chatsCache";
 import { parseSendFailure, type SendFailure } from "@/lib/sendFailure";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import {
@@ -545,17 +546,14 @@ function recordVaultSends(
  *  Walks every chats cache (Unified Inbox vs per-model keys); the per-cache
  *  rule (lift vs patch in place, never a new row) is lib/chatsCache
  *  `bumpAfterSend`. */
-function patchChatListAfterSend(
+export function patchChatListAfterSend(
   qc: ReturnType<typeof useQueryClient>,
   accountId: string,
   fanId: FanId,
   msg: SentMessage,
 ): void {
-  const nowIso = new Date().toISOString();
-  qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
-    const data = q.state.data as ChatPages | undefined;
-    if (!data?.pages?.length) return;
-    const next = bumpAfterSend(q.queryKey, data, accountId, fanId, msg, nowIso);
-    if (next !== data) qc.setQueryData(q.queryKey, next);
-  });
+  // On the Relay's clock, so a row showing a newer message (OF's createdAt) stays, live or replayed over a page read
+  // before the send (lib/chatsCache `patchChatCaches`), however far the tab's clock is off.
+  const nowIso = new Date(relayNow()).toISOString();
+  patchChatCaches(qc, accountId, (data, { key }) => bumpAfterSend(key, data, accountId, fanId, msg, nowIso));
 }

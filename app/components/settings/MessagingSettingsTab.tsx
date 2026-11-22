@@ -8,7 +8,8 @@
  * chatter's translate switch in the Composer and `/admin/translate` refuses the chatter. Never saved, it
  * counts as on, so its default here is on. Translation is Google's free keyless endpoint
  * (service/translate_api.py), which takes no instructions, so the old AI Translator prompt editor is gone
- * (owner, 2026-11-11); the blob's `prompt` key stays in every PUT so a stored one survives.
+ * (owner, 2026-11-11). Its retired `prompt` key is left out of every PUT (W30 F10): a stored legacy value the
+ * Relay now refuses (over 2,000 characters) would otherwise fail the switch's save.
  */
 
 import { useEffect, useEffectEvent } from "react";
@@ -18,8 +19,9 @@ import { Languages } from "lucide-react";
 import { useSettingsBlob } from "@/lib/settingsBlob";
 import { BlobNotes, Card, SettingsPanel, Switch } from "@/components/settings/SettingsPanel";
 
-type MessagingBlob = { ai_translation: boolean; prompt: string };
-const DEFAULTS: MessagingBlob = { ai_translation: true, prompt: "" };
+/** `prompt`: the retired editor's text, still in older stored blobs; never sent. */
+type MessagingBlob = { ai_translation: boolean; prompt?: string };
+const DEFAULTS: MessagingBlob = { ai_translation: true };
 
 /** The switch's name. */
 const AI_TRANSLATION = "Enable AI translation in Messages Pro for employees in your organization";
@@ -34,7 +36,7 @@ export default function MessagingSettingsTab() {
   // Shown flipped at once; a failed save drops the change, so the switch flips back and the error stays.
   const flip = (on: boolean) => {
     blob.set({ ai_translation: on });
-    blob.commit({ ai_translation: on });
+    blob.commit({ ai_translation: on, prompt: undefined });   // undefined: JSON drops the key
   };
   const dropChange = useEffectEvent(() => blob.reset());
   useEffect(() => {

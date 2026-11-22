@@ -7,11 +7,11 @@ import type { ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { relay, type OFChatItem } from "@/lib/relay";
+import { relay, RelayError, type OFChatItem } from "@/lib/relay";
 import { isUnreadChat } from "@/lib/chatUnread";
 import { useFanListMarkRead } from "./useFanListMarkRead";
 
-vi.mock("@/lib/relay", () => ({ relay: { post: vi.fn() } }));
+vi.mock("@/lib/relay", async (orig) => ({ ...(await orig<typeof import("@/lib/relay")>()), relay: { post: vi.fn() } }));
 const post = vi.mocked(relay.post);
 
 const A = "100000001";
@@ -111,6 +111,27 @@ describe("useFanListMarkRead", () => {
     expect(stillUnread()).toEqual([`${A}:200000001`, `${A}:200000003`]);
     expect(alert).toHaveBeenCalledWith("Marked 0 of 2; 2 failed.");
     expect(result.current.markingAll).toBe(false);
+  });
+
+  it("one Creator whose write the relay answers partial (502, acked fans): only the acked rows go read, the rest are reported", async () => {
+    post.mockRejectedValue(new RelayError(502,
+      { detail: { upstream_status: "partial", upstream_body: { partial: true, acked_fan_ids: [200000003] } } }));
+    const { result, stillUnread } = setup({ wholeCreator: A, rows: ROWS_A });
+    await act(() => result.current.markAllRead());
+    expect(stillUnread()).toEqual([`${A}:200000001`]);
+    expect(alert).toHaveBeenCalledWith("Marked 1 of 2; 1 failed.");
+  });
+
+  it("Fansly snowflakes past 2^53: the relay's string acked ids match their rows exactly (W30-mu #41)", async () => {
+    const snow = (id: string) => ({ ...unread(A, 0), withUser: { id, name: id } }) as unknown as OFChatItem;
+    const rows = [snow("900604711209099264"), snow("951404711209099265")];
+    // The relay's 502 body as it is on the wire: a JSON number this big would parse rounded to …9300.
+    post.mockRejectedValue(new RelayError(502, JSON.parse(
+      '{"detail":{"upstream_status":"partial","upstream_body":{"partial":true,"acked_fan_ids":["951404711209099265"]}}}')));
+    const { result, stillUnread } = setup({ wholeCreator: A, rows });
+    await act(() => result.current.markAllRead());
+    expect(stillUnread()).toEqual([`${A}:900604711209099264`]);
+    expect(alert).toHaveBeenCalledWith("Marked 1 of 2; 1 failed.");
   });
 
   it("a row with no Creator is not written and counts as failed; the others are marked", async () => {

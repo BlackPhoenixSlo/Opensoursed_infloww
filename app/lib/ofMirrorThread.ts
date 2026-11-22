@@ -48,6 +48,16 @@ export function chatHref(path: string, chat: string, listQuery = "", extra = "")
   return `${path}?chat=${encodeURIComponent(chat)}${listQuery ? `&${listQuery}` : ""}${extra ? `&${extra}` : ""}`;
 }
 
+/** A message's text as plain text (OF's markup dropped; a line break or paragraph a newline). */
+export const plainText = (html: string | null | undefined) => {
+  const el = (typeof document !== "undefined" ? document : null)?.createElement("div");
+  if (!el) return (html ?? "").replace(/<[^>]+>/g, "");
+  el.innerHTML = (html ?? "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>\s*<p[^>]*>/gi, "\n");
+  return (el.textContent ?? "").trim();
+};
+/** OF's unsend countdown: m:ss. */
+export const countdown = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
 /** OF's price words: "$5", "$15.99". */
 export const dollars = (n: number | null | undefined) => `$${Number.isInteger(n ?? 0) ? n ?? 0 : (n ?? 0).toFixed(2)}`;
 

@@ -20,8 +20,9 @@ vi.mock("@/lib/rqPersister", async (orig) => {
 
 import { loadFolderSort, saveFolderSort } from "@/components/vault/vaultFolderSort";
 import {
-  describeAllBody, hideDuplicates, invalidateVaultGrid, mirrorItemsKey, sortOfFolders, useOfSearch,
+  OF_SEARCH_MS, describeAllBody, hideDuplicates, invalidateVaultGrid, mirrorItemsKey, sortOfFolders, useOfSearch,
 } from "@/hooks/useVaultCache";
+
 
 const AID = "1000001";
 
@@ -123,40 +124,91 @@ describe("useOfSearch", () => {
       queryFn: () => new Promise<unknown>((r) => { refetched = () => r({}); }),
     }).subscribe(() => {});
     const grid = qc.getQueryCache().find({ queryKey: mirrorItemsKey(AID) })!;
-    expect(result.current).toBe(true);
-    expect(h.post).toHaveBeenCalledWith("/admin/vault-ai/search-of", { account_id: AID, query: "leggings" }, { accountId: AID });
+    expect(result.current.searching).toBe(true);
+    expect(h.post).toHaveBeenCalledWith("/admin/vault-ai/search-of", { account_id: AID, query: "leggings" }, { accountId: AID },
+                                        expect.any(AbortSignal));
     answer({ ids: [1], count: 1, source: "of" });
     await waitFor(() => expect(grid.state.fetchStatus).toBe("fetching"));
-    expect(result.current).toBe(true);
+    expect(result.current.searching).toBe(true);
     refetched();
-    await waitFor(() => expect(result.current).toBe(false));
+    await waitFor(() => expect(result.current).toMatchObject({ searching: false, failed: false }));
     unsub();
   });
 
-  it("a failed OF search stops searching", async () => {
+  it("a failed OF search stops searching and says so (never a false empty)", async () => {
     h.post.mockRejectedValue(new Error("502"));
     const { result } = setup("leggings");
-    await waitFor(() => expect(result.current).toBe(false));
+    await waitFor(() => expect(result.current).toMatchObject({ searching: false, failed: true }));
     expect(h.post).toHaveBeenCalledTimes(1);
+  });
+
+  // F5 (#429): neither OF's search nor the grid's refetch may hold the spinner forever; closing the picker aborts it.
+  // Only the search itself can fail it: a harvest that answered is never "OnlyFans search failed" (rwl W30 round 2).
+  it.each([["OF's search never answers", "post", true], ["the grid's refetch never answers", "grid", false]] as const)(
+    "%s: searching ends after OF_SEARCH_MS, failed %s", async (_n, hang, failed) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        h.post.mockImplementation((_p: string, _b: unknown, _c: unknown, signal?: AbortSignal) => (hang === "post"
+          ? new Promise((_, no) => signal?.addEventListener("abort", () => no(signal.reason)))
+          : Promise.resolve({ ids: [1], count: 1, source: "of" })));
+        const { qc, result } = setup("leggings");
+        qc.setQueryData(mirrorItemsKey(AID), {});
+        const unsub = new QueryObserver(qc, { queryKey: mirrorItemsKey(AID), staleTime: Infinity,
+                                              queryFn: () => new Promise<unknown>(() => {}) }).subscribe(() => {});
+        expect(result.current.searching).toBe(true);
+        await vi.advanceTimersByTimeAsync(OF_SEARCH_MS);
+        await waitFor(() => expect(result.current.searching).toBe(false));
+        expect(result.current).toMatchObject({ failed });
+        if (!failed) return unsub();
+        h.post.mockResolvedValue({ ids: [], count: 0, source: "of" });
+        unsub();
+        result.current.retry();
+        await waitFor(() => expect(result.current).toMatchObject({ searching: false, failed: false }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  it("unmounting (the picker closed) aborts OF's search request", async () => {
+    let sig: AbortSignal | undefined;
+    h.post.mockImplementation((_p: string, _b: unknown, _c: unknown, signal?: AbortSignal) => {
+      sig = signal;
+      return new Promise(() => {});
+    });
+    const { unmount } = setup("leggings");
+    await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+    unmount();
+    await waitFor(() => expect(sig?.aborted).toBe(true));
+  });
+  // W30 C8: a partial harvest (OF failed mid-walk, not cached server-side) is retried on the next search.
+  it.each([["of", 1], ["of_partial", 2]] as const)("a %s answer, searched again: %s OF call(s)", async (source, calls) => {
+    h.post.mockResolvedValue({ ids: [1], count: 1, source });
+    const { qc, result, unmount } = setup("leggings");
+    await waitFor(() => expect(result.current).toMatchObject({ searching: false }));
+    unmount();
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: qc }, children);
+    const again = renderHook(() => useOfSearch(AID, "leggings", true), { wrapper });
+    await waitFor(() => expect(again.result.current).toMatchObject({ searching: false }));
+    expect(h.post).toHaveBeenCalledTimes(calls);
   });
 
   it.each([["no query", "", true], ["the grid not on the mirror", "leggings", false]] as const)(
     "%s: no OF call, not searching", (_, query, enabled) => {
       const { result } = setup(query, enabled);
-      expect(result.current).toBe(false);
+      expect(result.current).toMatchObject({ searching: false, failed: false });
       expect(h.post).not.toHaveBeenCalled();
     });
 });
 
 describe("describeAllBody", () => {
   it.each([
-    [undefined, undefined],
-    [0, undefined],
-    [-5, undefined],
+    [undefined, "all"],
+    [0, "all"],
+    [-5, "all"],
+    [0.5, "all"],
     [2000, 2000],
     [12.7, 12],
   ])("limit %s -> %s", (limit, want) => {
     expect(describeAllBody({ restage: true, limit })).toEqual(
-      { force: false, restage: true, prompt_version: "v2", ...(want ? { limit: want } : {}) });
+      { force: false, restage: true, prompt_version: "v2", limit: want });
   });
 });

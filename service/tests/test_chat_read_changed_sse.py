@@ -92,7 +92,9 @@ def test_a_rejected_ack_publishes_nothing():
         mark_chat_read = mark_all_chats_read = _call
     for route, args in ((server.of_mark_chat_read, (FAN,)), (server.of_mark_all_chats_read, ())):
         pub, raised = _run(route, *args, client=_Rejected())
-        assert raised is None and pub == [], (route.__name__, raised, pub)
+        # W30-mu #1: answered as the failure it is (502), not a 200 the app reads as done
+        assert raised is not None and raised.status_code == 502 and pub == [], (route.__name__, raised, pub)
+        assert raised.detail["upstream_status"] == "ack_rejected", raised.detail
 
 
 def test_a_platform_without_unread_publishes_nothing():

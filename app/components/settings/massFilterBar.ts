@@ -3,6 +3,8 @@
  * draft (search, Sending Date range), what Search applied, and the list's "Sent in" window, which a Sending
  * Date older than it widens (the cache read takes only `days_back`). Reset clears the draft and the applied
  * filter and returns the window to the user's last pick. `filterMassRows` applies a filter client side over the loaded rows; `massCsvRows` is Export's sheet.
+ * The list's own filters live here too, as they decide the listed rows and the bulk targets with the bar: the model
+ * chips (`models`, empty = every Creator; bulk actions take this scope) and "Hide unsent".
  */
 
 import { dayOf } from "@/components/growth/automatedRows";
@@ -27,6 +29,9 @@ export interface MassFilterState {
   daysBack: number;
   /** The last "Sent in" the user picked; Reset returns to it after a Sending Date widened the window. */
   pickedDays: number;
+  /** The model chips' pick; empty = every Creator. Reset leaves it (it is the list's filter, not the bar's). */
+  models: ReadonlySet<string>;
+  hideUnsent: boolean;
 }
 
 export type MassFilterAction =
@@ -34,9 +39,18 @@ export type MassFilterAction =
   /** Search: the draft becomes the filter; `now` (ms) sizes the window a Sending Date start needs. */
   | { type: "apply"; now: number }
   | { type: "reset" }
-  | { type: "daysBack"; days: number };
+  | { type: "daysBack"; days: number }
+  | { type: "hideUnsent"; on: boolean }
+  /** A model chip: in the pick or out of it. */
+  | { type: "toggleModel"; id: string }
+  /** "All": no model filter. */
+  | { type: "allModels" }
+  /** The active Creators now: a picked one no longer active leaves the pick. */
+  | { type: "liveModels"; ids: readonly string[] };
 
-export const initialMassFilter: MassFilterState = { draft: NO_MASS_FILTERS, applied: NO_MASS_FILTERS, daysBack: 30, pickedDays: 30 };
+export const initialMassFilter: MassFilterState = {
+  draft: NO_MASS_FILTERS, applied: NO_MASS_FILTERS, daysBack: 30, pickedDays: 30, models: new Set(), hideUnsent: true,
+};
 
 /** The smallest "Sent in" window holding `from` (one day of slack for the time zone), the widest when none
  *  does; null without a start. */
@@ -60,6 +74,20 @@ export function massFilterReducer(state: MassFilterState, action: MassFilterActi
       return { ...state, draft: NO_MASS_FILTERS, applied: NO_MASS_FILTERS, daysBack: state.pickedDays };
     case "daysBack":
       return { ...state, daysBack: action.days, pickedDays: action.days };
+    case "hideUnsent":
+      return { ...state, hideUnsent: action.on };
+    case "toggleModel": {
+      const models = new Set(state.models);
+      if (models.has(action.id)) models.delete(action.id);
+      else models.add(action.id);
+      return { ...state, models };
+    }
+    case "allModels":
+      return state.models.size === 0 ? state : { ...state, models: new Set() };
+    case "liveModels": {
+      const models = new Set([...state.models].filter((id) => action.ids.includes(id)));
+      return models.size === state.models.size ? state : { ...state, models };
+    }
   }
 }
 
@@ -100,8 +128,17 @@ export function massCsvRows(
   ];
 }
 
-/** The bulk confirm's note on what the applied filter narrows the targets to ("" when unfiltered). */
-export function narrowedBy(f: MassFilters): string {
+/** The bulk confirm's note on what narrows the targets ("" when nothing does): the picked models (`modelNames`,
+ *  empty = every Creator) and the applied search / Sending Date. */
+export function narrowedBy(f: MassFilters, modelNames: readonly string[] = []): string {
+  const of = modelNames.length ? ` of ${modelNames.join(", ")}` : "";
   const by = [f.q.trim() && "search", (f.from || f.to) && "date"].filter(Boolean);
-  return by.length ? ` matching your ${by.join("/")}` : "";
+  return of + (by.length ? ` matching your ${by.join("/")}` : "");
+}
+
+/** True when a search / Sending Date is applied and a listed Creator's read came back full (`limit` rows, the
+ *  newest): its older broadcasts were never loaded, so matches among them are missing from the list, Export and bulk. */
+export function mayHideOlder(f: MassFilters, rowsPerCreator: readonly number[], limit: number): boolean {
+  const filtered = !!(f.q.trim() || f.from || f.to);
+  return filtered && rowsPerCreator.some((n) => n >= limit);
 }

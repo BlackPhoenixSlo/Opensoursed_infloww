@@ -16,7 +16,7 @@
 import { replaceEqualDeep, useQuery } from "@tanstack/react-query";
 
 import { relay, type OFChatItem } from "@/lib/relay";
-import { chatRowKey } from "./useChatList";
+import { chatRowKey } from "@/lib/chatsCache";
 
 interface RecentChatsResp {
   list: OFChatItem[];

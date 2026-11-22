@@ -1,0 +1,13 @@
+# A Fill matches each Step across the Creator's vault, pics plus a video
+
+**Status: accepted** (2026-11-22, supersedes ADR-0045; built in #916 and #945, `.scratch/script-fill-content` issue 16).
+
+ADR-0045 drew a whole Sequence from one Shoot. On AE that put one lingerie Shoot on all 9 paid Steps of a Sequence (16 photos, genitals covered, no video) while its "spread my bare pussy" Step went unmatched and the Fillable vault held 65 videos; the client rule is "always pics plus vids" (AE owner, 2026-11-21). We decided a Fill draws from a pool: every Fillable item of the Creator, one per dupe set, in `vault_scripts._script_sort_key` order. Per kind (photos, clips) the last paid Step takes the top of the pool and earlier Steps ascend below it under a forward lookahead, a required clip placed before an optional one. A paid Slice is its asked photo count (1-4, one Rung, one Shoot) plus one clip, clip last; a clip ask gets the clip alone; no clip left gives photos only and flag `no_video`. Inside a Step's window the pick answering the most of the text's asks (`asks`, a word lexicon with negation) wins, as a preference only (`ask_unmet` when none does). Shoots are a tie-break only: a Slice's clip and preview prefer its photos' Shoot, and a Step prefers the previous Step's Shoot. Items on the Creator's other Sequences are tried last, never excluded. Sequences take strictly solo media while the Creator's `solo_sequences` vault switch is on (default, #945); off, partner media may be filled. Unchanged from ADR-0045: Roles, the Fill status set, paid Options all-or-nothing with `free_unfilled` for a missing free tease, and pricing (ADR-0046). We chose this because the most expensive Step must carry the most explicit content the Creator has and the text's asks must be answerable, which one Shoot rarely holds; a mixed outfit mid-sell costs less than a $57 Step selling covered photos. Going back to one Shoot rewrites the assignment stage again and loses the clip on most paid Steps.
+
+## Considered Options
+
+- **Keep one Shoot (ADR-0045).** Rejected: measured on AE above.
+- **Lift a Step's floor to the first item answering a genitals or nude ask.** Withdrawn: on the AE fit one early lift spent every strong video, leaving the next Sequence none.
+- **Cap a Step's clip by its price.** Withdrawn: AE's Fixed prices start at $9.67, so the cap stripped the clip from early Steps.
+- **Hard exclusion of items on other Sequences.** Rejected: a small vault could not fill a second Sequence.
+- **An LLM reading Step texts for asks.** Deferred: the lexicon stands until an AE re-fill shows `ask_unmet` or wrong picks a person would match.

@@ -7,7 +7,7 @@ tables over plain dict rows, no DB. Sequences are AE-shaped (issue 07: 13+ steps
   case_roles_table             each `notes` tag, saved price, text amount, clip / photo / count cues,
                                `no content` beats a price, rows without a step left out
   case_all_chat_no_paid_steps  bridges and freebies only -> no_paid_steps
-  case_fillable_reasons        every exclusion; the standard_folders switch; an override flipping a
+  case_fillable_reasons        every exclusion; the standard_folders and solo_sequences switches; an override flipping a
                                tier; a `_jev` picks override leaving the stored `_jev` whole
   case_ae_sequence_worked      the worked 13-step fill: free Step, photos + clip, previews first, prices
   case_assignment_invariants   photos then one clip last, one Rung + one Shoot, <= 4 photos, each kind
@@ -49,6 +49,7 @@ from datetime import datetime, timedelta  # noqa: E402
 import script_fill_decide as d  # noqa: E402
 import vault_ai_brief  # noqa: E402
 import vault_ai_vision_decide  # noqa: E402
+import vault_jev_flags  # noqa: E402
 import vault_jev_rules  # noqa: E402
 import vault_scripts  # noqa: E402
 
@@ -90,6 +91,9 @@ def _item(mid, tier, kind="photo", lane="$10", colour="white", **kw):
     """A `full_ai_sell.load_rows`-shaped row plus review_state / operator_overrides_json."""
     fields = {**TIERS[tier], "clothing_items": [f"{colour} bra"], **SOLO,
               vault_jev_rules.JEV_KEY: _jev(lane, kind, "y" if tier == "explicit" else "n")}
+    if lane in vault_jev_rules.PAID:   # the tier the mapper writes a paid lane, never sfw / suggestive (W30 D1)
+        m = vault_jev_flags.apply(fields, fields[vault_jev_rules.JEV_KEY])
+        fields.update({k: m[k] for k in ("explicitness", "breasts_vis", "vulva_vis", "anus_vis")})
     fields = vault_ai_brief.settled_reading(fields)
     row = {"media_id": mid, "kind": kind, "created_at": T0 + timedelta(minutes=mid),
            "duration_seconds": 12 if kind == "video" else None, "fields": fields,
@@ -206,6 +210,21 @@ def case_fillable_reasons():
         ({**base, "account_id": "acct-a"}, {"account_id": "acct-a"}, None, "own Creator"),
         ({**base, "fields": {**base["fields"], "people_count": 2}}, {}, "not_solo", "partner in shot"),
         ({**base, "fields": {**base["fields"], "people_count": None}}, {}, "not_solo", "solo unknown"),
+        ({**base, "fields": {**base["fields"], "acts": ["blowjob"]}}, {}, "not_solo", "partner act, count 1"),
+        ({**base, "fields": {**base["fields"], "primary_folder": "sex_with_partner"}}, {}, "not_solo",
+         "partner folder, count 1"),
+        ({**base, "fields": {**base["fields"], "penetration": "penis"}}, {}, "not_solo", "penis, count 1"),
+        ({**base, "fields": {**base["fields"], "_jev": {**base["fields"]["_jev"],
+                                                     "tags": {"people_count": "two_or_more"}}}},
+         {}, "not_solo", "Jev counts two"),
+        ({**base, "fields": {**base["fields"], "people_count": 2}}, {"solo_sequences": True}, "not_solo",
+         "partner in shot, solo switch on"),
+        ({**base, "fields": {**base["fields"], "people_count": 2}}, {"solo_sequences": False}, None,
+         "partner in shot, solo switch off"),
+        ({**base, "fields": {**base["fields"], "acts": ["blowjob"]}}, {"solo_sequences": False}, None,
+         "partner act, solo switch off"),
+        ({**base, "fields": {**no_tier, "people_count": 2}}, {"solo_sequences": False}, "no_rung",
+         "partner, solo switch off: the other gates still apply"),
         ({**base, "fields": no_tier}, {}, "no_rung", "no Rung"),
         ({**base, "fields": {**base["fields"], "_jev": _jev("review")}}, {}, "jev_review", "Jev review"),
         ({**base, "fields": {**base["fields"], "_jev": _jev("$100", "video", review="fetch_failed")}}, {},
@@ -218,11 +237,18 @@ def case_fillable_reasons():
     for item, kw, want, why in rows:
         got = d.fillable(d.effective(item), **{"account_id": ACCT, **kw})
         assert got == want, (why, got)
+    duo = d.effective({**base, "fields": {**base["fields"], "people_count": 2}})
+    assert d.fillable_rows([duo], account_id=ACCT) == [], "solo_sequences defaults on"
+    assert [r["media_id"] for r in d.fillable_rows([duo], account_id=ACCT, solo_sequences=False)] == [1]
     # An operator tier override flips the item onto a Rung (and back off one).
-    flipped = d.effective({**base, "fields": no_tier,
+    free = {k: v for k, v in _item(3, "suggestive", lane="free")["fields"].items() if k != "explicitness"}
+    flipped = d.effective({**base, "fields": free,
                            "operator_overrides_json": json.dumps({"explicitness_tier": "suggestive"})})
     assert d.fillable(flipped, account_id=ACCT) is None, "override puts it on a Rung"
     assert vault_scripts._with_script_why(flipped)["why"]["rung"] == 1
+    paid = d.effective({**base, "fields": no_tier,
+                        "operator_overrides_json": json.dumps({"explicitness_tier": "suggestive"})})
+    assert d.fillable(paid, account_id=ACCT) == "unpriced_dispute", "suggestive beside a $10 Jev lane (W30 D1)"
     down = d.effective({**_item(2, "explicit", lane="$50"),
                         "operator_overrides_json": {"explicitness_tier": "suggestive"}})
     assert vault_scripts._with_script_why(down)["why"]["rung"] == 1, "explicit -> suggestive by override"
@@ -353,10 +379,10 @@ def case_asks_table():
     for text, want, why in rows:
         assert d.asks(text) == want, (why, d.asks(text))
     eff = {m: d.effective(r)["fields"] for m, r in ((r["media_id"], r) for r in BLUE)}
-    assert d.answers(eff[801]) == frozenset() and d.answers(eff[804]) == frozenset()
+    assert d.answers(eff[801]) == frozenset() and d.answers(eff[804]) == {"breasts"}   # a $10 is topless
     assert d.answers(eff[810]) == {"genitals", "nude", "breasts"}, d.answers(eff[810])
-    assert d.answers({**eff[804], "body_focus": ["ass"]}) == {"ass"}
-    assert d.answers({**eff[804], "acts": ["fingering"]}) == {"act"}
+    assert d.answers({**eff[804], "body_focus": ["ass"]}) == {"ass", "breasts"}
+    assert d.answers({**eff[804], "acts": ["fingering"]}) == {"act", "breasts"}
 
 
 def _three(text, items=BLUE):
@@ -374,10 +400,11 @@ def case_ask_preference():
     assert plain == {3: ([804], []), 5: ([808], []), 7: ([812], [])}, ("control: even spread, top last", plain)
     rows = [
         # (step-3 text, items, step-3 photos, step-3 flags, why)
-        ("let me show you my pussy", BLUE, [804], ["ask_unmet"], "genitals answered only above the window: no lift"),
-        ("get naked for me", BLUE, [804], ["ask_unmet"], "nude: no lift"),
+        # (a $50 clip shows her vulva, a $10 photo her breasts: W30 D1 rows as the Jev mapper stamps them)
+        ("let me show you my pussy", BLUE, [804], [], "genitals: no lift, the step's $50 clip 813 answers it"),
+        ("get naked for me", BLUE, [804], ["ask_unmet"], "nude answered only above the window: no lift"),
         ("you won't see my pussy yet", BLUE, [804], [], "a negated ask does nothing"),
-        ("look at my tits", BLUE, [804], ["ask_unmet"], "breasts: no lift (810 answers it)"),
+        ("look at my tits", BLUE, [804], [], "breasts: no lift, the $10 804 answers it"),
         ("bend over for you", [_with(r, body_focus=["ass"]) if r["media_id"] == 806 else r for r in BLUE],
          [806], [], "an ask answered inside the window wins over send order"),
     ]
@@ -571,13 +598,14 @@ def case_free_step_needs_free_safe():
     p = _plan(rows, black + [plain])
     o = _opts(p)
     assert o[1]["media"] == [599], ("control: a free-safe 599 takes the free Step", o[1])
+    # A firm Jev "y" behind stale covered flags is a dispute (`jev_bare_unflagged`, W30 C1): not Fillable at all.
     bad = [
-        (_with(plain, _jev=_jev("free", "photo", "n", breasts_bare="y")), "bare flag"),
-        ({**plain, "folder_cents": 2000}, "folder price"),
+        (_with(plain, _jev=_jev("free", "photo", "n", breasts_bare="y")), "bare flag", "unpriced_dispute"),
+        ({**plain, "folder_cents": 2000}, "folder price", None),
     ]
-    for item, why in bad:
+    for item, why, reason in bad:
         eff = d.effective(item)
-        assert d.fillable(eff, account_id=ACCT) is None, ("precondition: Fillable", why)
+        assert d.fillable(eff, account_id=ACCT) == reason, ("precondition", why, reason)
         p = _plan(rows, black + [item])
         o = _opts(p)
         assert p["status"] == "ok" and o[1]["media"] == [601], (why, o[1])

@@ -201,6 +201,8 @@ export interface ChattingStatsRow {
 export interface ChattingStatsResp {
   employees: ChattingStatsRow[];
   attribution_fallback: string | null;
+  /** With `chatter_only`: every Chatter-role Employee, active or not (owner sessions; else null). */
+  chatter_ids: number[] | null;
 }
 
 /** Employee reports' Chatting statistics (roadmap W5 5.2); `chatterOnly` keeps the Chatter role's Employees. */

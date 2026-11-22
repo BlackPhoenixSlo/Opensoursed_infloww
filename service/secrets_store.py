@@ -73,9 +73,13 @@ KNOWN: dict[str, dict] = {
     "TYPESAFE_API_KEY": {
         "label": "TypeSafe API key (Jev)",
         "group": "AI models",
-        "help": "Optional. Used by Vault Jev (reading vault items) for agencies "
-                "with no TypeSafe key of their own. Blank = those reads are "
-                "skipped. Get one at console.typesafe.ai.",
+        # tenant_keys.typesafe_key_for: every key-less agency's Jev runs on this one.
+        "help": "Optional. Jev's key for every agency with no TypeSafe key of its "
+                "own, paid by this deployment: the FM auto-reply's off-script "
+                "check, Full AI's Router and the vault AI's Jev pass run on it. "
+                "Blank = those agencies get no Jev: the off-script check is "
+                "skipped (the script is sent as before), Full AI cannot go Live, "
+                "the vault's Jev pass is skipped. Get one at console.typesafe.ai.",
     },
     "HELP_ASSISTANT_DEEPSEEK_KEY": {
         "label": "Help-bot fallback key (DeepSeek)",

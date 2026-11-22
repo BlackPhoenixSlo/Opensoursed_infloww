@@ -232,7 +232,8 @@ def case_formats():
     r = _run(A, recipe, "csv")
     assert r.headers["content-type"].startswith("text/csv")
     assert 'filename="sales_' in r.headers["content-disposition"] and r.headers["cache-control"] == "no-store"
-    assert r.text.splitlines() == ["Creator,Gross ($)", "creator_a,18.0"], r.text
+    lines = r.text.splitlines()  # then notes ("# …"): the bench's Creators were added today (history gaps)
+    assert lines[:2] == ["Creator,Gross ($)", "creator_a,18.0"] and all(x.startswith("# ") for x in lines[2:]), r.text
     x = _run(A, recipe, "xlsx")
     assert x.headers["content-type"].startswith("application/vnd.openxmlformats")
     assert '.xlsx"' in x.headers["content-disposition"]
@@ -284,6 +285,47 @@ def case_engine_notes_reach_json_and_files():
         assert b"# Shift schedule" in sheet
     finally:
         report_recipe.ENGINES["sales"] = real
+
+
+def case_sales_history_gap_is_a_note():
+    # W30 C3: days before a Creator was added with no OF figure stored (earnings_window's gaps): the totals there
+    # are the ledger's only, a note in json and the last line of a file, never a silent partial total.
+    real = of_stats_daily.earnings_window
+
+    async def gapped(*a, **k):
+        cells, _ = await real(*a, **k)
+        return cells, 3
+    of_stats_daily.earnings_window = gapped
+    try:
+        recipe = {"dataset": "sales", "window": WEEK, "metrics": ["gross"]}
+        notes = _run(A, recipe)["notes"]
+        assert notes == [report_recipe.history_note(3)] and "3 Creator-days" in notes[0], notes
+        assert _run(A, recipe, "csv").text.splitlines()[-1].startswith("# 3 Creator-days"), "csv"
+        sheet = zipfile.ZipFile(io.BytesIO(_run(A, recipe, "xlsx").content)).read("xl/worksheets/sheet1.xml")
+        assert b"# 3 Creator-days" in sheet
+    finally:
+        of_stats_daily.earnings_window = real
+    # the real read: the bench's Creators were added today, so last week's days are gaps
+    assert [n for n in _run(A, {"dataset": "sales", "window": WEEK})["notes"] if "Creator-day" in n], "real gaps"
+    assert _run(A, {"dataset": "chat_activity", "window": WEEK})["notes"] == []  # only sales reads OF's figure
+
+
+def case_file_byte_cap_both_routes():
+    # W30 F4: one byte cap in build_file: the export (/run csv, xlsx) and the held file both 413, nothing held.
+    import report_files
+    real = report_recipe.MAX_FILE_BYTES
+    report_recipe.MAX_FILE_BYTES = 10
+    try:
+        recipe = {"dataset": "sales", "window": WEEK, "metrics": ["gross"]}
+        for fmt in ("csv", "xlsx"):
+            r = _run(A, recipe, fmt, status=413)
+            assert "report file over" in r.json()["errors"]["file"], r.text
+        held = len(report_files._files)
+        r = A.post("/admin/reports/files", json={"recipe": recipe, "format": "csv"})
+        assert r.status_code == 413 and len(report_files._files) == held, r.text
+    finally:
+        report_recipe.MAX_FILE_BYTES = real
+    assert _run(A, {"dataset": "sales", "window": WEEK, "metrics": ["gross"]}, "csv").status_code == 200
 
 
 def case_report_zone_and_fractional_zone():

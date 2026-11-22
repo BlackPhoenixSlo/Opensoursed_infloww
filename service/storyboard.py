@@ -28,7 +28,7 @@ import anyio.from_thread
 
 import admission
 import cdn_resign
-from img_api import _ALLOWED_CDN_SUFFIXES, _CACHE_CONTROL
+from img_api import _ALLOWED_CDN_SUFFIXES, _CACHE_CONTROL, IMG_RESIGN
 from relay_host import get_request_client as _get_client
 from relay_host import periodic as _periodic
 
@@ -241,7 +241,7 @@ def _storyboard_download(
         # the default executor (as resolve_fresh's read does), not back to the anyio pool this thread holds.
         def get(url: str):
             return asyncio.to_thread(client.http.get, url, timeout=client.timeout_s, stream=True)
-        r, u = anyio.from_thread.run(cdn_resign.fetch, aid, media_id, u, client, get)
+        r, u = anyio.from_thread.run(cdn_resign.fetch, aid, media_id, u, client, get, IMG_RESIGN)
         if r.status_code not in (200, 206):
             log.warning("storyboard download non-2xx %d for %s", r.status_code, u[:120])
             _storyboard_build_failures += 1

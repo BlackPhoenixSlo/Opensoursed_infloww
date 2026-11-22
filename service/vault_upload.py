@@ -1755,10 +1755,14 @@ def _clear_spool(state: dict) -> None:
 
 # ── crash recovery ────────────────────────────────────────────────────────
 
-def _marker_text(post: dict) -> str:
-    """A scheduled post's text, with OF's markup out of the way."""
-    raw = post.get("rawText") or post.get("text") or ""
-    return html.unescape(re.sub(r"<[^>]+>", "", str(raw)))
+def _marker_text(post: dict) -> str | None:
+    """A scheduled post's text (`rawText` and `text`), with OF's markup out of
+    the way; None when the row carries neither as a string — its marker cannot
+    be read, so it may be a carrier."""
+    raw = [v for v in (post.get("rawText"), post.get("text")) if isinstance(v, str)]
+    if not raw:
+        return None
+    return html.unescape(re.sub(r"<[^>]+>", "", " ".join(raw)))
 
 
 def _known_carriers(account_id: str) -> set[str]:
@@ -1801,15 +1805,21 @@ def _sweep_scheduled(client, account_id: str,
     queue--scheduled-post-endpoint). Only `type == "post"` rows are candidates;
     the calendar lists chats too.
 
-    The third return value says whether the listing actually completed. OF
-    ignores `offset` and `limit` on /schedules and sends no hasMore, so the
-    window is read in date chunks (of_paging.schedules_in_window). An error, a
-    reply that is not `{list: [...]}`, `syncInProcess`, or a single day of
-    of_paging.SCHEDULE_PAGE rows or more (maybe truncated) is an INCOMPLETE listing and
-    nothing is deleted that run. A listing that FAILED once returned the same
-    `(0, 0)` as a listing that found nothing — "we looked and it is clean" and
-    "we could not look" reported identically, on the only recovery path an
-    unrecorded carrier has.
+    The third return value says whether the scan was COMPLETE: every chunk
+    listed and every post row evaluated. Only a complete scan may retire an
+    intent (sweep pass 3). OF ignores `offset` and `limit` on /schedules, so
+    the window is read in date chunks (of_paging.schedules_in_window). A
+    read that fails, a reply that is not `{list: [...]}`, `syncInProcess`,
+    `hasMore`, or a single
+    day of of_paging.SCHEDULE_PAGE rows or more (maybe truncated) makes the
+    listing INCOMPLETE — but every chunk is still read, and the marker carriers
+    among the rows that WERE listed are still deleted (absence proves nothing;
+    presence does). A row that cannot be evaluated (no entity, no post id, a
+    type that is neither post nor chat, a post with no text field) may be a
+    carrier, so it too makes the scan incomplete. A listing that FAILED once returned the same `(0, 0)` as a
+    listing that found nothing — "we looked and it is clean" and "we could not
+    look" reported identically, on the only recovery path an unrecorded
+    carrier has.
 
     `recheck()` returns the account's carrier ids as they are AT THAT MOMENT, or
     None if an import has started since. Both matter, and a frozen snapshot of
@@ -1819,8 +1829,9 @@ def _sweep_scheduled(client, account_id: str,
     before it existed. So it is asked again before the listing
     and again before every single delete.
 
-    Returns `(deleted, still_live, listed_completely)`. Abandoning because the
-    account went live is NOT a complete scan: nothing may be retired on it.
+    Returns `(deleted, still_live, complete)`; an incomplete listing counts
+    one in `still_live` so the relay shouts. Abandoning because the account
+    went live is NOT a complete scan: nothing may be retired on it.
     """
     known = recheck()
     if known is None:
@@ -1837,32 +1848,47 @@ def _sweep_scheduled(client, account_id: str,
         return 0, 1, False
     if why:
         log.error("vault sweep: scheduled-post listing for account %s is "
-                  "INCOMPLETE (%s) — nothing retired this run", account_id, why)
-        return 0, 1, False
+                  "INCOMPLETE (%s) — only the carriers it did list are retired, "
+                  "no intent is cleared this run", account_id, why)
 
-    deleted = failed = 0
+    deleted = failed = unevaluable = 0
     for row in rows:
+        # The calendar lists scheduled chats too; only a post can be a carrier.
+        kind = row.get("type") if isinstance(row, dict) else None
+        if kind == "chat":
+            continue
         # Each row is a QUEUE entry wrapping the post in `entity`; the row's own
         # `id` is the queue id (app/lib/__fixtures__/of/queue-schedules-2026-11.json).
-        # No entity = no post we can identify: skip it, never delete.
+        # No entity / no post id / unknown type = a row we cannot evaluate: never
+        # deleted, and the scan is not complete (it may be the carrier).
         post = row.get("entity") if isinstance(row, dict) else None
         if not isinstance(post, dict):
+            unevaluable += 1
             log.warning("vault sweep: account %s scheduled row %s has no entity "
                         "— skipped, not deleted", account_id,
                         row.get("id") if isinstance(row, dict) else row)
             continue
-        # The calendar lists scheduled chats too; only a post can be a carrier.
-        kind = row.get("type")
         if kind != "post":
-            if kind != "chat":
-                log.warning("vault sweep: account %s scheduled row %s has type "
-                            "%r — skipped, not deleted", account_id,
-                            row.get("id"), kind)
+            unevaluable += 1
+            log.warning("vault sweep: account %s scheduled row %s has type "
+                        "%r — skipped, not deleted", account_id,
+                        row.get("id"), kind)
             continue
         pid = post.get("id")
-        if pid is None or str(pid) in known:
+        if pid is None:
+            unevaluable += 1
+            log.warning("vault sweep: account %s scheduled row %s has no post id "
+                        "— skipped, not deleted", account_id, row.get("id"))
             continue
-        if of_client.VAULT_MARKER not in _marker_text(post):
+        if str(pid) in known:
+            continue
+        text = _marker_text(post)
+        if text is None:
+            unevaluable += 1
+            log.warning("vault sweep: account %s scheduled post %s has no text "
+                        "— skipped, not deleted", account_id, pid)
+            continue
+        if of_client.VAULT_MARKER not in text:
             continue
         # Re-asked per candidate, immediately before the irreversible bit. The
         # listing above may be a minute old by now.
@@ -1882,7 +1908,9 @@ def _sweep_scheduled(client, account_id: str,
         except Exception as e:  # noqa: BLE001
             failed += 1
             log.error("vault sweep: unrecorded carrier %s STILL LIVE — %s", pid, e)
-    return deleted, failed, failed == 0
+    if why:
+        failed += 1
+    return deleted, failed, failed == 0 and not unevaluable
 
 
 def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:

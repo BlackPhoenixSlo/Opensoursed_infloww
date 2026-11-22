@@ -273,6 +273,13 @@ def needs_ui(reasons: list[tuple[str, str]]) -> bool:
     return all(r.startswith("app: ") for _, r in reasons)
 
 
+def unjudged(changed_files: dict, untracked: list[str], map_missing: dict[str, set[str]] | None) -> set[str]:
+    """Changed (or untracked) files absent at some map entry's sha: the map cannot judge them (pick warns
+    about each; the nightly runs every scenario on any). Arguments as pick's."""
+    all_changed = set(untracked) | {f for fs in changed_files.values() for f in fs}
+    return {f for f in all_changed if any(f in fs for fs in (map_missing or {}).values()) and not ignored(f)}
+
+
 def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict, untracked: list[str],
          deleted=frozenset(), map_missing: dict[str, set[str]] | None = None):
     """-> ({scenario: [(tier, reason)]}, [warnings]); reasons best tier first.
@@ -327,8 +334,8 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
 
     all_changed = set(untracked) | {f for fs in changed_files.values() for f in fs}
     map_missing = map_missing or {}
-    unknown = {f for f in all_changed if any(f in fs for fs in map_missing.values()) and not ignored(f)}
-    warns |= {f"WARN map cannot judge {f} (absent at map sha); refresh: slop/run all --map" for f in unknown}
+    warns |= {f"WARN map cannot judge {f} (absent at map sha); refresh: slop/run all --map"
+              for f in unjudged(changed_files, untracked, map_missing)}
     for f in sorted(all_changed):  # a scenario's own file: always (new or mapped)
         if f.startswith(SCEN) and f.endswith(".py") and "/" not in f[len(SCEN):]:
             name = PurePosixPath(f).stem

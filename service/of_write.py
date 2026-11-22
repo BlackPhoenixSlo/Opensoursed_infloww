@@ -148,6 +148,9 @@ async def of_write_paced(account_id, fn, *, min_gap_s: float = _OF_WRITE_GAP_S,
                  aid, wait, " operator" if operator else "")
     if before_write is not None:
         await before_write()
+        # The gap counts from the write itself, not the grant `before_write` ran after.
+        gate = _write_gate(aid)
+        gate.next_at = max(gate.next_at, asyncio.get_running_loop().time() + min_gap_s)
     cell = _RUN_WRITE.get()
     if cell is not None:
         fn = _tracked(fn, cell)

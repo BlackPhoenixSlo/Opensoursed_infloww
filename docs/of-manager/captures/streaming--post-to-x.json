@@ -1,0 +1,16 @@
+{
+ "id": "streaming--post-to-x",
+ "section": "streaming",
+ "label": "Post to X that I'm Live",
+ "pages": [
+  "streaming/index"
+ ],
+ "phase": 4,
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "track B gate open, owner stream go pending",
+  "note": "Phase 4 track B (D7): unwired, Not-yet title kept; OnlyFans's Start body read offline from its JS in .scratch/ofm-not-yet/go-live-track-b.md (ticket 93); never proven by implication (story 33)."
+ }
+}

@@ -15,7 +15,8 @@ else. Pinned here against the real materializer and a temp DB:
   • the floor: a poke within min(every_seconds, 60 s) of the last fire does
     not fire yet; for promo_reactivate / purchase_followup it is kept and fires on
     the first pass past the floor, for send_welcome it is spent;
-  • no rule, a disabled rule, or quiet hours: a poke enqueues nothing;
+  • no rule, a disabled rule, or quiet hours: a poke enqueues nothing; inside quiet hours a
+    promo_reactivate / purchase_followup poke is kept for the band's end (W30 F10);
   • the hooks: a fresh purchase notification pokes once, its re-sighting and
     a stale one do not; a `subscribed` toast pokes send_welcome and
     promo_reactivate, a `favorited` one does not; a WS unlock frame pokes purchase_followup;
@@ -23,7 +24,7 @@ else. Pinned here against the real materializer and a temp DB:
     promo, promo_reactivate is poked only when its Claims plus the toasts since that read
     reach one short of the trigger (the Fill threshold, else the cap), or its end is near;
     no read, or one older than 600 s, pokes and keeps no toast history (F15). send_welcome
-    is always poked.
+    is always poked. A replayed toast (an id the Creator already counted) pokes nothing (W30 F28).
 
 No network: no OF client is built, nothing runs a job.
 
@@ -220,6 +221,26 @@ async def case_no_rule_a_disabled_rule_or_quiet_hours_enqueue_nothing():
     assert ax._poked == set(), ax._poked
 
 
+async def case_w30_f10_a_quiet_hours_poke_is_kept_for_the_end_of_the_band():
+    """W30 F10: a promo_reactivate poke inside quiet hours is held, not spent: it fires on
+    the first pass after the band ends, not an hourly cadence later."""
+    aid = await _rule(PROMO, quiet=[])      # a clock, no band yet
+    await _fired_once(aid, PROMO)
+    async with get_session() as s:
+        await s.execute(update(AutomationRule).where(AutomationRule.account_id == aid)
+                        .values(quiet_hours_json=json.dumps([0, 24])))   # every hour
+    ax.poke_rule(aid, PROMO)
+    await ax._materialize_due_rules()
+    assert len(await _jobs(aid, PROMO)) == 1, "a poke broke through quiet hours"
+    assert (aid, PROMO) in ax._poked, "the quiet-hours skip spent the promo poke"
+    async with get_session() as s:
+        await s.execute(update(AutomationRule).where(AutomationRule.account_id == aid)
+                        .values(quiet_hours_json=None))                 # the band ended
+    await ax._materialize_due_rules()
+    assert [j.status for j in await _jobs(aid, PROMO)] == ["done", "pending"]
+    assert ax._poked == set(), ax._poked
+
+
 # ── The hooks ───────────────────────────────────────────────────────────────
 
 class _Pokes:
@@ -278,6 +299,22 @@ async def case_a_subscribed_toast_pokes_the_welcome_and_promo_and_other_toasts_d
         await event_transcoder.transcode({"toasts": {"type": "subscribed"},
                                           "__account_id": "evt_toast2"})
         assert p.seen[-2:] == [("evt_toast2", WELCOME), ("evt_toast2", PROMO)], p.seen
+
+
+async def case_w30_f28_replayed_subscribe_toast_pokes_once():
+    """W30 F28: the same subscribe toast (same id) re-sent pokes nothing a second time; a new
+    id, or a toast with no id, still pokes."""
+    def frame(*ids):
+        return {"toasts": [{"type": "subscribed", **({} if i is None else {"id": i})} for i in ids],
+                "__account_id": "evt_replay"}
+    with _Pokes() as p:
+        await event_transcoder.transcode(frame(901))
+        assert p.seen == [("evt_replay", WELCOME), ("evt_replay", PROMO)], p.seen
+        await event_transcoder.transcode(frame(901))
+        assert len(p.seen) == 2, f"a replay poked again: {p.seen}"
+        await event_transcoder.transcode(frame(901, 902))
+        await event_transcoder.transcode(frame(None))
+        assert len(p.seen) == 6, p.seen
 
 
 def _gate(aid, claims, *, cap=50, preempt=True, age_s=0.0, ends_in_s=None):

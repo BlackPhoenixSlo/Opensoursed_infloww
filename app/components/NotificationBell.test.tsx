@@ -217,6 +217,34 @@ describe("NotificationBell (OF mark-read)", () => {
     expect(screen.getByText("7")).toBeInTheDocument();
   });
 
+  it("a list read that failed sends no mark-read: nothing was shown to be read", async () => {
+    relayGet.mockImplementation(async (path: string) => {
+      if (String(path).startsWith("/api/of/v2/users/notifications/count")) return { all: 7 };
+      throw new Error("OF 502");
+    });
+    renderWithProviders(<NotificationBell variant="messages-pro" classNames={PRO} />);
+    expect(await screen.findByText("7")).toBeInTheDocument();
+    await userEvent.click(button());
+    await screen.findByText(/OF 502/);
+    expect(posts()).toHaveLength(0);
+  });
+
+  it("closed while its list is still loading: no mark-read, then or after the list lands (W30-mu #48)", async () => {
+    let answer!: (v: unknown) => void;
+    relayGet.mockImplementation(async (path: string) => {
+      if (String(path).startsWith("/api/of/v2/users/notifications/count")) return { all: 7 };
+      return new Promise((r) => { answer = r; });
+    });
+    renderWithProviders(<NotificationBell variant="messages-pro" classNames={PRO} />);
+    expect(await screen.findByText("7")).toBeInTheDocument();
+    await userEvent.click(button());
+    await waitFor(() => expect(answer).toBeTypeOf("function"));
+    await userEvent.keyboard("{Escape}");
+    await act(async () => { answer({ list: [] }); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(posts()).toHaveLength(0);
+  });
+
   it("the top bar opening on Agency sends nothing until the OnlyFans tab shows", async () => {
     relayGet.mockResolvedValue({ list: [] });
     renderWithProviders(<NotificationBell agency={{ unread: 2, settings: null, panel: <p>Agency feed</p> }} />);
@@ -299,6 +327,22 @@ describe("NotificationBell (Messages Pro, All Models)", () => {
     expect(await screen.findByRole("button", { name: "Mark all read" })).toBeEnabled();
     expect(posted()).toEqual(["acc-1", "acc-3", "acc-4"]);
     await waitFor(() => expect(badge()).toBe("4"));
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 3 Creators failed");
+  });
+
+  it("a cached 0 read before the last arrival is written too (it may be stale)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.setSystemTime(Date.now() + 60_000);
+      setup();
+      act(() => { vi.setSystemTime(Date.now() + 1_000); dispatchNotifArrived(); });
+      relayPost.mockResolvedValue({ counters: { all: 0 } });
+      await userEvent.click(button());
+      await userEvent.click(await screen.findByRole("button", { name: "Mark all read" }));
+      await waitFor(() => expect(posted()).toEqual(["acc-1", "acc-2", "acc-3", "acc-4"]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

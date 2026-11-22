@@ -33,7 +33,7 @@ import logging  # noqa: E402
 import os  # noqa: E402
 import time  # noqa: E402
 import uuid  # noqa: E402
-from datetime import datetime  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 from urllib.parse import urlsplit  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -337,6 +337,62 @@ async def case_dead_session_keeps_its_last_total():
             assert pub == [] and _slot() == held, ("frozen at its last `at`", pub, _slot(), held)
 
 
+async def case_an_answer_without_a_counter_drops_the_held_total():
+    """It moved Last refresh but confirmed nothing: a held total may not keep looking fresh (W30-mu #19)."""
+    with _knobs(True, True):
+        wire = _Wire(3)
+        with _world(wire) as pub:
+            await server.users_me()
+            await _settle()
+            assert _slot()["n"] == 3, _slot()
+            pub.clear()
+            relay_cache.invalidate("users_me", A)
+            wire.me = (200, {"name": "no counter"})
+            await server.users_me()
+            await _settle()
+            assert len(wire.calls) == 2 and _slot() is None, (wire.calls, _slot())
+            assert _totals(pub) == [None], ("the drop is published once, as null", pub)
+            relay_cache.invalidate("users_me", A)
+            wire.me = (200, {"chatMessagesCount": 2})
+            await server.users_me()
+            await _settle()
+            assert _slot()["n"] == 2 and [t and t["n"] for t in _totals(pub)] == [None, 2], (_slot(), pub)
+
+
+async def case_an_answer_without_a_counter_keeps_the_records_adjustments_and_due_read():
+    """Only the total goes: per-fan records, adjustments still landing and a due window read survive (W30-mu #35)."""
+    import unread_total_decide as decide
+    with _knobs(True, True):
+        rec, adj = {7: (True, 150)}, (decide.Adj(stamp=900, delta=-1),)
+        unread_total._held[A] = decide.State(n=3, at=100, base=4, adj=adj, rec=rec, due=100)
+        unread_total.observe(A, {"name": "no counter"}, 200)
+        st = unread_total._held[A]
+        assert (st.n, st.at, st.base) == (None, None, None), st
+        assert st.rec == rec and st.adj == adj and st.due == 100, st
+        unread_total.observe(A, {"name": "no counter"}, 300)
+        assert unread_total._held[A] == decide.replace(st, seen=300), "nothing held to drop: only the mark moves"
+
+
+async def case_answers_of_both_kinds_order_by_their_ask_time():
+    """W30-mu #45: a delayed counter-less answer once erased a newer confirmed total and its watermark, and an
+    older valid answer then replaced it. Both kinds now order by ask time against one watermark (`seen`), kept
+    while the total is unknown: an answer asked before the newest one taken changes nothing."""
+    import unread_total_decide as decide
+    with _knobs(True, True):
+        unread_total._held[A] = decide.State()
+        unread_total.observe(A, {"chatMessagesCount": 5}, 200)
+        unread_total.observe(A, {"name": "no counter"}, 100)        # asked before the confirmation: stale
+        assert _slot() == {"n": 5, "at": 200}, _slot()
+        unread_total.observe(A, {"chatMessagesCount": 9}, 150)      # an older valid answer landing late
+        assert _slot() == {"n": 5, "at": 200}, _slot()
+        unread_total.observe(A, {"name": "no counter"}, 300)        # a newer one drops the total, keeps the mark
+        assert _slot() is None and unread_total._held[A].seen == 300, unread_total._held[A]
+        unread_total.observe(A, {"chatMessagesCount": 9}, 250)      # asked before it: still unknown
+        assert _slot() is None, _slot()
+        unread_total.observe(A, {"chatMessagesCount": 4}, 400)
+        assert _slot() == {"n": 4, "at": 400}, _slot()
+
+
 async def case_a_tab_without_the_creator_gets_no_unread_total():
     with _knobs(True, True):
         with _world(_Wire(3)) as pub:
@@ -400,8 +456,12 @@ async def case_knob_off_routes_hold_nothing():
 
 
 def _dm(fan: int, mid: int) -> dict:
+    """A DM sent now: its `createdAt` (the Unread total's stamp for it) is after the held confirmation and any write
+    already asked (2 ms on: never the same ms as them)."""
+    time.sleep(0.002)
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     return {"api2_chat_message": {"id": mid, "text": "hey", "price": 0, "isTip": False, "fromUser": {"id": fan},
-                                  "createdAt": "2026-11-20T10:00:00+00:00", "responseType": "message"},
+                                  "createdAt": now, "responseType": "message"},
             "__account_id": A}
 
 

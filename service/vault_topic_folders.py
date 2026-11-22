@@ -16,7 +16,7 @@ What the rules read (`Topic.rule(jev, fields)`; no new Jev question):
             that cut when a tag is missing. `butt_bare` is max(butt_state_a bare, butt_cheeks_bare) at .35.
   `lane5` "free" | "$10" | "$50" | "$100" | "review" and `breasts_bare` / `crotch_bare` / `penetration`
             y / n / unsure for the price split, the free guard and the body topics.
-  describe `acts` (menu spellings, `vault_scripts._ACT_ALIASES` normalised), `penetration`, `primary_folder`.
+  describe `acts` (menu spellings, `ACT_ALIASES` normalised), `penetration`, `primary_folder`.
 
 Price split (`split`): every topic folder is ONE price, named `AI-<name> <price>`:
   "split"    topics → free / $10 / $50 / $100 by the lane ($100 kept apart rather than folded into $50: it is
@@ -28,7 +28,8 @@ The lane is a photo's `lane5`; a clip's is `vault_jev_rules.read_lane` (a review
 "review" on a photo, or anything unknown → in NO topic folder. A review CLIP (`lane5` "review": its frames may
 miss its most explicit moment) never goes to a free folder, only to its paid read lane. FREE GUARD (`free_ok`): a
 free split never holds an item whose `breasts_bare`, `crotch_bare` or `penetration` is "y" or "unsure", whatever
-`lane5` says (settle nn.10 can call a coin-flip nipple free when NudeNet saw nothing; a topic folder must not).
+`lane5` says (settle nn.10 can call a coin-flip nipple free when NudeNet saw nothing; a topic folder must not), nor
+one the describe fields veto (`vault_ai_brief.free_vetoed`: disputed, or a region bare, an operator lock included).
 
 Unsplit (`assign(..., by_price=False)`, the modal's "Split topics by price" off): one folder per topic, `AI-<name>`,
 holding the union of what the split folders would.
@@ -42,6 +43,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, NamedTuple
 
+import vault_ai_brief
 import vault_jev_rules
 
 PRICES = ("free", "$10", "$50", "$100")
@@ -58,13 +60,14 @@ class Topic(NamedTuple):
     rule: Callable[[dict[str, Any], dict[str, Any]], bool]   # (jev, describe fields)
 
 
-def _tag(jev: dict[str, Any], q: str) -> Any:
+def jev_tag(jev: dict[str, Any], q: str) -> Any:
+    """Jev's stored answer to question `q` (a Noul y/n tag or a choice), else None."""
     return (jev.get("tags") or {}).get(q)
 
 
 def _yes(jev: dict[str, Any], q: str) -> bool:
     """A Noul question answered yes at its calibrated cut (the stored y/n tag; `P` at the same cut if absent)."""
-    t = _tag(jev, q)
+    t = jev_tag(jev, q)
     if t in ("y", "n"):
         return t == "y"
     p = (jev.get("P") or {}).get(q)
@@ -72,19 +75,37 @@ def _yes(jev: dict[str, Any], q: str) -> bool:
 
 
 def _butt_shown(j: dict[str, Any]) -> bool:
-    return (_yes(j, "butt_focus") or _tag(j, "facing") == "away"
-            or _tag(j, "pose") in ("all_fours_or_bent_over", "lying_on_stomach"))
+    return (_yes(j, "butt_focus") or jev_tag(j, "facing") == "away"
+            or jev_tag(j, "pose") in ("all_fours_or_bent_over", "lying_on_stomach"))
 
 
 def _norm(v: Any) -> str:
     return str(v or "").strip().lower()
 
 
+# The model does not always return the menu spelling. Observed on a real graded
+# batches: `stripping` for strip, `rubbing_breasts` for groping_own_breasts.
+# Unknown acts are ignored rather than guessed at, so drift silently costs
+# signal — these are the spellings actually seen, not speculative synonyms.
+# (`vault_scripts` reads it from here: one definition, no import cycle.)
+ACT_ALIASES: dict[str, str] = {
+    "stripping": "strip",
+    "undressing": "undress",
+    "rubbing_breasts": "groping_own_breasts",
+    "groping_breasts": "groping_own_breasts",
+    "twerking": "twerk",
+    "teasing": "tease",
+    "posing_for_camera": "posing",
+    "masturbation": "masturbation_orgasm",
+    "orgasm": "masturbation_orgasm",
+    "squirting": "squirt",
+}
+
+
 def acts(fields: dict[str, Any]) -> set[str]:
-    """The describe's `acts`, in menu spelling (`vault_scripts._ACT_ALIASES`: the drift actually seen)."""
-    from vault_scripts import _ACT_ALIASES   # lazy: vault_scripts imports this module
+    """The describe's `acts`, in menu spelling (`ACT_ALIASES`: the drift actually seen)."""
     raw = fields.get("acts")
-    return {_ACT_ALIASES.get(_norm(a), _norm(a)) for a in raw} if isinstance(raw, (list, tuple)) else set()
+    return {ACT_ALIASES.get(_norm(a), _norm(a)) for a in raw} if isinstance(raw, (list, tuple)) else set()
 
 
 _MASTURBATION = frozenset({"rubbing_clit", "fingering", "masturbation_orgasm", "squirt"})
@@ -93,11 +114,11 @@ _DANCE_STRIP = frozenset({"twerk", "ass_shaking", "strip", "undress"})
 
 def _masturbation(j: dict[str, Any], f: dict[str, Any]) -> bool:
     """Solo only: a partner in shot (or a sex act) is the sex folder's, never this one."""
-    if _tag(j, "people_count") == "two_or_more" or _sex(j, f):
+    if jev_tag(j, "people_count") == "two_or_more" or _sex(j, f):
         return False
     return (bool(acts(f) & _MASTURBATION)
             or (_yes(j, "self_touch") and j.get("crotch_bare") == "y")
-            or (j.get("penetration") == "y" and _tag(j, "toy") == "no_toy"))
+            or (j.get("penetration") == "y" and jev_tag(j, "toy") == "no_toy"))
 
 
 def _sex(j: dict[str, Any], f: dict[str, Any]) -> bool:
@@ -106,9 +127,11 @@ def _sex(j: dict[str, Any], f: dict[str, Any]) -> bool:
 
 
 def _explicit(j: dict[str, Any], f: dict[str, Any]) -> bool:
-    """An explicit act (describe or Jev): never free, whatever the bare answers say."""
-    return (bool(acts(f) & (_MASTURBATION | {"blowjob", "handjob"})) or _sex(j, f)
-            or _norm(f.get("primary_folder")) == "blowjob" or _tag(j, "toy") == "toy_touching_or_inserted")
+    """An explicit act (describe or Jev): never free, whatever the bare answers say. Covers every explicit
+    topic's rule (masturbation's Jev self_touch read too), so the sell price climbs the same ladder the folder
+    name does (`full_ai_sell.list_price_cents`)."""
+    return (bool(acts(f) & (_MASTURBATION | {"blowjob", "handjob"})) or _sex(j, f) or _masturbation(j, f)
+            or _norm(f.get("primary_folder")) == "blowjob" or jev_tag(j, "toy") == "toy_touching_or_inserted")
 
 
 TOPICS: tuple[Topic, ...] = (
@@ -119,34 +142,34 @@ TOPICS: tuple[Topic, ...] = (
     Topic("butt_bare", "butt bare", "bare butt cheeks on show (the subject, turned away or bent over)", "split",
           lambda j, f: _yes(j, "butt_bare") and _butt_shown(j)),
     Topic("boobs_closeup", "boobs close-up", "breasts are the subject, framed close", "split",
-          lambda j, f: _yes(j, "breasts_focus") and _tag(j, "framing") in ("body_part_close_up", "face_and_chest")),
+          lambda j, f: _yes(j, "breasts_focus") and jev_tag(j, "framing") in ("body_part_close_up", "face_and_chest")),
     Topic("see_through", "see-through", "sheer fabric or a nipple showing through it", "split",
           lambda j, f: _yes(j, "see_through") or _yes(j, "nipple_through_fabric")),
     Topic("spread", "spread", "legs spread", "split", lambda j, f: _yes(j, "legs_spread")),
     Topic("bent_over", "bent over", "on all fours or bent over", "split",
-          lambda j, f: _tag(j, "pose") == "all_fours_or_bent_over"),
+          lambda j, f: jev_tag(j, "pose") == "all_fours_or_bent_over"),
     Topic("toy_tease", "toy tease", "a toy in shot, not in use", "split",
-          lambda j, f: _tag(j, "toy") == "toy_visible_not_in_use"),
+          lambda j, f: jev_tag(j, "toy") == "toy_visible_not_in_use"),
     Topic("toy_play", "toy play", "a toy touching or inserted ($50 / $100 / $150)", "explicit",
-          lambda j, f: _tag(j, "toy") == "toy_touching_or_inserted"),
+          lambda j, f: jev_tag(j, "toy") == "toy_touching_or_inserted"),
     Topic("with_partner", "with partner", "two or more people in shot", "split",
-          lambda j, f: _tag(j, "people_count") == "two_or_more"),
-    Topic("faceless", "faceless", "no face in shot", "split", lambda j, f: _tag(j, "face_visible") == "no_face"),
+          lambda j, f: jev_tag(j, "people_count") == "two_or_more"),
+    Topic("faceless", "faceless", "no face in shot", "split", lambda j, f: jev_tag(j, "face_visible") == "no_face"),
     Topic("mirror_selfies", "mirror selfies", "mirror selfies", "split", lambda j, f: _yes(j, "mirror_selfie")),
     Topic("good_morning", "good morning", "smiling at the camera, casual or in bed (free only)", "free",
           lambda j, f: _yes(j, "smiling") and _yes(j, "looking_at_camera")
-          and (_tag(j, "outfit") == "everyday_clothes" or _tag(j, "setting") == "bedroom")),
-    Topic("bikini", "bikini", "in swimwear", "split", lambda j, f: _tag(j, "outfit") == "swimwear"),
+          and (jev_tag(j, "outfit") == "everyday_clothes" or jev_tag(j, "setting") == "bedroom")),
+    Topic("bikini", "bikini", "in swimwear", "split", lambda j, f: jev_tag(j, "outfit") == "swimwear"),
     Topic("shower_bath", "shower & bath", "in the bathroom or in water", "split",
-          lambda j, f: _tag(j, "setting") == "bathroom" or _yes(j, "feet_in_water")),
+          lambda j, f: jev_tag(j, "setting") == "bathroom" or _yes(j, "feet_in_water")),
     Topic("outdoors_car", "outdoors & car", "outdoors or in a car", "split",
-          lambda j, f: _tag(j, "setting") in ("outdoors", "car")),
+          lambda j, f: jev_tag(j, "setting") in ("outdoors", "car")),
     Topic("lips_tongue", "lips & tongue", "a lip bite, pout or tongue out", "split",
           lambda j, f: _yes(j, "mouth_tease") or _yes(j, "tongue_out")),
     Topic("clean_promo", "clean for promo", "no text, watermark, censor, phone or collage (free only)", "free",
-          lambda j, f: _tag(j, "added_text") == "nothing_added" and not any(
+          lambda j, f: jev_tag(j, "added_text") == "nothing_added" and not any(
               _yes(j, q) for q in ("watermark", "censor_edit", "phone_visible", "multi_panel"))),
-    Topic("nude", "nudes", "fully nude", "split", lambda j, f: _tag(j, "outfit") == "nude"),
+    Topic("nude", "nudes", "fully nude", "split", lambda j, f: jev_tag(j, "outfit") == "nude"),
     Topic("tits", "tits", "bare breasts, the subject or topless", "split",
           lambda j, f: j.get("breasts_bare") == "y" and (_yes(j, "breasts_focus") or _yes(j, "topless"))),
     Topic("pussy", "pussy", "pussy on show", "split", lambda j, f: j.get("crotch_bare") == "y"),
@@ -156,10 +179,10 @@ TOPICS: tuple[Topic, ...] = (
           lambda j, f: bool(acts(f) & {"blowjob", "handjob"}) or _norm(f.get("primary_folder")) == "blowjob"),
     Topic("sex", "sex", "sex with a partner ($50 / $100 / $150)", "explicit", _sex),
     Topic("clothed_tease", "clothed tease", "dressed, in lingerie or swimwear, nothing bare (free only)", "free",
-          lambda j, f: _tag(j, "outfit") in ("everyday_clothes", "lingerie_or_bodysuit", "swimwear")),
+          lambda j, f: jev_tag(j, "outfit") in ("everyday_clothes", "lingerie_or_bodysuit", "swimwear")),
     Topic("dance_strip", "dance & strip", "twerking, shaking or stripping (mostly clips)", "split",
           lambda j, f: bool(acts(f) & _DANCE_STRIP)),
-    Topic("gym_yoga", "gym & yoga", "at the gym", "split", lambda j, f: _tag(j, "setting") == "gym"),
+    Topic("gym_yoga", "gym & yoga", "at the gym", "split", lambda j, f: jev_tag(j, "setting") == "gym"),
 )
 BY_SLUG: dict[str, Topic] = {t.slug: t for t in TOPICS}
 SLUGS: tuple[str, ...] = tuple(BY_SLUG)
@@ -186,7 +209,7 @@ def jev_of(fields: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def free_ok(jev: dict[str, Any]) -> bool:
     """FREE GUARD: nothing Jev saw or half-saw bare. Every one of the three must be a plain "n"."""
-    return all(jev.get(k) == "n" for k in ("breasts_bare", "crotch_bare", "penetration"))
+    return vault_jev_rules.body_free(jev)   # a clip's: worst over its frames
 
 
 def splits(topic: Topic) -> tuple[str, ...]:
@@ -208,8 +231,9 @@ def split(topic: Topic, jev: dict[str, Any], fields: dict[str, Any] | None = Non
         return None
     if lane == "free":
         # A review clip's free read may be too low: never free. Explicit topics are never free.
+        # The describe/flags side vetoes too: disputed, or a region bare (an operator lock included).
         ok = (topic.price in ("split", "free") and free_ok(jev) and not (video and jev.get("lane5") == "review")
-              and not _explicit(jev, fields or {}))
+              and not _explicit(jev, fields or {}) and not vault_ai_brief.free_vetoed(fields))
         return "free" if ok else None
     if topic.price == "free":
         return None

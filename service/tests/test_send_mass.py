@@ -42,9 +42,9 @@ seam exactly like a real scheduled job.
       Auto_Exclude sync's own read.
   case_the_composer_reports_kept_ids_and_refuses_nobody_on_request:
       the route's answer carries `_user_ids_kept` {asked, kept} (the caller's
-      fan ids left after the opt-out guard); with nobody left it still sends
-      for every caller, but `require_recipients` (Ultra) → 422, no OF call, no
-      mass_runs row.
+      fan ids left after the opt-out guard); with nobody left (no id, list,
+      online or filter) → 422 for every caller, no OF call, no mass_runs row;
+      `require_recipients` (Ultra) still lets a list go.
 
 Run: ./venv/bin/python service/tests/test_send_mass.py  (exit 0 = pass)
 """
@@ -55,6 +55,7 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+from _of_fixtures import UNLISTABLE_403, of_error  # noqa: E402
 import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
@@ -98,7 +99,6 @@ class FakeClient:
     def send_mass_message(self, text, **kw) -> dict:
         self.sent.append({"text": text, **kw})
         return self._response
-
 
 class FakeListClient(FakeClient):
     """FakeClient + the fan-list API audiences.ensure_exclude_list syncs
@@ -484,7 +484,7 @@ async def case_exclude_sync_tolerates_one_bad_user():
     bad = 7463635
     real_add = fake.add_user_to_list
     fake.add_user_to_list = (lambda lid, uid: (_ for _ in ()).throw(
-        RuntimeError("403 Unable to add user to user list"))
+        of_error(403, UNLISTABLE_403))
         if int(uid) == bad else real_add(lid, uid))
 
     lid = _sync_exclude_list_blocking(fake, {1, 2, bad, 3})
@@ -523,7 +523,7 @@ async def case_exclude_sync_steady_state_straggler():
     fake.members[FakeListClient.AUTO_LID] = {1, 2, 3}   # already synced
     bad = 7463635                                       # never addable, ever
     fake.add_user_to_list = lambda lid, uid: (_ for _ in ()).throw(
-        RuntimeError("403 Unable to add user to user list"))
+        of_error(403, UNLISTABLE_403))
 
     lid = _sync_exclude_list_blocking(fake, {1, 2, 3, bad})
     assert lid == FakeListClient.AUTO_LID, lid
@@ -828,19 +828,18 @@ async def case_the_composer_reports_kept_ids_and_refuses_nobody_on_request():
         out = await mass_queue_api.of_send_or_schedule_mass(None, body([8601, 8602, 8601]))
         assert out["_user_ids_kept"] == {"asked": 2, "kept": 1}, out
         assert set(fake.sent[-1]["included_users"]) == {8601}, fake.sent  # (the route keeps duplicates as given)
-        # Without the flag every other caller sends as before, even with nobody left.
-        out = await mass_queue_api.of_send_or_schedule_mass(None, body([8602]))
-        assert out["_user_ids_kept"] == {"asked": 1, "kept": 0} and len(fake.sent) == 2, (out, fake.sent)
+        # Nobody left → 422 with or without the flag: an empty audience never goes to OF.
         n_open = len(opened)
-        try:
-            await mass_queue_api.of_send_or_schedule_mass(None, body([8602], require_recipients=True))
-            raise AssertionError("nobody left + require_recipients must refuse")
-        except HTTPException as e:
-            assert e.status_code == 422 and "nobody left to send to" in e.detail, e.detail
-        assert len(fake.sent) == 2 and len(opened) == n_open, (fake.sent, opened)  # no OF call, no run minted
+        for kw in ({}, {"require_recipients": True}):
+            try:
+                await mass_queue_api.of_send_or_schedule_mass(None, body([8602], **kw))
+                raise AssertionError(f"nobody left must refuse ({kw})")
+            except HTTPException as e:
+                assert e.status_code == 422 and "nobody left to send to: 1 of 1 fan" in e.detail, e.detail
+        assert len(fake.sent) == 1 and len(opened) == n_open, (fake.sent, opened)  # no OF call, no run minted
         out = await mass_queue_api.of_send_or_schedule_mass(None, body([8602], require_recipients=True,
                                                                        user_lists=["fans"]))
-        assert len(fake.sent) == 3 and out["_user_ids_kept"] == {"asked": 1, "kept": 0}, out  # a list still goes
+        assert len(fake.sent) == 2 and out["_user_ids_kept"] == {"asked": 1, "kept": 0}, out  # a list still goes
         fake._response = {"id": 770002}  # FakeClient answers one shared dict; a fresh one for this call
         out = await mass_queue_api.of_send_or_schedule_mass(None, mass_queue_api._MassScheduleBody(
             text="hi", user_lists=["fans"]))
@@ -1239,6 +1238,44 @@ async def case_dry_run_explicit_with_exclude_lists_reads_no_list():
     assert fake.calls == [] and fake.sent == [], (fake.calls, fake.sent)
 
 
+class _UnreadableListClient(FakeRosterClient):
+    def list_users_in(self, list_id, *, limit=20, offset=0):
+        raise RuntimeError("OF 502 on /lists/users")
+
+
+async def case_explicit_send_subtracts_its_exclude_lists():
+    """An explicit-ids send with OF `excluded_user_lists` (OF verifies those on
+    list audiences only) subtracts the lists' members itself before the POST;
+    an unreadable list refuses the send (nothing minted, no POST); a list that
+    covers everyone is a skip."""
+    aid = "acc_mass_explicit_excl"
+    await _seed_account(aid)
+    base = {"exclude_replied_hours": 0, "exclude_inbound_hours": 0,
+            "excluded_user_lists": [9881]}
+    fake = FakeRosterClient()
+    fake.members[9881] = {9882}
+    _use_fake(fake)
+    res = await run_once(aid, "send_mass_message", payload={
+        **base, "text": "x", "included_users": [9882, 9883]})
+    assert res["status"] == "ok" and res["recipients"] == 1, res
+    assert fake.sent[0]["included_users"] == [9883], fake.sent[0]
+    assert await _written(aid) == (1, 1), await _written(aid)
+
+    bad = _UnreadableListClient()
+    _use_fake(bad)
+    res = await run_once(aid, "send_mass_message", payload={
+        **base, "text": "y", "included_users": [9884]})
+    assert res["status"] == "error" and res["reason"] == "excluded_lists_unreadable", res
+    assert bad.sent == [] and await _written(aid) == (1, 1), bad.sent
+
+    fake2 = FakeRosterClient()
+    fake2.members[9881] = {9885}
+    _use_fake(fake2)
+    res = await run_once(aid, "send_mass_message", payload={
+        **base, "text": "z", "included_users": [9885]})
+    assert res["status"] == "skipped" and res["reason"] == "audience_empty", res
+    assert fake2.sent == [] and await _written(aid) == (1, 1), fake2.sent
+
 async def case_dry_run_online_refuses_a_list():
     aid = "acc_mass_dry_online"
     await _seed_account(aid)
@@ -1312,6 +1349,7 @@ _harness.run(
     case_dry_run_enforce_fence_in_memory,
     case_dry_run_enforce_halts_like_the_real_run,
     case_dry_run_explicit_with_exclude_lists_reads_no_list,
+    case_explicit_send_subtracts_its_exclude_lists,
     case_dry_run_online_refuses_a_list,
     case_dry_run_ignores_queued_dry_runs,
     case_dry_pending_ids_mirror_pending_send_fan_ids,

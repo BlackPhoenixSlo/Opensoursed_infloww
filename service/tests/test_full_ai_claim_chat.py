@@ -26,6 +26,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_claim_chat.py  (exit 0 = pass)
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+from _jev_fixtures import mapped  # noqa: E402
 
 import contextlib  # noqa: E402
 import json  # noqa: E402
@@ -128,7 +129,7 @@ def _one_clip_sell():
             s.add(VaultItem(account_id=A, media_id=CLIP, kind="video", duration_seconds=12,
                             created_at=datetime(2026, 7, 1) + timedelta(days=1), tags="[]",
                             describe_status="described", of_folder_ids="[]",
-                            ai_fields_json=json.dumps({**DRESSED, vault_jev_rules.JEV_KEY: JEV})))
+                            ai_fields_json=json.dumps(mapped({**DRESSED, vault_jev_rules.JEV_KEY: JEV}))))
 
     async def drop():
         async with get_session() as s:

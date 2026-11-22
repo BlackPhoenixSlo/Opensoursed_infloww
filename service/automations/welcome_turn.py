@@ -179,19 +179,17 @@ async def enqueue_turn_handoff(account_id: str, fan_id: int) -> str | None:
     its send loop); the executor's 30s tick then picks it up within half a
     minute, so he is answered about three minutes after he wrote.
 
-    A Fan Full AI Chat claims (spec 04b, Welcome handoff) gets one `full_ai_chat`
-    job instead, the shape `webhook_dispatch._full_ai_hook` enqueues, anchored on
-    his newest inbound row; also when Get to know fans is off."""
+    A Fan Full AI Chat claims (spec 04b, Welcome handoff) gets his `full_ai_chat`
+    job instead through `full_ai_live.enqueue` (as `webhook_dispatch._full_ai_hook`),
+    anchored on his newest inbound row, due at its reply speed and no sooner than
+    `run_at`; a pending one absorbs it; also when Get to know fans is off."""
     run_at = datetime.utcnow() + timedelta(
         seconds=WELCOME_REST_S + HANDOFF_DELAY_PAD_S)
     full_ai = await _full_ai_handoff(account_id, fan_id)
     if full_ai is not None:
+        from automations import full_ai_live   # lazy: import cycle safety
         rule_id, anchor = full_ai
-        await ax.enqueue_job(
-            account_id, "full_ai_chat",
-            payload={"only_fan_ids": [int(fan_id)], "anchor": anchor,
-                     "_rule_id": rule_id},
-            run_at=run_at)
+        await full_ai_live.enqueue(account_id, int(fan_id), anchor, rule_id, not_before=run_at)
         return "full_ai_chat"
     kind = await handoff_engine(account_id)
     if kind is None:
@@ -225,7 +223,8 @@ async def _full_ai_handoff(account_id: str, fan_id: int) -> tuple[int, int] | No
             )).scalar_one_or_none()
         if anchor is None:
             return None
-        rule_id = await ax.enabled_rule_id(account_id, "full_ai_chat")
+        from automations import full_ai_live   # lazy: import cycle safety
+        rule_id = await full_ai_live.live_rule(account_id)
         return None if rule_id is None else (int(rule_id), int(anchor))
     except Exception:
         log.warning("welcome handoff full_ai check failed account=%s fan=%s — "

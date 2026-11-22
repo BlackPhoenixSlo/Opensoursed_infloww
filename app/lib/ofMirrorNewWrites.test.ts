@@ -12,6 +12,8 @@ import { PROFILE_CAMERA, PROFILE_REMOVE } from "./ofMirrorProfileImages";
 import { applySubscription } from "./ofMirrorSubscription";
 import { applyBlocked, bindStreamBlock, type BlockedUser } from "./ofMirrorStreamBlocked";
 import { bindPost } from "./ofMirrorPost";
+import { applyData } from "./ofMirrorData";
+import { bindMessageMenu, type MenuMessage } from "./ofMirrorMessageMenu";
 
 /** OFM_NEW_WRITES_ENABLED's app side: off, each new write's control stays Not yet (disabled, Not-yet title, not Wired). */
 
@@ -176,6 +178,20 @@ describe("the switch flips off while a page is open", () => {
     rebind();
     unbinds.push(bindPost(d, page, { ...ctx, newWrites: false }));
     expect(records(), "off").toEqual([off, off]);
+  });
+
+  it("messages/chat: an own PPV's extras (Countdown, Copy as draft, Unsend PPV) drawn Wired, then none drawn (main)", () => {
+    const d = load("messages/chat");
+    const ppv = { id: 501, text: "<p>ppv</p>", createdAt: "2026-10-10T12:01:00Z", fromUser: { id: 1 }, price: 5, media: [], cancelSeconds: 90 } as unknown as MenuMessage;
+    applyData(d, "messages/chat", { chat: "2006", thread: { fan: { id: 2006, name: "Fan", username: "fan" }, messages: [ppv] } });
+    const menu = (newWrites: boolean) =>
+      bindMessageMenu(d, { chat: "2006", message: (id) => (id === "501" ? ppv : undefined), left: () => 90, limited: false, writes: null, storage: null, accountId: null, copy: () => Promise.resolve(), newWrites });
+    const extras = () => [...d.querySelectorAll<HTMLElement>("[data-oi-msg='501'] [data-oi-bubble]")].map((e) => [e.dataset.oiBubble, e.hasAttribute("data-oi-wired")]);
+    unbinds.push(menu(true));
+    expect(extras(), "on").toEqual([["countdown", true], ["copy-draft", true], ["unsend-ppv", true]]);
+    rebind();
+    unbinds.push(menu(false));
+    expect([extras(), d.querySelector("[data-oi-bubble-extras]")], "off").toEqual([[], null]);
   });
 
   it("Blocked users: Block's field and button back to Not yet on unbind", () => {

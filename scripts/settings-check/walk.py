@@ -10,6 +10,7 @@ Env:
 Mocks (Playwright routes on the browser context, no relay; synthetic data only):
   GET  /auth/me                        the owner "tester"
   POST /auth/logout                    200 {"ok": true}
+  POST /auth/2fa/init                  a synthetic setup key + otpauth:// link + enrol token
   /chatter/me/accounts                 []
   /chatter/me                          {"chatter": null, "owners": []}
   /events                              an empty text/event-stream
@@ -64,7 +65,7 @@ Outputs, in /tmp/settings-shots/: settings-<tab>.png (1440x900), settings-<tab>-
 settings-report.json {"tabs": {tab: {"1440"|"390": {geometry...}}}, "writes": [...], "failures": [...]}.
 Exits 1 on any failure.
 """
-import argparse, json, os, re, sys
+import argparse, glob, json, os, re, sys
 from urllib.parse import urlparse
 from playwright.sync_api import TimeoutError as PlaywrightTimeout, sync_playwright
 
@@ -91,6 +92,10 @@ EMPLOYEES={"employees":[
     {"id":3,"display_name":"Gamma Three","color":"#34d399","is_active":True,"chatter_id":"c3","created_at":"2026-01-01T00:00:00Z"},
 ]}
 SETTINGS={}  # the in-memory Settings blob store: tab -> config
+
+# The 2FA setup modal's init reply: a made-up base32 key, never any real account's.
+TOTP_INIT={"secret":"AAAABBBBCCCCDDDD", "otpauth_uri":"otpauth://totp/Synthetic:tester?secret=AAAABBBBCCCCDDDD&issuer=Synthetic",
+           "enrol_token":"synthetic-enrol-token"}
 
 # (tab, name, run(page), want_writes): later Phases append; each checks the writes its run caused.
 SCENARIOS=[]
@@ -132,21 +137,33 @@ def security_org(pg):
 SCENARIOS.append(("security-org", "names shown, 2FA switch writes nothing, no Reset without 2FA", security_org, []))
 
 def security_personal(pg):
-    """Security (personal): a force-click on "Enable 2FA" writes
-    nothing, then "Sign out" posts {} to /auth/logout (docs/spec/settings-tabs/phase-02-security.md,
-    Seam 3). Sign out is a hard navigation, so it is this scenario's last action."""
-    pg.get_by_role("button", name="Enable 2FA").click(force=True)
+    """Security (personal): "Enable 2FA" opens the setup modal, whose only write is the stateless
+    POST /auth/2fa/init {} (#540: a new secret, stored by nothing until activate); Escape closes it.
+    Then "Sign out" posts {} to /auth/logout (docs/spec/settings-tabs/phase-02-security.md, Seam 3).
+    Sign out is a hard navigation, so it is this scenario's last action."""
+    pg.get_by_role("button", name="Enable 2FA").click()
+    pg.get_by_role("dialog").wait_for()
+    pg.keyboard.press("Escape")
+    pg.get_by_role("dialog").wait_for(state="detached")
     with pg.expect_navigation(url=f"{BASE}/"):
         pg.get_by_role("button", name="Sign out").click()
 
-SCENARIOS.append(("security-personal", "Enable 2FA writes nothing, Sign out posts /auth/logout {}", security_personal,
-                  [["POST", "/auth/logout", {}]]))
+def _security_personal_writes(ws):
+    """Init repeats under dev Strict Mode's double effect: count it as one."""
+    out=[]
+    for w in ws:
+        if not (out and w == out[-1] == ["POST", "/auth/2fa/init", {}]): out.append(w)
+    return out
+
+SCENARIOS.append(("security-personal", "Enable 2FA only inits (stateless), Escape closes, Sign out posts /auth/logout {}",
+                  security_personal,
+                  (_security_personal_writes, [["POST", "/auth/2fa/init", {}], ["POST", "/auth/logout", {}]])))
 
 def add_role(pg):
     """Role Settings: "+ Add Role", fill "Synthetic Role", Submit, then reload and require the row from
-    the mock's stored body, the not-enforced sentence in place of the generic not-applied one (ticket 23 of
-    infloww-parity-next-steps applies Roles only once "Enforce role permissions" is on, and the mock's blob has no
-    `enforce`; RoleSettingsTab.tsx), and no horizontal overflow at 390x844
+    the mock's stored body, neither the generic not-applied nor the not-enforced sentence (enforcement is on
+    unless the blob stores `enforce: false`, 616491f2b; the mock's blob has no `enforce`; RoleSettingsTab.tsx),
+    and no horizontal overflow at 390x844
     (docs/spec/settings-tabs/phase-03-roles-sales.md, Testing Decisions)."""
     pg.get_by_role("button", name="+ Add Role").click()
     dialog=pg.get_by_role("dialog", name="Add Role")
@@ -158,7 +175,7 @@ def add_role(pg):
     check("scenario roles: Synthetic Role row after reload", pg.get_by_role("cell", name="Synthetic Role", exact=True).count(), 1)
     check("scenario roles: not-applied sentence", pg.get_by_text("Saved for your organization; not applied yet.").count(), 0)
     check("scenario roles: not-enforced sentence",
-          pg.get_by_text("Saved for your organization; not enforced until Enforce role permissions is on.").count(), 1)
+          pg.get_by_text("Saved for your organization; not enforced until Enforce role permissions is on.").count(), 0)
     no_overflow_at_390(pg, "roles")
 
 def no_overflow_at_390(pg, tab):
@@ -175,8 +192,14 @@ ROLE_CLOCK_MS=1760000000000  # "mgj6k3cw" in base 36
 # Today this is the same set as `permissionTabs` in app/components/settings/PermissionEditor.tsx, but the
 # walk filters line by line: a `legacy: true` group header would drop only that line and keep its children,
 # while `permissionTabs` drops the whole group.
-SIDEBAR_SRC="".join(NAV.split(f"const {name}: NavNode[] = [", 1)[1].split("\n];", 1)[0] for name in ("ONLYFANS_NAV", "COMMON_NAV"))
-PAGES=[h for line in SIDEBAR_SRC.splitlines() if "legacy: true" not in line
+# ONLYFANS_NAV is wrapped (`withSlotLinks([` … `]);`, the plugin slot registry): match either shape, and add the
+# plugins' `navLinks` hrefs (app/plugins/*/register.ts). A link with its own `permission:` answers to that page's
+# grant and is no key of its own (PermissionEditor's isPermissionPage).
+SIDEBAR_SRC="".join(re.search(rf"const {name}: NavNode\[\] = (?:\w+\()?\[(.*?)\n\]", NAV, re.S).group(1)
+                    for name in ("ONLYFANS_NAV", "COMMON_NAV"))
+SLOT_SRC="\n".join(line for f in sorted(glob.glob(os.path.join(ROOT, "app/plugins/*/register.ts")))
+                   for line in re.findall(r"navLinks:.*", open(f).read()))
+PAGES=[h for line in (SIDEBAR_SRC+"\n"+SLOT_SRC).splitlines() if "legacy: true" not in line and "permission:" not in line
        for h in re.findall(r'(?:href:\s*|nb\("[^"]*",\s*)"(/[^"]*)"', line)]
 def role(id, name, allowed, scope):
     return {"id":id, "name":name, "description":"", "permissions":{h: allowed for h in PAGES}, "scope":scope}
@@ -203,7 +226,8 @@ def sales_message_sender(pg):
 SCENARIOS.append(("sales", "click Message sender and Save", sales_message_sender,
                   [["PUT", "/admin/settings/sales",
                     {"exclude_welcome":False, "exclude_of_fee":False, "multi_employee_shift":False,
-                     "attribution":{"messages":"sender", "posts_tips":"shift", "subscriptions_chatter_opt_in":False}}]]))
+                     "attribution":{"messages":"sender", "posts_tips":"shift", "subscriptions_chatter_opt_in":False,
+                                     "converters_window_seconds":3600}}]]))
 
 def time_tracking_save(pg):
     """Time tracking: require no not-applied sentence (applied since infloww-parity-next-steps Phase 2), Edit,
@@ -232,18 +256,22 @@ SCENARIOS.append(("time-tracking", "Edit, 15, Cancel", time_tracking_cancel, [])
 
 def messaging_switch(pg):
     """Messaging settings: no AI Translator prompt (removed: Google's free translate takes no instructions); at
-    390x844 no overflow; turning AI translation off saves at once, the stored prompt key kept."""
+    390x844 no overflow; turning AI translation off saves at once and sends only the switch (the retired prompt is
+    not resubmitted, W30 F10)."""
     check("scenario messaging: no prompt editor", pg.get_by_label("AI Translator prompt").count(), 0)
     no_overflow_at_390(pg, "messaging")
     pg.get_by_role("switch").first.click()
 
 SCENARIOS.append(("messaging", "AI translation off saves at once", messaging_switch,
-                  [["PUT", "/admin/settings/messaging", {"ai_translation":False, "prompt":""}]]))
+                  [["PUT", "/admin/settings/messaging", {"ai_translation":False}]]))
 
 def billing(pg):
-    """Billing: one line, self-hosted and free; no payment actions, no invoice table."""
+    """Billing: one line, self-hosted and free; no payment actions, no invoice table. The only buttons are the
+    optional support block's Copy, one per wallet address (BillingTab.tsx WALLETS, 3)."""
     check("scenario billing: free line shown", pg.get_by_text("Inflowwww is self-hosted and free", exact=False).count(), 1)
-    check("scenario billing: no buttons in the Panel body", pg.locator('[data-settings="panel-body"] button').count(), 0)
+    body=pg.locator('[data-settings="panel-body"]')
+    check("scenario billing: buttons in the Panel body are the 3 address Copy buttons",
+          [body.locator("button").count(), body.get_by_role("button", name=re.compile("copy", re.I)).count()], [3, 3])
 
 SCENARIOS.append(("billing", "one self-hosted, free line", billing, []))
 
@@ -290,6 +318,7 @@ def handle(route):
         return reply(route, {"tab":tab,"config":SETTINGS.get(tab, {})})
     if path=="/auth/me": return reply(route, USER)
     if path=="/auth/logout": return reply(route, {"ok":True})
+    if path=="/auth/2fa/init": return reply(route, TOTP_INIT)
     if path=="/chatter/me/accounts": return reply(route, [])
     if path.startswith("/chatter/me"): return reply(route, {"chatter":None,"owners":[]})
     if path=="/admin/employees": return reply(route, EMPLOYEES)
@@ -375,7 +404,7 @@ def open_context(b, w, h, init="", timezone_id=None):
 def main():
     ap=argparse.ArgumentParser(description="The Settings walk (see the module docstring).")
     ap.parse_args()
-    if len(TABS)!=12: failures.append(f"nav.ts: expected 12 Settings tabs, read {TABS}")
+    if len(TABS)!=15: failures.append(f"nav.ts: expected 15 Settings tabs, read {TABS}")
     os.makedirs(SHOTS, exist_ok=True)
     report={"tabs":{t:{} for t in TABS}}
     with sync_playwright() as p:

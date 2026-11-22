@@ -6,13 +6,13 @@
   case_router_questions_are_the_code_constants  both Modes: every Router question id present, text identical
   case_price_instructions_are_the_constant      PRICE instructions == _price_jev.PRICE["instructions"]; the
                                                 Chat tease price Choice, its options and keys (chat_tease)
-  case_every_default_key_is_a_switch            every DEFAULTS key in the switches table; Shadow chips only
-                                                what Shadow reads
+  case_every_default_key_is_a_switch            every DEFAULTS key in the switches table and chips
   case_test_only_keys_are_the_gates             every full_ai_writers `*_flag` gate is in GATES; each counts
                                                 in test Mode only
   case_every_router_variant_and_keyset_shown    every router TEST_* wording dict and *_STATE_KEYS set in test
   case_edges_point_at_nodes                     every edge's ends are node ids; ids unique; same node set both Modes
-  case_shadow_holds_no_test_only_wording        no test-only question, prompt or flag in Shadow
+  case_shadow_is_refused                        W30 #6: no Shadow view (owner 11-15): rules("shadow") and the
+                                                route's mode both refuse it
   case_route_rows_match_decide_turn             the table's rows are decide_turn's own rows and Routes
   case_info_shows_old_and_lead_wording          NEXT_QUESTION and NEXT_QUESTION_LEAD labelled, extract prompt shown
   case_bad_mode_is_refused                      ValueError on an unknown mode
@@ -20,17 +20,15 @@
                                                 reply keys include chat_tease and ride; cents shown
   case_heat_check_listed                        96: the reply chain lists `reply_level` with its five
                                                 criteria under floor_on, doc NEW-155; reply keys hold
-                                                heat_check; not on the Shadow page
-  case_cutoff_is_what_fired_applies             rwl-a N8: test Mode shows the TEST_THRESHOLDS value, not min
-                                                with Shadow's; both pages show declines_buying's .95
+                                                heat_check
+  case_cutoff_is_what_fired_applies             rwl-a N8: the page shows the TEST_THRESHOLDS value; both
+                                                Modes show declines_buying's .95
   case_every_decider_row_on_the_page            every row decide_turn can return (enumerated over Facts' flags
-                                                and fired pairs) is a table row; Shadow: its own Facts
-  case_every_vault_switch_on_the_page           every vault_settings key in the test page's vault table; none
-                                                in Shadow
+                                                and fired pairs) is a table row
+  case_every_vault_switch_on_the_page           every vault_settings key in the test page's vault table
   case_offer_details_shown                      resolver steps (Step), look-back constants, OfferFacts fields,
                                                 the branch prompt (OFFER_GOAL, no NO_SELL_OFFERS), check RULES,
                                                 diagnostics keys, the switch notes, the live read
-  case_shadow_holds_no_offer_details_wording    none of the above in Shadow
 
 Run: ./venv/bin/python service/tests/test_full_ai_rules.py  (exit 0 = pass)
 """
@@ -43,7 +41,7 @@ _harness.bootstrap()
 import itertools  # noqa: E402
 from dataclasses import fields  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
-from typing import get_args  # noqa: E402
+from typing import get_args, get_type_hints  # noqa: E402
 
 from fastapi import HTTPException  # noqa: E402
 
@@ -58,9 +56,7 @@ from automations import _router_jev as rj  # noqa: E402
 from automations import full_ai_config, full_ai_decide  # noqa: E402
 from automations import full_ai_offer_details as fo  # noqa: E402
 from automations import full_ai_rules as fr  # noqa: E402
-from automations import full_ai_caption as fc  # noqa: E402
 from automations import full_ai_writers as fw  # noqa: E402
-from automations.full_ai_mode import full  # noqa: E402
 
 
 def _node(payload: dict, nid: str) -> dict:
@@ -107,18 +103,15 @@ def case_router_questions_are_the_code_constants():
         for b in blocks:
             if "qid" in b:
                 by_id.setdefault(b["qid"], []).append(b["text"])
-        want = {**rj.QUESTIONS, "intensity": rj.INTENSITY}
-        if full(mode):      # test + live ask `TEST_NEW_ONLY`'s wording in its place (`_router_jev._questions`)
-            want |= {**rj.TEST_NEW_ONLY, **rj.TEST_NOULS, **rj.TEST_CHOICES}
+        # test + live ask `TEST_NEW_ONLY`'s wording in its place (`_router_jev._questions`)
+        want = {**rj.QUESTIONS, "intensity": rj.INTENSITY, **rj.TEST_NEW_ONLY, **rj.TEST_NOULS, **rj.TEST_CHOICES}
         assert set(by_id) == set(want), (mode, set(want) ^ set(by_id))
         for qid, spec in want.items():
             assert spec["instructions"] in by_id[qid], (mode, qid)
-        if full(mode):      # rwl2 F6: Shadow's asks_if_ai wording is not shown as what test / live ask
-            for qid in rj.TEST_NEW_ONLY:
-                assert rj.QUESTIONS[qid]["instructions"] not in by_id[qid], (mode, qid)
-        if full(mode):
-            for qid, spec in rj.TEST_SPACING.items():
-                assert spec["instructions"] in by_id[qid], ("spacing", qid)
+        for qid in rj.TEST_NEW_ONLY:   # rwl2 F6: the old asks_if_ai wording is not shown as what test / live ask
+            assert rj.QUESTIONS[qid]["instructions"] not in by_id[qid], (mode, qid)
+        for qid, spec in rj.TEST_SPACING.items():
+            assert spec["instructions"] in by_id[qid], ("spacing", qid)
         # The cut-off shown is the one `fired` applies.
         promo = next(b for b in blocks if b.get("qid") == "promo")
         assert f"cut-off: {rj.THRESHOLDS['promo']}" in promo["items"], promo["items"]
@@ -145,27 +138,19 @@ def case_heat_check_listed():
     assert b["items"][:5] == [f"{i}: {c}" for i, c in enumerate(hj.REPLY_LEVEL["criteria"])], b["items"]
     assert "floor_on" in {f["key"] for f in _node(fr.rules("test"), "reply_chain")["flags"]}
     assert "heat_check" in fr._REPLY_KEYS
-    shadow = _node(fr.rules("shadow"), "reply_chain")["blocks"]
-    assert not [b for b in shadow if b.get("doc") == "NEW-155"], shadow
 
 
 def case_every_default_key_is_a_switch():
     for mode in fr.MODES:
         n = _node(fr.rules(mode), "switches")
-        want = list(full_ai_config.DEFAULTS) if full(mode) else list(fr.SHADOW_READS)
-        assert [f["key"] for f in n["flags"]] == want, mode
+        assert [f["key"] for f in n["flags"]] == list(full_ai_config.DEFAULTS), mode
         rows = n["blocks"][0]["rows"]
         assert [r[0] for r in rows[1:]] == list(full_ai_config.DEFAULTS), mode
-        scoped = {r[0] for r in rows[1:] if r[3].startswith("test + live (off")}
-        assert scoped == set(fr.TEST_ONLY_KEYS), scoped
         live = {r[0] for r in rows[1:] if r[3].startswith("live only")}
         assert live == set(fr.LIVE_ONLY_KEYS), live
-    assert set(fr.TEST_ONLY_KEYS) | set(fr.SHADOW_READS) | set(fr.LIVE_ONLY_KEYS) <= set(full_ai_config.DEFAULTS)
+        assert {r[3] for r in rows[1:] if r[0] not in live} == {"test + live"}, rows
+    assert set(fr.LIVE_ONLY_KEYS) <= set(full_ai_config.DEFAULTS)
     assert "top_spend_cents" in fr.LIVE_ONLY_KEYS
-    # Every key Shadow reads sits on a step card too, not just the switches table.
-    for mode in fr.MODES:
-        steps = {f["key"] for n in fr.rules(mode)["nodes"] if n["id"] != "switches" for f in n["flags"]}
-        assert set(fr.SHADOW_READS) <= steps, (mode, steps)
 
 
 def case_test_only_keys_are_the_gates():
@@ -217,35 +202,19 @@ def case_edges_point_at_nodes():
             assert e["from"] in nids and e["to"] in nids, e
         routes = {e["label"] for e in p["edges"] if e["from"] == "route_table"}
         assert routes == set(full_ai_decide.Route.__args__), routes
-    assert ids["test"] == ids["shadow"]
+    assert ids["test"] == ids["live"]
 
 
-def case_shadow_holds_no_test_only_wording():
-    p = fr.rules("shadow")
-    text = "\n".join(_strings(p))
-    test_only = [s["instructions"] for s in (*rj.TEST_NOULS.values(), *rj.TEST_CHOICES.values(),
-                                             *rj.TEST_SPACING.values(), *rj.TEST_LIKES.values(),
-                                             *rj.TEST_IMPLIED.values(), *ij.STATED_WIDE.values())]
-    test_only.append(ij.HOBBIES_EXTRACT)
-    test_only += [ij.NEXT_QUESTION_LEAD["instructions"], ij.LIKES_EXTRACT, pj.PRICE["instructions"],
-                  pj.TEASE_PRICE["instructions"], pj.TEASE_PRICE["free"], fw.LEAD_HEAD, fw.SELF_GIVE,
-                  fw.SEXT_SCENE, fw.SCENE_NARRATION, *fw.LEAD_LINES.values(), *fw.SCENE_STAGE.values()]
-    test_only += [fw.SEXT_HOT_TEST, fw.RIDE_NOTE, fw.OFFER_OPEN, "these are real, already made", fc.CHAT_RULE]
-    test_only += [fc.DIFFERS_RULE.split("{tone} ", 1)[1].split("{", 1)[0], fc.PREVIEW_COUNT.split("{", 1)[0],
-                  fc.NAME_PRICE]
-    test_only += [s.split("{", 1)[0] for s in (fw.NEAREST_NOTE, fw.SCENE_SELL, fw.SELL_OFF_SCENE,
-                                                fw.SELL_STEP_TEST, fw.ESCALATION_TEST)]
-    leaks = [s[:60] for s in test_only if s.strip() and s.strip() in text]
-    assert leaks == [], leaks
-    flags = {f["key"] for n in p["nodes"] for f in n["flags"]}
-    blocks = {b.get("flag") for n in p["nodes"] for b in n["blocks"]} - {None}
-    assert flags <= set(fr.SHADOW_READS) and blocks <= set(fr.SHADOW_READS), (flags, blocks)
-    table = next(b for b in _node(p, "route_table")["blocks"] if b["label"] == "Rows in walk order")["rows"][1:]
-    assert not {"sell_off", "tease_off", "sext_off"} & {r[1] for r in table}, table   # route flags all on
-    assert not any("after a tease" in r[0] for r in table), table                      # no Pending tease
-    assert not any(e["to"] == "price_jev" or e["from"] == "price_jev" for e in p["edges"])
-    assert "tease_price_version" not in p["versions"] and "teases_sent" not in text
-    assert "Shadow" in [b["label"] for b in _node(p, "writers")["blocks"]]
+async def case_shadow_is_refused():
+    # W30 #6: the page never asks for Shadow (AiRulesPage reads ?mode=test; owner 11-15 no Shadow view).
+    assert fr.MODES == ("test", "live"), fr.MODES
+    try:
+        fr.rules("shadow")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Shadow page served")
+    assert get_args(get_type_hints(full_ai_api.full_ai_rules_read)["mode"]) == ("test", "live")
 
 
 def case_route_rows_match_decide_turn():
@@ -259,9 +228,7 @@ def case_route_rows_match_decide_turn():
         # "Broke" routes nothing in any Mode (owner 2026-11-15); the page still names it.
         assert ["declines_buying fired: routes nothing; the Writer may joke", "otherwise", "chat"] in rows, rows
         assert not {"decline", "tease_decline"} & names, names
-        assert ("sell_off" in names) == (full(mode)), names
-        assert ("haggle" in names) == (full(mode)) and ("scene_offer" in names) == (full(mode)), names
-        assert ("chat_tease" in names) == (full(mode)), names
+        assert {"sell_off", "haggle", "scene_offer", "chat_tease"} <= names, names
 
 
 def case_info_shows_old_and_lead_wording():
@@ -294,10 +261,9 @@ def case_price_text_matches_code():
 
 def case_cutoff_is_what_fired_applies():
     for qid in rj.TEST_THRESHOLDS:
-        assert fr._cutoff(qid, "test") == rj.TEST_THRESHOLDS[qid], qid
-        assert fr._cutoff(qid, "shadow") == rj.THRESHOLDS.get(qid), qid
-    assert fr._cutoff("declines_buying", "test") == fr._cutoff("declines_buying", "shadow") == .95
-    assert fr._cutoff("promo", "test") == rj.THRESHOLDS["promo"]
+        assert fr._cutoff(qid) == rj.TEST_THRESHOLDS[qid], qid
+    assert fr._cutoff("declines_buying") == .95
+    assert fr._cutoff("promo") == rj.THRESHOLDS["promo"]
     for mode in fr.MODES:
         blocks = _node(fr.rules(mode), "router_jev")["blocks"]
         db = next(b for b in blocks if b.get("qid") == "declines_buying")
@@ -327,20 +293,14 @@ def case_every_decider_row_on_the_page():
                     if isinstance(s, dict) and "instructions" in s})
     want = _decider_rows(every)
     assert "offer_details" in want and want <= _table_rows("test"), want - _table_rows("test")
-    # Shadow (full_ai_chat): Shadow's questions, no Pending tease, every other flag at Facts' default.
-    shadow = {f.name: f.default for f in fields(full_ai_decide.Facts)
-              if f.type in ("bool", bool) and f.name not in ("pending_offer", "jev_ok")} | {"pending_tease": False}
-    got = _decider_rows(sorted(rj.QUESTIONS), **shadow)
-    assert got <= _table_rows("shadow"), got - _table_rows("shadow")
-    assert "offer_details" not in _table_rows("shadow")
 
 
 def case_every_vault_switch_on_the_page():
     (b,) = [b for b in _node(fr.rules("test"), "switches")["blocks"] if b["label"].startswith("Vault switches")]
     assert [r[0] for r in b["rows"][1:]] == list(vault_settings.KEYS), b["rows"]
-    assert all(r[1] == "off" and r[2] for r in b["rows"][1:]), b["rows"]  # undescribed key = fail, not a 500
-    shadow = "\n".join(_strings(fr.rules("shadow")))
-    assert not [k for k in vault_settings.KEYS if k in shadow]
+    assert all(r[1] == ("on" if vault_settings.DEFAULTS[r[0]] else "off") and r[2]
+               for r in b["rows"][1:]), b["rows"]  # undescribed key = fail, not a 500
+    assert dict((r[0], r[1]) for r in b["rows"][1:])["solo_sequences"] == "on", b["rows"]
 
 
 def case_offer_details_shown():
@@ -372,16 +332,6 @@ def case_offer_details_shown():
     assert "hold_folder_price" in sell and "folder_price_final" in sell and "standard_folders" in sell
     assert fr._review_label() in sell and "Needs Review" in fr._review_label()
     assert "folder_price_final" in "\n".join(_strings(_node(p, "price_jev")))
-
-
-def case_shadow_holds_no_offer_details_wording():
-    text = "\n".join(_strings(fr.rules("shadow")))
-    new = [fw.OFFER_GOAL, fw.OFFER_HEAD, "offer_details", "asks_offer_details", "hold_folder_price",
-           "folder_price_final", "standard_folders", "ASKED: <id>", "Live read", "held_tease", "asked_marker",
-           *fr._RESOLVER_WHEN.values(), *fr._VAULT_SWITCHES.values()]
-    new += [v.split("{", 1)[0] for v in fr._CHECK_RULES.values()]
-    leaks = [s[:60] for s in new if s.strip() in text]
-    assert leaks == [], leaks
 
 
 _harness.run()

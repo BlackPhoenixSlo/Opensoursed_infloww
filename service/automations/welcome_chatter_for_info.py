@@ -1921,15 +1921,14 @@ async def _turn_mark_read(t: _Turn) -> None:
     """We just replied → clear the unread badge. A mark-read failure must never
     break the (already-persisted) send."""
     at = read_flip.now_ms()                    # before the write: a fan message during it stays unread
-    await read_flip.set_local_unread(t.cfg.account_id, fan_id=t.c.fan_id, value=0)
     try:
         read = await asyncio.to_thread(t.client.mark_chat_read, t.c.fan_id)
     except Exception:
         log.warning("welcome_chatter_for_info mark_chat_read failed account=%s fan=%s",
                     t.cfg.account_id, t.c.fan_id, exc_info=True)
         return
-    # As a chatter's read: local badge, cached lists, other tabs (read_flip).
-    await read_flip.after_write(t.cfg.account_id, t.c.fan_id, 0, read, set_local=False, at=at)
+    # As a chatter's read, once it landed: local badge, cached lists, other tabs (read_flip).
+    await read_flip.after_write(t.cfg.account_id, t.c.fan_id, 0, read, at=at)
 
 
 async def _turn_release(t: _Turn) -> None:

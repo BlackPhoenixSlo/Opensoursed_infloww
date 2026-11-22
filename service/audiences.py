@@ -362,9 +362,24 @@ async def _read_list_members(client, names: list[str], what: str) -> set[int]:
     won't page one of them."""
     got = await asyncio.to_thread(lambda: roster_audience_blocking(client, user_lists=names))
     if got is None:
-        raise AudienceUnknown(f"Couldn't read who is on {what} {', '.join(names)}, so a "
-                              "thresholded send can't be resolved. Nothing was sent.")
+        raise AudienceUnknown(f"Couldn't read who is on {what} {', '.join(names)}, so the "
+                              "send's audience can't be resolved. Nothing was sent.")
     return set(got)
+
+
+async def drop_exclude_list_members(client, ids: Iterable, excluded_lists) -> list[int]:
+    """`ids` minus every member of the OF lists `excluded_lists`, in order: an
+    explicit-ids send subtracts its exclude lists itself, because OF's
+    `excludedLists` is verified on list audiences only
+    (of_client.schedule_mass_message), not on explicit `userIds`. Callers: the
+    composer (`mass_queue_api`, thresholded or not) and `send_mass_message`.
+    Raises AudienceUnknown when OF won't page one of the lists."""
+    ids = [int(i) for i in ids]
+    excl = [str(n).strip() for n in (excluded_lists or []) if str(n).strip()]
+    if not excl or not ids:
+        return ids
+    drop = await _read_list_members(client, excl, "the excluded list")
+    return [i for i in ids if i not in drop]
 
 
 async def _threshold_base(
@@ -406,10 +421,7 @@ async def _threshold_base(
             base &= online
     if gone is not None:
         base &= set(gone)
-    excl = [str(n).strip() for n in (excluded_lists or []) if str(n).strip()]
-    if excl and base:
-        base -= await _read_list_members(client, excl, "the excluded list")
-    return base
+    return set(await drop_exclude_list_members(client, base, excluded_lists))
 
 
 async def threshold_fan_ids(
@@ -728,9 +740,10 @@ def roster_audience_blocking(
 ) -> list[int] | None:
     """The ids a list audience stands for, read off OF's own rosters BEFORE a send
     that must carry them as ids — or `None` when that cannot be known. Blocking;
-    call via `asyncio.to_thread`. Callers: a thresholded composer send
-    (`_read_list_members`, its picked / excluded lists) and Priority mass's
-    freeze (`automations/priority_mass._freeze`). Never run after a send to
+    call via `asyncio.to_thread`. Callers: `_read_list_members` (a thresholded
+    composer send's picked lists; any explicit-ids send's excluded lists,
+    `drop_exclude_list_members`) and Priority mass's freeze
+    (`automations/priority_mass._freeze`). Never run after a send to
     record who received it: that crawl is gone (docs/spec/phase-02-audience-crawl.md);
     readers assume the audience from `mass_runs.audience_filter`.
 
@@ -790,11 +803,11 @@ import auto_exclude_decide as aed  # noqa: E402
 
 
 def _auto_exclude_list_id_blocking(client) -> int:
-    """The account's Auto_Exclude OF list id, made when missing. Blocking."""
-    lists = of_paging.page_all(
-        lambda off: client.get_lists(limit=of_paging.LIST_PAGE, offset=off))
-    list_id = next((it.get("id") for it in lists
-                    if (it.get("name") or "") == AUTO_EXCLUDE_LIST_NAME), None)
+    """The account's Auto_Exclude OF list id, made only when a COMPLETE /lists
+    read has none. Blocking. An incomplete read without it raises
+    `of_paging.ListLookupIncomplete` (the send is refused): taking it as absent
+    would make a second Auto_Exclude on every send."""
+    list_id = of_paging.find_list_id(client, AUTO_EXCLUDE_LIST_NAME)
     if list_id is None:
         list_id = client.create_list(AUTO_EXCLUDE_LIST_NAME).get("id")
     return list_id
@@ -836,14 +849,16 @@ def _reconcile_exclude_list_blocking(client, list_id, members: set[int], ids: se
 
 def _add_missing_blocking(client, list_id, members: set[int], ids: set[int]) -> None:
     """Add `ids − members` one by one, ascending; each confirmed add joins
-    `members`. Raises only when not one of `ids` is on the list. Blocking."""
-    # Per-user adds are best-effort: OF 403s "Unable to add user to user list"
-    # for the odd un-listable id (deleted/blocked/restricted account, the creator
-    # herself). ONE such id must not abort the whole exclude build and sink the
-    # broadcast — skip it and carry on. An un-addable id is almost always also
-    # undeliverable, so leaving it off the guard is low-risk. If EVERY add fails
-    # the list is unusable, so re-raise the last error (a systemic auth problem,
-    # not a stray fan).
+    `members`. Raises on an add that failed for any reason but OF's permanent
+    per-fan refusal (`of_paging.unlistable`), and when not one of `ids` is on
+    the list. Blocking."""
+    # Per-user adds tolerate ONLY OF's permanent refusal for one fan (403
+    # "Unable to add user to user list" / 404 "User not found": a deleted /
+    # blocked / restricted account, the creator herself). ONE such id must not
+    # abort the whole exclude build and sink the broadcast — skip it and carry
+    # on; an un-addable id is almost always also undeliverable. Any other
+    # failure (timeout, 429, 5xx, network) may pass on a retry, so the fan it
+    # left off the guard would get the blast: raised, the send is refused.
     to_add = sorted(ids - members)
     add_fail = 0
     last_err: Exception | None = None
@@ -851,6 +866,8 @@ def _add_missing_blocking(client, list_id, members: set[int], ids: set[int]) -> 
         try:
             client.add_user_to_list(list_id, uid)
         except Exception as e:  # noqa: BLE001 — per-user tolerance, see above
+            if not of_paging.unlistable(e):
+                raise
             add_fail += 1
             last_err = e
             continue

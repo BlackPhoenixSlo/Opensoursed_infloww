@@ -18,7 +18,9 @@
  * or every chat read, through the relay; any-scope) flips the row's unread
  * flags in every cached chat list holding the Creator, All Models lists
  * included, and adds / drops it in the cached Unread lists: no read. A list
- * page read after the event's `at` already reflects it and is left alone.
+ * page read after the event's `at` already reflects it and is left alone; one
+ * read before it and committed after gets it at its commit (lib/chatsCache
+ * `patchChatCaches`).
  *
  * `creator_refreshed` (the Shared refresher's snapshot of a Creator changed; any-scope) goes into the tab's
  * Freshness store (hooks/useCreatorFreshness.ts) and nowhere else: it arms no read and re-reads no money list,
@@ -36,7 +38,8 @@
 import { useEffect } from "react";
 import { useQueryClient, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import {
-  applyReadFlip, decodeChatsKey, freshestFanRow, isUnreadList, keyHoldsAccount, parseReadFlip, type ChatPages, type ReadFlip,
+  applyReadFlip, decodeChatsKey, freshestFanRow, isUnreadList, keyHoldsAccount, parseReadFlip, patchChatCaches,
+  type ChatPages, type ReadFlip,
 } from "@/lib/chatsCache";
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { APPLIED_SETTINGS_KEY } from "@/lib/appliedSettings";
@@ -114,24 +117,56 @@ export function warmMark(
   return s.dataUpdatedAt > 0 || s.errorUpdatedAt > 0 ? "unless" : "skip";
 }
 
+/** Per QueryClient, per Creator: the Relay stamp (`at`) of the last account-wide read flip taken and of each fan's
+ *  since then. */
+const flipStamps = new WeakMap<QueryClient, Map<string, { all: number; fans: Map<string, number> }>>();
+
+/** Whether `flip` is newer than every flip already taken for its fan (an account-wide one included), recording it
+ *  if so: null when older (it arrived late; the newer one stands), else the fans an account-wide flip must leave
+ *  alone (each flipped after it). An unstamped flip (`at` null) or this tab's own (`own`: stamped on the tab after
+ *  its write answered, so later than the Relay's stamp of it; the Relay's echo records it) is always taken and
+ *  records nothing. */
+function takeFlip(qc: QueryClient, accountId: string, flip: ReadFlip, own: boolean): ReadonlySet<string> | null {
+  if (flip.at == null || own) return new Set();
+  const byAccount = flipStamps.get(qc) ?? new Map<string, { all: number; fans: Map<string, number> }>();
+  flipStamps.set(qc, byAccount);
+  const rec = byAccount.get(accountId) ?? { all: -Infinity, fans: new Map<string, number>() };
+  byAccount.set(accountId, rec);
+  if (flip.at < rec.all) return null;
+  if (flip.fanId === null) {
+    rec.all = flip.at;
+    const after = new Set<string>();
+    for (const [f, t] of rec.fans) {
+      if (t > flip.at) after.add(f);
+      else rec.fans.delete(f);    // the account-wide flip covers it
+    }
+    return after;
+  }
+  const fan = String(flip.fanId);
+  if (flip.at < (rec.fans.get(fan) ?? -Infinity)) return null;
+  rec.fans.set(fan, flip.at);
+  return new Set();
+}
+
 /** A read flip on `accountId` written into every cached chat list holding it
  *  (lib/chatsCache applyReadFlip): flags everywhere; in an Unread list the row
  *  enters (copied from any cached list holding it) or leaves (not from the
  *  list on screen). The one path for the SSE event and this tab's own write,
- *  idempotent whichever lands first. */
-export function flipCachedReadState(qc: QueryClient, accountId: string, flip: ReadFlip): void {
-  const qs = qc.getQueryCache().findAll({ queryKey: ["chats"] })
-    .filter((q) => keyHoldsAccount(decodeChatsKey(q.queryKey), accountId));
+ *  idempotent whichever lands first. Ordered by its Relay stamp per fan
+ *  (`takeFlip`), not by arrival: an older one landing late changes nothing. `own`: this tab's write. */
+export function flipCachedReadState(
+  qc: QueryClient, accountId: string, flip: ReadFlip, opts: { own?: boolean } = {},
+): void {
+  const skip = takeFlip(qc, accountId, flip, !!opts.own);
+  if (!skip) return;
   const source = flip.unread && flip.fanId !== null
-    ? freshestFanRow(qs.map((q) => q.state.data as ChatPages | undefined), accountId, flip.fanId)
+    ? freshestFanRow(qc.getQueryCache().findAll({ queryKey: ["chats"] })
+      .filter((q) => keyHoldsAccount(decodeChatsKey(q.queryKey), accountId))
+      .map((q) => q.state.data as ChatPages | undefined), accountId, flip.fanId)
     : null;
-  for (const q of qs) {
-    const data = q.state.data as ChatPages | undefined;
-    const next = applyReadFlip(data, accountId, flip, {
-      unreadList: isUnreadList(q.queryKey), keepRows: q.getObserversCount() > 0, source,
-    });
-    if (next !== data) qc.setQueryData(q.queryKey, next);
-  }
+  patchChatCaches(qc, accountId, (data, { key, observed, replay }) => applyReadFlip(data, accountId, flip, {
+    unreadList: isUnreadList(key), keepRows: observed, source: replay ? null : source, skip,
+  }));
 }
 
 /** The SSE-relaxed polls (`ssePoll`). When the stream drops, one refetch

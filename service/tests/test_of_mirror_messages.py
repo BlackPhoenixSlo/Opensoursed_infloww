@@ -615,6 +615,30 @@ def case_a_failed_message_write_still_clears_the_pins():
     _with_pins(None, run)
 
 
+def case_unsend_stamps_the_row_only_on_ofs_success_true():
+    """A 2xx refusal (`success: false`, `{}`, no body) leaves our row live (the app keeps the bubble); only
+    `success: true` marks it unsent."""
+    import messages
+    stamped = []
+
+    async def _mark(aid, mid, fan_id=None, **_k):
+        stamped.append((aid, mid, fan_id))
+    real = messages.mark_unsent
+    messages.mark_unsent = _mark
+    try:
+        for reply, want in (({"success": False}, []), ({}, []), (None, []),
+                            ({"success": True}, [("acct-pins", 77, FAN)])):
+            stamped.clear()
+
+            async def run(c, reply=reply):
+                c._answer = lambda *w: (c.writes.append(w), reply)[1]
+                assert await _unsend() == reply
+            _with_pins(None, run)
+            assert stamped == want, (reply, stamped)
+    finally:
+        messages.mark_unsent = real
+
+
 def case_pins_ttl_zero_reads_of_every_time():
     async def run(c):
         for _ in range(3):

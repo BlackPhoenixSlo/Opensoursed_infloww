@@ -1088,7 +1088,7 @@ comparison group: buy rates, not proof of extra revenue.
 **Help assistant:** with the Creator picked, ask it ("reply slower", "turn GIFs
 off", "use Euryale then Hermes"): it shows a card with each change, before and
 after; **Apply to draft** stores it in the Draft only, and Make draft live on Full AI
-Chat sends it to fans. If the draft changed since the card, Apply answers "The draft
+Chat copies it to the Live settings. If the draft changed since the card, Apply answers "The draft
 changed since you saw it. Ask again." It can change every setting above except
 Fans and Top spend limit. It cannot Make draft live, Roll back, save the Live settings JSON,
 switch Off / Live or edit Model info. Owner only.
@@ -1605,7 +1605,7 @@ claim cap fills. This checks the campaign you marked "Keep running" and, if
 nothing is on offer any more, re-creates the same campaign with the same terms
 (discount, claim cap, length, audience, message, and offer expiration when
 known) — usually
-within about 2 minutes of it ending. With the second tick, **Re-create at 90%
+within minutes of it ending, checked at least hourly. With the second tick, **Re-create at 90%
 filled**, it re-makes the promo while it is still live instead: when 90% of the
 Offer limit has claimed, or about 2 minutes before OnlyFans' own end time, so
 there is no gap.
@@ -1624,7 +1624,10 @@ the automation on (re-creates for real, no dry run); unticking the last one
 turns it off. Creating a new campaign with Keep running ticked moves the tick
 onto it from any other campaign: the dialog names that campaign first, refuses
 if Keep running moved meanwhile ("check the form and create again"), and says
-"Took Keep running from …" after; the owner gets a notice too.
+"Took Keep running from …" after; the owner gets a notice too. If it moved
+after the promo was already made, the promo stays and the dialog says "Created,
+but Keep running is off: it's now on “…” — tick Keep running on this row if you
+want it here instead".
 
 **When it checks:** right after a fan claims a promo (the subscribe
 notification), a short re-check when the claim cap is nearly full, a re-check
@@ -1679,8 +1682,9 @@ cooldown, max re-arms.
 - **"This server is not set to create promos — ask the owner to set it up":**
   only the one server set up to create promos re-creates (the owner sets
   `PROMO_CREATE_HOST_ID` there, then ticks again or runs the restamp script).
-  **"Tick Keep running again"**: the campaign was ticked before that setup, or it
-  is a Free trial with no Offer limit.
+  **"Tick Keep running again"**: the campaign was ticked before that setup.
+  **"This free trial has no Offer limit, so it can't keep running — create a new
+  one with an Offer limit"**: a Kept Free trial whose Offer limit is unlimited.
 
 ## kind: gen_info — Generate fan profiles
 

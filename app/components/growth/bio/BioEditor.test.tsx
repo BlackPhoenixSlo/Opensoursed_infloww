@@ -96,7 +96,7 @@ describe("BioEditor", () => {
     fireEvent.change(dialog.getByLabelText(/Title/), { target: { value: "Third" } });
     fireEvent.change(dialog.getByLabelText(/Destination/), { target: { value: "https://dest.test/c" } });
     expect(titles("[data-preview-link]")).toEqual(["First", "Second", "Third"]);
-    relayPost.mockResolvedValueOnce({ ...page, links: [...page.links, LINK("c", "Third", 2)] });
+    relayPost.mockResolvedValueOnce({ ...page, links: [...page.links, LINK("c", "Third", 2)], link: LINK("c", "Third", 2) });
     fireEvent.click(dialog.getByRole("button", { name: "Save link" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(relayPost).toHaveBeenCalledWith("/admin/bio-pages/p1/links",
@@ -110,7 +110,7 @@ describe("BioEditor", () => {
     expect(titles("[data-preview-link]")).toEqual(["First", "Third", "Second"]);
   });
 
-  it("uploads a new background to the last unknown link in a stale page response", async () => {
+  it("uploads a new background to the created link, whatever else a stale page response holds", async () => {
     renderWithProviders(<BioEditor profileId="p1" />);
     fireEvent.click(await screen.findByRole("button", { name: "Add link" }));
     const dialog = within(await screen.findByRole("dialog", { name: "Add link" }));
@@ -118,8 +118,10 @@ describe("BioEditor", () => {
     fireEvent.change(dialog.getByLabelText(/Destination/), { target: { value: "https://dest.test/mine" } });
     const file = new File(["image"], "background.png", { type: "image/png" });
     fireEvent.change(dialog.getByLabelText(/Background image/), { target: { files: [file] } });
-    relayPost.mockResolvedValueOnce({ ...page, links: [...page.links, LINK("other", "Other tab", 2), LINK("mine", "Mine", 3)] });
-    relayUpload.mockResolvedValueOnce({ ...page, links: [...page.links, LINK("other", "Other tab", 2), LINK("mine", "Mine", 3)] });
+    // another tab's link sorts after the new one: only the answer's `link` names which is ours
+    const links = [...page.links, LINK("mine", "Mine", 2), LINK("other", "Other tab", 3)];
+    relayPost.mockResolvedValueOnce({ ...page, links, link: LINK("mine", "Mine", 2) });
+    relayUpload.mockResolvedValueOnce({ ...page, links });
     fireEvent.click(dialog.getByRole("button", { name: "Save link" }));
     await waitFor(() => expect(relayUpload).toHaveBeenCalledWith(
       "/admin/bio-pages/p1/links/mine/background", file));
@@ -172,8 +174,8 @@ describe("BioEditor", () => {
     expect(await screen.findByText("Enter the domain alone, like alice.com: no https://, no slash, no spaces.")).toBeTruthy();
     expect(relayPut).not.toHaveBeenCalled();
     const pending = { domain: "links.example.com", status: "pending", checked: null, records: [
-      { type: "A", name: "links", value: "203.0.113.7" },
-      { type: "TXT", name: "_oflink.links", value: "oflink-verify=tok123" }] };
+      { type: "A", name: "links", fqdn: "links.example.com", value: "203.0.113.7" },
+      { type: "TXT", name: "_oflink.links", fqdn: "_oflink.links.example.com", value: "oflink-verify=tok123" }] };
     relayPut.mockResolvedValueOnce({ ...page, profile: { ...page.profile, custom_domain: pending } });
     fireEvent.change(input, { target: { value: " Links.Example.com " } });
     fireEvent.click(screen.getByRole("button", { name: "Add domain" }));
@@ -181,7 +183,10 @@ describe("BioEditor", () => {
     expect(relayPut).toHaveBeenCalledWith("/admin/bio-pages/p1/domain", { domain: "links.example.com" });
     expect(screen.getByRole("heading", { name: "Point links.example.com here" })).toBeTruthy();
     const rows = [...document.querySelectorAll("[data-dns-record]")].map((r) => r.textContent);
-    expect(rows).toEqual(["AlinksCopy203.0.113.7Copy", "TXT_oflink.linksCopyoflink-verify=tok123Copy"]);
+    // Relative name (most registrars' Host field) and the full name under it (co.uk zones, full-name DNS hosts)
+    expect(rows).toEqual(["AlinksCopyFull name: links.example.comCopy203.0.113.7Copy",
+      "TXT_oflink.linksCopyFull name: _oflink.links.example.comCopyoflink-verify=tok123Copy"]);
+    expect(screen.getByText(/use the full name under it/)).toBeTruthy();
     expect(screen.getByText(/Delete any other A or AAAA record for this name/)).toBeTruthy();
     relayPost.mockResolvedValueOnce({ ...page, profile: { ...page.profile, custom_domain: pending },
       check: { status: "pending", problems: ["No A record for links.example.com yet.", "Delete the AAAA record ::1."] } });

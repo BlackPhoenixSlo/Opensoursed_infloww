@@ -195,7 +195,8 @@ export function VaultPicker(props: VaultPickerProps) {
   // Harvest OF's own vault search for the current query and fold it into the
   // mirror index (of_terms) so cache search ⊇ OF search — same as the manager.
   // While it runs, an empty grid says "Searching OnlyFans…", not "No media".
-  const searchingOf = useOfSearch(accountId, query, useLocalVault);
+  const ofSearch = useOfSearch(accountId, query, useLocalVault);
+  const searchingOf = ofSearch.searching;
 
   const allowedFolders = useMemo(
     () => folderAccessQ.data?.folders ?? [],
@@ -774,7 +775,14 @@ export function VaultPicker(props: VaultPickerProps) {
               Searching OnlyFans…
             </div>
           )}
-          {!vault.isLoading && !vault.isFetching && !searchingOf && visibleItems.length === 0 && !vault.error && (
+          {!vault.isLoading && !searchingOf && ofSearch.failed && visibleItems.length === 0 && (
+            <div role="alert" className="flex items-center justify-center gap-2 text-sm text-fg-dim py-12">
+              OnlyFans search failed
+              <button type="button" onClick={ofSearch.retry} className="text-accent hover:underline">Retry</button>
+            </div>
+          )}
+          {!vault.isLoading && !vault.isFetching && !searchingOf && !ofSearch.failed && visibleItems.length === 0
+            && !vault.error && (
             <div className="text-sm text-fg-dim text-center py-12">
               No media in this filter.
             </div>

@@ -1090,8 +1090,11 @@ async def case_a_pasted_model_name_moves_both_blocks_to_that_account():
                              steps_json="{}", is_enabled=True))
     spy = _Spy()
     _patch(spy)
-    await _ask(question=f"Zeta9 · id {fan_id}\nwhy no reply", account_id=AID)
+    out = await _ask(question=f"Zeta9 · id {fan_id}\nwhy no reply", account_id=AID)
     user = _user_of(spy)
+    # rwl W30 C3: the answer's live cards follow the resolved model, not the thread's focus
+    assert out["about"] == other, out
+    assert (await _ask(question="why no reply", account_id=AID))["about"] == AID
 
     assert f"on account {other} (Zeta9)" in user, user
     assert "autoreply: ON, checks every 1m" in user, "the state block stayed on the "\
@@ -2047,7 +2050,7 @@ async def case_a_failed_turn_write_never_costs_the_answer():
         out = await _ask()
     finally:
         assistant_api.get_session = real
-    assert out == {"answer": "still answered", "error": None, "id": None}, out
+    assert out == {"answer": "still answered", "error": None, "id": None, "about": AID}, out
 
 
 async def _seed_turns(rows):
@@ -2177,6 +2180,23 @@ async def case_general_with_accounts_is_no_account_in_focus():
     assert assistant_api.GENERAL_NOTE in user["content"], user["content"]
     assert assistant_api.NO_ACCOUNT_NOTE not in user["content"], user["content"]
     assert "NO ACCOUNT IN FOCUS" in system["content"]
+
+
+async def case_every_ask_caps_its_output_and_the_budget_reserves_that_cap():
+    """rwl W30 C4: /ask sent no max_tokens — a DeepSeek-lane answer reserved an assumed 1,024 output tokens
+    while the provider could write past it and settle over the cap. Account and General asks (the
+    fallback retry forwards it: F11)."""
+    spy = _Spy("ok")
+    _patch(spy)
+    await _ask()
+    token = auth._request_user.set(auth.AuthedUser("u_cap", "cap", frozenset({AID})))
+    try:
+        await ask(AskBody(question="where is the vault?", thread_id="cap1"))
+    finally:
+        auth._request_user.reset(token)
+    caps = [c.get("max_tokens") for c in spy.calls]
+    assert caps == [assistant_api.ASK_MAX_TOKENS] * 2, caps
+    assert llm_client._reserve_out_tokens("deepseek-v4-flash", assistant_api.ASK_MAX_TOKENS) == 4096
 
 
 async def case_watchers_only_is_no_account_connected():
@@ -3047,6 +3067,7 @@ _harness.run(
     case_the_server_owns_the_prompt_context,
     case_a_thread_is_its_own_context,
     case_general_with_accounts_is_no_account_in_focus,
+    case_every_ask_caps_its_output_and_the_budget_reserves_that_cap,
     case_watchers_only_is_no_account_connected,
     case_a_no_thread_ask_stores_the_thread_it_continues,
     case_a_legacy_thread_continues_with_its_turns,

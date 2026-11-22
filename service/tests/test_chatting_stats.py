@@ -311,8 +311,12 @@ def case_chatter_only_keeps_the_chatter_roles_employees():
         held = OWNER_A.get("/admin/settings/roles").json()["config"]["assignments"]
         chatters = {int(eid) for eid, rid in held.items() if rid == "chatter"}
         assert E1 in chatters and E2 not in chatters, held
-        only = OWNER_A.get(f"/admin/stats/chatting-stats?{q}&chatter_only=true").json()["employees"]
+        body = OWNER_A.get(f"/admin/stats/chatting-stats?{q}&chatter_only=true").json()
+        only = body["employees"]
         assert {e["employee_id"] for e in only} == every & chatters, only
+        # The role's whole roster, active or not: the Timesheet's scheduled hours filter by it, not by these rows.
+        assert set(body["chatter_ids"]) == chatters, body["chatter_ids"]
+        assert OWNER_A.get(f"/admin/stats/chatting-stats?{q}").json()["chatter_ids"] is None
         per = OWNER_A.get(f"/admin/stats/per-employee?{q}&chatter_only=true").json()["employees"]
         assert E1 in {e["employee_id"] for e in per} and {e["employee_id"] for e in per} <= chatters, per
     finally:

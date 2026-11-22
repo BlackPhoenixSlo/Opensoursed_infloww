@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
 import dm_rate
 from db.engine import get_session
-from db.models import Fan, SkipList
+from db.models import Fan, SkipList, VaultItem
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 
@@ -90,6 +92,111 @@ def is_media_rejected_error(exc: BaseException) -> bool:
     return isinstance(errors, dict) and "mediaFiles" in errors
 
 
+# A refused vault id is usually one the creator DELETED on OF. The mirror only
+# learns of a deletion through a by-id 404 (the collect walk never removes rows),
+# so without a re-check every picker keeps choosing the dead id and every send
+# re-hits the same reject. Bounded: one send's ids, at most this many GETs.
+_RECHECK_CAP = 10
+# A per-fan sender hits the same reject once per fan: an id this process already
+# re-read (alive or fetch failed) within the TTL is not re-read. A gone id needs
+# no memo: its `removed_at` keeps it out of the live-row SELECT.
+_RECHECK_TTL_S = 3600.0
+_RECHECKED: dict[tuple[str, int], float] = {}
+# Detached re-checks: referenced until done (a bare task can be GC'd mid-run).
+_RECHECK_TASKS: set[asyncio.Task] = set()
+
+
+def _recheck_ids(media_ids) -> list[int]:
+    """Each id as an int, in order, duplicates dropped; a bad id is skipped alone."""
+    ids: list[int] = []
+    for m in media_ids or ():
+        try:
+            mid = int(m)
+        except (TypeError, ValueError):
+            log.warning("media_reject_recheck bad id=%r", m)
+            continue
+        if mid not in ids:
+            ids.append(mid)
+    return ids
+
+
+async def recheck_rejected_media(account_id, client, media_ids, *, log=log) -> list[int]:
+    """After OF refused a send's ATTACHMENT: re-read each of `media_ids` by id
+    (`vault_stills.resolve_fresh`, the render path's read, `mark_gone=True`). A
+    404 stamps the mirror row `removed_at`, which every picker already skips; a
+    live id gets its row refreshed; any other failure leaves the row alone.
+    Only ids with a live mirror row are read, and none this process re-read
+    within `_RECHECK_TTL_S`. Returns the ids found gone.
+
+    Never raises: the caller's send outcome is already decided and this is
+    mirror upkeep, so every failure is logged and swallowed. Senders call
+    `schedule_recheck_rejected_media`, which runs this off the send path."""
+    asked: list[int] = []
+    gone: list[int] = []
+    if account_id is None:
+        return gone
+    aid = str(account_id)
+    try:
+        import vault_cache
+        import vault_stills
+        ids = _recheck_ids(media_ids)
+        if not ids:
+            return gone
+        async with get_session() as s:
+            live = set((await s.execute(select(VaultItem.media_id).where(
+                VaultItem.account_id == aid, VaultItem.media_id.in_(ids),
+                VaultItem.removed_at.is_(None)))).scalars())
+        # No await between the memo read and its write: concurrent re-checks of
+        # the same reject (one per fan) cannot both pass.
+        now = time.monotonic()
+        if len(_RECHECKED) > 1000:
+            for k in [k for k, t in _RECHECKED.items() if now - t >= _RECHECK_TTL_S]:
+                del _RECHECKED[k]
+        due = [m for m in ids if m in live
+               and ((aid, m) not in _RECHECKED or now - _RECHECKED[(aid, m)] >= _RECHECK_TTL_S)]
+        asked, rest = due[:_RECHECK_CAP], due[_RECHECK_CAP:]
+        for mid in asked:
+            _RECHECKED[(aid, mid)] = now
+        if rest:
+            log.warning("media_reject_recheck capped account=%s unchecked=%s", aid, rest)
+        for mid in asked:
+            try:
+                fresh = await vault_stills.resolve_fresh(aid, mid, client)
+            except Exception:  # noqa: BLE001
+                log.warning("media_reject_recheck failed account=%s media=%s",
+                            aid, mid, exc_info=True)
+                continue
+            if fresh.reason == "gone":
+                gone.append(mid)
+        if gone:
+            await vault_cache.invalidate(aid)
+    except Exception:  # noqa: BLE001
+        log.warning("media_reject_recheck failed account=%s", aid, exc_info=True)
+    log.info("media_reject_recheck account=%s asked=%s gone=%s", aid, asked, gone)
+    return gone
+
+
+def _recheck_done(task: asyncio.Task) -> None:
+    _RECHECK_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.warning("media_reject_recheck task failed", exc_info=exc)
+
+
+def schedule_recheck_rejected_media(account_id, client, media_ids, *, log=log) -> asyncio.Task:
+    """`recheck_rejected_media` as a detached task: the caller's send outcome
+    and its bookkeeping (claims, recipient rows) never wait on, or get
+    cancelled with, mirror upkeep. Returns the task (tests await it)."""
+    task = asyncio.get_running_loop().create_task(
+        recheck_rejected_media(account_id, client, list(media_ids or ()), log=log),
+        name=f"media-reject-recheck:{account_id}")
+    _RECHECK_TASKS.add(task)
+    task.add_done_callback(_recheck_done)
+    return task
+
+
 class SendOutcome(NamedTuple):
     """What `send_dropping_bad_media` actually managed to deliver."""
 
@@ -128,7 +235,9 @@ async def send_dropping_bad_media(
 
     Re-raises unchanged when the failure is NOT about media — those belong to the
     caller's own skip/quarantine handling. `price_cents` > 0 sends the media
-    locked at that price (a PPV); the text-only resend is free."""
+    locked at that price (a PPV); the text-only resend is free. After the
+    resend the refused ids are re-checked off the send path
+    (`schedule_recheck_rejected_media`)."""
     import audience_include as _audiences
     _audiences.audit_send_purpose(send_purpose, where="send_dropping_bad_media")
 
@@ -156,7 +265,9 @@ async def send_dropping_bad_media(
         "of_media_rejected fan=%s media=%s — resending text-only (%s)",
         fan_id, list(media_files), str(rejected).splitlines()[0][:120],
     )
-    return SendOutcome(await _post([]), media_landed=False)
+    outcome = SendOutcome(await _post([]), media_landed=False)
+    schedule_recheck_rejected_media(getattr(client, "account_id", None), client, media_files, log=log)
+    return outcome
 
 
 def send_dropping_bad_media_sync(client, fan_id, text: str, media_files: list, *,
@@ -165,7 +276,8 @@ def send_dropping_bad_media_sync(client, fan_id, text: str, media_files: list, *
     of `of_write_paced` (run in a worker thread), which is where the audience
     assert already ran. Same rule: a refused ATTACHMENT resends the text alone,
     free; any other failure is re-raised for the caller (and the paced seam's
-    rate-limit retry)."""
+    rate-limit retry). The caller calls `schedule_recheck_rejected_media` itself
+    when media was asked and did not land: this runs in a worker thread."""
     try:
         result = client.send_message(fan_id, text, media_files=media_files,
                                      **_price_kw(media_files, price_cents))

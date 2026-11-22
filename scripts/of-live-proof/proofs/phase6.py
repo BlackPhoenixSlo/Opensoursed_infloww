@@ -35,6 +35,8 @@ from proofs.phase6_reads import (HOME_STORY_STRIP, NOTIFICATIONS_TIPS, PROFILE_H
 from proofs.phase6_writes import *  # noqa: E402,F401,F403
 from proofs.phase6_writes import (NEW_POST_DEDUPE, NEW_POST_UPLOAD, QUEUE_PUBLISH_NOW, QUEUE_SEND_NOW,  # noqa: E402
                                   VAULT_CUSTOMIZE_ORDER)
+from proofs.phase6_cotag import *  # noqa: E402,F401,F403  (ticket 98)
+from proofs.phase6_cotag import NEW_POST_COTAG_IMMEDIATE, NEW_POST_COTAG_SCHEDULED  # noqa: E402  (ticket 98)
 
 ROOT = HERE.parents[1]
 CAPTURES = ROOT / "docs" / "of-manager" / "captures"
@@ -61,6 +63,8 @@ PROOFS = (
     NEW_POST_UPLOAD, NEW_POST_DEDUPE,
     # ticket 99
     QUEUE_PUBLISH_NOW,
+    # ticket 98
+    NEW_POST_COTAG_SCHEDULED, NEW_POST_COTAG_IMMEDIATE,
 )
 assert {p.id for p in PROOFS} <= set(IDS), "a Phase 6 definition outside IDS"
 

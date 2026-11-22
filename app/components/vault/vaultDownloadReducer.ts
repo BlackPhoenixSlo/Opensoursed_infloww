@@ -122,12 +122,22 @@ export interface DlState {
   /** The folder picker is open for a next run (folder sink). The run below stays as it was (a finished run keeps its
    *  card and its Retry) until that next run's `start`; a closed picker leaves it untouched. */
   picking: boolean;
+  /** The model the open picker's start is for ("" when none, or once access to it was removed: `keepAccounts`): its
+   *  `start` after the picker resolves is refused unless it is still this one. */
+  pickFor: string;
+  /** A start, the queue's permission check or a Retry's permission ask holds the slot before its `start` /
+   *  `retryFailed` (0: none; else the claimant's id). Nothing else starts meanwhile, and the Download controls say
+   *  so (`downloadGate`); `start` and the claimant's own `release` end it, never another's. */
+  claim: number;
   /** This run's attempt (start / Retry failed bump it). Item events carry the attempt they belong to; an older
    *  attempt's late event (a worker cancelled before a Retry) is ignored. Never reset, so a new run is never confused
    *  with a cancelled one either. */
   attempt: number;
   /** This run's number (0: none yet). Runs and queued jobs (`qid`) count on `seq`. */
   jobId: number;
+  /** This run is a retry job of run `retryOf` (null: not one). Its own failures never queue another retry job: two
+   *  jobs failing for good would re-queue each other forever; they stay on the card (Retry) and its finished line. */
+  retryOf: number | null;
   seq: number;
   /** Folder sink: downloads waiting for this run, in order. */
   jobs: DlJob[];
@@ -138,13 +148,17 @@ export interface DlState {
 }
 
 export type Action =
-  | { type: "pick" }
+  | { type: "pick"; accountId: string }
+  /** Hold the slot for claimant `id` (refused while another holds it). */
+  | { type: "claim"; id: number }
+  /** Claimant `id` is done (refused, picker closed, threw, permission answered): only its own claim ends. */
+  | { type: "release"; id: number }
   /** The picker closed (`error`: it threw instead of a plain close). */
   | { type: "pickClosed"; error?: string }
   /** Dispatched before the runner's first await (after its picker), so a second tap already finds the run.
    *  `qid`: the queue's head, which it drops from `jobs`. */
   | { type: "start"; mode: DlMode; label: string; accountId: string; creator: string; sink?: DlSink;
-      savedAt?: SavedAt | null; folder?: DlFolder | null; qid?: number }
+      savedAt?: SavedAt | null; folder?: DlFolder | null; qid?: number; retryOf?: number }
   | { type: "enqueue"; job: DlJobArgs }
   | { type: "clearQueue" }
   | { type: "paused" }
@@ -159,7 +173,7 @@ export type Action =
   | { type: "cancel" }
   /** Cancel the run and drop the queue (the provider unmounting: sign-out). */
   | { type: "stop" }
-  /** Only these accounts still exist: drop the others' queued jobs, cancel a run of theirs. */
+  /** Only these accounts still exist: drop the others' run (busy: the provider aborts it), files, queued jobs. */
   | { type: "keepAccounts"; ids: readonly string[] }
   | { type: "retryFailed" }
   /** Retry, but the folder's permission was refused: the retry waits as a queued job behind Resume. */
@@ -194,6 +208,10 @@ export const SHARE_TOO_BIG = `Too big for a phone (over ${SHARE_FILE_MAX_BYTES /
 export const LIST_MAX_PAGES = 1000;
 /** Lines of earlier runs the card keeps. */
 export const FINISHED_MAX = 5;
+/** Folder sink: at most this many downloads wait in the queue; one more is refused with QUEUE_FULL_OFF (selections
+ *  never dedupe, so presses could otherwise pile up without end). A run's own automatic retry job is not counted
+ *  against it: it takes the place of the job that just started. */
+export const JOBS_MAX = 20;
 
 const RETRYABLE: ReadonlySet<DlStatus> = new Set<DlStatus>(["failed", "stalled", "cancelled"]);
 
@@ -203,6 +221,7 @@ export const BUSY_OFF = "A download is running";
 export const UNSAVED_OFF = "Save the downloaded files first";
 export const SHARE_MODE_OFF = "Phone: only a selection downloads here; folders and the whole vault need desktop Chrome or Edge";
 export const SHARE_COUNT_OFF = `Phone: up to ${SHARE_MAX_ITEMS} at a time`;
+export const QUEUE_FULL_OFF = `The queue is full (${JOBS_MAX} waiting): let some finish or clear it first`;
 /** The relay soft-denies "All" to a folder-limited chatter on both sources, so its whole-vault download would read
  *  "Nothing to download". Also while its folder access is unread (loading / failed): never a false empty. */
 export const RESTRICTED_OFF = "Your access is by folder: download a folder";
@@ -210,7 +229,7 @@ export const RESTRICTED_OFF = "Your access is by folder: download a folder";
 export const initialDownloadState: DlState = {
   phase: "idle", mode: null, label: "", accountId: "", creator: "", folder: null, savedAt: null, items: [],
   directAllowed: false, directStrikes: 0, sink: "folder", batches: [], links: "none", runError: "", note: "",
-  picking: false, attempt: 0, jobId: 0, seq: 0, jobs: [], paused: false, finished: [],
+  picking: false, pickFor: "", claim: 0, attempt: 0, jobId: 0, retryOf: null, seq: 0, jobs: [], paused: false, finished: [],
 };
 
 /** Share sink: add a fetched file to the open batch. A file that would push a non-empty batch past `budget` seals it
@@ -243,19 +262,23 @@ export function retryJobOf(s: DlState): DlJobArgs | null {
            folder: s.folder, source: "mirror", items, retryOf: s.jobId };
 }
 
-/** Append `job` to the queue (no dedupe: a retry job is never another's duplicate). */
+/** Append `job` to the queue (no dedupe: a retry job is never another's duplicate); a full queue (JOBS_MAX) takes
+ *  nothing, every append included (`s` back unchanged). */
 function append(s: DlState, job: DlJobArgs): DlState {
+  if (s.jobs.length >= JOBS_MAX) return s;
   const seq = s.seq + 1;
   return { ...s, seq, jobs: [...s.jobs, { ...job, qid: seq }] };
 }
 
 /** The run ended: the open batch seals; with jobs waiting (the next one replaces this card at once) its retryable
- *  items join the queue's end as a retry job, so they keep a Retry. The one way to `done`, and never while an item is
- *  still queued / active: every item has its outcome (done / failed / stalled / cancelled / drm) first. */
+ *  items join the queue's end as a retry job, so they keep a Retry; a retry job's own never do (`retryOf`: one
+ *  automatic retry per run, the queue always drains; none into a full queue: the card's own Retry stays). The one
+ *  way to `done`, and never while an item is still queued
+ *  / active: every item has its outcome (done / failed / stalled / cancelled / drm) first. */
 function settled(s: DlState): DlState {
   if (s.items.some((i) => i.status === "queued" || i.status === "active")) return s;
   const done: DlState = { ...s, phase: "done", batches: sealBatches(s.batches) };
-  const retry = done.jobs.length ? retryJobOf(done) : null;
+  const retry = done.jobs.length && done.retryOf == null ? retryJobOf(done) : null;
   return retry ? append(done, retry) : done;
 }
 
@@ -296,16 +319,22 @@ export function vaultDownloadReducer(s: DlState, a: Action): DlState {
   if ("attempt" in a && a.attempt !== s.attempt) return s;   // a late event of an older attempt
   switch (a.type) {
     case "pick":
+      // Its own claim (the start that opens it) does not hold it off.
       if (holdsFiles(s)) return s;
-      return { ...s, picking: true, note: "" };
+      return { ...s, picking: true, pickFor: a.accountId, note: "" };
+    case "claim":
+      return s.claim || holdsFiles(s) ? s : { ...s, claim: a.id };
+    case "release":
+      return s.claim === a.id ? { ...s, claim: 0 } : s;
     case "pickClosed":
       // The run below (a finished one, its Retry) stays as it was; the note names the picker, not that run (#41).
-      return s.picking ? { ...s, picking: false, note: a.error ? `Folder picker: ${a.error}` : "" } : s;
+      return s.picking ? { ...s, picking: false, pickFor: "", note: a.error ? `Folder picker: ${a.error}` : "" } : s;
     case "start": {
       // One run at a time; unsaved phone files are never dropped by a new run. After `pick` (its own picker) too. A
       // refused start still ends its picker (the runner returns without `pickClosed`, #40).
-      const refused = s.picking ? { ...s, picking: false } : s;
-      if (isBusy(s) || unsaved(s) > 0) return refused;
+      // A picker for a model removed meanwhile (`pickFor` cleared by keepAccounts) starts nothing (X3).
+      const refused = s.picking ? { ...s, picking: false, pickFor: "" } : s;
+      if (isBusy(s) || unsaved(s) > 0 || (s.picking && s.pickFor !== a.accountId)) return refused;
       let jobs = s.jobs;
       if (a.qid != null) {       // the queue's head; gone (Clear queue meanwhile): nothing starts
         if (!jobs.some((j) => j.qid === a.qid)) return refused;
@@ -315,11 +344,12 @@ export function vaultDownloadReducer(s: DlState, a: Action): DlState {
       const seq = s.seq + 1;
       return { ...initialDownloadState, attempt: s.attempt + 1, phase: "listing", mode: a.mode, label: a.label,
                accountId: a.accountId, creator: a.creator, folder: a.folder ?? null, sink: a.sink ?? "folder",
-               savedAt: a.savedAt ?? null, jobId: seq, seq, jobs, finished };
+               savedAt: a.savedAt ?? null, jobId: seq, retryOf: a.retryOf ?? null, seq, jobs, finished };
     }
     case "enqueue": {
       if (!canQueue(s)) return s;
       if ((isBusy(s) && sameJob(a.job, s)) || s.jobs.some((j) => sameJob(a.job, j))) return s;   // asked twice
+      if (s.jobs.length >= JOBS_MAX) return s.note === QUEUE_FULL_OFF ? s : { ...s, note: QUEUE_FULL_OFF };
       return append(s, a.job);
     }
     case "clearQueue":
@@ -359,21 +389,23 @@ export function vaultDownloadReducer(s: DlState, a: Action): DlState {
       return next === s && !s.jobs.length && !s.paused ? s : { ...next, jobs: [], paused: false };
     }
     case "keepAccounts": {
+      // Access to a model removed: nothing of it stays, busy or not (its card, Retry, links, unsaved phone files,
+      // queued jobs, finished lines). The provider aborts a busy run's workers; their late events find no items.
       const keep = new Set(a.ids);
       const jobs = s.jobs.filter((j) => keep.has(j.accountId));
-      const gone = isBusy(s) && !keep.has(s.accountId);
-      // a finished run of a removed model: its card (and Retry) goes
-      const stale = !isBusy(s) && s.phase !== "idle" && !!s.accountId && !keep.has(s.accountId);
-      if (!gone && !stale && jobs.length === s.jobs.length) return s;
-      if (stale) {
-        return { ...initialDownloadState, attempt: s.attempt, seq: s.seq, finished: s.finished, jobs,
-                 paused: s.paused && jobs.length > 0 };
+      const finished = s.finished.filter((f) => keep.has(f.accountId));
+      const gone = s.phase !== "idle" && !!s.accountId && !keep.has(s.accountId);
+      const pickFor = s.pickFor && keep.has(s.pickFor) ? s.pickFor : "";   // its picker's start will be refused
+      if (!gone && pickFor === s.pickFor && jobs.length === s.jobs.length && finished.length === s.finished.length) {
+        return s;
       }
-      const next = gone ? cancelRun(s) : s;
-      return { ...next, jobs, paused: next.paused && jobs.length > 0 };
+      const next = gone
+        ? { ...initialDownloadState, attempt: s.attempt, seq: s.seq, picking: s.picking, claim: s.claim } : s;
+      return { ...next, pickFor, jobs, finished, paused: s.paused && jobs.length > 0 };
     }
     case "retryLater": {
       const job = canRetry(s) ? retryJobOf(s) : null;
+      if (job && s.jobs.length >= JOBS_MAX) return { ...s, note: QUEUE_FULL_OFF };   // its Retry stays
       return job ? { ...append(s, job), paused: true } : s;
     }
     case "retryFailed":
@@ -399,13 +431,14 @@ export function vaultDownloadReducer(s: DlState, a: Action): DlState {
     case "close":
       // Unsaved phone files go only on an explicit discard. A queue waiting on Resume stays (Clear queue drops it).
       if (s.picking || isBusy(s) || (unsaved(s) > 0 && !a.discard)) return s;
-      return { ...initialDownloadState, attempt: s.attempt, seq: s.seq, jobs: s.jobs, paused: s.paused };
+      return { ...initialDownloadState, attempt: s.attempt, seq: s.seq, claim: s.claim, jobs: s.jobs, paused: s.paused };
   }
 }
 
 /** The download can't take a next run now: a picker is open for one, the run is listing / running, or (phone)
- *  fetched files wait for their Save tap. The one rule for `pick`, the hook's start and file store and the close X.
- *  (A folder-sink Download press while busy queues instead: `queues`.) */
+ *  fetched files wait for their Save tap. The one rule for `pick`, `claim`, the hook's start and file store; a held
+ *  slot (`claim`) is checked beside it where it matters (`claim`, `downloadGate`, `canRetry`, the card's close). (A
+ *  folder-sink Download press while busy queues instead: `queues`.) */
 export function holdsFiles(s: Pick<DlState, "picking" | "phase" | "batches">): boolean {
   return s.picking || isBusy(s) || unsaved(s) > 0;
 }
@@ -430,8 +463,17 @@ export function dlAccess(q: { isLoading: boolean; isError: boolean; data?: { res
 export interface DlGate {
   /** Why it can't start or queue now; "" when it can. Shown as the control's title / beside it. */
   reason: string;
-  /** Off only because this is a phone (folder / whole vault): the rail says "(desktop only)". */
+  /** Off only because this is a phone (folder / whole vault): the label says "(desktop only)". */
   desktopOnly: boolean;
+  /** A press joins the queue (folder sink, a run busy or jobs waiting): the label says "Add … to queue". */
+  queues: boolean;
+}
+
+/** Every Download control's label from its gate: "Download <noun>", "Add <noun> to queue" or, off only because this
+ *  is a phone, "Download <noun> (desktop only)". */
+export function downloadLabel(g: DlGate, noun: string): string {
+  if (g.desktopOnly) return `Download ${noun} (desktop only)`;
+  return g.queues ? `Add ${noun} to queue` : `Download ${noun}`;
 }
 
 /** The one rule for every Download control (selection bar, rail folder item, page header): may a download of `mode`
@@ -440,9 +482,12 @@ export interface DlGate {
  *  queues); an open picker does. Share sink: a busy run does (its name and progress), and so do files not handed to
  *  the share sheet yet (a new run would drop them). */
 export function downloadGate(s: DlState, sink: DlSink | null, mode: DlMode, count: number, access: DlAccess): DlGate {
-  const off = (reason: string, desktopOnly = false): DlGate => ({ reason, desktopOnly });
+  const q = queues(sink, s);
+  const off = (reason: string, desktopOnly = false): DlGate => ({ reason, desktopOnly, queues: q && !reason });
   if (!sink) return off(DOWNLOAD_OFF);
-  if (s.picking) return off(BUSY_OFF);
+  // A held slot (`claim`): a start / permission ask is pending; a press would do nothing unless it queues.
+  if (s.picking || (s.claim !== 0 && !q)) return off(BUSY_OFF);
+  if (q && s.jobs.length >= JOBS_MAX) return off(QUEUE_FULL_OFF);
   if (sink === "share" && isBusy(s)) return off(busyOff(s));
   if (unsaved(s) > 0) return off(UNSAVED_OFF);
   if (sink === "share" && mode !== "selection") return off(SHARE_MODE_OFF, true);
@@ -548,10 +593,10 @@ export function retryable(s: Pick<DlState, "items">): number {
   return s.items.filter((i) => RETRYABLE.has(i.status)).length;
 }
 
-/** Retry is offered: the run ended with retryable items, no picker is open for a next run, and no retry job of it
- *  waits already. */
+/** Retry is offered: the run ended with retryable items, no picker is open / slot held for a next run, and no retry
+ *  job of it waits already. */
 export function canRetry(s: DlState): boolean {
-  return !s.picking && (s.phase === "done" || s.phase === "cancelled") && retryable(s) > 0
+  return !s.picking && !s.claim && (s.phase === "done" || s.phase === "cancelled") && retryable(s) > 0
     && !s.jobs.some((j) => j.retryOf === s.jobId);
 }
 
@@ -615,10 +660,28 @@ export function fileName(id: number, url: string | null, kind: string): string {
   return `${id}.${m ? m[1].toLowerCase() : KIND_EXT[kind] ?? "bin"}`;
 }
 
-/** A folder or creator name as one path segment: no separators, control chars or reserved names, at most 80 chars. */
+/** A path segment's longest name. */
+const NAME_MAX = 80;
+
+/** A folder or creator name as one path segment: no separators, control chars or reserved names, at most NAME_MAX
+ *  chars. */
 export function safeName(s: string): string {
-  const t = s.replace(/[\u0000-\u001f<>:"/\\|?*]+/g, "_").replace(/^[\s.]+|[\s.]+$/g, "").slice(0, 80);
+  const t = s.replace(/[\u0000-\u001f<>:"/\\|?*]+/g, "_").replace(/^[\s.]+|[\s.]+$/g, "").slice(0, NAME_MAX);
   return t || "_";
+}
+
+type Named = { id: string; nickname?: string | null; name?: string | null };
+const nameDir = (a: Named | null | undefined, id: string) => safeName(a?.nickname || a?.name || id);
+
+/** A model's `<creator>/` folder: its name, plus ` (<id>)` only when another of the operator's models (`all`, the
+ *  whole registry) names the same folder (case-insensitive, as Mac/Windows disks are), so their files never mix; a
+ *  long name is cut to keep that suffix within NAME_MAX. Every other model keeps the folder it always had. */
+export function creatorDir(id: string, account: Named | null | undefined, all: readonly Named[] = []): string {
+  const n = nameDir(account, id);
+  const same = (o: Named) => o.id !== id && nameDir(o, o.id).toLowerCase() === n.toLowerCase();
+  if (!all.some(same)) return n;
+  const suffix = ` (${safeName(id)})`;
+  return safeName(`${n.slice(0, Math.max(1, NAME_MAX - suffix.length))}${suffix}`);
 }
 
 type ListState = { id?: number | string; type?: string; name?: string; hasMedia?: boolean };

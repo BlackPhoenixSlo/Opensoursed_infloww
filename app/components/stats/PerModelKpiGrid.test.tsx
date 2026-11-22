@@ -116,6 +116,23 @@ describe("PerModelKpiGrid on a Creator with no live OnlyFans session", () => {
   });
 });
 
+describe("PerModelKpiGrid's card copy", () => {
+  it("labels its revenue gross, and New subs / LTV say what is counted (sub starts, free and trial on the roster too)", async () => {
+    const base = fetchMock.getMockImplementation() as (url: string) => Promise<Response>;
+    fetchMock.mockImplementation(async (url: string) => new URL(String(url), "http://localhost").pathname === "/admin/stats/per-model"
+      ? jsonRes({ per_model: [{ ...row("nosession", 3400), revenue_by_kind: { ...kinds(0), subscription: 3400 }, new_subs_count: 4 }] })
+      : base(url));
+    renderWithProviders(<PerModelKpiGrid from="2026-10-26T07:00:00.000Z" to="2026-11-02T07:59:59.999Z" />);
+    await screen.findByText("Creator nosession");
+    const c = within(card("nosession"));
+    expect(c.getByText("total revenue · gross")).toBeInTheDocument();
+    const newSubs = c.getByText("New subs").closest("div")!.getAttribute("title")!;
+    expect(newSubs).not.toMatch(/NOT counted|PAID/);
+    expect(newSubs).toMatch(/free and trial/);
+    expect(c.getByText("LTV").closest("div")!.getAttribute("title")).not.toMatch(/PAID/);
+  });
+});
+
 describe("ofReadState", () => {
   const pending = { isPending: true, isError: false };
   const done = { isPending: false, isError: false };

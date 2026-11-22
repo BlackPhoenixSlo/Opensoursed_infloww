@@ -171,7 +171,7 @@ def case_reusable_table():
     meta = vdj.meta("prose", j, "qwen3-vl-30b")
     vj = _vblob(settled=False, lane="$10")
     vmeta = vdj.meta("vid", vj, "m")
-    assert vmeta["path"] == "vid" and vmeta["jev_at"] == vj["at"] and vmeta["px"] is None
+    assert vmeta["path"] == "vid" and vmeta["jev_at"] == vj["at"] and vmeta["px"] == 400
     assert meta == {"path": "prose", "v": vdj.RECIPE_V, "jev_v": rules.VERSION, "jev_at": j["at"],
                     "model": "qwen3-vl-30b", "px": 640}
     assert vdj.meta("v2", j, "m") == {"path": "v2", "v": vdj.RECIPE_V, "jev_v": None, "jev_at": None,
@@ -204,7 +204,9 @@ def case_prose_fields_table():
 
     def pf(lane, pen=None, tags=None, F=()):
         lane5 = lane if lane in vault_jev_flags.EXPLICITNESS else "free"
-        j = {**base, "lane": lane, "lane5": lane5, "tags": {**base["tags"], **(tags or {})}}
+        # a free lane_rule lane (lingerie / mass) has every body answer "n" (a firm "y" is bare in any lane, F1a)
+        body = {} if lane5 != "free" else dict.fromkeys(("breasts_bare", "crotch_bare", "penetration"), "n")
+        j = {**base, **body, "lane": lane, "lane5": lane5, "tags": {**base["tags"], **(tags or {})}}
         return vdj.prose_fields(j, list(F), {"penetration": pen})
     assert pf("$100", "toy")["explicitness"] == "hardcore" and pf("$100", "toy")["acts"] == ["toy_insertion"]
     assert pf("$50")["explicitness"] == pf("$10")["explicitness"] == "explicit"
@@ -476,7 +478,7 @@ async def case_wiring_vid():
         res = await vault_ai_vision._describe_one(aid, 9001)
     assert res["ok"], res
     call, = fk.calls
-    assert call["prompt"] == vdj.prompt_for("vid", j, V2P) and call["px"] == [1440, 1080], call["px"]
+    assert call["prompt"] == vdj.prompt_for("vid", j, V2P) and call["px"] == [400, 300], call["px"]   # W30 F13
     async with get_session() as s:
         row = await s.get(VaultItem, (aid, 9001))
     f = json.loads(row.ai_fields_json)

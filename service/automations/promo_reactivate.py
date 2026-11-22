@@ -57,6 +57,7 @@ card's waiting line (wait_reason).
 Toast gate (`should_poke`): a subscribe toast pokes this kind only when a run could be owed
 (no fresh read of the live Kept promo, its count plus the toasts since near the threshold,
 or its end near), so a busy Creator's toasts cost no list reads far from the threshold.
+A read refused with an unclassified OF 401 backs the toasts off for GATE_STALE_S (`_hold_gate`).
 
 Safety — every unknown is read as "leave it alone", never as "re-create it":
   • Fails CLOSED when OF is unreachable — a failed fetch must never be read as
@@ -179,6 +180,14 @@ def _set_gate(account_id: str, p: dict | None, r: PromoCampaign | None, read_mon
     trigger = threshold(cap) if _preempts(r, cap) else (cap or None)
     _gate[aid] = _Gate(int(p.get("subscriber_count") or 0), trigger, read_mono,
                        parse_iso(p.get("finished_at")))
+
+
+def _hold_gate(account_id: str, read_mono: float) -> None:
+    """The read met an OF 401 the strict dead-session classifier does not name: backed off,
+    never parked, as the purchase poll treats it (purchase_notifications.feed_outcome
+    `unauthorized`). Toasts poke nothing for GATE_STALE_S; the backstop and Re-checks still
+    run (W30 F27)."""
+    _gate[str(account_id)] = _Gate(0, None, read_mono, None)
 
 
 def should_poke(account_id: str, n_toasts: int) -> bool:
@@ -511,9 +520,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Before the read: any create sent or settled after this instant (a manual one
     # mid-walk) beats this run's (newer_create).
     read_at, read_mono = datetime.utcnow(), time.monotonic()
-    # A background walk (of_pacing): paging to an older managed promo can take pages.
+    # A background walk (of_pacing): paging to an older managed promo can take pages. A dead
+    # session raises: run_once marks the account and skips it until the session is back.
+    failed: list[Exception] = []
     live = await of_pacing.walk(account_id, "promo_reactivate",
-                                lambda: fetch_of_promos(account_id, need_ids=managed_ids))
+                                lambda: fetch_of_promos(account_id, need_ids=managed_ids,
+                                                        raise_dead=True, on_error=failed.append))
     # Every read first settles an open create; one settled may have repointed a campaign.
     # Dry run writes nothing (a lost row would turn Keep running off).
     if not dry_run and await promo_create_guard.reconcile(account_id, live):
@@ -524,6 +536,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     shown = next((p for p in live or () if p.get("of_promo_id") in managed_ids and not p.get("is_finished")), None)
     _set_gate(account_id, shown, next((r for r in managed if shown and r.of_promo_id == shown["of_promo_id"]), None),
               read_mono)
+    if live is None and failed and of_pacing.upstream(failed[-1])[0] == 401:
+        _hold_gate(account_id, read_mono)
     if await promo_create_guard.has_open(account_id):
         # Still open (no unique candidate yet): a second create could duplicate it. Natural
         # reads settle it; UNKNOWN_OFF_S after its send it is lost and Keep running stops.

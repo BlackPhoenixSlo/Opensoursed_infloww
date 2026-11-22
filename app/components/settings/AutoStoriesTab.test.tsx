@@ -18,11 +18,12 @@ vi.mock("@/lib/relay", async (importOriginal) => {
     relay: { ...mod.relay, get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn() },
   };
 });
+const creators = vi.hoisted(() => ({ list: [{ id: "acc-a", nickname: "Creator A", has_session: true }] }));
 vi.mock("@/hooks/useAccounts", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/hooks/useAccounts")>();
   return {
     ...mod,
-    useActiveAccounts: () => [{ id: "acc-a", nickname: "Creator A", has_session: true }],
+    useActiveAccounts: () => creators.list,
     useAccounts: () => ({ isLoading: false }),
   };
 });
@@ -62,6 +63,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  creators.list = creators.list.slice(0, 1);
+  window.history.replaceState(null, "", "/");
 });
 
 describe("Auto Story (AutoStoriesTab)", () => {
@@ -91,6 +94,33 @@ describe("Auto Story (AutoStoriesTab)", () => {
     fireEvent.click(every);
     expect(every).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("spinbutton", { name: "Every N hours" })).toHaveValue(6);
+  });
+
+  it("switched to a Creator whose rules haven't loaded, the last Creator's rule is never written", async () => {
+    creators.list = [...creators.list, { id: "acc-b", nickname: "Creator B", has_session: true }];
+    // A's rule loads; B's read hangs, so the query shows A's rows as placeholder.
+    get.mockImplementation((path: string) => {
+      if (!path.startsWith("/admin/automation-rules")) return Promise.resolve({});
+      return path.includes("acc-b") ? new Promise(() => {}) : Promise.resolve({ rules: [RULE] });
+    });
+    renderWithProviders(<AutoStoriesTab />);
+    await seeded();
+    await act(async () => {
+      window.history.replaceState(null, "", "/?creator=acc-b");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => expect(get.mock.calls.some(([p]) => String(p).includes("acc-b"))).toBe(true));
+    const bar = screen.getByRole("banner");
+    const sw = within(bar).getByRole("switch", { name: "Auto Story" });
+    expect(sw).toBeDisabled();
+    expect(within(bar).getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(sw);
+    fireEvent.click(within(bar).getByRole("button", { name: "Save" }));
+    fireEvent.click(within(bar).getByRole("button", { name: "More actions" }));
+    for (const name of ["Run now", "Edit raw JSON", "Delete"]) expect(screen.getByRole("menuitem", { name })).toBeDisabled();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(patch).not.toHaveBeenCalled();
+    expect(relay.post as unknown as Mock).not.toHaveBeenCalled();
   });
 
   it("with no rule the header switch only rides the create", async () => {
@@ -207,6 +237,23 @@ describe("Auto Story on the help bot's agent bridge (D13)", () => {
       trigger: { daily_at: ["09:00", "20:00"], max_runs: 30 },
       payload: { folder_id: 5, per_run: 2, hours_to_live: 12 },
     });
+  });
+
+  // rwl W30 M13: another tab made one after this page read the rules — the save reads them again and refuses.
+  it("a rule made elsewhere since the page loaded: the save re-reads and refuses, nothing POSTed", async () => {
+    mockRules([]);
+    const post = relay.post as unknown as Mock;
+    const bridge = createAgentBridge();
+    renderWithProviders(<AgentBridgeProvider bridge={bridge}><AutoStoriesTab /></AgentBridgeProvider>);
+    const editor = await bridge.waitFor(() => bridge.anyEditor("auto_stories", "acc-a"), 2000, signal());
+    for (const step of DO_FLOWS.auto_story.toActions(SLOTS)) {
+      if (typeof step.action !== "string") act(() => editor.dispatch(step.action as never));
+    }
+    mockRules([RULE]);
+    let res: Awaited<ReturnType<typeof editor.save>> | undefined;
+    await act(async () => { res = await editor.save(); });
+    expect(res).toMatchObject({ ok: false, reason: expect.stringContaining("already set up") });
+    expect(post).not.toHaveBeenCalled();
   });
 
   it("with a rule already there it is not new and its save refuses (one per account)", async () => {

@@ -72,6 +72,12 @@ Locks in the contract discovered by LIVE testing on 2026-07-22:
                                  page-1 read before its reservation: OF answering without the
                                  id, a later read adopts it (mirror row, tickable), as the reply
                                  promised; without Keep running no extra read and no tick promised.
+  case_w30_f20_landed_between_steps_never_resent  the open create adopted by a concurrent read
+                                 at any step of a manual create: 409 create_landed, no POST.
+  case_w30_f24_delete_unticks_before_of_and_refuses_mid_create  deleting a Kept campaign
+                                 unticks it before OF hears; an open create: 409, no delete.
+  case_w30_f26_untick_on_stale_row_still_writes  an untick on a row read before a re-tick
+                                 still writes False; campaign and rule agree.
 
 Run: ./venv/bin/python service/tests/test_promotions.py
 """
@@ -588,7 +594,7 @@ def case_list_shows_backoff_and_budget():
                     if c["id"] == a["id"])
     asyncio.run(failed(not_before=until))
     row = listed()
-    assert (row["keep_blocked"], row["keep_blocked_until"]) == ("backoff", until.isoformat()), row
+    assert (row["keep_blocked"], row["keep_lines"][0]["until"]) == ("backoff", until.isoformat()), row
     asyncio.run(failed()); asyncio.run(failed())
 
     async def lift():
@@ -598,7 +604,7 @@ def case_list_shows_backoff_and_budget():
                 r.not_before = None
     asyncio.run(lift())
     row = listed()
-    assert row["keep_blocked"] == "budget" and row["keep_blocked_until"], row
+    assert row["keep_blocked"] == "budget" and row["keep_lines"][0]["until"], row
 
 
 def case_mn07_tick_on_unfenced_copy_stamps_empty():
@@ -982,6 +988,321 @@ def case_f3_first_unknown_kept_create_adopted():
     assert "tick Keep running" not in json.dumps(r), r
 
 
+def case_w30_f2_landed_create_never_resent():
+    """W30 F2: a create that landed on OF but got no answer (crash after the POST) is adopted
+    by the retry's reconcile: 409 create_landed, nothing sent again. "Create anyway" naming a
+    row a read settled created meanwhile: 409 create_landed too, no POST."""
+    terms = {"discount": 20, "subscribe_counts": 7, "subscribe_days": 30, "message": "Hi",
+             "type": "all", "mirror": {"name": "Late one", "promo_type": "all"}}
+
+    def _listed(f, pid):
+        f.store[pid] = {"id": pid, "message": "Hi", "type": "all", "subscribeCounts": 7,
+                        "subscribeDays": 0, "claimsCount": 0, "isFinished": False,
+                        "createdAt": datetime.utcnow().isoformat() + "+00:00"}
+    # the retry: the open row (crashed sender) is adopted by its own reconcile
+    aid = "pr_w30_f2_retry"
+    asyncio.run(_seed(aid))
+    f = _use_fake()
+    rid = asyncio.run(_open_row(aid, ago_s=30, source="manual", terms=terms, pre_ids=[]))
+    _listed(f, 902)
+    r = _client.post("/admin/promotions", json={"account_id": aid, **BODY})
+    assert r.status_code == 409, r.text
+    d = r.json()["detail"]
+    assert (d["reason"], d["id"], d["of_promo_id"]) == ("create_landed", rid, 902), d
+    assert f.calls == [], f.calls
+    assert asyncio.run(_reservations(aid)) == [("manual", "created")]
+    # "create anyway" on a row a list read settled created since the operator saw it
+    aid = "pr_w30_f2_anyway"
+    asyncio.run(_seed(aid))
+    f = _use_fake()
+    rid = asyncio.run(_open_row(aid, ago_s=promo_create_guard.SETTLE_GRACE_S + 60, source="manual",
+                                terms=terms, pre_ids=[]))
+    r = _client.post("/admin/promotions", json={"account_id": aid, **BODY})
+    assert r.status_code == 409 and r.json()["detail"]["reason"] == "create_unresolved", r.text
+    _listed(f, 903)
+    _client.get(f"/admin/promotions?account_id={aid}")          # the list read adopts it
+    r = _client.post("/admin/promotions", json={"account_id": aid, **BODY, "resolve_open": rid})
+    assert r.status_code == 409 and r.json()["detail"]["reason"] == "create_landed", r.text
+    assert f.calls == [], f.calls
+    assert asyncio.run(_reservations(aid)) == [("manual", "created")]
+
+
+def case_w30_f20_landed_between_steps_never_resent():
+    """W30 F20: a concurrent list read adopts the open create (settles it created) at any step
+    of a manual create: right after its reserve met the open row, between "create anyway"'s
+    landed check and its reserve, or just before it clears the row. Each: 409 create_landed,
+    no second reservation, nothing sent to OF."""
+    from of_promos import normalise_of_promo
+    terms = {"discount": 20, "subscribe_counts": 7, "subscribe_days": 30, "message": "Hi",
+             "type": "all", "mirror": {"name": "Late one", "promo_type": "all"}}
+    real_reserve, real_clear = promo_create_guard.reserve, promo_create_guard.clear
+
+    async def adopt(aid, f, pid):
+        raw = {"id": pid, "message": "Hi", "type": "all", "subscribeCounts": 7, "subscribeDays": 0,
+               "claimsCount": 0, "isFinished": False,
+               "createdAt": datetime.utcnow().isoformat() + "+00:00"}
+        f.store[pid] = raw
+        assert await promo_create_guard.reconcile(aid, [normalise_of_promo(raw)]) == 1
+
+    def run(aid, pid, *, ago_s, step, resolve):
+        asyncio.run(_seed(aid))
+        f = _use_fake()
+        rid = asyncio.run(_open_row(aid, ago_s=ago_s, source="manual", terms=terms, pre_ids=[]))
+        calls = {"reserve": 0}
+
+        async def reserve(*a, **k):
+            calls["reserve"] += 1
+            if step == "before_reserve" and calls["reserve"] == 1:
+                await adopt(aid, f, pid)
+            got = await real_reserve(*a, **k)
+            if step == "after_refused" and calls["reserve"] == 1:
+                await adopt(aid, f, pid)
+            return got
+
+        async def clear(row):
+            if step == "before_clear":
+                await adopt(aid, f, pid)
+            return await real_clear(row)
+        promo_create_guard.reserve, promo_create_guard.clear = reserve, clear
+        try:
+            body = {"account_id": aid, **BODY, **({"resolve_open": rid} if resolve else {})}
+            r = _client.post("/admin/promotions", json=body)
+        finally:
+            promo_create_guard.reserve, promo_create_guard.clear = real_reserve, real_clear
+        assert r.status_code == 409, (step, r.text)
+        d = r.json()["detail"]
+        assert (d["reason"], d["id"], d["of_promo_id"]) == ("create_landed", rid, pid), (step, d)
+        assert f.calls == [], (step, f.calls)
+        assert asyncio.run(_reservations(aid)) == [("manual", "created")], step
+    past = promo_create_guard.SETTLE_GRACE_S + 60
+    run("pr_w30_f20_refused", 904, ago_s=30, step="after_refused", resolve=False)
+    run("pr_w30_f20_anyway", 905, ago_s=past, step="before_reserve", resolve=True)
+    run("pr_w30_f20_clear", 906, ago_s=past, step="before_clear", resolve=True)
+
+
+def case_w30_f24_delete_unticks_before_of_and_refuses_mid_create():
+    """W30 F24: deleting a Kept campaign unticks it (and parks the rule) before OF hears,
+    so no tick re-creates it meanwhile; an open create on the Creator: 409 create_in_flight,
+    nothing deleted on OF, the row stays Kept."""
+    import sqlite3
+    aid = "pr_w30_f24_delete"
+    asyncio.run(_seed(aid))
+    f = _use_fake()
+    b = _create(aid, "B")
+    a = _create(aid, "A", auto_reactivate=True)
+    seen: list[tuple] = []
+    real = f.delete_promo
+
+    def delete_promo(pid):   # what the DB says the moment OF hears
+        con = sqlite3.connect(str(_harness.DB_PATH))
+        try:
+            seen.append(con.execute("SELECT auto_reactivate FROM promo_campaigns WHERE id = ?",
+                                    (a["id"],)).fetchone() + con.execute(
+                "SELECT is_enabled FROM automation_rules WHERE account_id = ? AND kind = "
+                "'promo_reactivate'", (aid,)).fetchone())
+        finally:
+            con.close()
+        return real(pid)
+    f.delete_promo = delete_promo
+    rid = asyncio.run(_open_row(aid, ago_s=30))
+    # W30 N2: an open create only holds a Kept row's delete; any other row deletes at once.
+    nb = _client.delete(f"/admin/promotions/{b['id']}")
+    assert nb.status_code == 200 and f.deleted == [b["of_promo_id"]], nb.text
+    f.deleted.clear(); seen.clear()
+    r = _client.delete(f"/admin/promotions/{a['id']}")
+    assert r.status_code == 409 and r.json()["detail"]["reason"] == "create_in_flight", r.text
+    assert f.deleted == [] and asyncio.run(_row(a["id"])).auto_reactivate, f.deleted
+
+    async def settle():
+        async with get_session() as s:
+            (await s.get(PromoCreateReservation, rid)).state = "failed"
+    asyncio.run(settle())
+    d = _client.delete(f"/admin/promotions/{a['id']}").json()
+    assert d["deleted"] == a["id"] and f.deleted == [a["of_promo_id"]], d
+    assert seen == [(0, 0)], f"unticked + rule parked before OF heard: {seen}"
+
+
+def case_w30_f3_retick_of_kept_keeps_limit_and_breaker():
+    """W30 F3: PATCH auto_reactivate=true on a campaign already Kept (a stale tab) keeps its
+    Re-create limit and keep_ticked_at (the Zero-claim breaker's start); an explicit
+    recreate_limit still sets the limit; an off→on tick or one clearing a warning restamps."""
+    aid = "pr_w30_f3_retick"
+    asyncio.run(_seed(aid))
+    _use_fake()
+    t = _create(aid, "T", discount=100, subscribe_days=3, subscribe_counts=5,
+                auto_reactivate=True, recreate_limit=2)
+    before = asyncio.run(_row(t["id"]))
+    assert before.recreates_left == 2, before.recreates_left
+    r = _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": True})
+    after = asyncio.run(_row(t["id"]))
+    assert r.status_code == 200 and r.json()["recreates_left"] == 2, r.text
+    assert after.keep_ticked_at == before.keep_ticked_at, (after.keep_ticked_at, before.keep_ticked_at)
+    r = _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": True, "recreate_limit": 3})
+    assert r.status_code == 200 and r.json()["recreates_left"] == 3, r.text
+    assert asyncio.run(_row(t["id"])).keep_ticked_at == before.keep_ticked_at
+
+    async def warned():
+        async with get_session() as s:
+            c = await s.get(PromoCampaign, t["id"])
+            c.auto_reactivate, c.keep_warning = False, "zero_claims"
+    asyncio.run(warned())
+    r = _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": True})
+    again = asyncio.run(_row(t["id"]))
+    assert r.status_code == 200 and r.json()["recreates_left"] is None, r.text
+    assert again.keep_warning is None and again.keep_ticked_at > before.keep_ticked_at, again.keep_ticked_at
+
+
+def case_w30_f5_untick_racing_takeover_keeps_rule():
+    """W30 F5: an untick of the last Kept campaign racing a create's Takeover onto another:
+    the untick takes the write lock before it reads "no other Kept campaign", so the Takeover
+    commits after it and the new Kept campaign's rule stays enabled."""
+    aid = "pr_w30_f5_race"
+    asyncio.run(_seed(aid))
+    _use_fake()
+    a = _create(aid, "A", auto_reactivate=True)
+    b = _create(aid, "B")
+    real = promotions_api._keep_running_rule
+
+    async def scenario():
+        arm_task = None
+
+        async def racing(s, account_id, *, on):
+            nonlocal arm_task
+            if not on and arm_task is None:
+                # The untick has read and is about to park the rule: a Takeover starts now.
+                arm_task = asyncio.create_task(promotions_api._arm(aid, b["id"], None))
+                await asyncio.sleep(0.5)
+            return await real(s, account_id, on=on)
+        promotions_api._keep_running_rule = racing
+        try:
+            async with get_session() as s:
+                row = await s.get(PromoCampaign, a["id"])
+                await promotions_api._untick(s, row)
+            await asyncio.wait_for(arm_task, 20)
+        finally:
+            promotions_api._keep_running_rule = real
+    asyncio.run(scenario())
+    assert asyncio.run(_row(b["id"])).auto_reactivate and not asyncio.run(_row(a["id"])).auto_reactivate
+    rules = asyncio.run(_rules(aid))
+    assert len(rules) == 1 and rules[0].is_enabled, "the Kept campaign's rule must stay on"
+
+
+def case_w30_f26_untick_on_stale_row_still_writes():
+    """W30 F26: an untick holding a row read before a re-tick landed (already False in
+    memory) still writes False, so the campaign and its rule agree: unticked, rule parked."""
+    aid = "pr_w30_f26_stale"
+    asyncio.run(_seed(aid))
+    _use_fake()
+    a = _create(aid, "A")
+
+    async def scenario():
+        async with get_session() as s:
+            row = await s.get(PromoCampaign, a["id"])   # unticked, read now
+            await s.commit()
+            await promotions_api._arm(aid, a["id"], None)   # a re-tick lands meanwhile
+            await promotions_api._untick(s, row)
+    asyncio.run(scenario())
+    rules = asyncio.run(_rules(aid))
+    got = (asyncio.run(_row(a["id"])).auto_reactivate, [r.is_enabled for r in rules])
+    assert got == (False, [False]), f"Kept with its rule parked: {got}"
+
+
+def case_w30_f6_keep_lines():
+    """W30 F6/F8: the relay sends the card's finished lines (`keep_lines`), so the app keeps no
+    copy of the reason text; a Kept Free trial with no Offer limit says "create a new one with an
+    Offer limit" (limit_needed), never "Tick Keep running again" (a re-tick 422s)."""
+    aid = "pr_w30_f6_lines"
+    asyncio.run(_seed(aid))
+    _use_fake()
+    t = _create(aid, "T", discount=100, subscribe_days=3, subscribe_counts=5, auto_reactivate=True)
+
+    async def unlimited():
+        async with get_session() as s:
+            (await s.get(PromoCampaign, t["id"])).subscribe_counts = 0   # older rule / OF edit
+    asyncio.run(unlimited())
+
+    def listed(mid):
+        return next(c for c in _client.get(f"/admin/promotions?account_id={aid}").json()["campaigns"]
+                    if c["id"] == mid)
+    row = listed(t["id"])
+    assert row["keep_blocked"] == "limit_needed", row
+    assert row["keep_lines"] == [{"lead": "Not re-creating", "off": True, "until": None,
+                                  "text": "this free trial has no Offer limit, so it can't keep running — "
+                                          "create a new one with an Offer limit"}], row
+    assert "Tick Keep running again" not in str(row["keep_lines"])
+
+    def lines(**kw):
+        blocked, until, wait = kw.pop("blocked", None), kw.pop("until", None), kw.pop("wait", None)
+        m = PromoCampaign(**{"auto_reactivate": True, "keep_warning": None, "recreates_left": None, **kw})
+        return [(x["lead"], x["text"], x["off"], x["until"])
+                for x in promotions_api.keep_lines(m, blocked, until, wait)]
+    off = promo_create_guard.OFF_TEXT
+    at = datetime(2099, 1, 2, 10, 5)
+    table = [
+        ({}, []),
+        ({"auto_reactivate": False, "keep_warning": "breaker"}, [("Keep running is off", off["breaker"], True, None)]),
+        ({"keep_warning": "something_new"}, [("Keep running is off", "tick Keep running again", True, None)]),
+        ({"blocked": "fence"}, [("Not re-creating", promo_create_guard.FENCE_TEXT, True, None)]),
+        ({"blocked": "retick"}, [("Not re-creating", "Tick Keep running again", True, None)]),
+        ({"blocked": "unknown"}, [("Paused", "waiting for OnlyFans to show the last re-create — Inflowwww "
+                                   "checks on its next look, nothing to do", False, None)]),
+        ({"blocked": "backoff", "until": at}, [("Paused", "the last re-create failed, so Inflowwww waits "
+                                                "before trying again — nothing to do", False, at.isoformat())]),
+        ({"blocked": "budget"}, [("Paused", "3 re-creates this hour (or 8 today) is the most Inflowwww makes "
+                                  "— nothing to do", False, None)]),
+        ({"blocked": "switch"}, [(None, "Re-create at 90% filled is off on this server — ask the owner",
+                                  False, None)]),
+        ({"blocked": "clock", "wait": "clock"},   # clock: the waiting line says it, never a second line
+         [("Waiting", "will re-create after it ends (OnlyFans' clock doesn't match ours)", False, None)]),
+        ({"wait": "count_untrusted"}, [("Waiting", "will re-create after it ends (the claim count isn't "
+                                        "reliable yet)", False, None)]),
+        ({"wait": "budget"}, [("Waiting", "will re-create after it ends (3 re-creates this hour (or 8 today) "
+                               "reached)", False, None)]),
+        ({"wait": "something_new"}, [("Waiting", "will re-create after it ends (something_new)", False, None)]),
+        ({"blocked": "something_new"}, [("Paused", "something_new", False, None)]),   # never dropped
+        ({"recreates_left": 1}, [(None, "1 re-create left, then Keep running turns off", False, None)]),
+        ({"recreates_left": 3}, [(None, "3 re-creates left, then Keep running turns off", False, None)]),
+        ({"auto_reactivate": False, "recreates_left": 3}, []),
+    ]
+    for kw, want in table:
+        assert lines(**kw) == want, (kw, lines(**kw))
+
+
+def case_w30_f15_every_hold_and_wait_code_has_text():
+    """W30 F15: the card's text tables cover every code decide/guard can answer (a new code
+    added there fails here, and shows raw on the card meanwhile instead of vanishing)."""
+    from typing import get_args
+    import promo_keep_decide as d
+    assert set(get_args(d.HoldReason)) | {"unknown"} <= set(promotions_api._HELD_TEXT), get_args(d.HoldReason)
+    assert set(get_args(d.PreemptWait)) <= set(promotions_api._WAIT_TEXT), get_args(d.PreemptWait)
+
+
+def case_w30_f7_moved_after_create_says_tick_the_row():
+    """W30 F7: Keep running moved after the promo landed on OF (the arm's 409): the create
+    answers 200 with the promo, and the reason says where Keep running is and to tick this
+    row, never "check the form and create again" (a second create would mint a duplicate)."""
+    aid = "pr_w30_f7_moved"
+    asyncio.run(_seed(aid))
+    f = _use_fake()
+    a = _create(aid, "Alpha", auto_reactivate=True)
+    c = _create(aid, "Gamma")
+    real = f.create_promo
+
+    def move_then_create(**kw):        # another tab moves Keep running mid-POST
+        async def move():
+            async with get_session() as s:
+                (await s.get(PromoCampaign, a["id"])).auto_reactivate = False
+                (await s.get(PromoCampaign, c["id"])).auto_reactivate = True
+        asyncio.run(move())
+        return real(**kw)
+    f.create_promo = move_then_create
+    r = _create(aid, "Delta", auto_reactivate=True, expect_taken_from=a["id"])
+    why = r["auto_reactivate_refused"]
+    assert r["auto_reactivate"] is False and r["of_promo_id"], r
+    assert "create again" not in why and "check the form" not in why, why
+    assert "“Gamma”" in why and "tick Keep running on this row" in why, why
+
+
 _harness.run(
     case_offer_expiration_and_audience_reach_of,
     case_bad_audience_is_422,
@@ -1017,4 +1338,13 @@ _harness.run(
     case_f1_manual_kept_create_first_read,
     case_f3_first_unknown_kept_create_adopted,
     case_f7_small_cap_no_switch_or_wait,
+    case_w30_f2_landed_create_never_resent,
+    case_w30_f20_landed_between_steps_never_resent,
+    case_w30_f24_delete_unticks_before_of_and_refuses_mid_create,
+    case_w30_f3_retick_of_kept_keeps_limit_and_breaker,
+    case_w30_f5_untick_racing_takeover_keeps_rule,
+    case_w30_f26_untick_on_stale_row_still_writes,
+    case_w30_f6_keep_lines,
+    case_w30_f7_moved_after_create_says_tick_the_row,
+    case_w30_f15_every_hold_and_wait_code_has_text,
 )

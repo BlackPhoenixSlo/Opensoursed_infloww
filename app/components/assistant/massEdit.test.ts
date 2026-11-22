@@ -1,51 +1,37 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  changeLines, diffLine, editApplyBody, editPlanText, editResultsOf, editSlotsFrom, isLiveIncrease, resultHeadline,
+  diffLine, editApplyBody, editPlanText, editResultsOf, editSlotsFrom, isLive, resultHeadline,
   resultLines, type EditDiff, type EditRule, type MassEditSlots,
 } from "./massEdit";
 
-const d = (field: EditDiff["field"], before: unknown, after: unknown, label = "L"): EditDiff => ({ field, label, before, after });
+const d = (field: EditDiff["field"], text: string, live = false, label = "L"): EditDiff => ({ field, label, text, live });
 const rule = (id: number, model: string, diffs: EditDiff[], is_enabled = true): EditRule => ({
   id, account_id: model.toLowerCase(), account_name: model, name: `Rule ${id}`, is_enabled, version: `v${id}`, diffs,
 });
 const SLOTS: MassEditSlots = {
-  scope: "all", match: null, changes: { unsend_after_hours: 0 }, already: 2,
+  scope: "all", match: null, changes: { unsend_after_hours: 0 }, change_lines: ["Unsend after → never"], already: 2,
   skipped: [{ id: 9, name: "Old", account_name: "Bea", reason: "has no message to change" }],
-  rules: [rule(1, "Ava", [d("unsend_after_hours", 8, null, "Unsend after")]),
-    rule(2, "Ava", [d("unsend_after_hours", 0.5, null, "Unsend after")], false),
-    rule(3, "Bea", [d("unsend_after_hours", 24, null, "Unsend after")])],
+  rules: [rule(1, "Ava", [d("unsend_after_hours", "Unsend after 8h → never")]),
+    rule(2, "Ava", [d("unsend_after_hours", "Unsend after 30 min → never")], false),
+    rule(3, "Bea", [d("unsend_after_hours", "Unsend after 24h → never")])],
 };
 
-describe("diffLine / changeLines", () => {
-  it.each<[EditDiff, string]>([
-    [d("unsend_after_hours", 8, null, "Unsend after"), "Unsend after 8h → never"],
-    [d("unsend_after_hours", 0.5, 2, "Unsend after"), "Unsend after 30 min → 2h"],
-    [d("every_seconds", 3600, 1800, "Every"), "Every 1h → 30 min"],
-    [d("online_only", true, false, "Online fans only"), "Online fans only on → off"],
-    [d("exclude_last_chat_hours", 1, null, "Skip"), "Skip 1h → off"],
-    [d("price", null, 15, "Price"), "Price free → $15"],
-    [d("media_count", 1, 3, "Photos per mass"), "Photos per mass 1 → 3"],
-    [d("is_enabled", true, false, "Enabled"), "Enabled on → off"],
-  ])("%o → %s", (diff, want) => expect(diffLine(diff)).toBe(want));
-
-  it("lists every change in the spec, switch-off last", () => {
-    expect(changeLines({ unsend_after_hours: 0, every_seconds: 7200, online_only: false, exclude_last_chat_hours: 0, disable_rule: true }))
-      .toEqual(["Unsend after → never", "Every → 2h", "Online fans only → off", "Skip fans chatted with recently → off", "Switch off"]);
+describe("diffLine (rwl W30 F12: the server's text, never re-formatted)", () => {
+  it("shows the server line verbatim — every prior value with its count included", () => {
+    expect(diffLine(d("price", "Price $5 (1 message), $50 (2 messages) → $10")))
+      .toBe("Price $5 (1 message), $50 (2 messages) → $10");
   });
 });
 
-describe("isLiveIncrease", () => {
+// rwl W30 S1: the server judges LIVE over every message's prior value; the card only shows it.
+describe("isLive", () => {
   it.each<[string, EditRule, boolean]>([
-    ["shorter interval on an enabled rule", rule(1, "A", [d("every_seconds", 3600, 1800)]), true],
-    ["longer interval", rule(1, "A", [d("every_seconds", 3600, 7200)]), false],
-    ["fewer skip-recent hours", rule(1, "A", [d("exclude_last_chat_hours", 3, null)]), true],
-    ["online-only off", rule(1, "A", [d("online_only", true, false)]), true],
-    ["a price change", rule(1, "A", [d("price", null, 10)]), true],
-    ["unsend off sends no more", rule(1, "A", [d("unsend_after_hours", 8, null)]), false],
-    ["switching off", rule(1, "A", [d("is_enabled", true, false)]), false],
-    ["a disabled rule is never live", rule(1, "A", [d("every_seconds", 3600, 600)], false), false],
-  ])("%s", (_, r, want) => expect(isLiveIncrease(r)).toBe(want));
+    ["a diff the server marked live", rule(1, "A", [d("online_only", "Online only on (1), off (1) → off", true)]), true],
+    ["one live diff among several", rule(1, "A", [d("unsend_after_hours", "x"), d("price", "y", true)]), true],
+    ["none live", rule(1, "A", [d("unsend_after_hours", "x"), d("is_enabled", "y")]), false],
+    ["no diffs", rule(1, "A", []), false],
+  ])("%s", (_, r, want) => expect(isLive(r)).toBe(want));
 });
 
 describe("editPlanText", () => {
@@ -57,8 +43,18 @@ describe("editPlanText", () => {
     expect(t.groups[0].rules[1].lines).toEqual(["Unsend after 30 min → never"]);
     expect(t.notes).toEqual(["2 rules already set — left alone", "Skipped “Old” (Bea): has no message to change"]);
   });
+  it.each<[string, number, string[]]>([
+    ["3 skips: all named", 3, ["Skipped “R0”: why", "Skipped “R1”: why", "Skipped “R2”: why"]],
+    ["4 skips: 3 named, 1 counted", 4, ["Skipped “R0”: why", "Skipped “R1”: why", "Skipped “R2”: why", "1 more rule skipped"]],
+    ["500 skips: 3 named, the rest counted (rwl W30 D1)", 500,
+      ["Skipped “R0”: why", "Skipped “R1”: why", "Skipped “R2”: why", "497 more rules skipped"]],
+  ])("skips: %s", (_name, n, want) => {
+    const skipped = Array.from({ length: n }, (_, i) => ({ id: i, name: `R${i}`, account_id: "a", account_name: "", reason: "why" }));
+    expect(editPlanText({ ...SLOTS, already: 0, skipped }).notes).toEqual(want);
+  });
   it("marks LIVE per rule", () => {
-    const t = editPlanText({ ...SLOTS, rules: [rule(1, "A", [d("every_seconds", 3600, 600)]), rule(2, "A", [d("every_seconds", 3600, 600)], false)] });
+    const t = editPlanText({ ...SLOTS, rules: [rule(1, "A", [d("every_seconds", "Every 1h → 10 min", true)]),
+      rule(2, "A", [d("every_seconds", "Every 1h → 10 min")], false)] });
     expect(t.groups[0].rules.map((r) => r.live)).toEqual([true, false]);
   });
 });
@@ -82,10 +78,19 @@ describe("apply round trip", () => {
 });
 
 describe("editSlotsFrom", () => {
+  it("a diff without the server's text (or an unknown field) is dropped, never shown as a bare label", () => {
+    const s = editSlotsFrom({ rules: [{ id: 1, version: "v", account_id: "a", diffs: [
+      { field: "price", label: "Price", before: 5, after: 10 },
+      { field: "price", label: "Price", text: "Price $5 → $10", live: true },
+      { field: "nope", label: "N", text: "x", live: true },
+      { field: "media_count", label: "Photos", text: "Photos 1 → 3", live: "yes" }] }] });
+    expect(s!.rules[0].diffs).toEqual([{ field: "price", label: "Price", text: "Price $5 → $10", live: true },
+      { field: "media_count", label: "Photos", text: "Photos 1 → 3", live: false }]);
+  });
   it("reads junk defensively", () => {
     expect(editSlotsFrom(null)).toBeNull();
     expect(editSlotsFrom({ rules: [{ id: "x" }, { id: 4, version: "v", account_id: "a" }] })).toEqual({
-      scope: "this", match: null, changes: {}, already: 0, skipped: [],
+      scope: "this", match: null, changes: {}, change_lines: [], already: 0, skipped: [],
       rules: [{ id: 4, version: "v", account_id: "a", account_name: "a", name: "", is_enabled: false, diffs: [] }],
     });
   });

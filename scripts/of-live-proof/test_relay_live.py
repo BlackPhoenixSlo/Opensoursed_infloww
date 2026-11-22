@@ -371,6 +371,41 @@ def test_found_reads_back_phase3_list_creates(relay, path, sent, answers, want, 
     assert reads == read
 
 
+def test_arm_takes_the_runs_marker_for_the_payload_guards(relay):
+    """Round 2 #22: the arm's `marker` is the Run's, so Write.payload binds to this run's exact marker."""
+    c = _app(relay, {})
+    assert c.post("/__proof/arm", json={"proof": UPLOAD, "of": "fake", "marker": "oi-proof-r"}).status_code == 200
+    assert relay._run.marker == "oi-proof-r"
+    assert c.post("/__proof/arm", json={"proof": UPLOAD, "of": "fake"}).status_code == 200
+    assert relay._run.marker is None
+
+
+# follow-up #10: the PPV send's lost reply: its found id read back on the Proof fan's thread, the sent marker text exact
+_PPV = "p2.bubble-unsend-ppv"
+_THREAD_READ = (f"/api2/v2/chats/{FAN}/messages", {"limit": 10, "order": "desc"})
+_OWN_PPV = {"id": int(MID), "text": "oi-proof-r ppv", "price": 3}
+
+
+@pytest.mark.parametrize("answer, want", [
+    ({"list": [{"id": 1, "text": "hi"}, _OWN_PPV], "hasMore": False}, 200),
+    ({"list": [{**_OWN_PPV, "text": "an operator's PPV"}]}, 409),
+    ({"list": [{**_OWN_PPV, "id": 7}]}, 409),
+    ({"list": [_OWN_PPV, dict(_OWN_PPV)]}, 409),
+    (RuntimeError("500"), 409),
+], ids=["own message", "text mismatch", "id not listed", "id twice", "read failed"])
+def test_found_reads_a_lost_ppv_send_back_on_the_proof_fans_thread(relay, answer, want):
+    reads = []
+    c = _app(relay, {_THREAD_READ[0]: answer}, reads)
+    _arm(c, relay, _PPV)
+    relay._wire[77] = {"seq": 77, "body": {"text": "oi-proof-r ppv", "price": 3, "mediaFiles": [1]}}
+    relay.append_jsonl(relay.UNDO, {"row": 4, "proof": _PPV, "state": "pending", "arm": 0, "of_id": None,
+                                    "wire_seq": 77, "write": {"method": "POST", "path": _THREAD_READ[0]}})
+    r = c.post("/__proof/found", json={"row": 4, "of_id": MID})
+    assert r.status_code == want, r.text
+    assert (MID in relay._run.created) is (want == 200)
+    assert reads == [_THREAD_READ]
+
+
 @pytest.mark.parametrize("queue_row, want", [
     ({"proof": SEND_NOW, "of_id": QID}, 200),
     ({"proof": SEND_NOW, "of_id": "900060000000009"}, 409),   # the found id is another queued item

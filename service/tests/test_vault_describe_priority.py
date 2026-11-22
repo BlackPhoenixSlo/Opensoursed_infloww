@@ -23,8 +23,15 @@ Vision sweeps: walk order + one call per duplicate set.
                                   progress 3/3, copy carries current flags.
   case_already_described_member_is_the_source:
                                   a new re-upload of a described item: 0 calls.
-  case_redescribed_source_refreshes_its_copies:
-                                  re-describing B rewrites A (`_copied_from`).
+  case_redescribed_source_leaves_former_members:
+                                  re-describing B leaves A (marked its copy, no
+                                  longer in its set) alone (W30 F8).
+  case_click_describe_carries_the_set:
+                                  the single describe of a copy calls it and
+                                  its whole current set takes the answer.
+  case_click_describe_hides_unseen_set_members:
+                                  a folder-limited caller's click writes the
+                                  whole set; `extra` lists only ids it sees.
   case_failed_leader_leaves_its_copies_undescribed:
                                   its riders count failed, nothing copied.
   case_raising_leader_still_counts_its_riders:
@@ -37,6 +44,8 @@ Vision sweeps: walk order + one call per duplicate set.
   case_flags_sweep_one_call_per_duplicate:
                                   flags-all: 1 flags call, follower stamped
                                   `_flags_copied_from`, both current.
+  case_flags_probe_carries_the_set:
+                                  flags-all `media_ids`: the set copies its flags.
   case_sweep_walks_priority_order: describe-all and `_flags_todo` walk
                                   `priority_order`, not created_at desc.
   case_sweep_reads_cached_rail:   the folder rank comes from the cached
@@ -190,6 +199,11 @@ def case_reuse_plan_table() -> None:
         assert p.copy_now == copy_now and p.followers == followers, (groups, done, bad, p)
     p = d.reuse_plan([[1, 2], [3, 4, 5]], order, set())
     assert p.riders() == {1, 4, 3}
+    # A named run: each lead is called; the rest of its set follows its first lead, answered or not.
+    for groups, leads, followers in (([[1, 3, 9]], [3], {3: [1, 9]}), ([[1, 3, 9]], [9, 1], {9: [3]}),
+                                     ([[1, 2], [3, 4]], [4], {4: [3]}), ([[1, 2]], [7], {})):
+        p = d.lead_plan(groups, leads)
+        assert p.copy_now == {} and p.followers == followers, (groups, leads, p)
 
 
 def case_copy_builders_table() -> None:
@@ -422,13 +436,14 @@ async def case_already_described_member_is_the_source() -> None:
     assert prog["total"] == prog["done"] == 1 and prog["cost_millicents"] == 0, prog
 
 
-async def case_redescribed_source_refreshes_its_copies() -> None:
+async def case_redescribed_source_leaves_former_members() -> None:
     aid = await _world([(1, 1, 120, 220), (2, 3, 120, 220)])
     with _Model("first") as m:
         await vault_ai_vision._run_describe_all(aid, "undescribed")
     assert (await _row(aid, 1)).video_description == "first"
-    # B alone needs work again; the dupe scan finds nothing this time — the
-    # `_copied_from` marker alone must carry the refresh.
+    # B alone needs work again; the dupe scan no longer puts A in B's set (a
+    # re-hash / an older seed changed it) — A's old `_copied_from` marker must
+    # not write B's new answer over it.
     async with get_session() as s:
         (await s.get(VaultItem, (aid, 2))).describe_status = None
         await s.commit()
@@ -444,7 +459,45 @@ async def case_redescribed_source_refreshes_its_copies() -> None:
         vault_dupes.reuse_groups = o
     assert m.n() == 1
     a = await _row(aid, 1)
-    assert a.video_description == "second" and _ai(a)["_copied_from"] == 2, (a.video_description, _ai(a))
+    assert a.video_description == "first" and _ai(a)["_copied_from"] == 2, (a.video_description, _ai(a))
+
+
+async def case_click_describe_carries_the_set() -> None:
+    aid = await _world([(1, 1, 125, 225), (2, 3, 125, 225), (3, 2, 125, 225)])
+    with _Model("first") as m:
+        await vault_ai_vision._run_describe_all(aid, "undescribed")
+    assert _ai(await _row(aid, 1)).get("_copied_from") == 2
+    # Click Describe on A, a copy: it is called anyway, and B (its source) and C take the new answer.
+    with _Model("second") as m:
+        out = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 1})
+    assert m.n() == 1 and out["ok"], (m.calls, out)
+    rows = {i: await _row(aid, i) for i in (1, 2, 3)}
+    assert {i: r.video_description for i, r in rows.items()} == {1: "second", 2: "second", 3: "second"}
+    assert "_copied_from" not in _ai(rows[1]) and _ai(rows[2])["_copied_from"] == _ai(rows[3])["_copied_from"] == 1
+    assert sorted(e["media_id"] for e in out["extra"]) == [2, 3], out
+
+
+async def case_click_describe_hides_unseen_set_members() -> None:
+    """W30 C1: a folder-limited chatter's click still writes the whole set (it shares one answer), but the
+    response lists only the members it may see; an unrestricted caller's lists all (above)."""
+    import vault_ai_api
+    aid = await _world([(1, 1, 126, 226), (2, 3, 126, 226), (3, 2, 126, 226)],
+                       cols={1: {"of_folder_ids": "[77]"}, 2: {"of_folder_ids": "[77]"},
+                             3: {"of_folder_ids": "[88]"}})
+    orig = vault_ai_api.allowed_folder_ids_for_chatter
+
+    async def gate(_account_id):
+        return frozenset({77})
+    vault_ai_api.allowed_folder_ids_for_chatter = gate
+    try:
+        with _Model("scoped") as m:
+            out = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 1})
+    finally:
+        vault_ai_api.allowed_folder_ids_for_chatter = orig
+    assert m.n() == 1 and out["ok"], (m.calls, out)
+    rows = {i: await _row(aid, i) for i in (1, 2, 3)}
+    assert {i: r.video_description for i, r in rows.items()} == {1: "scoped", 2: "scoped", 3: "scoped"}
+    assert [e["media_id"] for e in out["extra"]] == [2], out
 
 
 async def case_dupe_scan_raising_still_sweeps() -> None:
@@ -479,6 +532,18 @@ async def case_flags_sweep_one_call_per_duplicate() -> None:
     assert await vault_ai_vision._flags_todo(aid) == [], "a flags copy is not current"
     prog = vault_ai_vision._flags_progress[aid]
     assert prog["total"] == prog["done"] == 3 and prog["failed"] == 0, prog
+
+
+async def case_flags_probe_carries_the_set() -> None:
+    """W30 F8: flags-all with `media_ids` stamps the named item and its set's other members copy its flags."""
+    aid = await _world([(1, 1, 142, 242), (2, 3, 142, 242), (3, 2, 142, 242)],
+                       {i: {"describe_status": "described",
+                            "ai_fields_json": json.dumps({"description": "x", "_jev": video_jev()})}
+                        for i in (1, 2, 3)})
+    with _Model() as m:
+        out = await vault_ai_vision.flags_all({"account_id": aid, "media_ids": [1]})
+    assert m.calls == [] and out["flagged"] == 1 and out["complete"], (m.calls, out)
+    assert [_ai(await _row(aid, i)).get("_flags_copied_from") for i in (1, 2, 3)] == [None, 1, 1]
 
 
 async def case_failed_leader_leaves_its_copies_undescribed() -> None:
@@ -683,7 +748,9 @@ async def case_describe_all_limit() -> None:
     assert await _spy_walk(aid, limit=0) == full
     assert await _spy_walk(aid, limit=99) == full
 
-    # The POST hands `limit` to the sweep; 0 / absent / junk / negative = no limit.
+    # The POST hands `limit` to the sweep: absent = the default Max, "all" = none, a huge explicit number is the
+    # operator's (walks everything); 0 / junk / negative / a float / a decimal string too long to convert (W30 C8)
+    # = 400 before any claim (F7: a later start is not 409).
     got: list[int] = []
     o_run, o_budget = vault_ai_vision._run_describe_all, vault_ai_vision._vision_budget
 
@@ -694,13 +761,26 @@ async def case_describe_all_limit() -> None:
         return {"key_missing": False, "capped": False}
     vault_ai_vision._run_describe_all, vault_ai_vision._vision_budget = _run, _budget
     try:
-        for raw, want in ((2000, 2000), ("5", 5), (None, 0), ("x", 0), (-3, 0)):
+        for raw, want in ((2000, 2000), ("5", 5), (None, vault_ai_vision.DESCRIBE_MAX_DEFAULT), ("all", 0),
+                          (10 ** 100, 10 ** 100)):
             body = {"account_id": aid} if raw is None else {"account_id": aid, "limit": raw}
             r = await vault_ai_vision.describe_all(body)
             assert r["limit"] == want, (raw, r)
             await asyncio.sleep(0)
             assert got[-1] == want, (raw, got)
             vault_ai_vision._describe_running.discard(aid)
+        for raw in (0, "x", -3, 1.5, float("inf"), 1e308, True, "9" * 4301):
+            try:
+                await vault_ai_vision.describe_all({"account_id": aid, "limit": raw})
+            except vault_ai_vision.HTTPException as e:
+                assert e.status_code == 400 and e.detail == {"error": "bad_limit"}, (raw, e.detail)
+            else:
+                raise AssertionError(f"limit {raw!r} accepted")
+            assert aid not in vault_ai_vision._describe_running, f"claim stranded by {raw!r}"
+        # a target sweep with no limit is bounded by its goal
+        r = await vault_ai_vision.describe_all({"account_id": aid, "target": 10_000})
+        assert r["limit"] == 0, r
+        vault_ai_vision._describe_running.discard(aid)
     finally:
         vault_ai_vision._run_describe_all, vault_ai_vision._vision_budget = o_run, o_budget
         vault_ai_vision._describe_running.discard(aid)
@@ -841,9 +921,9 @@ async def case_target_sweep_never_writes_a_terminal_copy() -> None:
     before = snap(await _row(aid, 1))
     o = vault_dupes.reuse_groups
 
-    async def _none(_aid, _want):
-        return []
-    vault_dupes.reuse_groups = _none   # the markers alone carry the refresh
+    async def _one_set(_aid, _want):
+        return [[1, 2, 3, 4]]   # still one set: a marker refreshes only a current member (W30 F8)
+    vault_dupes.reuse_groups = _one_set
     try:
         with _Model("fresh") as m:
             await vault_ai_vision._run_describe_all(aid, "undescribed", target=2)

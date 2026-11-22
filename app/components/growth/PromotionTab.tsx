@@ -49,7 +49,7 @@ import {
   type Audience, type PromotionForm,
 } from "@/lib/ofMirrorOffers";
 import {
-  INITIAL_CREATE, RECREATE_MAX, RECREATE_MIN, blockReason, buildPayload, createPromotionReducer, keepRunningOn, movedTo,
+  INITIAL_CREATE, RECREATE_MAX, RECREATE_MIN, blockReason, buildPayload, createPromotionReducer, keepRunningOn, landed, movedTo,
   preemptUsable, takeoverNotice, type TakenFrom,
 } from "@/components/growth/createPromotionForm";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -58,6 +58,9 @@ import { RelayError } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { GrowthRailFrame } from "@/components/growth/GrowthFrame";
 import { useGrowthCreator } from "@/hooks/useAccounts";
+
+/** The last create's line on the page: what the relay made, or that the earlier create it met landed. */
+type CreateNotice = PromoCreated | { landed: string };
 
 /** Infloww's UserTypeOptions. */
 const AUDIENCES: IfOption<Audience>[] = [
@@ -126,12 +129,13 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
   const [creating, setCreating] = useState(false);
   const [details, setDetails] = useState<string | null>(null);
   /** The create just made: why it could not keep running (it still went through), or the campaign it took Keep
-   *  running from. */
-  const [created, setCreated] = useState<PromoCreated | null>(null);
+   *  running from; or the relay's line that the earlier create it met is on OnlyFans (409 create_landed). */
+  const [created, setCreated] = useState<CreateNotice | null>(null);
   /** The Free trial row being ticked: it offers its optional Re-create limit first. */
   const [retick, setRetick] = useState<PromoCampaign | null>(null);
   const { showExpired, page, set, setPage } = usePagedFilters({ showExpired: false });
 
+  const made = created && !("landed" in created) ? created : null;
   const campaigns = promosQ.data?.campaigns ?? [];
   const shown = visibleOffers(campaigns, showExpired);
   const ofAvailable = promosQ.data?.of_available ?? false;
@@ -153,22 +157,28 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
       <section aria-label="Promotion campaigns" className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className={TITLE}>Promotion campaigns</h2>
-          <IfButton variant="primary" onClick={() => setCreating(true)} disabled={!accountId}>Create promotion</IfButton>
+          {/* Not before the campaigns load: the dialog sends the Kept one it showed (expect_taken_from). */}
+          <IfButton variant="primary" onClick={() => setCreating(true)} disabled={!accountId || !promosQ.isSuccess}>
+            Create promotion
+          </IfButton>
         </div>
         <Tips />
         {/* OF answered without the new promo: nothing proves it exists yet, so never "Created".
             The relay says whether Keep running can go on it once listed (only when it was ticked). */}
-        {created?.create === "unknown" && (
+        {created && "landed" in created && (
+          <div role="status" className="break-words text-[14px] text-fg-dim">{created.landed}</div>
+        )}
+        {made?.create === "unknown" && (
           <div role="status" className="break-words text-[14px] text-warn">
-            Sent, but OnlyFans hasn&apos;t confirmed it. {created.auto_reactivate_refused || "It shows here once OnlyFans lists it"}.
+            Sent, but OnlyFans hasn&apos;t confirmed it. {made.auto_reactivate_refused || "It shows here once OnlyFans lists it"}.
           </div>
         )}
-        {created?.create !== "unknown" && created?.auto_reactivate_refused && (
-          <div role="status" className="text-[14px] text-warn">Created, but Keep running is off: {created.auto_reactivate_refused}.</div>
+        {made && made.create !== "unknown" && made.auto_reactivate_refused && (
+          <div role="status" className="text-[14px] text-warn">Created, but Keep running is off: {made.auto_reactivate_refused}.</div>
         )}
-        {created?.keep_running_taken_from && (
+        {made?.keep_running_taken_from && (
           <div role="status" className="break-words text-[14px] text-fg-dim">
-            Created. Took Keep running from “{created.keep_running_taken_from.name}”.
+            Created. Took Keep running from “{made.keep_running_taken_from.name}”.
           </div>
         )}
         {!ofAvailable && !promosQ.isLoading && accountId && (
@@ -249,6 +259,12 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
                             usable={preemptUsable(c.subscribe_counts)} disabled={reactM.isPending}
                             onChange={(on) => reactM.mutate({ id: c.id!, preempt: on })} />
                         )}
+                        {/* The relay's refusal (another campaign is Kept, a Free trial with no limit…) beside its row. */}
+                        {c.id != null && reactM.error && reactM.variables?.id === c.id && (
+                          <div role="alert" className="mt-1 max-w-[260px] break-words text-[12px] text-err md:max-w-none">
+                            {ofErrorMessage(reactM.error) ?? reactM.error.message}
+                          </div>
+                        )}
                       </td>
                       <td className={cn(IF_TABLE.td, "tabular-nums")}>{claimsText(c.subscriber_count, c.subscribe_counts)}</td>
                       <td className={IF_TABLE.td}><Revenue m={c.metrics} /></td>
@@ -294,6 +310,7 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
                 {promosQ.data.metrics_refreshing && " · refreshing…"}</span>
             )}
             {finishM.error && <span className="ml-2 text-err">{ofErrorMessage(finishM.error) ?? finishM.error.message}</span>}
+            {deleteM.error && <span className="ml-2 text-err" role="alert">{ofErrorMessage(deleteM.error) ?? deleteM.error.message}</span>}
           </span>
         </div>
       </section>
@@ -402,7 +419,7 @@ function TrialRetickModal({ accountId, campaign, onClose }: {
 /** `CreatePromotionModal`: 520px, label over control, Cancel then Create. The line over the footer says what
  *  OnlyFans will be asked to run (ours, in place of a second confirm). `kept`: the campaign keeping running now. */
 function CreatePromotionModal({ accountId, kept, onClose, onCreated }: {
-  accountId: string | null; kept: TakenFrom | null; onClose: () => void; onCreated: (out: PromoCreated | null) => void;
+  accountId: string | null; kept: TakenFrom | null; onClose: () => void; onCreated: (out: CreateNotice | null) => void;
 }) {
   const meQ = useOfMe(accountId);
   const createM = useCreatePromotion(accountId);
@@ -439,6 +456,8 @@ function CreatePromotionModal({ accountId, kept, onClose, onCreated }: {
       onClose();
     } catch (e) {
       const said = ofErrorMessage(e) ?? errMsg(e, "Create failed");
+      // The earlier create it met is on OnlyFans (the list refreshes): nothing to retry here.
+      if (e instanceof RelayError && landed(e.body)) { onCreated({ landed: said }); onClose(); return; }
       const id = e instanceof RelayError ? unresolvedId(e.body) : null;
       // Keep running moved meanwhile: show where it is now, so the next Create sends that.
       const moved = e instanceof RelayError ? movedTo(e.body) : undefined;

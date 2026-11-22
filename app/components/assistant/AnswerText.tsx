@@ -23,7 +23,8 @@
  * never a figure; markers.ts strips them (and any figure beside one) and
  * MarkerCards renders each as a live card under the text. `focus` is the
  * turn's model, `accountIds` the asker's roster (a card's "all"; null while it
- * loads), `canChat` whether the session may open Messages Pro.
+ * loads), `canChat` whether the session may open Messages Pro, `pages` the
+ * pages the session may open (only those link; required, rwl W30 S3).
  */
 
 import type { ReactNode } from "react";
@@ -77,7 +78,7 @@ function linked(text: string, offset: number, hits: PathHit[], key: number, onNa
  * The result is always ONE element's children, so keys only have to be unique
  * within this call — no caller-supplied prefix needed.
  */
-function inline(text: string, onNavigate?: () => void): ReactNode[] {
+function inline(text: string, onNavigate: (() => void) | undefined, pages: ReadonlySet<string>): ReactNode[] {
   const spans: Array<{ kind: "text" | "code" | "bold" | "italic"; text: string }> = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -93,7 +94,7 @@ function inline(text: string, onNavigate?: () => void): ReactNode[] {
   if (last < text.length) spans.push({ kind: "text", text: text.slice(last) });
 
   // A code span reads as a line break, so no path runs into or through one.
-  const hits = findPaths(spans.map((s) => (s.kind === "code" ? "\n".repeat(s.text.length) : s.text)).join(""));
+  const hits = findPaths(spans.map((s) => (s.kind === "code" ? "\n".repeat(s.text.length) : s.text)).join(""), pages);
   let offset = 0;
   return spans.flatMap((s, i): ReactNode[] => {
     const at = offset;
@@ -177,8 +178,11 @@ function parse(text: string): Block[] {
 }
 
 export function AnswerText({
-  text, muted, onNavigate, focus = null, accountIds = null, canChat = false,
-}: { text: string; muted?: boolean; onNavigate?: () => void; focus?: string | null; accountIds?: string[] | null; canChat?: boolean }) {
+  text, muted, onNavigate, focus = null, accountIds = null, canChat = false, pages,
+}: {
+  text: string; muted?: boolean; onNavigate?: () => void; focus?: string | null; accountIds?: string[] | null; canChat?: boolean;
+  pages: ReadonlySet<string>;
+}) {
   const { text: prose, markers } = parseMarkers(text);
   const blocks = parse(prose);
 
@@ -188,7 +192,7 @@ export function AnswerText({
         if (b.kind === "h") {
           return (
             <p key={i} className="font-semibold text-fg">
-              {inline(b.items[0], onNavigate)}
+              {inline(b.items[0], onNavigate, pages)}
             </p>
           );
         }
@@ -197,7 +201,7 @@ export function AnswerText({
           // and the model's own line breaks are an artefact of the manual.
           return (
             <p key={i} className="break-words">
-              {inline(b.items.join(" "), onNavigate)}
+              {inline(b.items.join(" "), onNavigate, pages)}
             </p>
           );
         }
@@ -212,7 +216,7 @@ export function AnswerText({
           >
             {b.items.map((it, j) => (
               <li key={j} className="marker:text-fg-dim">
-                {inline(it, onNavigate)}
+                {inline(it, onNavigate, pages)}
               </li>
             ))}
           </List>

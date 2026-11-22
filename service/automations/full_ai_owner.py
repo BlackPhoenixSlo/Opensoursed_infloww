@@ -5,6 +5,8 @@ Two derived answers, no stored state (pattern `wcfi_decide.py`):
   in_fans(cfg, i, e)   the Fans list: empty include = every Fan, exclude wins, a failed read = not listed
   of_app_human(items, fan_id=, anchor_at=, known_ids=)
                        the send time of the first OF-app item a human sent after his anchor, or None
+  fan_after(items, fan_id=, anchor_at=)
+                       the newest OF chat item the Fan sent after his anchor, or None
   yield_left_s(sent_at, now, yield_s)
                        seconds of the Human yield still to run (0 = none)
   claims(off, listed)  Full AI is on for the Creator and the Fan is on its Fans list: the other reply
@@ -20,12 +22,15 @@ Two derived answers, no stored state (pattern `wcfi_decide.py`):
   6. funnel_walk                        a pending, not held funnel_state whose walker rule is on
   7. top_spend                          lifetime spend >= top_spend_cents (0 = off)
 
-The facts come from `full_ai_owner_io.load`. No DB, OF client, lease or dm_rate import (AST test).
+The facts come from `full_ai_owner_io.load`. No DB, OF client, lease or dm_rate import (AST test);
+`of_shapes` (pure OF frame readers) is the one app import.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+from of_shapes import queue_id   # pure: OF's mass-copy marker
 
 REASONS: tuple[str, ...] = ("off_global", "off_rule", "off_mode", "not_listed", "hard_skip", "audience",
                             "human", "human_of_app", "funnel_walk", "top_spend")
@@ -44,6 +49,7 @@ class OwnerFacts:
     walk_advancing: bool
     spend_cents: int
     top_spend_cents: int        # 0 = no limit
+    fan_newest: dict | None = None   # the OF read's newest item HE sent after the anchor (None: none / not read)
 
 
 @dataclass(frozen=True)
@@ -86,19 +92,7 @@ def who_owns(f: OwnerFacts) -> Stop | None:
     return None
 
 
-def _queue_id(item: dict) -> int | None:
-    """OF's `queueId` on a chat item (a mass copy), or None: `messages._queue_id_of`'s rule on a parsed
-    item (a bool or a non-numeric value is not one)."""
-    qid = item.get("queueId")
-    if isinstance(qid, bool) or qid is None:
-        return None
-    try:
-        return int(qid)
-    except (TypeError, ValueError):
-        return None
-
-
-def _of_time(v) -> datetime | None:
+def of_time(v) -> datetime | None:
     """OF's `createdAt` (ISO, maybe `Z` / an offset) as naive UTC, like our rows; None if unreadable."""
     if not isinstance(v, str) or not v:
         return None
@@ -121,7 +115,7 @@ def of_app_human(items: list[dict], *, fan_id: int, anchor_at: datetime, known_i
         sender_id = sender.get("id") if isinstance(sender, dict) else None
         if sender_id is not None and str(sender_id) == str(fan_id):
             continue
-        at = _of_time(m.get("createdAt"))
+        at = of_time(m.get("createdAt"))
         if at is None or at <= anchor_at:
             continue
         try:
@@ -130,10 +124,25 @@ def of_app_human(items: list[dict], *, fan_id: int, anchor_at: datetime, known_i
             mid = None
         if mid is not None and mid in known_ids:
             continue
-        if _queue_id(m) is not None:
+        if queue_id(m) is not None:
             continue
         hits.append(at)
     return min(hits) if hits else None
+
+
+def fan_after(items: list[dict], *, fan_id: int, anchor_at: datetime) -> dict | None:
+    """The newest OF chat item from the Fan (`fromUser.id`) sent after `anchor_at` with an id, or None."""
+    best, best_key = None, None
+    for m in items or []:
+        if not isinstance(m, dict) or str((m.get("fromUser") or {}).get("id")) != str(fan_id):
+            continue
+        at = of_time(m.get("createdAt"))
+        if at is None or at <= anchor_at or not str(m.get("id", "")).isdigit():
+            continue
+        key = (at, int(m["id"]))
+        if best_key is None or key > best_key:
+            best, best_key = m, key
+    return best
 
 
 def yield_left_s(sent_at: datetime, now: datetime, yield_s: int) -> int:

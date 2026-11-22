@@ -6,13 +6,15 @@ forgets it; the reconnect reads refill it) under `_lock` and decided by `unread_
 Off unless `UNREAD_TOTAL=1` and `SHARED_REFRESHER=1` (both read once at import, P1 C11): off, the observer returns at
 once, no contributor and no window reader are registered (no `values.unread_total` key; Phase 1 reads windows with
 the roster rewarm), nothing is held. ASSUMPTION (spec, parked check
-C): `chatMessagesCount` counts unread chats; the Knob stays off until that check passes.
+C): `chatMessagesCount` counts unread chats. The Knob has been ON on AE since 2026-11-20 (with SHARED_REFRESHER,
+owner switch-on; sweep baseline re-pinned then); check C is still the proof the number means that.
 
 Source: every 2xx `GET /api2/v2/users/me` OF actually answered, whoever asked (the route, S4S's `_of_me`, health
 probes, account config, the Live connection's reconnect auth, the Shared refresher's Cycle and the App-open warm):
 `of_client._observe_unread_total`, beside the consent observer, calls `observe_response` on the worker thread that
 made the read; a cache hit never reaches the client, so it is never a confirmation. A failed read (429, error, a
-Dead session's 401) observes nothing: the total stays frozen at its last `at`. 0 OF calls of its own.
+Dead session's 401) observes nothing: the total stays frozen at its last `at`. A 2xx body without a valid counter
+drops the held total (null): it moved Last refresh but confirmed nothing. 0 OF calls of its own.
 
 Publish: registered with the Shared refresher as contributor `unread_total` (P1 C8): `snapshot(aid)` rides
 `freshness.values.unread_total = {n, at} | null` on both accounts answers and `creator_refreshed`; a changed `n`
@@ -74,11 +76,25 @@ def observe_response(account_id: str, method: str, url: str, r: Any, asked_at: i
 
 def observe(account_id: str, me_body: Any, asked_at: int) -> None:
     """One `/users/me` body OF returned for the Creator, asked at `asked_at`: a body carrying an int
-    `chatMessagesCount` confirms the total (`decide.reconcile`); a changed `n` is published via `note_values`."""
+    `chatMessagesCount` confirms the total (`decide.reconcile`); a changed `n` is published via `note_values`.
+    A body without one moves the Creator's Last refresh (the read landed) but confirms nothing: a held total is
+    dropped (published as null), so the tab's age, `max(Last refresh, total at)`, is always the total's own
+    confirmation time and an unconfirmable total never looks fresh (W30-mu #19). Only the total goes (`n`, `at`,
+    `base`): the per-fan records, the adjustments still landing and a due window read stay for the next one. Both
+    kinds order by `asked_at` against one watermark (`decide.unconfirmed`, `reconcile`): an older answer of either
+    kind landing late changes nothing (W30-mu #45)."""
     if not ENABLED:
         return
     n = decide.count(me_body)
     if n is None:
+        with _lock:
+            held = _held.get(account_id, decide.State())
+            st = decide.unconfirmed(held, asked_at)
+            dropped = held.n is not None and st.n is None
+            _held[account_id] = st
+        if dropped:
+            log.warning("unread_total_unconfirmed account=%s: a /users/me answer without chatMessagesCount", account_id)
+            shared_refresher.note_values(account_id)
         return
     with _lock:
         held = _held.get(account_id, decide.State())
@@ -92,13 +108,16 @@ def observe(account_id: str, me_body: Any, asked_at: int) -> None:
         shared_refresher.note_values(account_id)
 
 
-def _window_row(account_id: str, fan_id: int) -> dict | None:
-    """The fan's row in the Creator's held page-0 chats window (any age), else None. No OF call."""
+def _window_rows(account_id: str) -> list | None:
+    """The Creator's held page-0 chats window rows (any age), else None. No OF call."""
     from accounts_admin_api import _ROSTER_WINDOW_KEY  # noqa: PLC0415 — lazy: it imports this module's peers
     held = relay_cache.peek("list_chats", account_id, _ROSTER_WINDOW_KEY)
-    rows = (held.get("list") or held.get("chats") or []) if isinstance(held, dict) else []
-    return next((r for r in rows if isinstance(r, dict) and str((r.get("withUser") or {}).get("id")) == str(fan_id)),
-                None)
+    return (held.get("list") or held.get("chats") or []) if isinstance(held, dict) else None
+
+
+def _window_row(account_id: str, fan_id: int) -> dict | None:
+    """The fan's row in that window, else None."""
+    return next((r for r in _window_rows(account_id) or () if decide._fan(r) == fan_id), None)
 
 
 def _adjust(account_id: str, fan_id: int | None, event_of) -> None:
@@ -119,9 +138,10 @@ def _adjust(account_id: str, fan_id: int | None, event_of) -> None:
         log.warning("unread_total_adjust_failed account=%s fan=%s", account_id, fan_id, exc_info=True)
 
 
-def on_dm_in(account_id: str, fan_id: int) -> None:
-    """An inbound DM from `fan_id` (before the transcoder patches the window)."""
-    _adjust(account_id, fan_id, decide.DmIn)
+def on_dm_in(account_id: str, fan_id: int, at: int | None = None) -> None:
+    """An inbound DM from `fan_id` (before the transcoder patches the window), `at` its `createdAt` epoch ms (None:
+    unknown)."""
+    _adjust(account_id, fan_id, lambda fan, prior: decide.DmIn(fan, prior, at))
 
 
 def on_read_flip(account_id: str, fan_id: int | None, unread: int, at: int | None) -> None:
@@ -146,13 +166,6 @@ def window_due(account_id: str) -> bool:
     """P1 C8: a downward drift no window read has served yet (the refresher bounds it to one read per Cycle)."""
     with _lock:
         return _held.get(str(account_id), decide.State()).due is not None
-
-
-def _window_rows(account_id: str) -> list | None:
-    """The Creator's held page-0 chats window rows (any age), else None. No OF call."""
-    from accounts_admin_api import _ROSTER_WINDOW_KEY  # noqa: PLC0415 — lazy, as `_window_row`
-    held = relay_cache.peek("list_chats", account_id, _ROSTER_WINDOW_KEY)
-    return (held.get("list") or held.get("chats") or []) if isinstance(held, dict) else None
 
 
 async def window_read(account_id: str) -> Any:

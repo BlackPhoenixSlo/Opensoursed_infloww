@@ -3,13 +3,13 @@
  * ADR-0004), shared by Messages Pro (hooks/useSplitInbox, the Fan List's
  * "All inboxes" selector) and any queue that serves one group per Creator:
  * the stored shape, the group a Fan is in, the one query
- * (`["split-inbox", aid]`) every reader shares, and the per-group row filter.
+ * (`["split-inbox", aid]`) every reader shares, and the per-group gate.
  */
 
 import { queryOptions } from "@tanstack/react-query";
 
 import type { FanId } from "@/lib/fanId";
-import { relay, type OFChatItem, type RelayContext } from "@/lib/relay";
+import { relay, type RelayContext } from "@/lib/relay";
 
 /** The stored split: 1 to 9 groups, and only the explicit moves
  *  (Fan id → group); every other Fan's group is computed. */
@@ -69,29 +69,29 @@ export type InboxSplit =
   | { status: "error" }
   | { status: "success"; config: SplitInboxConfig };
 
-export interface InboxFilter {
-  /** The rows the reader may serve (`rows` itself when none was dropped). */
-  rows: OFChatItem[];
-  /** Per Creator: fan ids of its rows outside the picked group (all of them
-   *  when the pick is above the split's count) — evidence those fans are gone
-   *  from the queue. */
-  out: ReadonlyMap<string, ReadonlySet<string>>;
-  /** Split still loading: rows held back, the Creator not loaded yet. */
+/** Where a (Creator, Fan) stands against the picks: served (`in`); a resolved
+ *  mismatch (`out`: his group is not the pick, or the pick is above the split's
+ *  count, which groupOf never answers) — the evidence he left the queue; or
+ *  `held`: the Creator's split is still loading or its read failed, so neither. */
+export type InboxVerdict = "in" | "out" | "held";
+
+export interface InboxGate {
+  /** One check for live rows and snapshot entries alike. */
+  of: (accountId: string, fanId: FanId) => InboxVerdict;
+  /** Picked Creators whose split is still loading (not loaded yet). */
   pending: ReadonlySet<string>;
-  /** Split read failed: rows held back, the Creator failed. */
+  /** Picked Creators whose split read failed (failed). */
   failed: ReadonlySet<string>;
 }
 
-/** The Split Inbox row filter: a row of a Creator in `picks` (Creator id →
- *  group, the Creators in play only) is kept only when its Fan's group is the
- *  pick (none when the pick is above the split's count: groupOf never
- *  answers it); never shown unfiltered (held back while the split loads or
- *  after a failed read). A Creator absent from `picks` (All inboxes) keeps every row. */
-export function filterByInbox(
-  rows: OFChatItem[],
+/** The Split Inbox gate: a Creator in `picks` (Creator id → group, the
+ *  Creators in play only) serves only the Fans of its picked group, and none
+ *  unfiltered (held while its split loads or after a failed read). A Creator
+ *  absent from `picks` (All inboxes) serves every Fan. */
+export function inboxGate(
   picks: Readonly<Record<string, number>>,
   splits: ReadonlyMap<string, InboxSplit>,
-): InboxFilter {
+): InboxGate {
   const pending = new Set<string>();
   const failed = new Set<string>();
   const configs = new Map<string, SplitInboxConfig>();
@@ -101,17 +101,11 @@ export function filterByInbox(
     else if (split.status === "error") failed.add(aid);
     else configs.set(aid, split.config);
   }
-  const out = new Map<string, Set<string>>();
-  const kept = rows.filter((c) => {
-    const aid = c.__accountId ?? "";
-    if (!Object.hasOwn(picks, aid)) return true;
-    if (pending.has(aid) || failed.has(aid)) return false;
+  const of = (aid: string, fanId: FanId): InboxVerdict => {
+    if (!Object.hasOwn(picks, aid)) return "in";
     const config = configs.get(aid);
-    if (config && groupOf(c.withUser.id, config) === picks[aid]) return true;
-    let ids = out.get(aid);
-    if (!ids) out.set(aid, (ids = new Set()));
-    ids.add(String(c.withUser.id));
-    return false;
-  });
-  return { rows: kept.length === rows.length ? rows : kept, out, pending, failed };
+    if (!config) return "held";
+    return groupOf(fanId, config) === picks[aid] ? "in" : "out";
+  };
+  return { of, pending, failed };
 }

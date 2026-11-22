@@ -6,7 +6,7 @@
  *   summary  → GET  /admin/vault-ai/cache/summary   {count, running, complete, last_run}
  *   collect  → POST /admin/vault-ai/collect          starts a sweep
  *   status   → GET  /admin/vault-ai/collect/status   progress (polled while running)
- *   answer   → POST /admin/vault-ai/collect/{continue,stop}  a paused sweep (every 2000 new items)
+ *   answer   → POST /admin/vault-ai/collect/{continue,stop}  a paused sweep (about every 2000 collected items)
  *   items    → GET  /admin/vault-ai/items            read the mirror (instant local search)
  *
  * The mirror read returns the SAME {list, hasMore} shape as /api/of/v2/vault/media
@@ -14,7 +14,9 @@
  * consume it unchanged — search is a local LIKE-scan, no OF round-trip.
  */
 
-import { infiniteQueryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import {
+  infiniteQueryOptions, keepPreviousData, useInfiniteQuery, useQuery, useQueryClient, type QueryClient,
+} from "@tanstack/react-query";
 
 import type { TagFolderPayload } from "@/components/vault/tagFolderForm";
 import { folderSortAfter, loadFolderSort, saveFolderSort, type FolderSortState } from "@/components/vault/vaultFolderSort";
@@ -26,6 +28,7 @@ import { type FanId } from "@/lib/fanId";
 import { flushPersistedCache } from "@/lib/rqPersister";
 import { errText } from "@/lib/errText";
 import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
+import { withinMs } from "@/lib/withinMs";
 
 // Lazy-load in small chunks on scroll (not all at once — 244 images loading
 // simultaneously is what made the grid slow). Infinite-scroll fetches the next
@@ -266,7 +269,8 @@ export function describeAllBody(opts: {
   restage?: boolean;
   promptVersion?: PromptVersion;
   model?: string;
-  /** Describe only the first N items in the server's priority order; 0 / absent = all. */
+  /** Describe only the first N items in the server's priority order; 0 / absent = all (sent as "all": the
+   *  server's default Max applies to a request that names none). */
   limit?: number;
 }): Record<string, unknown> {
   return {
@@ -274,7 +278,7 @@ export function describeAllBody(opts: {
     restage: !!opts.restage,
     prompt_version: opts.promptVersion ?? "v2",
     ...(opts.model ? { model: opts.model } : {}),
-    ...(opts.limit && opts.limit > 0 ? { limit: Math.floor(opts.limit) } : {}),
+    limit: opts.limit && opts.limit >= 1 ? Math.floor(opts.limit) : "all",
   };
 }
 
@@ -397,8 +401,8 @@ export interface AiFolderPlan {
   folders: AiFolder[];
   /** Every topic, ticked or not, with its size. */
   topic_catalogue: AiFolderTopic[];
-  /** Jev on for the account, and how many of the planned items (photos + clips) carry a current Jev answer. */
-  jev: { enabled: boolean; items: number; with_jev: number };
+  /** How many of the planned items (photos + clips) carry a current Jev answer. */
+  jev: { items: number; with_jev: number };
   /** What Confirm does to the AI- folders already there, by the same match the apply makes. `keep` counts folders
    *  (not the shoot count above); `retire_on_of` = retired ones bound to an OF list (unlinked, never deleted on OF). */
   changes: PlanChanges;
@@ -502,6 +506,8 @@ export function useAiFolderPlan(
   return useQuery<AiFolderPlan>({
     queryKey: ["vault-ai-folder-plan", accountId, keep, solo, topicsParam, split],
     enabled: !!accountId && enabled,
+    // A toggle re-plans: the previous plan stays as placeholder (the modal keeps only its topic checklist drawn).
+    placeholderData: keepPreviousData,
     queryFn: () =>
       relay.get(
         `/admin/vault-ai/folder-plan?account_id=${encodeURIComponent(accountId!)}&keep=${keep}` +
@@ -519,6 +525,12 @@ export interface ApplyAiFoldersResult {
   items: number;
   of_mirrored?: number;
   of_failed?: number;
+  /** Items left on reused OF lists that this build no longer puts there (the mirror only adds). */
+  of_stale?: number;
+  /** Stale folders the preview did not list (`expectedRetire`): left live, not retired. */
+  skipped_retire?: { folder_id: number; name: string; of_list_id: number | null }[];
+  /** Generated folders an operator edit adopted mid-build: not rewritten, not retired. */
+  skipped_adopted?: { folder_id: number; name: string; of_list_id: number | null }[];
   created: {
     folder_id: number;
     name: string;
@@ -526,6 +538,7 @@ export interface ApplyAiFoldersResult {
     reused: boolean;
     of_list_id?: number;
     of_error?: string;
+    of_stale?: number;
   }[];
 }
 
@@ -541,15 +554,17 @@ export interface ApplyAiFoldersResult {
  *  The plan options MUST match what the preview was showing. The server
  *  re-derives the plan and retires generated folders the current plan no longer
  *  makes, so applying without `solo` after previewing with it would create the
- *  lanes and delete every `-solo` folder in the same call. */
+ *  lanes and delete every `-solo` folder in the same call. `expectedRetire` (the preview's retired folder ids):
+ *  only those are retired; a folder that went stale after the preview comes back in `skipped_retire`. */
 export async function applyAiFolders(
   accountId: string,
-  { keep = 2, solo = false, mirrorToOf = false, topics = [], split = true }:
-    FolderPlanOptions & { mirrorToOf?: boolean } = {},
+  { keep = 2, solo = false, mirrorToOf = false, topics = [], split = true, expectedRetire }:
+    FolderPlanOptions & { mirrorToOf?: boolean; expectedRetire: number[] },
 ): Promise<ApplyAiFoldersResult> {
   return relay.post(
     `/admin/vault-ai/folder-plan/apply`,
-    { account_id: accountId, keep, confirm: true, mirror_to_of: mirrorToOf, solo, topics, split },
+    { account_id: accountId, keep, confirm: true, mirror_to_of: mirrorToOf, solo, topics, split,
+      expected_retire: expectedRetire },
     { accountId },
   );
 }
@@ -643,29 +658,49 @@ export async function gradeFlags(
 export async function searchOf(
   accountId: string,
   query: string,
+  signal?: AbortSignal,
 ): Promise<{ ids: number[]; count: number; source: string }> {
-  return relay.post(`/admin/vault-ai/search-of`, { account_id: accountId, query }, { accountId });
+  return relay.post(`/admin/vault-ai/search-of`, { account_id: accountId, query }, { accountId }, signal);
+}
+
+/** OF's search plus the grid's refetch end within this (up to 30 OF pages server-side): past it the spinner stops; a
+ *  search still unanswered then is "OnlyFans search failed" with a Retry (the relay goes on and TTL-caches what it
+ *  found, so a Retry is quick); a slow grid refetch is not (its hits fill in when it lands). */
+export const OF_SEARCH_MS = 60_000;
+
+export interface OfSearch {
+  /** In flight: the grid shows "Searching OnlyFans…", never "No data". */
+  searching: boolean;
+  /** OF's search failed or ran out of time: an empty grid says so (never a false "No media"), with `retry`. */
+  failed: boolean;
+  retry: () => void;
 }
 
 /** OF's own vault search for `query`, harvested into the mirror (`searchOf`), then the mirror grid refetched with
- *  it. True while either is in flight: the grid shows "Searching OnlyFans…", never "No data", until OF answered.
- *  `enabled`: the grid reads the mirror (the harvest only tags media it holds). Per account+query; 10 min in memory, never persisted (not on the allowlist), the relay TTL-caches OF's side. */
-export function useOfSearch(accountId: string | null, query: string, enabled: boolean): boolean {
+ *  it; `searching` while either is in flight, at most OF_SEARCH_MS (then `failed` if the search hadn't answered). Unmounting (the picker closed) or
+ *  another term aborts the request (react-query's signal).
+ *  `enabled`: the grid reads the mirror (the harvest only tags media it holds). Per account+query; 10 min in memory, never persisted (not on the allowlist), the relay TTL-caches OF's side.
+ *  A partial harvest (`of_partial`: OF failed mid-walk, the relay caches nothing) is stale at once, so a repeat search retries. */
+export function useOfSearch(accountId: string | null, query: string, enabled: boolean): OfSearch {
   const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["vault-search-of", accountId, query] as const,
-    queryFn: async () => {
-      const r = await searchOf(accountId as string, query);
-      await qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
+    queryFn: async ({ signal }) => {
+      const until = Date.now() + OF_SEARCH_MS;
+      const r = await withinMs(OF_SEARCH_MS, signal, (sig) => searchOf(accountId as string, query, sig));
+      // The grid's refetch with the hits holds the spinner (never a false "No data") only up to the same deadline,
+      // and its stall or failure is the grid's own: the search answered, so it is never "failed".
+      await withinMs(Math.max(0, until - Date.now()), signal,
+                     () => qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) })).catch(() => {});
       return r;
     },
     enabled: enabled && !!accountId && !!query,
-    staleTime: 10 * 60 * 1000,
+    staleTime: (query) => (query.state.data?.source === "of_partial" ? 0 : 10 * 60 * 1000),
     gcTime: 10 * 60 * 1000,
     retry: false,
     refetchOnWindowFocus: false,
   });
-  return q.isFetching;
+  return { searching: q.isFetching, failed: q.isError && !q.isFetching, retry: () => { void q.refetch(); } };
 }
 
 export async function reorderItems(
@@ -732,7 +767,7 @@ export async function startCollect(accountId: string): Promise<{ run_id: number 
   );
 }
 
-/** A paused Collect (it asks every 2000 new items; `last_run.status === "paused"`) walks on or stops.
+/** A paused Collect (it asks about every 2000 collected items; `last_run.status === "paused"`) walks on or stops.
  *  409 when nothing is paused (already answered). */
 export async function answerCollect(accountId: string, answer: "continue" | "stop"): Promise<{ status: string }> {
   return relay.post<{ status: string }>(

@@ -33,6 +33,7 @@ test_full_ai_routes.py.
   case_crash_retry_redoes_only_undecided  the write crashes on Turn 2 of 3: error run,
                                           one row; the retry asks Jev twice, the first
                                           row kept
+  case_catchup_capped                     three Turns, cap 2: the oldest two decided, `capped` 1
   case_anchor_missing                     no row, the summary says `anchor_missing`
   case_rule_off_drops_queued_job          rule Off with a job queued: dropped at claim
   case_same_fan_two_creators              one row per Creator, each its own chat
@@ -552,6 +553,26 @@ async def case_crash_retry_redoes_only_undecided():
     rows = await _rows(aid)
     assert [r.trigger_key for r in rows] == ["3001", "3003", "3005"], rows
     assert _cols(rows[0]) == before, (_cols(rows[0]), before)
+
+
+async def case_catchup_capped():
+    """F21: three undecided Turns, `CATCHUP_CAP` 2: two Jev calls, the oldest two rows, `capped` 1."""
+    aid, fan = "fa_cap", 61
+    await _seed(aid, rule=True, gate=False)
+    await _dm(aid, fan, 3101, "one", T0)
+    await _msg(aid, fan, 3102, "out", "hi", T0 + timedelta(minutes=1), automation_kind="reply_mass_funnel")
+    await _dm(aid, fan, 3103, "two", T0 + timedelta(minutes=2))
+    await _msg(aid, fan, 3104, "out", "yes?", T0 + timedelta(minutes=3), automation_kind="reply_mass_funnel")
+    await _dm(aid, fan, 3105, "three", T0 + timedelta(minutes=4))
+    real, runner.CATCHUP_CAP = runner.CATCHUP_CAP, 2
+    try:
+        fake = FakeJev((QUIET, 1.0), (QUIET, 1.0))
+        res, stats = await _run(aid, fake)
+    finally:
+        runner.CATCHUP_CAP = real
+    assert res["status"] == "ok" and len(fake.calls) == 2, (res, fake.calls)
+    assert stats["recorded"] == 2 and stats["capped"] == 1, stats
+    assert [r.trigger_key for r in await _rows(aid)] == ["3101", "3103"]
 
 
 async def case_anchor_missing():

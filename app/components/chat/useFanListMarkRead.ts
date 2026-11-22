@@ -9,9 +9,11 @@
 import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
+import { relayNow } from "@/lib/ageClock";
 import { isUnreadChat } from "@/lib/chatUnread";
 import { type FanId, sameUserId } from "@/lib/fanId";
-import { relay, type OFChatItem } from "@/lib/relay";
+import { ackedFanIds, relay, type OFChatItem } from "@/lib/relay";
 import { ifAlert, ifConfirm } from "@/components/ui/ifConfirm";
 
 export function useFanListMarkRead({ markable, wholeCreator }: {
@@ -24,29 +26,11 @@ export function useFanListMarkRead({ markable, wholeCreator }: {
   const qc = useQueryClient();
   const [markingAll, setMarkingAll] = useState(false);
 
-  // Per-success optimistic patch: clear the unread badge on this fan's row
-  // across every cached ["chats"] view so the UI only shows "read" for chats
-  // that actually got marked. Mirrors useInboxRealtime's cache-shape walk
-  // (InfiniteData { pages: [{ rows, hasMore }] }); skips caches that don't
-  // hold the row. The trailing invalidate reconciles against OF either way.
+  // Per-success optimistic patch: the read flip the relay announces once the
+  // write landed (flipCachedReadState), so the UI only shows "read" for chats
+  // that actually got marked. The trailing invalidate reconciles against OF either way.
   const markRowRead = useCallback((accountId: string, fanId: FanId) => {
-    type Page = { rows: OFChatItem[]; hasMore: boolean };
-    type Infinite = { pages: Page[]; pageParams: unknown[] };
-    qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((cq) => {
-      const data = cq.state.data as Infinite | undefined;
-      if (!data?.pages?.length) return;
-      let touched = false;
-      const newPages: Page[] = data.pages.map((p) => ({
-        ...p,
-        rows: p.rows.map((c) => {
-          if ((c.__accountId ?? "") !== accountId || !sameUserId(c.withUser.id, fanId)) return c;
-          if (!isUnreadChat(c)) return c;
-          touched = true;
-          return { ...c, hasUnread: false, unreadMessagesCount: 0 };
-        }),
-      }));
-      if (touched) qc.setQueryData(cq.queryKey, { ...data, pages: newPages });
-    });
+    flipCachedReadState(qc, accountId, { fanId, unread: false, at: relayNow() }, { own: true });
   }, [qc]);
 
   /** Mark `rows` read on OF, one at a time. Unpaced: a read flip reaches no
@@ -81,7 +65,8 @@ export function useFanListMarkRead({ markable, wholeCreator }: {
   }
 
   /** POST /chats/mark-as-read for `accountId`; `rows` are its unread chats.
-   *  Returns how many failed (all or none). */
+   *  Returns how many failed: a partial write (the relay's 502 with the acked
+   *  fans, service read_flip.acked_fans) fails only the rest. */
   async function markCreatorRead(accountId: string, rows: OFChatItem[]): Promise<number> {
     try {
       await relay.post("/api/of/v2/chats/mark-as-read", undefined, { accountId });
@@ -89,7 +74,10 @@ export function useFanListMarkRead({ markable, wholeCreator }: {
       return 0;
     } catch (err) {
       console.warn("[mark-read] mark all failed for", accountId, err);
-      return rows.length;
+      const acked = ackedFanIds(err);
+      const done = rows.filter((c) => acked.some((f) => sameUserId(f, c.withUser.id)));
+      for (const c of done) markRowRead(accountId, c.withUser.id);
+      return rows.length - done.length;
     } finally {
       invalidateReadState();
     }

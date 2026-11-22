@@ -6,7 +6,8 @@ temp DB (the route through the app's test client, real owner session from `_agen
 
   case_readout_table              no live row; complete vs in-window Fan; holdout False → `all`,
                                   True → split by the cohort's Arm; the no-holdout line
-  case_money_rules                -1 s and +14 d out, refunded / chargedback out, rebill and tip in
+  case_money_rules                -1 s and +14 d out, rebill and tip in (statuses: `load`'s SQL,
+                                  the DB cases: pending in, refunded / chargedback out)
   case_routes                     unconfirmed / cleared (no message id) and Free item rows are no
                                   Offers; a bought sell_now adds its price
   case_load_derives_enrolment     no live row → nothing; his later inbound enrols him; a Fan Full AI
@@ -51,7 +52,7 @@ def _arm(fans, in_window, complete, cents, per):
 # ── pure ──────────────────────────────────────────────────────────────
 
 def case_readout_table():
-    none = rev.readout(None, [(1, T0, "treatment")], [(1, T0, 500, "cleared")], [("sell_now", 900, 1, "bought")],
+    none = rev.readout(None, [(1, T0, "treatment")], [(1, T0, 500)], [("sell_now", 900, 1, "bought")],
                        T0 + 30 * D)
     assert none == {"live_since": None, "note": rev.NO_HOLDOUT, "arms": {}, "routes": []}, none
     now = T0 + 20 * D
@@ -59,7 +60,7 @@ def case_readout_table():
               (2, T0 + 6 * D, "treatment"),         # 14 d exactly: complete
               (3, T0 + 7 * D, "treatment"),         # 13 d: in window, never in the mean
               (4, T0 + 2 * D, "treatment")]         # complete, no money
-    txs = [(1, T0 + D, 900, "cleared"), (2, T0 + 7 * D, 300, "cleared"), (3, T0 + 8 * D, 99_999, "cleared")]
+    txs = [(1, T0 + D, 900), (2, T0 + 7 * D, 300), (3, T0 + 8 * D, 99_999)]
     got = rev.readout(T0, cohort, txs, [], now)
     assert got["live_since"] == "2026-10-01T12:00:00Z" and got["note"] == "no holdout: not a comparison", got
     assert got["arms"] == {"all": _arm(4, 1, 3, 1200, 400)}, got["arms"]
@@ -74,10 +75,10 @@ def case_readout_table():
 
 def case_money_rules():
     e = T0
-    txs = [(1, e - S, 1, "cleared"), (1, e + 14 * D, 2, "cleared"), (1, e + D, 4, "refunded"),
-           (1, e + D, 8, "chargedback"), (1, e + 13 * D, 1000, "cleared"),   # subscription rebill
-           (1, e, 500, "cleared"),                                          # tip at enrolment
-           (2, e + D, 7, "cleared")]                                        # another Fan
+    txs = [(1, e - S, 1), (1, e + 14 * D, 2),
+           (1, e + 13 * D, 1000),                                           # subscription rebill
+           (1, e, 500),                                                     # tip at enrolment
+           (2, e + D, 7)]                                                   # another Fan
     got = rev.readout(T0, [(1, e, "treatment")], txs, [], T0 + 30 * D)
     assert got["arms"]["all"] == _arm(1, 0, 1, 1500, 1500), got
 
@@ -149,7 +150,8 @@ async def case_arm_split_is_arm_of_for_200_fans():
 
 
 def _seed_api(aid: str, now: datetime) -> None:
-    """Live since now-30 d. Fan 1 wrote before live and at now-20 d (complete, 1500 c in window);
+    """Live since now-30 d. Fan 1 wrote before live and at now-20 d (complete, 1750 c in window, a
+    pending 250 counted: owner rule, pending sales count in every earnings total);
     fan 2 at now-3 d (in window); fan 3 at now-25 d, never answered (complete, 0); fan 6 only
     before live; fan 4 outbound only. Live Offers: sell_now bought 1500, declined, unconfirmed,
     cleared; a Free item."""
@@ -160,7 +162,8 @@ def _seed_api(aid: str, now: datetime) -> None:
         _msg(aid, 4, now - 10 * D, direction="out"),
         _tx(aid, 1, e1 - S, 999), _tx(aid, 1, e1 + 14 * D, 1200), _tx(aid, 1, e1 + D, 700, status="refunded"),
         _tx(aid, 1, e1 + D, 800, status="chargedback"), _tx(aid, 1, e1 + 13 * D, 1000, kind="subscription"),
-        _tx(aid, 1, e1 + D, 500), _tx(aid, 2, now - 2 * D, 5000), _tx(aid, 4, now - 9 * D, 3000),
+        _tx(aid, 1, e1 + D, 500), _tx(aid, 1, e1 + 2 * D, 250, status="pending"),
+        _tx(aid, 2, now - 2 * D, 5000), _tx(aid, 4, now - 9 * D, 3000),
         _dec(aid, 1, e1 + S, route="sell_now", price=1500, msg=9001, outcome="bought"),
         _dec(aid, 1, e1 + 2 * S, route="sell_now", price=2000, msg=9002, outcome="declined"),
         _dec(aid, 1, e1 + 3 * S, route="sell_now", price=1800),
@@ -179,7 +182,7 @@ def case_api_shape_owned_account():
     assert r.status_code == 200, r.text
     got = r.json()
     assert got == {"live_since": (now - 30 * D).isoformat() + "Z", "note": "no holdout: not a comparison",
-                   "arms": {"all": _arm(3, 1, 2, 1500, 750)},
+                   "arms": {"all": _arm(3, 1, 2, 1750, 875)},
                    "routes": [{"route": "sell_now", "offers": 2, "bought": 1, "cents": 1500}]}, got
     # Test-Mode and Shadow rows (earlier than live, priced, with message ids, bought) change nothing.
     asyncio.run(_add(_dec(aid, 1, now - 60 * D, mode="shadow", route="sell_now", price=999, msg=9100,

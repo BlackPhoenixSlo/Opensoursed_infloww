@@ -16,6 +16,7 @@ import {
 import {
   Card, Field, FieldInput, FieldSelect, IF_BTN, IF_BTN_PRIMARY, LoadError, SettingsTable, TABLE_CELL, TABLE_ROW,
 } from "@/components/settings/SettingsPanel";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { IfModal } from "@/components/ui/infloww";
 import { ifConfirm } from "@/components/ui/ifConfirm";
 import { cn } from "@/lib/utils";
@@ -29,19 +30,6 @@ const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : 
 function state(t: OwnerToken, now: number): "revoked" | "expired" | "active" {
   if (t.revoked_at) return "revoked";
   return Date.parse(t.expires_at) <= now ? "expired" : "active";
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      className={IF_BTN}
-      onClick={() => { void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => {}); }}
-    >
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
 }
 
 export default function AccessTokensCard() {
@@ -121,7 +109,7 @@ export default function AccessTokensCard() {
               </p>
               <div className="flex items-center gap-2">
                 <FieldInput readOnly aria-label="Access token" value={form.created.token} className="font-mono" onFocus={(e) => e.currentTarget.select()} />
-                <CopyButton text={form.created.token} />
+                <CopyButton bare text={form.created.token} label="Copy" doneLabel="Copied" holdMs={2000} className={IF_BTN} />
               </div>
             </>
           ) : (

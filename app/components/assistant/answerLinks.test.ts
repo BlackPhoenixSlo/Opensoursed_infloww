@@ -19,10 +19,14 @@ import { isDivider, isGroup, SETTINGS_TABS, SIDEBAR, SIDEBAR_FOOTER } from "@/li
 import { MESSAGE_DASHBOARD_TABS, SMART_MESSAGES_TABS } from "@/lib/pageTabs";
 
 import { BARE, findPaths } from "./answerLinks";
+import { openablePages } from "./prepass";
+
+/** Every page an owner may open: these cases are about the text, not the role (rwl W30 S3: `pages` is required). */
+const ALL = openablePages({ chatterOnly: false, grantedPages: null });
 
 /** The single hit in `text`, or null. Fails loudly on more than one. */
 function only(text: string) {
-  const hits = findPaths(text);
+  const hits = findPaths(text, ALL);
   expect(hits.length).toBeLessThanOrEqual(1);
   if (hits.length === 0) return null;
   return { href: hits[0].href, text: text.slice(hits[0].start, hits[0].end) };
@@ -64,20 +68,20 @@ describe("findPaths", () => {
   it("links the Settings page a sentence names without an arrow", () => {
     // Live answer (public, 2026-11): bare "Settings" linked /settings, the page went unlinked.
     const text = "Settings has an Audit log page (owners only), but the manual doesn't describe it.";
-    expect(findPaths(text).map((h) => [text.slice(h.start, h.end), h.href])).toEqual([
+    expect(findPaths(text, ALL).map((h) => [text.slice(h.start, h.end), h.href])).toEqual([
       ["Settings", "/settings/audit"],
       ["Audit log", "/settings/audit"],
     ]);
     const t2 = "In Settings, open Role Settings and tick it.";
-    expect(findPaths(t2).map((h) => h.href)).toEqual(["/settings/roles", "/settings/roles"]);
+    expect(findPaths(t2, ALL).map((h) => h.href)).toEqual(["/settings/roles", "/settings/roles"]);
     // Next sentence, or another path in between, is not this Settings' page.
     expect(only("Open Settings for it. Billing is elsewhere.")?.href).toBe("/settings");
-    expect(findPaths("Settings, then Growth → Auto-follow, then AI keys").map((h) => h.href))
+    expect(findPaths("Settings, then Growth → Auto-follow, then AI keys", ALL).map((h) => h.href))
       .toEqual(["/settings", "/growth/auto-follow", "/settings/ai-keys"]);
   });
 
   it("links a page or tab of any section named in prose", () => {
-    const hrefs = (t: string) => findPaths(t).map((h) => [t.slice(h.start, h.end), h.href]);
+    const hrefs = (t: string) => findPaths(t, ALL).map((h) => [t.slice(h.start, h.end), h.href]);
     expect(hrefs("Open Manage creators and press Add creator.")).toEqual([["Manage creators", "/creators"]]);
     expect(hrefs("In Message dashboard, open Tips.")).toEqual([
       ["Message dashboard", "/analytics/message-dashboard?tab=tips"],
@@ -120,10 +124,10 @@ describe("findPaths", () => {
 
   it("never links the head word inside a longer page name", () => {
     // "Settings" stands alone as a link, but "Role Settings" is its own page.
-    expect(findPaths("the owner's, Role Settings and Sales Settings included").map((h) => h.href))
+    expect(findPaths("the owner's, Role Settings and Sales Settings included", ALL).map((h) => h.href))
       .toEqual(["/settings/roles", "/settings/sales"]);
     // One ordinary word is prose, not a page; a lowercase label is prose too.
-    expect(findPaths("Scripts and Billing are words; manage creators and auto post too")).toEqual([]);
+    expect(findPaths("Scripts and Billing are words; manage creators and auto post too", ALL)).toEqual([]);
     expect(only("open Settings for it")?.href).toBe("/settings");
   });
 
@@ -160,8 +164,8 @@ describe("findPaths", () => {
 
   it("links nothing for a group with no page under it", () => {
     // A group is a sidebar heading; its first page is a sibling, not a parent.
-    expect(findPaths("Growth → Something We Never Shipped")).toEqual([]);
-    expect(findPaths("Open Growth for that.")).toEqual([]);
+    expect(findPaths("Growth → Something We Never Shipped", ALL)).toEqual([]);
+    expect(findPaths("Open Growth for that.", ALL)).toEqual([]);
   });
 
   it.each([...BARE])("links a bare mention of %s", (label) => {
@@ -190,14 +194,14 @@ describe("findPaths", () => {
   it("leaves ordinary prose alone", () => {
     // "growth" lowercase is a word; "Analytics"/"Creators" are words that
     // happen to match a nav item, so they only link as the head of a path.
-    expect(findPaths("the growth of an account")).toEqual([]);
-    expect(findPaths("Analytics update hourly.")).toEqual([]);
-    expect(findPaths("Creators keep their own login.")).toEqual([]);
+    expect(findPaths("the growth of an account", ALL)).toEqual([]);
+    expect(findPaths("Analytics update hourly.", ALL)).toEqual([]);
+    expect(findPaths("Creators keep their own login.", ALL)).toEqual([]);
   });
 
   it("finds several paths in one answer without overlapping", () => {
     const text = "Use Growth → Profile promotion for that, or Growth → Smart Messages for a one-off.";
-    const hits = findPaths(text);
+    const hits = findPaths(text, ALL);
     expect(hits.map((h) => h.href)).toEqual(["/growth/profile-promotion", "/growth/smart-messages"]);
     expect(hits[0].end).toBeLessThanOrEqual(hits[1].start);
   });
@@ -214,7 +218,7 @@ describe("findPaths", () => {
 
   it("never returns a range outside the string", () => {
     const text = "Growth → Auto-follow";
-    for (const h of findPaths(text)) {
+    for (const h of findPaths(text, ALL)) {
       expect(h.start).toBeGreaterThanOrEqual(0);
       expect(h.end).toBeLessThanOrEqual(text.length);
       expect(h.end).toBeGreaterThan(h.start);
@@ -247,7 +251,7 @@ describe("every path the help manual writes names a real page", () => {
   const STEPS = new Set(["New Message"]);
 
   // The route only: a `#go=` hash is a part inside the page, not a page.
-  const hrefOf = (parts: string[]) => findPaths(parts.join(" → "))[0]?.href.split("#")[0];
+  const hrefOf = (parts: string[]) => findPaths(parts.join(" → "), ALL)[0]?.href.split("#")[0];
 
   it("finds paths to check", () => {
     expect(paths.length).toBeGreaterThan(40);
@@ -255,7 +259,7 @@ describe("every path the help manual writes names a real page", () => {
 
   it.each(paths)("%s", (path) => {
     const parts = path.split(/\s*→\s*/).map((p) => p.trim());
-    const hit = findPaths(path)[0];
+    const hit = findPaths(path, ALL)[0];
     // Resolving the first segment is what carries the link past "Head → ".
     expect(hit && path.slice(hit.start, hit.end).includes("→"), `"${path}" names no page`).toBe(true);
     // Below a place with pages or tabs, a segment must name one of them. The
@@ -268,5 +272,26 @@ describe("every path the help manual writes names a real page", () => {
       expect(!hasBelow || STEPS.has(parts[i]), `"${path}": "${parts[i]}" names no page or tab`).toBe(true);
       break;
     }
+  });
+});
+
+// rwl W30 F10: an answer links only the pages the asker's role may open.
+describe("findPaths with the role's pages", () => {
+  const TEXT = "Set it in Settings → AI keys, or ask in Help center. Customs sit in Message dashboard → Customs owed.";
+  it("drops a page the role can't open, keeps the rest (a tab rides its page)", () => {
+    const pages = new Set(["/help-center", "/analytics/message-dashboard"]);
+    expect(findPaths(TEXT, ALL).map((h) => h.href)).toContain("/settings/ai-keys");
+    expect(findPaths(TEXT, pages).map((h) => h.href)).toEqual(
+      findPaths(TEXT, ALL).map((h) => h.href).filter((h) => !h.startsWith("/settings")));
+    expect(findPaths(TEXT, pages).some((h) => h.href === "/analytics/message-dashboard?tab=customs")).toBe(true);
+  });
+  it("no pages: nothing links", () => expect(findPaths(TEXT, new Set())).toEqual([]));
+  // rwl W30 S3: `pages` is required — leaving it out is a type error, never "every page" (tsc checks this file).
+  it("leaving pages out does not typecheck", () => {
+    const typeOnly = () => {
+      // @ts-expect-error pages is required
+      findPaths(TEXT);
+    };
+    expect(typeof typeOnly).toBe("function");
   });
 });

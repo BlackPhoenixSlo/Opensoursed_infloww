@@ -46,10 +46,10 @@ the Sequence cannot be filled and what to fix. Nothing fills itself after a desc
 21. As an owner, I want pressing Fill during a sweep to reopen the dialog on its progress (apply answers non-`ok` and writes nothing), and pressing it after the sweep to be the explicit press that fills when the plan is `ok`, so that progress survives closing the dialog and the one press still fills.
 22. As an owner, I want a sweep that stopped early (breaker, key, server stop, death) to show its stop note after it settles, above the plan's state, and a cap stop to show the plan's cap sentence, with Describe offered again when items remain and nothing blocks, so that I can resume.
 23. As an owner, I want "Ready to fill." [Fill with content] once the sweep settles and a fresh plan is `ok`, and never an automatic Fill, so that I decide when media is written.
-24. As an owner, I want `no_fit` to say "No single set in this Creator's described content fits these steps.", with no describe offer, so that I do not describe in vain.
+24. As an owner, I want `no_fit` to say "This Creator's described content cannot fill every paid step of this sequence.", with no describe offer, so that I do not describe in vain.
 25. As an owner, I want `no_paid_steps` to say "No step in this sequence sells anything yet. Put a price on the steps that sell, then fill again.", so that I know the fix.
 26. As an owner, I want `price_conflict` and `price_out_of_range` to name each step and rule ("Step 3 is priced below step 2", "Step 4: $2 is under OnlyFans' $3 minimum") and end "fix the price, then fill again", so that I can fix it in the editor.
-27. As an owner, I want `already_filled` to say "Every step already has its content.", so that a re-press is explained, not silent.
+27. As an owner, I want `already_filled` to say "Every step already has its content." (or, when a free Option is `free_unfilled`, "Every paid step already has its content. No photo left is safe to send free, so the free steps stay empty.", W30 F46), so that a re-press is explained, not silent.
 28. As an owner, I want a `reserved` answer to get its own line, so that a server-side refusal is never a blank dialog.
 29. As an owner, I want no dollar estimate or total in the dialog (a price-rule line may quote that step's own saved price, story 26), so that it never shows an estimate the plan does not return.
 30. As an owner, I want an answer for another Creator or Sequence never to open a dialog or a notice over the one I am looking at, and a late `ok` only to refresh the cards, so that late answers cannot mislead me.
@@ -113,8 +113,11 @@ the Sequence cannot be filled and what to fix. Nothing fills itself after a desc
   sweep wins the precedence below.
 - **Editor guard.** The button and the notice's Undo are disabled, titled "Save or close the open step first", while
   the page's draft edits an existing row of this Sequence (`draft.id` among the Sequence's row ids); a new-step
-  draft does not block. If an edit draft is opened on a touched row while a Fill or Undo is in flight, the answer
-  closes that draft (`setDraft(null)`) so its stale media, previews and price cannot be saved over the write.
+  draft does not block; Undo is also off while a draft edits a row of its Undo list. While a Fill or Undo is in
+  flight no row of its Sequence opens an edit (Edit off), so no whole-row PUT of stale media, previews and price
+  can race the write; while the Creator's Scripts list query is in error (a reload after it failed) its rows stay
+  locked, with a Reload line, until a reload succeeds; read off the query cache, so a remount keeps it
+  (`isLocked`, W30 F35/F36/F41/F50).
 - **Dialog states** come from `dialogFor`, precedence: a refusal sentence; sweep running → describing ("Checked
   {done} of {total}. Keeps going if you close this." with counts and the failure / first-error lines from
   `describeSweepText`, "starting…" before the first snapshot); otherwise the fresh Fill plan's status, with the

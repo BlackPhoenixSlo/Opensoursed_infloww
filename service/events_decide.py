@@ -64,9 +64,7 @@ Creators' rings for their any-scope frames only; an evicted any-scope frame ther
 Persist. events_persist.py's worker drains its queue of PersistItems in batches and
 transcodes every item's `event`; `persist_plan` is the event_inbox rows one batch
 writes (`inbox_row`; none for UNPERSISTED_TYPES), in queue order. An item tagged `inbound_dm`
-(a Fan's DM) goes last: `overflow_victim` is the queued item a full queue displaces (the oldest
-non-DM; none when all are DMs, so the incoming frame is dropped), and `stop_order` is what a
-graceful stop transcodes (DMs first, each group in queue order).
+(a Fan's DM) is kept over the rest on overflow and taken first at a stop (events_persist._Lanes).
 
 Importable without side effects (stdlib only).
 """
@@ -236,7 +234,11 @@ def coalesce(frames) -> list:
 #                                           after the run's job is written too
 #   scheduled_send_changed {job_id}         a scheduled send queued, cancelled,
 #                                           claimed or finished
-#   permissions_changed  {}  (Agency-wide)  a roles blob write
+#   permissions_changed  {}  (Agency-wide)  a roles blob write; the stream
+#                                           ends after it so the browser
+#                                           reconnects under the new role (a
+#                                           stream's chat-history grant,
+#                                           `readable`, is read at connect)
 #   assignment_changed   {}  (Agency-wide)  Creator grants of the Agency's
 #                                           owner or its chatters changed; the
 #                                           stream ends after it so the browser
@@ -262,7 +264,7 @@ STATE_TYPES = frozenset({
 })
 # The state events a stream ends after: its browser reconnects, and the
 # reconnect reads the session afresh.
-ENDS_STREAM = frozenset({"assignment_changed", "sessions_revoked"})
+ENDS_STREAM = frozenset({"permissions_changed", "assignment_changed", "sessions_revoked"})
 
 # The SSE allow-list: the event types a browser tab listens for
 # (`eventBus.on(...)` in app/). Every other OF frame (`chat_messages`
@@ -382,6 +384,14 @@ def wants(scope: str, accounts: Optional[frozenset], agencies: frozenset, event:
     return sees(scope, accounts, account_id, any_scope(event))
 
 
+def strips_message(readable: Optional[frozenset], event: Mapping) -> bool:
+    """`event` is a `chat_responded` carrying `message` (reply text, price) for a Creator outside `readable`, the
+    Creators whose chats the subscriber's role may read (None: every one): it reaches that subscriber without it."""
+    body = event.get("chat_responded")
+    return (readable is not None and isinstance(body, dict) and "message" in body
+            and str(event.get("__account_id")) not in readable)
+
+
 # ── the rings ──
 def _missed(st: Rings, last_id: Optional[str], sees: Callable[[str], bool],
             wants: Callable[[Any], bool], sees_any: Optional[Callable[[str], bool]] = None) -> tuple[list, bool]:
@@ -426,6 +436,21 @@ def decide_ring(st: Rings, ev: Published) -> Rings:
             evicted_any = {**evicted_any, key: dropped}
         ring = ring[1:]
     return Rings(st.epoch, seq, {**st.rings, key: ring + ((seq, ev.frame),)}, evicted, evicted_any)
+
+
+def ended_since(st: Rings, since: int, wants: Callable[[Any], bool]) -> bool:
+    """Whether a stream-ending frame `wants` admits took a seq after `since`: a grant read at `since` (server
+    .sse_events' `readable`) may predate it, so the stream must end before it emits anything. Fails closed when
+    the Agency-wide ring (where every ENDS_STREAM frame lands) evicted past `since`."""
+    if st.evicted.get("", 0) > since:
+        return True
+    for ring in st.rings.values():
+        for seq, f in reversed(ring):
+            if seq <= since:
+                break
+            if first_key(f) in ENDS_STREAM and wants(f):
+                return True
+    return False
 
 
 def replay(st: Rings, last_id: Optional[str], sees: Callable[[str], bool], wants: Callable[[Any], bool],
@@ -492,15 +517,3 @@ def persist_plan(batch: list[PersistItem]) -> list[dict]:
     gets none (it is still transcoded)."""
     return [inbox_row(it.account_id, it.event_type, it.persistable)
             for it in batch if it.event_type not in UNPERSISTED_TYPES]
-
-
-def overflow_victim(queued: list[PersistItem]) -> Optional[int]:
-    """Which queued item a full queue displaces for an incoming frame: the index of the
-    oldest that is not an Inbound DM; None when every one is (the incoming frame is dropped)."""
-    return next((i for i, it in enumerate(queued) if not it.inbound_dm), None)
-
-
-def stop_order(queued: list[PersistItem]) -> list[PersistItem]:
-    """What a graceful stop transcodes, in order: the Inbound DMs first, then the rest,
-    each group in queue order (a stable partition; `queued` is not mutated)."""
-    return [it for it in queued if it.inbound_dm] + [it for it in queued if not it.inbound_dm]

@@ -12,6 +12,13 @@ No DB, no OF.
                               an unknown user_list refuses before any crawl.
   case_exclude_sync_truncated_logs_loud: a truncated Auto_Exclude crawl syncs as
                               before (no raise) and logs an ERROR.
+  case_exclude_add_failure_table: only OF's two permanent per-fan refusals (403
+                              "Unable to add user to user list", 404 "User not found")
+                              let a required Auto_Exclude add fail and the sync go on;
+                              generic 403, 404 "List not found", 400/429, 5xx and a
+                              timeout raise (the send is refused).
+  case_auto_exclude_lookup_incomplete_never_creates: an incomplete /lists read
+                              without Auto_Exclude raises, never creates a 2nd one.
   case_include_decide_table:  off | shadow | enforce (+ kill switch / unhealthy).
 
 Run: ./venv/bin/python service/tests/test_audience_decide.py   (exit 0 = pass)
@@ -21,13 +28,13 @@ from __future__ import annotations
 import _harness  # MUST be first (binds a temp DB; this file never touches it)
 
 import logging  # noqa: E402
+from _of_fixtures import UNLISTABLE_403, of_error  # noqa: E402
 from datetime import datetime  # noqa: E402
 
 import audiences  # noqa: E402
 import of_paging  # noqa: E402
 from audience_include import AudiencePolicy, IncludeDecision, include_decide  # noqa: E402
 from audiences import Audience, Fail, final_audience  # noqa: E402
-
 
 def _table(rows, fn) -> None:
     bad = []
@@ -144,7 +151,7 @@ class _AutoExclude(_Roster):
 
     def add_user_to_list(self, lid, uid):
         if uid in self.fail_add:
-            raise RuntimeError("Unable to add user to user list")
+            raise of_error(403, UNLISTABLE_403)
         self.added.append(uid)
 
     def remove_user_from_list(self, lid, uid):
@@ -177,6 +184,66 @@ def case_exclude_sync_truncated_logs_loud():
         assert (ok.added, ok.removed, logged) == ([2], [9], []), (ok.added, ok.removed, logged)
     finally:
         audiences.log.removeHandler(h)
+
+
+def case_exclude_add_failure_table():
+    from curl_cffi.requests import exceptions as curl_exc
+    rows = [
+        # (name, the add's error, sync goes on?)
+        ("403 Unable to add", of_error(403, '{"message":"Unable to add user to user list"}'), True),
+        ("404 User not found", of_error(404, '{"error":{"message":"User not found"}}'), True),
+        ("generic 403", of_error(403, '{"error":{"message":"Access denied"}}'), False),
+        ("404 List not found", of_error(404, '{"error":{"message":"List not found"}}'), False),
+        ("400 rate limit", of_error(400, '{"message":"Please allow 10 seconds"}'), False),
+        ("429", of_error(429, "Too many requests. Please allow 1 seconds"), False),
+        ("502", of_error(502, "Bad gateway"), False),
+        ("timeout", curl_exc.Timeout("curl: (28) Operation timed out"), False),
+        ("bare error naming the text", RuntimeError("Unable to add user to user list"), False),
+    ]
+    bad = []
+    for name, err, goes_on in rows:
+        c = _AutoExclude(members={50: [{"id": 1}]})
+
+        def add(lid, uid, c=c, err=err):
+            if uid == 2:
+                raise err
+            c.added.append(uid)
+        c.add_user_to_list = add
+        try:
+            got = audiences._sync_exclude_list_blocking(c, {1, 2, 3}) == 50
+        except Exception:
+            got = False
+        if got != goes_on:
+            bad.append(f"{name}: goes on {got} != {goes_on}")
+    assert not bad, "\n".join(bad)
+
+
+def case_auto_exclude_lookup_incomplete_never_creates():
+    """An incomplete /lists read without Auto_Exclude refuses (raises) instead of
+    creating a second Auto_Exclude; a complete miss still creates it once."""
+    class _Lists(_AutoExclude):
+        def __init__(self, page, more):
+            super().__init__()
+            self.page, self.more, self.created = page, more, []
+
+        def get_lists(self, **kw):
+            return {"list": list(self.page), "hasMore": self.more}
+
+        def create_list(self, name):
+            self.created.append(name)
+            return {"id": 77}
+
+    stall = _Lists([{"id": 9, "name": "VIP"}], True)     # same page forever
+    try:
+        audiences._auto_exclude_list_id_blocking(stall)
+        raised = False
+    except of_paging.ListLookupIncomplete:
+        raised = True
+    assert raised and stall.created == [], (raised, stall.created)
+
+    done = _Lists([{"id": 9, "name": "VIP"}], False)
+    assert audiences._auto_exclude_list_id_blocking(done) == 77
+    assert done.created == [audiences.AUTO_EXCLUDE_LIST_NAME], done.created
 
 
 def P(mode, *, healthy=True, paused=False, reason=None, members=()):

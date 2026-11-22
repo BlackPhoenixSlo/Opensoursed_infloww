@@ -11,7 +11,7 @@ the OF broadcast, per-recipient rows), in that order:
     seed(payload, members...)        -> the pre-guard audience handed to resolve_mass_audience
     plan(payload, funnel, resolved,  -> Plan | Skip   (dedupe, exclusions win, text, media)
          list_ids, opener_media)
-    audience_filter / echoed_of      -> the mass_runs forensics JSON / OF's per-fan echo
+    audience_filter(_json) / echoed_of -> the mass_runs audience JSON (one writer) / OF's per-fan echo
     is_dry_run / dry_run_result      -> a `dry_run` payload's answer (O3: never sends,
                                         returns who a real run would reach)
 """
@@ -129,25 +129,47 @@ def plan(payload: dict, *, funnel: Funnel | None, resolved: dict,
     )
 
 
-def audience_filter(p: Plan, *, ref, fence: bool) -> str:
-    """The mass_runs.audience_filter JSON (key order is the stored shape): who
-    received the send is assumed from it. Takes the post-fence plan: recipients after the include-only
-    intersection, excluded_user_lists with the AUTOFENCE / Auto_Exclude ids."""
+def audience_filter_json(*, user_lists, included_users, excluded_users,
+                         excluded_user_lists, online, filters, list_ids=(),
+                         ref=None, fence: bool = False, auto_exclude=None) -> str:
+    """The one writer of `mass_runs.audience_filter` (this send and the Composer's
+    POST /messages/queue); key order is the stored shape. Readers assume who
+    received the send from it. OF has no per-user exclusion field for a list
+    audience, so every excluded id rides in an OF list: `auto_exclude` names the
+    Auto_Exclude list among `excluded_user_lists` (its members are
+    `excluded_users`). `unresolved_exclude_lists`: the other excluded lists
+    (AUTOFENCE, operator-picked), whose members this row does not record. An
+    explicit-ids send has none: both writers subtract its excluded lists'
+    members from `included_users` before the POST
+    (`audiences.drop_exclude_list_members`)."""
+    explicit = bool(included_users) and not (user_lists or online or filters)
+    unresolved = [x for x in (excluded_user_lists or [])
+                  if not explicit and str(x) != str(auto_exclude)]
     return json.dumps({
-        "user_lists": list(p.user_lists),
-        "included_users": p.recipients,
-        "excluded_users": sorted(p.excl_set),
-        "list_ids": p.list_ids,
+        "user_lists": list(user_lists or []),
+        "included_users": list(included_users or []),
+        "excluded_users": list(excluded_users or []),
+        "list_ids": list(list_ids or []),
         "ref": str(ref) if ref else None,
-        # OF has no per-user exclusion field for a list audience, so every
-        # excluded id rides in an OF list. Readers assume who received the send
-        # from these keys.
-        "excluded_user_lists": list(p.excluded_user_lists),
-        "fence": fence,
+        "excluded_user_lists": list(excluded_user_lists or []),
+        "fence": bool(fence),
         # OF resolves an online / filtered audience itself.
-        "online": bool(p.online_only),
-        "filters": bool(p.filters),
+        "online": bool(online),
+        "filters": bool(filters),
+        "auto_exclude_list": auto_exclude,
+        "unresolved_exclude_lists": unresolved,
     })
+
+
+def audience_filter(p: Plan, *, ref, fence: bool, auto_exclude=None) -> str:
+    """`audience_filter_json` of the post-fence plan: recipients after the
+    include-only intersection, excluded_user_lists with the AUTOFENCE /
+    Auto_Exclude ids."""
+    return audience_filter_json(
+        user_lists=p.user_lists, included_users=p.recipients,
+        excluded_users=sorted(p.excl_set), excluded_user_lists=p.excluded_user_lists,
+        online=p.online_only, filters=p.filters, list_ids=p.list_ids,
+        ref=ref, fence=fence, auto_exclude=auto_exclude)
 
 
 def echoed_of(result) -> list[tuple[int, int]]:

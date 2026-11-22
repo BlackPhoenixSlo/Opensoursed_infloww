@@ -35,6 +35,10 @@ against a fake OFClient (no network):
       catalogued-bool seam check refuses to certify — all six cells.
   case_compose_helpers:
       _pick_pool day-bucket order, _choose_idx rotation, substitute_placeholders.
+  case_images_rotate_on_their_own_when_the_counts_differ:
+      more images than lines: the image rotates per nudge; equal counts stay paired.
+  case_small_hours_of_the_night_slot_read_the_evening_before:
+      night 00-04 reads the previous day's bucket (sender and preview).
 
 Run: ./venv/bin/python service/tests/test_nudge_online.py   (exit 0 = pass)
 """
@@ -430,6 +434,44 @@ def case_compose_helpers():
     assert out2 == "hey babe", out2
 
 
+async def case_images_rotate_on_their_own_when_the_counts_differ():
+    """W30-SM F6: a day's own images under an inherited single line: the image
+    rotates per nudge (`new`), not pinned to the line's index 0; `same` holds one;
+    as many images as lines keeps line i with image i."""
+    cfg = {"repeat_mode": "new", "nudge_line_image": True, "slots": {
+        "default": {"evening": {"text": ["hi"], "image": []}},
+        "friday": {"evening": {"text": [], "image": [11, 12, 13]}}}}
+
+    class _St:
+        def __init__(self, n, idx=0):
+            self.nudge_count, self.last_variation_idx, self.last_slot = n, idx, "evening"
+
+    async def _media(c, st):
+        msgs, _ = await nudge_online._compose_messages("n_img_rot", None, c, None, st,
+                                                       hour=19, weekday="friday")
+        return msgs[0]["media"]
+    got = [await _media(cfg, st) for st in (None, _St(1), _St(2), _St(3))]
+    assert got == [[11], [12], [13], [11]], got
+    same = {**cfg, "repeat_mode": "same"}
+    assert [await _media(same, st) for st in (None, _St(1), _St(2))] == [[11]] * 3
+    paired = {**cfg, "slots": {"default": {"evening": {"text": ["a", "b"], "image": [21, 22]}}}}
+    assert await _media(paired, _St(5, idx=0)) == [22], "line 1 rides with image 1"
+
+
+async def case_small_hours_of_the_night_slot_read_the_evening_before():
+    """W30-SM F11: the night slot runs 21-5; its hours 0-4 belong to the night that
+    began the day before (Friday 02:00 = Thursday night) — sender and preview."""
+    cfg = {"nudge_line_image": False, "slots": {
+        "thursday": {"night": {"text": ["thu night"]}},
+        "friday": {"night": {"text": ["fri night"]}}}}
+    for hour, want in ((2, "thu night"), (23, "fri night")):
+        msgs, slot = await nudge_online._compose_messages("n_night", None, cfg, None, None,
+                                                          hour=hour, weekday="friday")
+        assert slot == "night" and msgs[0]["text"] == want, (hour, msgs)
+    res = await nudge_online.preview_compose("n_night", cfg, hour=2, weekday="friday")
+    assert res["messages"][0]["text"] == "thu night", res
+
+
 # ── One message: the retired info line is ignored ─────────────────────
 
 async def case_legacy_info_line_keys_ignored():
@@ -535,6 +577,8 @@ _harness.run(
     case_no_cooldown_set,
     case_with_image_layers_the_payload_over_the_account_cfg,
     case_compose_helpers,
+    case_images_rotate_on_their_own_when_the_counts_differ,
+    case_small_hours_of_the_night_slot_read_the_evening_before,
     case_legacy_info_line_keys_ignored,
     case_preview_picks_the_asked_day,
 )

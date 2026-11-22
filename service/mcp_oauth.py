@@ -24,7 +24,8 @@ Access tokens card, revoking it there cuts it off, and it expires as cards' toke
                               redirect_uri, expiry and PKCE S256 are checked; mints the token
 
 Codes live in this process (`_grants`): the relay runs one uvicorn worker (login_throttle's buckets
-rely on the same). The session cookie a code holds is kept only until the code is used or expires.
+rely on the same). The session cookie a code holds is kept only until the code is used or, once expired, the next
+authorize / Allow / token request.
 The password, code, verifier and token are never logged; the three POST paths are audit-skipped
 (audit_log._AUDIT_SKIP_PATHS: the token form body would land in the audit row as plain text).
 """
@@ -79,9 +80,11 @@ NAME_FALLBACK = "client"
 
 _CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}")  # base64url(sha256), no padding
 _VERIFIER = re.compile(r"[A-Za-z0-9._~-]{43,128}")
-_LOOPBACK = ("localhost", "127.0.0.1")
+_LOOPBACK = ("localhost", "127.0.0.1", "::1")
+_RESERVED = frozenset({"code", "state", "error", "iss"})  # what the callback adds: a redirect_uri may not carry them
 
-WHAT_IT_CAN = ("It can read this Agency's data, make OnlyFans vault folders and bio pages, and propose "
+WHAT_IT_CAN = ("It can read this Agency's data; make OnlyFans vault folders and add media to any of them; make "
+               "bio pages and change any of them (add links, set avatar and background pictures); and propose "
                "mass messages and posts that run only after you approve them in the browser. It lasts "
                f"{owner_tokens.DEFAULT_DAYS} days; revoke it any time in Settings → AI keys → Access tokens.")
 BAD_CLIENT = "This app's sign-in link is broken or was changed: start again from the app."
@@ -140,8 +143,9 @@ def clean_name(raw: Any) -> str:
 
 
 def redirect_ok(uri: Any) -> bool:
-    """http://localhost[:port]/…, http://127.0.0.1[:port]/… or https://…; no userinfo, no
-    fragment, no spaces or control characters, at most MAX_URI characters."""
+    """http://localhost[:port]/…, http://127.0.0.1[:port]/…, http://[::1][:port]/… or https://…; no userinfo, no
+    fragment, no spaces or control characters, no code / state / error / iss query key (the
+    callback's own), at most MAX_URI characters."""
     if not isinstance(uri, str) or not uri or len(uri) > MAX_URI:
         return False
     if any(c <= " " or c in "\\\x7f" for c in uri):
@@ -152,6 +156,8 @@ def redirect_ok(uri: Any) -> bool:
     except ValueError:
         return False
     if u.fragment or "#" in uri or "@" in u.netloc or not u.hostname:
+        return False
+    if _RESERVED & parse_qs(u.query, keep_blank_values=True).keys():
         return False
     if u.scheme == "https":
         return True
@@ -255,19 +261,10 @@ async def authorization_server(request: Request) -> Response:
 
 # ── registration ───────────────────────────────────────────────────────────────
 
-async def _capped(request: Request, cap: int) -> bytes | None:
-    buf = bytearray()
-    async for chunk in request.stream():
-        buf += chunk
-        if len(buf) > cap:
-            return None
-    return bytes(buf)
-
-
 @router.post(REGISTER_PATH, include_in_schema=False)
 async def register(request: Request) -> Response:
     login_throttle.take_client_register(request)
-    raw = await _capped(request, MAX_FORM)
+    raw = await mcp_api.capped_body(request, MAX_FORM)
     try:
         meta = json.loads(raw) if raw is not None else None
     except (ValueError, UnicodeDecodeError, RecursionError):
@@ -278,8 +275,10 @@ async def register(request: Request) -> Response:
     if not isinstance(uris, list) or not 1 <= len(uris) <= MAX_URIS:
         return _oauth_error("invalid_redirect_uri", f"redirect_uris: 1 to {MAX_URIS} addresses")
     if not all(redirect_ok(u) for u in uris):
-        return _oauth_error("invalid_redirect_uri", "each redirect URI is http://localhost, http://127.0.0.1 or "
-                                                    f"https://, at most {MAX_URI} characters, with no fragment")
+        return _oauth_error("invalid_redirect_uri", "each redirect URI is http://localhost, http://127.0.0.1, "
+                                                    "http://[::1] or "
+                                                    f"https://, at most {MAX_URI} characters, with no fragment and no "
+                                                    "code / state / error / iss query key")
     client = Client(clean_name(meta.get("client_name")), tuple(dict.fromkeys(uris)))
     # A public client: whatever auth method it asked for, it gets "none" (RFC 7591 lets the server choose).
     return _json({"client_id": client_id(client), "client_id_issued_at": int(time.time()),
@@ -333,9 +332,20 @@ def _client_and_redirect(cid: str | None, redirect_uri: str | None) -> tuple[Cli
     client = parse_client_id(cid)
     if client is None:
         return _error_page(BAD_CLIENT)
-    if not redirect_uri or redirect_uri not in client.redirect_uris:
+    # the asked address passes redirect_ok first: a client_id signed before a rule (F9's callback keys) still obeys it
+    if not redirect_ok(redirect_uri) or not any(_registered(r, redirect_uri) for r in client.redirect_uris):
         return _error_page(BAD_REDIRECT)
     return client, redirect_uri
+
+
+def _registered(registered: str, asked: str) -> bool:
+    """Exact match, except a loopback http address matches on any port: a native app picks a free
+    port at sign-in time (RFC 8252 §7.3). `asked` already passed redirect_ok."""
+    if asked == registered:
+        return True
+    a, r = urlsplit(asked), urlsplit(registered)
+    return (a.scheme == r.scheme == "http" and r.hostname in _LOOPBACK and a.hostname == r.hostname
+            and a.path == r.path and a.query == r.query)
 
 
 async def _agency_name(user: Any) -> str:
@@ -350,6 +360,7 @@ def _hidden(**fields: str) -> str:
 
 @router.get(AUTHORIZE_PATH, include_in_schema=False)
 async def authorize(request: Request) -> Response:
+    _purge(_clock())  # an expired code (it holds a session cookie) goes on any sign-in traffic, not only Allow
     q = request.query_params
     found = _client_and_redirect(q.get("client_id"), q.get("redirect_uri"))
     if isinstance(found, HTMLResponse):
@@ -437,7 +448,7 @@ async def authorize_decision(request: Request) -> Response:
     origin = request.headers.get("origin")
     if origin is not None and _origin_host(origin) != _request_host(request):
         return _error_page(STALE_FORM, 403)
-    f = _form(await _capped(request, MAX_FORM))
+    f = _form(await mcp_api.capped_body(request, MAX_FORM))
     if f is None:
         return _error_page(STALE_FORM)
     found = _client_and_redirect(f.get("client_id"), f.get("redirect_uri"))
@@ -472,7 +483,8 @@ def pkce_ok(verifier: str, challenge: str) -> bool:
 
 @router.post(TOKEN_PATH, include_in_schema=False)
 async def token(request: Request) -> Response:
-    f = _form(await _capped(request, MAX_FORM))
+    _purge(_clock())
+    f = _form(await mcp_api.capped_body(request, MAX_FORM))
     if f is None:
         return _oauth_error("invalid_request", "a form-encoded body, each parameter once")
     if f.get("grant_type") != "authorization_code":

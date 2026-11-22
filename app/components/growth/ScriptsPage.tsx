@@ -48,7 +48,7 @@ import { CopyScriptsDialog, ExcelImportDialog } from "@/components/growth/Script
 import { NameModal, ScriptEditModal } from "@/components/growth/ScriptModals";
 import { ScriptFillDialog } from "@/components/growth/ScriptFillDialog";
 import {
-  ASK_OWNER, SAVE_FIRST, fillKey, fillRefusalText, leftText, noticeText, undoPayload, type Action as FillAction,
+  ASK_OWNER, SAVE_FIRST, fillKey, fillRefusalText, isLocked, leftText, noticeText, undoPayload, type Action as FillAction,
   type FillNotice,
 } from "@/components/growth/scriptFillState";
 import { dlAccess } from "@/components/vault/vaultDownloadReducer";
@@ -197,54 +197,57 @@ export default function ScriptsPage() {
     else startNewReply();
   }
 
-  /** An edit draft opened on one of `ids` while a Fill or Undo ran holds the rows as they were: saving it (a
-   *  whole-row PUT) would wipe the write, so the answer closes it. */
-  const closeTouchedDraft = (ids: ReadonlySet<number>) =>
-    setDraft((d) => (d?.kind === "reply" && d.id != null && ids.has(Number(d.id)) ? null : d));
-
-  /** Fill with content: one press applies (no preview); `ok` leaves the notice, anything else opens the dialog. */
-  async function fillPress(sequence: string) {
-    const account = accountId;
+  /** One Fill or Undo press on `sequence`: one in flight per Creator and Sequence; its rows take no edit until it
+   *  ends (`fill.inflight`), nor while the list's last load failed (`replyQ.isError`, W30 F41/F50).
+   *  `call` returns the answer to dispatch. */
+  async function runFill(
+    account: string | null, sequence: string, start: "press" | "undoPress",
+    call: (pin: { account: string; sequence: string; req: number }) => Promise<FillAction>,
+  ) {
     const key = fillKey(account, sequence);
     if (!account || fillOut.current.has(key)) return;
     fillOut.current.add(key);
     const pin = { account, sequence, req: ++fillReq.current };
-    const touched = new Set((sequences.get(sequence) ?? []).map((r) => r.id));
-    fillDispatch({ type: "press", ...pin });
+    fillDispatch({ type: start, ...pin });
     try {
-      const r = await fillApplyM.mutateAsync({ account, sequence });
-      if (r.status === "ok") fillDispatch({ type: "applied", ...pin, result: r });
-      else fillDispatch({ type: "answered", ...pin, status: r.status });
-    } catch (e) {
-      // A 409 `stale` carries the fresh plan (`useFillApply` seeds the dialog's plan with it): shown and asked
-      // again, never applied silently.
-      const fresh = stalePlan(e);
-      if (fresh) fillDispatch({ type: "answered", ...pin, status: fresh.status });
-      else fillDispatch({ type: "failed", ...pin, message: fillRefusalText(e) });
+      // The call awaits the list refetch, so a failed one is already the query's error state (the lock) here.
+      fillDispatch(await call(pin));
     } finally {
       fillOut.current.delete(key);
-      closeTouchedDraft(touched);
     }
   }
 
+  /** Fill with content: one press applies (no preview); `ok` leaves the notice, anything else opens the dialog. */
+  function fillPress(sequence: string) {
+    return runFill(accountId, sequence, "press", async (pin): Promise<FillAction> => {
+      try {
+        const r = await fillApplyM.mutateAsync({ account: pin.account, sequence });
+        return r.status !== "ok" ? { type: "answered", ...pin, status: r.status } : { type: "applied", ...pin, result: r };
+      } catch (e) {
+        // A 409 `stale` carries the fresh plan (`useFillApply` seeds the dialog's plan with it): shown and asked
+        // again, never applied silently.
+        const fresh = stalePlan(e);
+        return fresh ? { type: "answered", ...pin, status: fresh.status }
+          : { type: "failed", ...pin, message: fillRefusalText(e) };
+      }
+    });
+  }
+
   /** The Fill notice's Undo: apply's Undo list, verbatim, to the Creator the notice was written on. */
-  async function fillUndo(notice: FillNotice) {
-    const { account, sequence } = notice;
-    const key = fillKey(account, sequence);
-    if (!account || fillOut.current.has(key)) return;
-    fillOut.current.add(key);
-    const pin = { account, sequence, req: ++fillReq.current };
-    const touched = new Set(notice.undo.map((u) => u.id));
-    fillDispatch({ type: "undoPress", ...pin });
-    try {
-      const result = await fillUndoM.mutateAsync({ account, ...undoPayload(notice) });
-      fillDispatch({ type: "undone", ...pin, result });
-    } catch (e) {
-      fillDispatch({ type: "failed", ...pin, message: fillRefusalText(e) });
-    } finally {
-      fillOut.current.delete(key);
-      closeTouchedDraft(touched);
-    }
+  function fillUndo(notice: FillNotice) {
+    return runFill(notice.account, notice.sequence, "undoPress", async (pin): Promise<FillAction> => {
+      try {
+        const result = await fillUndoM.mutateAsync({ account: pin.account, ...undoPayload(notice) });
+        return { type: "undone", ...pin, result };
+      } catch (e) {
+        return { type: "failed", ...pin, message: fillRefusalText(e) };
+      }
+    });
+  }
+
+  /** Reload: refetch the shown Creator's list; only a success clears the query's error, and with it the lock. */
+  function reloadList() {
+    void replyQ.refetch();
   }
 
   /** A tag no script carries lives on this page only: renamed and deleted here, never on the server. */
@@ -329,7 +332,14 @@ export default function ScriptsPage() {
   const fillBlocked = access !== "all" ? ASK_OWNER : editingSeqRow ? SAVE_FIRST : null;
   const activeKey = activeSeq != null ? fillKey(accountId, activeSeq) : null;
   const fillBusy = activeKey != null && fill.inflight[activeKey] != null;
+  // A row of a Sequence with a Fill or Undo in flight opens no edit (so no whole-row PUT races the write); Fill
+  // and Undo are off while a draft is open on a step, and Undo also while one is open on a row it would revert
+  // (one moved out of the Sequence since).
+  const rowLocked = (r: { script_id?: string | null }) => r.script_id != null && isLocked(fill, accountId, r.script_id, replyQ.isError);
+  const listStale = activeSeq != null && replyQ.isError;
   const fillNotice = activeKey ? fill.notices[activeKey] : undefined;
+  const editingUndoRow = draft?.kind === "reply" && draft.id != null &&
+    (fillNotice?.undo.some((u) => u.id === Number(draft.id)) ?? false);
   const fillLeft = activeKey ? fill.left[activeKey] : undefined;
 
   const list = (
@@ -379,8 +389,8 @@ export default function ScriptsPage() {
               <span aria-hidden>·</span>
               <button
                 type="button"
-                disabled={editingSeqRow || fillBusy}
-                title={editingSeqRow ? SAVE_FIRST : undefined}
+                disabled={editingSeqRow || editingUndoRow || fillBusy}
+                title={editingSeqRow || editingUndoRow ? SAVE_FIRST : undefined}
                 onClick={() => void fillUndo(fillNotice)}
                 className="text-accent underline disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -392,6 +402,16 @@ export default function ScriptsPage() {
               <button type="button" aria-label="Dismiss Fill notice" onClick={() => fillDispatch({ type: "dismiss", account: accountId, sequence: activeSeq })}
                 className="ml-auto text-fg-dim hover:text-fg">
                 <X size={14} aria-hidden />
+              </button>
+            </div>
+          )}
+          {listStale && (
+            // W30 F41/F50: the list's last load failed: its steps may show values from before a write, so they stay locked.
+            <div role="status" title={EXTRA_LABEL} className="mt-2 flex items-center gap-2 text-xs text-warn">
+              <span>The list did not reload, so this sequence&apos;s steps stay locked.</span>
+              <button type="button" disabled={replyQ.isFetching} onClick={reloadList}
+                className="text-accent underline disabled:opacity-50 disabled:cursor-not-allowed">
+                Reload
               </button>
             </div>
           )}
@@ -508,7 +528,7 @@ export default function ScriptsPage() {
             onDelete={() => (removeLabel ? removeScripts([r.id]) : deleteScripts([r.id]))}
             removeLabel={removeLabel}
             onOpenChip={(kind, name) => dispatch({ type: "open", kind, name })}
-            busy={busy.has(r.id)}
+            busy={busy.has(r.id) || rowLocked(r)}
           />
         ))}
         {listHasMore && (
@@ -561,7 +581,7 @@ export default function ScriptsPage() {
       <CreatorRail
         creators={{
           accounts, value: allModels ? null : accountId, onChange: pickCreator,
-          onAll: () => dispatch({ type: "allModels" }),
+          all: { pick: () => dispatch({ type: "allModels" }) },
         }}
         className="flex flex-col"
       >

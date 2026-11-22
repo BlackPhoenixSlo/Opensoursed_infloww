@@ -40,7 +40,7 @@ describe("describe Max", () => {
     "cappedCount(%s, %s) = %s", (n, limit, want) => {
       expect(cappedCount(n, limit)).toBe(want);
     });
-  it("onDescribeAll posts the limit; 0 posts none", async () => {
+  it("onDescribeAll posts the limit; 0 posts \"all\"", async () => {
     const start = vi.fn(async () => null);
     const base = { capReason: "", refetchPlan: vi.fn(), describeSweep: { busy: false, start }, capped: false,
       plan: undefined, promptVersion: "v2" as const };
@@ -48,7 +48,7 @@ describe("describe Max", () => {
     await onDescribeAll("new", { ...base, limit: 0 });
     expect(start.mock.calls).toEqual([
       [{ force: false, restage: false, prompt_version: "v2", limit: 2000 }],
-      [{ force: false, restage: false, prompt_version: "v2" }],
+      [{ force: false, restage: false, prompt_version: "v2", limit: "all" }],
     ]);
   });
 });

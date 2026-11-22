@@ -50,17 +50,16 @@ function scheduleText(secs: number | null): string {
 
 const LINK = "text-accent hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
 
-type RowAction = "run" | "edit" | "toggle" | "delete";
-
 /** The phone row's "⋯": Run now, Edit, Pause / Resume (the wide row's switch), Delete. The page body clips (main's
  *  overflow-clip): on the last rows it opens upward (`flip`). */
-function RowMenu({ rule, busy, onPick }: {
+function RowMenu({ rule, busy, onRun, onEdit, onToggle, onDelete }: {
   rule: AutomationRule;
   busy: { toggle: boolean; run: boolean; remove: boolean };
-  onPick: (a: RowAction) => void;
+  onRun: () => void;
+  onEdit: () => void;
+  onToggle: () => void;
+  onDelete: () => void;
 }) {
-  const item = (a: RowAction, label: string, disabled: boolean) =>
-    ({ key: a, label, disabled, danger: a === "delete", onClick: () => onPick(a) });
   return (
     <Menu align="right" position="flip" panelClassName="z-20 w-36" itemClassName="text-[14px] text-fg disabled:opacity-50"
       trigger={(p) => (
@@ -70,10 +69,10 @@ function RowMenu({ rule, busy, onPick }: {
         </button>
       )}
       items={[
-        item("run", "Run now", busy.run),
-        item("edit", "Edit", false),
-        item("toggle", rule.is_enabled ? "Pause" : "Resume", busy.toggle),
-        item("delete", "Delete", busy.remove),
+        { key: "run", label: "Run now", disabled: busy.run, onClick: onRun },
+        { key: "edit", label: "Edit", disabled: false, onClick: onEdit },
+        { key: "toggle", label: rule.is_enabled ? "Pause" : "Resume", disabled: busy.toggle, onClick: onToggle },
+        { key: "delete", label: "Delete", disabled: busy.remove, danger: true, onClick: onDelete },
       ]} />
   );
 }
@@ -108,12 +107,6 @@ export function RuleTable({
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  const act = (r: AutomationRule, a: RowAction) => {
-    if (a === "run") onRun(r);
-    else if (a === "edit") onEdit(r);
-    else if (a === "toggle") onToggle(r);
-    else onDelete(r);
-  };
   const line = (children: React.ReactNode, cls = "text-muted") => (
     <tr><td colSpan={RULE_COLUMNS.length} className={cn("py-10 text-center text-[14px]", cls)}>{children}</td></tr>
   );
@@ -128,7 +121,7 @@ export function RuleTable({
             {RULE_COLUMNS.map((c) => (
               <th key={c} className={cn(IF_TABLE.th, IF_TABLE.thDivider, "border-b border-border",
                 WIDE_ONLY.has(c) && "max-sm:hidden",
-                c === "Actions" && cn(IF_TABLE.fixedRightHead, "z-[1] w-[220px] max-sm:static max-sm:w-12 max-sm:shadow-none max-sm:[html[data-theme=light]_&]:shadow-none"))}>
+                c === "Actions" && cn(IF_TABLE.fixedRightHead, "z-[1] w-[220px] max-sm:w-12", IF_TABLE.unpinPhone))}>
                 {c === "Actions" ? <span className="max-sm:sr-only">Actions</span> : c}
               </th>
             ))}
@@ -194,13 +187,14 @@ export function RuleTable({
                   <td className={cn(IF_TABLE.td, "whitespace-nowrap max-sm:hidden")}>
                     {next ?? <span className="text-muted">—</span>}
                   </td>
-                  <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight, "z-[1] w-[220px] whitespace-nowrap max-sm:static max-sm:w-12 max-sm:px-2 max-sm:align-top max-sm:shadow-none max-sm:[html[data-theme=light]_&]:shadow-none")}>
+                  <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight, "z-[1] w-[220px] whitespace-nowrap max-sm:w-12 max-sm:px-2 max-sm:align-top", IF_TABLE.unpinPhone)}>
                     <span className="inline-flex gap-4 max-sm:hidden">
                       <button type="button" className={LINK} disabled={busy.run} onClick={() => onRun(r)}>Run now</button>
                       <button type="button" className={LINK} onClick={() => onEdit(r)}>Edit</button>
                       <button type="button" className={LINK} disabled={busy.remove} onClick={() => onDelete(r)}>Delete</button>
                     </span>
-                    <span className="sm:hidden"><RowMenu rule={r} busy={busy} onPick={(a) => act(r, a)} /></span>
+                    <span className="sm:hidden"><RowMenu rule={r} busy={busy} onRun={() => onRun(r)} onEdit={() => onEdit(r)}
+                      onToggle={() => onToggle(r)} onDelete={() => onDelete(r)} /></span>
                   </td>
                 </tr>
                 {expanded && (

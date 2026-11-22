@@ -150,6 +150,10 @@ router = APIRouter()
 
 MANUAL_PATH = Path(__file__).with_name("assistant_manual.md")
 PURPOSE = "help_assistant"          # the tag every call is logged under in grok_calls
+# The answer's output cap, sent and reserved against on every lane (rwl W30 C4, as the draft's F11): an
+# OpenAI-wire call with none reserved only an assumed 1,024 while the provider could write more past the cap.
+# The native Claude lane's own cap (llm_anthropic.MAX_TOKENS), so a thinking model keeps its room.
+ASK_MAX_TOKENS = 4096
 MAX_QUESTION_CHARS = 1000
 
 
@@ -594,6 +598,7 @@ class Reply:
     provider: str
     error: str | None = None      # machine tag; None on success
     cost_millicents: int | None = None
+    about: str | None = None      # the account the live state described (rwl W30 C3); None = General
 
 
 async def _complete(model: str, user_content: str, *, account_id: str | None,
@@ -601,16 +606,19 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
                     capped: str = "This account's AI budget is used up for today.",
                     fallback: str | None = None,
                     purpose: str = PURPOSE, system: str | None = None,
-                    response_format: dict | None = None) -> Reply:
+                    response_format: dict | None = None, max_tokens: int | None = None) -> Reply:
     """One help-bot completion, every provider failure turned into an answer.
 
     `fallback` is set only when `model` is a KEYED purpose default
     (`resolve_model_and_fallback`): a cap, key or provider failure then gets
     exactly ONE retry on it, and the Reply names the model that answered.
     `purpose`/`system`/`response_format`: the "Do it for me" draft
-    (assistant_draft.py) reuses this with its own prompt and JSON mode."""
+    (assistant_draft.py) reuses this with its own prompt and JSON mode;
+    `max_tokens` caps its output and is what the budget reserves (llm_client.chat)."""
     sent = Reply("", model=model, provider=MODELS[model].provider)
-    extra = {"response_format": response_format} if response_format is not None else {}
+    extra: dict = {"response_format": response_format} if response_format is not None else {}
+    if max_tokens is not None:
+        extra["max_tokens"] = max_tokens
     try:
         result = await llm_client.chat(
             model=model,
@@ -656,7 +664,7 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
                 model, failed.error, fallback)
     return await _complete(fallback, user_content, account_id=account_id,
                            user_id=user_id, capped=capped, purpose=purpose,
-                           system=system, response_format=response_format)
+                           system=system, response_format=response_format, max_tokens=max_tokens)
 
 
 # ── Turns: one server-owned read for the history GET and the prompt ───
@@ -803,7 +811,9 @@ async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
     row_id = await _record_turn(question=question, reply=reply, role=role,
                                 account_id=body.account_id, thread_id=thread_id,
                                 started=started)
-    return {"answer": reply.answer, "error": reply.error, "id": row_id}
+    # `about`: the account the answer's data is about — the paste may resolve another of the
+    # asker's models than the thread's focus; the answer's live cards fetch it (rwl W30 C3).
+    return {"answer": reply.answer, "error": reply.error, "id": row_id, "about": reply.about}
 
 
 async def _ask(body: AskBody, question: str, role: str,
@@ -816,7 +826,7 @@ async def _ask(body: AskBody, question: str, role: str,
         note = GENERAL_NOTE if _has_creator() else NO_ACCOUNT_NOTE
         return await _complete(
             model, _user_block(question, role, note, history=prev),
-            account_id=None, user_id=_asker_ids()[0], fallback=fallback,
+            account_id=None, user_id=_asker_ids()[0], fallback=fallback, max_tokens=ASK_MAX_TOKENS,
             capped="Today's help-bot budget is used up — try again tomorrow.")
 
     # Resolution comes FIRST: the paste may name a different model, and the live
@@ -832,7 +842,8 @@ async def _ask(body: AskBody, question: str, role: str,
     model, fallback = await resolve_model_and_fallback(body.account_id, PURPOSE)
     reply = await _complete(
         model, _user_block(question, role, state, target.block, history=prev),
-        account_id=body.account_id, fallback=fallback)      # pays — see above
+        account_id=body.account_id, fallback=fallback, max_tokens=ASK_MAX_TOKENS)      # pays — see above
+    reply.about = target.account_id
     if reply.error is None:
         # The model answered without rows it should have had — be honest about why.
         if state is None:

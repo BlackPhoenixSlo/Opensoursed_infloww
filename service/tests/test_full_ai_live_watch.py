@@ -37,7 +37,9 @@ from automations import full_ai_live  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import AiDecision, AutomationRule  # noqa: E402
 
-KEYS = ("full_ai_breach", "full_ai_live_on", "full_ai_live_rows", "full_ai_double", "full_ai_strays")
+KEYS = ("full_ai_breach", "full_ai_live_on", "full_ai_live_rows", "full_ai_double", "full_ai_strays",
+        "full_ai_orphans")
+PER_ACCT = ("full_ai_live_on", "full_ai_live_rows", "full_ai_double", "full_ai_orphans")
 
 
 def sweep(aid: str) -> dict[str, list]:
@@ -49,12 +51,12 @@ def sweep(aid: str) -> dict[str, list]:
              for k in KEYS}
     finally:
         ro.close()
-    return {k: [r for r in v if r[0] == aid] if k in ("full_ai_live_on", "full_ai_live_rows", "full_ai_double")
-            else v for k, v in d.items()}
+    return {k: [r for r in v if r[0] == aid] if k in PER_ACCT else v for k, v in d.items()}
 
 
 def live_verdict(d: dict) -> tuple[str, str]:
-    return fw.judge_live(d["full_ai_live_rows"], d["full_ai_double"], {r[0] for r in d["full_ai_live_on"]}, set(), [])
+    return fw.judge_live(d["full_ai_live_rows"], d["full_ai_double"], {r[0] for r in d["full_ai_live_on"]}, set(), [],
+                         d["full_ai_orphans"])
 
 
 async def _run(aid, fan, mid, rid, **kw):

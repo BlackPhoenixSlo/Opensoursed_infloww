@@ -28,6 +28,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_choices_chat.py  (exit 0 = pas
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+from _jev_fixtures import mapped  # noqa: E402
 
 _harness.bootstrap()
 
@@ -153,7 +154,7 @@ def _vault(items: dict[int, str], folders: dict[str, tuple[tuple[int, ...], bool
                                 duration_seconds=12 if kind == "video" else None,
                                 created_at=T0 + timedelta(days=mid % 400), tags="[]",
                                 describe_status="described", of_folder_ids="[]",
-                                ai_fields_json=json.dumps({**DRESSED, vault_jev_rules.JEV_KEY: _jev(kind)})))
+                                ai_fields_json=json.dumps(mapped({**DRESSED, vault_jev_rules.JEV_KEY: _jev(kind)}))))
             for name, (members, deleted) in folders.items():
                 f = VaultFolder(account_id=A, name=name, deleted_at=T0 if deleted else None)
                 s.add(f)

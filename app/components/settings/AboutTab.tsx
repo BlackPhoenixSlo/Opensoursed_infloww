@@ -12,7 +12,7 @@ import { useInDesktopApp } from "@/hooks/useInDesktopApp";
 import { REPO_URL } from "@/lib/repoUrl";
 import { version } from "@/package.json";
 import { cn } from "@/lib/utils";
-import { BRAND_LOGO, BRAND_NAME } from "@/lib/brand";
+import { BRAND_LOGO, BRAND_NAME, DESKTOP_PLATFORMS, DESKTOP_URL } from "@/lib/brand";
 
 const LINK = "text-[length:var(--if-fs)] text-[var(--if-accent)] hover:underline underline-offset-2";
 
@@ -40,10 +40,10 @@ export default function AboutTab() {
             <div className="mb-4 flex flex-wrap w-[760px] max-w-full items-center justify-between gap-4 rounded border border-[var(--if-line)] p-4 text-left">
               <div>
                 <p className="text-[length:var(--if-fs-lg)] font-medium text-[var(--if-fg)]">Get the desktop app</p>
-                <p className="text-[length:var(--if-fs)] text-[var(--if-fg-2)]">{BRAND_NAME} for Mac, Windows and Linux</p>
+                <p className="text-[length:var(--if-fs)] text-[var(--if-fg-2)]">{BRAND_NAME} for {DESKTOP_PLATFORMS}</p>
               </div>
               {/* A plain <a>: /download is a static file outside the router. */}
-              <a href="/download" className={cn(IF_BTN, "inline-flex shrink-0 items-center")}>
+              <a href={DESKTOP_URL} className={cn(IF_BTN, "inline-flex shrink-0 items-center")}>
                 Download
               </a>
             </div>

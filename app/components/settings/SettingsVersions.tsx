@@ -13,12 +13,7 @@
 import type { SettingsVersion } from "@/lib/settingsBlob";
 import { Section } from "@/components/settings/SettingsPanel";
 import { IfDateInput } from "@/components/ui/ifDateInput";
-
-/** `datetime-local` text (local wall time, minutes) for an instant. */
-function localInput(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
+import { dateTimeKey as localInput } from "@/components/ui/ifDateValue";
 
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 

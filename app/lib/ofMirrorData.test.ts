@@ -115,6 +115,14 @@ describe("applyData", () => {
     expect(doc.querySelector("a[href*='?chat=']")).toBeNull();
   });
 
+  it("chat: the price link carries ?chat= before the thread arrives (a click then still returns to the chat)", () => {
+    const doc = load("messages/chat");
+    applyData(doc, "messages/chat", { chat: "102" });
+    expect(doc.querySelector("a[at-attr='price_btn']")?.getAttribute("href")).toBe("/of-manager/messages/chat/state-price?chat=102");
+    applyData(doc, "messages/chat", {});
+    expect(doc.querySelector("a[at-attr='price_btn']")?.getAttribute("href")).toBe("/of-manager/messages/chat/state-price");
+  });
+
   it("chat: a media message shows its still in OF's media bubble; no usable URL keeps the Media text", () => {
     const doc = load("messages/chat");
     const photo = { id: 9, type: "photo", width: 600, height: 800, files: { thumb: { url: "https://cdn.example/t.jpg" }, preview: { url: "https://cdn.example/p.jpg" } } };

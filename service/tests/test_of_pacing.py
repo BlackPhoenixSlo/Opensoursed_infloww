@@ -30,7 +30,8 @@ busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
   case_proxy_slot_shared:   ledger pages of two Creators on one exit: every departure on it
                             >= PAGE_GAP_S apart; a third Creator on another exit unpaced by them.
   case_proxy_retry_shares_slot: a 429's retry takes the exit slot too (spaced from the other
-                            Creator's pages), still exactly one retry; its log names the exit, no credential.
+                            Creator's pages), still exactly one retry; its log names the exit
+                            hashed (`p-<8 hex>`), never its IP or a credential.
   case_only_the_ledger_walk_is_proxy_paced: through OFClient.get_json, two Creators on one proxy:
                             a link-refresh walk's pages leave together (per Creator only), a
                             transactions walk's are spaced; outside a walk never paced.
@@ -417,8 +418,11 @@ def case_proxy_retry_shares_slot():
     assert sum(1 for a, _ in sent if a == "a1") == 4 and sum(1 for a, _ in sent if a == "a2") == 3, sent
     assert _spaced([t for _, t in sent], gap), "the retry takes the endpoint slot too"
     retry = [x for x in lines if x.startswith("bg_walk_429_retry")]
-    assert len(retry) == 1 and "account=a1" in retry[0] and f"proxy={K1}" in retry[0], retry
+    assert len(retry) == 1 and "account=a1" in retry[0], retry
+    assert f"proxy={of_pacing.exit_label(K1)}" in retry[0] and "proxy=p-" in retry[0], retry
+    assert K1 not in retry[0] and "10.0.0.1" not in retry[0], "the exit is logged hashed, never its IP"
     assert "pw" not in retry[0] and "u:" not in retry[0] and "@" not in retry[0], retry
+    assert of_pacing.exit_label("direct") == "direct" and of_pacing.exit_label(None) == "-"
 
 
 _SESSION = {"headers": {"user_id": "0", "x_bc": "bc", "x_of_rev": "rev", "user_agent": "ua"},

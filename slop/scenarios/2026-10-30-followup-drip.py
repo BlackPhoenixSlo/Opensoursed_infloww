@@ -75,7 +75,7 @@ scenario's own KILLED. Bypasses, declared: the KILL fans' `fan_lease` rows (the 
 `fans.automation_paused_until` nulled by SQL before the last tick (a no-op on correct code; the
 house funnel's twin needs it). Fault `followup-sending-marker-ignored` (`Entry.marked` always
 False): only the three KILL checks go red (tick 1 re-sends the hung nudge, whose Sent save
-clears the marker: nothing listed, Retry answers already_sent).
+clears the marker: nothing listed, so no listed `since`: Retry answers 422).
 """
 from __future__ import annotations
 
@@ -403,7 +403,9 @@ async def _kill_phase(ctx, w, aids: list[str]) -> None:
     for _ in range(2):
         ticks.append(await kill.tick_all())
     listed, get_status = await kill.unconfirmed()
-    retried = await kill.retry(con, {(a, f): {"kind": "followup", "fan_id": f} for a, f in sorted(keys)})
+    retried = await kill.retry(con, {(a, f): {"kind": "followup", "fan_id": f,   # the listed attempt's since
+                                              "since": (listed.get((a, f)) or {}).get("since", "")}
+                                     for a, f in sorted(keys)})
     t_retry = kill.t_retry
     ticks.append(await kill.tick_all())
     state = {(a, int(f)): {"sent": json.loads(m or "{}"), "phase": ph, "marked": sa is not None or ua is not None}

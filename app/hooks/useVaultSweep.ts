@@ -57,6 +57,9 @@ export interface SweepProgress {
   capped?: boolean;
   failed?: number;
   error?: string;
+  /** A sweep-wide skip worth its own line, whatever failed first (the Jev daily cap: Jev skipped for the rest of
+   *  the sweep) — the relay's sentence (`vault_sweep.run`). */
+  notice?: string;
   /** The sweep DIED — it did not finish. Server-side this is the outer handler
    *  stamping the exception that ended the run. Without it a dead sweep and a
    *  finished one are the same two facts (`running: false`, `done < total`) and
@@ -304,6 +307,11 @@ export function sweepCounts(
   return null;
 }
 
+/** The sweep's own-line notice (the Jev cap), "" when it only repeats `error`. */
+function noticeLine(progress: SweepProgress | null): string {
+  return progress?.notice && progress.notice !== progress.error ? progress.notice : "";
+}
+
 /** The describe button's live text, plus the tooltip that carries what will not
  *  fit on it. Failures stay off the button (it would wrap) but must not be
  *  invisible: 7 silent audio failures is a shrug, a whole vault failing on a
@@ -320,6 +328,7 @@ export function describeSweepText(
     `Describing ${label} — keeps running if you close this page.`,
     progress?.failed ? `${progress.failed} could not be described.` : "",
     progress?.error ? `First error: ${progress.error}` : "",
+    noticeLine(progress),
   ]
     .filter(Boolean)
     .join("\n");
@@ -343,15 +352,19 @@ export function sweepAbortedNote(
   progress: SweepProgress | null,
   now: number = Date.now(),
 ): { text: string; detail: string; tone: "warn" | "info" } | null {
-  // The relay's own sentences, stop first.
+  // The relay's own sentences, stop first; a Jev cap recorded before the stop keeps its line (W30 C7).
   const stop = progress?.key_error ?? progress?.stop;
-  if (stop) return { text: stop.message, detail: stop.fix, tone: "warn" };
+  if (stop) {
+    const detail = [stop.fix, noticeLine(progress)].filter(Boolean).join("\n");
+    return { text: stop.message, detail, tone: "warn" };
+  }
   if (!progress) return null;
   if (progress.aborted) {
     const left = Math.max(0, (progress.total || 0) - (progress.done || 0));
     return {
       text: `Stopped early — ${left} left. Press again to resume.`,
-      detail: progress.error || "The sweep ended before it finished.",
+      detail: [progress.error || "The sweep ended before it finished.", noticeLine(progress)]
+        .filter(Boolean).join("\n"),
       tone: "warn",
     };
   }
@@ -360,7 +373,10 @@ export function sweepAbortedNote(
   if (!failed || !Number.isFinite(at) || now - at > FAILED_NOTE_MAX_MS) return null;
   return {
     text: `Last run ${fmtAgo(progress.finished_at) ?? ""}: ${failed} of ${progress.total} failed.`,
-    detail: progress.error ? `First error: ${progress.error}` : "No error was recorded.",
+    detail: [
+      progress.error ? `First error: ${progress.error}` : "No error was recorded.",
+      noticeLine(progress),
+    ].filter(Boolean).join("\n"),
     tone: failed >= (progress.done || 0) ? "warn" : "info",
   };
 }

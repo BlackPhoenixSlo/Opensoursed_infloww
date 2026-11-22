@@ -7,8 +7,9 @@
  * runner (useDoRunner.ts) opens the page, dispatches the steps through the agent bridge and saves through the
  * editor's own Save. Pure, so the slots → steps table is tested (doFlows.test.ts).
  *
- * SAFETY: every recipe ends with Enabled OFF (and Dry run off) right before Save — the user's toggle is the go-live
- * (D2). A slot left at the blank form's default makes NO step: the agent never "touches" a default it wasn't asked to
+ * SAFETY: every recipe switches Enabled OFF (and Dry run off) FIRST, right after the form opens and before any content
+ * step, so a run stopped halfway never leaves a filled form ON for the user's own Save (rwl W30 F2); the agent's save
+ * forces OFF too (D7). The user's toggle is the go-live (D2). A slot left at the blank form's default makes NO step: the agent never "touches" a default it wasn't asked to
  * change (onlineOnly, excludeLastChatHours, the audience).
  *
  * `mass_edit` (D11, existing rules) is no recipe: no editor, no cursor — the server applies it (massEdit.ts).
@@ -112,6 +113,8 @@ export interface AgentStep<A = RuleEditorAction | AutoStoriesAction> {
   label: string;
   /** A caption the runner may type in visibly (typingFrames). */
   typing?: boolean;
+  /** The step that switches the form OFF (set by the recipe builders; leftFilled reads it, rwl W30 S4). */
+  off?: true;
 }
 
 export interface DoFlow<S, A> {
@@ -153,7 +156,11 @@ function rowPatch(patch: Partial<Row>): RuleEditorAction {
 }
 
 function massToActions(s: MassPremadeSlots): AgentStep<RuleEditorAction>[] {
-  const steps: AgentStep<RuleEditorAction>[] = [{ target: `rm-${MP}-new`, action: "open", label: "Opening a new Auto Mass…" }];
+  const steps: AgentStep<RuleEditorAction>[] = [
+    { target: `rm-${MP}-new`, action: "open", label: "Opening a new Auto Mass…" },
+    // ALWAYS first after open: the rule is OFF before anything is filled (D2, F2).
+    { target: `rm-${MP}-enabled`, action: { type: "field", patch: { enabled: false, dryRun: false } }, label: "Leaving it OFF — you turn it on", off: true },
+  ];
   const name = s.name.trim();
   if (name) steps.push({ target: `rm-${MP}-name`, action: { type: "field", patch: { name } }, label: "Naming it…" });
   const value = Math.max(1, Math.round(s.interval.value) || 1);
@@ -216,8 +223,6 @@ function massToActions(s: MassPremadeSlots): AgentStep<RuleEditorAction>[] {
     }
   }
   if (more.length) steps.push({ target: `pm-${MP}-more-toggle`, action: "reveal", label: "Opening more settings…" }, ...more);
-  // ALWAYS, last before Save: the rule is saved OFF (D2).
-  steps.push({ target: `rm-${MP}-enabled`, action: { type: "field", patch: { enabled: false, dryRun: false } }, label: "Leaving it OFF — you turn it on" });
   steps.push({ target: `rm-${MP}-save`, action: "save", label: "Saving…" });
   return steps;
 }
@@ -293,10 +298,13 @@ const storySet = (patch: Partial<typeof STORY_BLANK>): AutoStoriesAction => ({ t
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 const whole = (v: number, lo: number) => Math.max(lo, Math.round(v) || 0);
 
-/** The Auto Story page's own order: folder, when to post (mode, then its times or hours), stories per run, delete
- *  after, total runs; then Enabled OFF and Save. */
+/** Enabled OFF first, then the Auto Story page's own order: folder, when to post (mode, then its times or hours),
+ *  stories per run, delete after, total runs; then Save. */
 function storyToActions(s: AutoStorySlots): AgentStep<AutoStoriesAction>[] {
-  const steps: AgentStep<AutoStoriesAction>[] = [];
+  // ALWAYS first: the rule is OFF before anything is filled (D2, F2).
+  const steps: AgentStep<AutoStoriesAction>[] = [
+    { target: "story-enabled", action: storySet({ enabled: false }), label: "Leaving it OFF — you turn it on", off: true },
+  ];
   if (s.folder) {
     steps.push({ target: "story-folder", action: storySet({ folderId: Number(s.folder.id) }), label: `Picking folder “${s.folder.name}”…` });
   }
@@ -321,8 +329,6 @@ function storyToActions(s: AutoStorySlots): AgentStep<AutoStoriesAction>[] {
     const n = whole(s.max_runs, 1);
     steps.push({ target: "story-max-runs", action: storySet({ maxRuns: n }), label: `Stop after ${plural(n, "run")}` });
   }
-  // ALWAYS, last before Save: the rule is saved OFF (D2).
-  steps.push({ target: "story-enabled", action: storySet({ enabled: false }), label: "Leaving it OFF — you turn it on" });
   steps.push({ target: "story-save", action: "save", label: "Saving…" });
   return steps;
 }
@@ -379,6 +385,27 @@ export function boundFlow(d: DoDraft): BoundFlow | null {
   if (d.flow === "mass_premade" && d.slots) return bind(DO_FLOWS.mass_premade, d.slots, d.account_id);
   if (d.flow === "auto_story" && d.slots) return bind(DO_FLOWS.auto_story, d.slots, d.account_id);
   return null;
+}
+
+/** The step that switches the form OFF: the builder's marker, never a guess from the patch's shape. */
+const isOffStep = (st: AgentStep) => st.off === true;
+
+/** A run that stopped (aborted / failed) while on step index `step`: did it leave the form open and filled? Only past
+ *  the OFF step — which precedes every content step, so a filled form is always OFF. */
+export function leftFilled(steps: AgentStep[], step: number | undefined): boolean {
+  const off = steps.findIndex(isOffStep);
+  return off >= 0 && step !== undefined && step > off;
+}
+
+/** The line after a stopped run: what the page holds now. */
+export function stoppedLine(how: { aborted: string } | { failed: string }, filled: boolean): string {
+  if ("aborted" in how) {
+    return filled
+      ? `${how.aborted}. The form is partly filled and switched OFF — nothing was saved.`
+      : `${how.aborted}. The page is left as it was — nothing more is filled in or saved.`;
+  }
+  const msg = `Couldn't finish: ${how.failed.trim().replace(/[.\s]*$/, ".")}`;
+  return filled ? `${msg} The form is left open for you, switched OFF.` : msg;
 }
 
 /** The fixed note under every plan card. */

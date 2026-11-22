@@ -171,6 +171,7 @@ export default function VaultMediaToolbar({
   onSelectAll,
   selectMode,
   onToggleSelect,
+  selectAllOff = false,
   disabled = false,
 }: {
   search: string;
@@ -190,6 +191,8 @@ export default function VaultMediaToolbar({
   onSelectAll: () => void;
   selectMode: boolean;
   onToggleSelect: () => void;
+  /** Select all off: the grid still shows the previous view's tiles while the new one loads. */
+  selectAllOff?: boolean;
   /** Every control off (the no-Creator frame). */
   disabled?: boolean;
 }) {
@@ -286,7 +289,7 @@ export default function VaultMediaToolbar({
               aria-label="Select all"
               title="Select all"
               onClick={onSelectAll}
-              disabled={disabled || loadedCount === 0}
+              disabled={disabled || selectAllOff || loadedCount === 0}
               className={iconBox}
             >
               <CheckSquare size={18} aria-hidden />

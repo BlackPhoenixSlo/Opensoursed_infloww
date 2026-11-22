@@ -11,6 +11,7 @@
 import { useSyncExternalStore } from "react";
 import { X } from "lucide-react";
 
+import { DESKTOP_URL } from "@/lib/brand";
 import { isOlderVersion, LATEST_DESKTOP_VERSION } from "@/lib/desktopVersion";
 import { subscribeToStorage } from "@/lib/storageSync";
 
@@ -40,7 +41,7 @@ export function DesktopUpdateBanner() {
       className="fixed bottom-3 right-3 z-[60] flex items-center gap-3 rounded-lg border border-border bg-bg-elev-1 px-3 py-2 text-sm text-fg shadow-lg"
     >
       <span>Desktop update available (v{LATEST_DESKTOP_VERSION})</span>
-      <a href="/download" target="_blank" rel="noopener" className="text-accent underline">
+      <a href={DESKTOP_URL} target="_blank" rel="noopener" className="text-accent underline">
         Download
       </a>
       <button

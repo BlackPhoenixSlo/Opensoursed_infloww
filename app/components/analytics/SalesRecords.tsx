@@ -210,9 +210,8 @@ function fmtWhen(iso: string, timeZone: string | null): string {
 
 const CELL = cn(IF_TABLE.td, "whitespace-nowrap py-2 h-12");
 const HEAD = cn(IF_TABLE.th, IF_TABLE.thDivider);
-/** Action pins right from `sm` up; on a phone a pinned 122px column left the rest a sliver ("E" for Employee), so
- *  there it scrolls with the row (RuleTable's precedent). */
-const UNPIN_PHONE = "max-sm:static max-sm:shadow-none max-sm:[html[data-theme=light]_&]:shadow-none";
+// Action pins right from `sm` up; on a phone a pinned 122px column left the rest a sliver ("E" for Employee), so
+// there it scrolls with the row (IF_TABLE.unpinPhone, RuleTable's precedent).
 
 /** The batch bar: how many sales are selected, a picker, "Reassign selected" and "Clear selection". */
 function BatchReassign({ txIds, employees, capped, onDone }: {
@@ -348,7 +347,7 @@ export default function SalesRecords() {
                   ) : c}
                 </th>
               ))}
-              {user && <th className={cn(HEAD, IF_TABLE.fixedRightHead, UNPIN_PHONE)}>Action</th>}
+              {user && <th className={cn(HEAD, IF_TABLE.fixedRightHead, IF_TABLE.unpinPhone)}>Action</th>}
             </tr>
           </thead>
           <tbody>
@@ -385,7 +384,7 @@ export default function SalesRecords() {
                     </span>
                   </td>
                   {user && (
-                    <td className={cn(CELL, IF_TABLE.fixedRight, UNPIN_PHONE)}>
+                    <td className={cn(CELL, IF_TABLE.fixedRight, IF_TABLE.unpinPhone)}>
                       <ReassignCell txId={r.tx_id} employees={pickers} />
                     </td>
                   )}

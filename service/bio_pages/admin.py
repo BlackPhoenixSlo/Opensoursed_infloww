@@ -32,10 +32,14 @@ domains can't be set or checked, only removed) and BIO_SERVER_IPV6 (optional: th
 
 Custom domain (`PUT /{pid}/domain {domain}`, `DELETE /{pid}/domain`, `POST /{pid}/domain/check`): one per page (a
 new one replaces it, the same one keeps its row and token), at most domains.MAX_PER_OWNER per account, never this
-service's own hosts. Several pages may hold the same `pending` domain (nobody can squat one); only one row per domain
-may be `pending_cert` / `live` (checked under the write lock, and the live index). The check reads DNS and probes
-HTTPS outside any transaction (bio_pages/domains.py), at most once per page every CHECK_GAP_S. Sentences, records and the
-check's `{status, problems}` are ofl.ink v2's (~/oflinkv2/app/server.js, the domain-check route), plus `pending_cert`.
+service's own hosts. Several pages may hold the same `pending` domain, even one another page serves (nobody can squat
+one); only one row per domain may be `pending_cert` / `live` (checked under the write lock, and the live index). Current
+DNS wins: a page whose check proves a domain another page serves (a fresh lookup, its token the TXT's only
+`oflink-verify=` value; domains.check `sole`) takes it in one write that re-reads both rows (changed → 409), the
+other page back to `pending` with a fresh token. The check reads DNS and probes HTTPS outside any transaction
+(bio_pages/domains.py), at most once per page every CHECK_GAP_S; its write lands only on the row, token and status it
+checked (a stale check → 409). Sentences, records and the check's `{status, problems}` are ofl.ink v2's
+(~/oflinkv2/app/server.js, the domain-check route), plus `pending_cert`.
 """
 from __future__ import annotations
 
@@ -452,7 +456,6 @@ async def delete_page(pid: str) -> Response:
 # ── custom domain ────────────────────────────────────────────────────
 
 CHECK_GAP_S = 10
-_VERIFIED = ("pending_cert", "live")
 _DOMAINS_OFF = domains.OFF_MSG
 
 
@@ -479,11 +482,11 @@ def _example(username: str) -> str:
     return f"{username.replace('_', '') or 'yourname'}.com"
 
 
-async def _taken(s, domain: str, pid: str) -> bool:
-    """Another page's row holds `domain` past `pending`."""
-    return (await s.execute(select(BioCustomDomain.id).where(
+async def _holder(s, domain: str, pid: str):
+    """Another page's row that holds `domain` past `pending` (id, token, status), or None."""
+    return (await s.execute(select(BioCustomDomain.id, BioCustomDomain.token, BioCustomDomain.status).where(
         BioCustomDomain.domain == domain, BioCustomDomain.profile_id != pid,
-        BioCustomDomain.status.in_(_VERIFIED)))).first() is not None
+        BioCustomDomain.status.in_(decide.VERIFIED)))).first()
 
 
 @router.put("/{pid}/domain")
@@ -508,8 +511,6 @@ async def set_domain(pid: str, request: Request) -> dict[str, Any]:
         cur = (await s.execute(select(BioCustomDomain).where(BioCustomDomain.profile_id == pid))).scalar_one_or_none()
         if cur is not None and cur.domain == domain:
             return await _page(s, owner, pid)  # same domain: its row, token and status stay
-        if await _taken(s, domain, pid):
-            raise HTTPException(409, {"field": "domain", "msg": _in_use(domain)})
         n = (await s.execute(select(func.count()).select_from(BioCustomDomain).join(
             BioProfile, BioProfile.id == BioCustomDomain.profile_id).where(
             BioProfile.owner_user_id == owner, BioCustomDomain.profile_id != pid))).scalar_one()
@@ -539,7 +540,8 @@ async def remove_domain(pid: str) -> dict[str, Any]:
 @router.post("/{pid}/domain/check")
 @_safe_write
 async def check_domain(pid: str) -> dict[str, Any]:
-    """DNS, then the HTTPS probe; the row's next status is written only if it is still the row that was checked."""
+    """DNS, then the HTTPS probe; the row's next status is written only if it is still the row that was checked.
+    A domain another page serves moves here only on this check's sole proof, if neither row changed meanwhile."""
     owner = await _owner()
     _id_or_404(pid)
     async with get_session() as s:
@@ -552,6 +554,7 @@ async def check_domain(pid: str) -> dict[str, Any]:
                 raise HTTPException(404, "no such bio page")
             raise HTTPException(409, "This page has no custom domain.")
         own = cur.status != "live" and domains.own_host(cur.domain, await _own_hosts(s))
+        incumbent = await _holder(s, cur.domain, pid)
     ip = domains.server_ip()
     if ip is None and cur.status != "live":
         raise HTTPException(409, _DOMAINS_OFF)
@@ -560,13 +563,24 @@ async def check_domain(pid: str) -> dict[str, Any]:
     if own:  # a spare domain added since it was saved
         status, problems = "pending", [_own_msg(cur.domain)]
     else:
-        status, problems = await domains.check(cur.domain, cur.token, cur.status, ip or "", domains.server_ipv6())
+        status, problems = await domains.check(cur.domain, cur.token, cur.status, ip or "", domains.server_ipv6(),
+                                               sole=incumbent is not None)
     async with get_session() as s:
         await _lock_own(s, owner, pid)
-        if (await s.execute(select(BioCustomDomain.id).where(BioCustomDomain.id == cur.id))).first() is None:
+        if (await s.execute(select(BioCustomDomain.id).where(
+                BioCustomDomain.id == cur.id, BioCustomDomain.token == cur.token,
+                BioCustomDomain.status == cur.status))).first() is None:
             raise HTTPException(409, "The custom domain changed: reload.")
-        if status in _VERIFIED and status != cur.status and await _taken(s, cur.domain, pid):
-            status, problems = "pending", [_in_use(cur.domain)]  # v2: the live write's clash is a problem
+        holder = await _holder(s, cur.domain, pid)
+        if status in decide.VERIFIED:
+            if incumbent is None and holder is not None:  # uncontested at the lookup, claimed since: v2's clash problem
+                status, problems = "pending", [_in_use(cur.domain)]
+            elif holder != incumbent:  # the serving row changed since the lookup proved this one over it
+                raise HTTPException(409, "The custom domain changed: reload.")
+            elif incumbent is not None:  # sole proof of a served domain: it moves here
+                await s.execute(update(BioCustomDomain).where(BioCustomDomain.id == incumbent.id)
+                                .values(status="pending", token=files.new_id(32)))
+                log.info("bio admin: custom domain moved here by DNS: page=%s", pid)
         try:
             await s.execute(update(BioCustomDomain).where(BioCustomDomain.id == cur.id)
                             .values(status=status, checked=_now()))
@@ -626,13 +640,17 @@ def _file_name(stem: str | None) -> str:
 
 
 async def _set_file(owner: str, pid: str, model, col, collection: str, rid: str, stem: str,
-                    data: bytes | None, values: dict[str, Any] | None = None
+                    data: bytes | None, values: dict[str, Any] | None = None, *, account: str | None = None
                     ) -> dict[str, Any]:
-    """Point a row at a new file, then drop the old file after commit."""
+    """Point a row at a new file, then drop the old file after commit. `account`: the Creator a vault photo
+    was fetched for; the page's Creator under the write lock must still be it (else 409, nothing written)."""
     name = _file_name(stem) if data is not None else ""
     async with files.staged(collection, rid, name, data):
         async with get_session() as s:
             await _lock_own(s, owner, pid)
+            if account is not None and (await s.execute(select(BioProfile.account_id).where(
+                    BioProfile.id == pid))).scalar_one() != account:
+                raise HTTPException(409, "The page's Creator changed while that photo loaded. Pick again.")
             if model is BioLink:
                 await _owned_link(s, owner, pid, rid)
             old = (await s.execute(select(col).where(model.id == rid))).scalar_one()
@@ -668,11 +686,14 @@ async def upload_avatar(pid: str, request: Request) -> dict[str, Any]:
 
 async def _vault_still(account_id: str, media_id: int) -> bytes:
     """A vault photo's bytes via vault_stills (disk, mirror url, by-id re-sign; the account's egress). Photos only:
-    a mirror row of another kind is refused, and a re-signed media that is not a photo yields no url."""
+    a mirror row of another kind is refused, a removed one (soft-deleted) is gone, and a re-signed media that is not
+    a photo yields no url."""
     import vault_frames
     import vault_stills
     async with get_session() as s:
         item = await s.get(VaultItem, (account_id, media_id))
+    if item is not None and item.removed_at is not None:
+        raise HTTPException(404, "That vault item is gone.")
     if item is not None and item.kind != "photo":
         raise HTTPException(415, "Pick a photo, not a video.")
     def pick(m: dict) -> str | None:
@@ -718,7 +739,7 @@ async def avatar_from_vault(pid: str, request: Request) -> dict[str, Any]:
     aid, mid, data = await _vault_image(owner, pid, request, images.AVATAR_SIDE)
     log.info("bio admin: avatar from vault: page=%s account=%s media=%s", pid, aid, mid)
     return _audit_as(request, await _set_file(owner, pid, BioProfile, BioProfile.avatar, "profiles", pid, "avatar",
-                                              data))
+                                              data, account=aid))
 
 
 @router.delete("/{pid}/avatar")
@@ -746,7 +767,7 @@ async def page_background_from_vault(pid: str, request: Request) -> dict[str, An
     aid, mid, data = await _vault_image(owner, pid, request, images.BACKGROUND_SIDE)
     log.info("bio admin: background from vault: page=%s account=%s media=%s", pid, aid, mid)
     return _audit_as(request, await _set_file(owner, pid, BioProfile, BioProfile.background_image, "profiles", pid,
-                                              "background", data))
+                                              "background", data, account=aid))
 
 
 @router.delete("/{pid}/background")
@@ -869,7 +890,7 @@ async def background_from_vault(pid: str, lid: str, request: Request) -> dict[st
     aid, mid, data = await _vault_image(owner, pid, request, images.BACKGROUND_SIDE)
     log.info("bio admin: background from vault: page=%s link=%s account=%s media=%s", pid, lid, aid, mid)
     return _audit_as(request, await _set_file(owner, pid, BioLink, BioLink.background_image, "links", lid,
-                                              "backgroundImage", data))
+                                              "backgroundImage", data, account=aid))
 
 
 @router.delete("/{pid}/links/{lid}/background")

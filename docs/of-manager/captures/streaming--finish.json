@@ -1,0 +1,16 @@
+{
+ "id": "streaming--finish",
+ "section": "streaming",
+ "label": "Finish",
+ "pages": [
+  "streaming/index"
+ ],
+ "phase": 4,
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "track B gate open, owner stream go pending",
+  "note": "Phase 4 track B (D7): the in-stream Finish button; drawn only while a stream runs, so not a swept control on the idle page; unwired; OnlyFans's stream bodies read offline in .scratch/ofm-not-yet/go-live-track-b.md (ticket 93); never proven by implication (story 33)."
+ }
+}

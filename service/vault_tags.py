@@ -75,7 +75,12 @@ def tag_match(tag: str):
     folder = func.lower(func.trim(func.json_extract(_valid(VaultItem.ai_fields_json, "{}"), "$.primary_folder"))) == tag
     raw = func.lower(func.coalesce(VaultItem.tags, "") + func.coalesce(VaultItem.ai_fields_json, ""))
     # Prefilter first: SQLite evaluates AND left to right, so most rows never reach json_each.
-    return (func.instr(raw, tag) > 0) & (in_col | in_ai | folder)
+    # json.dumps stores non-ASCII escaped ("café" → "caf\u00e9"): look for that spelling too.
+    pre = func.instr(raw, tag) > 0
+    esc = json.dumps(tag)[1:-1]
+    if esc != tag:
+        pre = pre | (func.instr(raw, esc) > 0)
+    return pre & (in_col | in_ai | folder)
 
 
 def tags_where(tags: list[str]) -> list:

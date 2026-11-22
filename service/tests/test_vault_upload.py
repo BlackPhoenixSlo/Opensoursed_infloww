@@ -401,6 +401,7 @@ finally:
 check("a row without an entity is never deleted", bare.deleted, [])
 check("…and is logged", sum("no entity" in m for m in _cap.msgs), 2)
 check("…and deletes nothing else", got, 0)
+check("…and the scan is NOT complete (it may be the carrier)", complete, False)
 
 # ── dated carriers: the sweep reads GET /schedules, not later/post ─────────
 # Live read 2026-11-21 (capture queue--scheduled-post-endpoint): a post with a
@@ -459,8 +460,8 @@ check("a recorded dated carrier is kept", (cal.deleted, complete), ([], True))
 
 
 # An INCOMPLETE listing (of_paging.schedules_in_window says why: a full day,
-# a bad reply, ... — tabled in test_of_paging.py) retires nothing, not even the
-# marker posts it did list.
+# a bad reply, ... — tabled in test_of_paging.py) still deletes the marker
+# posts it DID list (presence is proof), but the scan is incomplete.
 _siw_orig = of_paging.schedules_in_window
 of_paging.schedules_in_window = lambda client, days, **kw: (
     [_row(5, days=5, rawText=of_client.VAULT_MARKER)], "2026-11-30: 100 rows in one day")
@@ -470,8 +471,8 @@ try:
                                                               lambda: set())
 finally:
     of_paging.schedules_in_window = _siw_orig
-check("an incomplete listing: nothing deleted, counted, incomplete",
-      (inc.deleted, got, lost_count, complete), ([], 0, 1, False))
+check("an incomplete listing: listed carrier deleted, counted, incomplete",
+      (inc.deleted, got, lost_count, complete), ([5], 1, 1, False))
 
 # A row whose type is missing or unknown is skipped AND logged.
 _cap = _Capture()
@@ -485,8 +486,8 @@ try:
     got, _, complete = vault_upload._sweep_scheduled(odd, "42", lambda: set())
 finally:
     _vlog.removeHandler(_cap)
-check("rows with no/unknown type are never deleted", (odd.deleted, complete),
-      ([], True))
+check("rows with no/unknown type are never deleted, scan incomplete",
+      (odd.deleted, complete), ([], False))
 check("…and each is logged (a chat row is expected, not logged)",
       sum("has type" in m for m in _cap.msgs), 2)
 

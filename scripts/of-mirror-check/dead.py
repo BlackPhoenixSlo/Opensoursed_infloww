@@ -165,9 +165,17 @@ READS=[]
 # that opens a popup to one is a Wired control's or link's outcome: recorded and aborted (no non-localhost load); a popup
 # to any other URL still fails as a non-localhost request.
 HANDOFF=[]
+# SWEEP_QUERY (ticket 33): {page: query}, the query the sweep opens a page with (and reopens it with after a write or a
+# navigation; a URL with just that query is still the page itself, `navigated`). A page with no entry opens bare, as
+# before. For a page whose controls draw only with a query: the chat page's own bubbles need its ?chat=.
+SWEEP_QUERY={}
+def sweep_url(page):
+    """The URL the sweep opens `page` at: url_of, with the page's SWEEP_QUERY if it has one."""
+    q=SWEEP_QUERY.get(page, "")
+    return url_of(page)+(f"?{q}" if q else "")
 # Per-ticket rows live in area modules beside dead.py, merged here in this order (the rows run in it): each module is
 # data plus its own mocks (helpers from dead_lib, never `import dead`: it runs as __main__) and may export PHASE1,
-# READS, SOURCES, V2, MARKED, ALLOWED, ALLOWED_RE, HANDOFF and SWEPT. An explicit tuple, never a glob: a misnamed file
+# READS, SOURCES, V2, MARKED, ALLOWED, ALLOWED_RE, HANDOFF, SWEPT and SWEEP_QUERY. An explicit tuple, never a glob: a misnamed file
 # would be skipped silently, and file order would pick which mock wins. A new area: one more module, listed here.
 MODULES=("dead_statistics", "dead_home", "dead_messages", "dead_settings", "dead_notifications", "dead_collections", "dead_content", "dead_vault",
          "dead_statements", "dead_golive")
@@ -183,7 +191,7 @@ def load(modules):
                 owner[path]=name
         SOURCES.update(getattr(mod, "SOURCES", {})); V2.update(getattr(mod, "V2", {}))
         for table in ("PHASE1", "READS", "MARKED", "ALLOWED_RE", "HANDOFF", "DISABLED"): globals()[table].extend(getattr(mod, table, ()))
-        ALLOWED.update(getattr(mod, "ALLOWED", ())); SWEPT.update(getattr(mod, "SWEPT", ()))
+        ALLOWED.update(getattr(mod, "ALLOWED", ())); SWEPT.update(getattr(mod, "SWEPT", ())); SWEEP_QUERY.update(getattr(mod, "SWEEP_QUERY", {}))
 SWEPT=set()   # pages a module needs swept while its controls are pinned (dead_golive.py), checked against pages()
 load(MODULES)
 HANDOFFS=[]   # the hand-off URLs requested so far (session(), aborted)
@@ -402,7 +410,7 @@ def open_page(pg, page, reopened=False, query=""):
     failures.append(f"{page}: NO IFRAME (url {pg.url})"); return None
 def navigated(pg, page):
     u=urlparse(pg.url)
-    return (u.path!=url_of(page) or u.query) and u  # a link to the page itself with a query (?row=) changes the URL too
+    return (u.path!=url_of(page) or u.query!=SWEEP_QUERY.get(page, "")) and u  # a link to the page itself with a query (?row=) changes the URL too
 def outcome(pg, fr, page, i, probe, sent, choosers, before):
     """The click's first outcome within 1s: ("write"|"chooser"|"handoff"|"nav"|"note"|"changed", detail) or (None, None)."""
     n_sent, n_choosers, n_handoffs=before
@@ -500,10 +508,12 @@ def sweep(b, scope, only=()):
     check(f"{scope}: pages swept", bool(todo), True)
     totals={"controls":0,"links":0,"wired":0,"readonly":0}
     found=[]     # --sweep-out, Single Creator: [page, {"ny", "dis", "ro"}]
+    opened_at=[]   # SWEEP_QUERY (ticket 33): pages the sweep found at another query than their entry (none: bare)
     for page in todo:
         if urlparse(pg.url).hostname in LOCAL: pg.evaluate("sessionStorage.clear()")
-        fr=open_page(pg, page)
+        fr=open_page(pg, page, query=SWEEP_QUERY.get(page, ""))
         if not fr: continue
+        if (q:=urlparse(pg.url).query)!=SWEEP_QUERY.get(page, ""): opened_at.append([page, q])
         marks=[]
         for applies, sel, shown, n in MARKED:
             if applies(page):
@@ -570,7 +580,7 @@ def sweep(b, scope, only=()):
                 silent.append([what, "no write, navigation or note within 1s"])
             i+=1
             if kind in ("write","nav"):
-                fr=open_page(pg, page)
+                fr=open_page(pg, page, query=SWEEP_QUERY.get(page, ""))
                 if not fr: break
                 if (again:=fr.evaluate("window.__deadList()"))!=total:
                     failures.append(f"{page}: {again} controls after a reload, {total} before"); break
@@ -586,6 +596,7 @@ def sweep(b, scope, only=()):
         reads(pg, page, sent, gets)
         if found_page is not None:
             found.append([page, {**found_page, "ro": ro}])
+    check(f"{scope}: SWEEP_QUERY: every page loads at its entry's query, bare with none", opened_at, [])
     print(json.dumps({"scope":scope, "pages":len(todo), **totals}))
     print(f"{scope} relay writes:", [w[:3] for w in sent])
     if HANDOFF: print(f"{scope} hand-offs (aborted):", HANDOFFS[h0:])  # ticket 57
@@ -606,6 +617,7 @@ def list_rows():
         print("MOCK", path, hashlib.sha1(js([SOURCES.get(path), V2.get(path)]).encode()).hexdigest()[:12])
     for applies, sel, shown, n in MARKED: print("MARKED", js([sel, shown, n, [p for p in pages() if applies(p)]]))
     print("ALLOWED", js(sorted(ALLOWED))); print("ALLOWED_RE", js(ALLOWED_RE)); print("HANDOFF", js(HANDOFF)); print("DISABLED", js(DISABLED))
+    print("SWEEP_URL", js([[p, sweep_url(p)] for p in pages()]))
     print("COUNT PHASE1", len(PHASE1))
     print("COUNT READS", len(READS))
 if LIST_ROWS:
@@ -615,6 +627,7 @@ check("v2 mock: the probe answers an object", bool(v2_body("/api/of/v2/streaks/t
 check("v2 mock: a param's other values answer other rows than its default", [p for p, (_, d, o) in V2.items() if any(b==d for b in o.values())], [])
 # The Phase 1 tables cannot pass on absence: every row's page is a swept page, every READS row names what it shows.
 check("PHASE1/READS: every row's page is a page the sweep opens", sorted({r[0] for r in PHASE1}.union(r["page"] for r in READS)-set(pages())), [])
+check("SWEEP_QUERY: every entry's page is a page the sweep opens", sorted(set(SWEEP_QUERY)-set(pages())), [])
 check("READS: every row has `shows`", [read_label(r) for r in READS if not r.get("shows")], [])
 check("SWEPT: every page a module keeps swept is a page the sweep opens", sorted(SWEPT-set(pages())), [])
 with sync_playwright() as p:

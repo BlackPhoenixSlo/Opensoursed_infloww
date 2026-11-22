@@ -163,7 +163,7 @@ function MetricsLegend() {
     <dl className="hidden md:block mt-1 rounded-md border border-border bg-bg-elev-1/40 p-3 text-[11px] leading-relaxed text-fg-dim space-y-1">
       <div className="text-fg-dim font-medium uppercase tracking-wide">How these are calculated</div>
       <div><span className="text-fg font-medium">Fans</span> — OF&apos;s current subscriber count (subscribers.active), the same audience a mass message reaches. Live from OF, not our chat DB.</div>
-      <div><span className="text-fg font-medium">New fans (30d)</span> — new subscribers in the window from OF Statistics (free-inclusive). <em>Paid pages show <span className="text-fg font-medium">New subs</span> instead</em> = new/renewed PAID subscriptions (free trial/promo subs excluded).</div>
+      <div><span className="text-fg font-medium">New fans (30d)</span> — new subscribers in the window from OF Statistics (free-inclusive). <em>Paid pages show <span className="text-fg font-medium">New subs</span> instead</em> = fans whose subscription began in the window (a subscription sale or OF&rsquo;s roster start, free and trial included; renewals not).</div>
       <div><span className="text-fg font-medium">LTV</span> — revenue in the window ÷ new acquisitions in that window (New fans on free pages, New subs on paid pages).</div>
       <div><span className="text-fg font-medium">ARPU</span> — revenue in the window ÷ total fans (average revenue per current fan).</div>
       <div><span className="text-fg font-medium">Messages / PPVs sold</span> — outbound messages sent and PPV unlocks attributed in the window (our DB).</div>
@@ -192,7 +192,7 @@ function SkeletonModelCard({ account }: { account: AccountMeta | null }) {
       </div>
       <div>
         <div className="text-2xl font-semibold tabular-nums text-fg-dim">—</div>
-        <div className="text-[11px] text-fg-dim mt-0.5">total revenue</div>
+        <div className="text-[11px] text-fg-dim mt-0.5">total revenue · gross</div>
       </div>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 pt-2 border-t border-border text-sm">
         <Kpi label="Fans"          value="—" muted />
@@ -237,7 +237,7 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
   const newFansQ = useOfNewFans(ofId, from, to);
   const newFans = newFansQ.data ?? null;
   // LTV = revenue in the window ÷ the new-count shown in slot 2 (paid pages:
-  // new PAID subs; free pages: new fans). Dividing by the displayed number
+  // new subs; free pages: new fans). Dividing by the displayed number
   // keeps LTV > ARPU the way you'd expect (revenue per acquisition vs per
   // current fan). "—" until the count lands / if it's 0.
   const ltvDenom = paid === true ? m.new_subs_count : newFans;
@@ -303,7 +303,7 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
             {m.pending_clears_by && ` · clears by ${fmtDateShort(m.pending_clears_by)}`}
           </div>
         )}
-        <div className="text-[11px] text-fg-dim mt-0.5">total revenue</div>
+        <div className="text-[11px] text-fg-dim mt-0.5">total revenue · gross</div>
       </div>
 
       {/* Revenue-by-kind chips. Hide kinds with zero on BOTH cleared and
@@ -320,9 +320,10 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 pt-2 border-t border-border text-sm">
         {/* Slot 1 = live total fans (OF subscribers.active) for BOTH page
-            types. Slot 2 adapts: a PAID page shows real new PAID subs (the
-            money metric, e.g. 9 — free trial/promo subs are excluded); a
-            FREE page shows OF's free-inclusive new-fan count. */}
+            types. Slot 2 adapts: a PAID page shows our new subs (each fan
+            whose subscription began in the window: a subscription sale or
+            OF's roster start, free and trial included; rebills not); a FREE
+            page shows OF's free-inclusive new-fan count. */}
         <Kpi
           label="Fans"
           value={totalFans == null ? (counts.isPending && !offline ? "…" : "—") : fmtInt(totalFans)}
@@ -333,7 +334,7 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
           <Kpi
             label="New subs"
             value={fmtInt(m.new_subs_count)}
-            title="New PAID subscriptions (new + renewed) in the window, counted from OF transactions. Free trial/promo subscribers are NOT counted here — see a free page's 'New fans' for those."
+            title="Fans whose subscription began in the window, each once: a subscription sale (renewals not counted) or a start on OF's subscriber roster, so free and trial subscribers the roster lists count too."
           />
         ) : (
           <Kpi
@@ -349,7 +350,7 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
           muted={ltvCents == null}
           title={
             paid === true
-              ? "Revenue in the window ÷ new PAID subs in the window (the 'New subs' number)."
+              ? "Revenue in the window ÷ new subs in the window (the 'New subs' number)."
               : "Revenue in the window ÷ new fans in the window (the 'New fans' number)."
           }
         />

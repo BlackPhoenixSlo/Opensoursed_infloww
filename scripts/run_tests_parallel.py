@@ -15,6 +15,9 @@ trips the timeout; the summary names how long the machine slept.
 
 `--pytest` runs each test_*.py as `python -m pytest -q <file>` instead (pytest
 suites like slop/lib, scripts/proxy-health: one file per process, same tests).
+Discovery is the dir's own test_*.py (not recursive, no *_test.py: neither suite
+has such files; pytest's default would also collect those). The summary counts
+files (one process each), not test cases: each file's own pytest line has those.
 
 Exit 0 only if every script passed.
 """
@@ -150,7 +153,7 @@ def main() -> int:
         a.times.write_text("".join(
             f"{results[s][1]:.1f}\t{'TIMEOUT' if results[s][3] else 'PASS' if results[s][0] == 0 else 'FAIL'}\t{s.name}\n"
             for s in order))
-    print(f"{'pytest' if a.pytest else 'backend'}: {len(order) - len(failed) - len(timed)} passed, {len(failed)} failed, "
+    print(f"{'pytest' if a.pytest else 'backend'}: {len(order) - len(failed) - len(timed)} files passed, {len(failed)} failed, "
           f"{len(timed)} timed out, wall {wall:.0f} s awake"
           + (f" (+{slept:.0f} s machine asleep)" if slept > 30 else ""))
     for n in failed:

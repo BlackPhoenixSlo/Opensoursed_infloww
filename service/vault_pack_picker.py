@@ -58,6 +58,7 @@ from sqlalchemy import case, delete, func, literal, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import vault_ai_brief
+import vault_jev_rules
 from db.engine import get_session
 from db.models import VaultFolder, VaultFolderItem, VaultItem
 from vault_mirror import visible_to
@@ -154,6 +155,15 @@ class PhotosOnly(ValueError):
         self.media_ids = media_ids
 
 
+class NotInMirror(ValueError):
+    """Media the triage refused on every rung: no live row in this account's mirror (`media_ids`; a stale tab,
+    another model's id). Saved, it would be a member nothing can show or send."""
+
+    def __init__(self, media_ids: list[int]):
+        super().__init__(f"not in mirror: {media_ids}")
+        self.media_ids = media_ids
+
+
 def free_rung_category(folder_name: str | None) -> Category | None:
     """The category whose free rung this folder is (e.g. `feet-tease`), else None."""
     return next((c for c in CATEGORIES.values() if c.folder_name(c.free_rung) == folder_name), None)
@@ -205,8 +215,6 @@ def normalise_verdicts(cat: Category, rows: list[dict[str, Any]]) -> dict[int, s
 # no NudeNet, junk) is ignored: the row is no candidate until Jev answers it.
 JEV_KEY = "_jev"
 JEV_LANE_TIERS = {"$100": 100, "$50": 50, "$10": 10, "free": 0}
-# The three body answers that must all be "n" for a Jev row to ride free (y / unsure / missing: not free).
-JEV_BODY = ("breasts_bare", "crotch_bare", "penetration")
 # Jev scoring priors (rough, not a fit): a part turned to the camera (soles, bare toes) adds to
 # `feet_subject` by noisy-OR at this weight; a part Jev says is not in the picture keeps this share.
 _EV_JEV_BOOST = 0.3
@@ -220,7 +228,8 @@ def _jev(fields: dict[str, Any]) -> dict[str, Any]:
 
 def jev_priced(fields: dict[str, Any] | None) -> dict[str, Any] | None:
     """The row's `_jev` when the pass answered it (`status == "ok"` with a lane5), photo or video, else None: the
-    lane + body answers `price_tier` and `free_ok` read (a video's are its max frame's: the clip's price)."""
+    lane + body answers `price_tier` and `free_ok` read (a video's lane its max frame's; a free one's body answers the
+    worst over its frames, `vault_jev_rules.body`)."""
     j = _jev(fields) if isinstance(fields, dict) else {}
     return j if j.get("status") == "ok" and j.get("lane5") else None
 
@@ -275,14 +284,17 @@ def jev_tier(j: dict[str, Any]) -> int | None:
     None (unknown): settle nn.10 can file an unsure body free, and the free rung must never carry one."""
     lane5 = str(j.get("lane5") or "")
     if lane5 == "free":
-        return 0 if all(j.get(k) == "n" for k in JEV_BODY) else None
+        return 0 if vault_jev_rules.body_free(j) else None   # a clip's: worst over frames
     tier = JEV_LANE_TIERS.get(lane5)
     return tier if tier else None
 
 
 def free_ok(fields: dict[str, Any] | None) -> bool | None:
-    """May this item ride the free rung? Jev-priced rows (`jev_priced`, videos too): True only at Jev tier 0 (False
-    otherwise; `triage` enforces it). Rows without a usable `_jev`: None (unknown; the operator decides)."""
+    """May this item ride the free rung? A describe/flags veto (`vault_ai_brief.free_vetoed`: disputed, a region
+    bare) is False first, Jev or not. Otherwise Jev-priced rows (`jev_priced`, videos too): True only at Jev tier 0,
+    False otherwise (`triage` enforces it). Rows without a usable `_jev`: None (unknown; the operator decides)."""
+    if vault_ai_brief.free_vetoed(fields):
+        return False
     j = jev_priced(fields)
     return None if j is None else jev_tier(j) == 0
 
@@ -297,6 +309,16 @@ async def non_photos(s, account_id: str, media_ids: list[int]) -> list[int]:
             VaultItem.account_id == account_id, VaultItem.media_id.in_(media_ids),
             VaultItem.kind != "photo")
     )).all())
+
+
+async def not_in_mirror(s, account_id: str, media_ids: list[int]) -> list[int]:
+    """Of `media_ids`, those with no live (not removed) row in this account's mirror, sorted."""
+    if not media_ids:
+        return []
+    live = set((await s.execute(select(VaultItem.media_id).where(
+        VaultItem.account_id == account_id, VaultItem.media_id.in_(media_ids),
+        VaultItem.removed_at.is_(None)))).scalars().all())
+    return sorted(int(m) for m in set(media_ids) - live)
 
 
 async def unsafe_on_free(s, account_id: str, media_ids: list[int]) -> list[int]:
@@ -509,6 +531,8 @@ async def candidates(account_id: str, cat: Category, limit: int = 600, *,
         ok = free_ok(fields)
         seen = j if j is not None else maybe
         rung = jev_pick(cat, j) if j is not None else jev_rung(cat, maybe) if maybe is not None else None
+        if rung == cat.free_rung and ok is False:
+            rung = None   # `triage` would refuse it there (`free_ok`): never prefill the free rung
         rows.append({
             "media_id": mid,
             "kind": kind,
@@ -552,13 +576,18 @@ async def triage(
     what makes filing exclusive AND makes a re-save a no-op.
 
     🚨 A pack is photos only: a video (any non-photo `kind`) on any rung is
-    refused (`PhotosOnly`, nothing written); rejecting one (rung None) is fine,
+    refused (`PhotosOnly`, nothing written), and so is an id with no live mirror
+    row (`NotInMirror`); rejecting one (rung None) is fine,
     so one filed before the rule can still come off. A Jev row whose body is not
     known-safe (`free_ok` False) is refused on the free rung: `NotFreeSafe`,
-    nothing written. Rows without a usable `_jev` are the operator's call.
+    nothing written; so is any row the describe/flags veto (disputed, a region
+    bare), Jev or not. Other rows without a usable `_jev` are the operator's call.
     """
     async with get_session() as s:
         ruled = [m for m, r in verdicts.items() if r is not None]
+        missing = await not_in_mirror(s, account_id, ruled)
+        if missing:
+            raise NotInMirror(missing)
         not_photo = await non_photos(s, account_id, ruled)
         if not_photo:
             raise PhotosOnly(not_photo)

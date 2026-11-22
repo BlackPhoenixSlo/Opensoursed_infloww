@@ -17,12 +17,13 @@
  * (standInModel), never the generator's placeholders; so do Statements' Earnings and Release forms.
  */
 
-import { useEffect, type RefObject } from "react";
+import { createContext, useContext, useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
 import { useUser } from "@/contexts/UserContext";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
-import { relay } from "@/lib/relay";
+import { relay, type AccountMeta } from "@/lib/relay";
+import { liveSession } from "@/lib/sessionConnectivity";
 import { proxyImage } from "@/lib/mediaUrl";
 import { stillUrl } from "@/lib/ofMedia";
 import type { PostLabel } from "@/lib/ofMirrorDataLists";
@@ -43,27 +44,48 @@ const PROFILE_SRC = /^\/of-mirror\/pages\/profile\//;
  */
 const STAND_IN_SRC = /^\/of-mirror\/pages\/(?:profile\/|release-forms\/|messages\/|queue\/|new-post\/|statistics\/|vault\/|settings\/|home\/state-avatar-menu\.html|statements\/(?:index|earnings)\.html$)/;
 
+/** What standInPick reads of a Creator. */
+type StandInCandidate = Pick<AccountMeta, "id" | "has_session" | "session_dead_at">;
+
+/** The Creator shown for "All models" (`accounts` in the picker's order): the first whose session is live, else the
+ *  first. OF Manager's OneCreator and standInModel both. */
+export function standInPick(accounts: readonly StandInCandidate[]): string | null {
+  return (accounts.find(liveSession) ?? accounts[0])?.id ?? null;
+}
+
+/**
+ * The Creator OF Manager's OneCreator put in scope by itself for a saved "All models" (it has no All), null when the scope
+ * is a real pick. useStandIn reads it: that Creator is a stand-in, not a pick.
+ */
+export const AutoPickContext = createContext<string | null>(null);
+
 /**
  * The model My profile, the avatar menu, Messages, the Queue, Statements' Earnings, New post, Statistics, the Vault and
- * Settings show in All models: the first model with a session (`accounts` in the picker's order), so the page is that model's real
+ * Settings show in All models (standInPick), so the page is that model's real
  * profile, menu, chats, scheduled items, earnings, composer, figures or vault rather than placeholders, and its actions
  * (New post's Post too) are that model's. null: a model is selected, the page is none of them, or there is no model.
  */
-export function standInModel(src: string, accountId: string | null, accounts: readonly { id: string }[]): string | null {
-  return !accountId && STAND_IN_SRC.test(src) ? (accounts[0]?.id ?? null) : null;
+export function standInModel(
+  src: string, accountId: string | null, accounts: readonly StandInCandidate[],
+): string | null {
+  return !accountId && STAND_IN_SRC.test(src) ? standInPick(accounts) : null;
 }
 
 /** The model each principal's frames last stood in with (a frame remounts per page, so this outlives it). */
 const lastStandIn = new Map<string, string>();
 
 /**
- * standInModel for a frame, the model list read here. A list with no answer (loading, its cache dropped) or an empty
+ * standInModel for a frame, the model list read here. OneCreator's automatic pick (AutoPickContext) is in scope but is
+ * no pick: the page stands in with it, so its Settings writes stay locked and the "Showing <model>" hint shows until the
+ * Creator is picked. A list with no answer (loading, its cache dropped) or an empty
  * answer keeps the model the frame last stood in with: without it the page binds with no model (New message back from
  * its vault: no draft, no status line, the vault's ticks kept) and stays so until the list is read again. A list that
  * names models but none with a session is an answer: no model.
  */
 export function useStandIn(src: string): string | null {
-  const { accountId } = useScope();
+  const { accountId: scoped } = useScope();
+  const auto = useContext(AutoPickContext);
+  const accountId = auto !== null && scoped === auto ? null : scoped;
   const principal = useUser().user?.user_id ?? "";
   const accounts = useAccounts().data?.accounts;
   const standIn = standInModel(src, accountId, useActiveAccounts());

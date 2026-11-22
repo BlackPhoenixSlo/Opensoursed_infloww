@@ -32,7 +32,7 @@ from _full_ai_fixtures import GIF_FITS, QUIET, _msg  # noqa: E402
 from _full_ai_live_fixtures import LiveOF, live_rows, out_rows, payload, seed_live, world  # noqa: E402
 import inbound_describe  # noqa: E402
 import read_flip  # noqa: E402
-from automations import cat_stickers, full_ai_config, full_ai_live  # noqa: E402
+from automations import cat_stickers, full_ai_config, full_ai_live, full_ai_look  # noqa: E402
 from automations._typing_hold import typing_delay_seconds  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Message  # noqa: E402
@@ -206,12 +206,12 @@ async def case_mark_read():
         assert row.status == "sent" and flips == [("fa_rd_sent", 811, 0)], flips   # a failed read: no flip
     _res, w, row = await _turn("fa_rd_nosend", 812, 10911, jev=({**QUIET, "promo": 0.99}, 1.0))
     assert row.status == "no_send" and w.of.read == [], w.of.read
-    saved = list(full_ai_live.LAST_LOOK)
-    full_ai_live.LAST_LOOK.insert(0, ("fake", None, lambda look: "no" if look.index == 0 else None))
+    saved = list(full_ai_look.LAST_LOOK)
+    full_ai_look.LAST_LOOK.insert(0, ("fake", None, lambda look: "no" if look.index == 0 else None))
     try:
         _res, w, row = await _turn("fa_rd_stood", 813, 10921)
     finally:
-        full_ai_live.LAST_LOOK[:] = saved
+        full_ai_look.LAST_LOOK[:] = saved
     assert row.status == "no_send" and w.of.calls == 0 and w.of.read == [], (row.status, w.of.read)
     _res, w, row = await _turn("fa_rd_fail", 814, 10931, of=ReadFailsOF())
     assert row.status == "sent" and w.of.read == [814] and w.of.calls == len(_parts(row)), row.status

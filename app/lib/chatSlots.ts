@@ -53,6 +53,10 @@ export interface ChatPlugin {
   /** AgencyNotifications `consentFixHref`: the page where a Creator's consent
    *  switch is (first plugin's; none: Settings › OnlyFans consent). */
   consentFixHref?: (accountId: string) => string;
+  /** UserContext `wipeIdentityStorage`: storage keys an identity wipe keeps
+   *  (a plugin's state filed under an Employee's own key, so no other
+   *  principal reads it). */
+  keptStorage?: (key: string) => boolean;
 }
 
 export const NAV_LINK_SLOTS: readonly NavLinkSlot[] = PLUGINS.flatMap((p) => p.navLinks ?? []);
@@ -107,6 +111,10 @@ export function isSourceScript(scriptId: string | null | undefined): boolean {
 
 export const FAN_SPEND_SOURCES: readonly ((fan: FanRecord) => number | null | undefined)[] =
   PLUGINS.flatMap((p) => (p.fanSpendCents ? [p.fanSpendCents] : []));
+/** Whether a plugin keeps `key` through an identity wipe (ChatPlugin.keptStorage). */
+export function keptStorage(key: string): boolean {
+  return PLUGINS.some((p) => p.keptStorage?.(key));
+}
 export const CONSENT_FIX_HREF: (accountId: string) => string =
   PLUGINS.find((p) => p.consentFixHref)?.consentFixHref
   ?? ((accountId) => `/settings/consent?account=${encodeURIComponent(accountId)}`);

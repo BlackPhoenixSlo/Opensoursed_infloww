@@ -13,6 +13,10 @@
  *               `hasMore: true` never reopens it (that flag is about the
  *               rows below the HEAD page, which this chat already has).
  *
+ * Beside the status, `headSettled`: this mount read the chat's head page and
+ * it gave a cursor, so `olderCursor` is fetch-derived (useChatMessages
+ * `headSettled`). Set by a head page, never cleared within the chat.
+ *
  * A new chat starts a new pager (`initialOlderPager`).
  */
 
@@ -20,11 +24,12 @@
  *  pager shows Retry instead of a "Loading older…" that never ends. */
 export const OLDER_TIMEOUT_MS = 15_000;
 
-export type OlderPager =
+export type OlderPager = (
   | { status: "idle" }
   | { status: "loading"; seq: number }
   | { status: "error" }
-  | { status: "exhausted" };
+  | { status: "exhausted" }
+) & { headSettled: boolean };
 
 export type OlderPagerAction =
   | { type: "start"; seq: number }
@@ -32,31 +37,33 @@ export type OlderPagerAction =
    *  was asked with. */
   | { type: "page"; seq: number; hasMore: boolean; progressed: boolean }
   | { type: "fail"; seq: number }
-  /** A head (newest) page landed: only its "nothing older" counts. */
-  | { type: "head"; hasMore: boolean };
-
-const IDLE: OlderPager = { status: "idle" };
-const ERROR: OlderPager = { status: "error" };
-const EXHAUSTED: OlderPager = { status: "exhausted" };
+  /** A head (newest) page landed: only its "nothing older" counts for the
+   *  status. `settled`: it gave the cursor (`headSettled`). */
+  | { type: "head"; hasMore: boolean; settled: boolean };
 
 /** A chat's first pager: exhausted when its last head page (a prefetch's) said
- *  nothing older, else idle so the first scroll-up can ask. */
+ *  nothing older, else idle so the first scroll-up can ask; not settled. */
 export function initialOlderPager(headSaysNoMore = false): OlderPager {
-  return headSaysNoMore ? EXHAUSTED : IDLE;
+  return { status: headSaysNoMore ? "exhausted" : "idle", headSettled: false };
 }
 
 export function olderPagerReducer(state: OlderPager, action: OlderPagerAction): OlderPager {
+  const { headSettled } = state;
   switch (action.type) {
     case "start":
-      return state.status === "idle" || state.status === "error" ? { status: "loading", seq: action.seq } : state;
+      return state.status === "idle" || state.status === "error" ? { status: "loading", seq: action.seq, headSettled } : state;
     case "page":
       if (state.status !== "loading" || state.seq !== action.seq) return state;
-      if (!action.hasMore) return EXHAUSTED;
-      return action.progressed ? IDLE : ERROR;
+      if (!action.hasMore) return { status: "exhausted", headSettled };
+      return { status: action.progressed ? "idle" : "error", headSettled };
     case "fail":
-      return state.status === "loading" && state.seq === action.seq ? ERROR : state;
-    case "head":
-      return action.hasMore || state.status === "exhausted" ? state : EXHAUSTED;
+      return state.status === "loading" && state.seq === action.seq ? { status: "error", headSettled } : state;
+    case "head": {
+      const exhaust = !action.hasMore && state.status !== "exhausted";
+      const settle = action.settled && !headSettled;
+      if (!exhaust && !settle) return state;
+      return exhaust ? { status: "exhausted", headSettled: headSettled || action.settled } : { ...state, headSettled: true };
+    }
   }
 }
 

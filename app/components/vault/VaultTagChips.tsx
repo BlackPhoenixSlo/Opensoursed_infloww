@@ -53,11 +53,13 @@ export default function VaultTagChips({ accountId, enabled, type, query, ofFolde
   const { saved, publish } = form;
   if (!enabled || (rows.length === 0 && tags.length === 0 && !saved)) return null;
   const total = facets.data?.total ?? 0;
+  // A chip tap shows the previous view's counts until the new ones land: no save on that stale count.
+  const counted = facets.isPlaceholderData ? null : total;
   const rest = rows.filter((r) => !tags.includes(r.tag));
   const tooMany = capText(total);
 
   async function save() {
-    if (!canSubmit(form, tags, total)) return;
+    if (!canSubmit(form, tags, counted)) return;
     dispatch({ type: "start" });
     try {
       const res = await saveTagFolder(buildPayload(form, { accountId, tags, type, query, ofFolderId }));
@@ -125,8 +127,8 @@ export default function VaultTagChips({ accountId, enabled, type, query, ofFolde
           />
           <div className="flex items-center gap-2 ml-auto">
             <IfButton onClick={() => dispatch({ type: "close" })} disabled={form.saving}>Cancel</IfButton>
-            <IfButton type="submit" variant="primary" disabled={!canSubmit(form, tags, total)}>
-              {form.saving ? "Saving…" : `Save ${total} item${total === 1 ? "" : "s"}`}
+            <IfButton type="submit" variant="primary" disabled={!canSubmit(form, tags, counted)}>
+              {form.saving ? "Saving…" : counted == null ? "Counting…" : `Save ${total} item${total === 1 ? "" : "s"}`}
             </IfButton>
           </div>
           {(tooMany || form.error) && (

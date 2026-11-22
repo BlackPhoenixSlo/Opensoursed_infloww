@@ -27,8 +27,9 @@ describe("name follows the chips until typed", () => {
 
 describe("canSubmit", () => {
   const open = run([{ type: "open" }]);
-  it.each<[string, TagFolderForm, readonly string[], number, boolean]>([
+  it.each<[string, TagFolderForm, readonly string[], number | null, boolean]>([
     ["open, chips, default name", open, TAGS, 12, true],
+    ["count still loading (W30 F25)", open, TAGS, null, false],
     ["closed", I, TAGS, 12, false],
     ["no chip", open, [], 12, false],
     ["nothing matches", open, TAGS, 0, false],

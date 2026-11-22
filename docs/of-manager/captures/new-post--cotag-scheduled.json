@@ -11,6 +11,7 @@
     "kind": "live",
     "verdict": "parked",
     "undo": "none",
-    "reason": "Live proof pending; waits on owner sheet item 4 (Co-tag partner)"
+    "reason": "Live proof pending; waits on owner sheet item 4 (Co-tag partner)",
+    "note": "Fake mode built (ticket 98, 2026-11-21): rfTag (with empty rfGuest/rfPartner) is the carrier measured in OF's JS; userTags is the Relay's legacy extra, asserted because the Relay sends it. The guard refuses any other Co-tag before it leaves; the proof asserts rfTag and userTags hold the partner alone and no media rides along. Open unknown: whether OF validates a Co-tag at create or at publish; service/server.py's comment that OF answers 400 for an id off the tagged-friend list is about chat messages and is not measured for posts. A lost or errored create is never retried, only found by its marker and deleted; ticket 06's frequency question stays open. Post C is Scheduled 45 min ahead (isScheduled + scheduledDate) and deleted before it fires."
   }
 }

@@ -6,7 +6,7 @@
  * "Load more" advancing the offset on a single-type tab.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, screen, within } from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const { relayGet, relayPost, scope, accounts, router, accountsQ } = vi.hoisted(() => ({
@@ -35,6 +35,7 @@ vi.mock("next/navigation", () => ({
 
 import { renderWithProviders } from "@/test-utils";
 import { holdLease } from "@/lib/viewLease";
+import { NOTIF_CLEARED_EVENT } from "@/lib/notifSettings";
 import { NotificationBell } from "./NotificationBell";
 import NotificationsPage from "./NotificationsPage";
 
@@ -131,6 +132,36 @@ describe("NotificationsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Mark all read" }));
     expect(relayPost.mock.calls.map(([p, , ctx]) => [p, (ctx as { accountId: string }).accountId]))
       .toEqual(want.map((aid) => ["/api/of/v2/users/notifications/read", aid]));
+  });
+
+  it.each<[string, boolean, number]>([
+    ["every write landed: the arrival badges clear after them", true, 1],
+    ["a write failed: they stay, and the page says which share failed", false, 0],
+  ])("Mark all read: %s", async (_n, ok, clears) => {
+    scope.accountId = null;
+    relayGet.mockResolvedValue({ list: [] });
+    relayPost.mockReset();
+    const cleared = vi.fn();
+    let answer!: () => void;
+    relayPost.mockImplementation((...args: unknown[]) => new Promise((res, rej) => {
+      const { accountId } = args[2] as { accountId: string };
+      answer = () => (ok || accountId !== "acc-2" ? res({ counters: { all: 0 } }) : rej(new Error("502")));
+      if (accountId === "acc-1") answer();
+    }));
+    window.addEventListener(NOTIF_CLEARED_EVENT, cleared);
+    try {
+      renderWithProviders(<NotificationsPage />);
+      await screen.findByText("No notifications");
+      await userEvent.click(screen.getByRole("button", { name: "Mark all read" }));
+      await vi.waitFor(() => expect(relayPost).toHaveBeenCalledTimes(2));
+      expect(cleared).not.toHaveBeenCalled();
+      await act(async () => { answer(); });
+      await vi.waitFor(() => expect(screen.getByRole("button", { name: "Mark all read" })).toBeEnabled());
+      expect(cleared).toHaveBeenCalledTimes(clears);
+      if (!ok) expect(screen.getByRole("status")).toHaveTextContent("1 of 2 Creators failed");
+    } finally {
+      window.removeEventListener(NOTIF_CLEARED_EVENT, cleared);
+    }
   });
 
   it("issues the bell's request (path and Creator scope) for every wired tab, for one Creator", async () => {

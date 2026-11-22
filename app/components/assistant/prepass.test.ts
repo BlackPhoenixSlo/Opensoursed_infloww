@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { canOpenChats, commandLinks, confirmation, prepass, type PrepassHit } from "./prepass";
+import { canOpenChats, commandLinks, confirmation, openablePages, prepass, type PrepassHit } from "./prepass";
 
 const OWNER = commandLinks({ chatterOnly: false, grantedPages: null });
 const CHATTER = commandLinks({ chatterOnly: true, grantedPages: null });
@@ -66,4 +66,29 @@ describe("prepass", () => {
     expect(confirmation({ kind: "theme", theme: "toggle" }, "light")).toBe("Switched to light mode.");
     expect(confirmation({ kind: "chat", handle: "lena" })).toBe("Opened @lena's chat.");
   });
+});
+
+// rwl W30 F10: what an answer may link, per role.
+describe("Settings opens a tab the role can open (rwl W30 C5)", () => {
+  it("an owner's open settings is /settings (it lands on Your Account)", () => {
+    expect(prepass("open settings", OWNER)).toEqual({ kind: "navigate", href: "/settings", label: "Settings" });
+  });
+  it("a chatter's open settings opens its first Settings tab, never the owner-only landing", () => {
+    expect(prepass("open settings", CHATTER)).toEqual({ kind: "navigate", href: "/settings/security-personal", label: "Settings" });
+  });
+});
+
+describe("openablePages", () => {
+  it.each<[string, Parameters<typeof openablePages>[0], string, boolean]>([
+    ["an owner links /settings", { chatterOnly: false, grantedPages: null }, "/settings", true],
+    ["a chatter never links /settings (it redirects to an owner-only tab)", { chatterOnly: true, grantedPages: null }, "/settings", false],
+    ["an owner opens AI keys", { chatterOnly: false, grantedPages: null }, "/settings/ai-keys", true],
+    ["a chatter never opens AI keys", { chatterOnly: true, grantedPages: null }, "/settings/ai-keys", false],
+    ["a chatter opens Help center", { chatterOnly: true, grantedPages: null }, "/help-center", true],
+    ["an owner opens a page drawn as another's tab", { chatterOnly: false, grantedPages: null }, "/analytics/sales-records", true],
+    ["a role without the page never opens it", { chatterOnly: true, grantedPages: new Set(["/growth/scripts"]) },
+      "/analytics/message-dashboard", false],
+    ["a role with the page opens it", { chatterOnly: true, grantedPages: new Set(["/analytics/message-dashboard"]) },
+      "/analytics/message-dashboard", true],
+  ])("%s", (_, f, page, want) => expect(openablePages(f).has(page)).toBe(want));
 });

@@ -71,6 +71,12 @@
                                  manual create) while the sender waits; the guard re-run right
                                  before the request leaves refuses it: zero POSTs, failed
                                  not_sent, no back-off. Nothing changed: one POST, created.
+  case_w30_f1_untick_during_proxy_backoff_no_retry  untick during the back-off: no retry.
+  case_w30_f22_untick_during_signing_or_telemetry_no_post  untick while an attempt signs or
+                                 waits on the telemetry lock: nothing sent; a write with no
+                                 PRE_DISPATCH still retries a refused CONNECT (W30 F21).
+  case_w30_f20_reserve_names_the_blocking_and_landed_row  create_open carries the open row's
+                                 id; unless_landed settled created → create_landed (locked).
 
 Run: ./venv/bin/python service/tests/test_promo_create_guard.py   (exit 0 = pass)
 """
@@ -416,8 +422,8 @@ async def case_rule_and_limit_rechecked():
 
 
 async def case_free_trial_limit_optional():
-    assert [g.trial_gap(d, cap) for d, cap in ((100, 10), (100, 0), (100, None), (50, 0), (None, 0))] == [
-        None, "trial_unlimited", "trial_unlimited", None, None]
+    assert [g.unlimited_trial(d, cap) for d, cap in ((100, 10), (100, 0), (100, None), (50, 0), (None, 0))] == [
+        False, True, True, False, False]
     aid = "gd_trial_nolimit"
     cid = await _creator(aid)
     async with get_session() as s:
@@ -981,24 +987,27 @@ class _WireResp:
 
 
 def _slot_client(aid, sent, answer_id):
-    """A real OFClient (no session) with ONE signed slot; its transport records each request
-    that would leave the box and answers OF's created LIST: every gate in _http_call runs."""
+    """A real OFClient (no session) with ONE signed slot; its fake curl session records each
+    request that leaves the box and answers OF's created LIST: every gate in _http_call and
+    the real _proxy_retry run."""
     import threading
     from _of_wire import fake_wire
     from of_client import OFClient
+
+    class _Http:
+        def request(self, method, url, **_k):
+            sent.append(method)
+            return _WireResp([{"id": answer_id, "subscribeCounts": 10, "subscribeDays": 30,
+                               "message": "Promo", "type": "all", "claimsCount": 0,
+                               "isFinished": False}])
     c = object.__new__(OFClient)
-    c.account_id, c.proxy_label = aid, None
-    fake_wire(c, object())
+    c.account_id, c.proxy_label, c.proxy_url, c.timeout_s = aid, None, None, 5
+    fake_wire(c, _Http())
     c._signed_slots = threading.BoundedSemaphore(1)
     c._ensure_x_hash = lambda **_k: "h"
+    c._signed_headers = lambda url: {}
     c._persist_cf_cookies = lambda r: None
     c._note_signed_ok = lambda url, r: None
-
-    def _transport(_fn, *, what="", **_k):
-        sent.append(what)
-        return _WireResp([{"id": answer_id, "subscribeCounts": 10, "subscribeDays": 30,
-                           "message": "Promo", "type": "all", "claimsCount": 0, "isFinished": False}])
-    c._proxy_retry = _transport
     return c
 
 
@@ -1080,5 +1089,171 @@ async def case_n1_failed_dispatch_check_is_not_sent():
     assert (r.state, r.error_class) == ("failed", "not_sent"), (r.state, r.error_class)
     assert not await g.has_open(aid)        # closed: the next create is not blocked
 
+
+async def case_w30_f1_untick_during_proxy_backoff_no_retry():
+    """W30 F1: the first CONNECT is refused by the proxy (nothing reached OF); the Employee
+    unticks during _proxy_retry's pause; the retry re-runs the guard: no second wire request,
+    failed not_sent. Nothing changed: the retry sends (two wire attempts, created)."""
+    from of_client import FULL_RETRY, RetryPolicy  # noqa: F401
+    aid = "gd_w30_f1_backoff"
+    cid = await _creator(aid)
+    loop = asyncio.get_running_loop()
+    wire: list[str] = []
+
+    async def untick():
+        async with get_session() as s:
+            (await s.get(PromoCampaign, cid)).auto_reactivate = False
+
+    class _Http:
+        def __init__(self, on_refuse):
+            self.on_refuse = on_refuse
+
+        def request(self, method, url, **_k):
+            wire.append(method)
+            if len(wire) == 1:
+                if self.on_refuse is not None:
+                    asyncio.run_coroutine_threadsafe(self.on_refuse(), loop).result()
+                raise curl_exc.ProxyError("CONNECT tunnel failed, response 403")
+            return _WireResp({"id": 7101, "subscribeCounts": 10, "subscribeDays": 30,
+                              "message": "Promo", "type": "all", "claimsCount": 0,
+                              "isFinished": False})
+
+    def _client(http):
+        import threading
+        from _of_wire import fake_wire
+        from of_client import OFClient
+        c = object.__new__(OFClient)
+        c.account_id, c.proxy_label, c.proxy_url, c.timeout_s = aid, None, None, 5
+        fake_wire(c, http)
+        c._signed_slots = threading.BoundedSemaphore(1)
+        c._ensure_x_hash = lambda **_k: "h"
+        c._signed_headers = lambda url: {}
+        c._persist_cf_cookies = lambda r: None
+        c._note_signed_ok = lambda url, r: None
+        return c
+
+    res = await _reserve(aid, cid)
+    out = await g.send(res, {"auto_reactivate": True}, lambda: _client(_Http(untick)), TERMS)
+    assert wire == ["POST"] and out.outcome is None and out.refused == "campaign_changed", (wire, out)
+    r = await _row(res.id)
+    assert (r.state, r.error_class) == ("failed", "not_sent"), (r.state, r.error_class)
+    # nothing changed during the pause: the retry goes out, created
+    async with get_session() as s:
+        (await s.get(PromoCampaign, cid)).auto_reactivate = True
+    wire.clear()
+    res = await _reserve(aid, cid)
+    out = await g.send(res, {"auto_reactivate": True}, lambda: _client(_Http(None)), TERMS)
+    assert wire == ["POST", "POST"] and out.outcome is not None and out.outcome.state == "created", (wire, out)
+
+
+async def case_w30_f22_untick_during_signing_or_telemetry_no_post():
+    """W30 F22: the guard is each attempt's last step before the bytes leave. The Employee
+    unticks while the first attempt signs, or while a retry waits on the proxy telemetry
+    lock (after the back-off pause): no request leaves, failed not_sent. A write with no
+    PRE_DISPATCH (W30 F21) still retries through a refused CONNECT as before."""
+    import threading
+    import of_client
+    import proxy_health
+    from _of_wire import fake_wire
+    from of_client import OFClient
+    loop = asyncio.get_running_loop()
+    wire: list[str] = []
+
+    class _Http:
+        def __init__(self, refuse_first):
+            self.refuse_first = refuse_first
+
+        def request(self, method, url, **_k):
+            wire.append(method)
+            if self.refuse_first and len(wire) == 1:
+                raise curl_exc.ProxyError("CONNECT tunnel failed, response 403")
+            return _WireResp({"id": 7201, "subscribeCounts": 10, "subscribeDays": 30,
+                              "message": "Promo", "type": "all", "claimsCount": 0,
+                              "isFinished": False})
+
+    def _client(aid, http, *, label=None, on_sign=None):
+        c = object.__new__(OFClient)
+        c.account_id, c.proxy_label, c.proxy_url, c.timeout_s = aid, label, None, 5
+        fake_wire(c, http)
+        c._signed_slots = threading.BoundedSemaphore(1)
+        c._ensure_x_hash = lambda **_k: "h"
+        c._persist_cf_cookies = lambda r: None
+        c._note_signed_ok = lambda url, r: None
+
+        def headers(url):
+            if on_sign is not None:
+                on_sign()
+            return {}
+        c._signed_headers = headers
+        return c
+
+    def _untick_now(cid):
+        async def untick():
+            async with get_session() as s:
+                (await s.get(PromoCampaign, cid)).auto_reactivate = False
+        return lambda: asyncio.run_coroutine_threadsafe(untick(), loop).result()
+
+    # 1. untick while the first attempt signs
+    aid = "gd_w30_f22_sign"
+    cid = await _creator(aid)
+    res = await _reserve(aid, cid)
+    out = await g.send(res, {"auto_reactivate": True},
+                       lambda: _client(aid, _Http(False), on_sign=_untick_now(cid)), TERMS)
+    assert wire == [] and out.outcome is None and out.refused == "campaign_changed", (wire, out)
+    r = await _row(res.id)
+    assert (r.state, r.error_class) == ("failed", "not_sent"), (r.state, r.error_class)
+
+    # 2. first CONNECT refused; untick while the retry waits on the telemetry lock
+    aid = "gd_w30_f22_tele"
+    cid = await _creator(aid)
+    res = await _reserve(aid, cid)
+    real_start, untick, starts = proxy_health.attempt_start, _untick_now(cid), []
+
+    def start(label):
+        starts.append(label)
+        if len(starts) == 2:
+            untick()
+        real_start(label)
+    proxy_health.attempt_start = start
+    real_sleep = of_client.time.sleep
+    of_client.time.sleep = lambda _s: None
+    try:
+        out = await g.send(res, {"auto_reactivate": True},
+                           lambda: _client(aid, _Http(True), label="lbl_f22"), TERMS)
+    finally:
+        proxy_health.attempt_start = real_start
+        of_client.time.sleep = real_sleep
+    assert len(starts) == 2, starts
+    assert wire == ["POST"] and out.outcome is None and out.refused == "campaign_changed", (wire, out)
+
+    # 3. W30 F21: no PRE_DISPATCH (any other write): the refused CONNECT is retried, sent
+    wire.clear()
+    of_client.time.sleep = lambda _s: None
+    try:
+        r = await asyncio.to_thread(
+            _client("gd_w30_f21_plain", _Http(True)).request, "POST", "/api2/v2/x", json_body={})
+    finally:
+        of_client.time.sleep = real_sleep
+    assert wire == ["POST", "POST"] and r.status_code == 200, wire
+
+
+
+async def case_w30_f20_reserve_names_the_blocking_and_landed_row():
+    """W30 F20: in reserve's own locked transaction: an open row refuses `create_open` with its
+    id; `unless_landed` naming a row settled created refuses `create_landed`; one not created
+    (cleared) lets the replacement through."""
+    aid = "gd_w30_f20"
+    await _creator(aid)
+    first = await g.reserve(aid, None, "manual", TERMS, {}, None, None)
+    got = await g.reserve(aid, None, "manual", TERMS, {}, None, None)
+    assert got == g.Refused("create_open", first.id), got
+    assert await g.mark_sending(first, {}) is None
+    await g.settle(first, g.outcome_of(res=[{"id": 7301}]))
+    got = await g.reserve(aid, None, "manual", TERMS, {}, None, None, unless_landed=first.id)
+    assert got == g.Refused("create_landed", first.id), got
+    other = await g.reserve(aid, None, "manual", TERMS, {}, None, None)
+    assert await g.clear(await _row(other.id))
+    got = await g.reserve(aid, None, "manual", TERMS, {}, None, None, unless_landed=other.id)
+    assert isinstance(got, g.Reservation), got
 
 _harness.run()

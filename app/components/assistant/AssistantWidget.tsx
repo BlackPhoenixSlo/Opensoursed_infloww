@@ -106,7 +106,7 @@ import { isChatterOnly } from "@/lib/session";
 import { BRAND_NAME } from "@/lib/brand";
 import {
   appFocusOf, assistantReducer, canGeneralOf, HISTORY_LIMIT, historyFromRows, initialAssistantState,
-  sendFocusOf, settledFrom, settledFromError, threadsOf, turnsOf,
+  cardFocus, sendFocusOf, settledFrom, settledFromError, threadsOf, turnsOf,
   type AskResponse, type AssistantCore, type Focus, type HistoryRow, type ThreadSummary, type Turn,
 } from "./assistantReducer";
 import { useBodyScrollLock } from "./useBodyScrollLock";
@@ -119,7 +119,7 @@ import { editApplyBody, editResultsOf } from "./massEdit";
 import { doOfferOf, doRunReducer, draftFrom, initialDoRun, previousOf, type DoOffer, type DoRun } from "./doRunReducer";
 import { useDoRunner } from "./useDoRunner";
 import { FocusLine } from "./FocusLine";
-import { canOpenChats, commandLinks, confirmation, prepass, type PrepassHit } from "./prepass";
+import { canOpenChats, commandLinks, confirmation, openablePages, prepass, type PrepassHit } from "./prepass";
 import { ThreadList } from "./ThreadList";
 import { UltraPanel, UltraToggle, useUltraMode } from "@/components/ultra/UltraPanel";
 import {
@@ -174,6 +174,8 @@ interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "unre
   isUser: boolean;
   /** The session may open Messages Pro: an answer's chat marker is a button. */
   canChat: boolean;
+  /** The pages the session may open: an answer links only these (prepass.openablePages). */
+  openPages: ReadonlySet<string>;
   /** General is on offer (a signed-in user, or nothing connected). */
   canGeneral: boolean;
   /** The app switcher's focus, resolved, for the "<model> in app" offer while `held`. */
@@ -198,8 +200,6 @@ interface AssistantState extends Pick<AssistantCore, "hydrated" | "open" | "unre
   /** Start do-mode on a Q&A turn's question (the swap chip). */
   doFromQuestion: (question: string) => void;
   doCallbacks: DoCallbacks;
-  /** Q&A turns do-mode sent ("Ask as a question"): no swap chip on them — it would bounce straight back. */
-  fromDo: ReadonlySet<number>;
 }
 
 /** A conversation id: made here, stored by the server as-is. Not
@@ -225,14 +225,14 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   // "Do it for me": the run, the bridge pages register on, and the server's say on who may.
   const [doRun, doDispatch] = useReducer(doRunReducer, initialDoRun);
   const [bridge] = useState(createAgentBridge);
-  const [capsOf, setCapsOf] = useState<{ accountId: string; body: { can_do?: unknown; reason?: unknown } | null } | null>(null);
+  // The do-caps answer, for the identity + model it was asked as (`key`): any other key reads as none.
+  const [capsOf, setCapsOf] = useState<{ key: string; body: { can_do?: unknown; reason?: unknown } | null } | null>(null);
   // The plan's own thread (never the Q&A one): kept while a plan is refined, fresh for every new request.
   const doThread = useRef<string | null>(null);
   // A reply is "read" if the dock is open or the help page is on screen; the
   // reducer holds both and reads them when the answer lands.
   useEffect(() => { dispatch({ type: "route", onHelpPage: pathname === HELP_PATH }); }, [pathname]);
   const nextId = useRef(0);
-  const [fromDo, setFromDo] = useState<ReadonlySet<number>>(() => new Set());
 
   // OWNED accounts, a dropped session or a deactivated Creator included: the
   // server answers about any of them (its reach), and a page may pick one
@@ -248,6 +248,15 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const user = useOptionalUser()?.user;
   const chatter = useOptionalChatter()?.chatter;
   const userName = user?.username ?? chatter?.username ?? null;
+  // Who is asking — the impersonated user while impersonating (rwl W30 F9): a change starts a clean conversation and
+  // ends the do-mode run and its plan thread (one principal-keyed path, rwl W30 S2: exit from off is a no-op, so the
+  // mount needs no special case). The caps are keyed on it below — a new identity asks again.
+  const principal = user?.user_id ?? (chatter?.chatter_id ? `chatter:${chatter.chatter_id}` : null);
+  useEffect(() => {
+    dispatch({ type: "principal", id: principal });
+    doDispatch({ type: "exit" });
+    doThread.current = null;
+  }, [principal]);
 
   // The focus follows the app's model (PageCreatorContext: a page's own pick,
   // else the scope switcher; all models → General). The reducer decides
@@ -284,21 +293,21 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   // History is the asker's own across every account (the session decides),
   // so the read carries no account or employee header.
   const wantHistory = hydrated && (open || state.onHelpPage) && state.historyStatus === "idle";
+  const asWho = state.principal;
   useEffect(() => {
     if (!wantHistory) return;
     dispatch({ type: "history_requested" });
     relay.get<{ turns: HistoryRow[] }>(`/admin/assistant/history?limit=${HISTORY_LIMIT}`)
-      .then((body) => dispatch({ type: "history_loaded", turns: historyFromRows(body) }))
+      .then((body) => dispatch({ type: "history_loaded", turns: historyFromRows(body), principal: asWho }))
       .catch(() => dispatch({ type: "history_failed" }));
-  }, [wantHistory]);
+  }, [wantHistory, asWho]);
 
   const ask = useCallback(async (question: string, sentByDo = false) => {
     if (accountId === undefined) return;   // the composer is disabled meanwhile
     const id = nextId.current++;
-    if (sentByDo) setFromDo((s) => new Set(s).add(id));
     // The open thread, or a new one this first ask names — made here only.
     const thread = active ?? newThreadId();
-    dispatch({ type: "asked", id, question, ts: new Date().toISOString(), thread, accountId });
+    dispatch({ type: "asked", id, question, ts: new Date().toISOString(), thread, accountId, fromDo: sentByDo });
     try {
       const r = await relay.post<AskResponse>(
         "/admin/assistant/ask",
@@ -319,16 +328,17 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   // Per account (the server runs the same check creating an Auto mass does): asked once per focused model while a
   // surface is up. Unknown (General, loading, a failed read) → doOfferOf's fallback.
   const wantCaps = hydrated && (open || state.onHelpPage) && !!accountId;
+  const capsKey = `${principal ?? ""}|${accountId ?? ""}`;
   useEffect(() => {
     if (!wantCaps || !accountId) return;
     let live = true;
     relay.get<{ can_do?: unknown; reason?: unknown }>(`/admin/assistant/do-caps?account_id=${encodeURIComponent(accountId)}`, { accountId, employeeId })
-      .then((body) => { if (live) setCapsOf({ accountId, body: body ?? null }); })
+      .then((body) => { if (live) setCapsOf({ key: capsKey, body: body ?? null }); })
       .catch(() => {});
     return () => { live = false; };
-  }, [wantCaps, accountId, employeeId]);
-  // Only the focused model's answer counts (a stale one for another model reads as none).
-  const doOffer = doOfferOf(capsOf && capsOf.accountId === accountId ? capsOf.body : null, isUser);
+  }, [wantCaps, accountId, employeeId, capsKey]);
+  // Only this identity's answer for the focused model counts (a stale one reads as none).
+  const doOffer = doOfferOf(capsOf && capsOf.key === capsKey ? capsOf.body : null, isUser);
   const navigate = useCallback((href: string) => router.push(href), [router]);
   const cursor = useDoRunner({ run: doRun, dispatch: doDispatch, bridge, navigate, employeeId });
   // A mass_edit run (D11) is one apply POST, once per started draft; the server re-applies the change to the fresh
@@ -363,6 +373,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       .catch((e: unknown) => doDispatch({ type: "fail", msg: e instanceof Error && e.message ? e.message : "The report didn't build" }));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per (plan id, attempt), not per run object
   }, [exportKey, employeeId]);
+  // A focus move drops a plan drafted for another model (rwl W30 F8); a still-loading focus is no move.
+  useEffect(() => { if (accountId !== undefined) doDispatch({ type: "focus", accountId }); }, [accountId]);
   const enterDo = useCallback(() => doDispatch({ type: "enter" }), []);
   const exitDo = useCallback(() => doDispatch({ type: "exit" }), []);
   const sendDo = useCallback(async (request: string) => {
@@ -370,7 +382,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     const id = newThreadId();
     const previous = previousOf(doRun);
     const thread = previous && doThread.current ? doThread.current : (doThread.current = newThreadId());
-    doDispatch({ type: "draft", id, request });
+    doDispatch({ type: "draft", id, request, accountId });
     try {
       const r = await relay.post<DoDraft>(
         "/admin/assistant/draft",
@@ -398,9 +410,11 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const appliedSettings = useAppliedSettings().data;
   const chatterOnly = isChatterOnly(user, chatter);
   const isMaster = user?.is_admin === true;
-  const commandTargets = useMemo(() => commandLinks({
+  const navFilter = useMemo(() => ({
     chatterOnly, grantedPages: sessionGrantedPages(chatterOnly, appliedSettings?.permissions), master: isMaster, flags: appliedSettings?.flags,
   }), [chatterOnly, appliedSettings?.permissions, appliedSettings?.flags, isMaster]);
+  const commandTargets = useMemo(() => commandLinks(navFilter), [navFilter]);
+  const openPages = useMemo(() => openablePages(navFilter), [navFilter]);
   const command = useCallback((question: string): PrepassHit | null => {
     const hit = prepass(question, commandTargets);
     if (!hit) return null;
@@ -459,12 +473,12 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   }, [rosterIds, owned]);
   const value: AssistantState = {
     hydrated, open, unread, active, held, toggle, ask, command, accountId,
-    accounts, rosterLoaded: rosterIds !== null, isUser: state.roster.isUser, canChat: canOpenChats(commandTargets),
+    accounts, rosterLoaded: rosterIds !== null, isUser: state.roster.isUser, canChat: canOpenChats(commandTargets), openPages,
     canGeneral: canGeneralOf(state.roster),
     appFocus: appFocusOf(state),
     shown, threads,
     pick, newChat, openThread, userName,
-    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks, fromDo,
+    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks,
   };
   return (
     <AssistantContext.Provider value={value}>
@@ -695,9 +709,9 @@ export function AssistantPanel({
   onClose?: () => void;
 }) {
   const {
-    shown, threads, active, held, userName, accounts, rosterLoaded, isUser, accountId, canGeneral, appFocus, canChat,
+    shown, threads, active, held, userName, accounts, rosterLoaded, isUser, accountId, canGeneral, appFocus, canChat, openPages,
     ask, command, pick, newChat, openThread,
-    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks, fromDo,
+    doOffer, doRun, enterDo, exitDo, sendDo, doFromQuestion, doCallbacks,
   } = useAssistant();
   const answer = useLazyModule(answerText);
   const [ultra, setUltra] = useUltraMode(isUser);
@@ -719,7 +733,7 @@ export function AssistantPanel({
   // null while the roster loads: a card's "all" waits for it.
   const accountIds = useMemo(() => (rosterLoaded ? accounts.map((a) => a.id) : null), [accounts, rosterLoaded]);
   const text = (body: string, muted = false, focus: Focus = null) => answer
-    ? <answer.AnswerText text={body} muted={muted} onNavigate={leave} focus={focus} accountIds={accountIds} canChat={canChat} />
+    ? <answer.AnswerText text={body} muted={muted} onNavigate={leave} focus={focus} accountIds={accountIds} canChat={canChat} pages={openPages} />
     : <span className="whitespace-pre-wrap">{body}</span>;
 
   // Follow the newest row — both when a question lands and when its answer
@@ -751,7 +765,7 @@ export function AssistantPanel({
     setDraft("");
   };
   /** A Q&A answer that links a "Do it for me" flow's page offers the swap (the link reader rides AnswerText's chunk). */
-  const offersDo = (body: string) => !!answer && answer.findPaths(body).some((h) => flowForHref(h.href) !== null);
+  const offersDo = (body: string) => !!answer && answer.findPaths(body, openPages).some((h) => flowForHref(h.href) !== null);
 
   const renderTurn = (t: Turn) => (
     <div key={t.id} className="flex flex-col gap-2">
@@ -776,10 +790,10 @@ export function AssistantPanel({
               it are real destinations — AnswerText renders both with its own
               block layout; until it loads, `text` falls back to pre-wrapped
               plain text. */}
-          {text(t.answer, !!t.error, t.accountId)}
+          {text(t.answer, !!t.error, cardFocus(t))}
         </div>
       )}
-      {doOffer.enabled && t.answer !== null && !t.error && !fromDo.has(t.id) && offersDo(t.answer) && (
+      {doOffer.enabled && t.answer !== null && !t.error && !t.fromDo && offersDo(t.answer) && (
         <button
           type="button"
           onClick={() => doFromQuestion(t.question)}

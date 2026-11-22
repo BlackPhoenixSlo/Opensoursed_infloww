@@ -52,6 +52,7 @@ entries, one bound per account (least-used IP) and kept (docs/proxies.md, "Inflo
   case_pool_routes:                    POST /admin/proxy-pool/assign + /unbind for the owner; another Agency's
                                        owner and A's chatter are refused, the registry is unchanged; signed out → 401.
   case_reload_session_is_the_owners_own_creator_only: no id → the relay-wide default; another Agency's → 403.
+  case_bulk_paste_audit_row_keeps_no_password: the pasted line's password never reaches `actions`.
 
 The registry is repointed at a temp file; every host and password is fake (`.invalid`).
 
@@ -442,6 +443,25 @@ def case_generic_routes_refuse_pool():
     assert proxy_registry.REGISTRY_PATH.read_bytes() == before, "a generic route wrote a pool entry"
 
 
+def case_bulk_paste_audit_row_keeps_no_password():
+    """W30 N1: a pasted proxy line carries its password in `text` (no secret-looking name);
+    the route is a `credential_write`, so its audit row says only that text was set."""
+    from sqlalchemy import select
+    from db.engine import get_session
+    from db.models import Action
+    _reset()
+    r = OWNER_A.post("/admin/proxies/bulk", json={"text": f"bulk.invalid:7001:bulkuser:{PW} bulk-audit"})
+    assert r.status_code == 200 and r.json()["added"], r.text
+
+    async def _rows():
+        async with get_session() as s:
+            return (await s.execute(select(Action.payload_json).where(
+                Action.action == "POST /admin/proxies/bulk"))).scalars().all()
+    rows = asyncio.run(_rows())
+    assert rows and all(PW not in (p or "") for p in rows), rows
+    assert json.loads(rows[-1]) == {"text": "set"}, rows
+
+
 def case_pool_routes():
     _reset(f"{L1},{L2}")
     r = OWNER_A.post("/admin/proxy-pool/assign", json={"account_id": CREATOR_A})
@@ -632,10 +652,14 @@ def case_scrub_pool_secrets():
     import asyncio
     from db.engine import get_session
     from db.models import AppError as _AE
+    import employees
+    from types import SimpleNamespace
     async def _legacy_row():
+        # Filed by owner A's own Employee: GET /admin/errors shows a row to its reporter's Agency (W30 F2).
+        emp = await employees.get_owner_employee_id(SimpleNamespace(id=IDS["agency_a_owner"], username="a"))
         async with get_session() as s:
             s.add(_AE(source="browser", kind="error", message="legacy-cut-context", account_id=CREATOR_A,
-                      context_json=json.dumps({"stack": "z" * 100})[:40]))
+                      employee_id=emp, context_json=json.dumps({"stack": "z" * 100})[:40]))
     asyncio.run(_legacy_row())
     got = OWNER_A.get("/admin/errors", params={"limit": 50})
     assert got.status_code == 200, got.text[:500]

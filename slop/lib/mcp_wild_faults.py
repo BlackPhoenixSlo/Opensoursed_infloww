@@ -26,10 +26,13 @@ CHECKS = (C_5XX, C_WELLFORMED, C_NO_SEND, C_CROSS, C_SEND_LISTED, C_ANON3, C_REV
 def _anon_sees_token_builtins() -> None:
     """The no-credential surface lists every builtin (bug class: the `token` filter on BUILTINS dropped), so an
     anonymous tools/list shows propose_plan and plan_status; their calls then answer 401/404 with no connect link.
-    `mcp_api._dispatch` / `_call` look `_builtins` up at call time. Only anonymous_only_three_tools goes red."""
+    `mcp_api._dispatch` / `_call` look `_builtins` (calls) and `_listed` (tools/list) up at call time; `_listed`
+    is widened for the no-credential caller only. Only anonymous_only_three_tools goes red."""
     import mcp_api
 
+    listed = mcp_api._listed
     mcp_api._builtins = lambda token: list(mcp_api.BUILTINS.values())
+    mcp_api._listed = lambda token: listed(token) if token else list(mcp_api.BUILTINS.values())
 
 
 def register(Fault) -> dict:

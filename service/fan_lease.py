@@ -187,14 +187,20 @@ async def fan_on_cooldown(account_id: str, fan_id: int) -> bool:
     (not the gather-time snapshot) so a fan another sender paused EARLIER IN THE
     SAME TICK is still skipped. Call this BEFORE acquire_fan_lease in every
     sender."""
+    return int(fan_id) in await fans_on_cooldown(account_id, [fan_id])
+
+
+async def fans_on_cooldown(account_id: str, fan_ids) -> set[int]:
+    """`fan_on_cooldown` for many fans in one read: the ones of `fan_ids` whose
+    `fans.automation_paused_until` is in the future."""
     now = datetime.utcnow()
     async with get_session() as s:
-        until = (
+        rows = (
             await s.execute(
-                select(Fan.automation_paused_until).where(
+                select(Fan.fan_id, Fan.automation_paused_until).where(
                     Fan.account_id == str(account_id),
-                    Fan.fan_id == int(fan_id),
+                    Fan.fan_id.in_([int(f) for f in fan_ids]),
                 )
             )
-        ).scalar_one_or_none()
-    return until is not None and until > now
+        ).all()
+    return {int(f) for f, until in rows if until is not None and until > now}

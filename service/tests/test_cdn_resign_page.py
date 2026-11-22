@@ -15,6 +15,10 @@ same selection spans 6 listing windows.
   case_no_mirror_row_by_id           — no mirror row: by-id, no listing read.
   case_herd_one_window_read          — 30 media of one window at once: one read.
   case_eviction_keeps_newest         — past _CAP the OLDEST remembered urls go, not all of them.
+  case_stale_window_rereads          — after an egress switch the cached window's urls 403 too: that window is
+                                       read again once, no by-id read; the window's other media then cost nothing.
+                                       A url OF really refuses (same signature back): one re-read per window, then
+                                       by id, not a window read per file.
 
 OF is faked: no request leaves the process.
 Run: ./venv/bin/python service/tests/test_cdn_resign_page.py
@@ -58,6 +62,7 @@ class _OF:
 
     def __init__(self, gone: set[int] = frozenset()):
         self.gone = set(gone)
+        self.sig = "new"   # the egress the urls are signed for
         self.reads: list = []
         self.lock = threading.Lock()
 
@@ -65,13 +70,13 @@ class _OF:
         assert (limit, type, sort) == (100, "all", "asc"), (limit, type, sort)
         with self.lock:
             self.reads.append(f"p{offset}")
-        live = [_media(i) for i in range(N) if i not in self.gone]
+        live = [_media(i, self.sig) for i in range(N) if i not in self.gone]
         return {"list": live[offset:offset + limit], "hasMore": offset + limit < len(live)}
 
     def vault_media_by_id(self, media_id: int):
         with self.lock:
             self.reads.append(int(media_id))
-        return _media(int(media_id) - 9_000_000)
+        return _media(int(media_id) - 9_000_000, self.sig)
 
 
 async def _seed(removed: set[int] = frozenset()) -> None:
@@ -99,7 +104,7 @@ def _reset(removed: set[int] = frozenset()) -> None:
 
 
 def _resign(of: _OF, i: int) -> str | None:
-    return asyncio.run(cdn_resign.resign(AID, _mid(i), _url(_mid(i), "old"), of))
+    return asyncio.run(cdn_resign.resign(AID, _mid(i), _url(_mid(i), "old"), of, "t"))
 
 
 def case_window_resigns_its_neighbours():
@@ -144,7 +149,7 @@ def case_absent_falls_back_by_id():
 def case_no_mirror_row_by_id():
     _reset()
     of = _OF()
-    got = asyncio.run(cdn_resign.resign(AID, _mid(400), _url(_mid(400), "old"), of))
+    got = asyncio.run(cdn_resign.resign(AID, _mid(400), _url(_mid(400), "old"), of, "t"))
     assert got == _url(_mid(400), "new") and of.reads == [_mid(400)], of.reads
 
 
@@ -153,10 +158,33 @@ def case_herd_one_window_read():
     of = _OF()
 
     async def herd():
-        return await asyncio.gather(*(cdn_resign.resign(AID, _mid(i), _url(_mid(i), "old"), of)
+        return await asyncio.gather(*(cdn_resign.resign(AID, _mid(i), _url(_mid(i), "old"), of, "t")
                                       for i in range(200, 230)))
     assert asyncio.run(herd()) == [_url(_mid(i), "new") for i in range(200, 230)]
     assert of.reads == ["p200"], of.reads
+
+
+def case_stale_window_rereads():
+    _reset()
+    of = _OF()
+    of.sig = "ip1"
+    assert _resign(of, 130) == _url(_mid(130), "ip1") and of.reads == ["p100"], of.reads
+    of.sig = "ip2"   # the account moved proxy: every ip1 url now 403s, the cached window still holds them
+    stale = cdn_resign.current(AID, _url(_mid(130), "old"))
+    assert stale == _url(_mid(130), "ip1")
+    got = asyncio.run(cdn_resign.resign(AID, _mid(130), stale, of, "t"))
+    # Bug: the cached window answered "hit" with the same dead url, so every file of it fell to a by-id read.
+    assert got == _url(_mid(130), "ip2"), got
+    assert of.reads == ["p100", "p100"], ("one window re-read, no by-id", of.reads)
+    assert cdn_resign.current(AID, _url(_mid(150), "ip1")) == _url(_mid(150), "ip2")
+    assert _resign(of, 150) == _url(_mid(150), "ip2") and of.reads == ["p100", "p100"], of.reads
+
+    _reset()
+    of = _OF()   # no egress switch: OF keeps signing the urls that 403
+    assert _resign(of, 130) == _url(_mid(130), "new") and of.reads == ["p100"], of.reads
+    for i in (130, 150):
+        assert asyncio.run(cdn_resign.resign(AID, _mid(i), _url(_mid(i), "new"), of, "t")) is None
+    assert of.reads == ["p100", "p100", _mid(130), _mid(150)], of.reads
 
 
 def case_eviction_keeps_newest():

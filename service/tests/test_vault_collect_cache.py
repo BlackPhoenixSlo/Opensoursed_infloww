@@ -51,7 +51,7 @@ PAYLOAD = {"list": [{"id": 1}], "hasMore": False}
 async def case_seed_accounts():
     async with get_session() as s:
         for a in ("accTTL", "accEnv", "accMoved", "accStays", "accPersist", "accRace", "accRv", "accRvL",
-                  "accRvGate", "accRvView"):
+                  "accRvGate", "accRvView", "accRvEmpty"):
             s.add(Account(id=a))
 
 
@@ -329,5 +329,23 @@ async def case_revalidate_new_ids_drop_the_views_other_offsets():
         await _media(refresh=True)
     assert await vault_cache.get(aid, page2) == OLD, "refresh=1 dropped a later page"
 
+
+
+async def case_revalidate_empty_answer_drops_the_old_first_page():
+    """W30 #23: the last item gone, the revalidate answers an empty listing (never cached): the old
+    page 1 goes too, so a plain read asks OF again instead of serving it for the 20 h TTL."""
+    os.environ.pop("VAULT_PICKER_REVALIDATE_S", None)
+    aid = "accRvEmpty"
+    await vault_cache.put(aid, RV_MEDIA, OLD, started_at=datetime.utcnow())
+    await _age(aid, RV_MEDIA, 400)
+
+    class _Empty(_FakeOF):
+        def vault_media(self, **_kw):
+            self.media += 1
+            return {"list": [], "hasMore": False}
+    assert await vault_cache.get(aid, RV_MEDIA) == OLD
+    with _routes(aid, _Empty()):
+        assert await _media(revalidate=True, refresh=False) == {"list": [], "hasMore": False}
+    assert await vault_cache.get(aid, RV_MEDIA) is None, "the old first page outlived an empty revalidate"
 
 _harness.run()

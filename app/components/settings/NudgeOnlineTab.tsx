@@ -80,9 +80,6 @@ export default function NudgeOnlineTab({
   // The picker's one copy: every pick is an `account` dispatch, which resets
   // the old account's draft and lines in the same update.
   const { accountId } = state;
-  const [previewFan, setPreviewFan] = useState("");
-  const [previewHour, setPreviewHour] = useState<number | "">("");
-  const [previewDay, setPreviewDay] = useState("");
   useEffect(() => {
     if (!accountId && accounts.length > 0) dispatch({ type: "account", accountId: accounts[0].id });
   }, [accounts, accountId]);
@@ -107,7 +104,7 @@ export default function NudgeOnlineTab({
     rulesError: rulesQ.isError,
   };
   const saveAllowed = canSave(gate);
-  const { form, slots, jsonDraft, jsonErr, save: saved, runMsg, previewErr, bulkMsg } = state;
+  const { form, slots, jsonDraft, jsonErr, save: saved, runMsg, preview, previewErr, bulkMsg } = state;
   /** THE save verdict, shown in the footer beside the Save. */
   const savedOk = saved?.ok === true;
   const saveErr = saved?.ok === false ? saved.err : null;
@@ -195,7 +192,7 @@ export default function NudgeOnlineTab({
 
   async function runPreview() {
     if (!accountId) return;
-    const p = previewPayload(previewFan, previewHour, previewDay);
+    const p = previewPayload(preview);
     if ("error" in p) {
       dispatch({ type: "previewErr", msg: `Preview failed: ${p.error}` });
       return;
@@ -388,23 +385,25 @@ export default function NudgeOnlineTab({
           <Section title="Preview">
             <div className="flex flex-wrap items-end gap-3">
               <Field label="Fan id">
-                <IfInput className="w-40" placeholder="Sample fan" value={previewFan}
-                  onChange={(e) => setPreviewFan(e.target.value)} />
+                <IfInput className="w-40" placeholder="Sample fan" value={preview.fan}
+                  onChange={(e) => dispatch({ type: "preview", patch: { fan: e.target.value } })} />
               </Field>
               <Field label="Hour">
                 <IfInput type="number" min={0} max={23} className="w-24" placeholder="Now"
-                  value={previewHour} onChange={(e) => setPreviewHour(e.target.value === "" ? "" : Number(e.target.value))} />
+                  value={preview.hour}
+                  onChange={(e) => dispatch({ type: "preview", patch: { hour: e.target.value === "" ? "" : Number(e.target.value) } })} />
               </Field>
               <Field label="Day">
-                <IfNativeSelect className="w-32" value={previewDay} onChange={(e) => setPreviewDay(e.target.value)}>
+                <IfNativeSelect className="w-32" value={preview.day}
+                  onChange={(e) => dispatch({ type: "preview", patch: { day: e.target.value } })}>
                   <option value="">Today</option>
                   {PREVIEW_DAYS.map((d) => <option key={d} value={d}>{d[0].toUpperCase() + d.slice(1)}</option>)}
                 </IfNativeSelect>
               </Field>
               <IfSegmented aria-label="Preview time" className="mb-px max-w-full overflow-x-auto"
                 options={TIME_PRESETS.map(([label, h]) => ({ value: String(h), label }))}
-                value={String(previewHour)}
-                onChange={(h) => setPreviewHour(Number(h))} />
+                value={String(preview.hour)}
+                onChange={(h) => dispatch({ type: "preview", patch: { hour: Number(h) } })} />
               <IfButton onClick={runPreview} disabled={previewM.isPending || !accountId}>
                 {previewM.isPending ? "…" : "Preview"}
               </IfButton>
@@ -436,7 +435,7 @@ export default function NudgeOnlineTab({
           {/* ── Tease pools: friendly editor, per day ───────────────── */}
           <Section title="Message lines & images">
             <IfHelp className="mt-0">
-              {"{name} {city} {age} {job} {hobby} {pet} fill from the fan's profile. One image per nudge; several rotate."}
+              {"{name} {city} {age} {job} {hobby} {pet} fill from the fan's profile. One image per nudge; several rotate. Night runs 21:00-05:00: after midnight it uses the day before's lines (Friday 02:00 = Thursday night)."}
             </IfHelp>
             <NudgeSlotPools accountId={accountId} slots={slots} mediaCache={mediaCache}
               onMediaPicked={addMedia}

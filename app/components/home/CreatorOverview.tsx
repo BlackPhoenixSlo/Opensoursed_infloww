@@ -25,7 +25,7 @@ import {
   type Bucket, type Chan, type ColCtx, type GrowthSums, type Point, type StatCol, type TotalGrowth, type View, CHANNEL_TEXT, CHANNELS, CHARGEBACKS_COLOR,
   LEDGER_ROWS,
   SUMMARY_TEXT,
-  TREND_TEXT, isWait, msgOf, netMsgOf, viewOf,
+  TREND_TEXT, colTotal, isWait, statCol, viewOf,
 } from "./reportsMath";
 
 /** The summary's sum tiles in grid order, each channel's icon and colour from the Dashboard's one map (#5), Total on
@@ -46,10 +46,14 @@ const STAT_TIPS = {
   refunded: "Amount of refunds during the selected time frame",
 } as const;
 
+const MESSAGE_COL = statCol("message");
+const TOTAL_EARNINGS_COL = statCol("totalEarnings");
+const REFUNDS_COL = statCol("refunds");
+
 export default function CreatorOverview({
   ids, view, totalCents, buckets, prior, growthNow, totalGrowth, trendPoints, chanPick, setChanPick,
   channelLines, from, to, net, buildExport, perModel, visibleCreators, colKeys,
-  setColKeys, orderedCols, colCtx, grossCents, netLedger, chargebacksCents, chargebacksView, referralsGap,
+  setColKeys, retryCols, orderedCols, colCtx, grossCents, netLedger, chargebacksCents, chargebacksView, referralsGap,
   referralsShown,
 }: {
   ids: { summary: string; trends: string; channel: string; breakdown: string; stats: string; ledger: string };
@@ -63,6 +67,8 @@ export default function CreatorOverview({
   from: string | null; to: string | null; net: boolean; buildExport: (c: ExportChoice) => Promise<Section[]>;
   perModel: { isPending: boolean; isError: boolean }; visibleCreators: PerModelRow[];
   colKeys: string[]; setColKeys: ((next: string[]) => void) | null;
+  /** The Agency's layout read failed: asks it again (the picker stays off until it answers). */
+  retryCols?: (() => void) | null;
   orderedCols: readonly StatCol[]; colCtx: ColCtx; grossCents: number;
   netLedger: Partial<Record<(typeof LEDGER_ROWS)[number], number>>;
   /** Chargebacks' figure, below zero, and its reversed read's state, outside `view`: pending or failed, only
@@ -80,12 +86,11 @@ export default function CreatorOverview({
   const statsView = viewOf([perModel], visibleCreators.length > 0);
   // With net on, OnlyFans' net per bucket; an older relay has none, so the card is Not wired then.
   const netByKind = visibleCreators.every((m) => m.net_revenue_by_kind);
-  const messageEarnings = visibleCreators.reduce((a, m) => a + ((net ? netMsgOf(m) : msgOf(m)) ?? 0), 0);
-  const totalEarningsAcrossCreators =
-    visibleCreators.reduce((a, m) => a + (net ? m.total_net_revenue_cents : m.total_revenue_cents), 0);
-  const refundedGross = visibleCreators.reduce((a, m) => a + (m.refunded_cents ?? 0), 0);
-  const refundedAcrossCreators = net
-    ? visibleCreators.reduce((a, m) => a + (m.refunded_net_cents ?? 0), 0) : refundedGross;
+  // The cards sum the table's own columns (Message, Total earnings, Refunds) in the table's basis.
+  const messageEarnings = colTotal(MESSAGE_COL, visibleCreators, colCtx);
+  const totalEarningsAcrossCreators = colTotal(TOTAL_EARNINGS_COL, visibleCreators, colCtx);
+  const refundedGross = colTotal(REFUNDS_COL, visibleCreators, { ...colCtx, net: false });
+  const refundedAcrossCreators = colTotal(REFUNDS_COL, visibleCreators, colCtx);
   /* Each channel’s share of total channel earnings. */
   const chanSum = CHANNELS.reduce((a, c) => a + buckets[c.key], 0);
   /* The summary tiles' rows: Chargebacks has its own read (its own wait and error) and no growth. */
@@ -244,7 +249,7 @@ export default function CreatorOverview({
         <h2 id={ids.stats} className="text-xl font-medium leading-[1.2]" style={{ color: "var(--color-fg)" }}>
           Creator statistics
         </h2>
-        <CustomMetricsPill keys={colKeys} onChange={setColKeys} />
+        <CustomMetricsPill keys={colKeys} onChange={setColKeys} onRetry={retryCols} />
         {/* #88, #89: the bundle's Export pop-up; ours downloads at once (W5 5.9). */}
         <ExportMenu fileName={`creator-reports_${from ?? ""}_${to ?? ""}`} sheet="Creator reports"
           displays={["total", "day"]} fields net={net} build={buildExport} className="self-start" />

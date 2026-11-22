@@ -272,7 +272,11 @@ _revalidating: set[tuple[str, str, tuple]] = set()
 
 async def _revalidate(key: tuple[str, str, tuple], ttl_seconds: float, fetcher) -> None:
     try:
-        await _fetch_locked(key, ttl_seconds, fetcher, bypass=False)
+        # A background refresh's own slot BEFORE the key lock: the lease it inherited closes with
+        # the request that spawned it, and waiting for a slot while holding the lock deadlocks
+        # the slot holders queued on it (no-op for a user read).
+        async with relay_coalesce.admission(own=True):
+            await _fetch_locked(key, ttl_seconds, fetcher, bypass=False)
     except Exception:
         # The stale entry stays; the next stale read retries.
         log.warning("relay_cache swr refresh failed ns=%s account=%s", key[0], key[1], exc_info=True)
@@ -429,7 +433,7 @@ def patch(
 
 
 # The namespaces whose bodies show MONEY — see `invalidate_money_feeds`.
-_MONEY_FEED_NAMESPACES = ("notifications", "notifications_count", "chat_pinned")
+_MONEY_FEED_NAMESPACES = ("notifications", "notifications_count", "chat_pinned", "payouts")
 
 
 def invalidate_money_feeds(account_id: str) -> int:
@@ -441,7 +445,8 @@ def invalidate_money_feeds(account_id: str) -> int:
     were the third, went with its route in the 2026-10 cleanup.) The chat pins
     (`chat_pinned`, server's pinned route, every chat of the account) are the
     third now: a pinned PPV shows its lock/price, which a fan's payment flips
-    with no write of ours. Callers are the money-event paths: an inbound tip and a `toasts`
+    with no write of ours. The ledger / balance reads (`payouts`, server's
+    `_account_ttl` routes, up to 15 min) are the fourth. Callers are the money-event paths: an inbound tip and a `toasts`
     frame (`event_transcoder`), and a PPV purchase
     (`purchase_notifications._broadcast_purchase`). Each is the server-side
     twin of a client-side `["notif-list", aid]` invalidation in

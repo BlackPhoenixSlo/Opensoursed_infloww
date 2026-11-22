@@ -23,6 +23,8 @@ vi.mock("@/components/chat/TemplatePicker", () => ({
 const media = vi.hoisted(() => ({ desktop: true }));
 vi.stubGlobal("matchMedia", (q: string) => ({ matches: media.desktop, media: q, addEventListener: () => {}, removeEventListener: () => {} }));
 vi.mock("@/components/ui/AccountAvatarPicture", () => ({ AccountAvatarPicture: () => null }));
+// useStandIn's principal (the frame's last stand-in is kept per principal).
+vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: { user_id: "owner-1" } }); return { useUser: v, useOptionalUser: v }; });
 // The `account` blob holds each creator's Tag (useCreatorProfiles); every other read is the notification count.
 const TAGS = { tab: "account", config: { creators: { profiles: { "2": { tag: "VIP" } } } } };
 const get = vi.fn(async (path: string, _opts?: unknown): Promise<unknown> => (path === "/admin/settings/account" ? TAGS : { all: 250 }));
@@ -46,6 +48,7 @@ vi.mock("@/hooks/useAccounts", () => ({
 import { renderWithProviders } from "@/test-utils";
 import { ScopeProvider, useScope } from "@/contexts/ScopeContext";
 import { chatDraftKey } from "@/lib/ofMirrorChat";
+import { useStandIn } from "@/lib/ofMirrorProfile";
 import { resetReadGate } from "@/lib/ofReadGate";
 import { holdLease } from "@/lib/viewLease";
 import { CreatorColumn } from "./CreatorColumn";
@@ -210,6 +213,20 @@ describe("OfManagerChrome", () => {
     expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Creator" })).toHaveTextContent("jade");
     expect(localStorage.getItem("chatterly:scope")).toBe("all");
+  });
+
+  it("the automatic pick for a saved All creators is a stand-in (settings locked, hint shown); clicking the Creator unlocks", () => {
+    accounts = [{ id: "1", nickname: "dead", has_session: true, session_dead_at: "x" }, { id: "2", nickname: "jade", has_session: true }];
+    localStorage.setItem("chatterly:scope", "all");
+    /** What OfMirrorFrame reads: the stand-in its Settings writes, stream copy and "Showing <model>" hint go by. */
+    function Frame() {
+      return <p data-testid="stand-in">{useStandIn("/of-mirror/pages/settings/account.html") ?? "none"}</p>;
+    }
+    renderWithProviders(<ScopeProvider><OfManagerChrome><Frame /></OfManagerChrome></ScopeProvider>);
+    expect(screen.getByTestId("stand-in")).toHaveTextContent("2");     // the same Creator the column shows picked
+    fireEvent.click(screen.getByTitle("jade"));
+    expect(screen.getByTestId("stand-in")).toHaveTextContent("none");  // an explicit pick: writes act for it
+    expect(localStorage.getItem("chatterly:scope")).toBe("model:2");
   });
 
   it("lists a watcher after the creators as a pickable row with a watcher badge; its pick stays OF Manager's", async () => {

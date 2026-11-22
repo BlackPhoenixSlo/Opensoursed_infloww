@@ -121,7 +121,7 @@ export function settingRows(reference: SettingRef[], live: FullAiConfig | null, 
 
 /** The top-level keys whose value differs between the Live settings (checkpoint) and the draft (key order inside a
  *  value ignored): `order`'s keys first (the GET's `reference` order), then any other key of either side. Empty =
- *  the draft is what fans get. */
+ *  the draft is the saved Live settings (what Mode Live runs). */
 export function draftDiff(checkpoint: FullAiConfig, draft: FullAiConfig, order: string[] = []): string[] {
   const keys = [...new Set([...order, ...Object.keys(checkpoint), ...Object.keys(draft)])];
   return keys.filter((k) => !sameConfig(checkpoint[k], draft[k]));
@@ -132,10 +132,10 @@ export function draftDiffLine(checkpoint: FullAiConfig | null, draft: FullAiConf
   { text: string; differs: boolean } | null {
   if (!checkpoint || !draft) return null;
   const keys = draftDiff(checkpoint, draft, order);
-  if (keys.length === 0) return { text: "Draft = Live settings. Fans get exactly what you see below.", differs: false };
+  if (keys.length === 0) return { text: "Draft matches the saved Live settings.", differs: false };
   const shown = keys.slice(0, 6).join(", ") + (keys.length > 6 ? `, +${keys.length - 6} more` : "");
   return {
-    text: `Draft differs from the Live settings in ${keys.length}: ${shown}. Fans keep the Live ones until you tap Make draft live.`,
+    text: `Draft differs from the Live settings in ${keys.length}: ${shown}. The Live settings stay until you tap Make draft live.`,
     differs: true,
   };
 }

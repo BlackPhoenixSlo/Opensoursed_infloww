@@ -332,6 +332,12 @@ async def _collect_video(account_id: str, media_id: int, raw: dict,
     frames = storyboard_frames(video_url(raw), want)
     if frames:
         return Collected(frames, "ok")
+    if previews_enough(raw, float(raw.get("duration") or 0)):   # previews a Jev pass stored: disk, no re-sign (F13)
+        on_disk = [b for i in spread(len(poster_frames(raw)), want)
+                   for p in (vault_stills.poster_path(account_id, media_id, i),) if p.is_file()
+                   for b in (p.read_bytes(),)]
+        if len(on_disk) >= min(PREVIEW_MIN, want, preview_count(raw)):
+            return Collected([vision.img_data_url(b) for b in on_disk], "ok")
 
     fresh = await vault_stills.resolve_fresh(account_id, media_id, client)
     if fresh.media is None:
@@ -532,7 +538,8 @@ def _publish_scrub(tmp: Any, h: str) -> None:
     """Move a full 400px set into the storyboard store (missing frames backfilled from the nearest, as
     `_storyboard_extract_batch` does), one atomic rename per frame. Copied into the store first: the temp dir and
     the store are different filesystems in the container (a bind mount), where a rename across them fails EXDEV
-    (measured on AE 2026-11-12: 6 of 8 first reads of a 720p clip failed so)."""
+    (measured on AE 2026-11-12: 6 of 8 first reads of a 720p clip failed so). A failed copy leaves no `.part`
+    behind (the error is raised; `_jev_frames_sync` treats the scrub as best-effort)."""
     import os
     import shutil
     have = [i for i in range(JEV_VIDEO_FRAMES) if (tmp / f"{i}.jpg").is_file()]
@@ -545,8 +552,12 @@ def _publish_scrub(tmp: Any, h: str) -> None:
             shutil.copyfile(tmp / f"{min(have, key=lambda j: abs(j - i))}.jpg", tmp / f"{i}.jpg")
     for i in range(JEV_VIDEO_FRAMES):
         part = dest / f".{i}.jpg.{os.getpid()}.part"
-        shutil.copyfile(tmp / f"{i}.jpg", part)
-        os.replace(part, dest / f"{i}.jpg")
+        try:
+            shutil.copyfile(tmp / f"{i}.jpg", part)
+            os.replace(part, dest / f"{i}.jpg")
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
 
 
 def _short_side(jpeg: bytes) -> int:
@@ -618,7 +629,10 @@ def _jev_frames_sync(client: Any, media: dict, dur: float, deadline: float) -> J
                 frames = _extract_jev(tmp / "src.mp4", max(0.1, d or 1.0), tmp / "out",
                                       tmp / "scrub" if lock is not None else None, deadline)
                 if lock is not None:
-                    _publish_scrub(tmp / "scrub", h)
+                    try:   # best-effort: the hover scrub, not the Jev frames (a full disk must not cost the read)
+                        _publish_scrub(tmp / "scrub", h)
+                    except Exception:  # noqa: BLE001
+                        log.warning("jev video scrub publish failed hash=%s", h, exc_info=True)
             finally:
                 if lock is not None:
                     lock.release()
@@ -683,8 +697,8 @@ async def _collect_jev_video(account_id: str, item: VaultItem, deadline: float) 
         return max(0.0, deadline - time.monotonic())
     client = await asyncio.to_thread(ax._make_client, account_id)
     fresh = await asyncio.wait_for(vault_stills.resolve_fresh(account_id, item.media_id, client), left())
-    if fresh.media is None:
-        return JevFrames([], fresh.reason)
+    if fresh.media is None:   # OF did not answer the re-sign: a brief failure (the retry cap counts it); gone is not
+        return JevFrames([], fresh.reason, transient=fresh.reason == "fetch_failed")
     media = fresh.media
     dur = float(media.get("duration") or item.duration_seconds or 0)
     if previews_enough(media, dur):   # D58: OF's spread preview frames read the clip; the mp4s only without them
@@ -692,7 +706,8 @@ async def _collect_jev_video(account_id: str, item: VaultItem, deadline: float) 
         if len(pv.images) >= min(PREVIEW_MIN, preview_count(media)):
             short = len(pv.images) < min(JEV_VIDEO_FRAMES, preview_count(media))   # some failed: retried
             drop_lane()   # a sweep's mp4 slot (`lane_ahead`) this read never needed: not held through Jev's call
-            review = "long" if dur > _env_preview_long_s() else "few_frames" if short else None
+            # an unknown length (0) may be long: read as long, never cleared on 9 previews (W30 F12)
+            review = "long" if dur <= 0 or dur > _env_preview_long_s() else "few_frames" if short else None
             return JevFrames([base64.b64decode(u.split(",", 1)[1]) for u in pv.images], "ok", src="preview",
                              review=review, transient=short)
     if video_url(media):
@@ -714,7 +729,9 @@ async def _collect_jev_video(account_id: str, item: VaultItem, deadline: float) 
     posters = await asyncio.wait_for(
         _poster_stills(account_id, item.media_id, media, JEV_VIDEO_FRAMES, ""), left())
     if not posters.images:   # every mp4 failed: that (retry next sweep), not the posters' reason
-        return got if got is not None else JevFrames([], posters.reason, posters.detail)
+        # posters alone failing briefly counts toward the retry cap too (W30 C2), like a failed re-sign
+        return got if got is not None else JevFrames([], posters.reason, posters.detail,
+                                                     transient=posters.reason == "fetch_failed")
     # `got` here = every mp4 failed (not over the cap, not absent): the posters stand in for a brief failure
     return JevFrames([base64.b64decode(u.split(",", 1)[1]) for u in posters.images], "ok", src="poster",
                      review="poster_only", transient=got is not None)
@@ -731,9 +748,9 @@ async def collect_jev_video(account_id: str, item: VaultItem) -> JevFrames:
         log.warning("collect_jev_video timed out after %ss account=%s media=%s",
                     JEV_VIDEO_TIMEOUT_S, account_id, item.media_id)
         return JevFrames([], "fetch_failed", f"gave up reading the clip after {JEV_VIDEO_TIMEOUT_S}s", transient=True)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — counted toward the retry cap (`vault_jev_pass`), never re-downloaded forever
         log.exception("collect_jev_video failed account=%s media=%s", account_id, item.media_id)
-        return JevFrames([], "fetch_failed", f"{type(e).__name__}: {e}"[:200])
+        return JevFrames([], "fetch_failed", f"{type(e).__name__}: {e}"[:200], transient=True)
 
 
 async def _collect(account_id: str, item: VaultItem, raw: dict,

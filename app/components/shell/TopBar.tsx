@@ -47,7 +47,7 @@ import { useAgencyTimeZone } from "@/lib/appliedSettings";
 import { zoneOffsetNow } from "@/lib/creatorClock";
 import { utcOffsetFromMinutes } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
-import { BRAND_NAME } from "@/lib/brand";
+import { BRAND_NAME, DESKTOP_TITLE, DESKTOP_URL } from "@/lib/brand";
 import { InfoTip } from "@/components/ui/InfoTip";
 
 const noSubscribe = () => () => {};
@@ -257,7 +257,7 @@ export function AvatarMenu() {
           </button>
           {/* A plain <a>: /download is a static file in public/, outside the router. Left out inside the app. */}
           {!inApp && (
-            <a href="/download" className={item} title={`Get the ${BRAND_NAME} desktop app for Mac, Windows and Linux`}>
+            <a href={DESKTOP_URL} className={item} title={DESKTOP_TITLE}>
               <span aria-hidden="true">&#8595;</span>
               Download desktop app
             </a>

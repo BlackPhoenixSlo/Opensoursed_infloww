@@ -5,7 +5,7 @@ import type { DoDraft, MassPremadeSlots } from "./doFlows";
 import type { ConfigStatus } from "./fullAiConfigEdit";
 import { pillFor, pillStatus, planCardText } from "./DoMode";
 import {
-  doOfferOf, doRunReducer, draftFrom, initialDoRun, isTakeover, NO_KEY_HINT, previousOf, type DoAction, type DoRun,
+  DO_FLOW_IDS, doOfferOf, doRunReducer, draftFrom, initialDoRun, isTakeover, NO_KEY_HINT, previousOf, type DoAction, type DoRun,
 } from "./doRunReducer";
 
 const SLOTS: MassPremadeSlots = {
@@ -20,7 +20,8 @@ const NULL_FLOW: DoDraft = { ...DRAFT, flow: null, slots: null, answer: "Ask it 
 
 const EDIT: DoDraft = {
   ...DRAFT, flow: "mass_edit",
-  slots: { scope: "all", match: null, changes: { unsend_after_hours: 0 }, rules: [], already: 0, skipped: [] },
+  slots: { scope: "all", match: null, changes: { unsend_after_hours: 0 }, change_lines: ["Unsend after → never"], rules: [],
+    already: 0, skipped: [] },
 };
 const STORY: DoDraft = {
   ...DRAFT, flow: "auto_story",
@@ -58,13 +59,13 @@ const saving: DoRun = { ...running, saving: true };
 describe("doRunReducer", () => {
   it.each<[string, DoRun, DoAction[], DoRun]>([
     ["enter → idle", initialDoRun, [{ type: "enter" }], { phase: "idle" }],
-    ["draft while off is ignored", initialDoRun, [{ type: "draft", id: "a", request: "r" }], initialDoRun],
+    ["draft while off is ignored", initialDoRun, [{ type: "draft", id: "a", request: "r", accountId: "1001" }], initialDoRun],
     ["idle → drafting → planned", { phase: "idle" },
-      [{ type: "draft", id: "a", request: "r" }, { type: "drafted", id: "a", draft: DRAFT }], planned],
-    ["a stale drafted is dropped", { phase: "drafting", id: "b", request: "r2" },
-      [{ type: "drafted", id: "a", draft: DRAFT }], { phase: "drafting", id: "b", request: "r2" }],
+      [{ type: "draft", id: "a", request: "r", accountId: "1001" }, { type: "drafted", id: "a", draft: DRAFT }], planned],
+    ["a stale drafted is dropped", { phase: "drafting", id: "b", request: "r2", accountId: "1001" },
+      [{ type: "drafted", id: "a", draft: DRAFT }], { phase: "drafting", id: "b", request: "r2", accountId: "1001" }],
     ["a reply while planned re-drafts with the plan's slots", planned,
-      [{ type: "draft", id: "c", request: "make it 2h" }], { phase: "drafting", id: "c", request: "make it 2h" }],
+      [{ type: "draft", id: "c", request: "make it 2h", accountId: "1001" }], { phase: "drafting", id: "c", request: "make it 2h", accountId: "1001" }],
     ["start runs a plan", planned, [{ type: "start" }], running],
     ["skipAnimation starts instantly", planned, [{ type: "skipAnimation" }], { ...running, instant: true }],
     ["skipAnimation mid-run", running, [{ type: "step", index: 3 }, { type: "skipAnimation" }], { ...running, step: 3, instant: true }],
@@ -72,19 +73,48 @@ describe("doRunReducer", () => {
       { phase: "planned", id: "a", request: "r", draft: NULL_FLOW }],
     ["a draft with an error never starts", { phase: "planned", id: "a", request: "r", draft: { ...DRAFT, error: "provider" } }, [{ type: "start" }],
       { phase: "planned", id: "a", request: "r", draft: { ...DRAFT, error: "provider" } }],
-    ["Stop → aborted", running, [{ type: "abort", reason: "Stopped" }], { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" }],
+    // rwl W30 F2: the stop's step says whether the form is left filled (doFlows.leftFilled)
+    ["Stop mid-run keeps the step", running, [{ type: "step", index: 4 }, { type: "abort", reason: "Stopped" }],
+      { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 4 }],
+    ["a fail mid-run keeps the step", running, [{ type: "step", index: 5 }, { type: "fail", msg: "x" }],
+      { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "x", attempt: 0, step: 5 }],
+    ["Stop → aborted", running, [{ type: "abort", reason: "Stopped" }], { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 0 }],
     ["saved → done", running, [{ type: "saved" }], { phase: "done", id: "a", request: "r", draft: DRAFT, outcome: { kind: "saved" } }],
     ["a run's fail keeps the draft", running, [{ type: "fail", msg: "Add text to enable Create." }],
-      { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "Add text to enable Create.", attempt: 0 }],
-    ["a drafting fail (its id) → failed with no draft", { phase: "drafting", id: "a", request: "r" },
+      { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "Add text to enable Create.", attempt: 0, step: 0 }],
+    ["a drafting fail (its id) → failed with no draft", { phase: "drafting", id: "a", request: "r", accountId: "1001" },
       [{ type: "fail", id: "a", msg: "down" }], { phase: "failed", id: "a", request: "r", draft: null, msg: "down" }],
     ["a stale runner's saved/abort after Stop is a no-op",
-      { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" },
+      { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 0 },
       [{ type: "saved" }, { type: "abort", reason: "again" }, { type: "fail", msg: "late" }, { type: "step", index: 4 }],
-      { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" }],
-    ["Do it again from aborted", { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" }, [{ type: "start" }], running],
+      { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 0 }],
+    ["Do it again from aborted", { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 0 }, [{ type: "start" }], running],
     ["Cancel → idle", planned, [{ type: "reset" }], { phase: "idle" }],
-    ["no new draft while running", running, [{ type: "draft", id: "z", request: "q" }], running],
+    // rwl W30 F8: a plan for model 1001 never runs (or refines / retries) once the focus is model 2002
+    ["focus move drops a plan for another model", planned, [{ type: "focus", accountId: "2002" }, { type: "start" }], { phase: "idle" }],
+    ["focus on the plan's own model keeps it", planned, [{ type: "focus", accountId: "1001" }], planned],
+    ["focus move drops a draft in flight; its late answer is stale",
+      { phase: "drafting", id: "a", request: "r", accountId: "1001" },
+      [{ type: "focus", accountId: null }, { type: "drafted", id: "a", draft: DRAFT }], { phase: "idle" }],
+    ["focus move drops an aborted run's Do it again", { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 0 },
+      [{ type: "focus", accountId: "2002" }, { type: "start" }], { phase: "idle" }],
+    ["focus move drops a failed run's Try again", { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "x", attempt: 0 },
+      [{ type: "focus", accountId: "2002" }], { phase: "idle" }],
+    ["a General export keeps on General", { phase: "planned", id: "a", request: "r", draft: EXPORT },
+      [{ type: "focus", accountId: null }], { phase: "planned", id: "a", request: "r", draft: EXPORT }],
+    ["a run already going keeps its own account (the move is noted)", running, [{ type: "focus", accountId: "2002" }],
+      { ...running, focus: "2002" }],
+    // rwl W30 N1: focus moved mid-run, then the run stops → no Do it again / Try again for the old model
+    ["focus moved mid-run, then Stop → idle", running, [{ type: "focus", accountId: "2002" }, { type: "abort", reason: "Stopped" },
+      { type: "start" }], { phase: "idle" }],
+    ["focus moved mid-run, then a fail → idle", running, [{ type: "focus", accountId: "2002" }, { type: "fail", msg: "x" },
+      { type: "start" }], { phase: "idle" }],
+    ["focus moved away and back mid-run: a Stop is a normal stop", running,
+      [{ type: "focus", accountId: "2002" }, { type: "focus", accountId: "1001" }, { type: "abort", reason: "Stopped" }],
+      { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 0 }],
+    ["focus moved mid-run, then saved: done is only read", running, [{ type: "focus", accountId: "2002" }, { type: "saved" }],
+      { phase: "done", id: "a", request: "r", draft: DRAFT, outcome: { kind: "saved" } }],
+    ["no new draft while running", running, [{ type: "draft", id: "z", request: "q", accountId: "1001" }], running],
     ["exit → off", running, [{ type: "exit" }], initialDoRun],
     ["saving marks the run", running, [{ type: "saving" }], saving],
     ["Stop / Esc / takeover while saving is ignored", saving,
@@ -94,7 +124,7 @@ describe("doRunReducer", () => {
       { phase: "done", id: "a", request: "r", draft: DRAFT, outcome: { kind: "saved" } }],
     ["a failed save after an abort mid-request still says so", saving,
       [{ type: "abort", reason: "Stopped" }, { type: "fail", msg: "Network" }],
-      { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "Network", attempt: 0 }],
+      { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "Network", attempt: 0, step: 0 }],
     ["saving outside a run is a no-op", planned, [{ type: "saving" }], planned],
     ["an edit plan starts straight into saving (no steps, no Stop)", { phase: "planned", id: "a", request: "r", draft: EDIT },
       [{ type: "start" }, { type: "abort", reason: "Stopped" }],
@@ -112,16 +142,16 @@ describe("doRunReducer", () => {
       [{ type: "saved" }, { type: "applied", results: RESULTS }], exportRunning],
     ["downloaded outside an export run is a no-op", running, [{ type: "downloaded", file: "x.csv" }], running],
     ["an export's fail keeps the attempt", exportRunning, [{ type: "fail", msg: "429" }],
-      { phase: "failed", id: "a", request: "r", draft: EXPORT, msg: "429", attempt: 0 }],
+      { phase: "failed", id: "a", request: "r", draft: EXPORT, msg: "429", attempt: 0, step: 0 }],
     ["Try again is the next attempt of the same draft", exportRunning,
       [{ type: "fail", msg: "429" }, { type: "start" }, { type: "fail", msg: "429" }, { type: "start" }],
       { ...exportRunning, attempt: 2 }],
     ["a new plan starts back at attempt 0", { phase: "failed", id: "a", request: "r", draft: EXPORT, msg: "x", attempt: 3 },
-      [{ type: "draft", id: "n", request: "q" }, { type: "drafted", id: "n", draft: EXPORT }, { type: "start" }], { ...exportRunning, id: "n", request: "q" }],
+      [{ type: "draft", id: "n", request: "q", accountId: "1001" }, { type: "drafted", id: "n", draft: EXPORT }, { type: "start" }], { ...exportRunning, id: "n", request: "q" }],
     // F21: a server draft id may be null — two exports of one id keep their own plan ids, so the download key differs
     ["a second export with the same server id runs as its own plan", { phase: "done", id: "a", request: "r", draft: { ...EXPORT, id: "" },
       outcome: { kind: "downloaded", file: "x.xlsx" } },
-      [{ type: "draft", id: "b", request: "q" }, { type: "drafted", id: "b", draft: { ...EXPORT, id: "" } }, { type: "start" }],
+      [{ type: "draft", id: "b", request: "q", accountId: "1001" }, { type: "drafted", id: "b", draft: { ...EXPORT, id: "" } }, { type: "start" }],
       { ...exportRunning, id: "b", request: "q", draft: { ...EXPORT, id: "" } }],
     ["an export with an unresolved name never downloads", { phase: "planned", id: "a", request: "r", draft: UNRESOLVED_EXPORT },
       [{ type: "start" }, { type: "skipAnimation" }], { phase: "planned", id: "a", request: "r", draft: UNRESOLVED_EXPORT }],
@@ -186,10 +216,25 @@ describe("draftFrom", () => {
     expect(draftFrom({ ...CONFIG, slots: { ...CONFIG_SLOTS, rev: undefined } } as never, "1001").slots).toBeNull();
   });
 
+  // rwl W30 M20: one flow list + a guard, no blind cast — junk slots on a form flow read as none
+  it.each<[string, unknown, unknown]>([
+    ["mass_premade, string slots", "mass_premade", "junk"],
+    ["mass_premade, array slots", "mass_premade", [1, 2]],
+    ["auto_story, number slots", "auto_story", 7],
+  ])("%s: kept as the flow, slots null", (_, flow, slots) => {
+    expect(draftFrom({ flow, slots } as never, "1001")).toMatchObject({ flow, slots: null, account_id: "1001" });
+  });
+  it("a prototype key is no flow", () => {
+    expect(draftFrom({ flow: "toString" } as never, "1001")).toMatchObject({ flow: null, slots: null });
+  });
+  it("DO_FLOW_IDS names every flow the card knows", () => {
+    expect(Object.keys(DO_FLOW_IDS).sort()).toEqual(["auto_story", "full_ai_config", "mass_edit", "mass_premade", "report_export"]);
+  });
+
   it("keeps a mass_edit draft, its slots read defensively", () => {
     expect(draftFrom(EDIT, "x")).toEqual(EDIT);
     expect(draftFrom({ ...EDIT, slots: { rules: "junk" } } as never, "x").slots).toEqual(
-      { scope: "this", match: null, changes: {}, rules: [], already: 0, skipped: [] });
+      { scope: "this", match: null, changes: {}, change_lines: [], rules: [], already: 0, skipped: [] });
   });
 });
 
@@ -211,7 +256,7 @@ describe("doOfferOf", () => {
 
 describe("phone pill", () => {
   const done: DoRun = { phase: "done", id: "a", request: "r", draft: DRAFT, outcome: { kind: "saved" } };
-  const aborted: DoRun = { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped" };
+  const aborted: DoRun = { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 0 };
   const runFailed: DoRun = { phase: "failed", id: "a", request: "r", draft: DRAFT, msg: "x" };
   const draftFailed: DoRun = { phase: "failed", id: "a", request: "r", draft: null, msg: "x" };
   it.each<[string, DoRun, DoRun | null, boolean, string]>([

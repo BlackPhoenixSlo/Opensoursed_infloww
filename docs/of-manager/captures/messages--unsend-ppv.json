@@ -1,0 +1,43 @@
+{
+  "id": "messages--unsend-ppv",
+  "section": "messages",
+  "label": "Unsend PPV",
+  "phase": 2,
+  "pages": [
+    "messages/chat"
+  ],
+  "source": null,
+  "note": "Infloww's own bubble extra (not OF's): on my own priced bubble while its unsend window is open; the mirror's unsend confirm, then this one message only (never the queue). Cancel sends nothing; a stale button (window closed since the last draw) goes and sends nothing; a refused unsend shows the red note and the bubble stays. Messages stands in: All Creators unsends as the stand-in Creator.",
+  "known_body": {
+    "source": "existing route",
+    "relay": [
+      "DELETE /api/of/v2/messages/{id} {withUserId: {fan}}"
+    ],
+    "code": [
+      "app/hooks/useUnsendMessage.ts unsendOne",
+      "service/of_sends.py unsend_message"
+    ]
+  },
+  "request": {
+    "method": "DELETE",
+    "path": "/api2/v2/messages/{id}",
+    "query": {},
+    "content_type": "application/json",
+    "body": {
+      "withUserId": "{fan}"
+    }
+  },
+  "response": {
+    "status": null,
+    "keys": []
+  },
+  "proof": {
+    "kind": "live",
+    "verdict": "parked",
+    "reason": "the Live proof passed 2026-11-21 23:28Z (measured below); recorded parked while the control keeps its Not-yet title (D1), since the proof list reads a pass as the title dropped. Set pass in the change that drops the title",
+    "evidence": "slop/evidence/20261121T232759Z-ofm-live-421307f60",
+    "undo": "undone",
+    "measured": "the live run of 2026-11-21 23:28Z (p2.bubble-unsend-ppv, run_ok, exit 0): the PPV to the Proof fan, then the bubble's Unsend PPV, confirmed; the UI's DELETE /api2/v2/messages/{id} answered 200 on the Relay's wire (no reply body recorded) and the after-undo read showed no marked message.",
+    "declared_undo": "none needed: the proof's own write is a PPV to the Proof fan that its Unsend removes; if the run stops before the Unsend, the undo is that same DELETE /api2/v2/messages/{id} (delete_at_once)"
+  }
+}

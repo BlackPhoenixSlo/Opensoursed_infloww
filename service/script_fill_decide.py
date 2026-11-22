@@ -13,13 +13,13 @@ Public functions:
   effective(row) -> row           `operator_overrides_json` laid over `fields` by key (`vault_ai_effective`
                                   precedence), except `_jev`: its override holds Jev picks `vault_jev_manual`
                                   already materialised into the stored `_jev`, so the stored `_jev` stays whole.
-  fillable(item, *, account_id, standard_folders) -> reason | None   the Fillable item check over an
-                                  `effective` row; an item whose `account_id` is missing or another
-                                  Creator's is `not_mine`.
-  fillable_rows(items, *, account_id, standard_folders) -> [row]   the Fillable ones, input order, each
-                                  with a `why` derived from its fields (a carried one is never read). The
-                                  one filter: `plan` gates with it itself, always; `plan_over_vault` before
-                                  building Shoots.
+  fillable(item, *, account_id, standard_folders, solo_sequences) -> reason | None   the Fillable
+                                  item check over an `effective` row; an item whose `account_id` is missing
+                                  or another Creator's is `not_mine`.
+  fillable_rows(items, *, account_id, standard_folders, solo_sequences) -> [row]   the Fillable ones,
+                                  input order, each with a `why` derived from its fields (a carried one is
+                                  never read). The one filter: `plan` gates with it itself, always;
+                                  `plan_over_vault` before building Shoots.
   build_shoots(items, dupe_groups, kept_ids, prints) -> [Shoot]   `fillable_rows` -> `collapse_dupes` (a kept
                                   id is its dupe set's keeper) -> `vault_scripts.collect_outfit_scripts`
                                   (min_items=1, min_videos=0, require_escalation=False). That coroutine
@@ -27,7 +27,7 @@ Public functions:
   plan(rows, shoots, items, used_ids, dupe_groups, coverage, blocked_reason, *, account_id,
        template_prices=None, ...) -> FillPlan
   plan_over_vault(rows, items, used_ids, dupe_groups, prints, coverage, blocked_reason, *, account_id,
-       standard_folders=True, live_ids=None, template_prices=None) -> FillPlan   `fillable_rows` ->
+       standard_folders=True, solo_sequences=True, live_ids=None, template_prices=None) -> FillPlan   `fillable_rows` ->
                                   `build_shoots` -> `plan` in one `vault_ai_brief.reading_memo()` (the second
                                   gate costs memo hits): the one pipeline, called by the route loader and
                                   `plan_from_vault`.
@@ -51,7 +51,8 @@ Input shapes (plain dicts):
   coverage       `vault_ai_vision_decide.coverage(...)` dict (described, goal, remaining, ...).
 
 `plan_from_vault(sequence_rows, vault_rows, folder_prices, *, account_id, used_ids=(), dupe_groups=(),
-prints=None, standard_folders=True, blocked_reason=None, target=DESCRIBE_TARGET, template_prices=None)` —
+prints=None, standard_folders=True, solo_sequences=True, blocked_reason=None, target=DESCRIBE_TARGET,
+template_prices=None)` —
 for an offline fit check over a DB copy, no relay:
 
   sequence_rows  the Sequence rows above (one `script_id`).
@@ -78,7 +79,9 @@ Slice. Kept media (and their dupe sets) are reserved.
            Option flag `no_video`; with too few clips the earliest Steps go without. A Step's price never limits
            its clip (A4 withdrawn).
   Escalate Per kind, the last Step's Slice takes the top of the pool, and earlier Slices ascend below it, each
-           from its even share under a forward lookahead (every later Slice must still fit).
+           from its even share under a forward lookahead (every later Slice must still fit). A required Slice
+           comes first: the last Step's optional clip is skipped when it would take the only clip an earlier
+           Step requires.
   Asks     `asks(text)` (word lexicon; an ask word within 4 words after not / no / don't / won't / never / yet /
            later / soon / without is dropped). Inside a Step's window the pick answering the most asks wins:
            preference only, never a floor lift (D4 lift withdrawn). A Slice whose locked media answer none of its
@@ -236,15 +239,17 @@ def effective(row: Mapping[str, Any]) -> dict[str, Any]:
     return {**out, "fields": fields, "score": vault_scripts.escalation_score(fields)}
 
 
-def fillable(item: Mapping[str, Any], *, account_id: str, standard_folders: bool = True) -> str | None:
+def fillable(item: Mapping[str, Any], *, account_id: str, standard_folders: bool = True,
+             solo_sequences: bool = True) -> str | None:
     """None when a Fill may use `item` (an `effective` row), else the first reason it may not:
     not_live, not_described, not_mine (`account_id` missing or another Creator's), not_solo, no_rung, held,
     jev_review, rejected, review_folder, unpriced_dispute. `review_folder` only while the Creator's
-    `standard_folders` switch is on (off, Needs Review keeps nothing from sale, `vault_settings`)."""
-    return _gate(item, account_id, standard_folders)[0]
+    `standard_folders` switch is on (off, Needs Review keeps nothing from sale, `vault_settings`); `not_solo`
+    only while its `solo_sequences` switch is on (default; off, partner media may be Filled)."""
+    return _gate(item, account_id, standard_folders, solo_sequences)[0]
 
 
-def _gate(item: Mapping[str, Any], account_id: str, standard_folders: bool
+def _gate(item: Mapping[str, Any], account_id: str, standard_folders: bool, solo_sequences: bool = True
           ) -> tuple[str | None, Mapping[str, Any] | None]:
     """(`fillable` reason, the row with its script `why`, or None when a reason came before it). The `why`
     is always derived here from the row's fields (one an item carries in is replaced, never read); it holds
@@ -260,7 +265,10 @@ def _gate(item: Mapping[str, Any], account_id: str, standard_folders: bool
     why = r["why"]
     jev = (item.get("fields") or {}).get(vault_jev_rules.JEV_KEY)
     jev = jev if isinstance(jev, dict) else {}
-    if why["solo"] is not True:
+    # Strict `is_solo` too: `why["solo"]` trusts `people_count: 1` on a blowjob clip (AE 11-21:
+    # partner clips Filled into Sequences). Client rule: Sequences carry solo content only, while the
+    # Creator's `solo_sequences` switch is on (default).
+    if solo_sequences and (why["solo"] is not True or not vault_scripts.is_solo(item.get("fields") or {})):
         reason = "not_solo"
     elif why["rung"] is None:
         reason = "no_rung"
@@ -280,11 +288,11 @@ def _gate(item: Mapping[str, Any], account_id: str, standard_folders: bool
 
 
 def fillable_rows(items: Iterable[Mapping[str, Any]], *, account_id: str,
-                  standard_folders: bool = True) -> list[dict[str, Any]]:
+                  standard_folders: bool = True, solo_sequences: bool = True) -> list[dict[str, Any]]:
     """The Fillable rows of `items` (`effective` rows), input order, each with its script `why`."""
     out = []
     for item in items:
-        reason, r = _gate(item, account_id, standard_folders)
+        reason, r = _gate(item, account_id, standard_folders, solo_sequences)
         if reason is None:
             out.append(r)
     return out
@@ -469,7 +477,8 @@ def _track(cands: list[int], slices: list[dict[str, Any]], ks: list[int], taken:
            first_pref: Callable[[int, int], bool]) -> dict[int, list[int]] | None:
     """One kind's picks: {slice index: media ids} for the Slices `ks` (indices into `slices`, step order) over
     `cands` (one kind's ids, send order), or None when a `must` Slice cannot be placed. A pick is `count(k)`
-    items of one `group` (photos: one Rung of one Shoot). The last Step's Slices take the top; earlier Slices
+    items of one `group` (photos: one Rung of one Shoot). The last Step's Slices take the top (`must` first; a
+    non-`must` one is skipped when it leaves an earlier `must` Slice no room); earlier Slices
     ascend below it, each from its even share, preferring (first_pref, asks answered, the previous Step's
     Shoot, send order), under a forward lookahead. A non-`must` Slice that leaves the rest no room is
     dropped, earliest first (absent from the result). `taken` is read, never changed."""
@@ -518,7 +527,11 @@ def _track(cands: list[int], slices: list[dict[str, Any]], ks: list[int], taken:
     out: dict[int, list[int]] = {}
     last_step = max((slices[k]["step"] for k in ks), default=None)
     bound = len(cands)
-    for k in [k for k in ks if slices[k]["step"] == last_step]:
+    need = [k for k in ks if slices[k]["step"] != last_step]
+    need_musts = [k for k in need if must(k)]
+    # The last Step's `must` Slices pick first; an optional one is skipped when its pick would leave an earlier
+    # `must` Slice no room (an optional clip on the last Step must not take the only clip Step 1 requires).
+    for k in sorted((k for k in ks if slices[k]["step"] == last_step), key=lambda k: not must(k)):
         got = None
         for p in range(len(cands) - 1, -1, -1):   # the top: the group whose highest free item sorts last
             if not free(k, p, taken):
@@ -527,6 +540,9 @@ def _track(cands: list[int], slices: list[dict[str, Any]], ks: list[int], taken:
             if len(g) == n_of[k]:
                 got = g
                 break
+        if got is not None and not must(k) and not fits(
+                need_musts, 0, taken | dx.expand(cands[q] for q in got), min(bound, min(got))):
+            got = None
         if got is None:
             if must(k):
                 return None
@@ -534,7 +550,6 @@ def _track(cands: list[int], slices: list[dict[str, Any]], ks: list[int], taken:
         taken |= dx.expand(cands[q] for q in got)
         out[k] = [cands[q] for q in got]
         bound = min(bound, min(got))
-    need = [k for k in ks if slices[k]["step"] != last_step]
     while not fits(need, 0, taken, bound):
         drop = next((k for k in need if not must(k)), None)
         if drop is None:
@@ -739,8 +754,8 @@ def plan(rows: Iterable[Mapping[str, Any]], shoots: Iterable[Mapping[str, Any]],
          items: Iterable[Mapping[str, Any]], used_ids: Iterable[int] = (),
          dupe_groups: Iterable[Iterable[int]] = (), coverage: Mapping[str, Any] | None = None,
          blocked_reason: str | None = None, *, account_id: str, standard_folders: bool = True,
-         live_ids: Iterable[int] | None = None, template_prices: Mapping[int, int] | None = None
-         ) -> dict[str, Any]:
+         solo_sequences: bool = True, live_ids: Iterable[int] | None = None,
+         template_prices: Mapping[int, int] | None = None) -> dict[str, Any]:
     """The Fill plan for one Sequence (`rows`). `items`: the Creator's live vault rows (or their
     `fillable_rows`, then with `live_ids`), `effective` already; Fill gates each with `fillable_rows` itself,
     whatever `shoots` and `items` hold; `shoots` from `build_shoots`;
@@ -778,7 +793,8 @@ def plan(rows: Iterable[Mapping[str, Any]], shoots: Iterable[Mapping[str, Any]],
         return done(*pre)
 
     pool = {int(r["media_id"]): r for r in fillable_rows(items, account_id=account_id,
-                                                          standard_folders=standard_folders)}
+                                                          standard_folders=standard_folders,
+                                                          solo_sequences=solo_sequences)}
     cents = functools.cache(lambda m: _list_cents(pool[m]))   # {media id: List price}, each derived once
     kept = [m for o in opts if o["keep"] for m in (*o["media"], *o["previews"])]
     dx = _Dupes(groups)
@@ -855,8 +871,8 @@ def plan_over_vault(rows: Iterable[Mapping[str, Any]], items: Iterable[Mapping[s
                     used_ids: Iterable[int] = (), dupe_groups: Iterable[Iterable[int]] = (),
                     prints: Mapping[int, Any] | None = None, coverage: Mapping[str, Any] | None = None,
                     blocked_reason: str | None = None, *, account_id: str, standard_folders: bool = True,
-                    live_ids: Iterable[int] | None = None, template_prices: Mapping[int, int] | None = None
-                    ) -> dict[str, Any]:
+                    solo_sequences: bool = True, live_ids: Iterable[int] | None = None,
+                    template_prices: Mapping[int, int] | None = None) -> dict[str, Any]:
     """`plan` over the Creator's live vault (`items`: `effective` rows): `fillable_rows`, then `build_shoots`
     (the Sequence's kept media standing for their dupe sets), then `plan` over the Fillable rows, inside one
     `reading_memo`. `live_ids` defaults to every item's id (not only the Fillable ones), for `removed_media`.
@@ -867,10 +883,12 @@ def plan_over_vault(rows: Iterable[Mapping[str, Any]], items: Iterable[Mapping[s
     live = [int(r["media_id"]) for r in items] if live_ids is None else live_ids
     kept = [m for r in _in_run(rows) for m in _media(r)]
     with vault_ai_brief.reading_memo():   # each item's reading derived once across gate, Shoots and plan
-        fill = fillable_rows(items, account_id=account_id, standard_folders=standard_folders)
+        fill = fillable_rows(items, account_id=account_id, standard_folders=standard_folders,
+                             solo_sequences=solo_sequences)
         shoots = build_shoots(fill, groups, kept, prints or {})
         return plan(rows, shoots, fill, used_ids, groups, coverage, blocked_reason, account_id=account_id,
-                    standard_folders=standard_folders, live_ids=live, template_prices=template_prices)
+                    standard_folders=standard_folders, solo_sequences=solo_sequences, live_ids=live,
+                    template_prices=template_prices)
 
 
 def sequence_media_ids(rows: Iterable[Mapping[str, Any]]) -> set[int]:
@@ -896,9 +914,9 @@ def _vault_row(r: Mapping[str, Any], folder_prices: Mapping[str, int]) -> dict[s
 def plan_from_vault(sequence_rows: Iterable[Mapping[str, Any]], vault_rows: Iterable[Mapping[str, Any]],
                     folder_prices: Mapping[str, int], *, account_id: str, used_ids: Iterable[int] = (),
                     dupe_groups: Iterable[Iterable[int]] = (), prints: Mapping[int, Any] | None = None,
-                    standard_folders: bool = True, blocked_reason: str | None = None,
-                    target: int = DESCRIBE_TARGET, template_prices: Mapping[int, int] | None = None
-                    ) -> dict[str, Any]:
+                    standard_folders: bool = True, solo_sequences: bool = True,
+                    blocked_reason: str | None = None, target: int = DESCRIBE_TARGET,
+                    template_prices: Mapping[int, int] | None = None) -> dict[str, Any]:
     """`plan` from raw rows, for an offline fit check (inputs: module docstring)."""
     rows = list(sequence_rows)
     live = [_vault_row(r, folder_prices) for r in vault_rows if r.get("removed_at") is None]
@@ -907,4 +925,4 @@ def plan_from_vault(sequence_rows: Iterable[Mapping[str, Any]], vault_rows: Iter
                     target)
     return plan_over_vault(rows, items, used_ids, dupe_groups, prints, cov, blocked_reason,
                            account_id=account_id, standard_folders=standard_folders,
-                           template_prices=template_prices)
+                           solo_sequences=solo_sequences, template_prices=template_prices)

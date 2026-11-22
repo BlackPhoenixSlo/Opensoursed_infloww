@@ -13,7 +13,7 @@ live, Shadow and Test chat Decision rows of today (`ai_decisions`, automations/f
   GET /admin/full-ai/revenue?account_id=
       → {live_since, note, arms: {arm: {fans, in_window, complete, cents, cents_per_fan}},
          routes: [{route, offers, bought, cents}]}   full_ai_revenue.revenue: Enrolment derived (his
-      first inbound at / after the Creator's first live row), 14-day cleared money per enrolled
+      first inbound at / after the Creator's first live row), 14-day cleared + pending money per enrolled
       Fan, live priced Offers per Route. No holdout gate yet: one group `all`, `note` "no holdout:
       not a comparison". Reads only, settles nothing; live rows only.
 
@@ -74,7 +74,7 @@ live, Shadow and Test chat Decision rows of today (`ai_decisions`, automations/f
       the owner's press only; a running run is returned as is. Chatters are refused
       before the handler (`chatters._CHATTER_BLOCKED_ADMIN_PREFIXES`).
 
-  GET /admin/full-ai/rules?mode=test|shadow   (default test)
+  GET /admin/full-ai/rules?mode=test|live   (default test; live = test, no Shadow view)
       → full_ai_rules.rules(mode): the AI rules page's (/ai-rules) read-only diagram of the Turn
       (steps, every prompt and Jev question off the live constants, routes, stored keys). No
       Creator data: signed in only (401 without), the page's role grant is the middleware's
@@ -180,7 +180,7 @@ async def _since(account_id: str) -> datetime:
 
 
 @router.get("/admin/full-ai/rules")
-async def full_ai_rules_read(mode: Literal["test", "shadow", "live"] = Query("test")) -> dict[str, Any]:
+async def full_ai_rules_read(mode: Literal["test", "live"] = Query("test")) -> dict[str, Any]:
     require_actor_account_ids()
     return full_ai_rules.rules(mode)
 
@@ -250,7 +250,7 @@ async def _blockers(account_id: str) -> list[str]:
         return await live_blockers(account_id)
     except Exception:
         log.exception("full_ai_mode_blockers_failed account=%s", account_id)
-        return ["Couldn't check the keys and the Fans list. Reload to try again"]
+        return ["Couldn't check the AI keys. Reload to try again"]
 
 
 async def _mode(account_id: str) -> dict[str, Any]:
@@ -293,8 +293,9 @@ async def full_ai_mode_write(body: ModeWrite) -> dict[str, Any]:
             await s.execute(update(AutomationRule).where(
                 AutomationRule.account_id == aid, AutomationRule.kind.in_(family))
                 .values(trigger_json=json.dumps(OFF_TRIGGER)))
-            # Hook jobs carry their rule in the payload only: cancel every pending job of the kind, so
-            # Off then Live inside the reply wait never runs a reply queued before Off.
+            # Hook jobs (rule in the payload only) are cancelled by ensure_kind_rule's `_cancel_queued`, the
+            # one Off cancel every rules route shares. Mode Off also cancels every other pending job of the
+            # kind (a rule-less `/admin/automation/enqueue` one-shot, W30 #17): Off then Live never runs one.
             await s.execute(update(ScheduledJob).where(
                 ScheduledJob.account_id == aid, ScheduledJob.kind.in_(family), ScheduledJob.status == "pending")
                 .values(status="cancelled", last_error="rule switched off"))

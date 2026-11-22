@@ -72,9 +72,12 @@ export default function AutoStoriesTab() {
   const { accountId, creators, loading } = useAutomationCreator();
 
   const rulesQ = useAutomationRules(accountId);
+  // This Creator's own rules only: after a Creator switch the query shows the last Creator's rows as placeholder
+  // until the new read lands, and a PATCH on that rule id would change the other Creator's Auto Story.
+  const rulesReady = rulesQ.isSuccess && !rulesQ.isPlaceholderData;
   const rule = useMemo(
-    () => (rulesQ.data ?? []).find((r) => r.kind === "auto_stories") ?? null,
-    [rulesQ.data],
+    () => (rulesReady ? (rulesQ.data ?? []).find((r) => r.kind === "auto_stories") ?? null : null),
+    [rulesReady, rulesQ.data],
   );
 
   const foldersQ = useVaultLists(accountId);
@@ -164,6 +167,13 @@ export default function AutoStoriesTab() {
     setErr(null);
     const gap = saveGap(form);
     if (gap) { setErr(gap); return { ok: false, reason: gap }; }
+    // Another tab may have made one since this page read the rules (rwl W30 M13): read them again right before the
+    // create. Narrows the race, never closes it — the create route has no one-per-account guard.
+    const fresh = await rulesQ.refetch();
+    if (fresh.isError || !fresh.data) return { ok: false, reason: "Couldn't check for an Auto Story already here — nothing was saved." };
+    if (fresh.data.some((r) => r.kind === "auto_stories")) {
+      return { ok: false, reason: "Auto Story is already set up for this creator — nothing was saved." };
+    }
     try {
       await createM.mutateAsync({
         account_id: accountId, kind: "auto_stories",
@@ -179,7 +189,7 @@ export default function AutoStoriesTab() {
   }
   useAgentEditor<AutoStoriesAction>("auto_stories", {
     accountId: accountId ?? "", isNew: !rule, dispatch, agentSave,
-    ready: !!accountId && rulesQ.isSuccess && !rulesQ.isPlaceholderData, dirty: !sameForm(form, baseline),
+    ready: !!accountId && rulesReady, dirty: !sameForm(form, baseline),
   });
 
   // 12px apart on phones (the header's 16px left "Auto Story" too little room).
@@ -187,7 +197,7 @@ export default function AutoStoriesTab() {
     <span className="flex items-center gap-3 sm:gap-4">
       {LEARN}
       <HeaderSwitch id="story-enabled" label={TITLE} checked={form.enabled} loading={switchM.isPending}
-        disabled={busy || rulesQ.isLoading} status={rule ? undefined : "Not saved"} onChange={flip} />
+        disabled={busy || !rulesReady} status={rule ? undefined : "Not saved"} onChange={flip} />
       {/* The rule's less-used actions, right-aligned under the ⋯ so the menu never runs off a phone's edge. */}
       <Menu align="right" menuLabel="More actions" panelClassName="z-50 w-44" itemClassName="text-[14px] text-fg disabled:opacity-60"
         trigger={(p) => <IfButton icon={MoreHorizontal} aria-label="More actions" title="More actions" {...p}
@@ -199,7 +209,7 @@ export default function AutoStoriesTab() {
             title: rule ? "Edit the raw JSON payload for this rule" : "Save this automation once, then edit its raw JSON" },
           { label: "Delete", onClick: () => setDeleting(true), disabled: !rule || deleteM.isPending, danger: true },
         ]} />
-      <IfButton id="story-save" variant="primary" onClick={save} disabled={busy || switchM.isPending} className="min-w-[64px]">
+      <IfButton id="story-save" variant="primary" onClick={save} disabled={busy || switchM.isPending || !rulesReady} className="min-w-[64px]">
         {createM.isPending || updateM.isPending ? "Saving…" : "Save"}
       </IfButton>
     </span>

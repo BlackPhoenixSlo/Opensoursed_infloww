@@ -5,7 +5,8 @@ reads the qwen flags shape (`vault_ai_brief.FLAG_KEYS` + `_flags_v`: flags_curre
 contradictions / is_disputed, vault_scripts' lanes, the pack picker, the OF folders), so `_jev` is mapped into exactly
 that shape and stamped with it (`vault_jev_pass`). Pure (`row_in_sync` only parses the two JSON columns).
 
-What is bare comes from the FINAL lane (`lane5`, after settle), so the price the consumers compute is Jev's:
+What is bare comes from the FINAL lane (`lane5`, after settle), so the price the consumers compute is Jev's — and a
+firm Jev `breasts_bare` / `crotch_bare` "y" is bare in any lane (settle nn.10 can file one free; F1a), explicit:
   $100  something inserted: vulva bare (the anus when Jev saw the crotch NOT bare); breasts bare iff breasts_bare y
   $50   vulva bare; breasts bare iff breasts_bare y
   $10   breasts bare, vulva not
@@ -37,7 +38,6 @@ JEV_KEY = vault_jev_rules.JEV_KEY
 FLAGS_V = vault_ai_brief.FLAGS_VERSION   # the flags version consumers require (one definition)
 MODEL = "jev"        # `_flags_model` of a Jev-mapped row
 EXPLICITNESS = {"$100": "hardcore", "$50": "explicit", "$10": "explicit"}
-_LANES = (*vault_jev_rules.PAID, "free")
 _DRESSED = {"everyday_clothes": "dressed", "sheet_or_towel": "dressed", "lingerie_or_bodysuit": "lingerie_on",
             "swimwear": "lingerie_on", "topless_with_bottoms": "lingerie_on"}
 # keys a Jev mapping clears: qwen's garment names (re-named from clothing_items, `garments`), clip stamps, failure
@@ -74,12 +74,11 @@ def _vulva_beside_anus(jev: Mapping[str, Any]) -> str:
 
 def reading(jev: Any) -> dict[str, Any] | None:
     """The flags + lane-critical describe fields for one `_jev`; None when it is not a current, settled reading."""
-    lane = vault_jev_rules.read_lane(jev) if isinstance(jev, dict) else None   # a review clip: what it read
-    if not vault_jev_rules.current({JEV_KEY: jev}) or lane not in _LANES:
+    bare = vault_jev_rules.bare_regions(jev)   # one derivation, shared with the brief's dispute check (W30 C1)
+    if bare is None:
         return None
-    bare_b = lane == "$10" or (lane in ("$50", "$100") and jev.get("breasts_bare") == "y")
-    bare_v = lane == "$50" or (lane == "$100" and jev.get("crotch_bare") != "n")
-    bare_a = lane == "$100" and not bare_v
+    lane = vault_jev_rules.read_lane(jev)
+    bare_b, bare_v, bare_a = bare["breasts_vis"], bare["vulva_vis"], bare["anus_vis"]
     outfit = str((jev.get("tags") or {}).get("outfit") or "")
     nude = outfit == "nude" and (bare_v or not bare_b)
     if nude:
@@ -96,7 +95,7 @@ def reading(jev: Any) -> dict[str, Any] | None:
         "underwear_visible": underwear,
         "clothing_state": clothing,
         "genitals_covered": not bare_v and not nude,
-        "explicitness": EXPLICITNESS.get(lane, "suggestive"),
+        "explicitness": EXPLICITNESS.get(lane) or ("explicit" if bare_b or bare_v else "suggestive"),
     }
 
 
@@ -167,9 +166,13 @@ TIER_COLUMN = "explicitness_tier"
 
 def column_tier(fields: Mapping[str, Any], cur: Any, locked: Collection[str]) -> Any:
     """The `explicitness_tier` column a row should hold beside `fields` (already `apply`-mapped): their
-    `explicitness` when they carry a current `_jev` reading, else `cur` (no reading, or the column operator-locked)."""
-    if TIER_COLUMN in locked or reading(fields.get(JEV_KEY)) is None:
+    `explicitness` when they carry a current `_jev` reading, else `cur` (no reading, or the column operator-locked).
+    A review clip's read (lane5 "review") is unknown (None) unless it read $100 — as a held clip (W30 F14)."""
+    jev = fields.get(JEV_KEY)
+    if TIER_COLUMN in locked or reading(jev) is None:
         return cur
+    if jev.get("lane5") == "review" and vault_jev_rules.read_lane(jev) != "$100":
+        return None
     return fields.get("explicitness")
 
 

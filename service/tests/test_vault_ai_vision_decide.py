@@ -93,6 +93,10 @@ def case_describe_selection_table():
         (12, "described", fed("vid"), "a", "video", False),
         (13, "described", fed("v6"), "a", "photo", False),
         (14, "described", fed("v2"), "a", "photo", False),      # v2 path: stale whatever its version
+        # W30 F18: key order / spacing do not matter (json_extract, not LIKE); an invalid blob is stale
+        (15, "described", json.dumps({"_describe": {"v": 1, "path": "prose"}, "_prompt_version": "v2"},
+                                     separators=(",", ":")), "a", "photo", False),
+        (16, "described", "{not json", "a", "photo", False),
     ]
     with eng.begin() as c:
         c.execute(insert(VaultItem), [
@@ -106,15 +110,15 @@ def case_describe_selection_table():
             return [r[0] for r in c.execute(q)]
 
     _table([
-        ("live describable base", (d.live_describable("a"),), [1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14]),
+        ("live describable base", (d.live_describable("a"),), [1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14, 15, 16]),
         ("force: every live describable row", (d.describe_selection("a", "force", "v2"),),
-         [1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14]),
+         [1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14, 15, 16]),
         ("undescribed: NULL + every non-described status (blocked_drm too)",
          (d.describe_selection("a", "undescribed", "v2"),), [1, 5, 6]),
         ("restage v2: undescribed + other/no stamp + photo/clip not Jev-fed (2, 14: v2-stamped)",
-         (d.describe_selection("a", "restage", "v2"),), [1, 2, 3, 4, 5, 6, 7, 14]),
+         (d.describe_selection("a", "restage", "v2"),), [1, 2, 3, 4, 5, 6, 7, 14, 16]),
         ("restage v1: 3 too (a clip, not Jev-fed)", (d.describe_selection("a", "restage", "v1"),),
-         [1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14]),
+         [1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14, 15, 16]),
         ("other account", (d.describe_selection("b", "force", "v2"),), [8]),
     ], picked)
     try:

@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
 
 import {
-  applyReadFlip, applyReply, badgeUnreadView, bumpAfterSend, bumpChatPages, completeUnreadView, decodeChatsKey, fanRowMatcher, freshestFanRow,
-  isUnreadList, keyHoldsAccount, mayAddRow, UNREAD_VIEW_MAX_AGE_MS, parseReadFlip, parseReply, patchFanRows, readElsewhere, type ChatPage, type ChatPages,
+  applyReadFlip, applyReply, badgeUnreadView, bumpAfterSend, bumpChatPages, commitChatPages, completeUnreadView, decodeChatsKey,
+  fanRowMatcher, freshestFanRow, isUnreadList, JOURNAL_MS, patchChatCaches, keyHoldsAccount, mayAddRow, UNREAD_VIEW_MAX_AGE_MS, parseReadFlip, parseReply, patchFanRows, readElsewhere, type ChatPage, type ChatPages,
   type Reply, type SentMessage,
 } from "@/lib/chatsCache";
 import type { FanId } from "@/lib/fanId";
@@ -434,5 +435,26 @@ describe("applyReply", () => {
     const next = applyReply(ALL, data, "a", rep(1));
     expect(next.pages[2]).toBe(data.pages[2]);
     expect(show(next)).toEqual([["a:1:50:a:r0", "a:2:1:fan:U2"], [], ["a:3:1:fan:U2"]]);
+  });
+});
+
+describe("the live-write journal (W30-mu #31)", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("a write older than JOURNAL_MS is not re-applied to a page with no askedSeq", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const KEY = ["chats", "model", "a1", null, null, null, 25];
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const opts = {
+      queryKey: KEY, initialPageParam: 0, getNextPageParam: () => undefined,
+      queryFn: async () => ({ rows: [row("a1", 7, 1, undefined, 2)], hasMore: false }),
+      structuralSharing: commitChatPages(client, KEY, (_p, n) => n),
+    };
+    await client.fetchInfiniteQuery(opts);
+    patchChatCaches(client, "a1", (d) => patchFanRows(d, "a1", 7, { unreadMessagesCount: 0 }));
+    expect(client.getQueryData<ChatPages>(KEY)!.pages[0].rows[0].unreadMessagesCount).toBe(0);
+    vi.setSystemTime(Date.now() + JOURNAL_MS + 1);
+    await client.refetchQueries({ queryKey: KEY });
+    expect(client.getQueryData<ChatPages>(KEY)!.pages[0].rows[0].unreadMessagesCount).toBe(2);
   });
 });

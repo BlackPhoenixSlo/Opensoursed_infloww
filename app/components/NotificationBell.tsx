@@ -420,17 +420,20 @@ export function NotificationBell(props: NotificationBellProps = {}) {
     () => activeAccounts.filter((a) => !a.session_dead_at).map((a) => a.id), [activeAccounts]);
   const allModelsCount = useCachedOfNotifSum(allModels ? liveIds : NO_IDS);
   const proCount = allModels ? allModelsCount : scopedCount;
-  const { marking, markAll } = useMarkAllOfNotifsRead();
+  const { marking, markAll, status: markStatus } = useMarkAllOfNotifsRead();
 
-  // OF's mark-read, once per open (the reducer's `markRead`), for a scoped live Creator.
+  // OF's mark-read, once per open (the reducer's `markRead`), for a scoped live Creator, once the list it acks
+  // answered and is on screen (a failed or pending list, or a bell closed or on another tab before it landed, stays
+  // "due": nothing was shown to be read).
   const markAccountId = accountId && !activeAccounts.some((a) => a.id === accountId && a.session_dead_at)
     ? accountId : null;
   const markOfNotifsRead = useMarkOfNotifsRead();
+  const listShown = ofListOnScreen(bell) && !feed.loading && !feed.error && feed.reads.some((r) => r.count !== undefined);
   useEffect(() => {
-    if (bell.markRead !== "due") return;
+    if (bell.markRead !== "due" || !listShown) return;
     dispatch({ type: "markReadSent" });
     if (markAccountId) void markOfNotifsRead(markAccountId);
-  }, [bell.markRead, markAccountId, markOfNotifsRead]);
+  }, [bell.markRead, listShown, markAccountId, markOfNotifsRead]);
 
   // Opening the bell counts as "seen everything" (the reducer zeroes this
   // bell; the event, any other one).
@@ -621,6 +624,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                     {marking ? "Marking…" : "Mark all read"}
                   </button>
                 )}
+                {allModels && markStatus && <span role="status" className="shrink-0 text-[11px] text-err">{markStatus}</span>}
               </div>
               {/* Money-rail rescue hatch — the bell is mounted everywhere, so
                   it hosts the rail's un-hide control. Renders null when the

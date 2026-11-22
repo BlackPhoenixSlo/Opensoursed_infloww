@@ -5,8 +5,8 @@
     python3 -I scripts/import_infloww_scripts.py --base-url http://127.0.0.1:8797 \
         --account-id <creator id> --dump <dir> [--mode skip|replace] [--dry-run] [--chunk 1000] [--report out.json]
 
-<dir> holds an Infloww dump: `sequences.json` (a list, or {"sequences": [...]}) and/or `tags.json` (a list, or
-{"tags": [...]}):
+<dir> holds an Infloww dump: `sequences.json` (a list, or {"sequences": [...]}; `[]` for a Creator with no
+sequences) and `tags.json` (a list, or {"tags": [...]}; optional):
     sequences: [{"name", "order", "created_by"?, "created_on"? ("Oct 13, 2026", ISO or epoch), "modified_on"?,
                  "description"?, "steps": [{"step": "1" | "2.1", "text", "notes"?, "conditional"?, "price"?,
                  "script_name" | "name" | "script_name_candidates": [...]}]}]
@@ -20,13 +20,20 @@ A tag's scripts are joined to steps by script name (case-blind) and text, as the
 (`_script_key`), and go on the step as its `tags`; only tag scripts matching no step are sent as tag scripts
 (standalone rows). "All scripts" and "Uncategorized" are Infloww's fixed views, not tags: never created; a script
 only there (no sequence, no tag) is sent untagged (tag ""); else used to reconcile by unique (name, text): All
-scripts == every script, Uncategorized == the untagged ones, a tag == its scripts.
+scripts == every script, Uncategorized == the untagged ones, a tag == its scripts. The dump carries no script id, so
+two tag/view scripts with one (name, text) but different notes or price are a plan problem (exit 1), never one
+silently kept. Without sequences.json any tag or view-only script may be a sequence step: none is sent (a later full
+dump would add the step a second time) and the plan says how many were left out, so a tags-only dump imports nothing
+(exit 2; write `[]` to sequences.json for a Creator with no sequences).
 
 Sign-in is the owner's, as scripts/lane-stats.sh does: `POST /auth/login` with RELAY_USER / RELAY_PASS (prompted
 on a terminal when unset), the session cookie kept for the run; SHARE_TOKEN is appended as ?t= when set.
 A chunk holds whole sequences only (one bigger than --chunk goes alone), then tag scripts. Re-running is a no-op
-(`skip`: an existing sequence is left and reported; a tag script already there is skipped). `--dry-run` sends each
-chunk with `dry_run: true`: the relay counts and rolls back. Media is not in the payload (not importable).
+(`skip`: an existing sequence is left and reported; a tag script already there is skipped), except a tag script
+whose name or text was edited in the app since: matched on (name, text) only, it is created again, and the
+reconciliation says so. `--dry-run` sends each
+chunk with `dry_run: true`: the relay counts and rolls back, chunk by chunk, so over several chunks the totals are
+labelled per-chunk estimates. Media is not in the payload (not importable).
 
 Prints the per-chunk answers, then the reconciliation: the dump's own views vs the plan, the endpoint's counts, and
 (not on a dry run) a read-back: rows (FM follow-up scripts aside), per-tag and untagged counts, the sequence metas
@@ -78,9 +85,10 @@ _of_text, _parse_step, _sequence_dates = _relay_modules()
 _UNREAD = datetime.min  # `sequence_dates`' stand-in for the import's own time: a date the dump doesn't give
 
 
-def _load(path: Path, key: str) -> list[dict]:
+def _load(path: Path, key: str) -> list[dict] | None:
+    """The dump file's list; None when the file is missing."""
     if not path.exists():
-        return []
+        return None
     data = json.loads(path.read_text(encoding="utf-8"))
     return data.get(key, []) if isinstance(data, dict) else data
 
@@ -118,10 +126,14 @@ def _step_names(sequences: list[dict]) -> list[list[str]]:
     return out
 
 
-def plan(sequences: list[dict], tags: list[dict]) -> dict:
+def plan(sequences: list[dict] | None, tags: list[dict]) -> dict:
     """The dump as the endpoint's payload, one row per script: {"sequences", "tags" (scripts in no sequence
     only; tag "" = the untagged ones), "expected" (rows, per tag, untagged, steps, sequences), "problems"
-    (unmappable bits)}."""
+    (unmappable bits)}. `sequences` None (no sequences.json): which script is a sequence step is unknown, so no
+    tag or view-only script is sent (a later full dump would add the step again); a problem says how many were
+    left out."""
+    known = sequences is not None
+    sequences = sequences or []
     real = [t for t in tags if t["name"].strip().lower() not in VIEWS]
     tags_of: dict[tuple[str, str], list[str]] = {}
     for t in real:
@@ -156,6 +168,12 @@ def plan(sequences: list[dict], tags: list[dict]) -> dict:
         key = _script_key(sc.get("name"), sc.get("text"))
         if key not in in_seq and key not in in_tags:
             untagged_loose.setdefault(key, sc)
+    if (untagged_loose or standalone) and not known:
+        # The relay's sequence import never merges a step into a standalone row: a later full dump would dupe it.
+        problems.append(f"no sequences.json: {len(untagged_loose) + len(standalone)} scripts were not imported "
+                        f"(a sequence step, tagged or not, can't be told from a loose script); add a "
+                        f"sequences.json containing [] if the Creator has no sequences")
+        untagged_loose, standalone, loose = {}, {}, []
     if untagged_loose:
         loose.append({"name": "", "scripts": list(untagged_loose.values())})
         standalone.update({k: [] for k in untagged_loose})
@@ -189,7 +207,25 @@ def plan(sequences: list[dict], tags: list[dict]) -> dict:
             extra, missing = sorted(k[0] for k in have - want)[:5], sorted(k[0] for k in want - have)[:5]
             problems.append(f"dump {label} {len(have)} unique != planned {len(want)}; only in dump {extra}, "
                             f"only planned {missing}")
+    problems += _conflicts(tags)
     return {"sequences": out, "tags": loose, "expected": expected, "dump_views": views, "problems": problems}
+
+
+def _conflicts(tags: list[dict]) -> list[str]:
+    """Tag and view scripts that share a (name, text) but not their notes or price: the dump carries no script
+    id, so the import (and the relay's tag pass) would keep one of them and drop the rest silently. A field a
+    script doesn't carry (the views give no price) is not compared."""
+    seen: dict[tuple[str, str], dict[str, set]] = {}
+    for t in tags:
+        for sc in t.get("scripts") or []:
+            got = seen.setdefault(_script_key(sc.get("name"), sc.get("text")), {"notes": set(), "price": set()})
+            if "notes" in sc:
+                got["notes"].add((sc.get("notes") or "").strip())
+            if "price" in sc:
+                got["price"].add(float(sc.get("price") or 0))
+    return [f"scripts {key[0]!r} share name and text but not {field} {sorted(values)}: the dump has no script id, "
+            f"so the import would keep one" for key, fields in seen.items() for field, values in fields.items()
+            if len(values) > 1]
 
 
 def chunks(sequences: list[dict], tags: list[dict], size: int) -> list[dict]:
@@ -333,9 +369,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--chunk", type=int, default=1000, help="scripts per request (max 5000)")
     ap.add_argument("--report", type=Path, help="write the reconciliation as JSON here")
     a = ap.parse_args(argv)
-    p = plan(_load(a.dump / "sequences.json", "sequences"), _load(a.dump / "tags.json", "tags"))
+    p = plan(_load(a.dump / "sequences.json", "sequences"), _load(a.dump / "tags.json", "tags") or [])
     if not p["sequences"] and not p["tags"]:
-        print(f"nothing to import in {a.dump}", file=sys.stderr)
+        print(f"nothing to import in {a.dump}", *p["problems"][:1], file=sys.stderr)
         return 2
     exp = p["expected"]
     print(f"plan: {exp['sequences']} sequences, {exp['steps']} steps + {exp['standalone']} standalone tag scripts "
@@ -368,7 +404,12 @@ def main(argv: list[str] | None = None) -> int:
               f"tag_scripts {ans['tag_scripts']}")
 
     tag_scripts = sum(len(t["scripts"]) for t in p["tags"])
-    print("\nreconciliation" + (" (dry run: nothing written)" if a.dry_run else ""))
+    # A dry run rolls back each chunk, so no chunk sees an earlier one's scripts: a script in two tags that land in
+    # two chunks is "created" by both. Over one chunk the counts are exact.
+    per_chunk = a.dry_run and len(bodies) > 1
+    print("\nreconciliation" + (" (dry run: nothing written)" if a.dry_run else "")
+          + (f"; {len(bodies)} chunks each counted alone, so the totals are per-chunk estimates (a script in "
+             f"tags across chunks counts once per chunk)" if per_chunk else ""))
     print(f"  sequences in dump {exp['sequences']}: created {total['sequences.created']}, "
           f"replaced {total['sequences.replaced']}, already there {total['sequences.skipped']}, "
           f"failed {total['sequences.failed']}")
@@ -377,11 +418,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  tag scripts in dump {tag_scripts}: created {total['tag_scripts.created']}, "
           f"tag added {total['tag_scripts.tagged']}, already there {total['tag_scripts.skipped']}, "
           f"failed {total['tag_scripts.failed']}")
+    if total["tag_scripts.created"] and (total["tag_scripts.skipped"] or total["tag_scripts.tagged"]):
+        print("  note: tag scripts match by name and text only: if this dump was imported before, one edited in "
+              "the app since then was created again beside it")
     for f in failed:
         print(f"  FAILED {f.get('kind')} {f.get('tag', '') + ' / ' if f.get('tag') else ''}{f.get('name')!r}: "
               f"{f.get('reason')}")
     report = {"plan": {"expected": exp, "dump_views": p["dump_views"], "problems": p["problems"]},
-              "counts": dict(total), "failed": failed, "skipped": skipped, "dry_run": a.dry_run}
+              "counts": dict(total), "failed": failed, "skipped": skipped, "dry_run": a.dry_run,
+              "counts_per_chunk": per_chunk}
     ok = not failed and not p["problems"]
     if not a.dry_run:
         code, ans = relay.call("GET", "/admin/saved-replies", account_id=a.account_id)

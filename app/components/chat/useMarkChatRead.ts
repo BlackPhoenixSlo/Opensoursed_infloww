@@ -5,24 +5,25 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
 import type { SendStatus } from "@/hooks/useSendMessage";
-import { patchFanRows, type ChatPages } from "@/lib/chatsCache";
+import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
+import { relayNow } from "@/lib/ageClock";
+import { patchChatCaches, patchFanRows } from "@/lib/chatsCache";
 import { relay, type OFChatItem } from "@/lib/relay";
-import { sameUserId, type FanId } from "@/lib/fanId";
+import type { FanId } from "@/lib/fanId";
 
-/** Patch the fan's row in every cached chat list (`["chats", …]`) at once. */
+/** Patch the fan's row in every cached chat list (`["chats", …]`) at once (a mute). */
 export function patchCachedChat(
   qc: ReturnType<typeof useQueryClient>, accountId: string, fanId: FanId, patch: Partial<OFChatItem>,
 ) {
-  qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
-    const data = q.state.data as ChatPages | undefined;
-    const next = patchFanRows(data, accountId, fanId, patch);
-    if (next !== data) qc.setQueryData(q.queryKey, next);
-  });
+  patchChatCaches(qc, accountId, (data) => patchFanRows(data, accountId, fanId, patch));
 }
 
 /** Mark a chat read: our local marker (zeroes chats.unread_count; resolves
  *  whether it cleared one), OF's — a "seen" receipt — only when OF still shows
- *  it unread, and the blue dot off every cached chat list at once. */
+ *  it unread, and the blue dot off every cached chat list at once (a read flip:
+ *  a chat-list read in flight, a Refresh or a loadMore, gets it at its commit).
+ *  OF refusing the write (the relay answers 502 when it did not land) brings
+ *  the dot back: the chat is still unread there. */
 async function markChatRead(
   qc: ReturnType<typeof useQueryClient>, accountId: string, fanId: FanId, ofUnread: boolean,
 ): Promise<boolean> {
@@ -36,19 +37,12 @@ async function markChatRead(
   if (ofUnread) {
     relay
       .post(`/api/of/v2/chats/${fanId}/mark-as-read`, undefined, { accountId })
-      .catch((err) => console.warn("[mark-as-read] failed", err));
+      .catch((err) => {
+        console.warn("[mark-as-read] failed", err);
+        flipCachedReadState(qc, accountId, { fanId, unread: true, at: relayNow() }, { own: true });
+      });
   }
-  // A chat-list read in flight (a Refresh, a loadMore) predates this mark: drop
-  // it, or it lands after the patch and paints the dot back. Lists with no data
-  // yet keep theirs (cancelling would leave them empty until the next poll).
-  // Only when a cached row still shows the dot: an already-read chat changes
-  // nothing, and opening it must not cancel a Refresh or a loadMore.
-  const dotted = qc.getQueryCache().findAll({ queryKey: ["chats"] }).some((q) =>
-    (q.state.data as ChatPages | undefined)?.pages?.some((p) => p.rows.some((c) =>
-      (c.hasUnread || !!c.unreadMessagesCount) && (c.__accountId ?? "") === accountId && sameUserId(c.withUser.id, fanId))));
-  if (!dotted) return local;
-  await qc.cancelQueries({ queryKey: ["chats"], predicate: (q) => q.state.data !== undefined });
-  patchCachedChat(qc, accountId, fanId, { hasUnread: false, unreadMessagesCount: 0 });
+  flipCachedReadState(qc, accountId, { fanId, unread: false, at: relayNow() }, { own: true });
   return local;
 }
 

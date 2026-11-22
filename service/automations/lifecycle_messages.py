@@ -114,8 +114,8 @@ from automations._fan_notes import substitute_placeholders, template_fan_name
 from automations._knobs import coerce_ids
 from automations._outbound_guard import apply_word_restriction
 from automations._send_failure import (
-    is_unreachable_fan_error, quarantine_if_undeliverable, send_dropping_bad_media_sync,
-    skip_unreachable_fan,
+    is_unreachable_fan_error, quarantine_if_undeliverable, schedule_recheck_rejected_media,
+    send_dropping_bad_media_sync, skip_unreachable_fan,
 )
 from automations._skiplist import (
     is_hard_skipped, load_hard_skip_ids, should_skip_muted_creator,
@@ -830,6 +830,9 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                             kind, account_id, fid, key, exc_info=True)
                 continue
             result = outcome.result
+            if fan_media and not outcome.media_landed:
+                # OF refused the media (resent text-only): a deleted id leaves the mirror.
+                schedule_recheck_rejected_media(account_id, client, fan_media, log=log)
             msg_id = result.get("id") if isinstance(result, dict) else None
             if not msg_id:
                 no_id += 1

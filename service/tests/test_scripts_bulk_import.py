@@ -153,7 +153,7 @@ def case_a_bad_step_fails_its_whole_sequence_with_a_reason_and_the_rest_import()
     assert reasons == {("zero", "must be N or N.M with N >= 1"), ("words", "must be N or N.M with N >= 1"),
                        ("twice", "twice"), ("fat", "text longer than 6500 characters"),
                        (long_name, "name longer than 64 characters"),
-                       ("FM123", "name is reserved (FM follow-up scripts)"),
+                       ("FM123", "name is reserved (FM and digits only names a generated sequence)"),
                        ("notes", "notes longer than 256 characters"),
                        ("cond", "conditional longer than 150 characters"),
                        ("empty", "no steps"), ("ok", "name twice in this request")}, reasons
@@ -297,6 +297,68 @@ def case_cli_plan_imports_loose_and_shared_scripts_with_no_problems():
     assert rb["got"]["untagged"] == 4 and rb["got"]["rows"] == 6, rb["got"]
 
 
+def case_cli_plan_reports_same_name_and_text_scripts_with_different_price_or_notes():
+    """W30 F8: the dump has no script id; two untagged scripts with one (name, text) but $10 and $30 (or other
+    notes) would collapse into one row, so the plan says so instead of keeping one silently."""
+    cli = _cli()
+    a, b = {"name": "promo", "text": "same", "price": 10}, {"name": "Promo", "text": "same", "price": 30}
+    p = cli.plan([], [{"name": "All scripts", "scripts": [a, b]}, {"name": "Uncategorized", "scripts": [a, b]}])
+    assert p["problems"] == ["scripts 'promo' share name and text but not price [10.0, 30.0]: the dump has no "
+                             "script id, so the import would keep one"], p["problems"]
+    noted = cli.plan([], [{"name": "VIP", "scripts": [{**a, "notes": "x"}]}, {"name": "All scripts", "scripts": [
+        {"name": "promo", "text": "same", "notes": "y"}]}])
+    assert [m.split(":")[0] for m in noted["problems"]] == ["scripts 'promo' share name and text but not notes ['x', 'y']"]
+    # The same script in several views (no price in a view) is one script, no problem.
+    assert cli.plan([], [{"name": "VIP", "scripts": [a]}, {"name": "All scripts", "scripts": [
+        {"name": "promo", "text": "same"}]}])["problems"] == []
+
+
+def case_cli_tags_only_dump_sends_no_view_only_script():
+    """W30 F9: with no sequences.json a script only in the views may be an untagged sequence step; sending it as a
+    loose script would leave a second copy once the full dump imports the step, so it is left out and reported."""
+    cli = _cli()
+    step, tagged = {"name": "s1", "text": "step one"}, {"name": "t", "text": "tagged"}
+    tags = [{"name": "All scripts", "scripts": [step, tagged]}, {"name": "VIP", "scripts": [tagged]},
+            {"name": "Uncategorized", "scripts": [step]}]
+    p = cli.plan(None, tags)
+    assert p["tags"] == [], p["tags"]
+    assert p["problems"][0] == ("no sequences.json: 2 scripts were not imported (a sequence step, tagged or "
+                                "not, can't be told from a loose script); add a sequences.json containing [] if "
+                                "the Creator has no sequences"), p["problems"]
+    # An empty sequences.json says the Creator has none: the view-only script is loose.
+    assert cli.plan([], tags)["tags"][-1] == {"name": "", "scripts": [step]}
+    assert cli.plan([], tags)["problems"] == []
+
+
+def case_cli_tags_only_dump_sends_no_tagged_script():
+    """W30 F42: a tagged script in a tags-only dump may be a sequence step too; the relay's sequence import never
+    merges into a standalone row, so sending it now leaves a second copy once the full dump imports the step. The
+    CLI sends nothing and exits non-zero, saying why."""
+    import contextlib
+    import io
+    import tempfile
+    from pathlib import Path
+    _wipe()
+    cli = _cli()
+    step = {"name": "s1", "text": "step one"}
+    tags = [{"name": "All scripts", "scripts": [step]}, {"name": "VIP", "scripts": [step]}]
+    assert cli.plan(None, tags)["tags"] == []
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "tags.json").write_text(json.dumps(tags))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = cli.main(["--base-url", "http://127.0.0.1:9", "--account-id", A, "--dump", d])
+    assert code == 2 and "no sequences.json: 1 scripts were not imported" in err.getvalue(), (code, err.getvalue())
+    assert "sequences.json containing [] if the Creator has no sequences" in err.getvalue(), err.getvalue()   # F52
+    assert _list() == []
+    # the full dump later: one row for the step, tagged
+    full = cli.plan([{"order": 0, "name": "Q", "steps": [{"step": "1", "text": "step one", "script_name": "s1"}]}],
+                    tags)
+    for body in cli.chunks(full["sequences"], full["tags"], 1000):
+        assert _bulk({**body, "mode": "skip"}).status_code == 200
+    assert [(x["title"], x["script_id"], x["tags"]) for x in _list()] == [("s1", "Q", ["VIP"])], _list()
+
+
 def case_cli_reads_back_what_the_relay_stores_and_reports_instead_of_crashing():
     """The read-back compares the relay's stored text (its `of_text`) and UTC days, a loose tag script sharing a
     step's name (other text) is imported, a sequence the relay refused (bad step label) is a diff, not a
@@ -429,6 +491,97 @@ def case_cli_writes_its_report_when_the_read_back_fails():
     assert report and report["ok"] is False, report
     assert report["read_back"] == {"failed": {"list_http": 503, "sequences_http": 200}}, report["read_back"]
     assert report["counts"]["steps.created"] == 2, report["counts"]
+
+
+def case_cli_reimport_after_an_app_edit_creates_the_tag_script_again_and_says_so():
+    """Tag scripts match on (name, text) only (the dump has no script id): one whose text was edited in the app
+    since the last import is created again on a re-import, and the reconciliation says so."""
+    import contextlib
+    import io
+    import tempfile
+    from pathlib import Path
+    _wipe()
+    cli = _cli()
+
+    def call(self, method, path, body=None, **q):
+        r = OWNER_A.request(method, path, params=q, json=body)
+        return r.status_code, r.json()
+    cli.Relay.call = call
+    tags = [{"order": 0, "name": "VIP", "scripts": [{"name": "hey", "text": "hey you"}, {"name": "yo", "text": "yo"}]}]
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "tags.json").write_text(json.dumps(tags))
+        (Path(d) / "sequences.json").write_text("[]")  # W30 F42: the Creator has no sequences
+        argv = ["--base-url", "http://unused", "--account-id", A, "--dump", d]
+        with contextlib.redirect_stdout(io.StringIO()) as first:
+            cli.main(argv)
+        assert "note:" not in first.getvalue(), first.getvalue()
+        row = next(x for x in _list() if x["title"] == "hey")
+        assert OWNER_A.put(f"/admin/saved-replies/{row['id']}", json={"title": "hey", "text": "hey you, edited"}).status_code == 200
+        with contextlib.redirect_stdout(io.StringIO()) as again:
+            cli.main(argv)
+    assert sorted(x["text"] for x in _list() if x["title"] == "hey") == ["hey you", "hey you, edited"], _list()
+    assert "created 1, tag added 0, already there 1" in again.getvalue(), again.getvalue()
+    assert "note: tag scripts match by name and text only" in again.getvalue(), again.getvalue()
+
+
+def case_cli_first_import_beside_an_app_script_notes_only_conditionally():
+    """W30 F33: a first import that finds one tag script already in the app (same name and text) and creates
+    another prints the note, worded so it is true on a first import too."""
+    import contextlib
+    import io
+    import tempfile
+    from pathlib import Path
+    _wipe()
+    cli = _cli()
+
+    def call(self, method, path, body=None, **q):
+        r = OWNER_A.request(method, path, params=q, json=body)
+        return r.status_code, r.json()
+    cli.Relay.call = call
+    assert OWNER_A.post(f"/admin/saved-replies?account_id={A}",
+                        json={"title": "hey", "text": "hey you", "tags": ["VIP"]}).status_code == 200
+    tags = [{"order": 0, "name": "VIP", "scripts": [{"name": "hey", "text": "hey you"}, {"name": "yo", "text": "yo"}]}]
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "tags.json").write_text(json.dumps(tags))
+        (Path(d) / "sequences.json").write_text("[]")  # W30 F42: the Creator has no sequences
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            cli.main(["--base-url", "http://unused", "--account-id", A, "--dump", d])
+    text = out.getvalue()
+    assert "created 1, tag added 0, already there 1" in text, text
+    assert "note: tag scripts match by name and text only: if this dump was imported before" in text, text
+    assert "a re-import matches" not in text, text
+
+
+def case_cli_dry_run_over_chunks_says_its_totals_are_per_chunk():
+    """W30 F45: a dry run rolls back each chunk, so a script in two tags that land in two chunks is "created" by
+    both; the reconciliation labels its totals as per-chunk estimates instead of passing them off as exact."""
+    import contextlib
+    import io
+    import tempfile
+    from pathlib import Path
+    _wipe()
+    cli = _cli()
+
+    def call(self, method, path, body=None, **q):
+        r = OWNER_A.request(method, path, params=q, json=body)
+        return r.status_code, r.json()
+    cli.Relay.call = call
+    sc = {"name": "hey", "text": "hey you"}
+    tags = [{"order": 0, "name": "VIP", "scripts": [sc]}, {"order": 1, "name": "New", "scripts": [sc]}]
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "tags.json").write_text(json.dumps(tags))
+        (Path(d) / "sequences.json").write_text("[]")
+        argv = ["--base-url", "http://unused", "--account-id", A, "--dump", d, "--dry-run", "--report",
+                str(Path(d) / "r.json")]
+        with contextlib.redirect_stdout(io.StringIO()) as one:
+            cli.main(argv)
+        with contextlib.redirect_stdout(io.StringIO()) as two:
+            cli.main([*argv, "--chunk", "1"])
+        report = json.loads((Path(d) / "r.json").read_text())
+    assert "created 1, tag added 1" in one.getvalue() and "estimate" not in one.getvalue(), one.getvalue()
+    assert "created 2, tag added 0" in two.getvalue(), two.getvalue()
+    assert "per-chunk estimates" in two.getvalue() and report["counts_per_chunk"] is True, two.getvalue()
+    assert _list() == []
 
 
 def case_relabel_rename_and_delete_keep_the_meta_in_step():

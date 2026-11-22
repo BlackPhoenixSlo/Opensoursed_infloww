@@ -85,7 +85,8 @@ app.whenReady().then(async () => {
       bcTokenSha: !!seen && seen.bcTokenSha === XBC,
       streamingPageServed: !!page,
       sessHttpOnly: !!sess && sess.value === "fake-sess-5678" && sess.httpOnly && !/sess=/.test(seen.documentCookie),
-      authIdVisible: !!seen && /auth_id=\d{7}/.test(seen.documentCookie),
+      // Exact name, full value: a "x_auth_id=" cookie or a longer id must not pass.
+      authIdVisible: !!seen && String(seen.documentCookie).split(/;\s*/).some((kv) => kv === `auth_id=${COOKIES.find((c) => c.name === "auth_id").value}`),
       noCloudflare: !jar.some((c) => c.name === "__cf_bm"),
       uaNoElectron: !!seen && !/Electron/i.test(seen.userAgent),
       logoutBlocked: !!seen && seen.logout === "blocked" && result.logoutRequestsReachingStub === 0,

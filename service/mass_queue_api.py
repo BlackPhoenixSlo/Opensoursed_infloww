@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
+import hashlib
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -28,7 +29,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import mass_queue_decide
-from automations.send_mass_decide import echoed_of
+from automations.send_mass_decide import audience_filter_json, echoed_of
 from relay_host import (
     get_client as _get_client,
     proxy as _proxy,
@@ -38,6 +39,36 @@ from relay_host import (
 log = logging.getLogger("of-relay")
 
 router = APIRouter()
+
+# One composer send per exact payload per account at a time. The key is
+# reserved (None) before any await, re-stamped with the time just before the OF
+# POST (from then on it may have sent), and dropped on a clear answer: the route
+# returned, it failed before the POST, or OF surely refused (`of_write._may_have_sent`
+# false). Otherwise (a timeout, a dropped connection, a 5xx, a failure after OF
+# took it) the run stays 'running' and the stamp holds the key for
+# `_MAY_HAVE_SENT_S`: an identical send, a Retry or a twin queued behind the
+# broadcast lock, is a 409. In memory: a restart forgets it (the boot heal marks
+# the run interrupted). 10 min is a guess at "the operator checked OF".
+_MAY_HAVE_SENT_S = 600.0
+_send_keys: dict[tuple[str, str], float | None] = {}
+
+
+def _send_key(account_id: str, body: BaseModel) -> tuple[str, str]:
+    """(account, hash of the payload as the caller sent it)."""
+    return str(account_id), hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+
+
+def _reserve_send(key: tuple[str, str]) -> None:
+    """Hold `key` for this send, or 409 while another holds it (in flight, or its
+    POST may have reached OF lately). Sync: nothing runs between check and hold."""
+    now = time.monotonic()
+    for k in [k for k, t in _send_keys.items() if t is not None and now - t >= _MAY_HAVE_SENT_S]:
+        del _send_keys[k]
+    if key in _send_keys:
+        raise HTTPException(409, "This exact mass message is being sent, or may already have "
+                                 "gone out: OF did not answer the last try. Check OF's sent "
+                                 "mass messages before sending it again.")
+    _send_keys[key] = None
 
 
 @contextlib.asynccontextmanager
@@ -61,6 +92,7 @@ async def _open_mass_run(
     funnel_id: int | None = None,
     online_only: bool = False,
     filters: dict | None = None,
+    auto_exclude: int | None = None,
 ) -> tuple[str, int | None, int | None]:
     """Resolve account + X-Employee-Id and mint a `mass_runs` row so every
     per-fan outbound row downstream can reference it. Returns
@@ -76,19 +108,10 @@ async def _open_mass_run(
     from employees import resolve_outbound_employee_id
     employee_id = await resolve_outbound_employee_id(request, account_id)
 
-    audience_filter = json.dumps({
-        "user_lists": user_lists,
-        "included_users": included_users,
-        "excluded_users": excluded_users,
-        # The audience actually SENT is wider than the three keys above: OF has
-        # no per-user exclusion field for a list audience, so the excluded ids
-        # ride in the Auto_Exclude list attached here. Who RECEIVED the blast is
-        # assumed from these keys.
-        "excluded_user_lists": list(excluded_user_lists or []),
-        # OF resolves an online / filtered audience itself.
-        "online": bool(online_only),
-        "filters": bool(filters),
-    })
+    audience_filter = audience_filter_json(
+        user_lists=user_lists, included_users=included_users,
+        excluded_users=excluded_users, excluded_user_lists=excluded_user_lists,
+        online=online_only, filters=filters, auto_exclude=auto_exclude)
     mass_run_id: int | None = None
     try:
         from db.engine import get_session
@@ -342,6 +365,21 @@ async def of_send_or_schedule_mass(
     Attribution: mint a `mass_runs` row up front, then walk the
     OF response for per-fan ids and write attribution rows. This is the
     path the Next UI broadcast composer actually hits."""
+    # The payload's key is held for the whole send (`_reserve_send`).
+    key = _send_key(_resolve_account_id(request), body)
+    _reserve_send(key)
+    try:
+        result = await _send_or_schedule_mass(request, body, key)
+    except BaseException:
+        if _send_keys.get(key, 0.0) is None:  # failed before the POST: nothing went out
+            del _send_keys[key]
+        raise
+    _send_keys.pop(key, None)
+    return result
+
+
+async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
+                                 _key: tuple[str, str]):
     # DB-sourced audience: merge "chatted in the last N hours" fan ids into the
     # explicit user_ids before anything else, so mass-run attribution + the OF
     # send both see the full recipient set.
@@ -415,9 +453,26 @@ async def of_send_or_schedule_mass(
     # never messaged), and those outbound rows would then poison the contact
     # guard. Mirror the of_client subtraction so our record matches the send.
     body.user_ids = mass_queue_decide.strip_excluded(body.user_ids, body.excluded_users)
-    if body.require_recipients and not body.user_lists and not body.user_ids:
-        raise HTTPException(422, f"nobody left to send to: {_asked_ids} of {_asked_ids} fan(s) skipped "
-                                 "(opted out or already queued); nothing was sent")
+    # An explicit-ids send (no list, online or filter) subtracts its excluded
+    # lists' members itself: OF's `excludedLists` is verified on list audiences
+    # only. A thresholded send did so in the resolver. A list OF won't page → 422.
+    _listed_out = 0  # fans the guards kept but the excluded lists hold
+    if (not _thresholds and body.user_ids and body.excluded_user_lists
+            and not (body.user_lists or body.online_only or body.filters)):
+        from audiences import drop_exclude_list_members
+        _kept = len(set(body.user_ids))
+        try:
+            body.user_ids = await drop_exclude_list_members(
+                _get_client(), body.user_ids, body.excluded_user_lists)
+        except AudienceUnknown as e:
+            raise HTTPException(422, str(e))
+        _listed_out = _kept - len(set(body.user_ids))
+    # No audience left (no id, list, online or filter) → 422 for every caller:
+    # what OF does with an empty audience is unknown, so fail closed. Ultra's
+    # `require_recipients` also refuses an online/filter-only send.
+    if (not (body.user_ids or body.user_lists or body.online_only or body.filters)
+            or (body.require_recipients and not body.user_lists and not body.user_ids)):
+        raise HTTPException(422, mass_queue_decide.nobody_left_refusal(_asked_ids, _listed_out))
     # OF cannot exclude individual ids from a list/online audience — the
     # `excludedUsers` body field doesn't exist (verified live 2026-06-12: it was
     # silently dropped and excluded fans got the blast). Mirror the ids into the
@@ -443,6 +498,7 @@ async def of_send_or_schedule_mass(
             funnel_id=body.funnel_id,
             online_only=body.online_only,
             filters=body.filters,
+            auto_exclude=auto_lid,
         )
         client = _get_client()
         # OF throttles consecutive broadcast POSTs with a 400 "Please allow 10
@@ -482,11 +538,15 @@ async def of_send_or_schedule_mass(
                 user_ids=body.user_ids)
         else:
             post, extra = client.send_mass_message, dict(included_users=body.user_ids)
+        _send_keys[_key] = time.monotonic()  # from here OF may have it
         try:
             result = await of_write_with_retry(lambda: _proxy(lambda: post(**shared, **extra), client=client))
         except Exception as e:
             from automations.send_mass_message import close_run_if_unsent
+            from of_write import _may_have_sent  # at call time: a slop fault swaps it
             await close_run_if_unsent(mass_run_id, e)
+            if not _may_have_sent(e):
+                _send_keys.pop(_key, None)  # OF refused: nothing went out
             raise
     # A funnel-linked send only works if the reply-walker runs on this account —
     # without it the opener goes out and no reply-check ever fires. Best-effort:

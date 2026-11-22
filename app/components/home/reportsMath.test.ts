@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PerModelRow } from "@/hooks/useStats";
 
 import {
-  type ColCtx, type RevResp, DEFAULT_RANGE, STAT_COLS, cellCsv, chargebacksCents, creatorDayRows, creatorRows, datePresets,
+  type ColCtx, type RevResp, DEFAULT_RANGE, STAT_COLS, cellCsv, chargebacksCents, colTotal, creatorDayRows, creatorRows, datePresets,
   dailyOf, daysFrom, forGrowth, grossOf, netOf, rollUp, sumKinds, totalGrowthOf, totalOf, viewOf,
 } from "./reportsMath";
 import { referralsGap } from "@/hooks/useReferrals";
@@ -118,6 +118,10 @@ describe("cellCsv", () => {
     expect([cellCsv(col("message"), c, gross), cellCsv(col("message"), c, netCtx)]).toEqual([155, 124]);
     // (15,000 + 500 + 1,999) / 1,000 subs
     expect(cellCsv(col("engagementEarningsRatio"), c, gross)).toEqual(1749.9);
+    // Net: (12,000 + 400 + 1,599) / 800 net subs (it stayed gross)
+    expect(cellCsv(col("engagementEarningsRatio"), c, netCtx)).toEqual(1749.88);
+    // The cards sum the columns' own reads, in either basis.
+    expect([colTotal(col("message"), [c, c], gross), colTotal(col("message"), [c, c], netCtx)]).toEqual([31_000, 24_800]);
   });
   it("Tips and Message leave out what the summary's channels do (other_by_kind: streams), in both bases", () => {
     const c = { ...m, revenue_by_kind: { tip: 1999, subscription: 1000, ppv: 500, custom: 100 },

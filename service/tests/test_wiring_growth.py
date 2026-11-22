@@ -244,7 +244,7 @@ def case_promo_keep_running_switch_gates_the_runtime():
     pid = _run(_seed())
     orig = promo_reactivate.fetch_of_promos
 
-    async def _nothing_live(_aid, need_ids=None):
+    async def _nothing_live(_aid, need_ids=None, **_kw):
         return []          # OF reachable, no live promo → the armed campaign is due
 
     promo_reactivate.fetch_of_promos = _nothing_live

@@ -410,7 +410,7 @@ def _parse_sequence(q: _BulkSequence) -> tuple[str | None, list[tuple[int, _Bulk
     elif len(name) > SEQ_NAME_MAX:
         why = f"name longer than {SEQ_NAME_MAX} characters"
     elif reserved.is_reserved_name(name):
-        why = "name is reserved (FM follow-up scripts)"
+        why = f"name is reserved ({reserved.PREFIX} and digits only names a generated sequence)"
     elif len(q.created_by or "") > BULK_BY_MAX or len(q.description or "") > BULK_DESC_MAX:
         why = "created_by or description too long"
     elif not q.steps:
@@ -457,8 +457,9 @@ async def bulk_import(account_id: str = Query(...), body: _BulkBody = Body(...))
     (some script carries it) is `skip`ped untouched, or with `replace` its scripts are deleted and the
     payload's put in their place (meta updated). A tag's script is matched on (name, case-blind; text): a
     script that exists already (a sequence step included) gets the tag added, else it is created; so a
-    re-run creates nothing. A tag named "" holds untagged scripts: created with no tag, an existing match is
-    skipped. Media is not importable (never in the payload); price is kept. `dry_run` counts
+    re-run creates nothing, except a tag script whose name or text was edited in the app since: no match,
+    so it is created again beside the edited one (the dump has no script id to match on). A tag named ""
+    holds untagged scripts: created with no tag, an existing match is skipped. Media is not importable (never in the payload); price is kept. `dry_run` counts
     and rolls back. Same Role gate as the Excel import (the Scripts page's `/admin/saved-replies/`); `replace`
     also needs the Delete scripts permission."""
     assert_account_owned(account_id)

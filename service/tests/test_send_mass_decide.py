@@ -136,11 +136,16 @@ def case_audience_filter_shape():
     raw = smd.audience_filter(p, ref=41, fence=True)
     assert list(json.loads(raw)) == ["user_lists", "included_users", "excluded_users",
                                      "list_ids", "ref", "excluded_user_lists", "fence",
-                                     "online", "filters"], raw
+                                     "online", "filters", "auto_exclude_list",
+                                     "unresolved_exclude_lists"], raw
     assert json.loads(raw) == {"user_lists": ["fans"], "included_users": [1],
                                "excluded_users": [3, 9], "list_ids": [7], "ref": "41",
                                "excluded_user_lists": ["x", 5], "fence": True,
-                               "online": False, "filters": False}, raw
+                               "online": False, "filters": False,
+                               "auto_exclude_list": None,
+                               "unresolved_exclude_lists": ["x", 5]}, raw
+    af = json.loads(smd.audience_filter(p, ref=None, fence=False, auto_exclude=5))
+    assert (af["auto_exclude_list"], af["unresolved_exclude_lists"]) == (5, ["x"]), af
     assert json.loads(smd.audience_filter(p, ref=None, fence=False))["ref"] is None
     # online / filtered sends say so (the boot re-crawl skips them: OF resolves those audiences)
     af = json.loads(smd.audience_filter(replace(p, online_only=True), ref=None, fence=False))

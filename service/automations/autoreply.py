@@ -178,6 +178,9 @@ _FOLDER_TTL_S = 300
 _folder_cache: dict[tuple[str, tuple[int, ...]], tuple[float, frozenset]] = {}
 # When the newest read of a key failed (monotonic); a later good read drops it.
 _folder_failed: dict[tuple[str, tuple[int, ...]], float] = {}
+# Keys whose cached read hit the paging backstop (a short read): fine for an allow-list, never for
+# an exclusion list (`FolderPeek.partial`).
+_folder_partial: set[tuple[str, tuple[int, ...]]] = set()
 
 
 def _folder_key(account_id: str, list_ids) -> tuple[str, tuple[int, ...]]:
@@ -189,6 +192,8 @@ class FolderPeek(NamedTuple):
     read_age_s: float | None     # the last good read's age; None = none cached
     members: frozenset | None    # what it read
     failed_age_s: float | None   # the newest read FAILED this long ago; None = it did not
+    partial: bool = False        # the cached read stopped short (paging backstop / repeated page): a Fan
+                                 # missing from `members` may still be on the folders
 
 
 def peek_folder(account_id: str, list_ids) -> FolderPeek:
@@ -199,7 +204,7 @@ def peek_folder(account_id: str, list_ids) -> FolderPeek:
     if hit is not None and failed is not None and (failed <= hit[0] or now - hit[0] < _FOLDER_TTL_S):
         failed = None   # `_folder_members` serves that hit: the failure (an overlapping crawl's) is moot
     return FolderPeek(None if hit is None else now - hit[0], None if hit is None else hit[1],
-                      None if failed is None else now - failed)
+                      None if failed is None else now - failed, hit is not None and key in _folder_partial)
 
 
 def _folder_ids(cfg: dict) -> tuple[int, ...]:
@@ -224,6 +229,7 @@ async def _folder_members(account_id: str, client, list_ids: tuple[int, ...]) ->
         return hit[1]
     from audience_include import _crawl_list_ids_blocking
     members: set[int] = set()
+    partial = False
     for lid in list_ids:
         try:
             ids, truncated = await asyncio.to_thread(_crawl_list_ids_blocking, client, lid)
@@ -235,9 +241,11 @@ async def _folder_members(account_id: str, client, list_ids: tuple[int, ...]) ->
         if truncated:
             log.warning("autoreply folder %s on account=%s hit the paging backstop "
                         "— replying to the members read so far", lid, account_id)
+            partial = True
         members |= ids
     out = frozenset(members)
     _folder_cache[key] = (time.monotonic(), out)
+    (_folder_partial.add if partial else _folder_partial.discard)(key)
     _folder_failed.pop(key, None)
     return out
 

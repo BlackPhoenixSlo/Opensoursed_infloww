@@ -70,9 +70,12 @@ vi.mock("@/hooks/useServerScheduledSends", () => ({
   scheduledSendsKey: (a: string, f: number) => ["scheduled-sends", a, f],
 }));
 
-import { shareChatPages, useChatList } from "@/hooks/useChatList";
+import { chatsQueryKey, shareChatPages, useCachedChatPages, useChatList } from "@/hooks/useChatList";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
-import { patchCachedChat } from "@/components/chat/useMarkChatRead";
+import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
+import { applyCachedReply } from "@/hooks/useInboxRealtime";
+import { patchChatListAfterSend } from "@/hooks/useSendMessage";
+import { setRelayOffset } from "@/lib/ageClock";
 import { relay, type OFChatItem } from "@/lib/relay";
 const relayGet = relay.get as unknown as Mock;
 
@@ -683,7 +686,7 @@ describe("unenriched", () => {
 });
 
 describe("useChatList head poll x a write during its read", () => {
-  it("a row patched while the head read is out (mark-read, send, SSE) is not overwritten by that older head", async () => {
+  it("a row patched while the head read is out keeps the patch, and the head's other rows land (no whole-head discard)", async () => {
     const h = await renderThreePages();
     let answer!: (page: { list: OFChatItem[]; hasMore: boolean }) => void;
     serve = (_aid, offset) => {
@@ -694,18 +697,208 @@ describe("useChatList head poll x a write during its read", () => {
     expect(chatCalls().map((c) => c.offset)).toEqual([0]);
 
     // The chatter opens fan 10 meanwhile: its row goes read in the cache.
-    patchCachedChat(client, "acct-a", 10, { hasUnread: false });
+    flipCachedReadState(client, "acct-a", { fanId: 10, unread: false, at: null });
     await settle();
-    // OF's head, read before the mark, still shows it unread.
-    answer({ list: [{ ...row(10, "2026-08-25T10:00:00Z"), hasUnread: true }, row(9, "2026-08-25T09:00:00Z")], hasMore: true });
+    // OF's head, read before the mark, still shows it unread; fan 9 has news.
+    answer({ list: [{ ...row(10, "2026-08-25T10:00:00Z"), hasUnread: true, unreadMessagesCount: 1 },
+      { ...row(9, "2026-08-25T09:30:00Z"), lastMessage: { id: 901, text: "news", createdAt: "2026-08-25T09:30:00Z" } }],
+    hasMore: true });
     await settle();
     await settle();
 
-    expect(h.result.current.data[0].withUser.id).toBe(10);
-    expect(h.result.current.data[0].hasUnread).toBe(false);
-
-    // The dropped head is re-read soon, not a full poll later.
+    const byId = (id: number) => h.result.current.data.find((c) => c.withUser.id === id)!;
+    expect(byId(10).hasUnread).toBe(false);
+    expect(byId(10).unreadMessagesCount).toBe(0);
+    expect(byId(9).lastMessage?.text).toBe("news");
+    // Landed, not dropped: no quick re-read.
     await settle(15_000);
-    expect(chatCalls().map((c) => c.offset)).toEqual([0, 0]);
+    expect(chatCalls().map((c) => c.offset)).toEqual([0]);
+  });
+});
+
+describe("useChatList head poll x a newer manual Refresh (W30-mu #43)", () => {
+  it("a slow head read that answers after a Refresh asked later leaves the Refresh's rows", async () => {
+    const h = await renderTwoPages();
+    const open: Array<{ offset: number; r: (p: { list: OFChatItem[]; hasMore: boolean }) => void }> = [];
+    serve = (_aid, offset) => new Promise((r) => { open.push({ offset, r }); }) as unknown as
+      { list: OFChatItem[]; hasMore: boolean };
+    await settle(POLL_MS);
+    expect(open.map((o) => o.offset)).toEqual([0]);            // the poll's head read, out
+    let done = false;
+    void h.result.current.refresh().finally(() => { done = true; });
+    await until("refresh page 0 asked", () => open.length === 2);
+    open[1].r({ list: [row(11, "2026-08-25T11:00:00Z"), row(10, "2026-08-25T10:00:00Z")], hasMore: true });
+    await until("refresh page 1 asked", () => open.length === 3);
+    open[2].r({ list: [row(8, "2026-08-25T08:00:00Z")], hasMore: false });
+    await until("refresh settled", () => done);
+    expect(h.result.current.data[0].withUser.id).toBe(11);
+    // The poll's head, asked before the Refresh, lands last.
+    open[0].r({ list: [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")], hasMore: true });
+    await settle();
+    await settle();
+    expect(h.result.current.data.map((c) => c.withUser.id)).toEqual([11, 10, 8]);
+    expect(h.result.current.data[1].hasUnread).toBeFalsy();
+  });
+});
+
+/** The relay's chats pages, each answered by hand: `answer(offset, list, hasMore)` resolves the oldest open read of
+ *  that offset. */
+function manualServe() {
+  const open = new Map<number, Array<(p: { list: OFChatItem[]; hasMore: boolean }) => void>>();
+  serve = (_aid, offset) => new Promise((r) => {
+    open.set(offset, [...(open.get(offset) ?? []), r]);
+  }) as unknown as { list: OFChatItem[]; hasMore: boolean };
+  return {
+    asked: (offset: number) => (open.get(offset) ?? []).length > 0,
+    answer(offset: number, list: OFChatItem[], hasMore = true) {
+      const [r, ...rest] = open.get(offset) ?? [];
+      if (!r) throw new Error(`no open read at offset ${offset}`);
+      open.set(offset, rest);
+      r({ list, hasMore });
+    },
+  };
+}
+
+const unreadRow = (id: number, createdAt: string): OFChatItem => ({ ...row(id, createdAt), hasUnread: true, unreadMessagesCount: 1 });
+
+/** Two loaded pages: fan 10 (unread) and 9 on page 0, fans 8 and 7 on page 1. */
+async function renderTwoPages() {
+  serve = (_aid, offset) => offset === 0
+    ? { list: [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")], hasMore: true }
+    : { list: [unreadRow(8, "2026-08-25T08:00:00Z"), row(7, "2026-08-25T07:00:00Z")], hasMore: false };
+  const h = renderHook(() => useChatList(), { wrapper });
+  await until("page 0", () => h.result.current.data.length === 2);
+  await act(async () => { await h.result.current.loadMore(); });
+  await until("pages 0-1", () => h.result.current.data.length === 4);
+  return h;
+}
+
+describe("useChatList commit: a read started before a live write never undoes it (W30-mu #12)", () => {
+  const byId = (h: { result: { current: { data: OFChatItem[] } } }, id: number) =>
+    h.result.current.data.find((c) => c.withUser.id === id)!;
+
+  it("a Refresh whose page 0 was read before a read flip, page 1 after: the flip stands on page 0", async () => {
+    const h = await renderTwoPages();
+    const srv = manualServe();
+    let done = false;
+    void h.result.current.refresh().finally(() => { done = true; });
+    await until("page 0 asked", () => srv.asked(0));
+    srv.answer(0, [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")]);
+    await until("page 1 asked", () => srv.asked(25));
+    // The SSE flip lands between the two pages of the refetch.
+    act(() => flipCachedReadState(client, "acct-a", { fanId: 10, unread: false, at: null }));
+    await settle();
+    expect(byId(h, 10).hasUnread).toBe(false);
+    srv.answer(25, [unreadRow(8, "2026-08-25T08:00:00Z"), row(7, "2026-08-25T07:00:00Z")], false);
+    await until("refresh settled", () => done);
+    expect(byId(h, 10).hasUnread).toBe(false);
+    expect(byId(h, 10).unreadMessagesCount).toBe(0);
+    expect(byId(h, 8).hasUnread).toBe(true);
+  });
+
+  it("a loadMore in flight across a flip re-commits the pages it captured with the flip on them", async () => {
+    serve = (_aid, offset) => offset === 0
+      ? { list: [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")], hasMore: true }
+      : { list: [], hasMore: false };
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("page 0", () => h.result.current.data.length === 2);
+    const srv = manualServe();
+    let done = false;
+    void h.result.current.loadMore().finally(() => { done = true; });
+    await until("page 1 asked", () => srv.asked(25));
+    act(() => flipCachedReadState(client, "acct-a", { fanId: 10, unread: false, at: null }));
+    srv.answer(25, [row(8, "2026-08-25T08:00:00Z")], false);
+    await until("loadMore settled", () => done);
+    expect(byId(h, 10).hasUnread).toBe(false);
+    expect(byId(h, 8)).toBeTruthy();
+  });
+
+  it("reply, then read flip, then a stale Refresh: the row keeps the reply's preview and the read", async () => {
+    const h = await renderTwoPages();
+    const srv = manualServe();
+    let done = false;
+    void h.result.current.refresh().finally(() => { done = true; });
+    await until("page 0 asked", () => srv.asked(0));
+    act(() => {
+      applyCachedReply(client, "acct-a", {
+        fanId: 10, id: 5555, createdAt: "2026-08-25T10:30:00Z", text: "our reply", mediaCount: 0, price: 0, at: null,
+      });
+      flipCachedReadState(client, "acct-a", { fanId: 10, unread: false, at: null });
+    });
+    srv.answer(0, [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")]);
+    await until("page 1 asked", () => srv.asked(25));
+    srv.answer(25, [unreadRow(8, "2026-08-25T08:00:00Z"), row(7, "2026-08-25T07:00:00Z")], false);
+    await until("refresh settled", () => done);
+    expect(byId(h, 10).lastMessage?.text).toBe("our reply");
+    expect(byId(h, 10).hasUnread).toBe(false);
+  });
+
+  it("mark-all, then a newer inbound DM, then a stale Refresh: every row read but the DM's, which stays unread", async () => {
+    const h = await renderTwoPages();
+    renderHook(() => useInboxRealtime(), { wrapper });
+    const srv = manualServe();
+    let done = false;
+    void h.result.current.refresh().finally(() => { done = true; });
+    await until("page 0 asked", () => srv.asked(0));
+    act(() => flipCachedReadState(client, "acct-a", { fanId: null, unread: false, at: Date.parse("2026-08-25T10:10:00Z") }));
+    fireInbound(9, "after the mark", "2026-08-25T10:20:00Z");
+    srv.answer(0, [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")]);
+    await until("page 1 asked", () => srv.asked(25));
+    // Page 1 was asked after the mark-all: OF's answer holds it.
+    srv.answer(25, [row(8, "2026-08-25T08:00:00Z"), row(7, "2026-08-25T07:00:00Z")], false);
+    await until("refresh settled", () => done);
+    expect(byId(h, 10).hasUnread).toBe(false);
+    expect(byId(h, 8).hasUnread).toBeFalsy();
+    expect(byId(h, 9).hasUnread).toBe(true);
+    expect(byId(h, 9).lastMessage?.text).toBe("after the mark");
+    expect(h.result.current.data[0].withUser.id).toBe(9);
+  });
+});
+
+describe("useChatList askedAt on the Relay's clock (W30-mu #14)", () => {
+  afterEach(() => setRelayOffset(0));
+
+  it("a tab clock 60 s ahead: a flip the Relay made after the page was asked still applies", async () => {
+    setRelayOffset(60_000);   // tab minus Relay
+    serve = () => ({ list: [unreadRow(10, "2026-08-25T10:00:00Z")], hasMore: false });
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("page 0", () => h.result.current.data.length === 1);
+    // 5 s after the ask, on the Relay's clock (55 s before the tab's).
+    act(() => flipCachedReadState(client, "acct-a", { fanId: 10, unread: false, at: Date.now() - 60_000 + 5_000 }));
+    await settle();
+    expect(h.result.current.data[0].hasUnread).toBe(false);
+  });
+
+  it("a tab clock 30 s ahead: a send replayed over a page holding a newer fan DM leaves the DM's preview and unread (W30-mu #30)", async () => {
+    setRelayOffset(30_000);   // tab minus Relay
+    const h = await renderTwoPages();
+    const srv = manualServe();
+    let done = false;
+    void h.result.current.refresh().finally(() => { done = true; });
+    await until("page 0 asked", () => srv.asked(0));
+    act(() => patchChatListAfterSend(client, "acct-a", 10,
+      { fromUserId: "acct-a", fromUserName: "me", text: "our send", mediaCount: 0, price: 0 }));
+    // The fan wrote 5 s after the send (OF's clock = the Relay's); the page read before the send answers with it.
+    const dmAt = new Date(Date.now() - 30_000 + 5_000).toISOString();
+    srv.answer(0, [{ ...unreadRow(10, dmAt), lastMessage: { id: 7777, text: "fan DM", createdAt: dmAt } } as OFChatItem,
+      row(9, "2026-08-25T09:00:00Z")]);
+    await until("page 1 asked", () => srv.asked(25));
+    srv.answer(25, [row(8, "2026-08-25T08:00:00Z")], false);
+    await until("refresh settled", () => done);
+    const fan = h.result.current.data.find((c) => c.withUser.id === 10)!;
+    expect(fan.lastMessage?.text).toBe("fan DM");
+    expect(fan.hasUnread).toBe(true);
+  });
+});
+
+describe("useCachedChatPages: another list's entry, subscribed without an observer (W30-mu #20)", () => {
+  it("re-renders on a live patch of that entry and never fetches it", async () => {
+    const key = chatsQueryKey("model", "acct-a", { filter: "unread" });
+    client.setQueryData(key, { pages: [{ rows: [unreadRow(10, "2026-08-25T10:00:00Z")], hasMore: false }], pageParams: [0] });
+    const h = renderHook(() => useCachedChatPages(key), { wrapper });
+    expect(h.result.current?.pages[0]).toMatchObject({ rows: [{ withUser: { id: 10 } }] });
+    act(() => { client.setQueryData(key, { pages: [{ rows: [], hasMore: false }], pageParams: [0] }); });
+    expect(h.result.current?.pages[0]).toMatchObject({ rows: [] });
+    expect(relayGet).not.toHaveBeenCalled();
   });
 });

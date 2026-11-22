@@ -59,6 +59,9 @@ class Entry:
     # INDEX of the step last sent: its `check_intervals_min` paces the reply-wait,
     # also after a `next` jump. None (a row from before the column) = c - 1.
     last_sent_step: int | None = None
+    # The mark time of the last step a replay saved (reply_mass_funnel._replay_landed);
+    # decide() only carries it. Floors the next reply cutoff.
+    confirmed_sent_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row) -> "Entry":
@@ -66,7 +69,8 @@ class Entry:
         return cls(current_step=row.current_step, next_check_at=row.next_check_at,
                    check_count=row.check_count, status=row.status,
                    last_error=row.last_error, last_ppv_sent_at=row.last_ppv_sent_at,
-                   hops=row.hops, last_sent_step=row.last_sent_step)
+                   hops=row.hops, last_sent_step=row.last_sent_step,
+                   confirmed_sent_at=row.confirmed_sent_at)
 
 
 @dataclass(frozen=True)

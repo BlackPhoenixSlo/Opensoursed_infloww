@@ -19,12 +19,19 @@ Tables (plain lists and dicts, so a JSON plant reads like the Phase file's own r
                 found as `proof_list.py --check-sweep` finds it (label == control, page in pages); its control (the
                 visible element whose Not-yet sweep label, sweep_diff.LABEL_JS, is `control`) is found and Wired
                 (data-oi-wired on it or a part of it; a checkbox inside a mark; a label whose field has it); with that record's Live-proof pass
-                (proof_list.live_passed) it has no Not-yet title, else it still has it (D1). A `never-titled` proof
+                (proof_list.live_passed) it has no Not-yet title, else it still has it (D1). `views` (ticket 33): {proof
+                id: page with a query} opens that proof's page with the query (a control drawn only on data, e.g. an
+                own bubble's, absent from the bare page). A `never-titled` proof
                 (ticket 35): each label of its joined `control` found, Wired or a State page opener (a link to another
                 /of-manager page, whose Wired controls are there), and untitled whatever the pass. An
                 `ofm_new_writes` proof (proof_core OFM_NEW_WRITES): also, in a pass of its own with
                 OFM_NEW_WRITES_ENABLED off (GET /api/of/ofm-writes answered 404, as the Relay's switch off), its
-                control is found, not Wired and keeps the Not-yet title, and that pass sends nothing.
+                control is found, not Wired and keeps the Not-yet title, and that pass sends nothing; one with a
+                `views` page (a control the app draws from data, which main never drew: ticket 33's own-bubble
+                extras) is opened there and must not be drawn at all, once that page's anchor is drawn: `anchors`
+                {proof id: CSS selector} (default ANCHORS by the page's path: messages/chat, an own bubble), an
+                element main draws there from the same data, so a page that drew nothing never reads as absent;
+                no anchor declared or none drawn within 5 s fails.
   requests      {"page", "steps", "want": [[method, path, body]] | "proof": id, "fill": {...}}: Single Creator; the
                 steps send exactly `want`, or the proof's capture record's request with `fill` applied, each with
                 X-Account-Id "1"; "page" defaults to the proof's; "after": [js, value] checks the read-back;
@@ -49,7 +56,7 @@ unsaved, so home/index (not a stand-in page, app/lib/ofMirrorProfile.ts STAND_IN
 run(..., one_creator_pass=True) from golive.py only (the cheapest Phase check).
 
 --plant <file.json> adds proofs ({"proofs": [{"id", "page", "control", "kind", "phase"?}]}, phase 2 unless given),
-rows ({"requests", "red_notes"}), capture records ({"records": {file name: record}}, replacing a capture file of that name) and an "init"
+rows ({"requests", "red_notes", "handoffs"}), capture records ({"records": {file name: record}}, replacing a capture file of that name) and an "init"
 script (run after the Phase's, e.g. to mark a control Wired) to the Phase's, to show a check fails; --captures <dir>
 reads the records from <dir> instead of docs/of-manager/captures.
 """
@@ -213,8 +220,8 @@ def act(fr, steps):
     """Each step on the frame: a label clicked, [label, text] typed. None, or the first step that could not run."""
     for step in steps:
         label, text=(step, None) if isinstance(step, str) else step
-        # Up to 5s for the control to be drawn, as click/fill wait for a drawn one (e.g. Home's recorder panel, put in
-        # only once the click's fetch of New post's markup lands: ofMirrorComposer ensureRecorder).
+        # Up to 5s for the control to be in the DOM, as click/fill wait for a drawn one (Playwright's auto-wait). Home's
+        # recorder no longer waits on a fetch after the click (ofMirrorComposer prefetchRecorder, at bind).
         for _ in range(50):
             if (el:=locate(fr, label)) is not None: break
             fr.page.wait_for_timeout(100)
@@ -243,10 +250,11 @@ def single(b, name, t, records, reads, after, init="", pages=None):
     fail={}
     pg, sent, errs=session(b, f"localStorage.setItem('chatterly:scope','{SINGLE}')", reads, after, fail, init)
     n_shot=0
-    for page in dict.fromkeys(p.page for p in t["proofs"]):
+    view=lambda p: t["views"].get(p.id, p.page)   # ticket 33
+    for page in dict.fromkeys(view(p) for p in t["proofs"]):
         fr=open_page(pg, page)
         if not fr: continue
-        for proof in [p for p in t["proofs"] if p.page==page]:
+        for proof in [p for p in t["proofs"] if view(p)==page]:
             _, rec, problem=record_of(proof, records)
             check(f"{proof.id}: one capture record", problem, None)
             if NEVER_TITLED in proof.tags:   # ticket 35: each joined label, never titled, pass or not
@@ -328,19 +336,40 @@ def single(b, name, t, records, reads, after, init="", pages=None):
     console("single creator", errs, {r.get("status", 502) for r in t["red_notes"] if r.get("fail")})
     print("single creator relay writes:", sent)
     pg.context.close()
-    switch_off(b, name, t, reads, after, init)
+# switch_off's positive anchor for a `views` proof, by its page's path (run's `anchors` overrides per proof id): an
+# element main draws on that page from the same data (an own bubble, ofMirrorDataChats bubbleClass), so "not drawn" means
+# the switch hid the control, not that the page drew nothing.
+ANCHORS={"messages/chat": ".b-chat__message.m-from-me[data-oi-msg]"}
+ANCHOR_WAIT_MS=5000
+def anchor_of(t, proof):
+    """The CSS selector `proof`'s views page must draw before its control is checked absent, or None."""
+    return t["anchors"].get(proof.id) or ANCHORS.get(t["views"][proof.id].partition("?")[0])
+def anchored(fr, sel):
+    """`sel` drawn on the frame within ANCHOR_WAIT_MS (the mocked reads land after load)."""
+    for _ in range(ANCHOR_WAIT_MS//100):
+        if fr.query_selector(sel) is not None: return True
+        fr.page.wait_for_timeout(100)
+    return False
 def switch_off(b, name, t, reads, after, init=""):
     """Single Creator with OFM_NEW_WRITES_ENABLED off: each `ofm_new_writes` proof's control found, not Wired, its
-    Not-yet title kept (main's state); no Relay write."""
+    Not-yet title kept (main's state), or with a `views` page not drawn at all (main had none, ticket 33); no Relay write.
+    ASSUMPTION: a `views` proof's control is one main never drew (rung 5); overturned by a views proof of a control
+    main drew disabled, which then needs its own flag."""
     gated=[p for p in t["proofs"] if OFM_NEW_WRITES in p.tags]
     if not gated: return
     pg, sent, errs=session(b, f"localStorage.setItem('chatterly:scope','{SINGLE}')", copy.deepcopy(reads), after, {}, init, switch=False)
-    for i, page in enumerate(dict.fromkeys(p.page for p in gated), 1):
+    view=lambda p: t["views"].get(p.id, p.page)
+    for i, page in enumerate(dict.fromkeys(view(p) for p in gated), 1):
         fr=open_page(pg, page)
         if not fr: continue
-        for proof in [p for p in gated if p.page==page]:
-            check(f"{proof.id} {page} {proof.control!r}, OFM_NEW_WRITES_ENABLED off: found, not Wired, Not-yet title kept",
-                  fr.evaluate(f"(want) => ({STATE})(({FIND})(want))", proof.control), [True, False, True])
+        for proof in [p for p in gated if view(p)==page]:
+            drawn=proof.id not in t["views"]
+            if not drawn:
+                sel=anchor_of(t, proof)
+                check(f"{proof.id} {page}, OFM_NEW_WRITES_ENABLED off: anchor {sel!r} drawn (the page drew its data)",
+                      bool(sel) and anchored(fr, sel), True)
+            check(f"{proof.id} {page} {proof.control!r}, OFM_NEW_WRITES_ENABLED off: "+("found, not Wired, Not-yet title kept" if drawn else "not drawn (main)"),
+                  fr.evaluate(f"(want) => ({STATE})(({FIND})(want))", proof.control), [True, False, True] if drawn else [False, False, False])
         shot(pg, f"{name}-switch-off", i, page)
     check("single creator, OFM_NEW_WRITES_ENABLED off: no Relay write", sent, [])
     console("single creator, OFM_NEW_WRITES_ENABLED off", errs, {404})
@@ -363,7 +392,8 @@ def one_creator(b, name, reads):
         shot(pg, name, 0, "one-creator-"+ONE_PAGE)
     console("saved all scope", errs, set())
     pg.context.close()
-def run(name, proofs=(), requests=(), red_notes=(), reads=None, after=(), argv=None, init="", pages=None, one_creator_pass=False):
+def run(name, proofs=(), requests=(), red_notes=(), reads=None, after=(), argv=None, init="", pages=None, one_creator_pass=False,
+        views=None, handoffs=(), anchors=None):
     """The Phase's check: its tables, plus --plant's rows (and one_creator with `one_creator_pass`); exit 1 on a failed check."""
     args=list(sys.argv[1:] if argv is None else argv)
     plant, captures={}, CAPTURES
@@ -373,7 +403,8 @@ def run(name, proofs=(), requests=(), red_notes=(), reads=None, after=(), argv=N
         i=args.index("--captures"); captures=args[i+1]; del args[i:i+2]
     if args: sys.exit(f"{name}: unknown arguments {args}")
     t={"proofs":[*proofs, *(Proof(**{"phase": 2, **p}) for p in plant.get("proofs", []))], "requests":[*requests, *plant.get("requests", [])],
-       "red_notes":[*red_notes, *plant.get("red_notes", [])]}
+       "red_notes":[*red_notes, *plant.get("red_notes", [])], "views":dict(views or {}), "anchors":dict(anchors or {}),
+       "handoffs":[*handoffs, *plant.get("handoffs", [])]}   # ticket 42
     if not os.path.isdir(captures): sys.exit(f"{name}: {captures} is not a directory")   # a mistyped path never reads as clean
     records, bad=load_records(Path(captures))
     check("capture records are valid JSON", bad, [])
@@ -385,7 +416,53 @@ def run(name, proofs=(), requests=(), red_notes=(), reads=None, after=(), argv=N
     with sync_playwright() as p:
         b=p.chromium.launch()
         single(b, name, t, records, copy.deepcopy(reads), list(after), init, pages)   # each pass starts from the Phase's reads
+        switch_off(b, name, t, copy.deepcopy(reads), list(after), init)   # not single's reads: its rows' hooks changed them
         if one_creator_pass: one_creator(b, name, copy.deepcopy(reads))
+        if t["handoffs"]: handoff_rows(b, name, t["handoffs"], reads, list(after), init)   # ticket 42
     if failures:
         print("FAIL:", *failures, sep="\n  "); sys.exit(1)
     print(f"{name} ok")
+
+# ticket 42: hand-off rows (D22, a Report that opens onlyfans.com; settings_privacy.py's check, as a table).
+#   handoffs  {"page", "steps", "handoff": url, "text", "reads"?: {GET path: JSON}}: the steps but the last run; the
+#             last names the hand-off, an <a> with href == url, target _blank, rel noopener noreferrer, data-oi-wired,
+#             title HANDOFF_TITLE, not aria-disabled, its text `text`; clicking it opens a popup to exactly url (recorded
+#             and aborted: no load), sends nothing. Single Creator. Screenshots: the open menu (trigger) and the page
+#             after the click (end state).
+HANDOFF_TITLE="opens onlyfans.com"   # app/lib/ofMirrorHandoffs.ts HANDOFF_TITLE
+HANDOFF_ATTRS="(a) => [a.tagName, a.href, a.target, a.rel, a.hasAttribute('data-oi-wired'), a.title, a.getAttribute('aria-disabled'), a.textContent.trim()]"
+def handoff_rows(b, name, rows, reads, after, init=""):
+    scope="single creator"
+    r_reads=copy.deepcopy(reads)
+    pg, sent, errs=session(b, f"localStorage.setItem('chatterly:scope','{SINGLE}')", r_reads, after, {}, init)
+    urls={r["handoff"] for r in rows}; opened=[]
+    def handoff(route):   # registered after session()'s `outside`, so it runs first, for the rows' URLs only
+        opened.append(route.request.url); route.abort()
+    pg.context.route(lambda u: u in urls, handoff)
+    for i, row in enumerate(rows, 1):
+        restore=with_reads(r_reads, row.get("reads", {}), pg)
+        fr=open_page(pg, row["page"])
+        if not fr: restore(); continue
+        what=f"{scope} {row['page']} {row['steps']} -> {row['handoff']}"
+        check(f"{what}: steps up to the hand-off run", act(fr, row["steps"][:-1]), None)
+        el=locate(fr, row["steps"][-1])
+        check(f"{what}: an <a>, new tab, noopener noreferrer, Wired, {HANDOFF_TITLE!r}, not disabled",
+              el.evaluate(HANDOFF_ATTRS) if el else None, ["A", row["handoff"], "_blank", "noopener noreferrer", True, HANDOFF_TITLE, None, row["text"]])
+        shot(pg, f"{name}-handoff-single", 2*i-1, row["page"])
+        n, h=len(sent), len(opened)
+        if el:
+            try: el.click(timeout=5000)
+            except Exception as e: failures.append(f"{what}: click: {str(e).splitlines()[0][:120]}")
+        for _ in range(20):   # up to 2s: the popup's request lands
+            if len(opened)>h: break
+            pg.wait_for_timeout(100)
+        pg.wait_for_timeout(300)
+        loaded=[f.url for p in pg.context.pages for f in p.frames if f.url==row["handoff"]]
+        check(f"{what}: a popup to exactly the URL (aborted, never loaded), nothing sent", [opened[h:], loaded, sent[n:]], [[row["handoff"]], [], []])
+        shot(pg, f"{name}-handoff-single", 2*i, row["page"])
+        for p in pg.context.pages:
+            if p is not pg: p.close()
+        restore()
+    console(f"{scope} hand-offs", errs, set())
+    print(f"{scope} hand-offs (aborted):", opened, "relay writes:", sent)
+    pg.context.close()

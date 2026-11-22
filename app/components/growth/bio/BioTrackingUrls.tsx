@@ -2,7 +2,7 @@
 
 /** The bio editor's Tracking URLs card, only for a page with a Creator: the page's address per OnlyFans tracking link
  *  of that Creator (`<address>/<code>`), v2 `script.js:218-250` minus its `/geo` row (no Geo Rule in the UI, 11-12). */
-import { CopyButton } from "@/components/growth/_bits";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { IfCard, IfHelp } from "@/components/ui/infloww";
 import { useOfTrackingLinks } from "@/hooks/useGrowth";
 import type { BioPage } from "@/hooks/useBioPages";

@@ -128,16 +128,16 @@ def case_verified_only_after_pass():
     assert analytics(lid).json()["totals"]["verified_clicks"] == 0, analytics(lid).json()
     assert summary().json()["verified_clicks"] == before_verified, summary().json()
     with turnstile():
-        import tracking_links_api as tla
-        real = tla._turnstile_passes
+        import turnstile as ts
+        real = ts.passes
         async def reject(*_args):
             return False
-        tla._turnstile_passes = reject
+        ts.passes = reject
         try:
             bad = _anon.post(f"/t/{slug}/verify", json={"token": "bad"})
             assert bad.status_code == 403, bad.text
         finally:
-            tla._turnstile_passes = real
+            ts.passes = real
         passed = _anon.post(f"/t/{slug}/verify", json={"token": "ok"})
         assert passed.status_code == 200, passed.text
     assert counts(lid) == (3, 3), counts(lid)
@@ -165,6 +165,21 @@ def case_zone_and_tenancy():
         _owner.put("/admin/settings/preferences", json={})
 
 
+def case_last_microsecond_of_a_day_stays_on_that_day():
+    # A click written with microseconds (the redirect writes utcnow()) at 23:59:59.999999: unixepoch() rounds it
+    # into the next day, outside the report's days; the reads must floor it to its own second.
+    lid, _ = link()
+    day = NOW.date()
+    sql("INSERT INTO tracking_clicks (tracking_link_id, clicked_at) VALUES (:lid, :at)", lid=lid,
+        at=f"{day.isoformat()} 23:59:59.999999")
+    a = analytics(lid)
+    assert a.status_code == 200, a.text
+    assert {r["day"]: r["clicks"] for r in a.json()["series"]}[day.isoformat()] == 1, a.json()
+    s = summary()
+    assert s.status_code == 200, s.text
+    assert s.json()["spark"][str(lid)][-1] == 1, s.json()
+
+
 def case_old_rows_chunks_idempotent():
     lid, _ = link()
     at = NOW - timedelta(days=1)
@@ -176,6 +191,14 @@ def case_old_rows_chunks_idempotent():
     assert sql("SELECT COUNT(*) FROM tracking_clicks WHERE tracking_link_id=:lid AND in_app='instagram' AND ref='reddit'",
                lid=lid)[0][0] == 3
     assert analytics(lid).json()["came_from"] == [{"key": "reddit", "clicks": 3}]
+
+
+def case_old_rows_scan_seeks_only_unclassified_rows():
+    """The boot classifier's chunk read walks the partial index of NULL-ref rows, not the whole click table."""
+    plan = " | ".join(str(r[-1]) for r in sql(
+        "EXPLAIN QUERY PLAN SELECT id, user_agent, referer FROM tracking_clicks "
+        "WHERE ref IS NULL AND id>:last ORDER BY id LIMIT :chunk", last=0, chunk=10))
+    assert "ix_tracking_clicks_unclassified" in plan, plan
 
 
 def case_stats_reads_share_one_lane():
@@ -214,4 +237,5 @@ def case_stats_reads_share_one_lane():
 
 _harness.run(case_clicks_classify_failure_and_clock, case_gate_referer, case_verified_only_after_pass,
              case_zone_and_tenancy, case_stats_reads_share_one_lane,
-             case_old_rows_chunks_idempotent)
+             case_old_rows_chunks_idempotent, case_last_microsecond_of_a_day_stays_on_that_day,
+             case_old_rows_scan_seeks_only_unclassified_rows)

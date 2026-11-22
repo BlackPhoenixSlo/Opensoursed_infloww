@@ -50,7 +50,6 @@ import {
   useAiFolderPlan,
   useVaultFlagsStatus,
   type AiFolder,
-  type AiFolderPlan,
   type ApplyAiFoldersResult,
 } from "@/hooks/useVaultCache";
 import { mirrorThumbSrc } from "@/lib/mediaUrl";
@@ -186,23 +185,18 @@ export default function VaultAiFoldersModal({
   const { keep, solo, mirrorToOf, topics, split } = form;
 
   const plan = useAiFolderPlan(accountId, { keep, solo, topics, split }, true);
-  // The topic checklist (+ Jev coverage) does not depend on the options, so it stays drawn while a toggle re-plans.
-  const [lastTopics, setLastTopics] = useState<Pick<AiFolderPlan, "topic_catalogue" | "jev"> | null>(null);
-  useEffect(() => {
-    if (!plan.data) return;
-    const next = { topic_catalogue: plan.data.topic_catalogue, jev: plan.data.jev };
-    // Same content keeps the same object: no re-render loop when a refetch hands back an equal plan.
-    setLastTopics((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
-  }, [plan.data]);
-  const catalogue = plan.data?.topic_catalogue ?? lastTopics?.topic_catalogue ?? [];
-  const jev = plan.data?.jev ?? lastTopics?.jev;
+  // The topic checklist (+ Jev coverage) does not depend on the options, so it stays drawn from the previous plan
+  // while a toggle re-plans; everything else reads only this toggle's plan (`fresh`).
+  const catalogue = plan.data?.topic_catalogue ?? [];
+  const jev = plan.data?.jev;
+  const fresh = plan.isPlaceholderData ? undefined : plan.data;
   const topicsOn = topicsUsable(jev);
 
   // Items that land in more than one folder — the case the per-folder ordering
   // exists for. Flagged in the preview so the overlap is visible up front
   // rather than discovered later in the picker.
   const seen = new Map<number, number>();
-  for (const f of plan.data?.folders ?? []) {
+  for (const f of fresh?.folders ?? []) {
     for (const it of f.items) seen.set(it.media_id, (seen.get(it.media_id) ?? 0) + 1);
   }
   const multi = new Set([...seen.entries()].filter(([, n]) => n > 1).map(([m]) => m));
@@ -227,24 +221,24 @@ export default function VaultAiFoldersModal({
     // The SAME options the preview was built from: the server re-derives the
     // plan and retires generated folders it no longer makes, so applying
     // without `solo` would create the lanes and delete every `-solo` folder
-    // in the same call.
-    applyM.mutate(buildPayload(form));
+    // in the same call. It retires only the folders this preview listed.
+    applyM.mutate(buildPayload(form, changes));
   }
   /** An option change makes the last build's result stale (its error stays). */
   const optionChanged = () => { if (applyM.isSuccess) applyM.reset(); };
 
-  const s = plan.data?.summary;
-  const changes = plan.data?.changes;
-  const flags = plan.data?.flags;
+  const s = fresh?.summary;
+  const changes = fresh?.changes;
+  const flags = fresh?.flags;
   // Only when the box is ticked AND some described item was never asked who
   // else is in it — the one case where an empty solo cut is correct but reads
   // as breakage.
-  const cov = solo ? plan.data?.solo_coverage : null;
+  const cov = solo ? fresh?.solo_coverage : null;
   const soloGap = cov?.unknown ? cov : null;
   // Unchecked stills are left out of the flag lanes (safe explicit, $10, $50) server-side (never
   // guessed), so this informs and offers the catch-up; it does not block.
   const flagsMissing = !!flags && flags.missing > 0;
-  const submittable = canSubmit(busy, plan.data?.folders.length ?? 0);
+  const submittable = canSubmit(busy, fresh?.folders.length ?? 0);
 
   // A whole-vault sweep runs for minutes in the background, so this watches it
   // rather than holding a request open. Polling starts on the click AND on open
@@ -459,7 +453,8 @@ export default function VaultAiFoldersModal({
           )}
         </IfHelp>
       )}
-      {/* What Confirm does to the AI- folders already there — the same match the apply makes. */}
+      {/* What Confirm does to the AI- folders already there, on the vault as it is now. The apply re-plans and
+          retires only the folders listed here; one that went stale since is left in place (`skipped_retire`). */}
       {changes && (
         <div className="mt-2 text-[13px]">
           <p className="tabular-nums">Confirm {changesLine(changes)}</p>
@@ -499,13 +494,33 @@ export default function VaultAiFoldersModal({
           {result.folders === 1 ? "folder" : "folders"} with {result.items} placements.
           {result.of_mirrored != null && (
             <span className="block text-ok/80">
-              {result.of_mirrored} mirrored to OnlyFans as real vault folders.
+              {result.of_mirrored} mirrored to OnlyFans as real vault folders (adds only: nothing is removed from
+              an OnlyFans list).
+            </span>
+          )}
+          {!!result.of_stale && (
+            <span className="block text-warn">
+              {result.of_stale} {result.of_stale === 1 ? "item stays" : "items stay"} in an OnlyFans list this
+              build no longer puts {result.of_stale === 1 ? "it" : "them"} in — remove on OnlyFans if needed.
             </span>
           )}
           {!!result.of_failed && (
             <span className="block text-warn">
               {result.of_failed} could not be created on OnlyFans — the folder still
               exists here, press Rebuild to retry.
+            </span>
+          )}
+          {!!result.skipped_retire?.length && (
+            <span className="block text-warn">
+              {result.skipped_retire.length} more {result.skipped_retire.length === 1 ? "folder" : "folders"} went
+              out of date after this preview and {result.skipped_retire.length === 1 ? "was" : "were"} left in
+              place — press Rebuild to review.
+            </span>
+          )}
+          {!!result.skipped_adopted?.length && (
+            <span className="block text-warn">
+              {result.skipped_adopted.length} {result.skipped_adopted.length === 1 ? "folder was" : "folders were"}{" "}
+              edited by hand during this build and left as edited.
             </span>
           )}
           {result.of_mirrored == null && (
@@ -519,16 +534,16 @@ export default function VaultAiFoldersModal({
       {applyM.error && <Notice tone="err">{errText(applyM.error)}</Notice>}
 
       <div className="mt-4 flex flex-col gap-3">
-        {plan.isLoading && <p className="text-muted">Reading the vault…</p>}
+        {(plan.isLoading || plan.isPlaceholderData) && <p className="text-muted">Reading the vault…</p>}
         {plan.isError && (
           <p className="text-err">Could not build a plan for this account.</p>
         )}
-        {plan.data && plan.data.folders.length === 0 && (
+        {fresh && fresh.folders.length === 0 && (
           <p className="text-muted">
             Nothing to group yet — the vault needs to be collected and described first.
           </p>
         )}
-        {plan.data?.folders.map((f) => (
+        {fresh?.folders.map((f) => (
           <FolderCard key={f.name} accountId={accountId} folder={f} multi={multi} />
         ))}
       </div>

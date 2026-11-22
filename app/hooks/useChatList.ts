@@ -17,7 +17,7 @@
  * (Phase B.2); the Refresh button is the full re-walk.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
   hashKey,
   keepPreviousData,
@@ -34,17 +34,13 @@ import { eventBus } from "@/lib/events";
 import { relay, relayFocus, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
 import { fanIdFromParam, type FanId } from "@/lib/fanId";
 import { CHATS_PAGE } from "@/lib/screenBundle";
-import { compareChats, completeUnreadView, type UnreadView } from "@/lib/chatsCache";
-import { cacheMark, cacheMovedSince } from "@/lib/queryCacheMark";
+import {
+  chatRowKey, commitChatPages, compareChats, completeUnreadView, localSeq, type StampedPage, type UnreadView,
+} from "@/lib/chatsCache";
+import { relayNow, relayOffsetKnown } from "@/lib/ageClock";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 import { usePlatformAccounts } from "./useAccounts";
 import { avatarThumb, mergeOFUserName, ofUserNameKey, type OFUserName } from "./useOFUser";
-
-/** A chat row's identity in the list, (accountId, fanId): the flatten step
- *  below de-dupes by it, and the Fan List keys its picks by it. */
-export function chatRowKey(c: OFChatItem): string {
-  return `${c.__accountId ?? ""}:${c.withUser.id}`;
-}
 
 /** One chat page per Creator: the inbox bundle answers this exact page (lib/screenBundle.ts). */
 const PAGE_SIZE = CHATS_PAGE;
@@ -58,8 +54,8 @@ const PAGE_SIZE = CHATS_PAGE;
  *  (or the whole data) whose rows are all unchanged keeps its own. Exported
  *  for tests. */
 export function shareChatPages(prev: unknown, next: unknown): unknown {
-  const p = prev as InfiniteData<ChatsPage> | undefined;
-  const n = next as InfiniteData<ChatsPage> | undefined;
+  const p = prev as InfiniteData<StampedPage> | undefined;
+  const n = next as InfiniteData<StampedPage> | undefined;
   if (!p?.pages || !n?.pages) return replaceEqualDeep(prev, next);
   if (p === n) return p;
   const old = new Map<string, OFChatItem>();
@@ -308,15 +304,16 @@ export function cachedUnreadView(qc: QueryClient, key: QueryKey): UnreadView | n
   return completeUnreadView(qc.getQueryData(key), SESSION);
 }
 
-interface ChatsPage {
-  rows: OFChatItem[];
-  hasMore: boolean;
-  /** The page load that read it from OF (`SESSION`); persisted along with it. */
-  session?: string;
-  /** When OF was asked for it (ms; before the request left). */
-  askedAt?: number;
-  /** All Models: a Creator's call failed, so its rows are missing. */
-  partial?: boolean;
+/** A chats cache's data, re-rendering when that entry changes (a live patch, a read): a cache read with no observer
+ *  of its own, so it neither fetches nor replaces the infinite query's options (a `useQuery` on its key would). */
+export function useCachedChatPages(key: QueryKey): InfiniteData<StampedPage> | undefined {
+  const qc = useQueryClient();
+  const hash = hashKey(key);
+  const subscribe = useCallback((cb: () => void) => qc.getQueryCache().subscribe((e) => {
+    if (e.query.queryHash === hash && e.type !== "observerAdded" && e.type !== "observerRemoved") cb();
+  }), [qc, hash]);
+  const get = useCallback(() => qc.getQueryCache().get(hash)?.state.data as InfiniteData<StampedPage> | undefined, [qc, hash]);
+  return useSyncExternalStore(subscribe, get, get);
 }
 
 /** Paint-attribution key for one list view. Exported so ChatList and
@@ -358,7 +355,7 @@ async function fetchPage(
     /** Aborts the page's relay calls (a superseded search; see useChatList). */
     signal?: AbortSignal;
   } = {},
-): Promise<ChatsPage> {
+): Promise<StampedPage> {
   const qs = new URLSearchParams();
   qs.set("limit", String(limit));
   qs.set("offset", String(offset));
@@ -369,7 +366,8 @@ async function fetchPage(
   if (listId) qs.set("list_id", listId);
   if (query) qs.set("query", query);
   const path = `/api/of/v2/chats?${qs.toString()}`;
-  const askedAt = Date.now();
+  // On the Relay's clock: held against an event's `at` (lib/chatsCache). `askedSeq` orders it among live writes.
+  const stamp = { session: SESSION, askedAt: relayNow(), askedSeq: localSeq(), ...(relayOffsetKnown() ? {} : { askedAtGuess: true as const }) };
 
   // Per-page perf op. offset=0 is "load messages" / first paint; offset>0
   // is "load next N messages" via infinite scroll. We log filter/listId/
@@ -402,7 +400,7 @@ async function fetchPage(
       // the row component observes that cache and picks up names + nicknames
       // as soon as /users/list lands. Don't await — that would slow cold paint.
       void enrichWithUsers(raw, scope.accountId, qc).catch(() => {});
-      return { rows: raw.sort(sort), hasMore: !!resp.hasMore, session: SESSION, askedAt };
+      return { rows: raw.sort(sort), hasMore: !!resp.hasMore, ...stamp };
     } catch (err) {
       perfError(opId, "chat.list", { message: (err as Error)?.message });
       throw err;
@@ -443,7 +441,7 @@ async function fetchPage(
     count: merged.length, hasMore: anyMore, accountCount: accounts.length, failed,
   });
   return {
-    rows: merged.sort(sort), hasMore: anyMore, session: SESSION, askedAt,
+    rows: merged.sort(sort), hasMore: anyMore, ...stamp,
     ...(failed ? { partial: true } : {}),
   };
 }
@@ -464,8 +462,9 @@ export function prefetchModelChatList(
 ): Promise<void> {
   if (!accountId) return Promise.resolve();
   const scope = { kind: "model", accountId } as const;
+  const queryKey = ["chats", "model", accountId, null, null, null, limit] as const;
   return qc.prefetchInfiniteQuery({
-    queryKey: ["chats", "model", accountId, null, null, null, limit] as const,
+    queryKey,
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       fetchPage(
@@ -476,9 +475,10 @@ export function prefetchModelChatList(
     // SAME query key as the live list, so an options mismatch (a missing
     // getNextPageParam) corrupts that query and the list fails to load with
     // "options.getNextPageParam is not a function". React Query v5 requires it.
-    getNextPageParam: (lastPage: ChatsPage, allPages: ChatsPage[]) =>
+    getNextPageParam: (lastPage: StampedPage, allPages: StampedPage[]) =>
       lastPage.hasMore ? allPages.length * limit : undefined,
     staleTime: 30_000,
+    structuralSharing: commitChatPages(qc, queryKey, shareChatPages),
   });
 }
 
@@ -514,6 +514,11 @@ export function prefetchModelChatList(
  * so it is invisible until the next `loadMore`, SSE bump, or Refresh. That is
  * precisely why `refresh()` stays a FULL re-walk: it is the user's recovery path.
  *
+ * **A write during its read.** A read flip, a reply or a live message landing while the head is out is
+ * journaled (lib/chatsCache `patchChatCaches`) and re-applied to that head at its commit (`commitChatPages`): the
+ * head lands whatever else moved meanwhile, its other rows refreshed. A page 0 asked after the head (a manual
+ * Refresh started while it was out; `askedSeq`) stands: the older head is dropped, the next tick reads again.
+ *
  * **The poll is silent.** Splicing via `setQueryData` never flips the query's
  * `fetchStatus`, and ChatList drives the Refresh button's spinner + disabled
  * state and the row count off `isFetching` — so the background poll no longer
@@ -521,12 +526,10 @@ export function prefetchModelChatList(
  * through a real refetch is a key with NO pages (cold or errored), where a
  * spinner and an error state are exactly what should be showing.
  */
-const RACED_RETRY_MS = 15_000;
-
 function useHeadPagePoll(args: {
   enabled: boolean;
   queryKey: QueryKey;
-  fetchHead: () => Promise<ChatsPage>;
+  fetchHead: () => Promise<StampedPage>;
 }) {
   const qc = useQueryClient();
   const latest = useRef(args);
@@ -542,9 +545,8 @@ function useHeadPagePoll(args: {
     if (!enabled) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
-    let retries = 0;
 
-    const tick = async (): Promise<true | void> => {
+    const tick = async (): Promise<void> => {
       // Idle mode (useIdleMode) pauses SSE; the disconnect must not turn this
       // into the faster offline cadence. Resume refetches stale queries.
       if (eventBus.isPaused()) return;
@@ -553,7 +555,7 @@ function useHeadPagePoll(args: {
       // A fetch is already running on this key (manual Refresh, filter switch,
       // an in-flight loadMore) — never race a write against it.
       if (state && state.fetchStatus !== "idle") return;
-      if (!(state?.data as InfiniteData<ChatsPage> | undefined)?.pages?.length) {
+      if (!(state?.data as InfiniteData<StampedPage> | undefined)?.pages?.length) {
         // No pages at all: this key is cold or its initial fetch errored (with
         // `placeholderData` the list can still be rendering the PREVIOUS
         // key's rows meanwhile: same Creator, or All Models under any
@@ -563,20 +565,16 @@ function useHeadPagePoll(args: {
         void qc.refetchQueries({ queryKey: key, exact: true });
         return;
       }
-      // A write landing during the read (mark-read, a send, an SSE bump) is
-      // newer than the head it returns: that head must not overwrite it.
-      const before = cacheMark(qc, key);
       try {
         const head = await fetchHead();
         if (cancelled) return;
-        // Skipped, not done: `run` re-reads soon, or a busy list (SSE bumps
-        // every few seconds in All Models) would starve the poll for good.
-        if (cacheMovedSince(before, cacheMark(qc, key))) return true;
-        qc.setQueryData<InfiniteData<ChatsPage>>(key, (prev) => {
+        qc.setQueryData<InfiniteData<StampedPage>>(key, (prev) => {
           // `prev` is whatever the cache holds NOW, which is not necessarily
           // what we checked before the await: the entry can have been reset or
           // collected meanwhile, and one page is not a list to splice into.
           if (!prev?.pages?.length) return prev;
+          // A page 0 asked after this head (a manual Refresh that started while it was out) is newer: it stands.
+          if ((prev.pages[0].askedSeq ?? -Infinity) > (head.askedSeq ?? -Infinity)) return prev;
           return { ...prev, pages: [head, ...prev.pages.slice(1)] };
         });
       } catch {
@@ -589,19 +587,15 @@ function useHeadPagePoll(args: {
     // Re-read `document.hidden` at each scheduling point rather than arming one
     // fixed interval — same shape as the function-form `refetchInterval` this
     // replaces: 90s in the foreground, 5min once the tab is hidden or SSE is live.
-    const schedule = (soon = false) => {
+    const schedule = () => {
       const hidden = typeof document !== "undefined" && document.hidden;
-      timer = setTimeout(run, soon ? RACED_RETRY_MS : hidden || eventBus.isConnected() ? HIDDEN_POLL_MS : POLL_MS);
+      timer = setTimeout(run, hidden || eventBus.isConnected() ? HIDDEN_POLL_MS : POLL_MS);
     };
     // Schedule-AFTER-settle, never a bare interval: at most one tick is ever in
     // flight, so a slow fan-out can't stack ticks on top of itself.
     const run = () => {
-      void tick().then((raced) => raced === true, () => false).then((raced) => {
-        if (cancelled) return;
-        // A head dropped for a write during its read gets two quick retries,
-        // then the normal cadence again.
-        retries = raced && retries < 2 ? retries + 1 : 0;
-        schedule(retries > 0);
+      void tick().catch(() => {}).then(() => {
+        if (!cancelled) schedule();
       });
     };
 
@@ -653,7 +647,7 @@ export function useChatList(params: ChatListParams = {}) {
   const enabled =
     wanted && (scope.kind === "model" ? !!scope.accountId : accounts.length > 0);
 
-  const q = useInfiniteQuery<ChatsPage>({
+  const q = useInfiniteQuery<StampedPage>({
     queryKey,
     enabled,
     initialPageParam: 0,
@@ -703,7 +697,7 @@ export function useChatList(params: ChatListParams = {}) {
         (scope.kind !== "model" || prevKey[2] === scopeKey[2]);
       return sameScope ? keepPreviousData(prev) : undefined;
     },
-    structuralSharing: shareChatPages,
+    structuralSharing: commitChatPages(qc, queryKey, shareChatPages),
   });
 
   // Deliberately NOT memoised: `useHeadPagePoll` re-reads its args every render,

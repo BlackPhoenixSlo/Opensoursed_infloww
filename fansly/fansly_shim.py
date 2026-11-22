@@ -2378,47 +2378,59 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         return {"list": [], "hasMore": False}
 
     # -- read state ---------------------------------------------------------
-    # The relay route already clears our LOCAL unread (what drives the inbox
-    # dot) before calling these, so they only need to sync read-state to Fansly
-    # — and Fansly's mark-read endpoint isn't identified yet (every guessed path
-    # 404s: /message/markread, /messaging/groups/markread, /messaging/groups/
-    # {id}/read). So these are graceful no-ops: they stop the AttributeError→500
-    # the OF route hit, keep the UI correct via the local clear, and simply skip
-    # the platform-side sync until a capture reveals the real call. (Opening a
-    # thread may already mark it read Fansly-side via the message fetch.)
-    # How many messages one chat-open is willing to ack. A thread with a
-    # genuinely huge unread backlog acks its most recent page and the rest
-    # clears on the next open — bounded work beats an unbounded body.
+    # Fansly's read receipt is `POST /message/ack` (below). The relay clears
+    # its LOCAL unread only once these answer landed (read_flip.after_write).
+    # How far one chat-open scans: `/message` pages of `_ACK_PAGE`, at most
+    # `_ACK_SCAN_PAGES` of them (the newest 200 messages). Reaching a read
+    # message proves nothing about older ones (ours acks, a read on another
+    # device), so the scan runs to the thread's end. Unread found but the end
+    # not reached acks nothing (partial): acking only the newest would leave
+    # the rest behind. Known limit: unread older than the newest 200 messages,
+    # with none among them, is not seen (answers "all read").
     _ACK_PAGE = 50
+    _ACK_SCAN_PAGES = 4
 
-    def _unread_message_ids(self, group_id: str) -> list[str]:
-        """Ids of messages in `group_id` that WE have not read yet.
+    def _unread_message_ids(self, group_id: str) -> tuple[list[str], bool] | None:
+        """Ids of messages in `group_id` that WE have not read yet, and whether
+        they are all of them; None when the scan failed (never "nothing unread").
 
         The test is per-message and lives on the message's `interactions[]`:
         our own row with a falsy `readAt`. Sender is checked too — our own
         sends carry an interaction for the fan, not for us, and acking our own
-        message is meaningless. Newest-first, as `/message` returns them."""
+        message is meaningless. Newest-first, as `/message` returns them,
+        paging back (`before` the oldest seen) up to `_ACK_SCAN_PAGES`. All of
+        them: a page was not full (the thread's end), or the scan window held
+        none (the limit above); unread in a window that did not reach the end
+        may have more."""
         me = str(self.session.account_id)
-        try:
-            payload = self._request(
-                "GET", "/message",
-                params={"groupId": str(group_id), "limit": str(self._ACK_PAGE)},
-            ) or {}
-        except FanslyAPIError:
-            log.warning("unread scan failed for group %s", group_id, exc_info=True)
-            return []
         out: list[str] = []
-        for msg in (payload.get("messages") or []):
-            if not isinstance(msg, dict) or str(msg.get("senderId") or "") == me:
-                continue
-            unread = any(
-                str(i.get("userId") or "") == me and not i.get("readAt")
-                for i in (msg.get("interactions") or [])
-                if isinstance(i, dict)
-            )
-            if unread and msg.get("id"):
-                out.append(str(msg["id"]))
-        return out
+        before = ""
+        for _ in range(self._ACK_SCAN_PAGES):
+            params = {"groupId": str(group_id), "limit": str(self._ACK_PAGE)}
+            if before:
+                params["before"] = before
+            try:
+                payload = self._request("GET", "/message", params=params) or {}
+            except FanslyAPIError:
+                log.warning("unread scan failed for group %s", group_id, exc_info=True)
+                return None
+            msgs = payload.get("messages") or []
+            for msg in msgs:
+                if not isinstance(msg, dict) or str(msg.get("senderId") or "") == me:
+                    continue
+                unread = any(
+                    str(i.get("userId") or "") == me and not i.get("readAt")
+                    for i in (msg.get("interactions") or [])
+                    if isinstance(i, dict)
+                )
+                if unread and msg.get("id"):
+                    out.append(str(msg["id"]))
+            if len(msgs) < self._ACK_PAGE:
+                return out, True
+            before = str(msgs[-1].get("id") or "") if isinstance(msgs[-1], dict) else ""
+            if not before:
+                break
+        return out, not out
 
     def mark_chat_read(self, chat_id: str | int) -> dict:
         """OF `POST /chats/{id}/mark-as-read` -> Fansly `POST /message/ack`.
@@ -2445,11 +2457,18 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         doesn't need to: a reply makes ``lastMessageId`` newer than
         ``lastUnreadMessageId``, which `of_chat_row` already reads as "cleared".
 
-        Best-effort by contract: the caller (server.of_mark_chat_read) treats
-        this as fire-and-forget, so a thread with nothing unread is a no-op
-        rather than an error."""
+        A thread with nothing unread is a no-op success. Not landed (the relay
+        then keeps its local unread and answers 502): a failed scan
+        (`scan_failed`), a refused ack (`ack_rejected`), or unread found in a
+        scan that hit `_ACK_SCAN_PAGES` before the thread's end (`partial`:
+        nothing acked, the thread still unread)."""
         group_id = self._as_group_id(chat_id)
-        message_ids = self._unread_message_ids(group_id)
+        scan = self._unread_message_ids(group_id)
+        if scan is None:
+            return {"success": False, "reason": "scan_failed"}
+        message_ids, complete = scan
+        if not complete:
+            return {"success": False, "reason": "partial"}   # nothing acked: see `_ACK_SCAN_PAGES`
         if not message_ids:
             return {"success": True}   # nothing unread — nothing to ack
         try:
@@ -2496,33 +2515,49 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         `lastUnreadMessageId` pointer (see that method for why the pointer
         alone leaves `unreadCount` standing) — but the group list is read once
         instead of once per thread, and every id collected goes out in a single
-        POST. A thread whose scan comes back empty is skipped, not failed.
-        Fire-and-forget by the same contract as the single-thread path."""
+        POST. A refused ack is `ack_rejected`. When not every unread thread was
+        cleared — past `_MARK_ALL_CAP`, a full groups page (more may follow),
+        a failed scan, unread past `_ACK_SCAN_PAGES` (not acked) — the answer
+        is partial: `{"success": True, "partial": True, "acked_fan_ids": [...]}`,
+        the fans whose threads were fully acked (strings: a snowflake past 2^53
+        is no JSON number a browser reads exactly), so the relay clears only
+        those (read_flip.after_write) and answers the rest as not done."""
         groups = self._request(
             "GET", "/messaging/groups",
             params={"sortOrder": "1", "flags": "0", "subscriptionTierId": "",
                     "listIds": "", "search": "", "limit": "100", "offset": "0"},
         )
-        unread_groups = [
-            str(m.get("groupId"))
-            for m in (groups.get("data") or [])
-            if isinstance(m, dict) and m.get("groupId")
-            and int(m.get("unreadCount") or 0)
-        ][: self._MARK_ALL_CAP]
+        rows = groups.get("data") or []
+        unread = [m for m in rows if isinstance(m, dict) and m.get("groupId")
+                  and int(m.get("unreadCount") or 0)]
+        partial = len(rows) >= 100 or len(unread) > self._MARK_ALL_CAP
         message_ids: list[str] = []
-        for gid in unread_groups:
-            message_ids.extend(self._unread_message_ids(gid))
-        if not message_ids:
-            return {"success": True}   # nothing unread — nothing to ack
-        try:
-            self._request(
-                "POST", "/message/ack",
-                json_body={"messageIds": message_ids, "type": 2},
-            )
-        except FanslyAPIError as e:
-            log.warning("fansly mark-all ack failed (%d ids across %d threads): %s",
-                        len(message_ids), len(unread_groups), e)
-            return {"success": False, "reason": "ack_rejected"}
+        acked_fans: list[str] = []
+        for m in unread[: self._MARK_ALL_CAP]:
+            scan = self._unread_message_ids(str(m["groupId"]))
+            if scan is None:
+                partial = True
+                continue
+            ids, complete = scan
+            if not complete:   # nothing of it acked: see `_ACK_SCAN_PAGES`
+                partial = True
+                continue
+            message_ids.extend(ids)
+            fan = str(m.get("partnerAccountId") or "")
+            if fan.isdigit():
+                acked_fans.append(fan)
+        if message_ids:
+            try:
+                self._request(
+                    "POST", "/message/ack",
+                    json_body={"messageIds": message_ids, "type": 2},
+                )
+            except FanslyAPIError as e:
+                log.warning("fansly mark-all ack failed (%d ids across %d threads): %s",
+                            len(message_ids), len(unread), e)
+                return {"success": False, "reason": "ack_rejected"}
+        if partial:
+            return {"success": True, "partial": True, "acked_fan_ids": acked_fans}
         return {"success": True}
 
     # -- earnings (money — out of scope on Fansly) --------------------------

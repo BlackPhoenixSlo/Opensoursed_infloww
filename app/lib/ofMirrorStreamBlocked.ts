@@ -194,7 +194,7 @@ export function useOfStreamBlocked(frameRef: RefObject<HTMLIFrameElement | null>
     staleTime: 60 * 1000,
     retry: false,
   }).data;
-  const newWrites = useOfmNewWrites(on); // OFM_NEW_WRITES_ENABLED off: Block and each remove stay Not yet
+  const newWrites = useOfmNewWrites(on, accountId); // OFM_NEW_WRITES_ENABLED off: Block and each remove stay Not yet
 
   useEffect(() => {
     const frame = frameRef.current;

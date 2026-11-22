@@ -23,12 +23,16 @@ await. `_global_kill_switch` calls it on every inbound DM. The overrides live in
 `_overrides`, loaded once at boot (`load()`, server startup) and replaced
 whole after each write. Writes are serialised by one lock that covers the DB
 write and the re-read, so the cache always equals the table as of the last
-write (200 concurrent saves leave the cache and the row agreeing). One relay
+write (200 concurrent saves leave the cache and the row agreeing). The committed
+row goes into the cache before the re-read, so a failed re-read cannot leave a
+saved force-off unenforced. One relay
 process per DB (a fleet shard has its own), so no cross-process invalidation.
 
 NOT LOADED IS VISIBLE. If the boot read fails, consumers run on env / defaults
 (the pre-registry behaviour) and `loaded()` is False: the panel shows a banner and
-the server retries `load()` in the background until it reads the table.
+the server retries `load()` in the background until it reads the table. An off_only
+switch reads off until then (fails closed): the unread table may hold its force-off,
+box-wide or for a Creator, and env-on alone must not turn it back on.
 
 AN OVERRIDE THAT DISAGREES WITH A SET ENV VAR IS FLAGGED (`overrides_env`, and a
 WARNING at load), because it outranks a later env change. The UI's toggle clears
@@ -36,6 +40,11 @@ the override instead of storing one when it lands back on the env / default valu
 
 WRITES NEED THE FOUNDER PASSWORD (system_admin_api), as every master write should
 (auth.require_master).
+
+PER-CREATOR FORCE-OFF (off_only switches only). A row named `<SWITCH>@<account_id>` (value false)
+forces the switch off for that one Creator: `value(name, account_id)` is the box-wide value AND
+no such row. Like the box-wide override it can only turn off, never on. Its write is the Creator's
+owner's (server PUT /admin/ofm-writes/{account_id}), not the founder's; it shares this cache and lock.
 """
 from __future__ import annotations
 
@@ -53,6 +62,7 @@ log = logging.getLogger("of-relay.runtime-switches")
 Kind = Literal["bool", "number"]
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
+SCOPE_SEP = "@"   # a per-Creator force-off row's name: "<SWITCH>@<account_id>"
 
 
 @dataclass(frozen=True)
@@ -117,10 +127,13 @@ SWITCHES: tuple[Switch, ...] = (
            "Like's add and remove, Reset stream key, Streaming blocked users' block and unblock, Edit "
            "profile's cover and avatar, Messaging's Tip-from-free-followers and Security's Fully "
            "private switches and a tracking link's Share work and save to OnlyFans; so do Edit "
-           "profile's Bio formatting, email's Update frequency, Record video / voice and a vault "
-           "list's More, which send requests the app already sent before. Off: all stay Not available; the Relay refuses the "
+           "profile's Bio formatting, email's Update frequency, Record video / voice, a vault "
+           "list's More and a chat's own-message Countdown, Copy as draft and Unsend PPV, which send requests the app "
+           "already sent before. Off: all stay Not available (the own-message extras are not shown); the Relay refuses the "
            "first group's writes (the second group is only hidden in the app). "
-           "Turns on only from the server's env; here it can only be forced off.",
+           "Turns on only from the server's env; here it can only be forced off, for every Creator. "
+           "Per Creator: the Creator's owner can force it off for that Creator alone "
+           "(Settings › OF Manager writes); on for a Creator = on here and not forced off there.",
            "bool", False, _truthy, "server._ofm_new_writes_on", off_only=True),
 )
 BY_NAME: dict[str, Switch] = {s.env: s for s in SWITCHES}
@@ -146,24 +159,46 @@ def _env(sw: Switch) -> tuple[Any, bool]:
         return sw.default, False
 
 
-def value(name: str) -> Any:
-    """The effective value: DB override > env > default (an off_only switch: env AND not forced off).
+def scoped(name: str, account_id: str) -> str:
+    """The row name of `name`'s force-off for one Creator."""
+    return f"{name}{SCOPE_SEP}{account_id}"
+
+
+def creator_override(name: str, account_id: str) -> dict[str, Any] | None:
+    """`account_id`'s force-off of `name` ({"value": False, "updated_at", "updated_by"}), or None."""
+    return _overrides.get(scoped(name, account_id))
+
+
+def value(name: str, account_id: str | None = None) -> Any:
+    """The effective value: DB override > env > default (an off_only switch: env AND not forced off;
+    with `account_id`, AND that Creator not forced off either; off while the table is not loaded).
     Sync and cheap (hot path)."""
+    sw = BY_NAME[name]
+    if sw.off_only and not _loaded:
+        return False   # a force-off may sit in the unread table (NOT LOADED IS VISIBLE)
     o = _overrides.get(name)
-    if o is not None and not (BY_NAME[name].off_only and o["value"]):
-        return o["value"]
-    return _env(BY_NAME[name])[0]
+    v = o["value"] if o is not None and not (sw.off_only and o["value"]) else _env(sw)[0]
+    if v and account_id and sw.off_only and creator_override(name, account_id) is not None:
+        return False
+    return v
 
 
-def on(name: str) -> bool:
-    return bool(value(name))
+def on(name: str, account_id: str | None = None) -> bool:
+    return bool(value(name, account_id))
 
 
-def require_switch(name: str) -> Callable[[], None]:
-    """A route guard (FastAPI dependency, or a direct call) for an inert-until-on switch: 404 while `name` is off,
-    before any OF call, so a client's probe reads the route as absent."""
+def on_for(name: str, account: Callable[[], str] | None = None) -> bool:
+    """`name` on box-wide and, given `account` (the request's Creator), for that Creator. `account` is asked only
+    once the switch is on box-wide; its own refusal (e.g. 403 not your account) passes through."""
+    return on(name) and (account is None or on(name, account()))
+
+
+def require_switch(name: str, account: Callable[[], str] | None = None) -> Callable[[], None]:
+    """A route guard (FastAPI dependency, or a direct call) for an inert-until-on switch: 404 while `name` is off
+    (`on_for`: box-wide, then for `account`'s Creator), before any OF call, so a client's probe reads the route as
+    absent."""
     def _require() -> None:
-        if not on(name):
+        if not on_for(name, account):
             from fastapi import HTTPException   # lazy: this module stays importable without FastAPI
             raise HTTPException(status_code=404, detail="Not Found")
     return _require
@@ -237,9 +272,10 @@ async def _read_rows() -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     async with get_session() as s:
         for r in (await s.execute(select(RuntimeSwitch))).scalars():
-            sw = BY_NAME.get(r.name)
-            if sw is None:
-                continue   # a retired switch's row: kept, not consulted
+            base, sep, aid = r.name.partition(SCOPE_SEP)
+            sw = BY_NAME.get(base)
+            if sw is None or (sep and not (sw.off_only and aid)):
+                continue   # a retired switch's row (or a Creator row of a switch that has none): kept, not consulted
             try:
                 v = coerce(sw, json.loads(r.value_json))
             except (ValueError, TypeError):
@@ -259,7 +295,7 @@ def _get_lock() -> asyncio.Lock:
 
 async def load() -> None:
     """Boot: read every override into the cache. Raises on failure; until a read
-    succeeds consumers run on env / defaults and `loaded()` is False."""
+    succeeds consumers run on env / defaults (an off_only switch: off) and `loaded()` is False."""
     global _overrides, _loaded
     async with _get_lock():
         _overrides = await _read_rows()
@@ -267,7 +303,7 @@ async def load() -> None:
     if _overrides:
         log.info("runtime switch overrides: %s", {k: v["value"] for k, v in _overrides.items()})
     for name, o in _overrides.items():
-        if _disagrees(BY_NAME[name], o):
+        if name in BY_NAME and _disagrees(BY_NAME[name], o):
             log.warning("runtime switch %s: the Settings override %r beats the env %s=%r; "
                         "clear it in Settings → System to let the env apply",
                         name, o["value"], name, os.environ.get(name))
@@ -284,9 +320,10 @@ async def load_until_loaded(interval_s: float = 30.0) -> None:
             log.exception("runtime switch overrides still not loaded; retrying in %ss", interval_s)
 
 
-async def set_override(name: str, v: Any, *, by: str | None) -> dict[str, Any]:
-    """Store (v not None) or clear (v None) the override, then refresh the cache.
-    KeyError: unknown name. ValueError: illegal value."""
+async def set_override(name: str, v: Any, *, by: str | None, account_id: str | None = None) -> dict[str, Any]:
+    """Store (v not None) or clear (v None) the override, publish it to the cache, then re-read the table (a failed
+    re-read keeps the published value; `loaded()` unchanged). `account_id`: that Creator's
+    force-off instead (off_only switches only; v False or None). KeyError: unknown name. ValueError: illegal value."""
     from sqlalchemy import delete
 
     from db.engine import get_session
@@ -294,15 +331,26 @@ async def set_override(name: str, v: Any, *, by: str | None) -> dict[str, Any]:
 
     global _overrides, _loaded
     sw = BY_NAME[name]
+    if account_id is not None and not (sw.off_only and account_id):
+        raise ValueError(f"{name} has no per-Creator override")
     clean = None if v is None else coerce(sw, v)
+    key = name if account_id is None else scoped(name, account_id)
     async with _get_lock():
+        at = datetime.utcnow()
         async with get_session() as s:
             if clean is None:
-                await s.execute(delete(RuntimeSwitch).where(RuntimeSwitch.name == name))
+                await s.execute(delete(RuntimeSwitch).where(RuntimeSwitch.name == key))
             else:
-                await s.merge(RuntimeSwitch(name=name, value_json=json.dumps(clean),
-                                            updated_by=by, updated_at=datetime.utcnow()))
-        _overrides = await _read_rows()
-        _loaded = True
-    log.info("runtime switch %s override=%r by=%s", name, clean, by)
+                await s.merge(RuntimeSwitch(name=key, value_json=json.dumps(clean), updated_by=by, updated_at=at))
+        # Committed: publish it before the re-read, so a failed re-read never leaves a committed force-off unenforced.
+        published = {k: o for k, o in _overrides.items() if k != key}
+        if clean is not None:
+            published[key] = {"value": clean, "updated_by": by, "updated_at": at.isoformat()}
+        _overrides = published
+        try:
+            _overrides = await _read_rows()
+            _loaded = True
+        except Exception:
+            log.exception("runtime switch %s: saved, but the re-read failed; the cache holds the saved value", key)
+    log.info("runtime switch %s override=%r by=%s", key, clean, by)
     return describe(name)

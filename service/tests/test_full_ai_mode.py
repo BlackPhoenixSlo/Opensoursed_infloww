@@ -62,7 +62,7 @@ def _turn_facts(mode, **cfg) -> ft.TurnFacts:
 
 
 def case_full_table():
-    assert MODES == ("test", "shadow", "live") and fr.MODES == MODES
+    assert MODES == ("test", "shadow", "live") and fr.MODES == ("test", "live")   # rules page: no Shadow (W30 #6)
     for mode, want in (("test", True), ("live", True), ("shadow", False), (None, False), ("nope", False),
                        ("", False), ("Test", False)):
         assert full(mode) is want, mode

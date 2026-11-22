@@ -98,8 +98,8 @@ OFF_TEXT = {
                       "running again",
     "limit_reached": "the free trial used up its Re-create limit — tick Keep running again "
                      "to set a new one",
-    "limit_needed": "this free trial has no Offer limit (or was ticked under an older rule) — "
-                    "set an Offer limit if it has none, then tick Keep running again",
+    "limit_needed": "this free trial has no Offer limit, so it can't keep running — create a "
+                    "new one with an Offer limit",
     "kept_duplicate": "another campaign of this Creator was also set to keep running, and only "
                       "one can be — tick Keep running again on the one you want",
 }
@@ -133,6 +133,7 @@ class Reservation:
 @dataclass(frozen=True)
 class Refused:
     reason: str
+    blocking: int | None = None    # create_open: the open row met; create_landed: the landed one
 
 
 @dataclass(frozen=True)
@@ -206,21 +207,17 @@ def fenced(stamp: str | None) -> str | None:
     return None if here and here == stamp else "fence"
 
 
-def trial_gap(discount: int | None, cap: int | None) -> str | None:
-    """Why a Free trial (discount 100) may not keep running: "trial_unlimited" (no Claim cap);
-    None otherwise. The one rule the run and the API's 422 read. The Re-create limit is
-    optional (owner 2026-11-21: Keep running is indefinite by default)."""
-    if int(discount or 0) != 100:
-        return None
-    if not cap:
-        return "trial_unlimited"
-    return None
+def unlimited_trial(discount: int | None, cap: int | None) -> bool:
+    """A Free trial (discount 100) with no Claim cap: an automatic create could hand out free
+    subs without end, each promo unbounded, so it may not keep running. The one rule the run
+    and the API's 422 read. The Re-create limit is optional (owner 2026-11-21: Keep running
+    is indefinite by default)."""
+    return int(discount or 0) == 100 and not cap
 
 
 def trial_unlimited(c: PromoCampaign) -> bool:
-    """A Free trial with no Claim cap: an automatic create could hand out free subs without
-    end, each promo unbounded."""
-    return trial_gap(c.discount_percent, c.subscribe_counts) is not None
+    """`unlimited_trial` of a campaign row."""
+    return unlimited_trial(c.discount_percent, c.subscribe_counts)
 
 
 def _live_rule(steps_json: str | None) -> bool:
@@ -308,23 +305,37 @@ async def reserve(account_id: str, campaign_id: int | None, source: str, terms: 
                   decision_read_at: datetime | None, *, replaced_of_promo_id: int | None = None,
                   claims_seen: int | None = None, first_claims: int | None = None,
                   rule_id: int | None = None, ticked_at: datetime | None = None,
-                  expect_kept: Any = NO_EXPECT, timed_end: datetime | None = None) -> Reservation | Refused:
+                  expect_kept: Any = NO_EXPECT, timed_end: datetime | None = None,
+                  unless_landed: int | None = None) -> Reservation | Refused:
     """Insert a `pending` row for this create, or refuse. `terms` are create_promo's kwargs
     (the reconcile matches on them); `pre_ids` the OF ids in the read before it (never
     adopted; None = no read, the row is never adopted). The keyword facts feed the
-    Zero-claim breaker and `_recheck`."""
+    Zero-claim breaker and `_recheck`. One transaction under SQLite's write lock: the
+    Creator's open row refuses it `create_open` with that row's id (`blocking`), and
+    reservation `unless_landed` (the earlier create a manual one replaces) settled created
+    refuses it `create_landed`, so no read between them and the insert can let a replacement
+    through after that create landed."""
     aid = str(account_id)
     ids = None if pre_ids is None else tuple(sorted({int(i) for i in pre_ids}))
+    R = PromoCreateReservation
     try:
         async with get_session() as s:
             now = datetime.utcnow()
+            # A write first: SQLite's write lock, so the reads below are the ones the insert acts on.
+            await s.execute(update(R).where(R.account_id == aid, R.state.in_(OPEN)).values(state=R.state))
+            if unless_landed is not None and (await s.execute(select(R.id).where(
+                    R.id == unless_landed, R.account_id == aid, R.state == "created"))).scalar_one_or_none():
+                return Refused("create_landed", unless_landed)
+            if (blocking := (await s.execute(select(R.id).where(
+                    R.account_id == aid, R.state.in_(OPEN)).limit(1))).scalar_one_or_none()) is not None:
+                return Refused("create_open", blocking)
             row = PromoCreateReservation(
                 account_id=aid, campaign_id=campaign_id, source=source, state="pending",
                 terms_json=json.dumps(terms), pre_ids_json=None if ids is None else json.dumps(ids),
                 replaced_of_promo_id=replaced_of_promo_id, claims_seen=claims_seen,
                 first_claims=first_claims, host_id=host_id(), created_at=now)
             s.add(row)
-            await s.flush()      # the write first: takes SQLite's lock, trips the unique index
+            await s.flush()      # the unique index stays the backstop
             res = Reservation(row.id, aid, campaign_id, source, dict(terms), decision_read_at,
                               ids, rule_id, ticked_at, expect_kept, timed_end)
             why = await _recheck(s, res, expect, now)
@@ -809,7 +820,9 @@ async def send(res: Reservation, recheck: Mapping[str, Any], client: Callable[[]
                terms: Mapping[str, Any], *, wrap: Callable[[Callable[[], Any]], Any] | None = None) -> Sent:
     """Load the client, flip to sending and POST, in one thread, then settle. The POST may wait
     after the CAS (the signed slot, the warm-up), so the guard runs again inside the transport
-    right before the request leaves (`_dispatch_check` via of_client.PRE_DISPATCH, once); its
+    as each attempt's last step before the request leaves (`_dispatch_check` via
+    of_client.PRE_DISPATCH; a proxy retry is another attempt: only a refused CONNECT is
+    retried, so nothing reached OF yet); its
     refusal is like the CAS's: no POST, `refused` says why. `wrap`: server._proxy for the raw
     route, so its lane and error translation run around the POST. A BaseException (a crash)
     leaves the row open for the reconcile."""
@@ -824,13 +837,9 @@ async def send(res: Reservation, recheck: Mapping[str, Any], client: Callable[[]
         if refused:
             return None
         reached = True
-        checked = False
 
         def last_check() -> str | None:
-            nonlocal refused, checked, reached
-            if checked:
-                return None
-            checked = True
+            nonlocal refused, reached
             try:
                 refused = asyncio.run_coroutine_threadsafe(_dispatch_check(res, recheck), loop).result()
             except Exception as e:

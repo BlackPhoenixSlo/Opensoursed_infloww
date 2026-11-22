@@ -48,6 +48,7 @@ import { useAccountConfig, useAccountConfigBusy, useSaveAccountConfig, type Acco
 import {
   useAutoreplyConfig,
   useSaveAutoreplyConfig,
+  useSwitchAutoreply,
   type AutoreplyConfig,
   type AutoreplyKeyState,
 } from "@/hooks/useAutoreplyConfig";
@@ -118,8 +119,9 @@ function AutoReplyFields({
   refetching: boolean;
 }) {
   const replyM = useSaveAutoreplyConfig(accountId);
-  // The header switch's own PUT, so its pending/error never reads as the page Save's.
-  const switchM = useSaveAutoreplyConfig(accountId);
+  // The header switch's own PUT, built on a fresh read (useAutoreplyConfig.ts): an old tab's switch must not
+  // restore a config someone has since replaced.
+  const switchM = useSwitchAutoreply(accountId);
   const brainM = useSaveAccountConfig(accountId);
   // A brain PUT (Model info's, or this Save's own) or re-read is out: this Save's brain copy may be stale, so it waits.
   const brainBusy = useAccountConfigBusy(accountId);
@@ -154,13 +156,12 @@ function AutoReplyFields({
   const { delay } = draft;
   const noSource = !canSubmit(draft);
 
-  // Saves at once: flips the draft (and its sent copy, so "Saved" holds), PUTs the stored blob with only `enabled`
-  // changed, and flips back if that PUT fails. Waits while the page Save or a re-read is out (`stored` behind).
+  // Saves at once: flips the draft (and its sent copy, so "Saved" holds), PUTs the blob as stored now with only
+  // `enabled` changed, and flips back if that PUT fails. Waits while the page Save or a re-read is out (`stored` behind).
   const flip = (on: boolean) => {
-    const body = switchPayload(defaults, stored, on);
-    if (!body) return;
+    if (!switchPayload(defaults, stored, on)) return;
     dispatch({ type: "switched", on });
-    switchM.mutate(body, { onError: () => dispatch({ type: "switched", on: !on }) });
+    switchM.mutate(on, { onError: () => dispatch({ type: "switched", on: !on }) });
   };
   const switchRefused = !draft.enabled && !switchPayload(defaults, stored, true);
 

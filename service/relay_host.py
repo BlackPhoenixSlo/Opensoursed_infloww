@@ -94,6 +94,10 @@ def invalidate_client(account_id: str | None = None):
     return live_server()._invalidate_client(account_id)
 
 
+async def flag_dead_session(account_id: str, exc: BaseException, via: str, client) -> bool:
+    return await live_server().flag_dead_session(account_id, exc, via, client)
+
+
 def kick_db_sync(reason: str):
     return live_server()._kick_db_sync(reason)
 

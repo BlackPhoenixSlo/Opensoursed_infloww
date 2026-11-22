@@ -31,7 +31,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import case, func, insert, or_, select, update
@@ -72,6 +73,10 @@ log = logging.getLogger("of-relay.transcode")
 # (event_type, payload top-level keys) tuple so we see what's coming
 # without spamming once we know the shape.
 _seen_unknown: set[tuple[str, tuple[str, ...]]] = set()
+# W30 F28: each Creator's last subscribe-toast ids, so a replayed toast (a reconnect
+# re-sending it) counts once. Bounded: _TOAST_IDS_KEPT per Creator.
+_TOAST_IDS_KEPT = 64
+_toast_ids: dict[str, deque] = {}
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -159,7 +164,7 @@ async def _transcode_toast(account_id: Any, payload: Any) -> None:
     await _touch_fan_from_event(account_id, payload)
     if account_id:
         relay_cache.invalidate_money_feeds(str(account_id))
-        n = _subscribe_toasts(payload)
+        n = _subscribe_toasts(payload, str(account_id))
         if n:
             # A new subscriber: the welcome sweep need not wait out its
             # cadence (W2 2.10). welcome_sent keeps it one welcome per fan.
@@ -174,12 +179,23 @@ async def _transcode_toast(account_id: Any, payload: Any) -> None:
     _log_unknown("toasts", payload)
 
 
-def _subscribe_toasts(payload: Any) -> int:
-    """How many `subscribed` toasts this `toasts` frame carries. OF sends a list of
-    toasts (`{"toasts": [{"type": ...}]}`); a single dict is accepted too."""
+def _subscribe_toasts(payload: Any, account_id: str) -> int:
+    """How many new `subscribed` toasts this `toasts` frame carries. OF sends a list of
+    toasts (`{"toasts": [{"type": ...}]}`); a single dict is accepted too. A toast whose
+    `id` this Creator already counted (a replay) is not new; one with no id always is."""
     items = payload if isinstance(payload, list) else [payload]
-    return sum(1 for t in items
-               if isinstance(t, dict) and str(t.get("type") or "").startswith("subscri"))
+    seen = _toast_ids.setdefault(account_id, deque(maxlen=_TOAST_IDS_KEPT))
+    n = 0
+    for t in items:
+        if not (isinstance(t, dict) and str(t.get("type") or "").startswith("subscri")):
+            continue
+        tid = t.get("id")
+        if tid is not None:
+            if tid in seen:
+                continue
+            seen.append(tid)
+        n += 1
+    return n
 
 
 async def _touch_fan_from_event(account_id: Any, payload: Any) -> None:
@@ -317,13 +333,13 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
 
     # The Unread total moves by the chat's prior state, peeked from the held
     # window row: before the patch below flags it unread (Knob off: no-op).
-    # A re-delivered frame (WS replay) is already counted: new rows only.
-    try:
+    # A re-delivered frame (WS replay) is already counted: new rows only. on_dm_in never raises.
+    if is_new is not False:     # False: the row was already stored
         import unread_total
-        if is_new is not False:     # False: the row was already stored
-            unread_total.on_dm_in(aid_s, fan_id)
-    except Exception:
-        log.debug("unread total hook failed", exc_info=True)
+        # Stamped with the message's createdAt (naive UTC, always set: td.dm_plan): a /users/me asked after it
+        # already counts it.
+        created = plan.msg["created_at"]
+        unread_total.on_dm_in(aid_s, fan_id, int(created.replace(tzinfo=timezone.utc).timestamp() * 1000))
     # Cache invalidation — must run AFTER the write above has committed
     # (of_writer.write returns once its batch has) so a concurrent reader
     # that re-fetches doesn't cache the pre-commit upstream state.

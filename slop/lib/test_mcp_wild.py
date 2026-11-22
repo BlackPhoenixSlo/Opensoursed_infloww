@@ -78,6 +78,17 @@ def test_mix_names_unique_and_expectations_cover_every_pick():
     (405, "text/plain", "POST only", None, "", True),
     (401, "text/plain", "invalid, expired or revoked access token", 1, 'Bearer realm="x"', True),
     (401, "text/plain", "invalid", 1, "", False),                                     # no WWW-Authenticate
+    # W30 F13: a JSON-RPC 401 (anon tool call, cookie) needs the Bearer challenge too
+    (401, "application/json", '{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"x"}}', 1,
+     'Bearer resource_metadata="https://h/.well-known/oauth-protected-resource/admin/mcp"', True),
+    (401, "application/json", '{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"x"}}', 1, "", False),
+    (401, "application/json", '{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"x"}}', 1,
+     'Basic realm="x"', False),
+    # W30 C6: the scheme is exactly Bearer (any case), then a space or the end
+    (401, "text/plain", "invalid", 1, "BearerExtra realm=\"x\"", False),
+    (401, "text/plain", "invalid", 1, "Bearer-ish", False),
+    (401, "text/plain", "invalid", 1, "bearer", True),
+    (401, "text/plain", "invalid", 1, 'BEARER error="invalid_token"', True),
     (500, "text/plain", "Internal Server Error", 1, "", False),
     (200, "application/json", '{"jsonrpc":"2.0","id":2,"result":{}}', 1, "", False),  # id not echoed
     (200, "application/json", '{"jsonrpc":"2.0","id":1,"result":{},"error":{}}', 1, "", False),
@@ -175,6 +186,18 @@ def test_unread_cases_are_header_or_size_refusals():
     import importlib
     scen = importlib.import_module("slop.scenarios.2026-11-14-mcp-wild")
     assert scen._MIX_UNREAD <= set(scen._MIX_STATUS)
+
+
+def test_fault_widens_anon_tools_list(monkeypatch):
+    """W30 F13: the fault reaches the tools/list leg (`_listed`) for the no-credential caller only."""
+    import sys
+    import types
+    fake = types.SimpleNamespace(BUILTINS={"sign_in": 0, "propose_plan": 1},
+                                 _builtins=lambda token: ["narrow"], _listed=lambda token: [f"listed-{token}"])
+    monkeypatch.setitem(sys.modules, "mcp_api", fake)
+    mf._anon_sees_token_builtins()
+    assert fake._listed(False) == [0, 1] and fake._builtins(False) == [0, 1]
+    assert fake._listed(True) == ["listed-True"]
 
 
 def test_fault_registers_known_target():

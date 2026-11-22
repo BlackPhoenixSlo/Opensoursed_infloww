@@ -1,7 +1,8 @@
 """Bounded raw click stats for redirect links.
 
 900-second UTC buckets fold into exact report-zone days, including half/quarter
-hour offsets and DST boundaries. NULL ref means unclassified old rows; the boot
+hour offsets and DST boundaries. A click's time is floored to its second first:
+older SQLite's unixepoch() rounds 23:59:59.9995+ into the next day. NULL ref means unclassified old rows; the boot
 job rescans those rows without a marker, in resumable chunks.
 """
 from __future__ import annotations
@@ -62,7 +63,7 @@ async def tracking_links_summary(account_id: str = Query(...)) -> dict[str, Any]
     async with admission.TRACKING_STATS_READ, get_session() as s:
         links = (await s.execute(text("SELECT id, name FROM tracking_links WHERE account_id=:aid"),
                                  {"aid": account_id})).all()
-        rows = (await s.execute(text("SELECT c.tracking_link_id AS lid, unixepoch(c.clicked_at)/:bucket_s AS bucket, "
+        rows = (await s.execute(text("SELECT c.tracking_link_id AS lid, unixepoch(substr(c.clicked_at, 1, 19))/:bucket_s AS bucket, "
                                      "COUNT(*) AS n, SUM(CASE WHEN c.verified THEN 1 ELSE 0 END) AS verified FROM tracking_clicks c JOIN tracking_links l ON l.id=c.tracking_link_id "
                                      "WHERE l.account_id=:aid AND c.clicked_at>=:lo AND c.clicked_at<:hi "
                                      "GROUP BY c.tracking_link_id, bucket"),
@@ -102,7 +103,7 @@ async def tracking_link_analytics(link_id: int, account_id: str = Query(...), da
             raise HTTPException(404, "tracking link not found")
         where = "WHERE tracking_link_id=:lid AND clicked_at>=:lo AND clicked_at<:hi "
         # One statement = one snapshot: series total == breakdown sums (STATS_BREAKDOWN).
-        rows = (await s.execute(text("SELECT 'series' AS kind, unixepoch(clicked_at)/:bucket_s AS bucket, "
+        rows = (await s.execute(text("SELECT 'series' AS kind, unixepoch(substr(clicked_at, 1, 19))/:bucket_s AS bucket, "
                                      "NULL AS country, NULL AS in_app, NULL AS ref, COUNT(*) AS n, "
                                      "SUM(verified) AS passed FROM tracking_clicks " + where + "GROUP BY bucket "
                                      "UNION ALL SELECT 'dims', NULL, country, in_app, ref, COUNT(*), NULL FROM tracking_clicks "
@@ -166,6 +167,16 @@ async def classify_old_rows_background(sync_url: str, chunk: int = 2_000) -> int
     failed = False
     delay = 1
     cancelled = False
+
+    def _tally(n: int, failures: int, first_error: Exception | None) -> None:
+        """One committed chunk: its rows and classifier failures; the first failure logged once per run."""
+        nonlocal done, row_failures
+        done += n
+        row_failures += failures
+        if first_error is not None and row_failures == failures:
+            log.error("tracking old click classify failed; storing fallback labels",
+                      exc_info=(type(first_error), first_error, first_error.__traceback__))
+
     try:
         while True:
             try:
@@ -179,11 +190,7 @@ async def classify_old_rows_background(sync_url: str, chunk: int = 2_000) -> int
                     except Exception:
                         pass
                     else:
-                        done += n
-                        row_failures += failures
-                        if first_error is not None and row_failures == failures:
-                            log.error("tracking old click classify failed; storing fallback labels",
-                                      exc_info=(type(first_error), first_error, first_error.__traceback__))
+                        _tally(n, failures, first_error)
                     raise
             except Exception:
                 if not failed:
@@ -194,13 +201,9 @@ async def classify_old_rows_background(sync_url: str, chunk: int = 2_000) -> int
                 continue
             failed = False
             delay = 1
-            row_failures += failures
-            if first_error is not None and row_failures == failures:
-                log.error("tracking old click classify failed; storing fallback labels",
-                          exc_info=(type(first_error), first_error, first_error.__traceback__))
+            _tally(n, failures, first_error)
             if not n:
                 break
-            done += n
             await asyncio.sleep(0.01)
         return done
     except asyncio.CancelledError:

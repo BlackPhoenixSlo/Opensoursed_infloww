@@ -353,6 +353,25 @@ async def case_a_purchase_drops_the_cached_pins():
     relay_cache.invalidate("chat_pinned", _OTHER_AID)
 
 
+async def case_a_purchase_drops_the_cached_ledger():
+    """W30 #16: the ledger reads (`payouts`, up to a 15 min TTL) show money too: a sale drops the
+    account's cached `payouts` entries, never another model's."""
+    _reset()
+    key = ("of_transactions", ("limit", 20))
+    await relay_cache.get_or_fetch("payouts", _AID, key, 900.0, lambda: {"warm": True})
+    await relay_cache.get_or_fetch("payouts", _OTHER_AID, key, 900.0, lambda: {"warm": True})
+    await pn._broadcast_purchase(_AID, {
+        "notif_id": "117301756209", "fan_id": 777010,
+        "message_id": 10491720677797, "amount_cents": 900,
+        "created_at": "2026-08-25T10:10:00+00:00", "name": "Daniel",
+    })
+    got = await relay_cache.get_or_fetch("payouts", _AID, key, 900.0, lambda: {"warm": False})
+    assert got == {"warm": False}, "a sale left the ledger cached"
+    other = await relay_cache.get_or_fetch("payouts", _OTHER_AID, key, 900.0, lambda: {"warm": False})
+    assert other == {"warm": True}, "a sale on one model dropped another model's ledger"
+    relay_cache.invalidate("payouts", _OTHER_AID)
+
+
 async def case_invalidation_is_account_scoped():
     """A tip landing on one model must not cost the other model its entry."""
     _reset()

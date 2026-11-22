@@ -180,10 +180,10 @@ async def case_rule_made_from_plan() -> None:
             async with get_session() as s:
                 await s.execute(delete(UltraPlan).where(UltraPlan.id == pid))
                 s.add(UltraPlan(id=pid, owner_user_id=OWNER_A, source="mcp", plan_json=json.dumps(plan),
-                                plan_sha256=ud.digest(plan), status="running",
+                                plan_sha256=ud.digest(plan, pid), status="running",
                                 step_states=json.dumps([{"id": x, "state": "started" if x == sid else "done"}
                                                         for x in ("m", "s")])))
-            r = await toolbox.call(ud.TOOLS[name], args, creds, plan_step=f"{pid}:{sid}")
+            r = await toolbox.call(ud.TOOLS[name], args, creds, plan_step=f"{pid}:{sid}", plan_owner=OWNER_A)
             assert "error" not in r and r["open_url"] == f"https://app.example.com{page}", r
             rule = (await _rules())[-1]
             assert (rule.kind, rule.is_enabled, json.loads(rule.trigger_json), json.loads(rule.steps_json)) == (

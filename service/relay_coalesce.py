@@ -74,9 +74,11 @@ _first_calls: dict[str, int] = {}
 #   admission()       an async context manager the LEADER enters around its fetch:
 #                     a background read waits for its Creator's background lane on
 #                     the event loop, before any worker thread is taken (server.
-#                     _bg_admission). Joiners never take a slot.
+#                     _bg_admission). Joiners never take a slot. `own=True`: a slot of
+#                     its own even inside a held one (relay_cache's detached SWR refresh:
+#                     the lease it inherited closes with the request that spawned it).
 priority_class: Callable[[], str] = lambda: "user"
-admission: Callable[[], AsyncContextManager] = contextlib.nullcontext
+admission: Callable[..., AsyncContextManager] = lambda own=False: contextlib.nullcontext()
 
 # Guards `_coalesced_hits` and `_first_calls`. The `_inflight` dict is
 # mutated from the event loop, and by `forget` from any thread, unlocked: see

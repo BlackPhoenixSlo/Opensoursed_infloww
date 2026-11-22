@@ -489,12 +489,16 @@ def tool_outcome(parsed: Any) -> tuple[bool | None, int | None, Any]:
     return bool(res["isError"]), None, None
 
 
+_BEARER = re.compile(r"bearer(?: |$)", re.IGNORECASE)  # the challenge's scheme, exactly
+
+
 def wellformed(status: int, ctype: str, text: str, req_id: Any, *, mcp: bool = True,
                www_auth: str = "") -> str | None:
     """Why one answer is not a proper answer to a client, else None. An MCP-endpoint answer is a JSON-RPC
     2.0 object (one of result/error; error {code int known, message non-empty str}; id echoed, None when
     the request's was unusable; an error code on its HTTP status), a 202 with no body, a 405, or the token
-    layer's 401 (WWW-Authenticate: Bearer). Off the endpoint: any answer below 500."""
+    layer's 401; every 401 carries a WWW-Authenticate: Bearer challenge (the client's sign-in starts from it).
+    Off the endpoint: any answer below 500."""
     if status >= 500:
         return f"HTTP {status}"
     if not mcp:
@@ -503,9 +507,11 @@ def wellformed(status: int, ctype: str, text: str, req_id: Any, *, mcp: bool = T
         return None if not text.strip() else "202 with a body"
     if status == 405:
         return None
+    if status == 401 and not _BEARER.match(www_auth):
+        return f"401 without a Bearer challenge (WWW-Authenticate {www_auth[:60]!r})"
     parsed = parse(text)
     if not isinstance(parsed, dict) or parsed.get("jsonrpc") != "2.0":
-        if status == 401 and "bearer" in www_auth.lower():
+        if status == 401:
             return None
         return f"HTTP {status} answer is no JSON-RPC 2.0 object: {text[:120]!r}"
     if "application/json" not in ctype:

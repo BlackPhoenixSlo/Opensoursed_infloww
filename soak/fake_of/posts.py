@@ -26,6 +26,9 @@ Mounted from app.py, the upload chain as service/of_upload.py `upload_media` wal
                                       ticket 136)
   GET    /posts/{id}                  the post, with its `media`
   GET    /labels                      the Creator's post labels: the captured new-post-labels.json (ticket 35)
+  GET    /posts/tagged-friend-users   the creators a post may Co-tag (ofm-not-yet ticket 98): new-post-tags.json's
+                                      items, `name` a case-blind search of name and username, `offset`/`limit`
+                                      honoured, `{items, hasMore}` (service/of_reads.py `tagged_friend_users`)
   DELETE /posts/{id}                  the post deleted; its vault items stay
   PUT    /vault/media/hidden          `{mediaIds}`: OF's Remove from vault, one-way (of_sends `hide_vault_media`); a
                                       hidden item leaves the vault listing and its ETag still answers the dedupe,
@@ -34,6 +37,13 @@ Mounted from app.py, the upload chain as service/of_upload.py `upload_media` wal
                                       profile-posts.json); any other user's 404 (ticket 99)
 Publish now (ticket 99): queue.py's `PUT /schedules/{id}/publish` naming a live scheduled post's schedule item
 publishes it (`publish`): it leaves GET /schedules and shows on the profile.
+Co-tags (ofm-not-yet ticket 98): a post body's `rfTag` (the Relay's `_write_tag_block` sends it with `userTags` beside
+it) is kept, and the post's reads (GET /posts/{id}, its /schedules row, its profile row) answer it as `rfTag`, the
+tagged creators' ids. An immediate post (no `isScheduled`) is published at once: it shows on the profile.
+ASSUMPTION (ticket 98): OnlyFans's post read names its Co-tags `rfTag`, as ids (rung 5: no tagged post's read is
+captured; the body's own key); overturned by the first live read of a tagged post, which then names the field. Tags
+are stored as sent, never checked against the taggable list (whether OnlyFans validates them at create or at publish
+is the Co-tag proofs' open unknown).
 Read beside vault.py's listing (filed, visible items, newest first, ahead of the seeded ones) and queue.py's
 GET /schedules (each live scheduled post as a `post` schedule item, shaped from queue-schedules-2026-11.json; the
 filters as `schedule_rows` reads them).
@@ -235,6 +245,7 @@ async def _profile(fake, req: Request, ok, uid: str) -> Response:
         d.update(id=p.id, postedAt=iso(p.published_at), postedAtPrecise=f"{p.published_at.timestamp():.6f}",
                  text=p.text, rawText=p.text, mediaCount=len(p.media), isMediaReady=True,
                  media=[{"id": vid, "type": "photo", "isReady": True, "canView": True} for vid in p.media])
+        d.update(_tags(p.extras))   # ticket 98
         rows.append(d)
     return ok(req, rows[:int(req.query_params.get("limit") or 10)])
 
@@ -372,6 +383,8 @@ async def _create(fake, req: Request, ok) -> Response:
             return _error(req, ok, 400, f"Media not found: {m!r}")
     p = Post(n=len(st["posts"]) + 1, text=str(body.get("text") or ""), media=out, scheduled_at=when,
              created_at=now_utc(), saved=bool(body.get("isScheduled")) and not body.get("scheduledDate"), extras=body)
+    if not body.get("isScheduled"):   # ticket 98: an immediate post is published at once
+        p.published_at = p.created_at
     st["posts"][p.id] = p
     return ok(req, entity(p))
 
@@ -431,6 +444,7 @@ def _extras(body: dict, posted_at: str) -> dict[str, Any]:
     if body.get("fundRaisingTargetAmount"):
         out["fundRaising"] = {"target": body["fundRaisingTargetAmount"],
                               "presets": list(body.get("fundRaisingTipsPresets") or [])}
+    out.update(_tags(body))   # ticket 98
     return out
 
 
@@ -441,3 +455,24 @@ async def _labels(fake, req: Request, ok) -> Response:
 
 
 ROUTES.append(("GET", re.compile(r"/api2/v2/labels"), _labels))
+
+
+# ofm-not-yet ticket 98: Co-tags on a post (module docstring) and the taggable-creators read.
+def _tags(body: dict) -> dict[str, Any]:
+    """The post's Co-tags as its reads answer them: `rfTag`, the ids the body sent (none: absent)."""
+    tags = body.get("rfTag") if isinstance(body, dict) else None
+    return {"rfTag": [int(i) for i in tags if str(i).isdigit()]} if isinstance(tags, list) and tags else {}
+
+
+async def _tagged(fake, req: Request, ok) -> Response:
+    q = req.query_params
+    name = (q.get("name") or "").strip().lower()
+    items = [i for i in render.fixture("new-post-tags.json")["items"]
+             if not name or name in str(i.get("name") or "").lower()
+             or name in str((i.get("user") or {}).get("username") or "").lower()]
+    off, lim = int(q.get("offset") or 0), int(q.get("limit") or 20)
+    page = items[off:off + lim]
+    return ok(req, {"items": page, "hasMore": off + len(page) < len(items)})
+
+
+ROUTES.insert(0, ("GET", re.compile(r"/api2/v2/posts/tagged-friend-users"), _tagged))

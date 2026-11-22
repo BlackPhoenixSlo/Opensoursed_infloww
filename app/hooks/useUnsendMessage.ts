@@ -21,10 +21,14 @@
  * unsent bubble straight back (see useChatMessagesLocal).
  *
  * Outside OF's edit window (~24h) the upstream returns 4xx — we revert.
+ * A 2xx counts only with OF's `success: true` (of_sends.unsend_message: OF
+ * answers `{"success": true}`, plus `queue` for a mass send); anything else
+ * (`success: false`, `{}`, no body) throws NOT_CONFIRMED and reverts, so the
+ * caller never reads a refusal as "Unsent".
  */
 
 import { useCallback } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { dropSeedMessage } from "@/hooks/useChatMessagesLocal";
 import { relay, RelayError, type OFMessage } from "@/lib/relay";
@@ -39,10 +43,20 @@ export interface UnsendQueueInfo {
   isCanceled?: boolean;
 }
 
+/** The error `unsendOne` throws when OF's 2xx is not `success: true`. */
+export const NOT_CONFIRMED = "OnlyFans did not confirm the unsend";
+
 interface UnsendResp {
   success?: boolean;
   queue?: UnsendQueueInfo | null;
 }
+
+/**
+ * The unsends still out, per QueryClient, by `accountId:messageId`. Every caller (the mirror's menu and
+ * Unsend PPV, the chat's UnsendChoice, the Messages list's button) shares one DELETE per message: a second
+ * confirm while it is out gets the same answer and sends nothing (W30 W3/S1).
+ */
+const inFlight = new WeakMap<QueryClient, Map<string, Promise<UnsendResp | null>>>();
 
 export function useUnsendMessage(accountId: string | null, fanId: FanId | null) {
   const qc = useQueryClient();
@@ -58,31 +72,51 @@ export function useUnsendMessage(accountId: string | null, fanId: FanId | null) 
       // path is a stale badge; on a destructive call it is data loss.
       if (!isValidFanId(msg.id)) return null;
       const id = String(msg.id);
-
-      // Optimistic: snapshot prior state so we can restore on failure,
-      // then drop the bubble from the cache.
-      const prev = qc.getQueryData<OFMessage[]>(queryKey);
-      qc.setQueryData<OFMessage[]>(queryKey, (curr = []) =>
-        curr.filter((m) => String(m.id) !== id),
-      );
-
-      try {
-        const resp = await relay.delete<UnsendResp>(
-          `/api/of/v2/messages/${id}`,
-          { accountId },
-          { withUserId: fanId },
+      const out = inFlight.get(qc) ?? new Map<string, Promise<UnsendResp | null>>();
+      inFlight.set(qc, out);
+      const key = `${accountId}:${id}`;
+      const pending = out.get(key);
+      if (pending) return pending;
+      const call = (async (): Promise<UnsendResp | null> => {
+        // Optimistic: snapshot prior state so we can restore on failure,
+        // then drop the bubble from the cache.
+        const prev = qc.getQueryData<OFMessage[]>(queryKey);
+        qc.setQueryData<OFMessage[]>(queryKey, (curr = []) =>
+          curr.filter((m) => String(m.id) !== id),
         );
-        dropSeedMessage(qc, accountId, fanId, id);
-        // The relay stamped `unsent_at` on our row: refetch the attribution
-        // map so the thread draws "Message withdrawn" where the bubble stood.
-        qc.invalidateQueries({ queryKey: ["msg-attribution", accountId, fanId] });
-        return resp ?? null;
-      } catch (err) {
-        if (prev) qc.setQueryData(queryKey, prev);
-        const reason = err instanceof RelayError ? err.message : String(err);
-        console.warn("[unsend] failed — restoring bubble:", reason);
-        throw err;
-      }
+
+        try {
+          const resp = await relay.delete<UnsendResp>(
+            `/api/of/v2/messages/${id}`,
+            { accountId },
+            { withUserId: fanId },
+          );
+          if (resp?.success !== true) throw new Error(NOT_CONFIRMED);
+          dropSeedMessage(qc, accountId, fanId, id);
+          // The relay stamped `unsent_at` on our row: refetch the attribution
+          // map so the thread draws "Message withdrawn" where the bubble stood.
+          qc.invalidateQueries({ queryKey: ["msg-attribution", accountId, fanId] });
+          return resp;
+        } catch (err) {
+          // Put back only this bubble, before the one that followed it: the
+          // whole snapshot would also revive a concurrent unsend that OF took (W30 W4).
+          const at = prev?.findIndex((m) => String(m.id) === id) ?? -1;
+          if (prev && at >= 0) {
+            qc.setQueryData<OFMessage[]>(queryKey, (curr = []) => {
+              if (curr.some((m) => String(m.id) === id)) return curr;
+              const ids = new Set(curr.map((m) => String(m.id)));
+              const next = prev.slice(at + 1).find((m) => ids.has(String(m.id)));
+              const i = next ? curr.findIndex((m) => String(m.id) === String(next.id)) : curr.length;
+              return [...curr.slice(0, i), prev[at], ...curr.slice(i)];
+            });
+          }
+          const reason = err instanceof RelayError ? err.message : String(err);
+          console.warn("[unsend] failed — restoring bubble:", reason);
+          throw err;
+        }
+      })().finally(() => out.delete(key));
+      out.set(key, call);
+      return call;
     },
     [accountId, fanId, qc, queryKey],
   );

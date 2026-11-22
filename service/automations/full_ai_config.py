@@ -32,6 +32,7 @@ Save makes the draft the checkpoint and keeps the old one as `previous`; roll ba
 from __future__ import annotations
 
 import copy
+import json
 import re
 from typing import Any
 
@@ -500,6 +501,16 @@ def merged(stored: dict | None) -> dict[str, Any]:
         "draft": _audience_of(side(stored["draft"]), checkpoint) if stored.get("draft") else copy.deepcopy(checkpoint),
         "rev": int(stored.get("rev") or 0),
     }
+
+
+def loaded(raw: str | None) -> dict[str, Any] | None:
+    """The one reader of a stored blob (`account_ai_config.full_ai_config_json`): `merged`, an empty store
+    `DEFAULTS`; None when it will not parse or merge (one policy: Full AI claims nobody, live stands down)."""
+    try:
+        stored = json.loads(raw) if raw else {}
+        return merged(stored) if isinstance(stored, dict) else None
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return None
 
 
 # Who live answers, not how the AI behaves: one value on every side, set only by `put_audience`.

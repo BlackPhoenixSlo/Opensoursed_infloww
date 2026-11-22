@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """of_origin.loopback_url: the one loopback rule for test seams that receive a
 signed request or a secret (OF_API_ORIGIN via parse(), TURNSTILE_VERIFY_URL in
-tracking_links_api._verify_url).
+turnstile.verify_url).
 
   case_loopback_url_accepts_only_loopback_http: scheme, host, userinfo, port.
   case_parse_still_wants_a_bare_origin: parse() keeps refusing a path / query

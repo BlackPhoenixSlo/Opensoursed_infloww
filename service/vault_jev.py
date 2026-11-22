@@ -363,14 +363,17 @@ _clients: dict[tuple[int, str], Any] = {}
 
 
 def _client(key: str) -> Any:
-    """One async client per event loop and key (as the FM off-script gate's `_client`)."""
+    """One async client per event loop and key (as the FM off-script gate's `_client`). Past 8, only other loops'
+    clients are dropped (their loop is gone: nothing to close on it); a live loop's are kept, never orphaned
+    unclosed mid-call — one per distinct TypeSafe key (W30 F19)."""
     from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy
     loop = asyncio.get_running_loop()
     k = (id(loop), key)
     c = _clients.get(k)
     if c is None:
         if len(_clients) > 8:
-            _clients.clear()
+            for gone in [x for x in _clients if x[0] != id(loop)]:
+                del _clients[gone]
         c = _clients[k] = AsyncTypeSafeClient(
             api_key=key, model=MODEL, retry=RetryPolicy(max_retries=MAX_RETRIES, timeout=TIMEOUT_S))
     return c
@@ -485,9 +488,11 @@ async def run(account_id: str, data: bytes) -> JevResult:
     tok = 0
     t0 = time.monotonic()
     try:
-        p1, scores = await asyncio.gather(
-            _ask(key, {"photo": await asyncio.to_thread(shrink, data, EDGE)}, Q), nudenet_scores(data))
-        rec["resp"] = p1; passes.append("1"); tok += _tokens(p1)
+        async def p1() -> None:   # counted inside: a NudeNet failure must not drop a paid answer (W30 F8)
+            nonlocal tok
+            r = await _ask(key, {"photo": await asyncio.to_thread(shrink, data, EDGE)}, Q)
+            rec["resp"] = r; passes.append("1"); tok += _tokens(r)
+        _, scores = await _settled([p1(), nudenet_scores(data)])
         d = rules.derive8(rec)
         if d["need2"]:
             p2 = await _ask(key, {"photo": await asyncio.to_thread(shrink, data, EDGE2)}, Q2)
@@ -524,23 +529,6 @@ FRAME_CONCURRENCY = 6
 # Pass L guard: Jev answers 400 "Invalid image dimensions" on a 400x202 crop (D53). A frame whose encoded crops
 # are not all ≥ this on their short edge (shrink's own floor) skips pass L, recorded as `"Ls": "small"`.
 MIN_L_EDGE = 280
-
-
-def _order(qs: dict[str, dict]) -> "rules.Order":
-    return [(k, None if q["type"] == "noul" else list(q["criteria"])) for k, q in qs.items()]
-
-
-# Each pass's positional layout in a stored video frame (`vault_jev_rules.pack`).
-ORDER = {"1": _order(Q), "2": _order(Q2), "L": _order(crop_questions({"full_photo": 0, "lower_part": 0}))}
-_RESP = {"1": "resp", "2": "resp2", "L": "respL"}
-_NN = ("FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED")   # the classes NN_D34 reads, stored per frame
-
-
-def frame_recs(jev: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
-    """A stored video `_jev`'s frames back as bench records + NudeNet scores: `vault_jev_rules.video_final` over
-    them re-derives the stored lane without a refetch."""
-    recs = [{_RESP[p]: {"answers": rules.unpack(f[p], ORDER[p])} for p in ORDER if p in f} for f in jev["frames"]]
-    return recs, [dict(zip(_NN, f["nn"])) for f in jev["frames"]]
 
 
 async def _settled(coros: list[Any]) -> list[Any]:
@@ -584,14 +572,23 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
     packs: list[dict[str, Any]] = [{"px": p} for p in px]
     recs: list[dict[str, Any]] = [{} for _ in frames]
 
+    refused: list[BaseException] = []   # TypeSafe refused the KEY: no frame after it is sent (W30 F11)
+
     async def ask(i: int, p: str, state: dict[str, bytes], qs: dict[str, dict]) -> None:
         nonlocal tok
         async with sem:
-            r = await _ask(key, state, qs)
+            if refused:
+                raise refused[0]
+            try:
+                r = await _ask(key, state, qs)
+            except Exception as e:  # noqa: BLE001 — re-raised; only a key refusal is remembered
+                if _failed(e) != "error":
+                    refused.append(e)
+                raise
         tok += _tokens(r)
-        # derive from the stored (packed) answers, so a later re-derive (`frame_recs`) gives the same lane
-        packs[i][p] = rules.pack(r["answers"], ORDER[p])
-        recs[i][_RESP[p]] = {"answers": rules.unpack(packs[i][p], ORDER[p])}
+        # derive from the stored (packed) answers, so a later re-derive (`rules.frame_recs`) gives the same lane
+        packs[i][p] = rules.pack(r["answers"], rules.ORDER[p])
+        recs[i][rules.RESP[p]] = {"answers": rules.unpack(packs[i][p], rules.ORDER[p])}
 
     async def p1(i: int) -> None:
         await ask(i, "1", {"photo": await asyncio.to_thread(shrink, frames[i], EDGE)}, Q)
@@ -614,7 +611,7 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
         scores = got[len(frames):]
         await _settled([p2(i) for i in rules.video_targets(recs, "need2")])
         await _settled([pl(i) for i in rules.video_targets(recs, "needL")])
-        scores = [{c: s.get(c, 0) for c in _NN} for s in scores]
+        scores = [{c: s.get(c, 0) for c in rules.NN} for s in scores]
         ds, top = rules.video_final(recs, scores)
     except Exception as e:  # noqa: BLE001 — SDK, HTTP, timeout, NudeNet decode, a missing answer
         actual = cost_millicents(tok)
@@ -623,9 +620,9 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
         log.warning("vault_jev video failed account=%s frames=%s: %s", account_id, len(frames), type(e).__name__)
         return JevResult(ok=False, status=_failed(e), detail=f"{type(e).__name__}: {e}"[:300],
                          cost_millicents=actual, tok=tok, call_failed=True)
-    passes = [p for p in ORDER if any(p in f for f in packs)]
+    passes = [p for p in rules.ORDER if any(p in f for f in packs)]
     for f, d, s in zip(packs, ds, scores):
-        f["nn"] = [s[c] for c in _NN]
+        f["nn"] = [s[c] for c in rules.NN]
         f["lane5"] = d["lane5"]
     actual = cost_millicents(tok)
     await hold.done(actual, tokens_in=tok, ok=True, latency_ms=int((time.monotonic() - t0) * 1000),

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  clampValue, dayAllowed, joinValue, minuteOptions, monthGrid, setTimePart, shiftMonth, splitValue, type DateMode,
+  clampValue, dateTimeKey, dayAllowed, joinValue, minuteOptions, monthGrid, setTimePart, shiftMonth, splitValue, type DateMode,
 } from "./ifDateValue";
 
 describe("ifDateValue", () => {
@@ -67,4 +67,8 @@ describe("clampValue", () => {
     ["07:00", "08:00", undefined, "08:00"],
     ["", "2026-11-13T14:30", undefined, ""],
   ])("%s min=%s max=%s -> %s", (v, min, max, out) => expect(clampValue(v, min, max)).toBe(out));
+
+  it("dateTimeKey: a Date as local datetime-local text, zero-padded", () => {
+    expect(dateTimeKey(new Date(2026, 0, 5, 7, 3))).toBe("2026-01-05T07:03");
+  });
 });

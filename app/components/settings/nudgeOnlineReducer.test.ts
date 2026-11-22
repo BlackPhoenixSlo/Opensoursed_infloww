@@ -477,7 +477,20 @@ describe("previewPayload", () => {
     ["non-numeric fan id refuses", "abc", "", "", { error: "Fan id must be a number." }],
     ["mixed fan id refuses", "12a", 8, "", { error: "Fan id must be a number." }],
   ])("%s", (_name, fan, hour, day, want) => {
-    expect(previewPayload(fan, hour, day)).toEqual(want);
+    expect(previewPayload({ fan, hour, day })).toEqual(want);
+  });
+
+  it.each<[string, NudgeOnlineAction[], ReturnType<typeof previewPayload>]>([
+    ["typed inputs make the payload", [{ type: "preview", patch: { fan: "42" } }, { type: "preview", patch: { hour: 19 } },
+      { type: "preview", patch: { day: "sunday" } }], { fan_id: 42, hour: 19, weekday: "sunday" }],
+    ["a preset hour replaces a typed one, the rest kept", [{ type: "preview", patch: { fan: "7", hour: 3 } },
+      { type: "preview", patch: { hour: 23 } }], { fan_id: 7, hour: 23, weekday: null }],
+    ["clearing the hour previews now", [{ type: "preview", patch: { hour: 8 } }, { type: "preview", patch: { hour: "" } }],
+      { fan_id: null, hour: null, weekday: null }],
+    ["the inputs survive a Creator switch", [to("acc-a"), { type: "preview", patch: { fan: "9", day: "monday" } }, to("acc-b")],
+      { fan_id: 9, hour: null, weekday: "monday" }],
+  ])("reducer: %s", (_name, actions, want) => {
+    expect(previewPayload(run(actions).preview)).toEqual(want);
   });
 });
 

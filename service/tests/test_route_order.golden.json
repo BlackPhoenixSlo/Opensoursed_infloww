@@ -1,4 +1,4 @@
-{"openapi_sha1": "b19527114efaf7dbee228e16c6906b3ee847691c",
+{"openapi_sha1": "28454fc6aa47dd28cfaa863aab0e31f4020a5c1a",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -163,6 +163,8 @@
   ["PUT", "/admin/account-config", "put_account_config"],
   ["GET", "/admin/of-consent/{account_id}", "get_of_consent"],
   ["PUT", "/admin/of-consent/{account_id}", "put_of_consent"],
+  ["GET", "/admin/ofm-writes/{account_id}", "get_ofm_writes_creator"],
+  ["PUT", "/admin/ofm-writes/{account_id}", "put_ofm_writes_creator"],
   ["GET", "/api/of/live-window", "live_window_probe"],
   ["POST", "/api/of/live-window/session", "live_window_session"],
   ["POST", "/admin/assistant/ask", "ask"],

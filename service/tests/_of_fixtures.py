@@ -1,7 +1,7 @@
 """_of_fixtures — fake OF clients any lane's tests share (the auto-reply and
 Full AI suites): `FakeOF` records DMs, `VaultOF` adds three paged vault
-folders, `PpvFailOF` fails a priced DM that OF may have taken anyway.
-Plain doubles, no DB; every id here is invented.
+folders, `PpvFailOF` fails a priced DM that OF may have taken anyway, `of_error`
+builds an OF non-2xx. Plain doubles, no DB; every id here is invented.
 """
 from __future__ import annotations
 
@@ -76,14 +76,27 @@ class PpvFailOF(VaultOF):
             return super().send_message(chat_id, text, **kw)
         self.attempts.append(text)
         if self.taken:
-            self.listed.insert(0, _listed(text, kw["price"], datetime.utcnow()))
+            self.listed.insert(0, _listed(text, kw["price"], datetime.utcnow(), media=kw.get("media_files")))
         raise self.error
 
     def get_messages(self, chat_id, **kw) -> dict:
         return {"list": list(self.listed), "hasMore": False}
 
 
-def _listed(text: str, price: float, at: datetime) -> dict:
-    """A line of ours as OF's chat read lists it."""
+def _listed(text: str, price: float, at: datetime, *, media=None) -> dict:
+    """A line of ours as OF's chat read lists it (its `media`, one item per id sent)."""
     return {"id": next(_of_ids), "text": f"<p>{text}</p>", "price": price,
-            "fromUser": {"id": 999}, "createdAt": at.isoformat() + "+00:00"}
+            "fromUser": {"id": 999}, "createdAt": at.isoformat() + "+00:00",
+            **({"media": [{"id": m} for m in media]} if media else {})}
+
+
+UNLISTABLE_403 = "Unable to add user to user list"    # OF's permanent per-fan list refusal
+
+
+def of_error(status: int, text: str, path: str = "/api2/v2/lists/50/users/2"):
+    """An OF non-2xx as `of_client.request_json` raises it: an OFAPIError
+    carrying its response (`of_paging.unlistable` reads the status)."""
+    from types import SimpleNamespace
+    from of_client import OFAPIError
+    return OFAPIError(f"{status} for https://onlyfans.com{path}\n{text}",
+                      response=SimpleNamespace(status_code=status))

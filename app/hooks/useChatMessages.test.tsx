@@ -22,6 +22,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mergeOlderPage, mergeTopPage, orderThread, prefetchChatMessages, selectMessages, useChatMessages } from "@/hooks/useChatMessages";
 import type { OFMessage, OFMessagesResp } from "@/lib/relay";
 import { THREAD_KEEP } from "@/lib/threadCache";
+import { setPlatform } from "@/lib/platform";
 import { UNREAD_WARM_REUSE_MS } from "@/hooks/useUnreadMessagesPrefetch";
 
 // The hook talks to the relay + an SSE event bus + a perf logger. Stub them all
@@ -410,6 +411,17 @@ describe("useChatMessages trim on leave", () => {
     client.setQueryData(KEY, [msg(6_000_000_000_000_123), ...many(50, 60)]);
     const { result } = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
     expect(result.current.olderCursor()).toBe(50);
+  });
+
+  it("on Fansly the cache-minimum cursor is the oldest snowflake id, not none (W30-mu #24)", async () => {
+    setPlatform("fansly");
+    try {
+      client.setQueryData(KEY, [msg(900_000_000_000_000_000), msg(910_000_000_000_000_000)]);
+      const { result } = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
+      expect(result.current.olderCursor()).toBe(900_000_000_000_000_000);
+    } finally {
+      setPlatform("onlyfans");
+    }
   });
 });
 

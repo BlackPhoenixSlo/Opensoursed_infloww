@@ -38,7 +38,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from automation_registry import register
 from automations import _router_jev as router
 from automations import full_ai_photo
-from automations.full_ai_config import merged
+from automations.full_ai_config import loaded
 from automations.full_ai_decide import SALT_VER, Facts, arm_of, decide_turn
 from db.engine import get_session
 from db.models import AccountAiConfig, AiDecision, Message, Transaction
@@ -48,6 +48,9 @@ log = logging.getLogger("of-relay.automation.full_ai_chat")
 MODE = "shadow"
 TRIGGER_KIND = "inbound"
 STATUS = "planned"      # Shadow rows are a plan never executed; they never move
+# Turns one catch-up job decides (one Jev call each): the oldest ones; the rest stay undecided (stats
+# `capped`). Shadow is retired (owner: never restored), so a bound, not a reschedule.
+CATCHUP_CAP = 20
 _TURN_KEY = ["account_id", "fan_id", "mode", "trigger_key"]
 
 
@@ -183,12 +186,11 @@ async def _photos_on(account_id: str) -> bool:
     stored blob that will not parse reads off (fail closed: the catch-up still runs)."""
     async with get_session() as s:
         row = await s.get(AccountAiConfig, str(account_id))
-    raw = row.full_ai_config_json if row is not None else None
-    try:
-        return bool(merged(json.loads(raw) if raw else {})["checkpoint"][full_ai_photo.KEY])
-    except (ValueError, TypeError, AttributeError, KeyError):
+    got = loaded(row.full_ai_config_json if row is not None else None)
+    if got is None:
         log.warning("full_ai bad stored config account=%s: describe_fan_photos off", account_id)
         return False
+    return bool(got["checkpoint"][full_ai_photo.KEY])
 
 
 async def _read(account_id: str, fan_id: int, anchor_id: int, photos: bool = False
@@ -256,9 +258,9 @@ async def _record(account_id: str, fan_id: int, anchor: Message, st: dict, has_o
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     """Catch up the one Fan in `payload["only_fan_ids"]`: decide and record,
     oldest first, every Turn from the run holding `payload["anchor"]` forward
-    whose Anchor has no row yet, one Jev call each. Stats: recorded, duplicate
-    (an insert that lost the Turn key to a racing job) and one entry per row
-    written; or `skipped` with why nothing was decided."""
+    whose Anchor has no row yet, one Jev call each, at most `CATCHUP_CAP`. Stats: recorded, duplicate
+    (an insert that lost the Turn key to a racing job), one entry per row written and `capped` (Turns
+    left undecided, when any); or `skipped` with why nothing was decided."""
     from automations import full_ai_live    # lazy: the live twin, the only Full AI send path
     if await full_ai_live.live_rule(account_id) is not None:
         return await full_ai_live.run(account_id, payload, run_id=run_id)
@@ -272,7 +274,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             return {"skipped": "anchor_missing"}
         if not turns:
             return {"skipped": "duplicate_turn"}
-        for anchor, st, has_offer, photo in turns:
+        capped = max(0, len(turns) - CATCHUP_CAP)
+        for anchor, st, has_offer, photo in turns[:CATCHUP_CAP]:
             try:
                 jev: router.Answers | str = await router.ask(st, account_id)   # no DB connection held
             except router.GateError as e:                   # never a "no": chat, Heat 1
@@ -291,4 +294,4 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     except Exception:
         log.warning("full_ai_turn_failed account=%s fan=%s", account_id, fan_id, exc_info=True)
         raise
-    return {"recorded": recorded, "duplicate": duplicate, "rows": rows}
+    return {"recorded": recorded, "duplicate": duplicate, "rows": rows, **({"capped": capped} if capped else {})}

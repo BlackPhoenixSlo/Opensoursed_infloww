@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const revealError = document.getElementById('revealError');
     const revealRetry = document.getElementById('revealRetry');
     const REVEAL_FAILED = "Couldn't open this link. Please try again.";
+    const GATE_PASSED = 'age';
 
     // Store links data to simulate API fetching
     let linksData = [];
@@ -56,7 +57,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const canTapEscape = igCard.dataset.escapeTap === '1' && isIOS && isInstagram && iosMajor >= 17;
     const trackingId = bootstrap.trackingCode;
     // Link Shortcut: read on page load, before the address bar is touched, so ?link= survives beside the code
-    const linkShortcut = new URLSearchParams(window.location.search).get('link');
+    const shortcutParams = new URLSearchParams(window.location.search);
+    const linkShortcut = shortcutParams.get('link');
+    // `age=ok`: the In-App Browser's Age Gate already passed for this shortcut and handed it out (escapeOnTap after
+    // Continue). Honoured for this load's shortcut only, and dropped from the address bar so a reload gates again.
+    const shortcutGatePassed = shortcutParams.get(GATE_PASSED) === 'ok';
+    if (shortcutParams.has(GATE_PASSED)) {
+        shortcutParams.delete(GATE_PASSED);
+        const rest = shortcutParams.toString();
+        window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash);
+    }
 
     if (!username || username === 'index.html') { // Default
         username = 'juliafilippo_';
@@ -104,8 +114,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 // In an In-App Browser an Escape Mode Link Shortcut is v1's `?link=`: the Escape Overlay opens on every load,
                 // aimed at that Link's escape target and with Close. Only Android then Reveals and bounces straight out to the
                 // Destination (the Chrome intent); iOS stays on the overlay until the visitor uses its steps or taps its card.
+                // A Link with the 18+ Age Gate shows the gate first, as a tap on its card does (Continue pops out).
                 const target = escapeTarget(shortcutLink.id);
                 pointAddressAt(target);
+                if (isAndroid && shortcutLink.isAdult) {
+                    openOverlay(shortcutLink.id);
+                    return;
+                }
                 openEscapeOverlay(target);
                 if (isAndroid) revealAndGo(shortcutLink, popOut);
                 return;
@@ -119,10 +134,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 openEscapeOverlay(target);
             }
 
-            // Link Shortcut, with no Age Gate (v1's Link Shortcut has none): the Destination as a tap gets it, Revealed then navigated to.
-            // Never inside an In-App Browser: an automatic navigation to the Destination there is what gets links flagged
+            // Link Shortcut: the Destination as a tap gets it, Revealed then navigated to; a Link with the 18+ Age Gate opens
+            // the gate first, as a tap does (v1's Link Shortcut skipped it), unless the In-App Browser's gate handed it here
+            // (`age=ok`). Never inside an In-App Browser: an automatic navigation to the Destination there is what gets
+            // links flagged
             if (shortcutLink && !isInAppBrowser) {
-                revealAndGo(shortcutLink);
+                if (shortcutLink.isAdult && !shortcutGatePassed) openOverlay(shortcutLink.id);
+                else revealAndGo(shortcutLink);
             }
         })
         .catch(error => {
@@ -336,15 +354,26 @@ document.addEventListener('DOMContentLoaded', () => {
             });
     }
 
+    // An answer is navigated to only as an http(s) address (absolute, or a path on this host); never javascript:/data:
+    function navigable(url) {
+        try {
+            return ['http:', 'https:'].includes(new URL(url, window.location.href).protocol);
+        } catch (err) {
+            return false;
+        }
+    }
+
+    // The answer's address to navigate to; an answer without a navigable one fails like a failed Reveal (error + Retry)
+    function destination(data) {
+        if (data && data.realUrl && navigable(data.realUrl)) return data.realUrl;
+        throw new Error('Reveal answer has no navigable destination');
+    }
+
     // Reveal, then `go` to the answer (by default, navigate straight to it)
     function revealAndGo(link, go = url => { window.location.href = url; }) {
         hideRevealError();
         reveal(link.id)
-            .then(data => {
-                if (data.realUrl) {
-                    go(data.realUrl);
-                }
-            })
+            .then(data => go(destination(data)))
             .catch(err => {
                 console.error('Error revealing link:', err);
                 showRevealError(() => revealAndGo(link, go));
@@ -367,11 +396,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (again) again();
     });
 
-    // Escape target: https on the host that served the page, at the Profile path with the stored Tracking Code
-    function escapeTarget(linkId) {
+    // Escape target: https on the host that served the page, at the Profile path with the stored Tracking Code;
+    // `gatePassed` (the Age Gate's Continue) marks the shortcut so the browser it opens in does not ask again
+    function escapeTarget(linkId, gatePassed = false) {
         const code = storedTrackingCode();
         let path = code ? `${profilePath.replace(/\/$/, '')}/${code}` : profilePath;
         if (linkId) path += `?link=${linkId}`;
+        if (linkId && gatePassed) path += `&${GATE_PASSED}=ok`;
         return { path, url: `https://${window.location.host}${path}` };
     }
 
@@ -399,8 +430,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // An Escape Mode tap in an In-App Browser: fired from the tap itself, with no request before it
-    function escapeOnTap(link) {
-        const target = escapeTarget(link.id);
+    function escapeOnTap(link, gatePassed = false) {
+        const target = escapeTarget(link.id, gatePassed);
         pointAddressAt(target);
         popOut(target.url);
         openEscapeOverlay(target);
@@ -457,7 +488,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // An Adult Escape Mode Link in an In-App Browser: this tap is the pop-out, with no Reveal in the app first
         if (isInAppBrowser && effectiveMode(link) === 'escape_ig') {
-            escapeOnTap(link);
+            escapeOnTap(link, true);
             closeOverlay();
             return;
         }
@@ -468,9 +499,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         reveal(currentLinkId)
             .then(data => {
-                if (data.realUrl) {
-                    window.location.href = data.realUrl;
-                }
+                window.location.href = destination(data);
                 // Reset UI
                 continueBtn.textContent = 'Continue (18+)';
                 continueBtn.removeAttribute('aria-disabled');

@@ -27,10 +27,11 @@ import purchase_notifications as pn  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, AutomationRule, Blacklist, Fan, Message, PurchaseFollowupClaim,
-    ScheduledJob, SkipList, Transaction,
+    ScheduledJob, SkipList, Transaction, VaultItem,
 )
 import automation_executor as executor  # noqa: E402
 import automations.purchase_followup as pf  # noqa: E402
+from automations import _send_failure  # noqa: E402
 import purchase_followup_config_api as api  # noqa: E402
 
 TEXT = "thank you for unlocking that 💕"
@@ -55,6 +56,7 @@ class FakeOF:
         self.with_id = with_id
         self.fail = fail
         self.subscribed = subscribed
+        self.byid: list[int] = []
         self._next_id = 9_000_000_000_000
 
     def send_message(self, chat_id, text, **kw):
@@ -72,6 +74,16 @@ class FakeOF:
     def get_user(self, fan_id):
         self.probed.append(int(fan_id))
         return {"id": int(fan_id), "subscribedOn": "2026-01-01" if self.subscribed else None}
+
+    def vault_media_by_id(self, media_id):
+        """Every vault id reads as deleted on OF (a 404)."""
+        self.byid.append(int(media_id))
+        raise _NotFound()
+
+
+class _NotFound(Exception):
+    class response:
+        status_code = 404
 
 
 class _MediaRejected(Exception):
@@ -1260,6 +1272,28 @@ def case_media_of_refuses_goes_out_as_the_free_text_alone():
     _sandboxed(go)
 
 
+def case_media_of_refuses_is_rechecked_once_and_a_deleted_one_leaves_the_vault():
+    """The refused media was deleted on OF: one by-id re-check (404, deduped across fans)
+    stamps the mirror row removed, so no picker offers it again."""
+    async def go():
+        fake = _use_fake(reject_media=True)
+        aid = "pf_deletedmedia"
+        await _seed_account(aid)
+        async with get_session() as s:
+            s.add(VaultItem(account_id=aid, media_id=504, kind="photo",
+                            created_at=datetime.utcnow()))
+        await _enable(aid, media_ids=[504], price_cents=700)
+        await _seed_purchase(aid, 67, 6701)
+        await _seed_purchase(aid, 68, 6801)
+        res = await _run(aid, 1)
+        await asyncio.gather(*list(_send_failure._RECHECK_TASKS))   # the re-check runs detached
+        assert res.get("sent") == 2, res
+        assert fake.byid == [504], fake.byid
+        async with get_session() as s:
+            assert (await s.get(VaultItem, (aid, 504))).removed_at is not None
+    _sandboxed(go)
+
+
 def case_a_fan_who_owns_the_media_gets_the_text_alone_free():
     """ppv_send's ownership guard: a paid thank-you never re-sells media the fan
     already unlocked. He gets the text alone, free (and its Auto-unsend); the
@@ -1530,6 +1564,7 @@ _harness.run(
     case_the_config_route_saves_the_rule_off_by_default_and_refuses_bad_input,
     case_media_and_a_price_go_out_with_the_message_and_its_price_is_recorded,
     case_media_of_refuses_goes_out_as_the_free_text_alone,
+    case_media_of_refuses_is_rechecked_once_and_a_deleted_one_leaves_the_vault,
     case_auto_unsend_queues_the_per_chat_unsend_for_a_free_message_only,
     case_frequency_once_thanks_a_fan_once_ever_every_time_keeps_the_2h_floor,
     case_a_rule_saved_before_frequency_keeps_its_24h_floor,

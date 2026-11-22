@@ -98,7 +98,7 @@ def case_pure_imports():
     assert found == [], found
     imported = {a.name.split(".")[0] for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Import) for a in n.names}
     imported |= {(n.module or "").split(".")[0] for n in ast.walk(ast.parse(src)) if isinstance(n, ast.ImportFrom)}
-    assert imported <= {"__future__", "dataclasses", "datetime"}, imported
+    assert imported <= {"__future__", "dataclasses", "datetime", "of_shapes"}, imported   # of_shapes: pure parsers
 
 
 if __name__ == "__main__":

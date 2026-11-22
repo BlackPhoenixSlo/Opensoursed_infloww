@@ -64,6 +64,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import dm_rate
+from isotime import parse_iso
 import llm_client                  # call .chat at runtime so tests can patch it
 import of_write                    # _may_have_sent, read at call time
 import run_slot
@@ -548,6 +549,19 @@ async def dismiss_sent(account_id: str, fan_id: int, mass_run_id: int | None,
         await smst.tag_out(account_id, fan_id, smd.lookup_since(sending_at), hint_message_id,
                            _PURPOSE)
     return True
+
+
+async def attempt_saved(account_id: str, fan_id: int, mass_run_id: int | None,
+                        since: datetime) -> bool:
+    """Was the attempt marked at `since` saved as sent? Its replay stores the
+    nudge at the mark (messages_sent); a Retry's clear stores nothing."""
+    async with get_session() as s:
+        r = await s.get(FollowupState, (str(account_id), int(fan_id)))
+    try:
+        sent = json.loads(r.messages_sent or "{}") if r is not None else {}
+    except ValueError:
+        return False
+    return any(parse_iso(str(v)) == since for v in (sent.values() if isinstance(sent, dict) else ()))
 
 
 # ── Vault image (network-rewrite of the DOM "bot" folder click) ───────

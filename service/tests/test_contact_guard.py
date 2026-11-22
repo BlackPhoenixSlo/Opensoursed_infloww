@@ -57,6 +57,7 @@ import _harness  # MUST be first
 _harness.bootstrap()
 
 import contextlib  # noqa: E402
+from _of_fixtures import UNLISTABLE_403, of_error  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 import audiences  # noqa: E402
@@ -70,7 +71,6 @@ from audiences import (  # noqa: E402
 )
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Blacklist, Fan, Message, NudgeState  # noqa: E402
-
 
 async def _seed_account(aid: str) -> None:
     async with get_session() as s:
@@ -216,7 +216,7 @@ class _BigListFake(_BareListFake):
 
     def add_user_to_list(self, lid, uid):
         if int(uid) in self.refuse:
-            raise RuntimeError("Unable to add user to user list")
+            raise of_error(403, UNLISTABLE_403)
         super().add_user_to_list(lid, uid)
 
 
@@ -331,7 +331,7 @@ async def case_big_coverage_zero():
         none = _BigListFake(range(2000, 2400), refuse={9})
         try:
             await ensure_exclude_list("acc_big0", {9}, client=none)
-        except RuntimeError:
+        except Exception:   # the refusal itself (OFAPIError), re-raised: guard empty
             pass
         else:
             raise AssertionError("coverage 0 must raise")

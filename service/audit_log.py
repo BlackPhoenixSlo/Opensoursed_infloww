@@ -47,8 +47,8 @@ _AUDIT_SKIP_PREFIXES = (
     "/admin/view-lease",  # every open tab's View lease renewal, every 20 s
 )
 # Exact paths skipped (not prefixes: a new route under one stays audited). The MCP host route
-# (mcp_api.PATH): its body may carry tool args with nested secrets, which `_safe_snapshot` does
-# not redact; each tool's own inner request is the audited write. The MCP sign-in (mcp_oauth): its
+# (mcp_api.PATH): its body may carry tool args with secrets under any name, which `_safe_snapshot`
+# (by name) would keep; each tool's own inner request is the audited write. The MCP sign-in (mcp_oauth): its
 # form bodies (code, code_verifier, CSRF value) are not JSON, so `_safe_snapshot` would store them
 # as plain text; the token's mint is its own audited inner request.
 _AUDIT_SKIP_PATHS = frozenset({"/admin/mcp", "/auth/oauth/register", "/auth/oauth/authorize", "/auth/oauth/token"})
@@ -67,6 +67,17 @@ BACKGROUND_WRITES = (("POST", "/admin/perflog/"), ("POST", "/admin/errors"))
 # (the resource's stored one); the audit row's account_id then ignores the
 # caller's X-Account-Id / ?account_id=. Hooks and route share the scope's state.
 AUDIT_ACCOUNT = "audit_account_id"
+
+# `request.state` flag a credential write sets through `Depends(credential_write)`: every value
+# in its body is a credential whatever its name (a provider name, HELP_ASSISTANT_DEEPSEEK_KEY, a
+# pasted proxy line), so the row keeps only WHICH were set or cleared. Read after call_next.
+AUDIT_KEYS_ONLY = "audit_keys_only"
+
+
+def credential_write(request: Request) -> None:
+    """Route dependency: this write's audit row keeps body key names only (`AUDIT_KEYS_ONLY`).
+    Migration 0134 scrubs rows such writes stored before it existed."""
+    setattr(request.state, AUDIT_KEYS_ONLY, True)
 
 
 def audit_action(method: str, path: str) -> str:
@@ -224,7 +235,8 @@ async def audit_middleware(request: Request, call_next):
                 employee_id=emp_id,
                 account_id=account_id,
                 action=action,
-                payload_json=binary_payload_snapshot if binary_payload_snapshot is not None else _safe_snapshot(body_bytes),
+                payload_json=binary_payload_snapshot if binary_payload_snapshot is not None else _safe_snapshot(
+                    body_bytes, keys_only=getattr(request.state, AUDIT_KEYS_ONLY, False)),
                 target_type=None,
                 target_id=_extract_target_id(path),
             )
@@ -254,26 +266,47 @@ async def _write_action(
         ))
 
 
-def _safe_snapshot(body_bytes: bytes) -> str | None:
+# A body key whose value is a secret: one containing a part or ending in `_key` (at any depth),
+# or, at the top level only, one of the names (`code` + `ticket`: the 2FA sign-in's,
+# account_security_api; a nested `code` is an OF country/list code, kept).
+# `cookie` + `curl`: an OF session (/admin/session/bootstrap's pasted curl carries its cookies).
+_SECRET_KEY_PARTS = ("password", "token", "secret", "api_key", "cookie", "curl")
+_SECRET_KEYS = ("code", "ticket")
+
+
+def _is_secret_key(k: str, top: bool) -> bool:
+    k = k.lower()
+    return (top and k in _SECRET_KEYS) or k.endswith("_key") or any(s in k for s in _SECRET_KEY_PARTS)
+
+
+def _redact(v, keys_only: bool, top: bool = True):
+    """`v` with every secret-named value "***"; `keys_only`: every leaf, whatever
+    its name, becomes "set" / "cleared" (empty or null) instead."""
+    if isinstance(v, dict):
+        return {k: "***" if not keys_only and _is_secret_key(str(k), top) else _redact(x, keys_only, False)
+                for k, x in v.items()}
+    if isinstance(v, list):
+        return [_redact(x, keys_only, False) for x in v]
+    if keys_only:
+        return "cleared" if v in ("", None) else "set"
+    return v
+
+
+def _safe_snapshot(body_bytes: bytes, *, keys_only: bool) -> str | None:
     """Best-effort string snapshot of the request body for the audit log.
-    JSON: pretty-print up to 4 KB. Binary: skip. Empty: NULL."""
+    JSON: secrets redacted (`_redact`; `keys_only`, a `credential_write` route:
+    key names only), up to 4 KB. Binary: skip. Empty: NULL. The whole body is
+    parsed before the cut, so a long one (a pasted curl) is redacted too."""
     if not body_bytes:
         return None
     try:
-        text = body_bytes.decode("utf-8", errors="replace")[:4096]
-        # If it looks like JSON, normalize so the audit-log view is readable.
+        text = body_bytes.decode("utf-8", errors="replace")
         try:
             parsed = json.loads(text)
-            # Redact obvious secrets so audit isn't a vector for leaks; `code`
-            # and `ticket` are the 2FA sign-in's (account_security_api).
-            if isinstance(parsed, dict):
-                for k in list(parsed.keys()):
-                    if any(s in k.lower() for s in ("password", "token", "secret", "api_key")) \
-                            or k.lower() in ("code", "ticket"):
-                        parsed[k] = "***"
-            return json.dumps(parsed)[:4096]
         except Exception:
-            return text
+            # Not JSON: kept as text, except on a credential write (never a value).
+            return None if keys_only else text[:4096]
+        return json.dumps(_redact(parsed, keys_only))[:4096]
     except Exception:
         return None
 

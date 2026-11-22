@@ -21,9 +21,10 @@ Measured by the step-2 spike (.scratch/ultra-s2/spike/RESULT.md):
 
 Results never raise: a refused tool, bad args or a non-2xx answer come back as
 `{"error": {"status", "detail"}, "open_url"}`. `effect="send"` is refused unless `plan_step`
-("<plan id>:<step id>") is, in the DB, a `started` step of a `running` Ultra plan holding exactly
-this tool and these args (ultra_decide.may_send): only the Ultra executor (ultra_run) writes that
-state, just before its call (ticket 13).
+("<plan id>:<step id>") is, in the DB, a `started` step of a `running` Ultra plan of `plan_owner`
+holding exactly this tool and these args (ultra_decide.may_send): only the Ultra executor
+(ultra_run) writes that state, just before its call (ticket 13). `live` (the executor's "not cancelled")
+is asked once more right before the request goes out: False → a 409 NOT_LIVE result, nothing sent.
 
 A 2xx write whose answer fails the tool's `check` (args silently dropped) is a 502 error result,
 never success.
@@ -35,7 +36,7 @@ import contextvars
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import httpx
 from fastapi import Request
@@ -49,6 +50,7 @@ from db.models import UltraPlan
 
 SEND_REFUSED = "send tools run only from an owner-approved plan"
 UNSENDABLE = "not sendable: NaN/Infinity, a lone surrogate or a value too long"
+NOT_LIVE = "the plan was cancelled before this call went out; nothing was sent"
 
 
 @dataclass(frozen=True)
@@ -118,12 +120,14 @@ async def _send(req: td.Request, creds: Creds) -> tuple[int, Any]:
 
 
 async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
-               plan_step: str | None = None) -> dict[str, Any]:
+               plan_step: str | None = None, plan_owner: str | None = None,
+               live: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Run tool `t` with `args` as `creds`' owner; the shaped result, never a raise. A send tool
-    needs `plan_step`, the approved plan step it runs, `started` in the DB (`_plan_send`)."""
+    needs `plan_step`, the approved plan step it runs, `started` in the DB, of a plan `plan_owner`
+    owns (`_plan_send`). `live()` False right before the request → NOT_LIVE (409), nothing sent."""
     base = creds.public_base()
     raw_args = dict(args)
-    if t.effect == "send" and not await _plan_send(t, raw_args, plan_step):
+    if t.effect == "send" and not await _plan_send(t, raw_args, plan_step, plan_owner):
         return {**td.error(403, SEND_REFUSED), "open_url": td.open_url(base, t.open, raw_args, None)}
     try:
         parsed = td.validate_args(t, args)
@@ -131,6 +135,8 @@ async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
     except td.ArgsError as e:
         return {**td.error(422, {"detail": "invalid arguments", "errors": e.errors}),
                 "open_url": td.open_url(base, t.open, raw_args, None)}
+    if live is not None and not live():  # e.g. a cancel landed while the send gate read the plan
+        return {**td.error(409, NOT_LIVE), "open_url": td.open_url(base, t.open, raw_args, None)}
     try:
         status, body = await _send(req, creds)
     except (ValueError, httpx.InvalidURL):  # httpx can't build it: NaN/Infinity, a lone surrogate, an over-long query
@@ -142,14 +148,14 @@ async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
     return {**td.shape_result(t, status, body, base=base), "open_url": url}
 
 
-async def _plan_send(t: td.Tool, args: dict[str, Any], plan_step: str | None) -> bool:
-    """`plan_step` is a `started` step of a `running` plan with this tool and args (one short read)."""
+async def _plan_send(t: td.Tool, args: dict[str, Any], plan_step: str | None, owner: str | None) -> bool:
+    """`plan_step` is a `started` step of `owner`'s `running` plan with this tool and args (one short read)."""
     pid, _, sid = (plan_step or "").partition(":")
-    if not pid or not sid:
+    if not pid or not sid or not owner:
         return False
     async with get_session() as s:
         row = (await s.execute(select(UltraPlan.status, UltraPlan.plan_json, UltraPlan.step_states)
-                               .where(UltraPlan.id == pid))).first()
+                               .where(UltraPlan.id == pid, UltraPlan.owner_user_id == owner))).first()
     return row is not None and ud.may_send(json.loads(row.plan_json), row.status, json.loads(row.step_states),
                                            sid, t.name, args)
 

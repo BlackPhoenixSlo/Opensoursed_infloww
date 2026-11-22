@@ -193,6 +193,32 @@ async def ensure_hashes(account_id: str, *, force: bool = False,
 
 # ── Clustering ──────────────────────────────────────────────────────
 
+def _pair(a: dict, b: dict, threshold: int) -> tuple[int, int, bool] | None:
+    """(dhash distance, ahash distance, exact) when `a` and `b` are dupes at
+    `threshold`, else None: same kind (clips: duration within ±1 s), and an equal
+    md5 or both hashes within `threshold`."""
+    if a["kind"] != b["kind"]:
+        return None
+    if a["kind"] == "video" and abs((a.get("duration") or 0) - (b.get("duration") or 0)) > \
+            _VIDEO_DUR_TOLERANCE_S:
+        return None
+    if a["md5"] == b["md5"]:
+        return 0, 0, True
+    dd = hamming(a["dhash"], b["dhash"])
+    if dd > threshold:
+        return None
+    da = hamming(a["ahash"], b["ahash"])
+    if da > threshold:
+        return None
+    return dd, da, False
+
+
+def near(a: dict | None, b: dict | None, threshold: int) -> bool:
+    """Whether two fingerprints are dupes at `threshold`, as `cluster` compares
+    (a missing one never is)."""
+    return bool(a and b) and _pair(a, b, threshold) is not None
+
+
 def cluster(items: list[dict], threshold: int) -> list[dict]:
     """Seed-based grouping, oldest-first. Returns sets of >= 2 where `original`
     is the earliest-uploaded item and `dupes` are the removable copies.
@@ -231,21 +257,10 @@ def cluster(items: list[dict], threshold: int) -> list[dict]:
             cand = items[pos]
             if cand["media_id"] in claimed:
                 continue
-            if seed["kind"] == "video":
-                if abs((seed["duration"] or 0) - (cand["duration"] or 0)) > \
-                        _VIDEO_DUR_TOLERANCE_S:
-                    continue
-            if cand["md5"] == seed["md5"]:
-                dd = da = 0
-                exact = True
-            else:
-                dd = hamming(seed["dhash"], cand["dhash"])
-                if dd > threshold:
-                    continue
-                da = hamming(seed["ahash"], cand["ahash"])
-                if da > threshold:
-                    continue
-                exact = False
+            pair = _pair(seed, cand, threshold)
+            if pair is None:
+                continue
+            dd, da, exact = pair
             dupes.append({**cand, "dhash_dist": dd, "ahash_dist": da,
                           "exact": exact})
         if not dupes:
@@ -320,9 +335,10 @@ async def find_duplicates(account_id: str, threshold: int = DEFAULT_THRESHOLD,
 _BACKFILL_CONCURRENCY = 2
 _backfill: dict[str, dict[str, int]] = {}      # account → {total, done, failed}
 _backfill_running: set[str] = set()
-_backfill_finished: dict[str, float] = {}       # account → monotonic finish time
+_backfill_finished: dict[tuple[str, frozenset[int] | None], float] = {}  # (account, scope) → monotonic finish
 # After a pass, what is still missing is media OF would not give us (deleted,
-# transient fail): don't re-ask on every poll of the open modal.
+# transient fail): don't re-ask on every poll of the open modal. Per scope: a
+# folder-restricted chatter's pass covered only its folders, not the owner's vault.
 _BACKFILL_COOLDOWN_S = 600.0
 
 
@@ -342,7 +358,7 @@ async def missing_thumb_ids(account_id: str, allowed: frozenset[int] | None = No
             and not thumb_path(account_id, int(mid)).is_file()]
 
 
-async def _run_backfill(account_id: str, ids: list[int]) -> None:
+async def _run_backfill(account_id: str, ids: list[int], allowed: frozenset[int] | None) -> None:
     import vault_frames
     import vault_stills
     queue: asyncio.Queue[int] = asyncio.Queue()
@@ -368,21 +384,26 @@ async def _run_backfill(account_id: str, ids: list[int]) -> None:
         await asyncio.gather(*(_worker() for _ in range(min(_BACKFILL_CONCURRENCY, len(ids)))))
         log.info("thumb backfill done account=%s %s", account_id, st)
     finally:
-        _backfill_finished[account_id] = time.monotonic()
+        _backfill_finished[(account_id, allowed)] = time.monotonic()
         _backfill_running.discard(account_id)
 
 
-def start_thumb_backfill(account_id: str, ids: list[int]) -> bool:
-    """Fire-and-forget backfill of `ids`; False when one is already running."""
+def start_thumb_backfill(account_id: str, ids: list[int], allowed: frozenset[int] | None = None) -> bool:
+    """Fire-and-forget backfill of `ids` (the missing list for scope `allowed`, None = whole vault);
+    False when one is already running for the account or this scope's last pass is in cooldown."""
     if account_id in _backfill_running or not ids:
         return False
-    last = _backfill_finished.get(account_id)
+    last = _backfill_finished.get((account_id, allowed))
     if last is not None and time.monotonic() - last < _BACKFILL_COOLDOWN_S:
         return False
     _backfill_running.add(account_id)
     _backfill[account_id] = {"total": len(ids), "done": 0, "failed": 0}
-    asyncio.create_task(_run_backfill(account_id, ids))
+    asyncio.create_task(_run_backfill(account_id, ids, allowed))
     return True
+
+
+def backfill_running(account_id: str) -> bool:
+    return account_id in _backfill_running
 
 
 def backfill_status(account_id: str) -> dict[str, Any] | None:

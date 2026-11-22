@@ -29,6 +29,10 @@ Runtime gates:
       Share (PUT /admin/nudge-config/bulk) copies settings + lines to each
       model, keeps each model's own slot images (vault ids never cross
       accounts) and syncs each model's rule to the shared `enabled`.
+  case_nudge_config_slots_shape_is_checked:
+      slots shape enforced (single + bulk): bad text/image/day/slot → 422.
+  case_nudge_config_legacy_null_slot_still_saves:
+      a legacy null day/slot saves (single + bulk, Off too), stored as absent.
 
 Run: ./venv/bin/python service/tests/test_wiring_nudges.py   (exit 0 = pass)
 """
@@ -246,5 +250,68 @@ async def case_nudge_online_share_keeps_each_models_images():
             AutomationRule.account_id == tgt, AutomationRule.kind == "nudge_online"))).scalars().all()
     assert on == [False], on
 
+    # W30-SM F5: a share that omits `enabled` leaves each target's rule as it is (as a single save does).
+    r = await put_nudge_config_bulk(_BulkBody(account_ids=[tgt], config={"delay_minutes": 7}))
+    async with get_session() as s:
+        on = (await s.execute(select(AutomationRule.is_enabled).where(
+            AutomationRule.account_id == tgt, AutomationRule.kind == "nudge_online"))).scalars().all()
+    assert on == [False], ("no `enabled` sent: the parked rule stays parked", on)
+    assert r["enabled"] is None and r["applied"] == [{"account_id": tgt, "rule": "unchanged"}], r
+    assert (await _saved(tgt))["delay_minutes"] == 7
+
+
+
+async def case_nudge_config_slots_shape_is_checked():
+    """W30-SM F7: slots are day bucket → slot → {text: [str], image: [int]}; a string
+    `text` (sent letter by letter), a non-numeric image id (the whole slot fails), an
+    unknown day or slot are refused 422 (single and bulk); digit-string ids are
+    stored as ints, unknown entry keys dropped."""
+    from fastapi import HTTPException
+    aid = "w_slots_shape"
+    await _seed_account(aid)
+    bad = [
+        {"default": {"evening": {"text": "hey there"}}},
+        {"default": {"evening": {"text": ["ok"], "image": ["abc"]}}},
+        {"default": {"evening": {"text": ["ok"], "image": [True]}}},
+        {"funday": {"evening": {"text": ["ok"]}}},
+        {"default": {"brunch": {"text": ["ok"]}}},
+        {"default": {"evening": "hey"}},
+        {"default": ["evening"]},
+        {"default": {"evening": {"text": [3]}}},
+    ]
+    for slots in bad:
+        for call in (lambda: put_nudge_config(_ConfigBody(account_id=aid, config={"slots": slots})),
+                     lambda: put_nudge_config_bulk(_BulkBody(account_ids=[aid], config={"slots": slots}))):
+            try:
+                await call()
+                raise AssertionError(f"accepted {slots}")
+            except HTTPException as e:
+                assert e.status_code == 422, (slots, e.status_code)
+    r = await put_nudge_config(_ConfigBody(account_id=aid, config={"slots": {
+        "default": {"evening": {"text": ["hi {name}"], "image": ["901", 902], "x": 1}},
+        "friday": {"night": {"image": [7]}}, "weekend": {"night": {"text": None, "image": None}}}}))
+    assert r["config"]["slots"] == {
+        "default": {"evening": {"text": ["hi {name}"], "image": [901, 902]}},
+        "friday": {"night": {"text": [], "image": [7]}},
+        "weekend": {"night": {"text": [], "image": []}}}, r["config"]["slots"]
+
+
+
+async def case_nudge_config_legacy_null_slot_still_saves():
+    """W30-SM F33: a stored `null` day or slot (the sender skips it: that slot
+    inherits the next bucket's lines) round-trips from the editor; Save (an Off
+    save too) must not 422 on it. Single and bulk store it as absent."""
+    aid = "w_slots_legacy_null"
+    await _seed_account(aid)
+    legacy = {"friday": None, "default": {"evening": {"text": ["hi"]}, "night": None}}
+    want = {"default": {"evening": {"text": ["hi"], "image": []}}}
+    r = await put_nudge_config(_ConfigBody(account_id=aid, config={"enabled": False, "slots": legacy}))
+    assert r["config"]["slots"] == want, r["config"]
+    assert r["config"]["enabled"] is False, r["config"]
+    r = await put_nudge_config_bulk(_BulkBody(account_ids=[aid], config={"enabled": False, "slots": legacy}))
+    assert (r["count"], r["enabled"]) == (1, False), r
+    async with get_session() as s:
+        stored = json.loads((await s.get(AccountAiConfig, aid)).nudge_config_json)
+    assert stored["slots"] == want, stored
 
 _harness.run()

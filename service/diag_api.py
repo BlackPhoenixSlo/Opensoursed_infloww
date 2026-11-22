@@ -80,22 +80,26 @@ def _employee_ids_of(actor):
     return select(Employee.id).where(Employee.chatter_id == actor.id, Employee.is_active.is_(True))
 
 
-def _errors_scope(actor, is_master: bool):
-    """Which app_errors rows a principal may read or clear, as a WHERE clause
-    (None = every row). A row belongs to the Creator it names (`account_id`,
-    the principal's reach `actor.account_ids`, as the account isolation
-    middleware gates), else to the Employee it names (`_employee_ids_of`).
-    A row naming neither — or a Creator/Employee outside the principal — is
-    the Master's alone (`users.is_admin`: the instance owner, as
-    `auth.require_master` gates /admin/system's all-accounts reads)."""
-    from sqlalchemy import and_, or_
+def _errors_where(actor, is_master: bool, *, since_hours: int | None, source: str | None) -> list:
+    """The WHERE conditions of the app_errors rows a principal may read or clear
+    (GET and Clear both): within `since_hours` (None = any age), of `source`, and —
+    unless `is_master` (`_principal`) — filed by one of the principal's Employees
+    (`_employee_ids_of`): an owner reads its Agency's (its own and its chatters'
+    Mirror rows), a chatter only its own. Bound to the REPORTER, never to the
+    Creator a row names: a Creator two Agencies share, or one transferred, would
+    hand one Agency the other's reports, and a Creator's chatters each other's.
+    A row naming no Employee (no principal, a chatter of several Agencies, a
+    legacy row) is the Master's alone (`users.is_admin`, as `auth.require_master`
+    gates /admin/system's all-accounts reads)."""
     from db.models import AppError
-    if is_master:
-        return None
-    return or_(
-        AppError.account_id.in_(sorted(actor.account_ids)),
-        and_(AppError.account_id.is_(None), AppError.employee_id.in_(_employee_ids_of(actor))),
-    )
+    conds = []
+    if since_hours is not None:
+        conds.append(AppError.occurred_at >= datetime.utcnow() - timedelta(hours=since_hours))
+    if source:
+        conds.append(AppError.source == source)
+    if not is_master:
+        conds.append(AppError.employee_id.in_(_employee_ids_of(actor)))
+    return conds
 
 
 def _principal():
@@ -120,17 +124,17 @@ def header_attribution(request: Request) -> tuple[str | None, int | None]:
 
 
 async def owned_attribution(
-    account_id: str | None, employee_id: int | None, *, owner_fallback: bool = False,
+    account_id: str | None, employee_id: int | None,
 ) -> tuple[str | None, int | None]:
     """The (account_id, employee_id) an app_errors row is stored under, for the
     current principal: a Creator outside its reach (`actor.account_ids`) or an
     Employee not its own (`_employee_ids_of`; the Master may name any) is
-    dropped, so no session can file a row into another Agency's list.
-    `owner_fallback`: an owner session naming no Employee gets its own. A
-    chatter naming none gets its one Mirror Employee. No principal: nothing
-    kept (the row is the Master's)."""
+    dropped, so no session can file a row into another Agency's list. Naming
+    no Employee: an owner session gets its own; a chatter its Mirror Employee
+    in its one Agency (`owner_user_ids`; with several the row cannot be placed
+    and stays the Master's). No principal: nothing kept (the Master's row)."""
     from auth import get_request_user
-    from chatters import current_actor
+    from chatters import current_actor, get_request_chatter
     from db.engine import get_session
     from db.models import Employee
     import employees
@@ -144,15 +148,14 @@ async def owned_attribution(
         async with get_session() as s:
             mine = (await s.execute(_employee_ids_of(actor).where(Employee.id == employee_id))).first()
         employee_id = employee_id if mine else None
-    if employee_id is None and owner_fallback and user is not None:
+    if employee_id is None and user is not None:
         employee_id = await employees.get_owner_employee_id(user)
-    if employee_id is None and actor.kind != "user":
-        # A chatter naming nobody (a page with no Creator picked) is its own
-        # Mirror Employee, so its Agency's owner still reads the row. Only when
-        # it has exactly one: with several Agencies the row cannot be placed.
-        async with get_session() as s:
-            mine = (await s.execute(_employee_ids_of(actor).limit(2))).scalars().all()
-        employee_id = mine[0] if len(mine) == 1 else None
+    elif employee_id is None:
+        chatter = get_request_chatter()
+        owners = sorted(chatter.owner_user_ids) if chatter is not None else []
+        if len(owners) == 1:
+            async with get_session() as s:
+                employee_id = await employees.mirror_id(s, chatter.id, owners[0])
     return (account_id[:64] if account_id else None), employee_id
 
 
@@ -168,8 +171,7 @@ async def admin_errors_create(request: Request, body: _AppErrorBody = Body(...))
     try:
         h_account, h_employee = header_attribution(request)
         account_id, employee_id = await owned_attribution(
-            body.account_id or h_account, body.employee_id if body.employee_id is not None else h_employee,
-            owner_fallback=True)
+            body.account_id or h_account, body.employee_id if body.employee_id is not None else h_employee)
         async with get_session() as s:
             row = AppError(
                 source=(body.source or "browser")[:32],
@@ -200,24 +202,16 @@ async def admin_errors_clear(
 ) -> dict[str, Any]:
     """Dismiss errors — used by the TopNav badge's Clear button. Owner-only
     (`owner_context`: a chatter session 403s). Deletes only the rows the
-    caller's GET shows (`_errors_scope`), matching its filter so the badge
+    caller's GET shows (`_errors_where`), matching its filter so the badge
     count drops to zero immediately."""
     from agency_context import owner_context
     from db.engine import get_session
     from db.models import AppError
     from sqlalchemy import delete as sa_delete
-    ctx = await owner_context(None, _ERRORS_OWNER_ONLY)
-    actor, _ = _principal()
+    await owner_context(None, _ERRORS_OWNER_ONLY)
+    actor, is_master = _principal()
+    stmt = sa_delete(AppError).where(*_errors_where(actor, is_master, since_hours=since_hours, source=source))
     async with get_session() as s:
-        stmt = sa_delete(AppError)
-        scope = _errors_scope(actor, ctx.is_master)
-        if scope is not None:
-            stmt = stmt.where(scope)
-        if since_hours is not None:
-            cutoff = datetime.utcnow() - timedelta(hours=since_hours)
-            stmt = stmt.where(AppError.occurred_at >= cutoff)
-        if source:
-            stmt = stmt.where(AppError.source == source)
         result = await s.execute(stmt.execution_options(synchronize_session=False))
         await s.commit()
         return {"ok": True, "deleted": result.rowcount or 0}
@@ -229,20 +223,14 @@ async def admin_errors_list(
     since_hours: int = Query(24, ge=1, le=720),
     source: str | None = Query(None, description="Filter by 'browser' or 'server'"),
 ) -> dict[str, Any]:
-    """Recent errors the caller may see (`_errors_scope`), newest first.
+    """Recent errors the caller may see (`_errors_where`), newest first.
     `since_hours` defaults to 24h so the TopNav badge can count today's errors
     cheaply; `count` is every matching row, `list` at most `limit` of them."""
     from db.engine import get_session
     from db.models import AppError
     from sqlalchemy import func, select
     actor, is_master = _principal()
-    cutoff = datetime.utcnow() - timedelta(hours=since_hours)
-    conds = [AppError.occurred_at >= cutoff]
-    scope = _errors_scope(actor, is_master)
-    if scope is not None:
-        conds.append(scope)
-    if source:
-        conds.append(AppError.source == source)
+    conds = _errors_where(actor, is_master, since_hours=since_hours, source=source)
     async with get_session() as s:
         total = (await s.execute(select(func.count(AppError.id)).where(*conds))).scalar_one()
         stmt = select(AppError).where(*conds).order_by(AppError.occurred_at.desc()).limit(limit)

@@ -787,6 +787,12 @@ export interface FillOption {
   flags: string[];
 }
 
+/** The price rule a Fill plan's `conflict` names (service/script_fill_decide.py). */
+export type FillConflictRule = "under_min" | "over_max" | "below_earlier" | "quote_unholdable";
+
+/** Why `fill/undo` left a row: changed since the Fill, moved to another Sequence, gone, or script-generated. */
+export type FillKeptReason = "edited" | "moved" | "missing" | "reserved";
+
 /** The read-only Fill plan of one Sequence. `conflict`: the one price rule a `price_conflict` /
  *  `price_out_of_range` broke (`under_min`, `over_max`, `below_earlier`, `quote_unholdable`); `describe`: the
  *  Describe target counts and whether describe-all can start. */
@@ -794,7 +800,7 @@ export interface FillPlan {
   status: FillStatus;
   options: FillOption[];
   flags: string[];
-  conflict: { step: number; rule: string; price_cents: number } | null;
+  conflict: { step: number; rule: FillConflictRule; price_cents: number } | null;
   describe: {
     described: number;
     target: number;
@@ -822,10 +828,10 @@ export interface FillApplyResult {
   undo: FillUndoEntry[];
 }
 
-/** `fill/undo`'s answer: the rows emptied, and each row left with why (`edited`, `moved`, `missing`). */
+/** `fill/undo`'s answer: the rows emptied, and each row left with why. */
 export interface FillUndoResult {
   undone: number[];
-  kept: Array<{ id: number; reason: string }>;
+  kept: Array<{ id: number; reason: FillKeptReason }>;
 }
 
 /** A message queued for future delivery via OF's /messages/queue.

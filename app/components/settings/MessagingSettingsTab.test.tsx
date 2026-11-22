@@ -13,8 +13,9 @@ import MessagingSettingsTab from "@/components/settings/MessagingSettingsTab";
 type Call = { method: string; url: string; body: unknown };
 
 const URL = "/admin/settings/messaging";
-/** The stored blob: translation off with a prompt, so a PUT that drops or blanks the prompt cannot pass. */
-const STORED = { ai_translation: false, prompt: "Alpha One house prompt" };
+/** The stored blob: translation off with a legacy prompt the Relay now refuses (over 2,000 characters), so a PUT
+ *  that carries it would fail. */
+const STORED = { ai_translation: false, prompt: "p".repeat(2001) };
 const SWITCH = "Enable AI translation in Messages Pro for employees in your organization";
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -96,11 +97,11 @@ describe("MessagingSettingsTab", () => {
     await waitFor(() => expect(toggle()).toBeEnabled());
   });
 
-  it("flipping the switch PUTs the whole blob at once, carrying the stored prompt, and shows it on", async () => {
+  it("flipping the switch PUTs the blob at once without the retired prompt, and shows it on", async () => {
     await mountLoaded();
     fireEvent.click(toggle());
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(puts()).toEqual([{ method: "PUT", url: URL, body: { ai_translation: true, prompt: "Alpha One house prompt" } }]);
+    expect(puts()).toEqual([{ method: "PUT", url: URL, body: { ai_translation: true } }]);
     await waitFor(() => expect(toggle()).toBeEnabled());
     expect(toggle()).toHaveAttribute("aria-checked", "true");
   });
@@ -115,7 +116,7 @@ describe("MessagingSettingsTab", () => {
     fireEvent.click(toggle());
     await settle();
     expect(puts()).toHaveLength(1);
-    answer(jsonRes({ tab: "messaging", config: { ai_translation: true, prompt: "Alpha One house prompt" } }));
+    answer(jsonRes({ tab: "messaging", config: { ai_translation: true } }));
     await waitFor(() => expect(toggle()).toBeEnabled());
     expect(toggle()).toHaveAttribute("aria-checked", "true");
   });

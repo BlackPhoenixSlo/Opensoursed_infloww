@@ -1036,3 +1036,83 @@ def test_fill_text_puts_in_the_marker_and_the_proof_fan():
     assert fill_text("{marker} for {fan}", "oi-proof-r1", None) == "oi-proof-r1 for "
     assert fill_text("plain", "m", FAN) == "plain"
     assert fill_text("{handle}", "oi-proof-20261121T010203Z", None) == "oi_proof_20261121t010203z"   # ticket 69
+
+
+# ofm-not-yet ticket 101: reads, then writes no Fan can see, then Fan-reaching writes, then Lockout, whatever the
+# given order; within a group a `canon` id order (the proof list's) wins over the caller's.
+RD = P(id="read")
+INV = armed("POST", "/api2/v2/lists", id="invisible")
+DAO = armed("POST", "/api2/v2/posts", id="at-once", tags={"delete_at_once", "post"})
+MSG = armed("POST", "/api2/v2/messages/queue", id="msg", tags={"message"})
+PUB = armed("PUT", "/api2/v2/schedules/{id}/publish", id="publish")
+
+
+@pytest.mark.parametrize("p, group", [(RD, 0), (INV, 1), (DAO, 2), (MSG, 2), (PUB, 2), (L1, 3)],
+                         ids=["read", "fan-invisible write", "delete-at-once", "message", "schedule publish",
+                              "lockout"])
+def test_order_group(p, group):
+    from proof_core import order_group
+    assert order_group(p) == group
+
+
+def test_order_runs_reads_then_invisible_then_fan_reaching_then_lockout_whatever_the_given_order():
+    got = [p.id for p in order([L1, PUB, MSG, INV, DAO, RD])]
+    assert got == ["read", "invisible", "publish", "msg", "at-once", "sec.block-ip"]
+
+
+def test_order_canon_fixes_the_order_inside_a_group():
+    got = [p.id for p in order([MSG, DAO, PUB, INV, RD], canon=("read", "invisible", "at-once", "publish", "msg"))]
+    assert got == ["read", "invisible", "at-once", "publish", "msg"]
+    # ids outside canon keep the given order, after the canon ones of their group
+    X = armed("POST", "/api2/v2/trials", id="x")
+    assert [p.id for p in order([X, INV], canon=("invisible",))] == ["invisible", "x"]
+
+
+# ── follow-up #5: an arm's declared payload (Write.payload, class 4) ──
+
+def _ppv(**kw):
+    return {"text": "<p>oi-proof-r</p>", "price": 3, "mediaFiles": [9001], "previews": [], "lockedText": False, **kw}
+
+
+@pytest.mark.parametrize("body, why", [
+    (_ppv(), None),
+    (_ppv(price="3"), None),                                   # a numeric string: the same price
+    (_ppv(text="<p>hi</p>"), "marker"),
+    (_ppv(text="<p>oi-proof-q</p>"), "marker"),                # round 2 #22: another run's marker
+    (_ppv(text="<p>oi-proof-rr</p>"), "marker"),               # this run's as a prefix only
+    (_ppv(text="oi-proof-r copy"), None),                      # this run's as a whole token
+    (_ppv(price=0), "price"),                                  # free media
+    (_ppv(price=30), "price"),
+    (_ppv(price=True), "price"),
+    ({k: v for k, v in _ppv().items() if k != "price"}, "price"),
+    (_ppv(previews=[9001]), "free previews"),
+    (_ppv(mediaFiles=[]), "one locked medium"),
+    (_ppv(mediaFiles=[9001, 9002]), "one locked medium"),
+    ("text=oi-proof-r&price=3", "not a JSON object"),
+])
+def test_the_ppv_send_leaves_only_as_declared(body, why):
+    """p2.bubble-unsend-ppv: the guard holds the send to the run's marker, the declared price, one locked medium and no
+    free preview (phase2.ppv_payload) before it leaves."""
+    from proofs.phase2 import PROOFS as P2
+    proof = next(p for p in P2 if p.id == "p2.bubble-unsend-ppv")
+    v = decide(R("POST", f"/api2/v2/chats/{FAN}/messages", body), Run(proof=proof, proof_fan=FAN, marker="oi-proof-r"))
+    if why is None:
+        assert v.kind == "allow", v
+    else:
+        assert (v.kind, v.cls) == ("refused", "unarmed") and why in v.reason and v.key == ("arm", 0), v
+
+
+def test_a_payload_proof_armed_with_no_marker_refuses_the_send():
+    """Round 2 #22: the payload binds to the marker the arm declared; none armed, nothing leaves."""
+    from proofs.phase2 import PROOFS as P2
+    proof = next(p for p in P2 if p.id == "p2.bubble-unsend-ppv")
+    v = decide(R("POST", f"/api2/v2/chats/{FAN}/messages", _ppv()), Run(proof=proof, proof_fan=FAN))
+    assert (v.kind, v.cls) == ("refused", "unarmed") and "no run marker armed" in v.reason, v
+
+
+def test_a_payload_refuses_outside_it_and_an_arm_without_one_takes_any_body():
+    w = Write("POST", "/api2/v2/lists", payload=lambda body, run, at: None if body == {"ok": 1} else "not ok")
+    p = P(arm=[w], undo=[Write("DELETE", "/api2/v2/lists/{id}")])
+    assert decide(R("POST", "/api2/v2/lists", {"ok": 2}), Run(proof=p)).cls == "unarmed"
+    assert decide(R("POST", "/api2/v2/lists", {"ok": 1}), Run(proof=p)).kind == "allow"
+    assert decide(R("POST", "/api2/v2/lists", {"any": 1}), Run(proof=armed("POST", "/api2/v2/lists"))).kind == "allow"

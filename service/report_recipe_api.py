@@ -2,7 +2,8 @@
 
   POST /admin/reports/run        → {recipe, format csv|xlsx|json}: the report
                                    (`report_recipe.run` / `build_file`); 400 {errors} per field
-                                   when refused, 429 while another run of the
+                                   when refused, 413 past 20 MB (both file
+                                   routes), 429 while another run of the
                                    Agency is in flight. The "export" Function
                                    permission's route (permissions.ACTIONS).
   GET  /admin/reports/catalogue  → the datasets a recipe may name: the help
@@ -34,7 +35,7 @@ OWNERS_ONLY = "reports are for Agency owners"
 
 
 async def refused(_request: Request, e: report_recipe.RecipeError) -> JSONResponse:
-    """report_recipe.RecipeError's answer (server.py registers it): 400/429 {detail, errors}."""
+    """report_recipe.RecipeError's answer (server.py registers it): 400/413/429 {detail, errors}."""
     return JSONResponse({"detail": str(e), "errors": e.errors}, status_code=e.status)
 
 

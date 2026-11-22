@@ -1,0 +1,24 @@
+{
+ "id": "streaming--add-cover",
+ "section": "streaming",
+ "label": "Add cover",
+ "pages": [
+  "streaming/dashboard/create"
+ ],
+ "phase": 4,
+ "source": null,
+ "captured": null,
+ "request": null,
+ "facts": {
+  "menu_record": "streaming--schedule-cover-menu-page (live, 2026-11-21): Upload file, Take photo; no vault item; no request on open",
+  "gatherer_record": ".scratch/ofm-not-yet/captures/streaming--schedule-add-cover-upload.json (js): mediaFiles=[this.uploadedFile] in save(); the item's shape is not in the cited evidence",
+  "schedule_with_cover": "not captured live: OnlyFans redirects /my/streaming/dashboard/create to / when authUser.isScheduledStreamsAllowed is false (the Proof Creator), so no scheduled stream with a cover could be sent or seen",
+  "upload": "not wired: its only use is SCHEDULE's cover body, which is blocked; the schedule chunk's upload create body was not read (gatherer record: 'not read in this pass')",
+  "app": "not wired: Add cover stays as the page ships it, disabled with the Not-yet title (D1); SCHEDULE keeps the no-cover body"
+ },
+ "proof": {
+  "kind": "mocked",
+  "verdict": "parked",
+  "reason": "blocked: schedule create gated (isScheduledStreamsAllowed false); body + upload need capture on an account allowed to schedule streams. Nothing is built (ADR-0005, never a guessed body); the control stays unwired."
+ }
+}

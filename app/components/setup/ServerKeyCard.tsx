@@ -1,10 +1,9 @@
 "use client";
 
 /**
- * DriveKeyCard — Settings → AI keys → Google Drive. The one server key the vault
- * importer's Drive section needs (GOOGLE_DRIVE_API_KEY), set where an operator
- * looks for keys rather than only in the master's System tab. `ServerKeyCard` is
- * the same card for any one secrets-store key (AI keys also shows TypeSafe's). It is the same
+ * ServerKeyCard — one secrets-store key's card in Settings → AI keys (AiKeysTab names
+ * which: the fallback TypeSafe key, the vault importer's Google Drive key), set where an
+ * operator looks for keys rather than only in the master's System tab. It is the same
  * secrets-store entry the "Server keys" card edits: stored server-side in
  * service/secrets/secrets.json, read masked, never sent back raw, and the relay
  * still falls back to the env var when it is unset here.
@@ -19,16 +18,6 @@ import { useSaveSecrets, useSecrets } from "@/hooks/useSecrets";
 import { Button } from "@/components/ui/primitives";
 import SecretKeyField from "@/components/setup/SecretKeyField";
 import { Skeleton } from "@/components/ui/Skeleton";
-
-const DRIVE_KEY = "GOOGLE_DRIVE_API_KEY";
-
-const DRIVE_INTRO = (
-  <>
-    Lets Vault Pro import from a Google Drive folder link. A plain Google API key with the
-    Drive API enabled — the folder itself must be shared as &quot;Anyone with the link can
-    view&quot;.
-  </>
-);
 
 type ServerKeyProps = {
   /** The secrets-store key (service/secrets_store.py KNOWN). */
@@ -69,7 +58,7 @@ function ServerKeyEditor({ name, savedNote }: Omit<ServerKeyProps, "intro">) {
 }
 
 /** A section body; AI keys' Panel gives it its Section title. */
-export function ServerKeyCard({ name, intro, savedNote }: ServerKeyProps) {
+export default function ServerKeyCard({ name, intro, savedNote }: ServerKeyProps) {
   const { user } = useUser();
   return (
     <div className="space-y-3">
@@ -83,8 +72,4 @@ export function ServerKeyCard({ name, intro, savedNote }: ServerKeyProps) {
       )}
     </div>
   );
-}
-
-export default function DriveKeyCard() {
-  return <ServerKeyCard name={DRIVE_KEY} intro={DRIVE_INTRO} savedNote="Saved — Drive import works on the next upload." />;
 }

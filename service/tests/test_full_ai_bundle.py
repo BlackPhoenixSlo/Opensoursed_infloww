@@ -38,6 +38,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_bundle.py  (exit 0 = pass)
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+from _jev_fixtures import mapped  # noqa: E402
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, OWNER_A, FakePriceJev, _body, _db, _guarded, _post, _price, _put_draft, _reply, _rows, _vault,
@@ -80,7 +81,7 @@ def _jev(lane5, kind="photo", **tags):
 
 
 def _row(mid, lane="$50", kind="photo"):
-    fields = vault_ai_brief.settled_reading({**DRESSED, vault_jev_rules.JEV_KEY: _jev(lane, kind, **TOY_J)})
+    fields = vault_ai_brief.settled_reading(mapped({**DRESSED, vault_jev_rules.JEV_KEY: _jev(lane, kind, **TOY_J)}))
     return {"media_id": mid, "kind": kind, "created_at": T0 + timedelta(minutes=mid),
             "duration_seconds": 12 if kind == "video" else None, "fields": fields,
             "describe_status": "described", "score": 0, "refs": set(), "packs": set()}
@@ -398,7 +399,7 @@ def _clips(mids):
                 s.add(VaultItem(account_id=A, media_id=mid, kind="video", duration_seconds=30,
                                 created_at=T0 + timedelta(days=mid), tags="[]", describe_status="described",
                                 of_folder_ids="[]",
-                                ai_fields_json=json.dumps({**DESCRIBED, vault_jev_rules.JEV_KEY: CLIP_JEV})))
+                                ai_fields_json=json.dumps(mapped({**DESCRIBED, vault_jev_rules.JEV_KEY: CLIP_JEV}))))
 
     async def drop():
         async with get_session() as s:

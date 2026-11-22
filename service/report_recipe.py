@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import csv_export
 import msg_stats
 import of_stats_daily
+import report_files
 import report_recipe_decide as rd
 import tx_rollup
 import xlsx_io
@@ -40,6 +41,7 @@ from tenant_keys import billable_owners
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 _running: set[str] = set()  # Agencies with a run in flight
+MAX_FILE_BYTES = report_files.MAX_BYTES_PER_USER  # one built file, both routes (export + held link): else 413
 
 
 class RecipeError(Exception):
@@ -59,7 +61,7 @@ class Table:
     to: date
     tz: str
     dataset: str
-    notes: list[str]  # caveats the engine reported (credited_sales' fallback line)
+    notes: list[str]  # caveats the engine reported (credited_sales' fallback line, sales' history gaps)
 
 
 @dataclass(frozen=True)
@@ -121,12 +123,19 @@ async def agency_scope(s: AsyncSession, user_id: str, now: datetime) -> AgencySc
 Cells = tuple[list[dict[str, Any]], dict[str, dict[Any, str]], list[str]]  # cells, extra labels {dim: …}, notes
 
 
+def history_note(gaps: int) -> str:
+    """`sales`' note for earnings_window's gaps: Creator-days whose totals are the ledger's alone."""
+    return (f"{gaps} Creator-day{'' if gaps == 1 else 's'} before a Creator was added have no OnlyFans figure "
+            "stored: totals there are our ledger's only and may be low")
+
+
 async def _sales(r: rd.Recipe, sc: _Scope) -> Cells:
     """The Creator reports' path: the ledger per local day and kind
     (`stats._day_sums`) plus OnlyFans' own figure where it is over the
-    ledger's (`stats._of_top_ups`, the UTC day on the same-date report day)."""
+    ledger's (`stats._of_top_ups`, the UTC day on the same-date report day); its
+    gaps (days before a Creator was added, no OF figure stored) are a note."""
     import stats
-    of_cells, _gaps = await of_stats_daily.earnings_window(sc.ids, sc.start, sc.end)
+    of_cells, gaps = await of_stats_daily.earnings_window(sc.ids, sc.start, sc.end)
     async with get_session() as s:
         cells = await stats._day_sums(s, ("account_id", "kind"), sc.zone, account_ids=sc.ids, start=sc.start,
                                       end=sc.end, where={"status": TRACKED_STATUSES})
@@ -143,7 +152,7 @@ async def _sales(r: rd.Recipe, sc: _Scope) -> Cells:
         if unit:
             cell[unit] = rd.period_label(c["day"], unit, sc.week_start)
         out.append(cell)
-    return out, {}, []
+    return out, {}, [history_note(gaps)] if gaps else []
 
 
 async def _employee_sales(r: rd.Recipe, sc: _Scope) -> Cells:
@@ -287,24 +296,38 @@ async def _guarded_table(ctx: AgencyContext, recipe: Any, now: datetime | None) 
 
 
 async def build_file(ctx: AgencyContext, recipe: Any, fmt: str, *, now: datetime | None = None) -> ReportFile:
-    """The recipe's report as a csv or xlsx file (`fmt`; the route's body type enforces it)."""
+    """The recipe's report as a csv or xlsx file (`fmt`; the route's body type enforces it); RecipeError 413 past
+    MAX_FILE_BYTES (a csv stops serializing there)."""
     t = await _guarded_table(ctx, recipe, now)
     name = rd.filename(t.dataset, t.frm, t.to, fmt)
     if fmt == "csv":
         # The rows are in memory already; a POST's StreamingResponse trips the
         # middleware stack (it listens for a disconnect on a consumed body).
-        body = b"".join([c async for c in csv_export.stream_csv(_aiter(t.rows), t.columns,
-                                                                 lambda r: [_cell(v) for v in r])])
+        chunks, size = [], 0
+        async for c in csv_export.stream_csv(_aiter(t.rows), t.columns, lambda r: [_cell(v) for v in r]):
+            size += len(c)
+            if size > MAX_FILE_BYTES:  # stop serializing at the cap
+                raise _too_large()
+            chunks.append(c)
+        body = b"".join(chunks)
         if t.notes:
             buf = io.StringIO()
             csv.writer(buf).writerows(_note_rows(t))
             body += buf.getvalue().encode("utf-8")
-        return ReportFile(name, "text/csv", body)
-    cap = csv_export.CSV_MAX_ROWS
-    rows = [[_cell(v) for v in r] for r in t.rows[:cap]]
-    if len(t.rows) > cap:
-        rows.append([csv_export.TRUNCATED_LINE] + [""] * (len(t.columns) - 1))
-    return ReportFile(name, XLSX_TYPE, xlsx_io.write_xlsx([t.columns, *rows, *_note_rows(t)], "Report"))
+    else:
+        cap = csv_export.CSV_MAX_ROWS
+        rows = [[_cell(v) for v in r] for r in t.rows[:cap]]
+        if len(t.rows) > cap:
+            rows.append([csv_export.TRUNCATED_LINE] + [""] * (len(t.columns) - 1))
+        body = xlsx_io.write_xlsx([t.columns, *rows, *_note_rows(t)], "Report")
+    if len(body) > MAX_FILE_BYTES:
+        raise _too_large()
+    return ReportFile(name, "text/csv" if fmt == "csv" else XLSX_TYPE, body)
+
+
+def _too_large() -> RecipeError:
+    return RecipeError({"file": f"report file over {MAX_FILE_BYTES // (1024 * 1024)} MB; narrow the window, "
+                                "the Creators or the rows"}, 413)
 
 
 async def run(ctx: AgencyContext, recipe: Any, *, now: datetime | None = None) -> dict[str, Any]:

@@ -77,6 +77,8 @@ B = {"described": 250, "target": 500, "goal": 1000, "complete": True, "jev": {"r
      "open:mirror_incomplete"),
     ("progress capped", B, {"described": 400}, {"capped": True}, {}, "defer"),
     ("jev_capped short of slice", B, {"described": 400}, {"error": "no Jev reading (jev_capped)"}, {}, "defer"),
+    ("jev_capped after a fetch failure", {**B, "zero_sweeps": 1}, {"described": 250},
+     {"error": "fetch failed: 502", "jev_capped": True}, {}, "defer"),
     ("jev_capped but slice reached", B, {"described": 500}, {"error": "no Jev reading (jev_capped)"}, {},
      "continue"),
     ("key_error mid-sweep", B, {"described": 260}, {"key_error": {"message": "x"}}, {}, "open:key"),
@@ -153,6 +155,17 @@ def test_may_sweep(spent, running, want):
 ])
 def test_pause_reason(window, want):
     assert rd.pause_reason(window) == want
+
+
+@pytest.mark.parametrize("codes,want", [   # W30 F51: sweeps left in flight carry a code; the worst one names the pause
+    ({"start_unanswered"}, "start_unanswered"),
+    ({"describe_still_running"}, "describe_still_running"),
+    ({"recount_unreadable"}, "recount_unreadable"),
+    ({"start_unanswered", "describe_still_running"}, "describe_still_running"),
+    ({"start_unanswered", "describe_still_running", "recount_unreadable"}, "recount_unreadable"),
+])
+def test_unsettled_pause(codes, want):
+    assert rd.unsettled_pause(codes) == want
 
 
 @pytest.mark.parametrize("status,want", [(0, "retry"), (500, "retry"), (503, "retry"), (403, "open"),
@@ -254,6 +267,19 @@ def test_resume_open_or_defer_never_drops_an_in_flight_sweep(line):
     st = rd.resume(j + [_sw("a", 0, 250, "continue")])            # only a sweep line settles it
     assert st["creators"]["a"]["state"] == "pending" and "sweep" not in st["creators"]["a"]
     assert st["spent_mc"] == 100
+
+
+def test_resume_not_started_closes_the_reservation_without_a_sweep():
+    """The start POST is journaled first (sweep_start); a refused start closes it with `not_started`: pending,
+    no spend, not a zero-progress sweep, and a defer written after it applies (W30 F5)."""
+    j = HEAD + [_ln("sweep_start", "a", target=250, before=0),
+                _ln("sweep", "a", before=0, after=0, outcome="not_started", http=429,
+                    cap_before={"day": "d", "spent_millicents": 0}, cap_after={"day": "d", "spent_millicents": 0})]
+    st = rd.resume(j)
+    c = st["creators"]["a"]
+    assert (c["state"], c["zero_sweeps"], "sweep" in c) == ("pending", 0, False)
+    assert st["sweeps"] == [] and st["spent_mc"] == 0
+    assert rd.resume(j + [_ln("defer", "a", until=5.0)], now=1.0)["creators"]["a"]["state"] == "deferred"
 
 
 def test_resume_one_of_three_slots_in_flight():
@@ -613,17 +639,21 @@ DA, PLAN_P = "/admin/vault-ai/describe-all", "/admin/vault-ai/describe-all/plan"
 COL_STATUS, COL_CONT = "/admin/vault-ai/collect/status", "/admin/vault-ai/collect/continue"
 
 
-def test_failing_start_is_retried_after_a_sleep_then_opened(serve, tmp_path, monkeypatch):
+def test_failing_start_is_retried_after_a_sleep_then_left_in_flight(serve, tmp_path, monkeypatch):
+    """A 5xx start answer is unknown (the relay may still claim and bill it): retried on the same reservation,
+    bounded, then left in flight (never closed, never re-baselined) and the run pauses (W30 F40)."""
     monkeypatch.setattr(core, "POLL_S", 0.05)
     bad, good = Cr("100", "a"), Cr("101", "b", describable=250)
     fake = Fake([bad, good])
     fake.fail[(DA, "100")] = 500
     url = serve(fake)
-    assert run(url, tmp_path, "describe", "--live") == 0
+    assert run(url, tmp_path, "describe", "--live") == core.EXIT_PAUSED
     hits = fake.hits[(DA, "100")]
     assert len(hits) == rd.RETRY_BUDGET                               # bounded, never forever
     assert all(b - a >= 0.05 for a, b in zip(hits, hits[1:]))       # each retry waits a poll interval
-    assert [(o["creator"], o["reason"]) for o in kinds(tmp_path, "open")] == [("100", "relay_errors")]
+    assert len(kinds(tmp_path, "sweep_start")) == 2 and not kinds(tmp_path, "open")   # one reservation for 100
+    assert kinds(tmp_path, "pause")[-1]["reason"] == "start_unanswered"
+    assert rd.resume(journal(tmp_path))["creators"]["100"]["state"] == "running"
     assert good.described == 250
 
 
@@ -707,6 +737,18 @@ def test_dry_run_reserves_running_sweeps_like_the_live_run(serve, tmp_path, caps
     assert "describe 102: would pause" in out and fake.posts == []
     assert run(url, tmp_path, "describe", "--ceiling-cents", "150") == 0
     assert "describe 102: would sweep to target 250" in capsys.readouterr().out
+
+
+def test_dry_run_labels_a_start_past_the_free_slots_conditional(serve, tmp_path, capsys):
+    """W30 F13: with every slot taken, a later Creator starts only after a sweep ahead ends and only if its real
+    spend leaves the ceiling room: the dry run says so instead of a plain "would sweep"."""
+    fake = Fake([Cr("100", "a"), Cr("101", "b")])
+    assert run(serve(fake), tmp_path, "describe", "--slots", "1") == 0
+    out = capsys.readouterr().out
+    assert "describe 100: would sweep to target 250" in out, out
+    assert ("describe 101: would queue for a slot, then sweep (if the sweeps ahead leave ceiling room) to target "
+            "250") in out, out
+    assert fake.posts == []
 
 
 def test_collect_open_never_drops_a_sweep_left_in_flight(serve, tmp_path):

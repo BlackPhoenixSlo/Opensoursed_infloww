@@ -16,6 +16,7 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 
+import { CopyButton } from "@/components/ui/CopyButton";
 import { errText } from "@/lib/errText";
 import { relay } from "@/lib/relay";
 import type { SignedInKind, TwoFactorChallenge } from "@/lib/twoFactor";
@@ -25,22 +26,10 @@ import { cn } from "@/lib/utils";
 interface InitReply { secret: string; otpauth_uri: string; enrol_token: string }
 interface ActivateReply { recovery_codes: string[]; kind: SignedInKind }
 
+/** The step's text links: Copy buttons, the authenticator link, Cancel. */
+const TEXT_LINK = "text-sm underline underline-offset-4";
 /** The setup key in fours, as authenticator apps print it. */
 const grouped = (secret: string) => secret.replace(/(.{4})/g, "$1 ").trim();
-
-/** A copy-to-clipboard text button that says "Copied" once it worked. */
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      className="text-sm underline underline-offset-4"
-      onClick={() => { void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => {}); }}
-    >
-      {copied ? "Copied" : label}
-    </button>
-  );
-}
 
 /** The otpauth:// link as a QR code to scan from a computer (a PNG data URL; white quiet zone so it scans on the dark
  *  theme too). Hidden below `sm`: a phone cannot scan its own screen, and the shorter dialog keeps the code field above
@@ -67,7 +56,8 @@ export function BackupCodes({ codes }: { codes: string[] }) {
       <ul aria-label="Backup codes" className="mt-3 grid grid-cols-1 gap-x-6 sm:grid-cols-2 gap-y-1 font-mono text-sm">
         {codes.map((c) => <li key={c}>{c}</li>)}
       </ul>
-      <div className="mt-3"><CopyButton text={codes.join("\n")} label="Copy codes" /></div>
+      <div className="mt-3"><CopyButton bare text={codes.join("\n")} label="Copy codes" doneLabel="Copied" holdMs={2000}
+        className={TEXT_LINK} /></div>
     </div>
   );
 }
@@ -137,8 +127,9 @@ export function TwoFactorSetup({ ticket, inputClass, buttonClass, onDone }: {
             <SetupQr uri={init.otpauth_uri} />
             <p aria-label="Setup key" className="mt-2 select-all font-mono text-sm tracking-wider">{grouped(init.secret)}</p>
             <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-              <CopyButton text={init.secret} label="Copy setup key" />
-              <a className="text-sm underline underline-offset-4" href={init.otpauth_uri}>Open in authenticator app</a>
+              <CopyButton bare text={init.secret} label="Copy setup key" doneLabel="Copied" holdMs={2000}
+                className={TEXT_LINK} />
+              <a className={TEXT_LINK} href={init.otpauth_uri}>Open in authenticator app</a>
             </div>
           </>
         ) : !error && <p className="mt-2 text-sm opacity-60">…</p>}
@@ -191,7 +182,7 @@ export default function TwoFactorStep({ challenge, inputClass, buttonClass, onSi
   }
 
   const back = (
-    <button type="button" onClick={onCancel} className="mt-6 text-sm underline underline-offset-4">
+    <button type="button" onClick={onCancel} className={cn("mt-6", TEXT_LINK)}>
       Sign in with another account
     </button>
   );

@@ -52,14 +52,16 @@ describe("canSave + buildPayload (the rule's payload, pinned)", () => {
 
 describe("saveBody", () => {
   const off = [{ type: "classOn", cls: "text", on: false }] as AutoUnsendAction[];
-  it.each<[string, AutoUnsendAction[], boolean, ReturnType<typeof saveBody>]>([
-    ["a class on: on/off plus the payload", [{ type: "enabled", on: true }], false,
-      { is_enabled: true, payload: { policy: { mass_text_hours: 4 } } }],
-    ["no class, rule on: nothing sent", [...off, { type: "enabled", on: true }], true, null],
-    ["no class, no rule yet, off: nothing sent", off, false, null],
-    ["no class, saved rule turned off: only is_enabled, the saved policy stays", [hydrate(true, {}), { type: "enabled", on: false }], true,
-      { is_enabled: false }],
-  ])("%s", (_name, actions, hasRule, want) => {
-    expect(saveBody(run(actions), hasRule)).toEqual(want);
+  it.each<[string, AutoUnsendAction[], number | null, ReturnType<typeof saveBody>]>([
+    ["a class on, no rule yet: create with the payload", [{ type: "enabled", on: true }], null,
+      { kind: "create", is_enabled: true, payload: { policy: { mass_text_hours: 4 } } }],
+    ["a class on, saved rule: update it with the payload", [{ type: "enabled", on: true }], 9,
+      { kind: "update", id: 9, is_enabled: true, payload: { policy: { mass_text_hours: 4 } } }],
+    ["no class, rule on: nothing sent", [...off, { type: "enabled", on: true }], 9, null],
+    ["no class, no rule yet, off: nothing sent", off, null, null],
+    ["no class, saved rule turned off: only is_enabled, the saved policy stays", [hydrate(true, {}), { type: "enabled", on: false }], 9,
+      { kind: "update", id: 9, is_enabled: false }],
+  ])("%s", (_name, actions, ruleId, want) => {
+    expect(saveBody(run(actions), ruleId)).toEqual(want);
   });
 });

@@ -145,7 +145,9 @@ def case_bucket_shapes():
     # senders no longer exist to classify.
     # 3 → 4 on 2026-10-30: the send seam moved out of _common into _send_failure;
     # _common stays as its re-export shim.
-    assert len(buckets["exempt"]) == 4, buckets["exempt"]
+    # 4 → 5 on 2026-11-22 (W30): full_ai_look, Full AI live's last look — no send
+    # code; the scan matches its before_write hook's name.
+    assert len(buckets["exempt"]) == 5, buckets["exempt"]
 
 
 def case_mass_premade_delegates():

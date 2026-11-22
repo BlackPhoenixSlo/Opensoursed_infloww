@@ -71,6 +71,18 @@ def registry_pool(path) -> dict[str, int]:
 
 
 _INTERIM = re.compile(rb"HTTP/1\.[01] 1(?!01)\d\d ")  # interim 1xx answer (101 upgrade excluded: a WebSocket keeps its tunnel anyway)
+# A head too short to tell yet: it may still grow into an interim status line (a read can end anywhere).
+_INTERIM_PART = re.compile(rb"H(?:T(?:T(?:P(?:/(?:1(?:\.(?:[01](?: (?:1(?:\d\d?)?)?)?)?)?)?)?)?)?)?\Z")
+
+
+def _answered(head: bytes) -> tuple[bool, bytes]:
+    """(the answer began, what to keep for the next read) for the answer bytes seen so far: complete interim
+    1xx heads are dropped; an incomplete one, or a start that may still become one, waits for more bytes."""
+    while _INTERIM.match(head) and (end := head.find(b"\r\n\r\n")) >= 0:
+        head = head[end + 4:]
+    if not head or _INTERIM.match(head) or _INTERIM_PART.match(head):
+        return False, head
+    return True, b""
 
 
 async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tuple,
@@ -82,6 +94,7 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tup
     before the refusals began closes too). The cut assumes one request in flight per tunnel (curl never
     pipelines); a 1xx interim answer does not count as the answer. Either direction ending shuts both
     sockets, which ends the other."""
+    head = b""  # answer bytes not judged yet (an interim head split across reads)
     try:
         while chunk := await src.read(65536):
             if once is not None and b"upgrade: websocket" in chunk.lower():
@@ -90,8 +103,10 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tup
                 break
             dst.write(chunk)
             await dst.drain()
-            if mark is not None and not _INTERIM.match(chunk):
-                mark.set()  # a `100 Continue` is not the answer: the request body still follows it
+            if mark is not None and not mark.is_set():
+                began, head = _answered(head + chunk)
+                if began:
+                    mark.set()  # a `100 Continue` is not the answer: the request body still follows it
         # Every buffered byte to the kernel before the shutdown below: drain() stops at the transport's high-water
         # mark, and the shutdown dropped what was left (a slow reader's big body lost its last <= 64 KiB, measured).
         dst.transport.set_write_buffer_limits(0)

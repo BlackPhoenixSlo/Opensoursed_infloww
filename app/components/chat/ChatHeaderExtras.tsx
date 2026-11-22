@@ -26,6 +26,7 @@ import { openGroupTab } from "@/lib/groupChannel";
 import { useMassExclude } from "@/hooks/useMassExclude";
 import { relay } from "@/lib/relay";
 import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
+import { relayNow } from "@/lib/ageClock";
 import type { FanId } from "@/lib/fanId";
 import { MP } from "@/lib/messagesPro";
 
@@ -55,7 +56,7 @@ export function ChatHeaderExtras({ id, accountId, fanId }: Props) {
     mutationFn: () =>
       relay.delete(`/api/of/v2/chats/${fanId}/mark-as-read`, { accountId }),
     onSuccess: () => {
-      flipCachedReadState(qc, accountId, { fanId, unread: true, at: Date.now() });
+      flipCachedReadState(qc, accountId, { fanId, unread: true, at: relayNow() }, { own: true });
       flash(true, "Marked unread");
     },
     onError: (e: Error) => flash(false, e.message),

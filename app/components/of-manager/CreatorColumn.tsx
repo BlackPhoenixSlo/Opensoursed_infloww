@@ -25,6 +25,7 @@ import { useRosterCounts } from "@/hooks/useRosterCounts";
 import { useOnScreenLease } from "@/hooks/useViewLease";
 import { ofMeQuery } from "@/lib/ofMe";
 import type { AccountMeta, WatcherAccount } from "@/lib/relay";
+import { liveSession } from "@/lib/sessionConnectivity";
 import { subscribeToStorage } from "@/lib/storageSync";
 import { cn } from "@/lib/utils";
 
@@ -51,11 +52,11 @@ function setCollapsed(on: boolean) {
  *  filters the loaded list, so a short wait only spares the rows' remounts while typing. */
 const SEARCH_WAIT_MS = 300;
 
-/** A creator the OF view can show: a captured session not flagged dead. Every column lists `useActiveAccounts()`
- *  (captured sessions only), so a row that fails this is a logged-out one. */
-export const liveSession = (a: AccountMeta) => !!a.has_session && !a.session_dead_at;
 /** AccountsTable's word for a flagged session. */
 const LOGGED_OUT = "Disconnected";
+
+/** A controlled column's "All creators" pick (CreatorColumn `all`). */
+export type AllPick = { on: boolean; pick: () => void; label?: string; row?: boolean };
 
 /** Share for Share's marks on a creator row: the "S4S" tag (opted in) and its pending received requests. */
 export type S4SMark = { optedIn: boolean; pending: number };
@@ -76,10 +77,9 @@ export function CreatorColumn(props: {
   value?: string | null;
   onChange?: (accountId: string) => void;
   /** A controlled column's "All creators" pick; `on` while it is the pick. `label` relabels the row (Scripts'
-   *  "All models"), default "All creators". Without it the column has no "All creators" row. */
-  all?: { on: boolean; pick: () => void; label?: string };
-  /** "All creators" as a creator row (rainbow tile) that picks it in one click, in place of the menu. */
-  allRow?: boolean;
+   *  "All models"), default "All creators"; `row`: a creator row (rainbow tile) that picks it in one click, in place of
+   *  the menu. Without it the column has no "All creators" row. */
+  all?: AllPick;
   /** Watcher accounts: dimmed rows after the creators, never picked (a page that passes them). OF Manager's
    *  own lists its watchers in `accounts` instead, as pickable rows with a "watcher" badge (WatcherScope). */
   watchers?: WatcherAccount[];
@@ -113,15 +113,13 @@ function ScopedColumn({ accounts, onPicked, className }: {
   );
 }
 
-function ColumnBody({ accounts, value, onChange, all, allRow = false, watchers, groups, ofManager = false, className, variant, marks }: {
+function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManager = false, className, variant, marks }: {
   accounts: AccountMeta[];
   value?: string | null;
   onChange: (accountId: string) => void;
   /** A controlled column's "All creators" pick; without it (and with no Tags) there is no menu. `label` relabels the
-   *  row, default "All creators". */
-  all?: { on: boolean; pick: () => void; label?: string };
-  /** "All creators" as a one-click creator row, no menu. */
-  allRow?: boolean;
+   *  row, default "All creators"; `row`: a one-click creator row, no menu. */
+  all?: AllPick;
   /** Watcher accounts after the creators, not pickable. */
   watchers?: WatcherAccount[];
   /** OF Manager's creator groups (the Tags) under "All tags"; `value` "" is none picked. */
@@ -256,17 +254,17 @@ function ColumnBody({ accounts, value, onChange, all, allRow = false, watchers, 
         </button>
       </div>}
       {!menu && <div className="h-4 shrink-0" />}
-      {/* `allRow`: "All creators" is one more creator row (rainbow tile, name, count); one click picks it. */}
-      {allRow && menu && (
+      {/* `all.row`: "All creators" is one more creator row (rainbow tile, name, count); one click picks it. */}
+      {all?.row && menu && (
         <button
           type="button"
-          onClick={() => all?.pick()}
-          aria-current={all?.on || undefined}
+          onClick={all.pick}
+          aria-current={all.on || undefined}
           aria-label={allLabel}
           data-testid="of-all-creators-row"
           className={cn(
             "w-full flex items-center gap-3 px-4 py-3 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ofm-blue)]",
-            all?.on ? "bg-[var(--ofm-active)]" : "hover:bg-[var(--ofm-hover)]",
+            all.on ? "bg-[var(--ofm-active)]" : "hover:bg-[var(--ofm-hover)]",
           )}
         >
           <AllCreatorsTile />
@@ -278,7 +276,7 @@ function ColumnBody({ accounts, value, onChange, all, allRow = false, watchers, 
           </span>
         </button>
       )}
-      {!allRow && menu && <div className="relative" ref={menuRef}>
+      {!all?.row && menu && <div className="relative" ref={menuRef}>
         <button
           type="button"
           onClick={() => setMenuOpen((v) => !v)}

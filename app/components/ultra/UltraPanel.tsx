@@ -17,7 +17,7 @@ import { LOGINS_PAGE } from "@/lib/loginPaste";
 import { RelayError } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { PlanSteps } from "./PlanSteps";
-import { beginStart, pendingStart, ULTRA_PLAN_KEY } from "./ultraStart";
+import { beginStart, keepPlanId, pendingStart, ULTRA_PLAN_KEY } from "./ultraStart";
 import { useUltraPlan } from "./useUltraPlan";
 import {
   INITIAL_PANEL, isOver, type PanelAction, isRunning, MAX_REQUEST, requestBody, canSubmit, ultraPanelReducer,
@@ -87,11 +87,7 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
     if (!id && p) follow(p, send);
   }, []);
   useEffect(() => {
-    if (!s.hydrated) return;
-    try {
-      if (s.planId) window.localStorage.setItem(ULTRA_PLAN_KEY, s.planId);
-      else window.localStorage.removeItem(ULTRA_PLAN_KEY);
-    } catch { /* quota */ }
+    if (s.hydrated) keepPlanId(s.planId);
   }, [s.hydrated, s.planId]);
 
   function start() {

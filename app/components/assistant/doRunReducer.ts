@@ -25,7 +25,7 @@
  */
 
 import { exportSlotsFrom } from "./doExport";
-import type { AutoStorySlots, DoDraft, MassPremadeSlots } from "./doFlows";
+import type { AutoStorySlots, DoDraft, DoFlowId, MassPremadeSlots } from "./doFlows";
 import { slotsFrom as configSlotsFrom, type ConfigStatus } from "./fullAiConfigEdit";
 import { editSlotsFrom, type EditResult } from "./massEdit";
 
@@ -46,18 +46,21 @@ const DIRECT_FLOWS: ReadonlySet<DoDraft["flow"]> = new Set(["mass_edit", "report
 export type DoRun =
   | { phase: "off" }
   | { phase: "idle" }
-  | { phase: "drafting"; id: string; request: string }
+  /** `accountId`: the focus the draft request went out with (null = General). */
+  | { phase: "drafting"; id: string; request: string; accountId: string | null }
   | ({ phase: "planned" } & Planned)
-  | ({ phase: "running"; step: number; instant: boolean; saving: boolean; attempt: number } & Planned)
+  /** `focus`: where the bot's focus moved while it ran (none = never moved) — checked when the run stops. */
+  | ({ phase: "running"; step: number; instant: boolean; saving: boolean; attempt: number; focus?: string | null } & Planned)
   | ({ phase: "done"; outcome: DoOutcome } & Planned)
-  | ({ phase: "aborted"; reason: string } & Planned)
-  /** `attempt`: the failed run's (none for a failed draft). */
-  | { phase: "failed"; id: string; request: string; draft: DoDraft | null; msg: string; attempt?: number };
+  /** `step`: the step the run stopped on (what the form holds now, doFlows.leftFilled). */
+  | ({ phase: "aborted"; reason: string; step: number } & Planned)
+  /** `attempt` / `step`: the failed run's (none for a failed draft). */
+  | { phase: "failed"; id: string; request: string; draft: DoDraft | null; msg: string; attempt?: number; step?: number };
 
 export type DoAction =
   | { type: "enter" }
   | { type: "exit" }
-  | { type: "draft"; id: string; request: string }
+  | { type: "draft"; id: string; request: string; accountId: string | null }
   | { type: "drafted"; id: string; draft: DoDraft }
   | { type: "start" }
   | { type: "skipAnimation" }
@@ -74,7 +77,9 @@ export type DoAction =
   | { type: "configApplied"; status: ConfigStatus; line: string }
   /** `id`: a drafting request's failure (dropped when stale); none: the running run's. */
   | { type: "fail"; msg: string; id?: string }
-  | { type: "reset" };
+  | { type: "reset" }
+  /** The bot's focus moved (a resolved one; null = General): a plan drafted for another model is dropped. */
+  | { type: "focus"; accountId: string | null };
 
 export const initialDoRun: DoRun = { phase: "off" };
 
@@ -96,7 +101,7 @@ export function doRunReducer(s: DoRun, a: DoAction): DoRun {
       return s.phase === "off" ? s : initialDoRun;
     case "draft":
       if (s.phase === "off" || s.phase === "running" || s.phase === "drafting") return s;
-      return { phase: "drafting", id: a.id, request: a.request };
+      return { phase: "drafting", id: a.id, request: a.request, accountId: a.accountId };
     case "drafted":
       return s.phase === "drafting" && s.id === a.id ? { phase: "planned", id: s.id, request: s.request, draft: a.draft } : s;
     case "start":
@@ -116,7 +121,9 @@ export function doRunReducer(s: DoRun, a: DoAction): DoRun {
     case "saving":
       return s.phase === "running" && !s.saving ? { ...s, saving: true } : s;
     case "abort":
-      return s.phase === "running" && !s.saving ? { phase: "aborted", id: s.id, request: s.request, draft: s.draft, reason: a.reason } : s;
+      if (s.phase !== "running" || s.saving) return s;
+      return movedOff(s) ? { phase: "idle" }
+        : { phase: "aborted", id: s.id, request: s.request, draft: s.draft, reason: a.reason, step: s.step };
     case "saved":
       return s.phase === "running" && !DIRECT_FLOWS.has(s.draft.flow)
         ? { phase: "done", id: s.id, request: s.request, draft: s.draft, outcome: { kind: "saved" } } : s;
@@ -133,39 +140,67 @@ export function doRunReducer(s: DoRun, a: DoAction): DoRun {
       if (a.id !== undefined) {
         return s.phase === "drafting" && s.id === a.id ? { phase: "failed", id: s.id, request: s.request, draft: null, msg: a.msg } : s;
       }
-      return s.phase === "running" ? { phase: "failed", id: s.id, request: s.request, draft: s.draft, msg: a.msg, attempt: s.attempt } : s;
+      if (s.phase !== "running") return s;
+      return movedOff(s) ? { phase: "idle" }
+        : { phase: "failed", id: s.id, request: s.request, draft: s.draft, msg: a.msg, attempt: s.attempt, step: s.step };
     case "reset":
       return s.phase === "off" ? s : { phase: "idle" };
+    case "focus":
+      // rwl W30 F8: a plan (or its retry / refine) for model A never runs while the bot shows model B. A run already
+      // going keeps its own account but notes the move: if it then stops, no "Do it again" for A (N1); a finished one
+      // is only read.
+      if (s.phase === "drafting") return s.accountId === a.accountId ? s : { phase: "idle" };
+      if (s.phase === "running") return s.focus === a.accountId ? s : { ...s, focus: a.accountId };
+      if (s.phase === "planned" || s.phase === "aborted" || (s.phase === "failed" && s.draft !== null)) {
+        return s.draft?.account_id === a.accountId ? s : { phase: "idle" };
+      }
+      return s;
   }
 }
 
+/** The bot's focus moved off the running plan's model (rwl W30 N1): a stop then drops it, as F8 does for a stopped plan. */
+const movedOff = (s: Extract<DoRun, { phase: "running" }>) => s.focus !== undefined && s.focus !== s.draft.account_id;
+
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+
+/** Every flow a draft may name: the one list draftFrom reads (a Record, so a new DoFlowId fails the build until it is
+ *  here — rwl W30 M20). */
+export const DO_FLOW_IDS: Readonly<Record<DoFlowId, true>> = {
+  mass_premade: true, auto_story: true, mass_edit: true, report_export: true, full_ai_config: true,
+};
+const isFlowId = (v: unknown): v is DoFlowId =>
+  typeof v === "string" && Object.prototype.hasOwnProperty.call(DO_FLOW_IDS, v);
+
+/** The server's slots object for a form flow (its shape is the server's contract); anything else is none. */
+const objOf = <T,>(v: unknown): T | null => (v && typeof v === "object" && !Array.isArray(v) ? v as T : null);
+
+const NO_FLOW_ANSWER = "I can only set up an Auto Mass or Auto Story, change an Auto Mass, or export a report of your "
+  + "numbers, for now — ask it as a question and I'll point you to the page.";
 
 /** The draft POST's 200, read defensively: a missing field never crashes the card, and a blank answer still reads.
  *  `accountId` null: drafted in General (an export only — another flow with no model is no draft). */
 export function draftFrom(r: Partial<Record<keyof DoDraft, unknown>> | null | undefined, accountId: string | null): DoDraft {
   const acct = typeof r?.account_id === "string" && r.account_id ? r.account_id : accountId;
-  const named = r?.flow === "mass_premade" || r?.flow === "mass_edit" || r?.flow === "auto_story" || r?.flow === "report_export"
-    || r?.flow === "full_ai_config" ? r.flow : null;
-  const flow = named === "report_export" || acct ? named : null;
-  const pair = flow === "mass_premade" ? { flow, slots: r?.slots ? r.slots as MassPremadeSlots : null }
-    : flow === "auto_story" ? { flow, slots: r?.slots ? r.slots as AutoStorySlots : null }
-    : flow === "mass_edit" ? { flow, slots: editSlotsFrom(r?.slots) }
-    : flow === "report_export" ? { flow, slots: exportSlotsFrom(r?.slots) }
-    : flow === "full_ai_config" ? { flow, slots: configSlotsFrom(r?.slots) }
-    : { flow: null, slots: null };
-  return {
+  const named = isFlowId(r?.flow) ? r.flow : null;
+  const base = (flowed: boolean) => ({
     id: String(r?.id ?? ""),
-    ...pair,
-    account_id: acct,
     summary: typeof r?.summary === "string" ? r.summary : "",
     assumptions: strs(r?.assumptions),
     unresolved: strs(r?.unresolved),
-    answer: (typeof r?.answer === "string" ? r.answer : "").trim()
-      || (flow ? "" : "I can only set up an Auto Mass or Auto Story, change an Auto Mass, or export a report of your "
-        + "numbers, for now — ask it as a question and I'll point you to the page."),
+    answer: (typeof r?.answer === "string" ? r.answer : "").trim() || (flowed ? "" : NO_FLOW_ANSWER),
     error: typeof r?.error === "string" ? r.error : null,
-  } as DoDraft;
+  });
+  const slots = r?.slots;
+  if (named === "report_export") return { ...base(true), flow: named, account_id: acct, slots: exportSlotsFrom(slots) };
+  if (named !== null && acct) {
+    switch (named) {
+      case "mass_premade": return { ...base(true), flow: named, account_id: acct, slots: objOf<MassPremadeSlots>(slots) };
+      case "auto_story": return { ...base(true), flow: named, account_id: acct, slots: objOf<AutoStorySlots>(slots) };
+      case "mass_edit": return { ...base(true), flow: named, account_id: acct, slots: editSlotsFrom(slots) };
+      case "full_ai_config": return { ...base(true), flow: named, account_id: acct, slots: configSlotsFrom(slots) };
+    }
+  }
+  return { ...base(false), flow: null, account_id: acct, slots: null };
 }
 
 /** The do-mode offer: hidden, shown, or shown disabled with a hint (`hint` is AnswerText-linked). */

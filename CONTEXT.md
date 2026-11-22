@@ -895,7 +895,7 @@ What an Option is for, read from its saved price and deterministic text cues: `c
 _Avoid_: type, kind, purpose lane (`vault_scripts`' folders), Lane
 
 **Fill**:
-One write of a Creator's own vault media, and prices where none is saved, onto the empty Options of one Sequence, done by the "Fill with content" press or the Rollout driver. It sends nothing to Fans (ADR-0045, ADR-0046).
+One write of a Creator's own vault media, and prices where none is saved, onto the empty Options of one Sequence, done by the "Fill with content" press or the Rollout driver. It sends nothing to Fans (ADR-0048, superseding ADR-0045; ADR-0046).
 _Avoid_: auto-fill, populate, attach, import (the bulk import keeps prices but never media)
 
 **Fill plan**:
@@ -907,12 +907,12 @@ A Fill plan's one-word outcome: `ok`, `already_filled` (nothing to write), or a 
 _Avoid_: error, partial
 
 **Slice**:
-The media a Fill puts on one Option: one clip alone, or one to four photos of the same Rung, plus at most one free preview from the same Shoot on a paid photo Slice. A Slice never mixes clips and photos.
+The media a Fill puts on one Option: on a paid Option one to four photos of the same Rung and Shoot plus one clip (clip last; photos only, flag `no_video`, when no clip is left), or one clip alone when the text asks for a clip; a free Option one free-safe photo. A paid Slice holding photos gets at most one free preview, preferring the photos' Shoot (ADR-0048).
 _Avoid_: Pick (the Sell executor's), Bundle (Full AI Chat's two-to-five-photo Offer), pack, set
 ASSUMPTION: "Slice" (the media-pick answer's word) is chosen over "pack" and "bundle" because both are taken or avoided elsewhere in this glossary; overturned if the specs need the Full AI word.
 
 **Shoot**:
-A group of one Creator's vault items from one outfit and room close in time (`vault_scripts.collect_outfit_scripts`), the unit a Fill draws a whole Sequence from.
+A group of one Creator's vault items from one outfit and room close in time (`vault_scripts.collect_outfit_scripts`). A Fill draws each Step from the Creator's whole pool and reads Shoots only as a tie-break: a Slice's photos share one, its clip and preview prefer it (ADR-0048, superseding ADR-0045's one Shoot per Sequence).
 _Avoid_: folder (an OnlyFans vault folder), outfit (Jev's clothing state), set, album, script (`vault_scripts`' name for it)
 
 **Rung**:
@@ -932,7 +932,7 @@ The house's price for one vault item, `full_ai_sell.list_price_cents`: its highe
 _Avoid_: suggested price, default price (columns Fill ignores), Quoted price, lane on its own (a **Lane** is an automation)
 
 **Escalation rule**:
-Along successive Steps, on every path through a Sequence's alternatives, paid prices never go down; ties allowed. Media order follows the Shoot's send order, never price.
+Along successive Steps, on every path through a Sequence's alternatives, paid prices never go down; ties allowed. Media order follows script send order (`_script_sort_key`), never price.
 _Avoid_: ascending prices, ladder (the mass-send drop ladder, the **Backoff ladder**), price sort
 
 **Undo list**:

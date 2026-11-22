@@ -10,8 +10,8 @@ from ._knobs import (  # noqa: F401
 )
 from ._send_failure import (  # noqa: F401
     SendOutcome, is_media_rejected_error, is_unreachable_fan_error,
-    quarantine_if_undeliverable, send_dropping_bad_media, send_dropping_bad_media_sync,
-    skip_unreachable_fan,
+    quarantine_if_undeliverable, recheck_rejected_media, schedule_recheck_rejected_media,
+    send_dropping_bad_media, send_dropping_bad_media_sync, skip_unreachable_fan,
 )
 from ._skiplist import (  # noqa: F401
     HARD_SKIP_REASONS, LADDER_STOP_REASON, MANUAL_RESTRICT_REASON, MUTED_CREATOR_REASON,
@@ -90,6 +90,8 @@ __all__ = [
     "is_media_rejected_error",
     "is_unreachable_fan_error",
     "quarantine_if_undeliverable",
+    "recheck_rejected_media",
+    "schedule_recheck_rejected_media",
     "send_dropping_bad_media",
     "send_dropping_bad_media_sync",
     "skip_unreachable_fan",

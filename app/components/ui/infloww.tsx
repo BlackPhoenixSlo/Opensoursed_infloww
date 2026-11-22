@@ -691,5 +691,7 @@ export const IF_TABLE = {
   td: "p-4 text-fg",
   fixedRight: "sticky right-0 w-[100px] bg-bg shadow-[-6px_0_6px_-4px_rgba(0,0,0,.35)] [html[data-theme=light]_&]:shadow-[-6px_0_6px_-4px_#f5f6fa]",
   fixedRightHead: "sticky right-0 w-[100px] shadow-[-6px_0_6px_-4px_rgba(0,0,0,.35)] [html[data-theme=light]_&]:shadow-[-6px_0_6px_-4px_#f5f6fa]",
+  /** On a phone the fixed column scrolls with the row, its shadow off (with `fixedRight` / `fixedRightHead`). */
+  unpinPhone: "max-sm:static max-sm:shadow-none max-sm:[html[data-theme=light]_&]:shadow-none",
 } as const;
 

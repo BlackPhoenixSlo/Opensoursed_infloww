@@ -6,9 +6,11 @@ driver's own tagged read (header `x-oi-proof-read`, story 12: the before / after
 from the app's). Serves on a loopback socket in a daemon thread.
 
 Faults (`--fault`, the harness's failure paths, ticket 05), on the targeted proof's untagged requests only:
-  delete-500   `DELETE /api2/v2/lists/{id}` answered 500 without deleting: the undo fails, the list stays.
-  lost-reply   a create (`POST /api2/v2/lists`, `/api2/v2/vault/lists` or `/api2/v2/trials`) applied (the list,
-               folder or trial link is made), then the connection is dropped with no reply.
+  delete-500   `DELETE /api2/v2/lists/{id}` or `/api2/v2/posts/{id}` answered 500 without deleting: the undo fails, the
+               list or post stays (ofm-not-yet ticket 101: posts too, so a Phase 6 run stops on the first post undo).
+  lost-reply   a create (`POST /api2/v2/lists`, `/api2/v2/vault/lists` or `/api2/v2/trials`, or ofm-not-yet ticket
+               98's immediate Co-tagged `POST /api2/v2/posts`: no `isScheduled`, a non-empty `rfTag`) applied (the
+               list, folder, trial link or post is made), then the connection is dropped with no reply.
   cdn-src      `GET /api2/v2/vault/media` answered with its first item's `_thumb` (the tile src) set to its CDN url:
                a tile that would load straight from a CDN host (vault--thumbnails must fail).
   trial-delete-500  `DELETE /api2/v2/trials/{id}` answered 500 without deleting (Phase 3 ticket 64: trial Create
@@ -52,6 +54,9 @@ Faults (`--fault`, the harness's failure paths, ticket 05), on the targeted proo
   publish-other    app side (`AppFault`), FakeOF seeded with the owner's own scheduled post (`_seed_owner_post`): the
                    app's `PUT /api/of/v2/schedules/{id}/publish` sent with that post's schedule id instead
                    (queue--publish-now must fail on the guard's refusal, FakeOF receiving no publish; ticket 99).
+  cotag-extra      app side (`AppFault`, ofm-not-yet ticket 98): the app's `POST /api/of/v2/posts` sent with a second
+                   creator (COTAG_EXTRA) added to its `tagged_users`: the guard refuses the post (proof_core
+                   `cotag_refusal`), FakeOF sees no create, the Co-tag proof fails.
   post-lost-hidden `POST /api2/v2/posts` holding a hidden vault id applied (the post is made), then the connection is
                    dropped with no reply (queue--publish-now's post D: found by the Relay's read-back and undone).
   hidden-refused   `PUT /api2/v2/schedules/{id}/publish` of a scheduled post holding a hidden medium answered 400
@@ -59,6 +64,8 @@ Faults (`--fault`, the harness's failure paths, ticket 05), on the targeted proo
   publish-lost     `PUT /api2/v2/schedules/{id}/publish` applied (the post is published), then the connection is
                    dropped with no reply; publish-500 the same answered 500: queue--publish-now must fail unretried,
                    its post found by its marker through the Relay's strict read-back (`/__proof/found`) and deleted.
+  unsend-delete-500  `DELETE /api2/v2/messages/{id}` answered 500 without unsending (ofm-not-yet ticket 33: Unsend
+               PPV's unsend fails, the app shows its red note, the message stays and the proof fails).
 
 Start states (`--fault`, the account as FakeOF starts it; no request is faulted, STATES): the run passes only when
 the named proof parks (prove.py replaces "fault never fired" with that check).
@@ -383,6 +390,39 @@ def _drop_stored_order(data: dict, hit) -> dict:
     return data
 
 
+# ofm-not-yet ticket 98: the Co-tag proofs' partner (a fake run's run input, prove.py `--cotag-partner`), the creator
+# cotag-extra plants beside it (both from new-post-tags.json, FakeOF's taggable creators), and the faults' predicates.
+COTAG_PARTNER = 2001
+COTAG_EXTRA = 2002
+
+
+def _lost_reply_target(of, path, query, body) -> bool:
+    """lost-reply's predicate: every list, folder or trial create; a post create only when immediate (no
+    `isScheduled`) and Co-tagged (a non-empty `rfTag`), the Co-tag immediate proof's."""
+    if path != "/api2/v2/posts":
+        return True
+    return isinstance(body, dict) and not body.get("isScheduled") and bool(body.get("rfTag"))
+
+
+def cotag_extra(planted: list):
+    """Ticket 98's planted composer: a route hook sending the app's `POST /api/of/v2/posts` that names Co-tags with
+    COTAG_EXTRA added to its `tagged_users`; each time it fires is appended to `planted`."""
+    def hook(route, request) -> bool:
+        if request.method != "POST" or urlsplit(request.url).path != "/api/of/v2/posts":
+            return False
+        try:
+            body = json.loads(request.post_data or "")
+        except ValueError:
+            return False
+        tags = body.get("tagged_users") if isinstance(body, dict) else None
+        if not isinstance(tags, list) or not tags or COTAG_EXTRA in tags:
+            return False
+        planted.append({"method": "POST", "path": "/api/of/v2/posts", "tagged_users": tags})
+        route.continue_(post_data=json.dumps({**body, "tagged_users": [*tags, COTAG_EXTRA]}))
+        return True
+    return hook
+
+
 def _dup_ids(of, path, query, body) -> bool:
     ids = [m for m in (body.get("mediaFiles") if isinstance(body, dict) else None) or [] if isinstance(m, int)]
     return len(set(ids)) < len(ids)
@@ -410,8 +450,9 @@ class AppFault:
 
 
 FAULTS = {
-    "delete-500": Fault("DELETE", re.compile(r"^/api2/v2/lists/\d+$"), status(500)),
-    "lost-reply": Fault("POST", re.compile(r"^/api2/v2/(vault/)?lists$|^/api2/v2/trials$"), applied_then(None)),
+    "delete-500": Fault("DELETE", re.compile(r"^/api2/v2/(lists|posts)/\d+$"), status(500)),   # posts: ticket 101
+    "lost-reply": Fault("POST", re.compile(r"^/api2/v2/(vault/)?lists$|^/api2/v2/trials$|^/api2/v2/posts$"),
+                        applied_then(None), when=_lost_reply_target),
     "cdn-src": Fault("GET", re.compile(r"^/api2/v2/vault/media$"), rewrite(_cdn_src)),   # ticket 94
     "trial-delete-500": Fault("DELETE", re.compile(r"^/api2/v2/trials/\d+$"), status(500)),   # ticket 64
     # ticket 95
@@ -447,7 +488,10 @@ FAULTS = {
                             when=_publishes_hidden),
     "publish-lost": Fault("PUT", re.compile(r"^/api2/v2/schedules/\d+/publish$"), applied_then(None)),
     "publish-500": Fault("PUT", re.compile(r"^/api2/v2/schedules/\d+/publish$"), applied_then(500)),
+    # ofm-not-yet ticket 33
+    "unsend-delete-500": Fault("DELETE", re.compile(r"^/api2/v2/messages/\d+$"), status(500)),
 }
+FAULTS["cotag-extra"] = AppFault(cotag_extra)   # ofm-not-yet ticket 98
 # ofm-not-yet ticket 35: each drops its body keys before FakeOF stores the post
 DROPS = {"post-drop-label": ("labelIds",), "post-drop-expiry": ("expireDays",),
          "post-drop-target": ("fundRaisingTargetAmount", "fundRaisingTipsPresets")}

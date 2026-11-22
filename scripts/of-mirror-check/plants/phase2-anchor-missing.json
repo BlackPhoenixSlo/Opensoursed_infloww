@@ -1,0 +1,1 @@
+{"init": "(() => { const f = window.fetch; window.fetch = (i, o) => /\\/chats\\/9001\\/messages/.test(String(i && i.url || i)) ? Promise.resolve(new Response(JSON.stringify({list: [], hasMore: false}), {status: 200, headers: {'content-type': 'application/json'}})) : f(i, o); })();"}

@@ -323,35 +323,6 @@ def test_inbox_row_dedup_key(persistable, want):
     assert pid("t", persistable) == want
 
 
-def q(kind, n=0):
-    """A queued item: kind "dm" is an Inbound DM frame; `n` tells two of a kind apart."""
-    return ed.PersistItem(A, kind, {"n": n}, {"__account_id": A, "n": n}, inbound_dm=kind == "dm")
-
-
-@table("queued, victim", [
-    ([], None),
-    ([q("dm", 1), q("dm", 2)], None),                                            # all DMs: drop the incoming
-    ([q("dm", 1), q("typing"), q("dm", 2), q("toasts")], 1),                     # oldest non-DM
-    ([q("typing"), q("dm")], 0),
-    ([q("dm", 1), q("dm", 2), q("echo")], 2),
-])
-def test_overflow_victim(queued, victim):
-    assert ed.overflow_victim(queued) == victim
-
-
-@table("queued, ordered", [
-    ([q("typing"), q("dm", 1), q("toasts"), q("dm", 2)], [q("dm", 1), q("dm", 2), q("typing"), q("toasts")]),
-    ([q("dm", 2), q("echo", 1), q("dm", 1), q("echo", 2)], [q("dm", 2), q("dm", 1), q("echo", 1), q("echo", 2)]),
-    ([q("dm", 1), q("dm", 2)], [q("dm", 1), q("dm", 2)]),                        # all DMs: unchanged
-    ([q("typing"), q("toasts")], [q("typing"), q("toasts")]),                    # no DMs: unchanged
-    ([], []),
-])
-def test_stop_order(queued, ordered):
-    before = list(queued)
-    assert ed.stop_order(queued) == ordered
-    assert queued == before, "the input is not mutated"
-
-
 # ── routing ──
 OWNER, OTHER = "owner-1", "owner-2"
 CLAMP = frozenset({A})
@@ -452,6 +423,32 @@ def test_sse_types():
     assert "typing" not in ed.SSE_TYPES and "chat_typing" in ed.SSE_TYPES
     assert "creator_refreshed" in ed.SSE_TYPES and "creator_refreshed" not in ed.STATE_TYPES
     assert ed.COALESCE == {"chat_typing": "fan_id", "chat_queue_update": "id", "creator_refreshed": "account_id"}
+
+
+def _ended_rings(*frames, evicted=None):
+    """Ring "" holding `frames` at seqs 1..n; `evicted` its highest dropped seq."""
+    return ed.Rings(E, len(frames), {"": tuple((i + 1, f) for i, f in enumerate(frames))},
+                    {"": evicted} if evicted is not None else {})
+
+
+_END = {"permissions_changed": {}}
+_OTHER = {"chat_responded": {"fan_id": 1}}
+
+
+def test_ended_since(frames, since, evicted, wants, expected):
+    """A stream opening after a grant read at `since` ends at once only for a stream-ending frame it wants
+    after `since`, or when ring "" evicted past `since` (W30-mu #55)."""
+    assert ed.ended_since(_ended_rings(*frames, evicted=evicted), since, lambda f: wants) is expected
+
+
+test_ended_since.rows = [
+    ((_END,), 1, None, True, False),            # ending frame AT since: the grant read saw it
+    ((_OTHER, _END), 1, None, True, True),      # ending frame after since, wanted
+    ((_OTHER, _END), 1, None, False, False),    # ending frame after since, not wanted
+    ((_END, _OTHER), 1, None, True, False),     # only a non-ending frame after since
+    ((), 5, 5, True, False),                    # evicted exactly up to since: nothing missed
+    ((), 5, 6, True, True),                     # evicted past since: fail closed
+]
 
 
 if __name__ == "__main__":

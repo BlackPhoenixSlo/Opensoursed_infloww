@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Keep running rules heal (0129, owner 2026-11-21): each account with a Kept campaign ends
 with exactly one enabled live promo_reactivate rule — a missing one created, a disabled /
-dry-run one fixed, enabled duplicates parked (their pending jobs cancelled); accounts with
+dry-run one fixed (its queued job runs live too), enabled duplicates parked (their pending jobs cancelled); accounts with
 no Kept campaign untouched. Idempotent; downgrade no-op; on the one head's line; init_db
 runs it once (data_migrations marker).
 
@@ -28,6 +28,8 @@ MIGRATIONS = Path(__file__).resolve().parents[1] / "db/migrations"
 PREV, REV = "0126_promo_preempt", "0129_keep_running_rules_heal"
 LIVE = {"dry_run": False, "cooldown_minutes": 2, "max_reactivations": 0}
 EVERY = {"every_seconds": 3600}
+
+META = {"_recheck": "first_read", "_expiry_retries": 1, "_followup": True}   # a queued job's own keys
 
 
 def _cfg() -> Config:
@@ -93,6 +95,11 @@ def case_upgrade_heals_rules_only_for_kept_accounts():
                 "INSERT INTO scheduled_jobs (account_id, kind, payload_json, run_at, status, attempts, rule_id, "
                 "created_at) VALUES ('dupes', 'promo_reactivate', '{}', '2026-11-21', 'pending', 0, :r, "
                 "'2026-11-21')"), {"r": third})
+            dry = con.execute(sa.text("SELECT id FROM automation_rules WHERE account_id = 'dry'")).scalar_one()
+            con.execute(sa.text(   # W30 F11: a job the dry-run rule already queued
+                "INSERT INTO scheduled_jobs (account_id, kind, payload_json, run_at, status, attempts, rule_id, "
+                "created_at) VALUES ('dry', 'promo_reactivate', :p, '2026-11-21', 'pending', 0, :r, "
+                "'2026-11-21')"), {"r": dry, "p": json.dumps({"dry_run": True, **META})})
             _campaign(con, "unticked", 0)                                   # no Kept campaign: untouched
             _rule(con, "none", 0, {"dry_run": True})
         _alembic(url, command.stamp, PREV)
@@ -102,7 +109,12 @@ def case_upgrade_heals_rules_only_for_kept_accounts():
             assert _rules(con, "dry") == [("old", True, LIVE, EVERY)], _rules(con, "dry")
             assert _rules(con, "dupes") == [("first", True, LIVE, EVERY), ("second", False, LIVE, {}),
                                             ("third", False, LIVE, {})], _rules(con, "dupes")
-            assert con.execute(sa.text("SELECT status FROM scheduled_jobs")).scalar_one() == "cancelled"
+            assert con.execute(sa.text(
+                "SELECT status FROM scheduled_jobs WHERE account_id = 'dupes'")).scalar_one() == "cancelled"
+            queued = con.execute(sa.text("SELECT status, payload_json FROM scheduled_jobs "
+                                         "WHERE account_id = 'dry'")).one()
+            # runs live, not dry; W30 F23: its own keys (a Re-check's metadata) stay
+            assert (queued[0], json.loads(queued[1])) == ("pending", {**LIVE, **META}), queued
             assert _rules(con, "unticked") == [], _rules(con, "unticked")
             assert _rules(con, "none") == [("old", False, {"dry_run": True}, {})], _rules(con, "none")
             before = con.execute(sa.text("SELECT * FROM automation_rules ORDER BY id")).all()

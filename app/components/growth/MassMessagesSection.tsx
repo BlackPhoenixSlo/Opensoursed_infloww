@@ -89,13 +89,15 @@ export default function MassMessagesSection() {
 }
 
 /** The "Mass Auto Unsend Messages" tab: the creator column (`CreatorRail`, as Automated Messages') picks the
- *  Creator whose own hourly Auto-unsend form shows; each Creator keeps its own rule and its own Save. */
-export function MassAutoUnsendSection() {
+ *  Creator whose own hourly Auto-unsend form shows; each Creator keeps its own rule and its own Save. The pick
+ *  is the page's (`SmartMessagesPage`), so New Message opens on the Creator this column shows. */
+export function MassAutoUnsendSection({ accountId, onPick }: {
+  accountId: string | null;
+  onPick: (accountId: string) => void;
+}) {
   const accounts = useActiveAccounts();
-  const [picked, setPicked] = useState<string | null>(null);
-  const accountId = accounts.some((a) => a.id === picked) ? picked : accounts[0]?.id ?? null;
   return (
-    <CreatorRail creators={{ accounts, value: accountId, onChange: setPicked }} top="96px">
+    <CreatorRail creators={{ accounts, value: accountId, onChange: onPick }} top="96px">
       <IfBody className="pb-6"><AutoUnsendCard accountId={accountId} /></IfBody>
     </CreatorRail>
   );

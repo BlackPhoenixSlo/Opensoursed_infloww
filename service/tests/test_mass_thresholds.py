@@ -36,6 +36,9 @@ Subscribed over / Expired over, resolved from our own records.
       exactly ONLINE_ROSTER_MAX is sent.
   case_route_subtracts_the_excluded_lists:
       excluded lists' members are subtracted server-side; an unreadable one → 422.
+  case_route_explicit_ids_subtract_the_excluded_lists:
+      the same for explicit ids without a threshold; lists holding every
+      picked fan → 422 naming the excluded lists, nothing sent.
   case_route_tenure_keeps_a_list_member_without_a_fan_row:
       Subscribed over keeps a list member with no fans row but a crawl date.
   case_route_expired_over_a_custom_list_needs_a_crawl:
@@ -388,6 +391,29 @@ async def case_route_subtracts_the_excluded_lists():
     detail = await _refused(aid, FakeOF(fans=[111, 112]),
                             _list_body(["fans"], excluded_user_lists=["999"], min_total_spent=50))
     assert "Couldn't read who is on the excluded list 999" in detail, detail
+
+
+async def case_route_explicit_ids_subtract_the_excluded_lists():
+    """No threshold: explicit ids with an excluded list still subtract its
+    members (OF's `excludedLists` is verified on list audiences only); one OF
+    won't page → 422, nothing sent."""
+    aid = "acc_excl_explicit"
+    await _seed(aid, {151: {}, 152: {}})
+    fake = FakeOF(lists={556: [152]})
+    with _Patch(aid, fake):
+        await mass_queue_api.of_send_or_schedule_mass(
+            None, _list_body([], user_ids=[151, 152], excluded_user_lists=["556"]))
+    (sent,) = fake.sent
+    assert sent["included_users"] == [151], sent
+
+    detail = await _refused(aid, FakeOF(),
+                            _list_body([], user_ids=[151, 152], excluded_user_lists=["998"]))
+    assert "Couldn't read who is on the excluded list 998" in detail, detail
+
+    # The lists hold every picked fan: an empty audience never goes to OF.
+    detail = await _refused(aid, FakeOF(lists={556: [151, 152]}),
+                            _list_body([], user_ids=[151, 152, 151], excluded_user_lists=["556"]))
+    assert "the excluded lists hold all 2 fan(s)" in detail, detail
 
 
 async def case_route_tenure_keeps_a_list_member_without_a_fan_row():

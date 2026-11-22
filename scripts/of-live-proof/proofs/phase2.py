@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from proof_core import OFM_NEW_WRITES, Proof, Write  # noqa: E402,F401
+from proof_core import OFM_NEW_WRITES, Proof, Write, marker_problem, read_id_query  # noqa: E402,F401
 
 PROOFS = ()
 
@@ -429,6 +429,140 @@ PROOFS += (
           of_read=read_post_extras, effect=post_extras_held,
           undo=(Write("DELETE", "/api2/v2/posts/{id}", relay="/api/of/v2/posts/{id}"),),
           find=lambda before, after, marker: find_marked_post(before["posts"], after["posts"], marker)),
+)
+
+# ticket 33: Infloww's own bubble extras on the chat page (ofMirrorBubbleExtras bubbleExtras): the unsend Countdown and
+# Copy as draft write nothing on OnlyFans (mocked: their Mirror check rows, content_writes.py); Unsend PPV is a live
+# definition on one PPV to the Proof fan, parked until the owner names the Proof fan (ticket 54). It sends the PPV through
+# the chat's own composer (price dialog, Send's confirm), checks the bubble's Countdown, copies it as a draft (the
+# composer's line shows its price), then Unsend PPV, confirmed: the UI's DELETE /messages/{id} is the send's declared
+# undo (class 8; undo_driver `trigger_reversal` takes it as the record when answered 2xx, so the run sends no
+# second one; answered otherwise, the driver sends its own while the read still shows the PPV: the undo's max 2).
+# The PPV's text is the run's marker; delete-at-once forces the undo within the minute whatever step the proof is on.
+# The PPV carries the first tile of the chat's own vault dialog (Add media from vault, Add): OnlyFans answers a priced
+# message with no media and no locked text 400 "You have no paid content. Please add some paid media or text." (measured
+# on the Live run, 11-22; FakeOF now answers the same). The tile is an existing vault item, sent to the Proof fan locked
+# behind the $3 price until the unsend. The guard holds the send to that payload (ppv_payload).
+# All three keep the Not-yet title until a Live pass (D1): the mocked ones never drop it. All three are behind
+# OFM_NEW_WRITES_ENABLED (UI-only, ofMirrorNewWrites): off, none is drawn (main); phase_check's switch-off pass pins it.
+# The controls are drawn from the thread's data only (an own bubble): the sweep (dead.py, the proof list's --check-sweep)
+# opens messages/chat on its synthetic chat with my own PPV (dead.py SWEEP_QUERY, dead_messages.py), and content_writes.py's
+# check 1 opens the chat with its synthetic thread (phase_check VIEWS).
+_THREAD = "/api2/v2/chats/{fan}/messages"   # the Proof fan's send (the arm keeps {fan})
+_OWN = ".b-chat__message.m-from-me"
+_MINE = f"{_OWN}:has-text('{MARKER}')"   # the run's PPV bubble (a Playwright locator)
+_TILE = ".modal.show .b-photos__item.m-checkbox-control"   # the chat vault dialog's tile (ofMirrorChatShared VAULT_TILE)
+
+
+def read_marked_messages(get, fan) -> dict:
+    """The Proof fan's latest messages carrying the marker, as {"marked": [(id, text, price)], sorted, "_page":
+    {"newest", "oldest", "more"}}: OnlyFans's `GET /chats/{fan}/messages` (`{list, hasMore}`, service/of_reads.py),
+    read as proof_core.read_id_query's (one page). W30 W2: "_page" keeps what the page covers (its newest and oldest
+    message ids, None when unreadable; `more`: OF's hasMore), so a message pushed past it is never read as gone
+    (`_covers`). A `_` key is the read's bookkeeping: undo_driver.still_shown never takes it for an item (W30 S3)."""
+    page = get(*read_id_query("message", None, fan)) or {}
+    msgs = [m for m in page.get("list") or [] if isinstance(m, dict) and "id" in m]
+    ids = [int(m["id"]) for m in msgs if str(m["id"]).isdigit()]
+    return {"marked": sorted((str(m["id"]), str(m.get("text") or ""), m.get("price") or 0) for m in msgs
+                             if MARKER in str(m.get("text") or "")),
+            "_page": {"newest": max(ids) if ids else None,
+                      "oldest": min(ids) if ids and len(ids) == len(msgs) else None,
+                      "more": bool(page.get("hasMore"))}}
+
+
+def _marked(read) -> list:
+    return [tuple(r) for r in (read or {}).get("marked") or []] if isinstance(read, dict) else []
+
+
+def _covers(before, later) -> bool:
+    """W30 W2: whether `later`'s page reaches back to `before`'s newest message, so every message since `before` (the
+    PPV) was read: `later` saw the whole thread, or its oldest id is at or below `before`'s newest. Unreadable: no."""
+    was, now = ((r.get("_page") if isinstance(r, dict) else None) for r in (before, later))
+    if not (isinstance(was, dict) and isinstance(now, dict)):
+        return False
+    if not now.get("more"):
+        return True
+    oldest, newest = now.get("oldest"), was.get("newest")
+    return isinstance(oldest, int) and isinstance(newest, int) and oldest <= newest   # an empty `before` + more: unknown
+
+
+PPV_PRICE = 3   # the PPV's declared price, dollars
+
+
+def ppv_payload(body, run, at=None) -> str | None:
+    """p2.bubble-unsend-ppv's declared payload (Write.payload, the guard's class 4): the run's marker in the text,
+    priced exactly PPV_PRICE, one medium (locked behind the price), no free preview; else why not (`at` unused)."""
+    if not isinstance(body, dict):
+        return f"the send body is not a JSON object: {str(body)[:80]}"
+    if why := marker_problem(body.get("text"), run):   # this run's exact marker (round 2 #22)
+        return f"the send: {why}"
+    price = body.get("price")
+    try:
+        priced = not isinstance(price, bool) and float(price) == PPV_PRICE
+    except (TypeError, ValueError):
+        priced = False
+    if not priced:
+        return f"the send's price is {str(price)[:20]}, not the declared {PPV_PRICE}"
+    media = body.get("mediaFiles")
+    if not isinstance(media, list) or len(media) != 1:
+        return f"the send carries mediaFiles {str(media)[:80]}, not one locked medium"
+    if body.get("previews"):
+        return f"the send carries free previews {str(body['previews'])[:80]}"
+    return None
+
+
+def ppv_gone(before, after):
+    """p2.bubble-unsend-ppv's effect: the marked messages read as before, none left (an unsend FakeOF refused fails),
+    on a page that reaches back past `before` (W30 W2: a PPV pushed off the page is unknown, never gone)."""
+    return not _marked(before) and not _marked(after) and _covers(before, after)
+
+
+def ppv_same(before, after_undo) -> bool:
+    """p2.bubble-unsend-ppv's after-undo check (Proof.same): the marked messages as before, on a page that reaches back
+    past `before` (W30 W2: unknown closes the row FAILED, never `undone`)."""
+    return _marked(before) == _marked(after_undo) and _covers(before, after_undo)
+
+
+def find_marked_ppv(before, after, marker):
+    """A lost reply's finder (story 53): the one priced message new since `before` whose text holds `marker`."""
+    new = [r for r in set(_marked(after)) - set(_marked(before)) if marker in r[1] and r[2]]
+    return new[0][0] if len(new) == 1 else None
+
+
+PROOFS += (
+    Proof(id="p2.bubble-countdown", phase=2, page="messages/chat", control="Countdown", kind="mocked", tags=frozenset({OFM_NEW_WRITES})),
+    Proof(id="p2.bubble-copy-draft", phase=2, page="messages/chat", control="Copy as draft", kind="mocked", tags=frozenset({OFM_NEW_WRITES})),
+    Proof(id="p2.bubble-unsend-ppv", phase=2, page="messages/chat", control="Unsend PPV", kind="live",
+          tags=frozenset({"message", "delete_at_once", OFM_NEW_WRITES}),
+          arm=(Write("POST", _THREAD, payload=ppv_payload),),
+          trigger=(("text", "button[at-attr='send_btn']", ""),   # the bare chat page drew; then the Proof fan's chat
+                   ("goto", "messages/chat?chat={fan}"),
+                   ("click", "[at-attr='add_vault_media']"),   # OF refuses a priced text-only send: one vault item
+                   ("frame", "messages/chat/state-vault"),
+                   ("click", f"{_TILE}[data-oi-media][data-oi-wired]"),   # the first real tile, whatever it is
+                   ("click", "[data-oi-vault-add]"),
+                   ("frame", "messages/chat"),
+                   ("text", "#oi-chat-summary", "1 media"),
+                   ("fill", POST_EDITOR, "{marker}"),
+                   ("click", "a[at-attr='price_btn']"),
+                   ("frame", "messages/chat/state-price"),
+                   ("fill", ".modal.show input[at-attr='input'][data-oi-wired]", str(PPV_PRICE)),
+                   ("click", ".modal.show .modal-footer button"),
+                   ("frame", "messages/chat"),
+                   ("text", "#oi-chat-summary", f"Price: ${PPV_PRICE}"),
+                   ("accept", "button[at-attr='send_btn']", "Send this message to"),
+                   ("text", f"{_OWN} [data-oi-bubble='countdown']", ":"),
+                   ("click", f"{_MINE} button[data-oi-bubble='copy-draft']"),
+                   ("text", POST_EDITOR, MARKER),   # Send emptied the composer; the copy filled it again
+                   ("text", "#oi-chat-summary", f"Price: ${PPV_PRICE}"),
+                   ("click", f"{_MINE} button[data-oi-bubble='unsend-ppv']"),
+                   ("click", "#oi-msg-confirm .modal-footer button:has-text('Unsend')")),
+          settled=("text", "#oi-note", "Unsent"),
+          of_read=read_marked_messages, effect=ppv_gone,
+          same=ppv_same,
+          # max 2: the UI's Unsend, then the driver's own when that one was not answered 2xx (follow-up #6)
+          undo=(Write("DELETE", "/api2/v2/messages/{id}", max=2, relay="/api/of/v2/messages/{id}"),),
+          find=find_marked_ppv),
 )
 
 if __name__ == "__main__":

@@ -65,12 +65,7 @@ export function BioLinkDialog({ page, form, dispatch, profileMode, bgPreviewUrl 
     let link: BioLink | null = base;
     try {
       if (!base) {
-        const before = new Set(page.links.map((l) => l.id));
-        const P = await create.mutateAsync(body!);
-        // service/bio_pages/admin.py:433-443 assigns max(sort_order)+1 under _lock_own;
-        // _page at :182-183 returns the links sorted in that transaction.
-        link = P.links.filter((l) => !before.has(l.id)).at(-1) ?? null;
-        if (!link) throw new Error("The link was saved; reload the page to see it.");
+        link = (await create.mutateAsync(body!)).link;
         dispatch({ type: "saved", link });
       } else if (body) {
         const P = await patch.mutateAsync({ lid: base.id, body });

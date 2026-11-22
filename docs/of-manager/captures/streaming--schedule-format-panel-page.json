@@ -66,5 +66,11 @@
  "evidence": [
   "r14-schedule-format-size-open.html",
   "r14-schedule-format-color-open.html"
- ]
+ ],
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "page capture for ticket 28 (the format panel's State page); the format button keeps its Not-yet title until ticket 28 regenerates the page (ticket 87, blocked by 28); Live proof pending (ticket 92)"
+ }
 }

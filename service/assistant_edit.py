@@ -14,8 +14,10 @@ rule ON. The LLM only says WHAT changes (`Edit`); everything else is here:
     already matching and the ones skipped. `resolve_rules` is its DB read.
   • `apply_one` — the apply route's per-rule write: reload the row the session
     owns, compare `rule_version`, re-apply the change spec to the FRESH row
-    (never a client payload), validate as the editor's PATCH does, write, cancel
-    queued jobs when it was switched off, log the old steps hash.
+    (never a client payload), validate as the editor's PATCH does, write only
+    if the row is still the one read (conditional UPDATE), cancel queued jobs
+    when it was switched off, log the old steps hash. Any failure = that
+    rule's skip.
 """
 from __future__ import annotations
 
@@ -23,13 +25,12 @@ import copy
 import hashlib
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from auth import clamp_account_filter
 from db.engine import get_session
@@ -181,18 +182,27 @@ def _set_or_pop(it: dict, key: str, value: Any) -> None:
         it[key] = value
 
 
-def _apply_mass_premade(payload: dict, ch: dict[str, Any]) -> list[tuple[str, Any, Any]]:
-    """Mutates `payload["messages"]` items; returns (field, before, after) per
-    changed field (the first message that changed it)."""
+Befores = list[tuple[Any, int]]      # each distinct prior value, with how many messages had it
+
+
+def _apply_mass_premade(payload: dict, ch: dict[str, Any]) -> list[tuple[str, Befores, Any]]:
+    """Mutates `payload["messages"]` items; returns (field, befores, after) per
+    changed field — every distinct prior value across the messages, with its
+    count (rwl W30 F7: $5 and $50 both show, never only the first)."""
     msgs = payload.get("messages")
     items = [m for m in msgs if isinstance(m, dict)] if isinstance(msgs, list) else []
     if not items:
         raise Skip("has no message to change")
-    diffs: dict[str, tuple[Any, Any]] = {}
+    seen: dict[str, dict[Any, int]] = {}
+    afters: dict[str, Any] = {}
+    changed: set[str] = set()
 
     def note(key: str, before: Any, after: Any) -> None:
-        if before != after and key not in diffs:
-            diffs[key] = (before, after)
+        counts = seen.setdefault(key, {})
+        counts[before] = counts.get(before, 0) + 1
+        afters[key] = after
+        if before != after:
+            changed.add(key)
 
     for it in items:
         if "unsend_after_hours" in ch:
@@ -232,10 +242,10 @@ def _apply_mass_premade(payload: dict, ch: dict[str, Any]) -> list[tuple[str, An
             before = int(_pos(it.get("media_count")) or 1)
             it["media_count"] = ch["media_count"]
             note("media_count", before, ch["media_count"])
-    return [(k, b, a) for k, (b, a) in diffs.items()]
+    return [(k, list(seen[k].items()), afters[k]) for k in seen if k in changed]
 
 
-APPLIERS: dict[str, Callable[[dict, dict[str, Any]], list[tuple[str, Any, Any]]]] = {
+APPLIERS: dict[str, Callable[[dict, dict[str, Any]], list[tuple[str, Befores, Any]]]] = {
     KIND: _apply_mass_premade,
 }
 
@@ -257,19 +267,97 @@ def apply_changes(kind: str, payload: dict, every_seconds: int | None, is_enable
         if every_seconds is None:
             raise Skip("runs at set times — change its schedule in the form")
         if ch["every_seconds"] != every_seconds:
-            diffs.append(("every_seconds", every_seconds, ch["every_seconds"]))
+            diffs.append(("every_seconds", [(every_seconds, 1)], ch["every_seconds"]))
             every = ch["every_seconds"]
     enabled = bool(is_enabled)
     if ch.get("disable_rule") and enabled:
-        diffs.append(("is_enabled", True, False))
+        diffs.append(("is_enabled", [(True, 1)], False))
         enabled = False
-    return out, every, enabled, [{"field": k, "label": LABELS[k], "before": b, "after": a}
-                                 for k, b, a in diffs]
+    return out, every, enabled, [_diff(k, b, a, enabled) for k, b, a in diffs]
 
 
-def rule_version(steps_json: str | None, trigger_json: str | None, is_enabled: Any) -> str:
-    """What the plan card saw: a changed payload, schedule or switch since → a skip."""
-    raw = f"{steps_json or ''}|{trigger_json or ''}|{int(bool(is_enabled))}"
+def _sends_more(key: str, befores: Befores, after: Any) -> bool:
+    """The change makes SOME message send more (or charge differently) right away — every prior value read, not
+    only the first message's: a shorter interval, fewer skip-recent hours, online-only off, a price change, more
+    media."""
+    a, priors = _num(after), [_num(v) if key != "online_only" else v for v, _ in befores]
+    if key == "every_seconds":
+        return a is not None and any(b is not None and a < b for b in priors)
+    if key == "exclude_last_chat_hours":
+        return any((b or 0) > (a or 0) for b in priors)
+    if key == "online_only":
+        return not after and any(bool(b) for b in priors)
+    if key == "price":
+        return True
+    if key == "media_count":
+        return a is not None and any((b or 0) < a for b in priors)
+    return False
+
+
+def _diff(key: str, befores: Befores, after: Any, enabled: bool) -> dict[str, Any]:
+    """`live` (rwl W30 S1): decided here, over every prior value, for a rule that stays on — the card only shows it."""
+    d = {"field": key, "label": LABELS[key], "before": befores[0][0], "after": after,
+         "text": diff_text(key, befores, after), "live": bool(enabled) and _sends_more(key, befores, after)}
+    if len(befores) > 1:
+        d["befores"] = [{"value": v, "count": c} for v, c in befores]
+    return d
+
+
+# ── Wording (pure): the ONE formatter the plan card and the summary read (rwl W30 F12) ──
+
+def _fmt_num(x: float) -> str:
+    x = round(float(x), 2)
+    return str(int(x)) if x.is_integer() else f"{x:g}"
+
+
+def _hours_text(h: float) -> str:
+    return f"{_fmt_num(round(h * 60))} min" if h < 1 else f"{_fmt_num(h)}h"
+
+
+def value_text(key: str, v: Any) -> str:
+    """A value in plain words: "8h", "never", "every 90s", "$15", "on"."""
+    n = _num(v)
+    if key == "unsend_after_hours":
+        return _hours_text(n) if n and n > 0 else "never"
+    if key == "exclude_last_chat_hours":
+        return _hours_text(n) if n and n > 0 else "off"
+    if key == "every_seconds":
+        if not n or n <= 0:
+            return "—"
+        sec = int(n)
+        return _hours_text(sec / 3600) if sec % 60 == 0 else f"{sec}s"
+    if key == "price":
+        return f"${_fmt_num(n)}" if n and n > 0 else "free"
+    if key == "media_count":
+        return str(int(n)) if n and n > 0 else "1"
+    return "on" if v else "off"
+
+
+def diff_text(key: str, befores: Befores, after: Any) -> str:
+    """"Unsend after 8h → never"; several prior values: "Price $5 (1 message), $50 (2 messages) → $10"."""
+    if len(befores) > 1:
+        before = ", ".join(f"{value_text(key, v)} ({c} message{'s' if c != 1 else ''})" for v, c in befores)
+    else:
+        before = value_text(key, befores[0][0])
+    return f"{LABELS[key]} {before} → {value_text(key, after)}"
+
+
+_CHANGE_ORDER = ("unsend_after_hours", "every_seconds", "online_only", "exclude_last_chat_hours", "price",
+                 "media_count")
+
+
+def change_lines(changes: dict[str, Any]) -> list[str]:
+    """The change spec's lines: "Unsend after → never", …, "Switch off" last."""
+    out = [f"{LABELS[k]} → {value_text(k, changes[k])}" for k in _CHANGE_ORDER if k in changes]
+    if changes.get("disable_rule"):
+        out.append("Switch off")
+    return out
+
+
+def rule_version(account_id: str, steps_json: str | None, trigger_json: str | None, is_enabled: Any) -> str:
+    """What the plan card saw: a changed payload, schedule or switch since → a skip. The model is in it
+    (rwl W30 C1): a deleted rule's reused id on another model never passes as the planned rule."""
+    raw = f"{account_id}|{steps_json or ''}|{trigger_json or ''}|{int(bool(is_enabled))}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -296,17 +384,23 @@ def payload_of(steps_json: str | None) -> dict:
 # ── Matching + plan (pure) ────────────────────────────────────────────
 
 def _norm(s: str | None) -> str:
-    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    """Letters and digits in any script, casefolded (rwl W30 F6: "夜" stays "夜", never "")."""
+    return "".join(ch for ch in (s or "").casefold() if ch.isalnum())
 
 
-_GENERIC = {"", "automass", "automasses", "mass", "masses", "all", "allautomasses", "allmasses",
+_GENERIC = {"automass", "automasses", "mass", "masses", "all", "allautomasses", "allmasses",
             "every", "everything", "my", "mine", "rule", "rules", "automassrule", "automassrules",
             "myautomass", "myautomasses", "allmyautomasses", "automasse", "massdm", "massdms"}
 
 
 def name_matches(match: str | None, name: str | None) -> bool:
-    """Case/space-insensitive contains; a generic match ("auto masses") = every rule."""
+    """Case/space-insensitive contains; no match or a generic one ("auto masses")
+    = every rule. A supplied name that normalises to nothing selects none."""
+    if match is None:
+        return True
     m, n = _norm(match), _norm(name)
+    if not m:
+        return False
     if m in _GENERIC:
         return True
     return bool(n) and (m in n or (len(n) >= 3 and n in m))
@@ -329,6 +423,8 @@ class EditPlan:
     already: int = 0
     skipped: list[dict] = field(default_factory=list)
     matched: int = 0
+    overflow: int = 0          # rules that would change but are past MAX_RULES: not on the card (said)
+    left_out: int = 0          # "all": managed models the opt-in gate dropped (said, rule names never read)
 
 
 def plan_rules(rows: Iterable[RuleRow], changes: dict[str, Any], match: str | None,
@@ -356,7 +452,7 @@ def plan_rules(rows: Iterable[RuleRow], changes: dict[str, Any], match: str | No
             "id": r.id, "account_id": r.account_id,
             "account_name": names.get(r.account_id) or r.account_id,
             "name": r.name, "is_enabled": bool(r.is_enabled),
-            "version": rule_version(r.steps_json, r.trigger_json, r.is_enabled),
+            "version": rule_version(r.account_id, r.steps_json, r.trigger_json, r.is_enabled),
             "diffs": diffs})
     return plan
 
@@ -366,42 +462,62 @@ def plan_rules(rows: Iterable[RuleRow], changes: dict[str, Any], match: str | No
 Allowed = Callable[[str], Awaitable[bool]]
 
 
-async def scope_accounts(scope: str, account_id: str, allowed: Allowed) -> list[str] | None:
-    """"this" = the focused account; "all" = every account the session owns
-    (`clamp_account_filter`) that passes `allowed` (the opt-in gate). None =
-    unauthed (no clamp): every account, each still through `allowed`."""
+async def scope_accounts(scope: str, account_id: str, allowed: Allowed) -> tuple[list[str], int]:
+    """(accounts, left out). "this" = the focused account; "all" = every account
+    the session owns (`clamp_account_filter`) that passes `allowed` (the opt-in
+    gate), and how many it dropped (rwl W30 C2: said, never silent). No clamp
+    (unauthed dev hatch) never widens to every account in the DB (rwl W30 M14):
+    "all" reads as the focused account only."""
     if scope != "all":
-        return [account_id]
+        return [account_id], 0
     ids = clamp_account_filter(None)
     if ids is None:
-        async with get_session() as s:
-            ids = list((await s.execute(select(AutomationRule.account_id).where(
-                AutomationRule.kind == KIND).distinct())).scalars().all())
-        if account_id not in ids:
-            ids.append(account_id)
-    return [a for a in dict.fromkeys(ids) if await allowed(a)]
+        ids = [account_id]
+    owned = list(dict.fromkeys(ids))
+    ok = [a for a in owned if await allowed(a)]
+    return ok, len(owned) - len(ok)
 
 
 async def resolve_rules(scope: str, account_id: str, changes: dict[str, Any], match: str | None,
                         allowed: Allowed) -> EditPlan:
-    accounts = await scope_accounts(scope, account_id, allowed) or []
+    accounts, left_out = await scope_accounts(scope, account_id, allowed)
     if not accounts:
-        return EditPlan()
+        return EditPlan(left_out=left_out)
     async with get_session() as s:
         rules = (await s.execute(select(AutomationRule).where(
             AutomationRule.kind == KIND, AutomationRule.account_id.in_(accounts)))).scalars().all()
         rows = [RuleRow(r.id, r.account_id, r.name or "", r.kind, r.steps_json, r.trigger_json,
-                        bool(r.is_enabled)) for r in rules][:MAX_RULES]
+                        bool(r.is_enabled)) for r in rules]
         accts = (await s.execute(select(Account.id, Account.nickname).where(
             Account.id.in_(accounts)))).all()
     names = {a: (nick or a) for a, nick in accts}
-    return plan_rules(rows, changes, match, names)
+    # Match over every rule, THEN cap the card (rwl W30 F3): the cut is counted, never silent.
+    plan = plan_rules(rows, changes, match, names)
+    plan.left_out = left_out
+    if len(plan.rules) > MAX_RULES:
+        plan.overflow = len(plan.rules) - MAX_RULES
+        plan.rules = plan.rules[:MAX_RULES]
+    return plan
+
+
+def left_out_note(n: int) -> str:
+    """Models the opt-in gate dropped from "every model" (rwl W30 C2); no rule names."""
+    return (f"{n} model{'s' if n != 1 else ''} left out — your role can't edit "
+            f"{'their' if n != 1 else 'its'} Auto mass.")
+
+
+def overflow_note(n: int) -> str:
+    return (f"{n} more rule{'s' if n != 1 else ''} not shown and not changed — "
+            "narrow the request (a rule name or one model).")
 
 
 async def apply_one(rule_id: int, version: str, changes: dict[str, Any], *, home: str,
                     allowed: Allowed) -> dict[str, Any]:
     """One rule of an approved plan → {id, ok, reason?, diffs?}. A 401 is
-    re-raised (session gone); any other refusal is this rule's skip."""
+    re-raised (session gone); any other refusal or failure is this rule's skip
+    (rwl W30 F4: the response always lists every rule, never an error after
+    earlier rules committed). The write is conditional on the row still being
+    the one this call read (F5): a concurrent edit in between → CHANGED_SINCE."""
     from automation_registry import canonical_kind
     from automation_rules_api import _cancel_queued, _load_owned, _validate_payload_for_kind
 
@@ -421,28 +537,48 @@ async def apply_one(rule_id: int, version: str, changes: dict[str, Any], *, home
                 return skip("not an Auto mass rule")
             if not await allowed(rule.account_id):
                 return skip("not allowed")
-            if rule_version(rule.steps_json, rule.trigger_json, rule.is_enabled) != version:
+            if rule_version(rule.account_id, rule.steps_json, rule.trigger_json, rule.is_enabled) != version:
                 return skip(CHANGED_SINCE)
             if rule.account_id != home and any(k in ch for k in ONE_MODEL_ONLY):
                 return skip(ONE_MODEL_NOTE)
+            seen = (rule.steps_json, rule.trigger_json, bool(rule.is_enabled))
             trig, every = every_of(rule.trigger_json)
-            was_enabled = bool(rule.is_enabled)
+            was_enabled = seen[2]
             old_hash = hashlib.sha1((rule.steps_json or "").encode()).hexdigest()[:12]
             payload, every2, enabled, diffs = apply_changes(
                 KIND, payload_of(rule.steps_json), every, was_enabled, ch)
             if not diffs:
                 return {"id": rule_id, "ok": True, "reason": "already set", "diffs": []}
-            rule.steps_json = json.dumps(_validate_payload_for_kind(KIND, payload))
+            try:
+                values: dict[str, Any] = {"steps_json": json.dumps(_validate_payload_for_kind(KIND, payload))}
+            except HTTPException as e:
+                return skip(f"the change isn't valid on this rule ({e.detail})")
             if every2 != every:
                 trig["every_seconds"] = every2
-                rule.trigger_json = json.dumps(trig)
+                values["trigger_json"] = json.dumps(trig)
             if was_enabled and not enabled:
-                rule.is_enabled = False
+                values["is_enabled"] = False
+            res = await s.execute(
+                update(AutomationRule)
+                .where(AutomationRule.id == rule.id, AutomationRule.account_id == rule.account_id,
+                       AutomationRule.steps_json == seen[0],
+                       AutomationRule.trigger_json == seen[1], AutomationRule.is_enabled == seen[2])
+                .values(**values).execution_options(synchronize_session=False))
+            if res.rowcount != 1:
+                return skip(CHANGED_SINCE)
+            if values.get("is_enabled") is False:
                 await _cancel_queued(s, [rule.id])
-            await s.flush()
             account_id, name = rule.account_id, rule.name
     except Skip as e:
         return skip(str(e))
+    except HTTPException as e:
+        if e.status_code == 401:
+            raise
+        log.warning("assistant_edit_apply_refused rule=%s status=%s detail=%r", rule_id, e.status_code, e.detail)
+        return skip("not allowed" if e.status_code == 403 else "couldn't be changed")
+    except Exception:
+        log.exception("assistant_edit_apply_failed rule=%s", rule_id)
+        return skip("couldn't be saved — try again")
     log.info("assistant_edit_applied rule=%s account=%s name=%r old_steps=%s fields=%s enabled=%s",
              rule_id, account_id, name, old_hash, ",".join(d["field"] for d in diffs), enabled)
     return {"id": rule_id, "ok": True, "diffs": diffs}

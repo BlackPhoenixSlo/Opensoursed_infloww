@@ -313,7 +313,15 @@ export function markNotifHistoryResponded(accountId: string, fanId: FanId, by: s
 export const NOTIF_ARRIVED_EVENT = "chatterly:notif-arrived";
 export const NOTIF_CLEARED_EVENT = "chatterly:notif-cleared";
 
+/** The last notification this tab saw arrive (epoch ms; this page load's start before any): a cached 0 count read
+ *  before it may be stale, so "Mark all read" writes for it (hooks/useOfNotifCount). Stamped where it fires. */
+let lastArrivalAt = Date.now();
+export function lastNotifArrival(): number {
+  return lastArrivalAt;
+}
+
 export function dispatchNotifArrived(): void {
+  lastArrivalAt = Date.now();
   if (typeof window === "undefined") return;
   try { window.dispatchEvent(new CustomEvent(NOTIF_ARRIVED_EVENT)); } catch { /* ignore */ }
 }

@@ -275,6 +275,15 @@ async def _imminent_pending_job(
 
     Returns the LATEST-due match. W7 callers only want the boolean and take
     `_has_imminent_pending_job` below; the full_ai hook reads the payload."""
+    return (await _imminent_pending_jobs(account_id, kind, [fan_id], within_s, s=s)).get(int(fan_id))
+
+
+async def _imminent_pending_jobs(
+    account_id: str, kind: str, fan_ids, within_s: float, *, s=None
+) -> dict[int, tuple[datetime, dict]]:
+    """`_imminent_pending_job` for many fans in one read: fan id -> its
+    LATEST-due `(run_at, payload)`, only the fans of `fan_ids` that have one
+    (Full AI's sweep asks for a whole pass)."""
     soon = datetime.utcnow() + timedelta(seconds=within_s)
     async with _reader(s) as s:
         rows = (
@@ -289,18 +298,19 @@ async def _imminent_pending_job(
                 )
             )
         ).all()
-    fid = int(fan_id)
-    best: tuple[datetime, dict] | None = None
+    fids = {int(f) for f in fan_ids}
+    best: dict[int, tuple[datetime, dict]] = {}
     for run_at, pj in rows:
         try:
             p = json.loads(pj or "{}")
         except Exception:
             continue
-        if not decide.targets_fan(p, fid):
+        if not isinstance(p, dict):
             continue
         at = run_at or datetime.utcnow()
-        if best is None or at > best[0]:
-            best = (at, p)
+        for fid in fids:
+            if decide.targets_fan(p, fid) and (fid not in best or at > best[fid][0]):
+                best[fid] = (at, p)
     return best
 
 

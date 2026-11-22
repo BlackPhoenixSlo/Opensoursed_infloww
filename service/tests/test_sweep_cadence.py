@@ -21,7 +21,7 @@ sweep_cadence — full chat sweeps (`scrape_chats` `{}`) on a cadence, not per r
   case_sweep_with_every_chat_failed_raises_not_full_sweep:
       a `{}` scrape_chats run whose every target chat failed raises (the job
       retries, then parks 'error'); one scraped chat finalises `full_sweep`; an
-      explicit-id run with every chat failed still returns its stats. A sweep whose
+      explicit-id run with every chat failed raises too (no full_sweep). A sweep whose
       first SCRAPE_SWEEP_FAIL_FAST (5) chats all failed stops there (no more OF calls) and raises.
       OF's 404 (fan gone) is handled, not a failure: 5 gone then good chats, and an
       all-gone small sidebar, finalise `full_sweep` without raising.
@@ -213,8 +213,11 @@ async def case_sweep_with_every_chat_failed_raises_not_full_sweep():
             raise AssertionError("an all-failed {} sweep must raise")
         except RuntimeError as e:
             assert "0 of 2" in str(e), e
-        out = await sc._automation_scrape_chats("sc_failed_sweep", {"fan_ids": [11, 12]}, run_id=0)
-        assert out["chats_failed"] == 2 and "full_sweep" not in out, out
+        try:   # an explicit scrape that scraped nothing raises too (W30 #8: bounded job retry)
+            await sc._automation_scrape_chats("sc_failed_sweep", {"fan_ids": [11, 12]}, run_id=0)
+            raise AssertionError("an all-failed explicit scrape must raise")
+        except RuntimeError as e:
+            assert "0 of 2" in str(e), e
         ok_ids.add(12)
         out = await sc._automation_scrape_chats("sc_failed_sweep", {}, run_id=0)
         assert out["full_sweep"] is True and out["chats_scanned"] == 1, out

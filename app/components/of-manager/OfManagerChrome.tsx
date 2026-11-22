@@ -25,7 +25,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Maximize, PanelRight, RotateCw } from "lucide-react";
 
-import { CreatorColumn, PALETTE, liveSession } from "@/components/of-manager/CreatorColumn";
+import { CreatorColumn, PALETTE } from "@/components/of-manager/CreatorColumn";
+import { AutoPickContext, standInPick } from "@/lib/ofMirrorProfile";
+import { liveSession } from "@/lib/sessionConnectivity";
 import { popoutReady } from "@/components/of-manager/popoutReady";
 import { FanDrawer } from "@/components/chat/FanDrawer";
 import { InflowwPalette } from "@/components/chat/InflowwPalette";
@@ -103,13 +105,18 @@ export function OfManagerChrome({ children }: { children: React.ReactNode }) {
 }
 
 /** OF Manager has no "All creators" (owner 2026-11-20: the OF view is one creator's): a saved "all" scope (Messages
- *  Pro's unified inbox) shows the first creator with a live session, else the first, here alone; the saved scope stays,
- *  so leaving finds it. A pick sets the real scope. */
+ *  Pro's unified inbox) shows the first creator with a live session, else the first (standInPick), here alone; the saved
+ *  scope stays, so leaving finds it. That automatic pick is a stand-in (AutoPickContext): the mirror's Settings writes
+ *  and stream key stay locked and it says "Showing <model>", as in All models. A pick sets the real scope. */
 function OneCreator({ children }: { children: React.ReactNode }) {
   const { accountId } = useScope();
   const creators = useActiveAccounts();
-  const first = (creators.find(liveSession) ?? creators[0])?.id ?? null;
-  return <ScopeOverride accountId={accountId ? null : first}>{children}</ScopeOverride>;
+  const auto = accountId ? null : standInPick(creators);
+  return (
+    <AutoPickContext.Provider value={auto}>
+      <ScopeOverride accountId={auto}>{children}</ScopeOverride>
+    </AutoPickContext.Provider>
+  );
 }
 
 function Chrome({ children }: { children: React.ReactNode }) {

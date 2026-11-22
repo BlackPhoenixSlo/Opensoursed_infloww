@@ -6,7 +6,7 @@ import { useState } from "react";
 import { Info } from "lucide-react";
 
 import { Badge, ExtraTag } from "@/components/ui/primitives";
-import { CopyButton } from "@/components/growth/_bits";
+import { CopyButton } from "@/components/ui/CopyButton";
 import LinkEditDialog, { LinkBatchEditDialog } from "@/components/growth/LinkEditDialog";
 import LinksListFrame, {
   RowActions, Switch, Unreachable, dateOnly, downloadCsv, readTime, useFrameFilters, useSessionGone,

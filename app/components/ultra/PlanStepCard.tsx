@@ -26,12 +26,10 @@ const STATE_TONE: Record<StepStatus["state"], string> = {
   uncertain: "text-warn", skipped: "text-fg-dim",
 };
 
-export function PlanStepCard({ card, step, index, finishedAt = null }: {
+export function PlanStepCard({ card, step, index }: {
   card: PlanCard;
   step: StepStatus | undefined;
   index: number;
-  /** The plan's finished_at: a report file's link is known dead 15 minutes after it. */
-  finishedAt?: string | null;
 }) {
   const state = step?.state ?? "pending";
   const ids = step?.result?.ids;
@@ -67,7 +65,7 @@ export function PlanStepCard({ card, step, index, finishedAt = null }: {
       {step?.error && <p className="mt-2 break-words text-[13px] text-err">{step.error}</p>}
       {step?.note && <p data-step-note className="mt-2 break-words text-[13px] text-warn">{step.note}</p>}
       {fileId !== undefined && (
-        <ReportDownload fileId={String(fileId)} finishedAt={finishedAt}
+        <ReportDownload fileId={String(fileId)} endedAt={step?.ended_at ?? null}
           fallbackName={`report.${card.rows.find(([label]) => label === "format")?.[1] ?? "csv"}`} />
       )}
       {step?.result?.id !== undefined && fileId === undefined && (

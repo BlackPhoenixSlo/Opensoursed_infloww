@@ -5,10 +5,10 @@ starts the loopback stack, runs each selected proof on the running app, and leav
          post-drop-label|post-drop-expiry|post-drop-target|email-off|wrong-creator|
          tip-filter|strip-miss|highlight-field|payout-field|no-stored-order|sort-restore-500|audience-list|
          audience-second|unsend-refused|queue-500-foreign|dup-id-refused|post-commit-500|composer-once|
-         publish-other|post-lost-hidden|hidden-refused|publish-lost|publish-500]
-         [--proof-fan <id>|none] [--lockout]
+         publish-other|post-lost-hidden|hidden-refused|publish-lost|publish-500|unsend-delete-500|cotag-extra]
+         [--proof-fan <id>|none] [--cotag-partner <id>|none] [--lockout]
   run.sh --of fake capture [--abort] --proof <id>
-  run.sh --of live --session-dir <dir> [--proof-fan <id>] [capture [--abort]] --proof <id>
+  run.sh --of live --session-dir <dir> [--proof-fan <id>] [--cotag-partner <id>] [capture [--abort]] --proof <id>
   run.sh --of fake|live [--session-dir <dir>] serve
   run.sh --of fake|live [--session-dir <dir>] reverify --evidence <folder>
 
@@ -47,7 +47,7 @@ Failure paths (ticket 05): a failed undo stops the run (later proofs `<id>: not 
 change left); a write whose reply was lost is never retried, found by its proof's `find` in the after-write read and
 undone, or its row closes FAILED. One run per Creator holds a lock file in the system temp dir; a stale one (dead
 pid) is taken over and reported, and any earlier run's `pending` row (the stale holder's included) refuses every new
-run until cleared by hand.
+run until cleared by hand; under --of live so does an earlier live run's FAILED or not-reversible row (follow-up #6).
 
 Evidence: slop/evidence/<UTC>-ofm-<of>-<sha>/ (screenshots, wire.jsonl, undo-log.jsonl + .md, OnlyFans-side reads,
 fake-hits.jsonl, app-offhost.jsonl, report.json + .md, relay.log, next.log). Exit 0 only when every proof passed and
@@ -83,12 +83,12 @@ from of_browser import (LAUNCH_ARGS, AppBrowser, CaptureBrowser, _call_ctx, _dom
 from expects import Park, expect_problems, expect_waits, park_problems, resolve_expects  # noqa: E402
 from proof_core import (NOT_REVERSIBLE_REFUSED, census, fake_only_refused, fill_text, order, pace_problems,  # noqa: E402
                         redact_text, step_family, undo_deadline, wire_problems)
-from proofs import ALL, PENDING  # noqa: E402
-from run_lock import holds_lock, release_lock, take_lock  # noqa: E402
+from proofs import ALL, ORDER, PENDING  # noqa: E402
+from run_lock import _index_path, holds_lock, index_logs, index_update, release_lock, take_lock  # noqa: E402
 import undo_driver  # noqa: E402
 from ui_steps import click_confirm, collect_tiles, goto_target  # noqa: E402
 from undo_log import (append_jsonl, check_undo_log, needs_row_id, pending_rows, read_undo_log,  # noqa: E402
-                      reads_equal, undo_markdown, undo_order)
+                      reads_equal, undo_markdown, undo_order, unresolved_rows)
 
 NICE = 10
 PY = sys.executable
@@ -372,17 +372,19 @@ def _wait_text(fr, sel: str, want: str, marker: str, proof_fan) -> None:
 
 def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path, run_id: str,
               proof_fan: str | None = None, cb: CaptureBrowser | None = None, capture_abort: bool = False,
-              lockout: bool = False) -> dict:
+              lockout: bool = False, cotag_partner: str | None = None) -> dict:
     """Steps 2-14 of the driver for one proof. Returns its result; `state` FAILED stops the run.
 
     Story 10: an allowed write with an undo deadline (`undo_deadline`: delete-at-once, a Scheduled post) is watched
     by a timer thread that forces its after-write read and undo at the deadline, whatever step the proof is on.
     `cb`: the capture browser for `fetch` / `hand-off` steps; a fetch step expected aborted is checked on its own and
     left out of the step-9 window. `capture_abort`: armed in capture-abort mode, and OnlyFans's side must read the
-    same after the steps as before."""
+    same after the steps as before. `cotag_partner` (ofm-not-yet ticket 98): the run input naming the Co-tag proofs'
+    partner, given to a `call` step as `ctx["cotag_partner"]` (None: they park)."""
     req = ab.ctx.request
     call = _relay_client(stack, ab)
     res = {"proof": proof.id, "problems": [], "screens": []}
+    t0 = time.time()   # ticket 98: the proof's own window (`res["t"]`) for harness_checks' read-first check
     marker = f"oi-proof-{run_id}"
     shots = evidence / proof.id
     shots.mkdir(exist_ok=True)
@@ -406,7 +408,9 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
     quiet = datetime.strptime(run_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).isoformat()
     r = req.post(f"{stack.relay}/__proof/arm", data={"proof": proof.id, "of": stack.of, "proof_fan": proof_fan,
                                                      "capture_abort": capture_abort, "lockout": lockout,
-                                                     **({"quiet_hour": quiet} if stack.of == "fake" else {})})
+                                                     **({"quiet_hour": quiet} if stack.of == "fake" else {}),
+                                                     "cotag_partner": cotag_partner,   # ticket 98: the guard's too
+                                                     "marker": marker})   # round 2 #22: payloads bind to this run's
     if not r.ok:
         res["problems"].append(f"arm failed: {r.status} {r.text()[:200]}")
         res["state"] = "FAILED"
@@ -586,7 +590,7 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
                 _wait_text(fr, step[1], wants.get(i, step[2]), marker, proof_fan)
                 continue
             if step[0] == "goto":   # UI: another Mirror page in the same tab (Phase 6: New post's vault dialog)
-                shown = goto_target(step[1], mine)
+                shown = goto_target(fill_text(step[1], marker, proof_fan), mine)   # ticket 33: {fan}
                 page.goto(f"{stack.app}/of-manager/{shown.replace('/index', '')}", wait_until="load", timeout=180_000)
                 fr = _mirror_frame(page, shown.split("?", 1)[0])
                 continue
@@ -598,7 +602,8 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
             if step[0] == "call":   # ticket 100: the proof's own steps (Relay calls, reads, clicks) on `ctx`
                 problems = step[1](_call_ctx(page, fr, shown, stack, call, creator, marker, proof_fan, shots, res,
                                              proof.id, extra={"settle": settle_now,
-                                                              "fan_visible_spent": fan_visible_spent})) or []
+                                                              "fan_visible_spent": fan_visible_spent,
+                                                              "cotag_partner": cotag_partner})) or []
                 res["problems"] += problems
                 if problems:
                     break
@@ -740,6 +745,7 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
     if parked and res["state"] == "pass" and set(res["undo"]) <= {"undone", "none"}:
         res["state"], res["parked"] = "parked", "; ".join(parked)
     res["reads"] = {"before": before, "after_write": after, "after_undo": after_undo}
+    res["t"] = [t0, time.time()]
     return res
 
 
@@ -850,8 +856,9 @@ def harness_checks(evidence: Path, hits: list, results: list) -> list:
         if p.refused_as is not None:   # a drill: FakeOF received none of its requests (story 39)
             out += [f"{p.id}: FakeOF received {h['method']} {h['path']}" for h in plain if undo_driver.arm_hit(p.arm, h)]
         if r.get("read_first"):   # tickets 96, 100: parked before any write, so FakeOF received none of its writes
+            t0, t1 = r.get("t") or (float("-inf"), float("inf"))   # ticket 98: in its own window (proofs share arms)
             out += [f"{p.id}: parked, yet FakeOF received {h['method']} {h['path']}" for h in plain
-                    if undo_driver.arm_hit(p.arm, h) or undo_driver.arm_hit(p.undo, h)]
+                    if t0 <= h["t"] <= t1 and (undo_driver.arm_hit(p.arm, h) or undo_driver.arm_hit(p.undo, h))]
         out += [m for c in r.get("closed", []) if (m := undo_driver.row_problem(p, c, r["closed"], plain))]
     return out
 
@@ -897,25 +904,59 @@ def _report_md(rep: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def earlier_pending(of: str, folder: str) -> list:
-    """Every `pending` row in an earlier run's Undo log (story 52), named with its file.
+def earlier_pending(of: str, folder: str, creator: str | None = None) -> list:
+    """Every `pending` row in an earlier run's Undo log (story 52), named with its file; under --of live also every
+    FAILED or NOT_REVERSIBLE_REFUSED one (follow-up #6, `unresolved_rows`: an undo that did not take may have left the
+    item on the Proof Creator's account; a fake run's FakeOF is fresh each run). Round 2 #23: under --of live with
+    `creator`, also the logs the Creator's shared Undo index lists (run_lock, beside its lock: other worktrees' live
+    runs); a listed log with no unresolved row drops out of the index; a listed log that is gone blocks (check by
+    hand, then drop its path from the index file).
     ASSUMPTION: only runs of the same mode count (a fake run's pending row says nothing about the Proof Creator's
     account, and the reverse; rung 5); overturned if the owner wants any pending row to block every run."""
-    out = []
-    for log in sorted((ROOT / "slop" / "evidence").glob(f"*-ofm-{of}-*/undo-log.jsonl")):
+    out, resolved = [], []
+    local = {log.resolve(): f"slop/evidence/{log.parent.name}/undo-log.jsonl"
+             for log in (ROOT / "slop" / "evidence").glob(f"*-ofm-{of}-*/undo-log.jsonl")}
+    try:
+        listed = index_logs(creator) if creator and of == "live" else []
+    except ValueError as e:
+        out.append(f"{e}: check it by hand")
+        listed = []
+    shared = {log: str(log) for log in listed if f"-ofm-{of}-" in log.parent.name and log not in local}
+    for log, name in sorted({**local, **shared}.items()):
         if log.parent.name == folder:
             continue
-        name = f"slop/evidence/{log.parent.name}/undo-log.jsonl"
+        if not log.exists():
+            out.append(f"{name}: listed in the shared Undo index {_index_path(creator)} but gone: check by hand")
+            continue
         try:
-            out += [f"{name}: {p}" for p in pending_rows(read_undo_log(log))]
+            rows = read_undo_log(log)
+            left = [f"{name}: {p}" for p in (unresolved_rows(rows) if of == "live" else pending_rows(rows))]
         except (ValueError, KeyError, OSError) as e:
-            out.append(f"{name}: unreadable ({type(e).__name__}): check it by hand")
+            left = [f"{name}: unreadable ({type(e).__name__}): check it by hand"]
+        out += left
+        if not left and log in shared:
+            resolved.append(log)
+    if resolved:
+        index_update(creator, drop=resolved)
     return out
+
+
+def _index_settle(creator: str, log: Path) -> None:
+    """Round 2 #23, at a live run's end: its Undo log leaves the shared index unless it holds an unresolved row."""
+    try:
+        left = unresolved_rows(read_undo_log(log)) if log.exists() else []
+    except (ValueError, KeyError, OSError):
+        left = ["unreadable"]
+    if not left:
+        try:
+            index_update(creator, drop=[log])
+        except ValueError:
+            pass   # an unreadable index already blocks the next live run (earlier_pending)
 
 
 def prove(proof_ids: list[str], fault: str | None = None, proof_fan: str | None = None,
           capture: str | None = None, of: str = "fake", session_src: Path | None = None, serve: bool = False, *,
-          expected: str, lockout: bool = False, reverify: Path | None = None) -> int:
+          expected: str, lockout: bool = False, reverify: Path | None = None, cotag_partner: str | None = None) -> int:
     from playwright.sync_api import sync_playwright
 
     sha = _git("rev-parse", "--short", "HEAD").strip() or "nosha"
@@ -929,21 +970,29 @@ def prove(proof_ids: list[str], fault: str | None = None, proof_fan: str | None 
         return 1
     if lock_msg:
         print(f"ofm-live-proof: {lock_msg}", flush=True)
+    log = ROOT / "slop" / "evidence" / folder / "undo-log.jsonl"
+    listed = False
     try:
-        pending = earlier_pending(of, folder)
+        pending = earlier_pending(of, folder, expected)
         if pending:
             for p in pending:
-                print(f"ofm-live-proof: refused: earlier run's Undo log has a pending row: {p}", flush=True)
+                print(f"ofm-live-proof: refused: earlier run's Undo log has an unresolved row: {p}", flush=True)
             return 1
+        if of == "live":   # round 2 #23: listed from the start, so a crashed live run still blocks other worktrees
+            index_update(expected, add=log)
+            listed = True
         return _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, proof_fan, capture,
                       of=of, session_src=session_src, expected=expected, serve=serve, lockout=lockout,
-                      reverify=reverify)
+                      reverify=reverify, cotag_partner=cotag_partner)
     finally:
+        if listed:
+            _index_settle(expected, log)
         release_lock(expected)
 
 
 def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, proof_fan=None, capture=None, *,
-           of="fake", session_src=None, expected: str, serve=False, lockout=False, reverify=None) -> int:
+           of="fake", session_src=None, expected: str, serve=False, lockout=False, reverify=None,
+           cotag_partner=None) -> int:
     """`capture`: None (prove), "send" or "abort" (`capture [--abort]`, one proof, no app). `serve`: no proof; the
     stack waits after preflight until interrupted. `reverify`: an earlier evidence folder; no proof, no app, the served
     cover compared with its kept one after preflight. `expected`: the Creator the preflight must find."""
@@ -953,7 +1002,8 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
     (evidence / "undo-log.jsonl").touch()
     trees0 = _trees_state()
     rep = {"folder": f"slop/evidence/{folder}", "evidence": str(evidence), "of": of, "sha": sha,
-           "fault": fault, "expected": expected, "lock": lock_msg, "proof_fan": proof_fan, "proofs": [], "parked": [],
+           "fault": fault, "expected": expected, "lock": lock_msg, "proof_fan": proof_fan, "cotag_partner": cotag_partner,
+           "proofs": [], "parked": [],
            "refused": [], "not_run": [],
            "preflight": [], "harness": [], "revision": revision(),
            "cmd": "serve" if serve else "reverify" if reverify else f"capture ({capture})" if capture else "prove"}
@@ -978,7 +1028,7 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
                 [fake.origin] if fake else []), expected, holds_lock(expected))
             for why in rep["preflight"]:
                 print(f"ofm-live-proof: refused before any proof: preflight: {why}", flush=True)
-            proofs = order([ALL[i] for i in proof_ids if i in ALL])
+            proofs = order([ALL[i] for i in proof_ids if i in ALL], canon=ORDER)
             if not rep["preflight"]:   # parked and refused first: the capture browser opens for startable proofs only
                 proofs = live_entry.startable(proofs, [x for x in proof_ids if x in PENDING], of, proof_fan, rep,
                                               capture=capture)
@@ -1003,10 +1053,11 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
                     if capture:   # one proof (main)
                         r = capture_cmd.run_capture(p, lambda q, abort: run_proof(
                             q, stack, ab, creator, evidence, run_id, proof_fan, cb=cb, capture_abort=abort,
-                            lockout=lockout),
+                            lockout=lockout, cotag_partner=cotag_partner),
                             cb, creator, evidence, run_id, proof_fan, capture == "abort")
                     else:
-                        r = run_proof(p, stack, ab, creator, evidence, run_id, proof_fan, cb=cb, lockout=lockout)
+                        r = run_proof(p, stack, ab, creator, evidence, run_id, proof_fan, cb=cb, lockout=lockout,
+                                      cotag_partner=cotag_partner)
                     started.append(r)   # harness_checks: every proof that ran, a parked one included
                     if r["state"] == "parked":   # tickets 60, 61, 95, 96, 99: found at run time, reported parked
                         rep["parked"].append({"proof": p.id, "reason": r["parked"], "screens": r["screens"],
@@ -1109,8 +1160,10 @@ def main(argv=None) -> int:
                                         "queue-500-foreign",
                                         "dup-id-refused", "post-commit-500", "composer-once",   # ticket 97
                                         "publish-other", "post-lost-hidden", "hidden-refused",   # ticket 99
-                                        "publish-lost", "publish-500"),
-                    help="fake only: FakeOF answers the tracer's DELETE 500, or applies its create and drops the reply; "
+                                        "publish-lost", "publish-500",
+                                        "unsend-delete-500",   # ofm-not-yet ticket 33
+                                        "cotag-extra"),   # ofm-not-yet ticket 98
+                    help="fake only: FakeOF answers the tracer's (or a post's, ticket 101) DELETE 500, or applies its create and drops the reply; "
                          "or plants a vault tile src on a CDN host; or the run expects another Creator than FakeOF's; "
                          "trial-delete-500: the trial link's DELETE 500 (ticket 64); rename-ignored: a vault folder "
                          "PATCH answered 200, not applied (ticket 34); post-drop-*: a post stored without that field, "
@@ -1124,11 +1177,17 @@ def main(argv=None) -> int:
                          "composer sending each id once; or (ticket 99) plants an app Publish now sending another "
                          "queued post's schedule id, or makes the post holding a hidden medium then drops the reply, "
                          "or refuses publishing a post whose medium is hidden, or publishes a post then drops the "
-                         "reply or answers 500")
+                         "reply or answers 500; unsend-delete-500: a message DELETE 500 (ofm-not-yet ticket 33); "
+                         "or (ticket 98) plants an app post adding a second Co-tag creator "
+                         "(lost-reply also drops the immediate Co-tagged post's reply)")
     ap.add_argument("--session-dir", help="live only, required there (no default): the Proof Creator's account "
                                           "session dir, copied into the run's temp dir and never printed")
     ap.add_argument("--proof-fan", help="the Proof fan message and PPV proofs may reach; fake mode defaults to "
                                          "FakeOF's fan, `none` unsets it (those proofs then park)")
+    # ofm-not-yet ticket 98: the Co-tag proofs' partner is run input only
+    ap.add_argument("--cotag-partner", help="the OnlyFans creator id the Co-tag proofs tag; fake mode defaults to "
+                                            "FakeOF's taggable creator, `none` unsets it; live never defaults (those "
+                                            "proofs then park: owner sheet item 4)")
     ap.add_argument("--abort", action="store_true", help="capture only: record the write and abort it before it "
                                                          "leaves")
     # ticket 66: the Run's `lockout` (proof_core.Run, rung 4) had no flag; a Lockout control's write still needs its
@@ -1179,12 +1238,21 @@ def main(argv=None) -> int:
     if a.proof_fan is None and a.of == "fake":
         from fake_layer import PROOF_FAN
         fan = str(PROOF_FAN)
+    # ofm-not-yet ticket 98: digits only; `none` unsets it in fake mode, as --proof-fan
+    partner = None if a.cotag_partner is None or a.cotag_partner.strip().lower() in ("", "none") \
+        else a.cotag_partner.strip()
+    if partner is not None and not partner.isdigit():
+        print("ofm-live-proof: --cotag-partner is an OnlyFans user id (digits) or `none`", file=sys.stderr)
+        return 2
+    if a.cotag_partner is None and a.of == "fake":
+        from fake_layer import COTAG_PARTNER
+        partner = str(COTAG_PARTNER)
     expected = live_entry.expected_creator(a.of, a.fault)   # wrong-creator ends here: FakeOF never sees it
     fault = None if a.fault == live_entry.WRONG_CREATOR else a.fault
     signal.signal(signal.SIGTERM, _interrupt)   # SIGTERM tears down like Ctrl-C (temp dir and session copy go)
     return prove(ids, fault, fan, capture=("abort" if a.abort else "send") if a.cmd == "capture" else None,
                  of=a.of, session_src=Path(a.session_dir) if a.session_dir else None, serve=a.cmd == "serve",
-                 expected=expected, lockout=a.lockout, reverify=a.evidence)
+                 expected=expected, lockout=a.lockout, reverify=a.evidence, cotag_partner=partner)
 
 
 def _interrupt(signum, frame):

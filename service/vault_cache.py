@@ -314,11 +314,12 @@ def _view(query_key: str) -> str:
     return _OFFSET.sub("|offset=*|", query_key, count=1)
 
 
-async def drop_view_pages(account_id: str, query_key: str) -> int:
+async def drop_view_pages(account_id: str, query_key: str, *, include_self: bool = False) -> int:
     """Delete the cached pages of `query_key`'s view (same key but the offset) other than `query_key` itself.
     The picker's revalidate (server._vault_read) calls it when a page 1 refetch shows new ids: every later
     offset was cut from the old listing, so serving one would drop or repeat media. View-scoped and no RAM mark,
-    unlike `invalidate`: the fresh page 1 put that follows must land.
+    unlike `invalidate`: the fresh page 1 put that follows must land. `include_self`: `query_key` too (an empty
+    refetch, which `put` never caches, so the old page 1 would outlive it).
 
     Never raises: a failed delete leaves those rows to the TTL (returns 0)."""
     view = _view(query_key)
@@ -327,7 +328,7 @@ async def drop_view_pages(account_id: str, query_key: str) -> int:
             keys = (await s.execute(
                 select(VaultResponseCache.query_key).where(VaultResponseCache.account_id == account_id)
             )).scalars().all()
-            gone = [k for k in keys if k != query_key and _view(k) == view]
+            gone = [k for k in keys if (include_self or k != query_key) and _view(k) == view]
             if not gone:
                 return 0
             result = await s.execute(delete(VaultResponseCache).where(

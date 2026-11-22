@@ -101,7 +101,7 @@ import { bindLabels, bindTags, labelsOf, type PostLabelsResp, tagsRoute, type Ta
 import { refetchOwnStories, vaultStoryBody, type VaultStoryBody } from "@/lib/ofMirrorStory";
 import { lock, RECORD_POPUP, recordPopup, toast } from "@/lib/ofMirrorToast";
 import { useOfmNewWrites } from "@/lib/ofMirrorNewWrites";
-import { recordSession, refusedAudio, voiceFile, type TakeRecording } from "@/lib/ofMirrorComposer";
+import { prefetchRecorder, recordSession, refusedAudio, voiceFile, type TakeRecording } from "@/lib/ofMirrorComposer";
 
 /** Split out of this file; importers keep importing them from here. */
 export { clearDraft, collectPost, collectSchedule, type CreatePostBody, draftKey, loadDraft, mergeSendWith, type PostContext, type PostDraft, type PostHandlers, type PriceLimits, renderCalendar, saveDraft, type SearchPost, type SearchUser, type UploadsInFlight, type Voting } from "@/lib/ofMirrorPostDraft";
@@ -847,6 +847,16 @@ export function bindAddMedia(
 type TakenMedia = Pick<PostDraft, "media_files" | "thumbs" | "upload_failed">;
 /** Which media a failed upload was (a recording's kind, else the file's name): its re-upload forgets the failure. */
 export const mediaKey = (file: File) => /^(voice|video)-\d+\./.exec(file.name)?.[1] ?? file.name;
+/** Each file's `mediaKey` in one pick, a repeat suffixed " #2", " #3"…: same-named files never forget each other's failure. */
+export const pickKeys = (files: File[]) => {
+  const seen = new Map<string, number>();
+  return files.map((file) => {
+    const key = mediaKey(file);
+    const n = (seen.get(key) ?? 0) + 1;
+    seen.set(key, n);
+    return n > 1 ? `${key} #${n}` : key;
+  });
+};
 /** The draft's failed uploads with `key` failed for `why`, or forgotten (no `why`); undefined once none are left. */
 function failedWith(failed: Record<string, string> | undefined, key: string, why?: string) {
   const next = { ...failed };
@@ -863,7 +873,7 @@ export const uploadFailed = (failed: Record<string, string>) => `Upload failed: 
  * accepted upload's `send_with` is appended to the draft's `media_files` with a thumb from the file's object URL;
  * `done` is told of each attached file. Every file counts as in flight (`uploading`) from the start. A refused, failed
  * or undecodable upload shows a red "Could not upload: …" note after `anchor`, attaches nothing, and is kept on the
- * draft's `upload_failed` by `mediaKey` (live 2026-11-21: a refused voice note was followed by a text-only post; the
+ * draft's `upload_failed` by `pickKeys` (live 2026-11-21: a refused voice note was followed by a text-only post; the
  * send now asks first, `uploadFailed`); the same media's accepted upload forgets it. No `ctx.handlers` (or no files):
  * nothing is sent.
  */
@@ -876,8 +886,7 @@ export function mediaTaker(
   uploading: (n: 1 | -1) => void,
   done?: (file: File) => void,
 ): (files: File[]) => void {
-  const send = (file: File) => {
-    const key = mediaKey(file);
+  const send = (file: File, key: string) => {
     const fail = (why: string) => {
       update({ upload_failed: failedWith(media().upload_failed, key, why) });
       note(doc, anchor, `Could not upload: ${why}`, true);
@@ -903,8 +912,9 @@ export function mediaTaker(
     if (!files.length || !ctx.handlers) return;
     // Every file counts as in flight at once (Post waits for all); they upload one after another.
     files.forEach(() => uploading(1));
+    const keys = pickKeys(files);
     let chain: Promise<unknown> | null = null;
-    for (const file of files) chain = chain ? chain.then(() => send(file)) : send(file);
+    files.forEach((file, i) => (chain = chain ? chain.then(() => send(file, keys[i])) : send(file, keys[i])));
   };
 }
 
@@ -1059,7 +1069,8 @@ export function feedSearchHandlers(accountId: string | null): FeedSearchHandlers
 /**
  * Wire the right column's search (New post's and Home's): typing (400 ms after it stops) runs OF's users search and posts
  * search, and a list under the box shows "Users" and "Posts" rows, each a link to its OF profile or My profile (searchHref); the
- * submit (Enter or the search button) runs it at once and never reloads the frame; an empty box clears the list.
+ * submit (Enter or the search button) runs it at once and never reloads the frame; an empty box clears the list at once,
+ * and a search still out (or one out at the unbind) never draws.
  * All-Creators: the select-a-model note. Notifications' aside (ticket 17) and the stream schedule form's (ticket 84) too:
  * their box comes disabled and is enabled here. Returns an unbind.
  */
@@ -1132,6 +1143,8 @@ export function bindFeedSearch(doc: Document, ctx: { handlers: Pick<PostHandlers
     if (submit) submit.disabled = !input.value.trim();
     win?.clearTimeout(timer);
     const q = input.value.trim();
+    // Cleared: the list goes at once, and a search still out never draws under the empty box.
+    if (!q) return run("");
     timer = win?.setTimeout(() => run(q), 400) ?? 0;
   };
   const onSubmit = (ev: Event) => {
@@ -1144,6 +1157,7 @@ export function bindFeedSearch(doc: Document, ctx: { handlers: Pick<PostHandlers
   doc.addEventListener("submit", onSubmit);
   return () => {
     win?.clearTimeout(timer);
+    asked = ""; // a search still in flight must not draw after the unbind
     doc.removeEventListener("input", onInput);
     doc.removeEventListener("submit", onSubmit);
     results()?.remove();
@@ -1178,6 +1192,8 @@ function bindRecordPopup(doc: Document): () => void {
 function bindRecorder(doc: Document, key: string, take: TakeRecording, selected: boolean): () => void {
   const records = [...doc.querySelectorAll<HTMLButtonElement>(RECORD)];
   for (const b of records) markWired(b, true);
+  // Home borrows the recorder markup: fetched now, so a click draws it at once (no Creator picked: a click only notes).
+  if (selected) prefetchRecorder(doc);
   // One Record at a time; a rebind of the same draft keeps it going, its File going to this (the latest) bind's upload.
   const rec = recordSession(doc, key, take);
   const onRecord = (ev: Event) => {
@@ -1591,7 +1607,7 @@ export function useOfPost(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const meId = me?.id ?? undefined;
   const tagKey = JSON.stringify(tagView);
   const sortKey = JSON.stringify([labelSort, folderSort]);
-  const newWrites = useOfmNewWrites(!!path); // OFM_NEW_WRITES_ENABLED off: Record video and Record voice stay as on main
+  const newWrites = useOfmNewWrites(!!path, accountId); // OFM_NEW_WRITES_ENABLED off: Record video and Record voice stay as on main
 
   useEffect(() => {
     const frame = frameRef.current;

@@ -86,6 +86,8 @@
                                  once (limit_needed) + notice, no OF read.
   case_rv_c11_dry_run_never_turns_off  a dry run leaves an aged unknown create and Keep
                                  running as they are.
+  case_w30_f27_unauthorized_read_backs_off_toasts  an unclassified OF 401 on the read: not
+                                 parked, toasts back off for GATE_STALE_S; a 500 leaves them.
 
 Run: ./venv/bin/python service/tests/test_promo_reactivate.py
 """
@@ -1323,6 +1325,66 @@ async def case_rv_c11_dry_run_never_turns_off():
     assert (row.auto_reactivate, row.keep_warning) == (True, None), (row.auto_reactivate, row.keep_warning)
 
 
+async def case_w30_f4_dead_session_on_read_parks_account():
+    """W30 F4: the Keep running read meets a dead session (OF's "Wrong user.", or no captured
+    session at all): the run errors so run_once marks the account session-dead; the next run
+    is skipped before any OF read. Keep running stays ticked. A plain OF failure still stands
+    down as of_unreachable (case_fails_closed_when_of_down)."""
+    aid = "pr_w30_f4_dead_read"
+    cid = await _seed_campaign(aid, of_id=4511)
+    f = _use_fake(); f.seed(4511, finished=True)
+    reads = []
+
+    def dead(**_k):
+        reads.append(1)
+        raise _refusal(400, '{"error":{"code":301,"message":"Wrong user."}}')
+    f.promotions = dead
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res["status"] == "error", res
+    assert await account_health.is_session_dead(aid)
+    assert (await _campaign(cid)).auto_reactivate, "a dead session never turns Keep running off"
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res == {"status": "skipped", "reason": "session_unlinked"}, res
+    assert len(reads) == 1 and _posts(f) == 0, (reads, _posts(f))
+    # no captured session: the client load itself fails
+    aid = "pr_w30_f4_no_session"
+    await _seed_campaign(aid, of_id=4512)
+
+    def missing(account_id):
+        raise FileNotFoundError(f"account {account_id} has no captured session")
+    ax._make_client = missing  # type: ignore[attr-defined]
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res["status"] == "error", res
+    assert await account_health.is_session_dead(aid)
+
+
+async def case_w30_f27_unauthorized_read_backs_off_toasts():
+    """W30 F27: the read meets an OF 401 the strict classifier does not name: the run stands
+    down (of_unreachable), the account is not parked (as the purchase poll treats a 401),
+    and toasts poke nothing until GATE_STALE_S; any other failed read leaves them poking."""
+    aid = "pr_w30_f27_401"
+    await _seed_campaign(aid, of_id=4521)
+    f = _use_fake(); f.seed(4521, finished=True)
+
+    def unauthorized(**_k):
+        raise _refusal(401, '{"error":{"code":401,"message":"Unauthorized"}}')
+    f.promotions = unauthorized
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res.get("skipped") == "of_unreachable", res
+    assert not await account_health.is_session_dead(aid)
+    assert pr.should_poke(aid, 1) is False, "a 401 read: toasts back off"
+    aid = "pr_w30_f27_500"
+    await _seed_campaign(aid, of_id=4522)
+    f = _use_fake(); f.seed(4522, finished=True)
+
+    def down(**_k):
+        raise _refusal(500, "oops")
+    f.promotions = down
+    res = await run_once(aid, "promo_reactivate", payload=GO)
+    assert res.get("skipped") == "of_unreachable", res
+    assert pr.should_poke(aid, 1) is True, "any other failure: toasts still poke"
+
+
 _harness.run(
     case_rearm_keeps_both_audiences,
     case_dry_run_is_default,
@@ -1376,4 +1438,6 @@ _harness.run(
     case_free_trial_no_limit_keeps_running,
     case_rv_r01_uncapped_trial_turned_off_before_read,
     case_rv_c11_dry_run_never_turns_off,
+    case_w30_f4_dead_session_on_read_parks_account,
+    case_w30_f27_unauthorized_read_backs_off_toasts,
 )

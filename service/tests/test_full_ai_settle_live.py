@@ -3,7 +3,9 @@
 
 Pure:
   case_plan_table                 settle_plan rules 1 + 2 (id / no id, paid / unpaid, claimed,
-                                  slack 60 / 61 s, price, settled, price 0, tease, contested)
+                                  price, settled, price 0, tease, contested; W30 F3:
+                                  rule 2 only for an attempted row (or legacy `unconfirmed`), exact
+                                  media, never a mass copy; W30 C5: window from the attempt, not the reserve)
   case_plan_now_fallback          paid, no notice, no purchased_at -> outcome_at = now
 DB (temp, seeded; purchases feed = a `test_purchase_notifications._FakeClient` twin driving the
 real `purchase_notifications.poll_purchases`; that module runs its cases on import):
@@ -15,8 +17,12 @@ real `purchase_notifications.poll_purchases`; that module runs its cases on impo
   case_test_and_shadow_untouched  a test-Mode row and a Shadow row keep every column
   case_old_and_superseded_settle  > 24 h old and haggled-over Offers still settle
   case_account_wide_scope         no fan: every Fan of the account, no other account
-  case_heuristic_link_via_db      unconfirmed row links to its sole message; two candidates: none
-  case_foreign_and_stale_not_linked  in-flight row vs another lane's PPV at its price: no link; stale row unread
+  case_heuristic_link_via_db      attempted row links to its sole message (+ its vault_sends, purchased
+                                  when paid); two candidates: none; an unattempted row: none
+  case_foreign_not_linked_old_attempt_linked  in-flight row vs another lane's PPV at its price: no link; an
+                                  attempted row 8 d old still links its card (W30 C6)
+  case_load_reads_each_rows_window  an old and a new unlinked row of one Fan: `_load` reads each row's
+                                  link window only, not the span between (W30 m3), also one window per read
 
 Run: nice -n 10 venv/bin/python service/tests/test_full_ai_settle_live.py  (exit 0 = pass)
 """
@@ -36,11 +42,11 @@ from automations import full_ai_settle as fs  # noqa: E402
 from automations import full_ai_test as ft  # noqa: E402
 from automations.full_ai_settle import Settle  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, AiDecision, Fan, Message  # noqa: E402
+from db.models import Account, AiDecision, Fan, Message, VaultSend  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 ACC, OTHER = "acc_fs", "acc_fs_b"
-T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=3)   # past the 2 h announce gate, no followup poke; inside LINK_LOAD_S
+T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=3)   # past the 2 h announce gate, no followup poke
 S = timedelta(seconds=1)
 # Columns that differ by construction between a live row and its test twin.
 IDENTITY = {"id", "fan_id", "mode", "trigger_kind", "trigger_key", "offer_message_id"}
@@ -84,9 +90,10 @@ def _cols(at, *, price, media=(), previews=(), ref=1, kind="offer", over=None, r
                 offer_media_json=json.dumps({"locked": list(media), "previews": list(previews)}))
 
 
-def _live(acc: str, fan: int, n: int, mid: int | None, **kw) -> AiDecision:
+def _live(acc: str, fan: int, n: int, mid: int | None, *, attempt: datetime | None = None, **kw) -> AiDecision:
+    """`attempt`: the carrier POST's `offer_attempt_at` (rule 2 links only an attempted row)."""
     return AiDecision(account_id=acc, fan_id=fan, mode="live", trigger_kind="inbound",
-                      trigger_key=str(n), offer_message_id=mid, **_cols(**kw))
+                      trigger_key=str(n), offer_message_id=mid, offer_attempt_at=attempt, **_cols(**kw))
 
 
 def _twin(acc: str, pair: str, n: int, **kw) -> AiDecision:
@@ -94,9 +101,10 @@ def _twin(acc: str, pair: str, n: int, **kw) -> AiDecision:
                       trigger_key=ft.trigger_key(ft.session_key(pair, "draft"), n), **_cols(**kw))
 
 
-def _msg(acc: str, fan: int, mid: int, at: datetime, price: int, paid: bool = False) -> Message:
+def _msg(acc: str, fan: int, mid: int, at: datetime, price: int, paid: bool = False, media=()) -> Message:
     return Message(account_id=acc, fan_id=fan, message_id=mid, direction="out", price_cents=price,
-                   is_paid=paid, purchased_at=at + 5 * S if paid else None, created_at=at)
+                   is_paid=paid, purchased_at=at + 5 * S if paid else None, created_at=at,
+                   media_ids=json.dumps(list(media)), media_count=len(media))
 
 
 async def _add(acc: str, fans, *objs) -> list[int]:
@@ -124,13 +132,19 @@ def _snap(r: AiDecision) -> dict:
 
 # ── Pure: settle_plan ────────────────────────────────────────────────
 
-def _r(rid=1, *, at=T0, price=1000, mid=None, outcome=None):
-    return NS(id=rid, created_at=at, offer_price_cents=price, offer_message_id=mid, outcome=outcome)
+def _r(rid=1, *, at=T0, price=1000, mid=None, outcome=None, attempted=True, attempt=None, status="sent",
+       media=(5,)):
+    """`attempt`: the carrier POST's time (default: `at`, the reserve; None with `attempted` False)."""
+    return NS(id=rid, created_at=at, offer_price_cents=price, offer_message_id=mid, outcome=outcome,
+              offer_attempt_at=(attempt or at) if attempted else None, status=status,
+              offer_media_json=json.dumps({"locked": list(media), "previews": []}))
 
 
-def _m(mid=10, *, at=T0 + 5 * S, price=1000, paid=False, bought_at=None, kind=None, emp=None):
+def _m(mid=10, *, at=T0 + 5 * S, price=1000, paid=False, bought_at=None, kind=None, emp=None, media=(5,),
+       mass=None, raw=None):
     return NS(message_id=mid, created_at=at, price_cents=price, is_paid=paid, purchased_at=bought_at,
-              automation_kind=kind, sent_by_employee_id=emp)
+              automation_kind=kind, sent_by_employee_id=emp, media_ids=json.dumps(list(media)),
+              mass_run_id=mass, raw_json=raw)
 
 
 T1, T2 = T0 + timedelta(minutes=3), T0 + timedelta(minutes=2)
@@ -151,9 +165,16 @@ _TABLE = [
      [Settle(1, 10, T1, "is_paid")]),
     ("claimed one, free one: links the free one", [_r()], [_m(**PAID), _m(11, **PAID)], {}, {10},
      [Settle(1, 11, T1, "heuristic")]),
-    ("candidate 61 s older than the row", [_r()], [_m(at=T0 - 61 * S, **PAID)], {}, set(), []),
-    ("candidate 60 s older than the row", [_r()], [_m(at=T0 - 60 * S, **PAID)], {}, set(),
+    # W30 C5: the window opens at the carrier's attempt (OF's whole second), not the reserve.
+    ("candidate 1 s before the attempt", [_r()], [_m(at=T0 - S, **PAID)], {}, set(), []),
+    ("candidate in the attempt's second", [_r(attempt=T0 + S / 2)], [_m(at=T0, **PAID)], {}, set(),
      [Settle(1, 10, T1, "heuristic")]),
+    ("candidate after the reserve, before the attempt", [_r(attempt=T0 + 10 * S)], [_m(at=T0 + 5 * S, **PAID)],
+     {}, set(), []),
+    ("attempt 901 s after the reserve, candidate 5 s after it", [_r(attempt=T0 + 901 * S)],
+     [_m(at=T0 + 906 * S, **PAID)], {}, set(), [Settle(1, 10, T1, "heuristic")]),
+    ("legacy row (no attempt): window from the reserve", [_r(attempted=False, status="unconfirmed")],
+     [_m(at=T0 - S, **PAID)], {}, set(), []),
     ("price mismatch", [_r()], [_m(price=900, **PAID)], {}, set(), []),
     ("candidate 900 s after the row", [_r()], [_m(at=T0 + 900 * S, **PAID)], {}, set(),
      [Settle(1, 10, T1, "heuristic")]),
@@ -172,6 +193,16 @@ _TABLE = [
     ("tease row (price NULL)", [_r(price=None)], [_m(**PAID)], {}, set(), []),
     ("two unlinked rows, one sole candidate: contested", [_r(1), _r(2, at=T0 + 2 * S)], [_m(at=T0 + 9 * S, **PAID)],
      {}, set(), []),
+    # W30 F3: only a row whose carrier POST was attempted, exact media, never a mass copy.
+    ("carrier never attempted", [_r(attempted=False)], [_m(**PAID)], {}, set(), []),
+    ("legacy unconfirmed row (no attempt column)", [_r(attempted=False, status="unconfirmed")], [_m(**PAID)],
+     {}, set(), [Settle(1, 10, T1, "heuristic")]),
+    ("other media, same price", [_r()], [_m(media=(6,), **PAID)], {}, set(), []),
+    ("media a subset", [_r(media=(5, 6))], [_m(media=(5,), **PAID)], {}, set(), []),
+    ("media not scraped yet ('[]')", [_r()], [_m(media=(), **PAID)], {}, set(), []),
+    ("mass copy by mass_run_id", [_r()], [_m(mass=7, **PAID)], {}, set(), []),
+    ("mass copy by OF queueId", [_r()], [_m(raw=json.dumps({"queueId": 123}), **PAID)], {}, set(), []),
+    ("row with no media", [_r(media=())], [_m(media=(), **PAID)], {}, set(), []),
 ]
 
 
@@ -340,11 +371,15 @@ async def case_account_wide_scope():
 
 async def case_heuristic_link_via_db():
     fan = 7201
-    one = _live(ACC, fan, 1, None, at=T0, price=1200, media=[81])
-    ids = await _add(ACC, [fan], one, _msg(ACC, fan, 9_201_001, T0 + 4 * S, 1200))
+    one = _live(ACC, fan, 1, None, at=T0, price=1200, media=[81], attempt=T0)
+    ids = await _add(ACC, [fan], one, _msg(ACC, fan, 9_201_001, T0 + 4 * S, 1200, media=[81]))
     assert await fs.settle_pull(ACC, fan) == 1                      # link only, unpaid
     (r,) = await _rows(*ids)
     assert (r.offer_message_id, r.outcome, r.join_src) == (9_201_001, None, None), _snap(r)
+    async with get_session() as s:      # W30 F9: the link writes its vault_sends, once
+        vs = (await s.execute(select(VaultSend.media_id, VaultSend.message_id).where(
+            VaultSend.account_id == ACC, VaultSend.fan_id == fan))).all()
+    assert [tuple(v) for v in vs] == [(81, 9_201_001)], vs
     assert await fs.settle_pull(ACC, fan) == 0
     assert (await _feed(ACC, _notif(fan, 9_201_001, T0 + timedelta(minutes=9), 1200)))["flipped"] == 1
     assert await fs.settle_pull(ACC, fan) == 1                      # now rule 1 via the notice
@@ -352,32 +387,63 @@ async def case_heuristic_link_via_db():
     assert (r.outcome, r.join_src) == ("bought", "notice"), _snap(r)
     # Paid before linking: heuristic in one step. Two candidates: nothing.
     fan2, fan3 = 7202, 7203
-    ids2 = await _add(ACC, [fan2, fan3], _live(ACC, fan2, 1, None, at=T0, price=800, media=[82]),
-                      _live(ACC, fan3, 1, None, at=T0, price=800, media=[83]),
-                      _msg(ACC, fan2, 9_202_001, T0 + S, 800, paid=True),
-                      _msg(ACC, fan3, 9_203_001, T0 + S, 800, paid=True),
-                      _msg(ACC, fan3, 9_203_002, T0 + 2 * S, 800, paid=True))
+    ids2 = await _add(ACC, [fan2, fan3], _live(ACC, fan2, 1, None, at=T0, price=800, media=[82], attempt=T0),
+                      _live(ACC, fan3, 1, None, at=T0, price=800, media=[83], attempt=T0),
+                      _msg(ACC, fan2, 9_202_001, T0 + S, 800, paid=True, media=[82]),
+                      _msg(ACC, fan3, 9_203_001, T0 + S, 800, paid=True, media=[83]),
+                      _msg(ACC, fan3, 9_203_002, T0 + 2 * S, 800, paid=True, media=[83]))
     assert await fs.settle_pull(ACC, fan2) == 1 and await fs.settle_pull(ACC, fan3) == 0
     a, b = await _rows(*ids2)
     assert (a.offer_message_id, a.outcome, a.join_src) == (9_202_001, "bought", "heuristic"), _snap(a)
     assert (b.offer_message_id, b.outcome) == (None, None), _snap(b)
+    async with get_session() as s:      # W30 N4: settled bought -> its vault_sends are purchased
+        vs2 = (await s.execute(select(VaultSend.media_id, VaultSend.was_purchased).where(
+            VaultSend.account_id == ACC, VaultSend.fan_id == fan2))).all()
+    assert [tuple(v) for v in vs2] == [(82, True)], vs2
+    # Never attempted (the carrier POST did not run): its exact message is not linked either.
+    fan4 = 7204
+    ids4 = await _add(ACC, [fan4], _live(ACC, fan4, 1, None, at=T0, price=700, media=[84]),
+                      _msg(ACC, fan4, 9_204_001, T0 + S, 700, paid=True, media=[84]))
+    assert await fs.settle_pull(ACC, fan4) == 0
+    assert (await _rows(*ids4))[0].offer_message_id is None
 
 
 
-async def case_foreign_and_stale_not_linked():
+async def case_foreign_not_linked_old_attempt_linked():
     """An in-flight Full AI row and another lane's PPV at its price 30 s before: no link (send_priced would
-    otherwise see an id and send nothing). A row older than LINK_LOAD_S is not looked at."""
+    otherwise see an id and send nothing). An attempted row 8 days old still links its own card (W30 C6)."""
     fan, fan2 = 7301, 7302
     now = datetime.utcnow().replace(microsecond=0)
     foreign = _msg(ACC, fan, 9_301_001, now - 30 * S, 1500, paid=True)
     foreign.automation_kind = "reply_mass_funnel"
-    stale_at = now - timedelta(seconds=fs.LINK_LOAD_S + 3600)
-    ids = await _add(ACC, [fan, fan2], _live(ACC, fan, 1, None, at=now, price=1500, media=[91]), foreign,
-                     _live(ACC, fan2, 1, None, at=stale_at, price=1500, media=[92]),
-                     _msg(ACC, fan2, 9_302_001, stale_at + 5 * S, 1500, paid=True))
-    assert await fs.settle_pull(ACC, fan) == 0 and await fs.settle_pull(ACC, fan2) == 0
-    for r in await _rows(*ids):
-        assert (r.offer_message_id, r.outcome) == (None, None), _snap(r)
+    old_at = now - timedelta(days=8)
+    foreign.media_ids = json.dumps([91])
+    ids = await _add(ACC, [fan, fan2], _live(ACC, fan, 1, None, at=now, price=1500, media=[91], attempt=now), foreign,
+                     _live(ACC, fan2, 1, None, at=old_at, price=1500, media=[92], attempt=old_at),
+                     _msg(ACC, fan2, 9_302_001, old_at + 5 * S, 1500, paid=True, media=[92]))
+    assert await fs.settle_pull(ACC, fan) == 0 and await fs.settle_pull(ACC, fan2) == 1
+    mine, old = await _rows(*ids)
+    assert (mine.offer_message_id, mine.outcome) == (None, None), _snap(mine)
+    assert (old.offer_message_id, old.outcome) == (9_302_001, "bought"), _snap(old)
+
+
+async def case_load_reads_each_rows_window():
+    acc, fan = "acc_fs_m3", 7401
+    old_at = T0 - timedelta(days=10)
+    await _add(acc, [fan], _live(acc, fan, 1, None, at=old_at, price=900, media=[95], attempt=old_at),
+               _live(acc, fan, 2, None, at=T0, price=900, media=[96], attempt=T0),
+               _msg(acc, fan, 9_401_001, old_at + S, 900, media=[95]),
+               _msg(acc, fan, 9_401_002, T0 - timedelta(days=5), 900, media=[97]),   # between the windows
+               _msg(acc, fan, 9_401_003, T0 + S, 900, media=[96]))
+    real = fs._OR_TERMS
+    for terms in (real, 1):
+        fs._OR_TERMS = terms
+        try:
+            _, msgs, _, _ = await fs._load(acc, fan)
+        finally:
+            fs._OR_TERMS = real
+        got = sorted(m.message_id for m in msgs)
+        assert got == [9_401_001, 9_401_003], f"{terms} window(s) per read: each row's window only; got={got}"
 
 
 _harness.run()

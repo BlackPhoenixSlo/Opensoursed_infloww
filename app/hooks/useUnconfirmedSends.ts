@@ -61,8 +61,8 @@ export function useUnconfirmedSends(accountId: string) {
         : { status: 0, message: e instanceof Error ? e.message : String(e) };
     }
     dispatch({ type: "done", key: row.key, op, result });
-    const out = retryOutcome(result.status, op);
-    if (out === "error") return;
+    const out = retryOutcome(result.status);
+    if (out === "error" && result.status !== 409) return;   // a 409: the row changed, show it as it is now
     qc.setQueryData<UnconfirmedRow[]>([KEY, accountId], (d) => settleRows(d, row.key, out));
     void qc.invalidateQueries({ queryKey: [KEY, accountId] });
   }, [accountId, qc]);

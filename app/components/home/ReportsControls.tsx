@@ -327,8 +327,10 @@ export function FiltersPill({ models, selected, onChange }: {
 /** #105 to #107: "Custom metrics", opening "Creator report metrics": the shown columns in display order, each with
  *  up and down, then the hidden ones in the capture's order. `keys` is the shown columns' order (creatorCols.ts).
  *  On a phone it opens as a sheet over the page's bottom, so no part of it is off screen. */
-export function CustomMetricsPill({ keys, onChange }: {
+export function CustomMetricsPill({ keys, onChange, onRetry }: {
   keys: readonly string[]; onChange: ((next: string[]) => void) | null;
+  /** The Agency's layout read failed: the button asks it again instead of opening. */
+  onRetry?: (() => void) | null;
 }) {
   const [open, setOpen] = useState(false);
   const change = (next: string[]) => onChange?.(next);
@@ -361,9 +363,9 @@ export function CustomMetricsPill({ keys, onChange }: {
       <button
         type="button"
         aria-expanded={open}
-        disabled={!onChange}
-        title={onChange ? undefined : "Loading the Agency's layout"}
-        onClick={() => setOpen((v) => !v)}
+        disabled={!onChange && !onRetry}
+        title={onChange ? undefined : onRetry ? "Couldn't load the Agency's layout. Click to try again" : "Loading the Agency's layout"}
+        onClick={() => (onChange ? setOpen((v) => !v) : onRetry?.())}
         className="inline-flex items-center gap-1 p-1.5 rounded-md text-sm disabled:opacity-50"
         style={{ color: "var(--color-fg)" }}
       >

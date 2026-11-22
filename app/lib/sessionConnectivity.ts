@@ -27,3 +27,7 @@ export function sessionConnectivity(a: Pick<AccountMeta, "session_dead_at" | "ha
   if (!a.is_active) return { label: "—", title: "deactivated: not probed", tone: "muted" };
   return null;
 }
+
+/** A creator the OF view can show: a captured session not flagged dead. Every OF Manager column lists
+ *  `useActiveAccounts()` (captured sessions only), so a row that fails this is a logged-out one. */
+export const liveSession = (a: Pick<AccountMeta, "has_session" | "session_dead_at">) => !!a.has_session && !a.session_dead_at;

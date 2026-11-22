@@ -209,6 +209,8 @@ services:
       # Traefik redirect to BIO_PUBLIC_URL; deploy/bio/README.md "Short address").
       BIO_SHORT_URL: "${BIO_SHORT_URL:-}"
       BIO_HEALTH_URL: "${BIO_HEALTH_URL:-http://openinflowwww-bio:8788/internal/healthz}"
+      # The bio service's own hosts (same value as its block below): the editor refuses them as a custom domain.
+      BIO_PRIMARY_HOSTS: "${BIO_PRIMARY_HOSTS:-ofl.ink}"
       # The box's public IPv4 a bio page's custom domain must point its A record at
       # (deploy/bio/README.md "Custom domains"). Unset = the editor can't add one.
       BIO_SERVER_IP: "${BIO_SERVER_IP:-}"

@@ -1,7 +1,7 @@
 /**
  * "Build AI folders" options: how many shoots stay script folders, the solo cut, the OnlyFans mirror, the ticked
  * Jev topic folders and whether they split by price. All of them go into ONE apply payload and must match the preview the operator saw (the server re-derives the plan and retires
- * what it no longer makes), so they live in one pure reducer; VaultAiFoldersModal only dispatches.
+ * what it no longer makes, limited to the folders the preview listed), so they live in one pure reducer; VaultAiFoldersModal only dispatches.
  *
  * `confirmLabel` / `changesLine` turn the plan's `changes` (what Confirm does to the AI- folders already there) into
  * the copy shown before Confirm. Retiring a folder bound to an OnlyFans list unlinks that list, so the button says so.
@@ -61,16 +61,18 @@ export function aiFoldersFormReducer(state: AiFoldersForm, action: Action): AiFo
   }
 }
 
-/** The apply call's options: exactly the preview's. */
-export function buildPayload(form: AiFoldersForm): {
-  keep: number; solo: boolean; mirrorToOf: boolean; topics: string[]; split: boolean;
+/** The apply call's options: exactly the preview's, plus the folder ids the preview showed retiring
+ *  (`expectedRetire`): the server re-plans and retires only those, never a folder the operator was not shown. */
+export function buildPayload(form: AiFoldersForm, changes: PlanChanges | null | undefined): {
+  keep: number; solo: boolean; mirrorToOf: boolean; topics: string[]; split: boolean; expectedRetire: number[];
 } {
-  return { keep: form.keep, solo: form.solo, mirrorToOf: form.mirrorToOf, topics: form.topics, split: form.split };
+  return { keep: form.keep, solo: form.solo, mirrorToOf: form.mirrorToOf, topics: form.topics, split: form.split,
+    expectedRetire: (changes?.retired ?? []).map((r) => r.folder_id) };
 }
 
-/** Topic checkboxes are live only when Jev is on for the account AND some item carries its answers. */
-export function topicsUsable(jev: { enabled: boolean; with_jev: number } | null | undefined): boolean {
-  return !!jev && jev.enabled && jev.with_jev > 0;
+/** Topic checkboxes are live only when some item carries Jev's answers (Jev is on for every photo). */
+export function topicsUsable(jev: { with_jev: number } | null | undefined): boolean {
+  return !!jev && jev.with_jev > 0;
 }
 
 export function keepLabel(n: number): string {

@@ -79,7 +79,7 @@ def case_of_app_human_table():
 def case_queue_id_matches():
     for frame in ({"queueId": 1}, {"queueId": "12"}, {"queueId": "x"}, {"queueId": True}, {"queueId": None},
                   {}, {"queueId": 3.0}):
-        assert fo._queue_id(frame) == _queue_id_of(json.dumps(frame)), frame
+        assert fo.queue_id(frame) == _queue_id_of(json.dumps(frame)), frame
 
 
 def case_yield_left_table():

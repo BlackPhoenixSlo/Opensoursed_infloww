@@ -10,7 +10,8 @@ through `GET /admin/vault-ai/download` instead.
                                                           itself (the account's egress is Direct, not a proxy).
   GET /admin/vault-ai/download/resign?account_id=&media_id=&u=
                                                           {url}: a freshly signed url for the same file as `u`
-                                                          (`cdn_resign`: its listing window, else by id), no bytes. The direct
+                                                          (no `u`: the mirror row's url; `cdn_resign`: its listing
+                                                          window, else by id), no bytes. The direct
                                                           path's retry after a 403 / expired url.
   GET /admin/vault-ai/download?account_id=&media_id=[&u=] the full-quality file through the account's client (its
                                                           proxy), streamed (never read whole), Content-Disposition
@@ -77,6 +78,7 @@ CUT_SHORT: ContextVar[dict | None] = ContextVar("vault_download_cut_short", defa
 # A queued download waits this long for a slot, then 503 (retryable: the browser lists it failed). A slot is a whole
 # file's stream, so this is "another tab's file finished", not a fixed latency. Under the 60 s read timeout common
 # in front of the app (nginx's default proxy_read_timeout): the browser gets our clean 503, never the proxy's 504.
+# The browser's own header limit (vaultDownload.ts HEAD_MS, 90 s) outlasts this + a re-sign; keep them in step.
 SLOT_WAIT_S = 45.0
 # A browser that takes no chunk for this long (a stalled tab, a dead socket the OS has not noticed) gives its slot
 # back. Upstream stalls are curl's: a streamed GET with a float timeout aborts below 1 B/s for `timeout_s`.
@@ -143,11 +145,14 @@ async def download_resign(
     u: str | None = Query(None, description="The url that failed; the fresh one is for the same host+path"),
 ) -> dict[str, Any]:
     """A fresh signature for the same file (`cdn_resign`: its listing window, else by id). 404 when OF has no such
-    media / file."""
+    media / file. No `u` (or one that may not stand in, `_u_ok`): the mirror row's own url is the failed one, so it
+    goes through the same window / fail cache; a by-id read only without a row url."""
     unrestricted = await _gate(account_id, media_id)
     client = await asyncio.to_thread(ax._make_client, account_id)
-    if u and _cdn_host(u) and _u_ok(u, await _row_media(account_id, media_id), unrestricted):
-        fresh = await _paced(account_id, lambda: cdn_resign.resign(account_id, media_id, u, client))
+    row = await _row_media(account_id, media_id)
+    failed_u = u if u and _cdn_host(u) and _u_ok(u, row, unrestricted) else full_url(row)
+    if failed_u:
+        fresh = await cdn_resign.resign(account_id, media_id, failed_u, client, PACE_KIND)
     else:
         got = await _paced(account_id, lambda: vault_stills.resolve_fresh(account_id, media_id, client))
         fresh = full_url(got.media)
@@ -156,9 +161,12 @@ async def download_resign(
     return {"url": fresh}
 
 
+PACE_KIND = "vault_download"   # this route's OF reads as an of_pacing walk (module doc); cdn_resign's too
+
+
 def _paced(account_id: str, run):
     """`run()` with its OF reads paced on the Creator (module doc)."""
-    return of_pacing.walk(account_id, "vault_download", run)
+    return of_pacing.walk(account_id, PACE_KIND, run)
 
 
 def _close(r: Any) -> None:
@@ -229,7 +237,7 @@ async def download(
             async def get(x: str):
                 return await run_in_threadpool(client.http.get, x, timeout=client.timeout_s, stream=True)
 
-            r, fetched_url = await _paced(account_id, lambda: cdn_resign.fetch(account_id, media_id, url, client, get))
+            r, fetched_url = await cdn_resign.fetch(account_id, media_id, url, client, get, PACE_KIND)
             resigned = fetched_url != fetch_u
         except HTTPException:
             raise

@@ -41,6 +41,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_tease_chat.py  (exit 0 = pass)
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+from _jev_fixtures import mapped  # noqa: E402
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, DRESSED, NANO, OPENROUTER, OWNER_A, PICS, PRICED, T0, TURN, _body, _db, _guarded, _hot, _jev,
@@ -116,10 +117,10 @@ def _add_clip(mid: int, lane: str) -> None:
         async with get_session() as s:
             s.add(VaultItem(account_id=A, media_id=mid, kind="video", duration_seconds=30,
                             created_at=T0 + timedelta(days=mid), tags="[]", describe_status="described",
-                            of_folder_ids="[]", ai_fields_json=json.dumps(
+                            of_folder_ids="[]", ai_fields_json=json.dumps(mapped(
                                 {**DRESSED, "description": "a clip in jeans",
                                  vault_jev_rules.JEV_KEY: {**_jev(lane), "kind": "video", "frames": [],
-                                                           "vv": vault_jev_rules.VIDEO_VERSION}})))
+                                                           "vv": vault_jev_rules.VIDEO_VERSION}}))))
     _db(q)
 
 

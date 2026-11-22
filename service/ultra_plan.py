@@ -92,7 +92,7 @@ async def _loop(plan_id: str, request: str, owner_user_id: str, owned: frozenset
             if upd.capped(turns, spent):
                 status, error = "capped", TURNS_CAPPED if turns >= upd.MAX_TURNS else SPEND_CAPPED
                 break
-            if not await ultra_run._flip(plan_id, "planning", {"plan_json": _body(upd.progress(turns, last))}):
+            if not await ultra_run.flip(plan_id, "planning", {"plan_json": _body(upd.progress(turns, last))}):
                 return  # cancelled (or recovered): the row's end is already written
             res = await llm_client.chat(model=upd.MODEL, messages=msgs, purpose=upd.PURPOSE, account_id=None,
                                         user_id=owner_user_id, tools=upd.TOOLS, temperature=0.2)
@@ -133,7 +133,7 @@ async def _loop(plan_id: str, request: str, owner_user_id: str, owned: frozenset
     finally:
         _TASKS.pop(plan_id, None)
         try:  # guarded: a no-op once the plan landed or the row was cancelled
-            await asyncio.shield(ultra_run._flip(plan_id, "planning", {
+            await asyncio.shield(ultra_run.flip(plan_id, "planning", {
                 "status": status, "finished_at": datetime.utcnow(),
                 "plan_json": _body(upd.progress(turns, last, error))}))
         except Exception:

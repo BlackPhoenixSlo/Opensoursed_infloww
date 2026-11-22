@@ -68,11 +68,32 @@ export function prepass(raw: string, links: readonly NavLink[]): PrepassHit | nu
   return hit ? { kind: "navigate", href: hit.href, label: hit.label } : null;
 }
 
+/** Where "/settings" lands (app/next.config.ts redirects it): a tab a Chatter can't open. */
+const SETTINGS_LANDING = "/settings/account";
+
 /** The pages a command may open: the sidebar, footer and Settings tabs as
- *  this session sees them (a hidden group hides its pages too). */
+ *  this session sees them (a hidden group hides its pages too). "Settings"
+ *  opens the first Settings tab the session may open when the redirect's tab
+ *  is not one (rwl W30 C5: a Chatter was told "Opened Settings" onto a denied
+ *  page); no such tab, no Settings. */
 export function commandLinks(f: NavFilter): NavLink[] {
   const side = visibleSidebar(SIDEBAR, f).flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]));
-  return [...side, ...visibleLinks(SIDEBAR_FOOTER, f), ...visibleLinks(SETTINGS_TABS, f)];
+  const tabs = visibleLinks(SETTINGS_TABS, f);
+  const lands = tabs.some((t) => t.href === SETTINGS_LANDING) ? "/settings" : tabs[0]?.href;
+  const footer = visibleLinks(SIDEBAR_FOOTER, f).flatMap((l) =>
+    l.href !== "/settings" ? [l] : lands ? [{ ...l, href: lands }] : []);
+  return [...side, ...footer, ...tabs];
+}
+
+/** Every page this session may open — what an answer may link (rwl W30 F10): the commands' pages, plus a page drawn as
+ *  another's tab (`tabOf`) while that page is open to it (it rides the tab, so no entry of its own). */
+export function openablePages(f: NavFilter): ReadonlySet<string> {
+  const pages = new Set(commandLinks(f).map((l) => l.href));
+  const all = SIDEBAR.flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]));
+  for (const l of all) {
+    if (l.tabOf && pages.has(l.tabOf) && visibleLinks([{ ...l, tabOf: undefined }], f).length > 0) pages.add(l.href);
+  }
+  return pages;
 }
 
 /** The thread's confirmation line for a hit that ran. */

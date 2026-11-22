@@ -72,6 +72,35 @@ describe("schedule form's search (ticket 84)", () => {
     expect(d.getElementById("oi-note")).toBeNull();
   });
 
+  it("clearing the box drops the list at once; a search still out never redraws under the empty box", async () => {
+    vi.useFakeTimers();
+    const d = loadPage();
+    let answer = (_v: unknown) => {};
+    const h = { ...search(), searchUsers: vi.fn(() => new Promise((r) => { answer = r; }) as never) };
+    unbinds.push(bindFeedSearch(d, { handlers: h }));
+    await type(d, "syn");                                  // the search is out
+    box(d).value = "";
+    box(d).dispatchEvent(new Event("input", { bubbles: true }));   // cleared: no debounce wait
+    answer([{ id: 5001, name: "Synthetic Fan", username: "fan1" }]);
+    vi.useRealTimers();
+    await flush();
+    expect(d.getElementById("oi-search-results")).toBeNull();
+  });
+
+  it("a search still out when the page unbinds never draws afterwards", async () => {
+    vi.useFakeTimers();
+    const d = loadPage();
+    let answer = (_v: unknown) => {};
+    const h = { ...search(), searchUsers: vi.fn(() => new Promise((r) => { answer = r; }) as never) };
+    const unbind = bindFeedSearch(d, { handlers: h });
+    await type(d, "syn");
+    unbind();
+    answer([{ id: 5001, name: "Synthetic Fan", username: "fan1" }]);
+    vi.useRealTimers();
+    await flush();
+    expect(d.getElementById("oi-search-results")).toBeNull();
+  });
+
   it("All-Creators: typing, Enter and Search give the Select-model note and no search GET", async () => {
     vi.useFakeTimers();
     const get = vi.spyOn(relay, "get");

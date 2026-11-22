@@ -39,7 +39,7 @@ import automation_executor as ax  # noqa: E402
 import fan_lease  # noqa: E402
 import webhook_dispatch as wd  # noqa: E402
 from automation_executor import run_once  # noqa: E402
-from automations import full_ai_config, full_ai_live, full_ai_test  # noqa: E402
+from automations import full_ai_config, full_ai_live, full_ai_look, full_ai_test  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import AccountAiConfig, AiDecision, Fan, ScheduledJob  # noqa: E402
 
@@ -188,12 +188,12 @@ async def case_prelook_stands_down():
     def no(look):
         seen.append((look.client, look.row, look.bubble, look.index, look.sent))
         return "test_says_no"
-    full_ai_live.LAST_LOOK.insert(0, ("fake", None, no))
+    full_ai_look.LAST_LOOK.insert(0, ("fake", None, no))
     try:
         with live_world() as w:
             assert await _pass(aid) == {"swept": 1, "queued": 0}
     finally:
-        full_ai_live.LAST_LOOK.pop(0)
+        full_ai_look.LAST_LOOK.pop(0)
     assert seen == [(None, None, None, -1, 0)], seen
     assert await _jobs(aid) == [] and w.jev.calls == [] and w.made == [] and await _rows(aid) == []
 

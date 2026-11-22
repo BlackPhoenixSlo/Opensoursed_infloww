@@ -9,7 +9,6 @@
  *  `@/lib/runStats` directly; the compatibility re-export that stood here while
  *  the importers were repointed is gone. */
 
-import { useState } from "react";
 import { Button } from "@/components/ui/primitives";
 import { IfSelect } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
@@ -80,27 +79,3 @@ export function ConfirmDeleteButton({
   );
 }
 
-/** Copy-to-clipboard button that flashes "Copied". Tracking links passes the
- *  bundle's "Link copied" held 5 s; a click during the flash copies nothing. */
-export function CopyButton({
-  text, label = "Copy", doneLabel = "✓ Copied", holdMs = 1200,
-}: { text: string; label?: string; doneLabel?: string; holdMs?: number }) {
-  const [done, setDone] = useState(false);
-  return (
-    <Button
-      size="sm" variant="ghost"
-      onClick={async () => {
-        if (done) return;
-        try {
-          if (!navigator.clipboard?.writeText) return;   // insecure origin: no fake "Copied"
-          await navigator.clipboard.writeText(text);
-          setDone(true);
-          setTimeout(() => setDone(false), holdMs);
-        } catch { /* clipboard blocked */ }
-      }}
-      title={text}
-    >
-      {done ? doneLabel : label}
-    </Button>
-  );
-}

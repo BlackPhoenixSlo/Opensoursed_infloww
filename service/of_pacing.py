@@ -80,6 +80,7 @@ Limits, as built (kept on purpose):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import random
 import re
@@ -156,10 +157,13 @@ def parse_allow(text: str | None) -> float:
     return min(RETRY_DEFAULT_S if a is None else a, RETRY_MAX_S)
 
 
-def upstream(exc: BaseException) -> tuple[int | None, str, str | None]:
+def upstream(exc: BaseException) -> tuple[int | str | None, str, str | None]:
     """OF's answer behind `exc`: (status, body text, Retry-After header). An OFAPIError's
-    `response`, or server._proxy's 502 whose detail carries upstream_status / upstream_body
-    (no header there: None). Anything else: (None, "", None)."""
+    `response`, or server._proxy's HTTPException whose detail carries upstream_status /
+    upstream_body (no header there: None). That status is OF's int, or one of _proxy's
+    string codes for a request OF never answered: `proxy_unreachable`, `timeout`,
+    `network`, `refused_by_relay`, `session_retired`, `signed_pool_busy`. Callers compare
+    with == or check `isinstance(status, int)` first. Anything else: (None, "", None)."""
     detail = getattr(exc, "detail", None)
     if isinstance(detail, dict):
         return detail.get("upstream_status"), str(detail.get("upstream_body") or ""), None
@@ -197,6 +201,14 @@ def _wait_turn(*keys: str) -> None:
         time.sleep(d)
 
 
+def exit_label(exit_: str | None) -> str:
+    """The log name of an exit key: "-" none, "direct" as is, else `p-<8 hex of the key>`
+    (app_open_warm's exit label too): never an IP, host, port or credential."""
+    if not exit_ or exit_ == "direct":
+        return exit_ or "-"
+    return "p-" + hashlib.sha1(exit_.encode()).hexdigest()[:8]
+
+
 def paced(account_id: Any, call: Callable[[], Any], proxy_key: Callable[[], str] | None = None) -> Any:
     w = _WALK.get()
     if w is None:
@@ -216,7 +228,7 @@ def paced(account_id: Any, call: Callable[[], Any], proxy_key: Callable[[], str]
     # Outside the except: OF's second 429 is the page's own error, not one "during handling" the first.
     # walk= after kind=: proxy-health's summarize.py matches "account=... kind=transactions".
     log.info("bg_walk_429_retry account=%s kind=%s walk=%s proxy=%s wait_s=%.1f", aid, w.kind,
-             w.account_id or "-", exit_ or "-", wait)
+             w.account_id or "-", exit_label(exit_), wait)
     time.sleep(wait)
     _wait_turn(*keys)
     return call()

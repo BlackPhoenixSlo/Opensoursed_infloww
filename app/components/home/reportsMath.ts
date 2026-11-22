@@ -173,7 +173,8 @@ export const STAT_COLS: readonly StatCol[] = [
   { key: "recurringSubscriptionEarnings", title: "Recurring subscription earnings", width: 305, show: false, fmt: "usd", v: kindOf("rebill"), netV: netKindOf("rebill") },
   { key: "tips", title: "Tips", width: 112, show: true, fmt: "usd", v: chanOf("tip"), netV: netChanOf("tip") },
   { key: "message", title: "Message", width: 145, show: true, fmt: "usd", v: msgOf, netV: netMsgOf },
-  { key: "engagementEarningsRatio", title: "Engagement earnings ratio", width: 280, show: true, fmt: "pct", v: (m) => (subsOf(m) > 0 ? (100 * engagedOf(m)) / subsOf(m) : null) },
+  { key: "engagementEarningsRatio", title: "Engagement earnings ratio", width: 280, show: true, fmt: "pct", v: (m) => (subsOf(m) > 0 ? (100 * engagedOf(m)) / subsOf(m) : null),
+    netV: (m) => { const s = netSubsOf(m), e = netEngagedOf(m); return s !== null && e !== null && s > 0 ? (100 * e) / s : null; } },
   { key: "posts", title: "Posts", width: 120, show: false, fmt: "usd", v: kindOf("post"), netV: netKindOf("post") },
   { key: "totalEarnings", title: "Total earnings", width: 240, show: true, fmt: "usd", v: (m) => m.total_revenue_cents, netV: (m) => m.total_net_revenue_cents },
   { key: "avgHourlyEarnings", title: "Avg hourly earnings", width: 220, show: false, fmt: "usd", avg: true, v: (m, c) => (c.hours > 0 ? m.total_revenue_cents / c.hours : null),
@@ -218,6 +219,17 @@ export const STAT_COLS: readonly StatCol[] = [
 export function readOf(col: StatCol, ctx: ColCtx): StatCol["v"] {
   if (!ctx.net) return col.v;
   return col.netV ?? (col.fmt === "usd" ? undefined : col.v);
+}
+/** The column `key`, which must exist in STAT_COLS (a constant key at the call site: a typo throws at load, not a crash mid-render). */
+export function statCol(key: string): StatCol {
+  const c = STAT_COLS.find((x) => x.key === key);
+  if (!c) throw new Error(`no stat column ${key}`);
+  return c;
+}
+/** The column's figures summed over `rows` in the current basis (Creator statistics' cards); 0 for a "-". */
+export function colTotal(col: StatCol, rows: readonly PerModelRow[], ctx: ColCtx): number {
+  const read = readOf(col, ctx);
+  return rows.reduce((a, m) => a + (read?.(m, ctx) ?? 0), 0);
 }
 /** A cell as shown: "-" when the read has nothing (#147). */
 export function cellText(col: StatCol, m: PerModelRow, ctx: ColCtx): string {

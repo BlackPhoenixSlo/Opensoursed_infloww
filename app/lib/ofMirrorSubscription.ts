@@ -829,7 +829,7 @@ export function useOfSubscription(frameRef: RefObject<HTMLIFrameElement | null>,
   // The tracking links sort (ticket 61: ?field=, ?sort=), sorted by the Relay.
   const trackingKey = JSON.stringify(trackingViewOf(params));
   const trackingShared = trackingViewOf(params).tab === "shared";
-  const newWrites = useOfmNewWrites(parts.includes("campaigns")); // OFM_NEW_WRITES_ENABLED off: a row's Share hint stays Not yet
+  const newWrites = useOfmNewWrites(parts.includes("campaigns"), accountId); // OFM_NEW_WRITES_ENABLED off: a row's Share hint stays Not yet
   const campaigns = useQuery(subQuery(accountId, "campaigns", parts.includes("campaigns"), trackingRoute(trackingViewOf(params))));
   // The free trial links tab and sort (ofMirrorOffers: ?tab=shared, ?field=, ?sort=).
   const trialView = trialViewOf(params);

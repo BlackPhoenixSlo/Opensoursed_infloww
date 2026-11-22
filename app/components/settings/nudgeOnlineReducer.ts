@@ -64,6 +64,8 @@ export interface NudgeOnlineState {
   /** The save's own verdict, shown in the footer beside Save. */
   save: { ok: true } | { ok: false; err: string } | null;
   runMsg: string | null;
+  /** The Preview row's inputs (they jointly make `previewPayload`): a sample fan id, hour ("" = now), weekday ("" = today). */
+  preview: PreviewInput;
   previewErr: string | null;
   /** What the server holds (last hydrate or landed save); null = not loaded. */
   base: NudgeConfig | null;
@@ -84,6 +86,12 @@ export interface NudgeOnlineState {
   /** The form was seeded from a kept draft (`hydrate`) — cleared by a landed
    *  save, a discard or the pick; shown only while dirty (`restoredNote`). */
   restored: { moved: boolean } | null;
+}
+
+export interface PreviewInput {
+  fan: string;
+  hour: number | "";
+  day: string;
 }
 
 /** A kept draft and what the server held when it was made. */
@@ -112,6 +120,7 @@ export type NudgeOnlineAction =
   | { type: "saveOk"; accountId: string; at: number }
   | { type: "saveErr"; msg: string; accountId: string; at: number }
   | { type: "runMsg"; msg: string | null }
+  | { type: "preview"; patch: Partial<PreviewInput> }
   | { type: "previewErr"; msg: string | null }
   | { type: "toggleModel"; id: string; all: readonly string[] }
   /** null = All. */
@@ -119,7 +128,8 @@ export type NudgeOnlineAction =
   | { type: "bulkMsg"; msg: string | null };
 
 export const initialNudgeOnlineState: NudgeOnlineState = {
-  form: {}, slots: {}, jsonDraft: "", jsonErr: null, save: null, runMsg: null, previewErr: null,
+  form: {}, slots: {}, jsonDraft: "", jsonErr: null, save: null, runMsg: null,
+  preview: { fan: "", hour: "", day: "" }, previewErr: null,
   base: null, accountId: null, saving: null, selected: new Set(), bulkMsg: null, savedAt: {}, restored: null,
 };
 
@@ -201,7 +211,7 @@ export function shareBlock(s: Pick<NudgeOnlineState, "base">, picked: readonly s
 
 /** Preview's fan id + hour, or why not (a typo must not preview the sample fan). */
 export function previewPayload(
-  fan: string, hour: number | "", day = "",
+  { fan, hour, day }: PreviewInput,
 ): { fan_id: number | null; hour: number | null; weekday: string | null } | { error: string } {
   const f = fan.trim();
   if (f && !/^\d+$/.test(f)) return { error: "Fan id must be a number." };
@@ -302,10 +312,10 @@ export function nudgeOnlineReducer(state: NudgeOnlineState, action: NudgeOnlineA
   switch (action.type) {
     case "account":
       if (action.accountId === state.accountId) return state;
-      // The roll-out checklist, its line and `savedAt` span accounts; the rest is the old one's.
+      // The roll-out checklist, its line, `savedAt` and the Preview inputs span accounts; the rest is the old one's.
       return {
         ...initialNudgeOnlineState, accountId: action.accountId,
-        savedAt: state.savedAt, selected: state.selected, bulkMsg: state.bulkMsg,
+        savedAt: state.savedAt, selected: state.selected, bulkMsg: state.bulkMsg, preview: state.preview,
       };
     case "hydrate": {
       if (action.accountId !== state.accountId) return state;
@@ -359,6 +369,8 @@ export function nudgeOnlineReducer(state: NudgeOnlineState, action: NudgeOnlineA
     }
     case "runMsg":
       return { ...state, runMsg: action.msg };
+    case "preview":
+      return { ...state, preview: { ...state.preview, ...action.patch } };
     case "previewErr":
       return { ...state, previewErr: action.msg };
     case "toggleModel": {

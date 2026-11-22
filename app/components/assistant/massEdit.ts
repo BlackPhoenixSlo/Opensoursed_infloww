@@ -10,7 +10,15 @@ export type EditField =
   | "unsend_after_hours" | "online_only" | "every_seconds" | "exclude_last_chat_hours" | "price" | "media_count"
   | "is_enabled";
 
-export interface EditDiff { field: EditField; label: string; before: unknown; after: unknown }
+/** One changed field, as the server words and judges it (assistant_edit._diff): the card only shows it. */
+export interface EditDiff {
+  field: EditField;
+  label: string;
+  /** The server's line (assistant_edit.diff_text) — the one wording, every prior value included. */
+  text: string;
+  /** The rule stays on and some message sends more (or charges differently) right away (rwl W30 S1). */
+  live: boolean;
+}
 
 export interface EditRule {
   id: number;
@@ -38,6 +46,8 @@ export interface MassEditSlots {
   scope: "this" | "all";
   match: string | null;
   changes: EditChanges;
+  /** The change spec in words (assistant_edit.change_lines) — the card's head, same as the summary's. */
+  change_lines: string[];
   rules: EditRule[];
   /** Matching rules that already have the change. */
   already: number;
@@ -47,59 +57,16 @@ export interface MassEditSlots {
 /** One rule's apply outcome (the route's `results[]`). */
 export interface EditResult { id: number; ok: boolean; reason?: string }
 
-const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
-const fmtNum = (n: number) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100));
-const hours = (h: number) => (h < 1 ? `${fmtNum(Math.round(h * 60))} min` : `${fmtNum(h)}h`);
+/** "Unsend after 8h → never" — the server's text (one formatter, rwl W30 F12). */
+export const diffLine = (d: EditDiff) => d.text;
 
-/** A diff value in plain words: "8h", "never", "$15", "on". */
-export function fmtValue(field: EditField, v: unknown): string {
-  const n = num(v);
-  switch (field) {
-    case "unsend_after_hours": return n && n > 0 ? hours(n) : "never";
-    case "exclude_last_chat_hours": return n && n > 0 ? hours(n) : "off";
-    case "every_seconds": return n && n > 0 ? hours(n / 3600) : "—";
-    case "price": return n && n > 0 ? `$${fmtNum(n)}` : "free";
-    case "media_count": return n && n > 0 ? String(n) : "1";
-    case "online_only":
-    case "is_enabled": return v ? "on" : "off";
-  }
-}
-
-/** "Unsend after 8h → never". */
-export const diffLine = (d: EditDiff) => `${d.label} ${fmtValue(d.field, d.before)} → ${fmtValue(d.field, d.after)}`;
-
-/** The change spec's lines, the card's head: "Unsend after → never", "Switch off". */
-export function changeLines(c: EditChanges): string[] {
-  const out: string[] = [];
-  if (c.unsend_after_hours !== undefined) out.push(`Unsend after → ${fmtValue("unsend_after_hours", c.unsend_after_hours)}`);
-  if (c.every_seconds !== undefined) out.push(`Every → ${fmtValue("every_seconds", c.every_seconds)}`);
-  if (c.online_only !== undefined) out.push(`Online fans only → ${fmtValue("online_only", c.online_only)}`);
-  if (c.exclude_last_chat_hours !== undefined) {
-    out.push(`Skip fans chatted with recently → ${fmtValue("exclude_last_chat_hours", c.exclude_last_chat_hours)}`);
-  }
-  if (c.price !== undefined) out.push(`Price → ${fmtValue("price", c.price)}`);
-  if (c.media_count !== undefined) out.push(`Photos per mass → ${c.media_count}`);
-  if (c.disable_rule) out.push("Switch off");
-  return out;
-}
-
-/** An enabled rule whose change makes it send MORE (or charge differently) right away: a shorter interval, fewer
- *  skip-recent hours, online-only off, a price change. */
-export function isLiveIncrease(r: EditRule): boolean {
-  if (!r.is_enabled) return false;
-  return r.diffs.some((d) => {
-    const b = num(d.before), a = num(d.after);
-    switch (d.field) {
-      case "every_seconds": return b !== null && a !== null && a < b;
-      case "exclude_last_chat_hours": return (b ?? 0) > (a ?? 0);
-      case "online_only": return d.before === true && d.after === false;
-      case "price": return true;
-      default: return false;
-    }
-  });
-}
+/** LIVE on the card: any diff the server judged live. */
+export const isLive = (r: EditRule): boolean => r.diffs.some((d) => d.live);
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+/** Skips the card names; the rest are one count (the server's nothing-answer names 3 too). */
+export const SKIPS_SHOWN = 3;
 
 export interface EditPlanText {
   /** "3 rules · 2 models". */
@@ -116,14 +83,18 @@ export function editPlanText(s: MassEditSlots): EditPlanText {
   for (const r of s.rules) {
     let g = groups.find((x) => x.model === r.account_name);
     if (!g) groups.push(g = { model: r.account_name, rules: [] });
-    g.rules.push({ id: r.id, name: r.name, live: isLiveIncrease(r), lines: r.diffs.map(diffLine) });
+    g.rules.push({ id: r.id, name: r.name, live: isLive(r), lines: r.diffs.map(diffLine) });
   }
   const notes: string[] = [];
   if (s.already > 0) notes.push(`${plural(s.already, "rule")} already set — left alone`);
-  for (const x of s.skipped) notes.push(`Skipped “${x.name}”${x.account_name ? ` (${x.account_name})` : ""}: ${x.reason}`);
+  // The first few skips by name, the rest counted (rwl W30 D1: a bulk edit's skips used to list every rule).
+  for (const x of s.skipped.slice(0, SKIPS_SHOWN)) {
+    notes.push(`Skipped “${x.name}”${x.account_name ? ` (${x.account_name})` : ""}: ${x.reason}`);
+  }
+  if (s.skipped.length > SKIPS_SHOWN) notes.push(`${plural(s.skipped.length - SKIPS_SHOWN, "more rule")} skipped`);
   return {
     headline: `${plural(s.rules.length, "rule")} · ${plural(groups.length, "model")}`,
-    changes: changeLines(s.changes),
+    changes: s.change_lines,
     groups,
     notes,
   };
@@ -163,6 +134,22 @@ export function resultHeadline(results: EditResult[]): string {
   return `Changed ${ok} of ${plural(results.length, "rule")}`;
 }
 
+const FIELDS: Readonly<Record<EditField, true>> = {
+  unsend_after_hours: true, online_only: true, every_seconds: true, exclude_last_chat_hours: true, price: true,
+  media_count: true, is_enabled: true,
+};
+
+/** A rule's diffs, read defensively: one without the server's text is dropped (never a guessed line). */
+function diffsOf(v: unknown): EditDiff[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((x) => {
+    const d = x && typeof x === "object" ? x as Partial<Record<keyof EditDiff, unknown>> : null;
+    return d && typeof d.field === "string" && typeof d.text === "string" && d.text
+      && Object.prototype.hasOwnProperty.call(FIELDS, d.field)
+      ? [{ field: d.field as EditField, label: String(d.label ?? ""), text: d.text, live: d.live === true }] : [];
+  });
+}
+
 /** The draft's slots, read defensively (a missing field never crashes the card). */
 export function editSlotsFrom(v: unknown): MassEditSlots | null {
   if (!v || typeof v !== "object") return null;
@@ -173,7 +160,8 @@ export function editSlotsFrom(v: unknown): MassEditSlots | null {
     scope: s.scope === "all" ? "all" : "this",
     match: typeof s.match === "string" ? s.match : null,
     changes: s.changes && typeof s.changes === "object" ? s.changes : {},
-    rules: rules.map((r) => ({ ...r, diffs: Array.isArray(r.diffs) ? r.diffs : [], name: String(r.name ?? ""),
+    change_lines: Array.isArray(s.change_lines) ? s.change_lines.filter((x): x is string => typeof x === "string") : [],
+    rules: rules.map((r) => ({ ...r, diffs: diffsOf(r.diffs), name: String(r.name ?? ""),
       account_name: String(r.account_name ?? r.account_id ?? ""), is_enabled: r.is_enabled === true })),
     already: typeof s.already === "number" ? s.already : 0,
     skipped: Array.isArray(s.skipped) ? s.skipped : [],

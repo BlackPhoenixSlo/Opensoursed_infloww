@@ -21,7 +21,10 @@ sells the nearest piece, the Writer says so ("note"), and selling off never prom
                                    "off" the Refusal row as before
   case_differs_caption_alone_via_api  caption mode, a Pick not what he asked for: the passed caption
                                    ships alone (outcome "alone"), no chat Writer call, no typo pass;
+                                   one not naming the price is refused ("terms", W30 #4a);
                                    a failed one: today's path with NEAREST_NOTE, `rejected` recorded
+  case_plain_tagged_caption_no_typos  W30 #21: "plain" over a tagged Pick: its caption gets no typo
+                                   pass (typo_pct 100), ships as written
   case_asked_words_table           NEAREST_NOTE's {asked}
   case_writer_note                 "note" -> NEAREST_NOTE right under the item line (chat mode) /
                                    in the caption call's prompt ("caption"), the bubbles before it
@@ -36,6 +39,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_sell_nearest.py  (exit 0 = pas
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+from _jev_fixtures import mapped  # noqa: E402
 
 from _full_ai_sell_helpers import (  # noqa: E402
     NANO, OFFER_COLS, PRICED, _body, _post, _put_draft, _reply, _rows, _system, _vault,
@@ -76,7 +80,7 @@ def _jev(lane5, kind="photo", **tags):
 
 
 def _row(mid, lane="$10", kind="photo", *, packs=(), **tags):
-    fields = vault_ai_brief.settled_reading({**DRESSED, vault_jev_rules.JEV_KEY: _jev(lane, kind, **tags)})
+    fields = vault_ai_brief.settled_reading(mapped({**DRESSED, vault_jev_rules.JEV_KEY: _jev(lane, kind, **tags)}))
     return {"media_id": mid, "kind": kind, "created_at": T0 + timedelta(minutes=mid),
             "duration_seconds": 12 if kind == "video" else None, "fields": fields,
             "describe_status": "described", "score": 0, "refs": set(), "packs": set(packs)}
@@ -419,18 +423,24 @@ def case_turn_nearest_via_api():
 def case_differs_caption_alone_via_api():
     # caption_writer "caption", a Pick not what he asked for: the passed caption is the only message,
     # no chat Writer call; typo_pct 100: no typo pass on it (a slip would void its disclosure).
-    line = "no blowjob pic babe, but a photo of me just for u"
+    # W30 #4a: it ships alone, so it states the deal: one with no price is refused ("terms"), the
+    # rewrite naming the count and the price ships.
+    vague = "no blowjob pic babe, but a photo of me just for u"
+    line = "no blowjob pic babe, but a photo of me just for u, $10"
     jev = ({**QUIET, "wants_content": .9}, 1.0, BJ_PHOTO)
     with _draft(caption_writer="caption", typo_pct=100), _vault(PRICED):
-        r, fw, (pick,) = _post(_body("nr-alone", ASK_TEXT), {NANO: ["ok:" + json.dumps({"caption": line}),
+        r, fw, (pick,) = _post(_body("nr-alone", ASK_TEXT), {NANO: ["ok:" + json.dumps({"caption": vague}),
+                                                                   "ok:" + json.dumps({"caption": line}),
                                                                    "ok:u got it babe"]}, jev=jev)
     got = r.json()
     (row,) = _rows("nr-alone")
     assert isinstance(pick, Pick) and "asked" in pick.facts and row.status == "sent", (pick, got)
-    assert len(fw.requests) == 1, fw.requests                                  # the caption call only
+    assert pick.price_cents == 1000 and pick.facts["kinds"] == {"photo": 1}, pick
+    assert len(fw.requests) == 2, fw.requests                       # the caption call and its rewrite only
     assert [p["text"] for p in got["parts"] if "text" in p] == [line] and "ppv" in got["parts"][-1], got["parts"]
     cap = got["caption"]
-    assert (cap["writer"], cap["outcome"]) == ("caption", "alone") and "rejected" not in cap, cap
+    assert (cap["writer"], cap["outcome"]) == ("caption", "alone"), cap
+    assert cap["rejected"] == [{"checks": ["terms"], "text": vague}], cap
     assert got["attempts"] == [] and row.writer_model == cap["model"], (got["attempts"], row.writer_model)
     # A failed caption keeps today's path: the chat Writer with NEAREST_NOTE under its item line.
     bad = "ok:" + json.dumps({"caption": "heres ur blowjob pic"})
@@ -439,8 +449,22 @@ def case_differs_caption_alone_via_api():
                                {NANO: [bad, bad, "ok:dont have that one babe, but this pic tho"]}, jev=jev)
     got = r.json()
     assert len(fw.requests) == 3 and got["caption"]["outcome"] == "failed", got["caption"]
-    assert got["caption"]["rejected"][0] == {"checks": ["claim", "disclose"], "text": "heres ur blowjob pic"}
+    assert got["caption"]["rejected"][0] == {"checks": ["claim", "disclose", "terms"], "text": "heres ur blowjob pic"}
     assert wr.NEAREST_NOTE.format(asked="a blowjob photo", got=wr.got_words(pick)) in _system(fw, 2)
+
+
+def case_plain_tagged_caption_no_typos():
+    # W30 #21: "plain" (no note, `differs` False) over a Pick still tagged not what he asked for: the
+    # caption keeps no typo pass, as before W30 #4 (a slip in "no" / "pic" would void its disclosure).
+    line = "no blowjob pic babe, but a photo of me just for u, $10"
+    jev = ({**QUIET, "wants_content": .9}, 1.0, BJ_PHOTO)
+    with _draft(caption_writer="caption", sell_nearest="plain", typo_pct=100), _vault(PRICED):
+        r, fw, (pick,) = _post(_body("nr-plain-typo", ASK_TEXT),
+                               {NANO: ["ok:" + json.dumps({"caption": line}), "ok:mm babe"]}, jev=jev)
+    got = r.json()
+    assert isinstance(pick, Pick) and "asked" in pick.facts, pick
+    assert got["caption"]["outcome"] == "ok" and "rejected" not in got["caption"], got["caption"]
+    assert [p["text"] for p in got["parts"] if "text" in p][-1] == line, got["parts"]
 
 
 # ── The Writer ────────────────────────────────────────────────────────

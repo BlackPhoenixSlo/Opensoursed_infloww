@@ -26,6 +26,7 @@ Run: cd service && nice -n 10 ../venv/bin/python tests/test_full_ai_live_session
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+from _jev_fixtures import mapped  # noqa: E402
 
 _harness.bootstrap()
 
@@ -43,7 +44,7 @@ from _full_ai_fixtures import QUIET, _msg  # noqa: E402
 from _full_ai_live_fixtures import LINE3  # noqa: E402
 from _full_ai_live_helpers import HOSTS, NANO, clear_pause, get_fan, reply, seed_live, world  # noqa: E402
 from _of_fixtures import VaultOF  # noqa: E402
-from automations import full_ai_live  # noqa: E402
+from automations import full_ai_live, full_ai_look  # noqa: E402
 from automations.full_ai_scene import scene_words  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import AiDecision, Message, VaultItem, VaultSend  # noqa: E402
@@ -149,12 +150,13 @@ class Spy:
 
 @contextlib.contextmanager
 def last_look(m: Misses):
-    """Every Check of `full_ai_live.LAST_LOOK` wrapped to record (name, look.index); the list is
-    restored after. Records a MISS per missing seam / slot / order."""
+    """Every Check of `full_ai_look.LAST_LOOK` wrapped to record (name, look.index) (the write gate's DB-only
+    re-look, `of_read` False, not recorded); the list is restored after. Records a MISS per missing seam /
+    slot / order."""
     spy = Spy()
-    ll = getattr(full_ai_live, "LAST_LOOK", None)
+    ll = getattr(full_ai_look, "LAST_LOOK", None)
     if not isinstance(ll, list):
-        m.miss(66, "full_ai_live has no LAST_LOOK")
+        m.miss(66, "full_ai_look has no LAST_LOOK")
         yield spy
         return
     saved = list(ll)
@@ -168,7 +170,8 @@ def last_look(m: Misses):
 
     def wrap(name, check):
         def spied(look):
-            spy.events.append((name, look.index))
+            if getattr(look, "of_read", True):
+                spy.events.append((name, look.index))
             return check(look)
         return spied
     ll[:] = [(n, loader, wrap(n, chk)) for n, loader, chk in saved]
@@ -219,7 +222,7 @@ async def seed_vault(aid: str) -> None:
         for mid, lane in VAULT.items():
             s.add(VaultItem(account_id=aid, media_id=mid, kind="photo", created_at=t0 + timedelta(days=mid),
                             tags="[]", describe_status="described", of_folder_ids="[]",
-                            ai_fields_json=json.dumps({**DRESSED, vault_jev_rules.JEV_KEY: _jev_fields(lane)})))
+                            ai_fields_json=json.dumps(mapped({**DRESSED, vault_jev_rules.JEV_KEY: _jev_fields(lane)}))))
 
 
 async def prior_turn(aid: str, fan: int, his: int, out: int, *, ago: int = 5, scene: dict | None = None,
@@ -612,7 +615,8 @@ async def case_8_off_switch():
     m.need(not jevs.calls, 81, f"switch on: the Router ran ({len(jevs.calls)})")
     m.need(not await rows_of(aid, FAN, mid), 81, "switch on: a stood-down pre-look wrote a row")
     if spy.names is not None and "off_switch" in spy.names:
-        m.need(spy.at(-1) == ["off_switch"], 66, f"switch on: pre-look ran {spy.at(-1)} (first reason wins)")
+        # W30 F14: the job reads the switch before anything else (no photo read): no pre-look runs.
+        m.need(spy.at(-1) == [], 66, f"switch on: pre-look ran {spy.at(-1)} (switch read first)")
 
     # B: flipped on after bubble 1 landed, before bubble 2's last look (spec: hold -> rate turn -> look).
     aid, mid = "fa_sess_8b", 8285
@@ -623,8 +627,11 @@ async def case_8_off_switch():
     real_turn, turns = dm_rate.turn, []
 
     async def turn(account_id, **kw):
+        # Per bubble: the loop's turn, then `of_write_paced(dm=True)`'s (passes at once). The 3rd call
+        # is bubble 1's loop turn, before its look (a flip at the 2nd lands during bubble 0's write
+        # wait, which `_gate` now stops: W30 F2).
         turns.append(account_id)
-        if len(turns) == 2:
+        if len(turns) == 3:
             await runtime_switches.set_override(OFF, True, by="test")
         return await real_turn(account_id, **kw)
     dm_rate.turn = turn

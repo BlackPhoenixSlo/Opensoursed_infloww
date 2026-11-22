@@ -120,6 +120,8 @@ describe("applyScript: a Messages Pro script beside the chat", () => {
     expect([...editor(doc).querySelectorAll("p")].map((p) => p.textContent)).toEqual(["Hey", "there"]);
     expect(doc.getElementById("oi-chat-summary")!.textContent).toContain("Price: $12");
     expect(send(doc).disabled).toBe(false);
+    // ticket 33: the cursor in the composer, a Wired field (dead.py's focus outcome of Copy as draft)
+    expect([doc.activeElement === editor(doc), editor(doc).hasAttribute("data-oi-wired")]).toEqual([true, true]);
   });
 
   // A Scripts picker row (TemplatePicker fromLocal): `text` the plain lines, `displayText` the row as saved.

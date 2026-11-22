@@ -60,7 +60,13 @@ def get(account_id: str) -> OFClient:
     return c
 
 
-def evict(account_id: str | None = None, *, only: OFClient | None = None) -> None:
+def peek(account_id: str) -> OFClient | None:
+    """The pooled OFClient for `account_id`, or None; never builds one. A requestless read takes it before it
+    starts, so its failure evicts only that client (`evict(only=)`)."""
+    return _POOL.get(account_id)
+
+
+def evict(account_id: str | None = None, *, only: OFClient | None = None) -> bool:
     """Drop pooled client(s) so the next `get()` re-reads session + proxy from
     disk. `None` evicts every account — a proxy edit can affect any of them.
 
@@ -71,6 +77,9 @@ def evict(account_id: str | None = None, *, only: OFClient | None = None) -> Non
     Explicitly `is None` and not a truthiness test: the failure mode of a
     falsy-but-not-None argument slipping through is silently dumping every
     account's client, which is the worst possible reading of a typo.
+
+    False only when `only` lost to a replacement client the pool now holds
+    (nothing evicted); True otherwise.
     """
     # Under _LOCK: a build that read the OLD proxy before a registry write
     # would otherwise land in the pool after this pop and pin the old route.
@@ -79,7 +88,7 @@ def evict(account_id: str | None = None, *, only: OFClient | None = None) -> Non
             retired = list(_POOL.values())
             _POOL.clear()
         elif only is not None and _POOL.get(account_id) is not only:
-            return
+            return _POOL.get(account_id) is None
         else:
             old = _POOL.pop(account_id, None)
             retired = [old] if old is not None else []
@@ -95,5 +104,6 @@ def evict(account_id: str | None = None, *, only: OFClient | None = None) -> Non
     try:
         import fansly_backend
     except Exception:
-        return
+        return True
     fansly_backend.drop(account_id)
+    return True

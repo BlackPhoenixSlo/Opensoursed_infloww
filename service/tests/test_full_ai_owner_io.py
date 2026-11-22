@@ -13,7 +13,8 @@
                              0 never stops, equal stops; a bad stored value reads the default
   case_claimed_ids           empty for every input while `_live` is false; live + rule on -> the Fans given;
                              rule off or the global switch on -> empty
-  case_no_lane_edits         no funnel / dispatch file differs from origin/main
+  case_no_lane_edits         the funnel file does not differ from origin/main (webhook_dispatch left the list
+                             in W30: the sweep's batch pending-job read lives beside the one-fan one)
 
 Run: ./venv/bin/python service/tests/test_full_ai_owner_io.py  (exit 0 = pass)
 """
@@ -261,9 +262,9 @@ async def case_claimed_ids():
 
 
 def case_no_lane_edits():
-    files = ["service/automations/reply_mass_funnel.py", "service/webhook_dispatch.py"]
+    files = ["service/automations/reply_mass_funnel.py"]
     r = subprocess.run(["git", "diff", "--quiet", "origin/main", "--", *files], cwd=_harness._REPO_ROOT)
-    assert r.returncode == 0, "a funnel / dispatch file differs from origin/main"
+    assert r.returncode == 0, "the funnel file differs from origin/main"
 
 
 if __name__ == "__main__":

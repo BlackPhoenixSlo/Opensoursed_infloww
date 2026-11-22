@@ -81,13 +81,16 @@ export function AutoUnsendPanel({ accountId, label }: { accountId: string; label
 
   const saving = createM.isPending || updateM.isPending;
   const err = createM.error || updateM.error;
-  const body = saveBody(form, !!existing);
+  const body = saveBody(form, existing?.id ?? null);
 
   const save = () => {
     if (!body) return;
-    if (existing) {
-      updateM.mutate({ id: existing.id, every_seconds: AUTO_EVERY_SECONDS, ...body });
-    } else if (body.payload) {
+    if (body.kind === "update") {
+      updateM.mutate({
+        id: body.id, every_seconds: AUTO_EVERY_SECONDS, is_enabled: body.is_enabled,
+        ...(body.payload && { payload: body.payload }),
+      });
+    } else {
       createM.mutate({
         account_id: accountId,
         kind: "unsend_messages",

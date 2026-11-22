@@ -77,8 +77,10 @@ P95_VS_LAST_MIN_N = 20
 SIDECARS = {"bio": ("slop/lib/bio.py", "BIO_PORT", "/internal/healthz")}
 BIO_PORT = 0
 LIMIT = 30
+# EDGE_PROXIES = the fans' X-Forwarded-For range: stands in for Cloudflare, whose location headers the bio service
+# believes only from an edge hop (client_addr.from_edge).
 RELAY_ENV = {"BIO_FLUSH_SECONDS": "0.5", "BIO_ESCAPE_TAP": "1", "BIO_PRIMARY_HOSTS": "127.0.0.1,localhost,bio.slop.test",
-             "BIO_REVEAL_LIMIT_PER_MINUTE": str(LIMIT)}
+             "BIO_REVEAL_LIMIT_PER_MINUTE": str(LIMIT), "EDGE_PROXIES": "100.64.0.0/10"}
 PAGE_P95_MS, JSON_P95_MS, WRITE_P95_MS = 60, 80, 150   # [g]
 SHARED_REDIRECT_P95_MS, SHARED_DM_P95_MS = 150, 300
 UI_NAME = ("UI: a bio page renders its Links, an 18+ tap opens the age gate, Continue goes to the oracle's "

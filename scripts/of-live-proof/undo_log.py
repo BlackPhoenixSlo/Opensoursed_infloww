@@ -9,7 +9,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Mapping
 
-from proof_core import NOT_REVERSIBLE, READS, Proof, _api, _bind, _names, _req, _template, declared_kinds
+from proof_core import (NOT_REVERSIBLE, NOT_REVERSIBLE_REFUSED, READS, Proof, _api, _bind, _names, _req, _template,
+                        declared_kinds)
 
 
 def undo_rows(lines) -> list:
@@ -178,6 +179,17 @@ def pending_rows(rows) -> list:
     clears it by hand: appending `{"row": N, "state": "cleared by hand", ...}` to that undo-log.jsonl (last wins)."""
     return [f"row {r.get('row')} ({r.get('proof')}) pending: {_row_write(r)} ({_row_id(r)}) may be left on the "
             "account; check it, then clear the row by hand" for r in rows if r.get("state") == "pending"]
+
+
+def unresolved_rows(rows) -> list:
+    """Follow-up #6, a live run's gate: every `pending` row (`pending_rows`), and every FAILED or
+    NOT_REVERSIBLE_REFUSED one (an undo that did not take: the item may still be on the account). Each refuses every
+    new live run until the owner clears it by hand, as a pending row: appending `{"row": N, "state": "cleared by
+    hand", ...}` to that undo-log.jsonl (last wins)."""
+    return pending_rows(rows) + [
+        f"row {r.get('row')} ({r.get('proof')}) {r.get('state')}: {_row_write(r)} ({_row_id(r)}) may be left on the "
+        "account; check it, then clear the row by hand"
+        for r in rows if r.get("state") in ("FAILED", NOT_REVERSIBLE_REFUSED)]
 
 
 def check_undo_log(wire, rows) -> list:

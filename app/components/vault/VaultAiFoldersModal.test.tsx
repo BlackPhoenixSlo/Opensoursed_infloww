@@ -22,7 +22,7 @@ vi.mock("@/hooks/useVaultCache", () => ({
       summary: { folders: plan.noFolders ? 0 : 1, scripts: 0, lanes: 1, topics: 0, solo_cuts: 0, unique_media: 0,
         memberships: 0 },
       topics: [],
-      jev: { enabled: plan.jevOn, items: 10, with_jev: plan.jevOn ? 7 : 0 },
+      jev: { items: 10, with_jev: plan.jevOn ? 7 : 0 },
       topic_catalogue: [
         { slug: "spread", name: "spread", description: "legs spread", price: "split", count: 3 },
         { slug: "bikini", name: "bikini", description: "in swimwear", price: "split", count: 2 },
@@ -69,8 +69,8 @@ describe("VaultAiFoldersModal", () => {
     expect(screen.queryByText(/Created 1 new/)).toBeNull();
     expect(screen.getByRole("button", { name: "Create 1 folders" })).toBeInTheDocument();
     expect(apply.mock.calls).toEqual([
-      ["acc-1", { keep: 10, solo: false, mirrorToOf: true, topics: [], split: true }],
-      ["acc-1", { keep: 10, solo: true, mirrorToOf: true, topics: [], split: true }],
+      ["acc-1", { keep: 10, solo: false, mirrorToOf: true, topics: [], split: true, expectedRetire: [] }],
+      ["acc-1", { keep: 10, solo: true, mirrorToOf: true, topics: [], split: true, expectedRetire: [] }],
     ]);
   });
 
@@ -83,6 +83,32 @@ describe("VaultAiFoldersModal", () => {
     expect(screen.getByText(/1 of them is linked to an OnlyFans list/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create 1 folders · retire 1 linked to OnlyFans" }));
     expect(await screen.findByText(/Created 1 new/)).toBeInTheDocument();
+    // W30 F3: the apply retires only what this preview listed.
+    expect(apply.mock.calls[0][1]).toMatchObject({ expectedRetire: [7, 8] });
+  });
+
+  it("a folder that went stale after the preview is reported as left in place (W30 F3)", async () => {
+    apply.mockResolvedValueOnce({ ...RESULT, skipped_retire: [{ folder_id: 9, name: "AI-x", of_list_id: null }] });
+    renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
+    expect(await screen.findByText(/1 more folder went\s+out of date after this preview and was left in\s+place/))
+      .toHaveClass("text-warn");
+  });
+
+  it("a folder adopted by a hand edit mid-build is reported as left as edited (W30 C2)", async () => {
+    apply.mockResolvedValueOnce({ ...RESULT, skipped_adopted: [{ folder_id: 9, name: "AI-x", of_list_id: null }] });
+    renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
+    expect(await screen.findByText(/1 folder was edited by hand during this build and left as edited/))
+      .toHaveClass("text-warn");
+  });
+
+  it("the OF mirror says it only adds and counts items left on OF lists (W30 F4)", async () => {
+    apply.mockResolvedValueOnce({ ...RESULT, of_stale: 2 });
+    renderWithProviders(<VaultAiFoldersModal accountId="acc-1" onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
+    expect(await screen.findByText(/adds only: nothing is removed/)).toBeInTheDocument();
+    expect(screen.getByText(/2 items stay in an OnlyFans list/)).toHaveClass("text-warn");
   });
 
   it("a script card shows its health line and marks the borrowed closer; a clean one shows none", () => {
@@ -113,7 +139,7 @@ describe("VaultAiFoldersModal", () => {
     expect(select.querySelectorAll("option")).toHaveLength(21);
     fireEvent.change(select, { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
-    await waitFor(() => expect(apply).toHaveBeenCalledWith("acc-1", { keep: 0, solo: false, mirrorToOf: true, topics: [], split: true }));
+    await waitFor(() => expect(apply).toHaveBeenCalledWith("acc-1", { keep: 0, solo: false, mirrorToOf: true, topics: [], split: true, expectedRetire: [] }));
   });
 
   it("topic folders: none ticked by default; ticked ones (Select all / None) go in the build", async () => {
@@ -131,7 +157,7 @@ describe("VaultAiFoldersModal", () => {
     fireEvent.click(bikini);
     fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
     await waitFor(() => expect(apply).toHaveBeenCalledWith("acc-1",
-      { keep: 10, solo: false, mirrorToOf: true, topics: ["bikini"], split: true }));
+      { keep: 10, solo: false, mirrorToOf: true, topics: ["bikini"], split: true, expectedRetire: [] }));
   });
 
   it("split by price is on by default; switching it off re-plans and builds unsplit", async () => {
@@ -146,7 +172,7 @@ describe("VaultAiFoldersModal", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /bikini/ }));
     fireEvent.click(screen.getByRole("button", { name: "Create 1 folders" }));
     await waitFor(() => expect(apply).toHaveBeenCalledWith("acc-1",
-      { keep: 10, solo: false, mirrorToOf: true, topics: ["bikini"], split: false }));
+      { keep: 10, solo: false, mirrorToOf: true, topics: ["bikini"], split: false, expectedRetire: [] }));
   });
 
   it("topic folders without Jev data: the hint shows and the boxes are disabled", () => {

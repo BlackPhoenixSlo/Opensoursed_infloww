@@ -10,6 +10,8 @@ UI's re-asks answer it from RAM instead of 429-ing OF again.
                                 answers the same 429 without reading OF; another page still reads.
   case_route_reads_after_hold:  once the hold ends the page reads OF again.
   case_route_non_429_not_held:  any other upstream error is never held.
+  case_hold_serves_cache_and_gates_swr: the hold gates the upstream fetch only: a cached
+                                window is served during it, an SWR refresh inside it reads nothing.
 
 Run: ./venv/bin/python service/tests/test_chats_429_hold.py   (exit 0 = pass)
 """
@@ -134,6 +136,75 @@ async def case_route_non_429_not_held():
         await _ask()
         assert reads == [0, 0], reads
     finally:
+        undo()
+
+
+async def case_hold_serves_cache_and_gates_swr():
+    """W30 #6: the hold sits at the upstream fetch. A ?refresh=1 429 holds the page, yet a plain
+    re-ask is served its cached window (no 502); a stale window's SWR refresh inside the hold
+    reads OF nothing."""
+    import asyncio
+    import time as _t
+    reads, _clk, undo = _patched(429, "Please allow 3 seconds")
+    ok = {"on": True}
+    real = server._assemble_chats_page
+
+    def _assemble(client, **kw):
+        if ok["on"]:
+            reads.append(("ok", kw["offset"]))
+            return {"list": [], "hasMore": False}
+        return real(client, **kw)
+    server._assemble_chats_page = _assemble
+    try:
+        await server.list_chats(refresh=False, offset=0, **_KW)          # cached
+        ok["on"] = False
+        try:
+            await server.list_chats(refresh=True, offset=0, **_KW)       # 429 -> held
+            raise AssertionError("refresh should 429")
+        except HTTPException as e:
+            assert e.detail["upstream_status"] == 429, e.detail
+        n = len(reads)
+        got = await server.list_chats(refresh=False, offset=0, **_KW)    # cache hit during the hold
+        assert got["list"] == [], got
+        key = next(k for k in relay_cache._cache if k[0] == "list_chats" and k[1] == _AID)
+        relay_cache._cache[key] = (relay_cache._cache[key][0], _t.monotonic() - 1)   # stale, inside SWR
+        await server.list_chats(refresh=False, offset=0, **_KW)          # stale served, SWR starts
+        await asyncio.sleep(0.2)
+        assert len(reads) == n, f"SWR refresh read OF during the hold: {reads[n:]}"
+    finally:
+        undo()
+
+
+async def case_cancelled_waiter_keeps_the_hold():
+    """W30 #34: the sole waiter is cancelled while its detached read is on OF; the read then 429s.
+    The hold is recorded by the read itself, so an immediate re-ask answers it from RAM."""
+    import asyncio
+    import threading
+    import time as _t
+    import relay_coalesce
+    reads, _clk, undo = _patched(429, "Please allow 3 seconds")
+    real, release = server._assemble_chats_page, threading.Event()
+
+    def _slow(client, **kw):
+        release.wait(5)
+        return real(client, **kw)
+    server._assemble_chats_page = _slow
+    try:
+        waiter = asyncio.create_task(server.list_chats(refresh=False, offset=0, **_KW))
+        end = _t.monotonic() + 5
+        while not relay_coalesce._inflight and _t.monotonic() < end:
+            await asyncio.sleep(0.01)
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        release.set()
+        while relay_coalesce._inflight and _t.monotonic() < end:
+            await asyncio.sleep(0.01)
+        assert reads == [0], reads
+        again = await _ask()
+        assert reads == [0], f"the cancelled waiter's 429 left no hold: re-ask read OF {reads}"
+        assert again.detail["upstream_status"] == 429, again.detail
+    finally:
+        release.set()
         undo()
 
 

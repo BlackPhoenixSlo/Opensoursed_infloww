@@ -65,7 +65,8 @@ async def _send_ppv(client, look) -> dict:
     b = look.bubble
     got = await full_ai_ppv.send_priced(client, row_id=look.row["id"], account_id=look.account_id,
                                         fan_id=look.fan_id, text=b["text"], ppv=b["ppv"],
-                                        send_purpose=full_ai_live.SEND_PURPOSE)
+                                        send_purpose=full_ai_live.SEND_PURPOSE,
+                                        min_gap_s=full_ai_live.WRITE_GAP_S)
     return {"id": got.message_id, "attributed": True, "offer_dropped": got.dropped,
             "unknown": got.outcome == full_ai_ppv.UNCONFIRMED}
 
@@ -186,9 +187,12 @@ async def case_unconfirmed_lands():
     rid = await seed_live(aid)
     uid = await _unconfirmed(aid, fan, 100)
     landed = next(_ids)
-    async with get_session() as s:      # its PPV, as the scrape finds it on OF: ours, same price, no tag
+    # its PPV, as the scrape finds it on OF: ours, same price and media (W30 F3: settle links an exact
+    # media match only), no tag
+    async with get_session() as s:
         s.add(Message(account_id=aid, fan_id=fan, message_id=landed, direction="out", body="just for u",
-                      created_at=datetime.utcnow() - timedelta(seconds=95), price_cents=900))
+                      created_at=datetime.utcnow() - timedelta(seconds=95), price_cents=900,
+                      media_ids=json.dumps([7701]), media_count=1))
     _res, w, row = await _turn(aid, fan, mid, rid=rid)
     _sent(row, w)
     rows = await live_rows(aid, fan)

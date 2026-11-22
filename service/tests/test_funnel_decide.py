@@ -331,10 +331,12 @@ def case_entry_from_row_round_trips():
     class Row:
         current_step, next_check_at, check_count, status = 2, N, 1, "pending"
         last_error, last_ppv_sent_at, hops, last_sent_step = "blocked:x", m(-5), None, 1
+        confirmed_sent_at = m(-7)
     e = Entry.from_row(Row())
-    assert e == Entry(2, N, 1, "pending", "blocked:x", m(-5), None, 1)
+    assert e == Entry(2, N, 1, "pending", "blocked:x", m(-5), None, 1, m(-7))
     assert set(vars(e)) == {"current_step", "next_check_at", "check_count", "status",
-                            "last_error", "last_ppv_sent_at", "hops", "last_sent_step"}
+                            "last_error", "last_ppv_sent_at", "hops", "last_sent_step",
+                            "confirmed_sent_at"}
 
 
 def case_send_shape_table():

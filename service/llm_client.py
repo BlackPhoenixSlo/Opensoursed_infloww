@@ -635,11 +635,13 @@ def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
     return int(round(cents * _MILLICENTS_PER_CENT))
 
 
-def _reserve_out_tokens(model: str) -> int:
+def _reserve_out_tokens(model: str, max_tokens: int | None = None) -> int:
     """The output a reservation counts: the real cap where the body states one
-    (native Anthropic: `llm_anthropic.MAX_TOKENS`, which adaptive thinking may
-    spend in full), else `_ASSUMED_OUTPUT_TOKENS` (the OpenAI-wire lanes send no
-    max_tokens, so there is no real max to reserve)."""
+    (the caller's `max_tokens`; else native Anthropic: `llm_anthropic.MAX_TOKENS`,
+    which adaptive thinking may spend in full), else `_ASSUMED_OUTPUT_TOKENS`
+    (an OpenAI-wire call with no max_tokens has no real max to reserve)."""
+    if max_tokens:
+        return max_tokens
     mdl = MODELS.get(model)
     prov = PROVIDERS.get(mdl.provider) if mdl else None
     if prov is not None and prov.wire == "anthropic":
@@ -647,7 +649,7 @@ def _reserve_out_tokens(model: str) -> int:
     return _ASSUMED_OUTPUT_TOKENS
 
 
-def _reserve_millicents(model: str, tokens_in: int) -> int:
+def _reserve_millicents(model: str, tokens_in: int, max_tokens: int | None = None) -> int:
     """The pre-flight cap reservation, the most this call can bill: no cache
     info exists yet, so every input token is priced at the dearer of miss and
     cache-write (Anthropic bills a write at 1.25x input, so all-miss would
@@ -656,7 +658,7 @@ def _reserve_millicents(model: str, tokens_in: int) -> int:
     if mdl is None:
         return 0
     write = tokens_in if mdl.input_cache_write_per_1k_cents > mdl.input_per_1k_cents else 0
-    return _cost_millicents(model, tokens_in, _reserve_out_tokens(model), 0, write)
+    return _cost_millicents(model, tokens_in, _reserve_out_tokens(model, max_tokens), 0, write)
 
 
 def _cache_hit_tokens(usage: dict) -> int | None:
@@ -1071,6 +1073,7 @@ async def chat(
     max_attempts: int | None = None,
     tools: list[dict] | None = None,
     tool_choice: str | dict | None = None,
+    max_tokens: int | None = None,
 ) -> LLMResult:
     """Call an OpenAI-compatible LLM (DeepSeek, DeepInfra, Z.ai or Anthropic) with full cost + audit.
 
@@ -1121,6 +1124,10 @@ async def chat(
                          assistant `tool_calls` and `role: "tool"` answers; the
                          result's `tool_calls` holds the model's calls (content
                          may be ""). Other providers → LLMConfigError.
+        max_tokens:      OPTIONAL output cap: sent as the body's `max_tokens`
+                         (native Anthropic: in place of llm_anthropic.MAX_TOKENS)
+                         and reserved in place of the assumed output. None keeps
+                         both as they were.
 
     Raises:
         LLMConfigError, LLMCapExceeded, LLMHTTPError — and LLMKeyError (a
@@ -1169,6 +1176,8 @@ async def chat(
         body["tools"] = tools
     if tool_choice is not None:
         body["tool_choice"] = tool_choice
+    if max_tokens and not native:
+        body["max_tokens"] = max_tokens
     # The reasoning mode, stated explicitly and never by omission — the model
     # registry holds the exact body keys, so there is nothing to branch on here.
     #
@@ -1190,7 +1199,7 @@ async def chat(
         # Pure, and before the cap reservation and the audit row: a body it
         # can't translate costs neither.
         try:
-            body = llm_anthropic.to_native_body(body)
+            body = llm_anthropic.to_native_body(body, max_tokens or llm_anthropic.MAX_TOKENS)
         except llm_anthropic.NativeShapeError as e:
             raise LLMConfigError(f"model {mdl.id!r}: {e}") from e
 
@@ -1205,7 +1214,7 @@ async def chat(
             # ── 2. Atomic pre-flight cap reservation (in millicents) ────────
             hold = await _reserve_call(model, messages, account_id=account_id, user_id=user_id,
                                        provider=budget_key(purpose), now=now,
-                                       tools=tools)  # raises LLMCapExceeded
+                                       tools=tools, max_tokens=max_tokens)  # raises LLMCapExceeded
 
             # ── 3. Pending audit row ────────────────────────────────────────
             call_id = await _insert_pending_call(
@@ -1262,9 +1271,9 @@ class _Hold:
 
 async def _reserve_call(model: str, messages: list[dict], *, account_id: str | None,
                         user_id: str | None, provider: str, now: datetime,
-                        tools: list[dict] | None = None) -> _Hold:
+                        tools: list[dict] | None = None, max_tokens: int | None = None) -> _Hold:
     est_in = _estimate_input_tokens(messages, tools)
-    hold = _Hold(now, account_id, user_id, provider, _reserve_millicents(model, est_in))
+    hold = _Hold(now, account_id, user_id, provider, _reserve_millicents(model, est_in, max_tokens))
     cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
     await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, provider,
                    user_id)  # raises LLMCapExceeded

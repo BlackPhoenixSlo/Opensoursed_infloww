@@ -2,11 +2,13 @@
 
 /** The vault item popup, laid out from Infloww Vault Pro's media viewer: a dimmed mask over the grid; the media on
  *  black with its date and ‹ › to step through the grid's items (or ← →); "Media details" on the right
- *  (`VaultItemEditor`). A full-screen sheet on a phone. Backdrop, ✕ and Escape close it. */
+ *  (`VaultItemEditor`). A full-screen sheet on a phone. Backdrop, ✕ and Escape close it; with unsaved edits,
+ *  closing or stepping away asks first. */
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 
+import { ifConfirm } from "@/components/ui/ifConfirm";
 import { useModalFocus } from "@/components/ui/ifModal";
 import VaultPreviewMedia from "@/components/vault/VaultPreviewMedia";
 import { VaultDeleteButton } from "@/components/vault/VaultSelectionBar";
@@ -59,7 +61,21 @@ export default function VaultItemModal({
   describeSlot: ReactNode;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
-  useModalFocus(boxRef, onEscape);
+  // The editor's unsaved edits: closing or stepping away asks before throwing them out.
+  const dirtyRef = useRef(false);
+  const onDirtyChange = useCallback((d: boolean) => {
+    dirtyRef.current = d;
+  }, []);
+  const leave = useCallback((go: () => void) => {
+    if (!dirtyRef.current) return go();
+    void ifConfirm("Discard your unsaved changes?", { confirmLabel: "Discard", danger: true }).then((ok) => {
+      if (ok) go();
+    });
+  }, []);
+  const close = () => leave(onClose);
+  const step = useCallback((t: Tile) => leave(() => onStep(t)), [leave, onStep]);
+  // A layer above (the full-screen player) takes this Escape for itself: nothing is discarded.
+  useModalFocus(boxRef, keysOff ? onEscape : () => leave(onEscape));
   // "More info": closed by default (nobody needs the extras until they ask); kept while stepping.
   const [more, setMore] = useState(false);
 
@@ -73,11 +89,11 @@ export default function VaultItemModal({
       const to = e.key === "ArrowLeft" ? prev : e.key === "ArrowRight" ? next : null;
       if (!to) return;
       e.preventDefault();
-      onStep(to);
+      step(to);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [keysOff, prev, next, onStep]);
+  }, [keysOff, prev, next, step]);
 
   const date = mediaDate(media.createdAt);
 
@@ -86,7 +102,7 @@ export default function VaultItemModal({
       className="fixed inset-x-0 top-[var(--vvt,0px)] z-50 h-[var(--vvh,100dvh)] flex items-center justify-center bg-black/70 md:p-6"
       // pointerdown, not click: a text selection dragged out of a field onto the backdrop must not close it.
       onPointerDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) close();
       }}
     >
       <div
@@ -99,7 +115,7 @@ export default function VaultItemModal({
       >
         <button
           type="button"
-          onClick={onClose}
+          onClick={close}
           aria-label="Close details"
           title="Close (Esc)"
           className="absolute right-2 top-[calc(env(safe-area-inset-top)+6px)] md:top-3 md:right-3 z-20 grid h-8 w-8 place-items-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-elev-1"
@@ -114,6 +130,7 @@ export default function VaultItemModal({
           describeSlot={describeSlot}
           more={more}
           onToggleMore={() => setMore((v) => !v)}
+          onDirtyChange={onDirtyChange}
           mediaSlot={
             <div className="relative h-full w-full">
               <VaultPreviewMedia key={`pv-${media.id}`} media={media} accountId={accountId} onExpand={onExpand} fill />
@@ -123,11 +140,11 @@ export default function VaultItemModal({
                 </span>
               )}
               <button type="button" aria-label="Previous item" title="Previous (←)" disabled={!prev}
-                onClick={() => prev && onStep(prev)} className={`${ARROW} left-3`}>
+                onClick={() => prev && step(prev)} className={`${ARROW} left-3`}>
                 <ChevronLeft className="h-5 w-5" aria-hidden />
               </button>
               <button type="button" aria-label="Next item" title="Next (→)" disabled={!next}
-                onClick={() => next && onStep(next)} className={`${ARROW} right-3`}>
+                onClick={() => next && step(next)} className={`${ARROW} right-3`}>
                 <ChevronRight className="h-5 w-5" aria-hidden />
               </button>
             </div>

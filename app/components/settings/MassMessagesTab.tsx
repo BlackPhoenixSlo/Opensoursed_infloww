@@ -18,7 +18,7 @@
  * loaded rows client side when Search is pressed (or Enter), Reset clears them, Export downloads the listed
  * rows as CSV (`massFilterBar.ts`). The bulk actions act on the filtered rows only. A Sending Date older than
  * the "Sent in" window widens it until Reset, as the cache read takes `days_back` alone (up to 365 days, 100 rows per
- * Creator).
+ * Creator); with a filter applied and a Creator's read full, a line says older matches may be hidden (`mayHideOlder`).
  */
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -42,9 +42,12 @@ import { cn } from "@/lib/utils";
 
 import { RefreshButton } from "./RefreshButton";
 import { MassMessageRowItem } from "./MassMessageRow";
-import { filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, narrowedBy, RANGE_DAYS } from "./massFilterBar";
-import { BULK_ACTIONS, bulkCounts, bulkTargets, unsendByCreator, visibleMassRows, type BulkAction } from "./massUnsendRules";
-import { bulkRunReducer, bulkStatusLine, INITIAL_BULK_RUN } from "./bulkUnsendRun";
+import {
+  filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, mayHideOlder, narrowedBy, RANGE_DAYS,
+} from "./massFilterBar";
+import { BULK_ACTIONS, bulkCounts, bulkTargets, visibleMassRows, type BulkAction } from "./massUnsendRules";
+import { bulkStatusLine } from "./bulkUnsendRun";
+import { useBulkUnsend } from "./useBulkUnsend";
 
 const RANGE_OPTIONS = RANGE_DAYS.map((days) => ({ label: `Last ${days} days`, days }));
 
@@ -56,25 +59,14 @@ export default function MassMessagesTab() {
   const accounts = useActiveAccounts();
   const accountIds = useMemo(() => accounts.map((a) => a.id), [accounts]);
   const [filter, dispatch] = useReducer(massFilterReducer, initialMassFilter);
-  const { daysBack, draft } = filter;
-  const [hideUnsent, setHideUnsent] = useState(true);
-  // Multi-select model filter. Empty set = no filter (show all). Otherwise
-  // restrict to the accounts in the set. Bulk actions inherit this scope.
-  const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
-  // The bulk unsend run: its action, "N of M" progress and the note it left (bulkUnsendRun.ts).
-  const [bulk, bulkDispatch] = useReducer(bulkRunReducer, INITIAL_BULK_RUN);
+  // The model chips (`models`, empty = every Creator; bulk actions take this scope) and "Hide unsent" are the
+  // reducer's too: with the bar they decide the listed rows and the bulk targets.
+  const { daysBack, draft, hideUnsent, models: selectedModels } = filter;
+  // The bulk unsend run: its action, "N of M" progress and the note it left. Held by the query
+  // client, not this tab (useBulkUnsend.ts), so it and its close-tab warning outlive a tab switch.
+  const { run: bulk, clear: clearBulk, nothing: nothingToBulk, start: startBulk } = useBulkUnsend();
   const bulkRunning = bulk.running;
   const bulkLine = bulkStatusLine(bulk);
-  // A run is one delete at a time and lives in this tab: warn before the tab closes mid-run.
-  useEffect(() => {
-    if (!bulkRunning) return;
-    const warn = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [bulkRunning]);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -82,7 +74,7 @@ export default function MassMessagesTab() {
   }, []);
   const { ask, modal: confirmModal } = useIfConfirm();
 
-  const { rows: loaded, isLoading, isFetching, error, queries } = useMassMessages(accountIds, { daysBack });
+  const { rows: loaded, isLoading, isFetching, error, queries, limit } = useMassMessages(accountIds, { daysBack });
   const cancelM = useCancelMassMessage();
   const refreshM = useRefreshMassMessages();
   // Broadcasts OF is still delivering; each one's finish refreshes its Creator's rows.
@@ -116,11 +108,7 @@ export default function MassMessagesTab() {
   // Drop ids from the filter set when the account is no longer active so
   // we don't render an empty list filtered by a model that's gone.
   useEffect(() => {
-    setSelectedModels((prev) => {
-      if (prev.size === 0) return prev;
-      const live = prev.size > 0 ? new Set([...prev].filter((id) => accountIds.includes(id))) : prev;
-      return live.size === prev.size ? prev : live;
-    });
+    dispatch({ type: "liveModels", ids: accountIds });
   }, [accountIds]);
 
   const refreshing = isFetching || refreshM.isPending;
@@ -135,33 +123,23 @@ export default function MassMessagesTab() {
     [rows, selectedModels, hideUnsent],
   );
 
-  /** Run cancel mutations across a target subset of rows, Creator by
-   *  Creator, one at a time (`unsendByCreator`), with one combined
-   *  confirmation up front. */
+  /** Unsend a target subset of rows, Creator by Creator, one at a time
+   *  (`unsendByCreator`), with one combined confirmation up front; a run
+   *  already going (even one started before a remount) refuses a second. */
   async function bulkCancel(actionKey: BulkAction, label: string) {
-    bulkDispatch({ type: "clear" });
+    clearBulk();
     const targets = bulkTargets(rows, selectedModels, actionKey, Date.now());
     if (targets.length === 0) {
-      bulkDispatch({ type: "nothing" });
+      nothingToBulk();
       return;
     }
     const ok = await ask(
       label,
-      `Unsend ${targets.length} broadcast${targets.length === 1 ? "" : "s"}${narrowedBy(filter.applied)} from EVERY recipient? This can't be undone.`,
+      `Unsend ${targets.length} broadcast${targets.length === 1 ? "" : "s"}${narrowedBy(filter.applied, [...selectedModels].map(accountName))} from EVERY recipient? This can't be undone.`,
       "Unsend",
     );
     if (!ok) return;
-    bulkDispatch({ type: "start", action: actionKey, total: targets.length });
-    let failed = 0;
-    try {
-      failed = await unsendByCreator(
-        targets,
-        (r) => cancelM.mutateAsync({ id: r.id, accountId: r.__accountId }),
-        (done) => bulkDispatch({ type: "progress", done }),
-      );
-    } finally {
-      bulkDispatch({ type: "finish", failed });
-    }
+    await startBulk(actionKey, targets);
   }
 
   // Counters for the button labels — shows up-front whether each action
@@ -170,6 +148,12 @@ export default function MassMessagesTab() {
   const counts = useMemo(
     () => bulkCounts(rows, selectedModels, now),
     [rows, selectedModels, now],
+  );
+  // A search / Sending Date reads only the loaded rows: the newest `limit` per Creator. Say so when one came back full.
+  const olderHidden = mayHideOlder(
+    filter.applied,
+    accountIds.flatMap((id, i) => (selectedModels.size === 0 || selectedModels.has(id) ? [queries[i]?.data?.length ?? 0] : [])),
+    limit,
   );
 
   return (
@@ -217,7 +201,7 @@ export default function MassMessagesTab() {
           {/* An Inflowwww extra: the list's own filters, where Infloww's
            *  OF list has the filter bar above it. */}
           <ExtraTag />
-          <IfSwitch label="Hide unsent" checked={hideUnsent} onChange={setHideUnsent} />
+          <IfSwitch label="Hide unsent" checked={hideUnsent} onChange={(on) => dispatch({ type: "hideUnsent", on })} />
           <IfNativeSelect
             aria-label="Sent in"
             value={daysBack}
@@ -240,7 +224,7 @@ export default function MassMessagesTab() {
             <ExtraTag />
             <button
               type="button"
-              onClick={() => setSelectedModels(new Set())}
+              onClick={() => dispatch({ type: "allModels" })}
               className={cn(
                 "px-3 h-7 rounded-full text-[12px] border transition-colors",
                 selectedModels.size === 0
@@ -256,14 +240,7 @@ export default function MassMessagesTab() {
                 <button
                   key={a.id}
                   type="button"
-                  onClick={() =>
-                    setSelectedModels((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(a.id)) next.delete(a.id);
-                      else next.add(a.id);
-                      return next;
-                    })
-                  }
+                  onClick={() => dispatch({ type: "toggleModel", id: a.id })}
                   className={cn(
                     "px-3 h-7 rounded-full text-[12px] border transition-colors",
                     active
@@ -300,6 +277,11 @@ export default function MassMessagesTab() {
           ))}
         </div>
 
+        {olderHidden && (
+          <div className="text-[14px] text-fg-dim mb-3">
+            Showing the newest {limit} per Creator: older matches may be hidden.
+          </div>
+        )}
         {bulkLine && <div role="status" className="text-[14px] text-fg-dim mb-3">{bulkLine}</div>}
         {bulk.note && <div role="alert" className="text-[14px] text-err mb-3">{bulk.note}</div>}
         {error && (

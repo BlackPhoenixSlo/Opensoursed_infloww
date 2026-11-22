@@ -8,7 +8,8 @@
  * real event. The browser's picker icon is hidden and the theme's drawn (`.if-date`, globals.css; `bare` drops it, for a
  * box that leads with its own). The pop-over renders beside the input, fixed to the viewport, not in a portal: a
  * pop-over holding the input (a date-range popover) still sees clicks in it as inside. Touch screens keep the phone's
- * own picker.
+ * own picker. Keyboard: F4 / Alt+Down are the browser's (its own picker, keyboard-operable); the themed pop-over is
+ * pointer-only, its buttons untabbable, so it never opens on a key (W30 F4).
  */
 
 import {
@@ -18,7 +19,8 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { IF_FIELD } from "@/components/ui/ifSelect";
 import {
-  clampValue, dayAllowed, dayKey, joinValue, minuteOptions, monthGrid, setTimePart, shiftMonth, splitValue, timeKey, type DateMode,
+  clampValue, dayAllowed, dayKey, joinValue, minuteOptions, monthGrid, pad, setTimePart, shiftMonth, splitValue, timeKey,
+  type DateMode,
 } from "@/components/ui/ifDateValue";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +34,6 @@ function emit(el: HTMLInputElement, value: string) {
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const CELL = "h-7 rounded text-[13px] tabular-nums";
-const pad = (n: number) => String(n).padStart(2, "0");
 
 /** `IfInput`'s field box (32px, `padding:0 11px`) on the input itself: a date field standing alone. */
 export const IF_DATE_FIELD = cn(IF_FIELD, "h-8 px-[11px] outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50");
@@ -53,6 +54,7 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
   const [month, setMonth] = useState("");
   const [, rerender] = useState(0);
 
+  const min = rest.min as string | undefined, max = rest.max as string | undefined;
   const value = rest.value != null ? String(rest.value) : input.current?.value ?? "";
   const { day, time } = splitValue(type, value);
   const today = dayKey(new Date());
@@ -64,7 +66,7 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
     setOpen(true);
   };
   const pick = (v: string, close: boolean) => {
-    if (input.current) emit(input.current, clampValue(v, rest.min as string | undefined, rest.max as string | undefined));
+    if (input.current) emit(input.current, clampValue(v, min, max));
     rerender((n) => n + 1);
     if (close) setOpen(false);
   };
@@ -131,7 +133,7 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
       <div className="grid grid-cols-7 gap-y-1 p-2">
         {WEEKDAYS.map((w) => <span key={w} className="grid h-7 place-items-center text-[12px] text-muted">{w}</span>)}
         {month && monthGrid(month).map((d) => {
-          const ok = dayAllowed(d, rest.min as string | undefined, rest.max as string | undefined);
+          const ok = dayAllowed(d, min, max);
           return btn(d, String(Number(d.slice(8))), () => {
             if (d.slice(0, 7) !== month) setMonth(d.slice(0, 7));
             pick(joinValue(type, d, time), type === "date");
@@ -177,8 +179,7 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
         onClick={(e) => { onClick?.(e); openPanel(); }}
         onKeyDown={(e) => {
           onKeyDown?.(e);
-          if ((e.altKey && e.key === "ArrowDown") || e.key === "F4") { e.preventDefault(); openPanel(); }
-          else if (e.key === "Escape" && open) { e.preventDefault(); e.stopPropagation(); setOpen(false); }
+          if (e.key === "Escape" && open) { e.preventDefault(); e.stopPropagation(); setOpen(false); }
           else if (e.key === "Enter" && open) setOpen(false);
         }}
         onBlur={(e) => { onBlur?.(e); setOpen(false); }}
@@ -199,7 +200,7 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
           <div className="flex h-10 items-center justify-between gap-4 border-t border-border px-3">
             {btn("now", type === "date" ? "Today" : "Now", () => pick(nowValue, type === "date"),
               "text-accent hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-40",
-              { disabled: type !== "time" && !dayAllowed(today, rest.min as string | undefined, rest.max as string | undefined) })}
+              { disabled: type !== "time" && !dayAllowed(today, min, max) })}
             {type !== "date" && btn("ok", "OK", () => setOpen(false),
               "h-6 rounded bg-accent px-2.5 text-[12px] text-white hover:bg-accent-hover")}
           </div>

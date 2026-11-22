@@ -32,7 +32,7 @@ def _recorded():
     """(local sets, cache busts, published events) while the block runs; all put back."""
     local, busted, published = [], [], []
 
-    async def _local(account_id, *, fan_id, value):
+    async def _local(account_id, *, fan_id, value, at=None):
         local.append((account_id, fan_id, value))
 
     orig = (read_flip.set_local_unread, relay_cache.invalidate, events.publish)
@@ -59,11 +59,23 @@ def test_landed_read_clears_busts_publishes():
         assert [_flip(e) for e in pub] == [{"fan_id": FAN, "unread": 0}], pub
 
 
-def test_mark_all_and_set_local_false():
+def test_mark_all():
     with _recorded() as (local, busted, pub):
-        assert asyncio.run(read_flip.after_write(AID, None, 0, {"success": True}, set_local=False)) is True
-    assert local == [] and ("get_chat", AID, False) in busted, (local, busted)
+        assert asyncio.run(read_flip.after_write(AID, None, 0, {"success": True})) is True
+    assert local == [(AID, None, 0)] and ("get_chat", AID, False) in busted, (local, busted)
     assert [_flip(e) for e in pub] == [{"fan_id": "all", "unread": 0}], pub
+
+
+def test_partial_mark_all_clears_only_the_acked_fans_and_is_not_landed():
+    """W30-mu #2: a capped / partly failed mark-all (the Fansly shim's `partial`) never clears or announces "all"."""
+    with _recorded() as (local, _busted, pub):
+        assert asyncio.run(read_flip.after_write(
+            AID, None, 0, {"success": True, "partial": True, "acked_fan_ids": [11, 12]})) is False
+    assert local == [(AID, 11, 0), (AID, 12, 0)], local
+    assert [_flip(e) for e in pub] == [{"fan_id": 11, "unread": 0}, {"fan_id": 12, "unread": 0}], pub
+    with _recorded() as (local, busted, pub):
+        assert asyncio.run(read_flip.after_write(AID, None, 0, {"success": True, "partial": True})) is False
+    assert local == [] and busted == [] and pub == [], (local, busted, pub)
 
 
 def test_rejected_ack_does_nothing():
@@ -107,8 +119,8 @@ def test_wcfi_failed_or_rejected_read_publishes_nothing():
     for of in (_OF(fail=True), _OF({"success": False, "reason": "ack_rejected"})):
         with _recorded() as (local, busted, pub):
             asyncio.run(wcfi._turn_mark_read(_wcfi_turn(of)))    # never raises: the send already landed
-        # local unread is cleared before the write (as the route does); nothing else follows a miss
-        assert of.read == [FAN] and local == [(AID, FAN, 0)] and busted == [] and pub == [], (local, busted, pub)
+        # W30-mu #1: the local unread is only ever cleared after the write landed; nothing follows a miss
+        assert of.read == [FAN] and local == [] and busted == [] and pub == [], (local, busted, pub)
 
 
 if __name__ == "__main__":

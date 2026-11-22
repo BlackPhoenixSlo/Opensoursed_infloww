@@ -19,8 +19,8 @@ const find = (o: Overlay, r: UnconfirmedRow, rows = ROWS) => viewRows(rows, o).f
 
 describe("retryOutcome", () => {
   it.each([
-    [200, "drop"], [404, "drop"], [409, "sending"], [403, "error"], [500, "error"], [0, "error"],
-  ] as const)("HTTP %i → %s", (status, out) => {
+    [200, "drop"], [404, "drop"], [409, "error"], [403, "error"], [500, "error"], [0, "error"],
+  ] as const)("HTTP %i → %s (409 keeps the row: still sending, or the row changed since it was listed)", (status, out) => {
     expect(retryOutcome(status)).toBe(out);
   });
 });
@@ -30,9 +30,9 @@ describe("rowKey / buildRetryPayload", () => {
     expect(rowKey(A)).toBe("funnel:1:7");
     expect(rowKey(B)).toBe("followup:2:");
   });
-  it("sends mass_run_id only when set", () => {
-    expect(buildRetryPayload(A)).toEqual({ kind: "funnel", fan_id: "1", mass_run_id: 7 });
-    expect(buildRetryPayload(B)).toEqual({ kind: "followup", fan_id: "2" });
+  it("sends mass_run_id only when set, and always the listed since", () => {
+    expect(buildRetryPayload(A)).toEqual({ kind: "funnel", fan_id: "1", mass_run_id: 7, since: A.since });
+    expect(buildRetryPayload(B)).toEqual({ kind: "followup", fan_id: "2", since: B.since });
   });
 });
 
@@ -62,7 +62,6 @@ describe("viewRows", () => {
 describe("settleRows", () => {
   it.each([
     ["drop", [rowKey(B), rowKey(C)], undefined],
-    ["sending", [rowKey(A), rowKey(B), rowKey(C)], "IN_FLIGHT"],
     ["error", [rowKey(A), rowKey(B), rowKey(C)], "UNCONFIRMED"],
   ] as const)("%s → A as expected, others untouched", (out, keys, stateA) => {
     const got = settleRows(ROWS, rowKey(A), out)!;
@@ -79,22 +78,15 @@ describe("unconfirmedSendsReducer (the overlay)", () => {
   it.each([
     ["200 (retried / already_sent)", 200, undefined],
     ["404 gone", 404, "not found"],
-    ["409 in flight", 409, "in flight"],
   ])("retry %s → overlay cleared (the rows: settleRows)", (_n, status, message) => {
     let o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "retry" });
     o = reduce(o, { type: "done", op: "retry", key: rowKey(A), result: { status, message } });
     expect(o).toEqual({});
   });
 
-  it("409 → Sending, no Retry", () => {
-    let o = reduce(initialOverlay, { type: "start", key: rowKey(A), op: "retry" });
-    o = reduce(o, { type: "done", op: "retry", key: rowKey(A), result: { status: 409, message: "in flight" } });
-    const v = find(o, A, settleRows(ROWS, rowKey(A), "sending"));
-    expect(v).toMatchObject({ state: "IN_FLIGHT", pending: null, error: null });
-    expect(canAct(v!)).toBe(false);
-  });
-
   it.each([
+    [409, "this row changed since it was listed: refresh", "this row changed since it was listed: refresh"],
+    [409, "still sending", "still sending"],
     [500, "boom", "boom"],
     [403, undefined, "Retry failed (HTTP 403)"],
     [0, "Failed to fetch", "Failed to fetch"],
@@ -128,12 +120,6 @@ describe("unconfirmedSendsReducer (the overlay)", () => {
 describe("It went through (dismiss)", () => {
   const H = { ...A, hint: { message_id: "555", at: "2026-11-03T10:02:00Z", text: "hey you" } };
 
-  it.each([
-    [200, "drop"], [404, "drop"], [409, "error"], [403, "error"], [500, "error"], [0, "error"],
-  ] as const)("HTTP %i → %s (409 keeps the row: still sending or not savable)", (status, out) => {
-    expect(retryOutcome(status, "dismiss")).toBe(out);
-  });
-
   it("body: Retry's + the hint the user saw", () => {
     expect(buildDismissPayload(A)).toEqual({ kind: "funnel", fan_id: "1", mass_run_id: 7, since: A.since });
     expect(buildDismissPayload(H)).toEqual({ kind: "funnel", fan_id: "1", mass_run_id: 7, since: H.since, hint_message_id: "555" });
@@ -162,7 +148,7 @@ describe("It went through (dismiss)", () => {
     expect(reduce(o, { type: "start", key: rowKey(A), op: "retry" })).toBe(o);
     o = reduce(o, { type: "done", op: "dismiss", key: rowKey(A), result: { status: 409, message: "still sending" } });
     expect(find(o, A)).toMatchObject({ state: "UNCONFIRMED", pending: null, error: "still sending" });
-    expect(settleRows(ROWS, rowKey(A), retryOutcome(409, "dismiss"))).toBe(ROWS);
+    expect(settleRows(ROWS, rowKey(A), retryOutcome(409))).toBe(ROWS);
     const e = reduce(reduce(initialOverlay, { type: "start", key: rowKey(A), op: "dismiss" }),
       { type: "done", op: "dismiss", key: rowKey(A), result: { status: 500 } });
     expect(e[rowKey(A)].error).toBe("Couldn't mark it as sent (HTTP 500)");

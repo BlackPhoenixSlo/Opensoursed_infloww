@@ -41,7 +41,7 @@ def _fixture(rows):
     env.write_text(f"OTHER=1\nBIO_SERVER_IP={IP}\n")
     return d, sync.parse_args(["--db", str(db), "--out", str(d / "dyn" / "bio-custom-domains.yml"),
                                "--state", str(d / "state" / "state.json"), "--env-file", str(env),
-                               "--upstream", "http://127.0.0.1:8791"])
+                               "--upstream", "http://127.0.0.1:8790"])
 
 
 def _routers(args):
@@ -56,6 +56,25 @@ def case_hostname_rule_matches_the_bio_app():
     assert sync.HOSTNAME.pattern == decide.HOSTNAME.pattern
 
 
+def case_verified_statuses_match_the_bio_app():
+    """The routed statuses are the ones the bio app serves and the admin API keeps to one row per domain."""
+    assert sync.VERIFIED == decide.VERIFIED, (sync.VERIFIED, decide.VERIFIED)
+
+
+def case_upstream_is_the_readme_bio_port():
+    """The unit (and the script's default) route to the bio host port the README's override publishes (BIO_PORT)."""
+    import re
+    import shlex
+    readme = (SCRIPT.parent / "README.md").read_text()
+    port = re.search(r"^BIO_PORT=(\d+)", readme, re.M).group(1)
+    unit = (SCRIPT.parent / "bio-custom-domains.service").read_text()
+    argv = shlex.split(re.search(r"^ExecStart=(.*)$", unit, re.M).group(1))[2:]
+    want = f"http://127.0.0.1:{port}"
+    assert sync.parse_args(argv).upstream == want, (sync.parse_args(argv).upstream, want)
+    assert sync.parse_args([]).upstream == want
+    assert f"127.0.0.1:{port}" in readme.split("## Custom domains", 1)[1]
+
+
 def case_routes_only_verified_valid_domains():
     d, args = _fixture([("a.example", "live"), ("b.example", "pending_cert"), ("c.example", "pending"),
                         ("Bad Domain", "live"), ("x.example`) || Host(`evil.test", "live"), ("a.example", "live")])
@@ -68,7 +87,7 @@ def case_routes_only_verified_valid_domains():
         assert v["service"] == "bio-custom-domains"
     cfg = yaml.safe_load(args.out.read_text())
     assert cfg["http"]["services"]["bio-custom-domains"]["loadBalancer"]["servers"] == [
-        {"url": "http://127.0.0.1:8791"}]
+        {"url": "http://127.0.0.1:8790"}]
     assert not list(args.out.parent.glob(".*.tmp")), "no tmp file left behind"
     assert oct(args.out.stat().st_mode)[-3:] == "644"
 

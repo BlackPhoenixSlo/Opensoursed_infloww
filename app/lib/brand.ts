@@ -6,6 +6,12 @@
  *  public/icon.svg). The relay's twin is service/brand.py. */
 export const BRAND_NAME = process.env.NEXT_PUBLIC_BRAND_NAME || "Inflowwww";
 
+/** The desktop app's download page (a static file in public/, outside the router: link it with a plain <a>), the
+ *  platforms it ships for, and the download link's tooltip. */
+export const DESKTOP_URL = "/download";
+export const DESKTOP_PLATFORMS = "Mac, Windows and Linux";
+export const DESKTOP_TITLE = `Get the ${BRAND_NAME} desktop app for ${DESKTOP_PLATFORMS}`;
+
 /** A round logo image instead of the OIF square: a path prefix under public/ whose
  *  `-512.png` is the mark (Settings > About), `-32.png` the favicon and `-180.png` the Apple touch icon and the
  *  small inline mark (SiteLook's IfMark).

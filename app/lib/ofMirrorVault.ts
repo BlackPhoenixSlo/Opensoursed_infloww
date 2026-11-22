@@ -1087,7 +1087,7 @@ export function useOfVault(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   // "Go to date"'s first day, as OF's: the model's first published post, else its join day.
   const me = useQuery(ofMeQuery(accountId)).data as { firstPublishedPostDate?: string | null; joinDate?: string | null } | undefined;
   const minDate = me?.firstPublishedPostDate || me?.joinDate || null;
-  const newWrites = useOfmNewWrites(page === "vault/list"); // OFM_NEW_WRITES_ENABLED off: the header More stays Not yet
+  const newWrites = useOfmNewWrites(page === "vault/list", accountId); // OFM_NEW_WRITES_ENABLED off: the header More stays Not yet
 
   useEffect(() => {
     const frame = frameRef.current;

@@ -378,7 +378,8 @@ def case_one_wrong_password_is_one_token_whoever_has_the_name():
 
 
 def case_the_audit_log_keeps_no_2fa_code_or_ticket():
-    snap = employees._safe_snapshot(b'{"ticket": "2fa.user.x", "code": "123456", "username": "ann"}')
+    snap = employees._safe_snapshot(b'{"ticket": "2fa.user.x", "code": "123456", "username": "ann"}',
+                                    keys_only=False)
     assert "123456" not in snap and "2fa.user.x" not in snap and "ann" in snap, snap
 
 

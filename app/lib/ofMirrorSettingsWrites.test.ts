@@ -339,11 +339,19 @@ describe("drawn switches and email Update frequency", () => {
     expect(noteText()).toBe(SELECT_MODEL);
   });
 
+  const OF_LIST = [
+    { value: 1, label: "Every Hour" },
+    { value: 3, label: "3 Hours" },
+    { value: 6, label: "6 Hours" },
+    { value: 12, label: "12 Hours" },
+    { value: 24, label: "24 Hours" },
+  ];
   it.each([
-    [24, [24]],
-    [12, [12, 24]],
-    [48, [24, 48]],
-  ])("frequency choices for stored %s h: %j (OF's list needs capture)", (stored, want) => {
+    [24, OF_LIST],
+    [1, OF_LIST],
+    [48, [...OF_LIST, { value: 48, label: "Every 48 Hours" }]],
+    [2, [OF_LIST[0], { value: 2, label: "Every 2 Hours" }, ...OF_LIST.slice(1)]],
+  ])("frequency choices for stored %s h: OF's captured list (settings--email-frequency-menu-page), a stored value off it kept", (stored, want) => {
     expect(frequencyChoices(stored)).toEqual(want);
   });
 
@@ -365,11 +373,11 @@ describe("drawn switches and email Update frequency", () => {
     expect(freq().hasAttribute("data-oi-wired")).toBe(true);
   });
 
-  it("a pick sends the digest with the hours and shows it; the menu lists the stored value and 24", async () => {
+  it("a pick sends the digest with the hours and shows it; the menu lists OF's choices", async () => {
     const { sent } = drawn("notifications/email", email(true, 12));
     freq().click();
-    expect(menuRows().map((r) => r.textContent)).toEqual(["Every 12 Hours", "Every 24 Hours"]);
-    menuRows()[1].click();
+    expect(menuRows().map((r) => r.textContent)).toEqual(["Every Hour", "3 Hours", "6 Hours", "12 Hours", "24 Hours"]);
+    menuRows()[4].click();
     await flush();
     expect(sent).toEqual([frequencyWrite(24)]);
     expect(shown()).toBe("Every 24 Hours");

@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { type VaultMedia } from "@/lib/relay";
 
 import {
-  BUSY_OFF, CANCELLED, DOWNLOAD_OFF, FINISHED_MAX, MAX_DIRECT_STRIKES, RESTRICTED_OFF, SHARE_BATCH_BYTES,
+  BUSY_OFF, CANCELLED, DOWNLOAD_OFF, FINISHED_MAX, JOBS_MAX, MAX_DIRECT_STRIKES, QUEUE_FULL_OFF, RESTRICTED_OFF, SHARE_BATCH_BYTES,
   SHARE_COUNT_OFF, SHARE_HELD_BYTES, SHARE_MODE_OFF, UNFILED, UNSAVED_OFF, addToBatches,
-  batchLabel, busyOff, canFetchMore, canQueue, canRetry, dlAccess, downloadGate, fileName, folderOf, countText,
+  batchLabel, busyOff, canFetchMore, canQueue, canRetry, creatorDir, dlAccess, downloadGate, downloadLabel, fileName, folderOf, countText,
   heldBytes, holdsFiles, initialDownloadState, isBusy, mimeFor, outcomeParts, panelTitle, progressText, queues,
   readyBatch, retryable, retryJobOf, safeName, sourceFor, summarize, toItems, unsaved,
   vaultDownloadReducer, type Action, type DlAccess, type DlBatch, type DlJobArgs, type DlMode, type DlSink,
@@ -19,6 +19,8 @@ const media = (id: number, type = "photo", url: string | null = `https://cdn2.on
   ({ id, type, files: url ? { full: { url } } : { full: { url: null } }, listStates }) as unknown as VaultMedia;
 
 const start: Action = { type: "start", mode: "selection", label: "3 selected", accountId: "acc-amy", creator: "amy" };
+/** The picker a folder `start` (its model's) opens first. */
+const pick: Action = { type: "pick", accountId: "acc-amy" };
 const direct: Action = { type: "direct", allowed: true, attempt: 1 };
 const listed = (ids: number[], attempt = 1): Action => ({ type: "listed", items: toItems(ids.map((i) => media(i)), null), attempt });
 const running = run([start, direct, listed([1, 2, 3])]);
@@ -80,20 +82,20 @@ describe("phases", () => {
     expect(run(actions).directAllowed).toBe(want);
   });
   it("isBusy: listing or running (an open picker holds the slot through holdsFiles, not isBusy)", () => {
-    expect([initialDownloadState, run([{ type: "pick" }]), run([start]), running, run([{ type: "cancel" }], running)]
+    expect([initialDownloadState, run([pick]), run([start]), running, run([{ type: "cancel" }], running)]
       .map(isBusy)).toEqual([false, false, true, true, false]);
   });
 });
 
 describe("picker, notes and run errors (#11, #17, #21: no useStates beside the reducer)", () => {
   it.each<[string, Action[], DlState["phase"], boolean, string, string, DlState?]>([
-    ["pick opens the picker", [{ type: "pick" }], "idle", true, "", ""],
-    ["the picker closed: back to idle", [{ type: "pick" }, { type: "pickClosed" }], "idle", false, "", ""],
-    ["a folder picked: the run lists", [{ type: "pick" }, start], "listing", false, "", ""],
-    ["the picker threw: idle with why, as a note", [{ type: "pick" }, { type: "pickClosed", error: "SecurityError" }],
+    ["pick opens the picker", [pick], "idle", true, "", ""],
+    ["the picker closed: back to idle", [pick, { type: "pickClosed" }], "idle", false, "", ""],
+    ["a folder picked: the run lists", [pick, start], "listing", false, "", ""],
+    ["the picker threw: idle with why, as a note", [pick, { type: "pickClosed", error: "SecurityError" }],
       "idle", false, "", "Folder picker: SecurityError"],
     ["pickClosed outside picking is a no-op", [start, { type: "pickClosed" }], "listing", false, "", ""],
-    ["a new pick clears an old note", [{ type: "pick" }, { type: "pickClosed", error: "x" }, { type: "pick" }],
+    ["a new pick clears an old note", [pick, { type: "pickClosed", error: "x" }, pick],
       "idle", true, "", ""],
     ["runError outside a run changes nothing", [{ type: "runError", error: "x", attempt: 0 }], "idle", false, "", ""],
     ["runError of an older attempt changes nothing", [start, { type: "runError", error: "x", attempt: 0 }],
@@ -111,7 +113,7 @@ describe("picker, notes and run errors (#11, #17, #21: no useStates beside the r
     const failed = run([{ type: "itemStart", attempt: 1, id: 1 }, { type: "itemFailed", attempt: 1, id: 1, error: "x" }],
       run([start, direct, listed([1])]));
     expect(canRetry(failed)).toBe(true);
-    const open = vaultDownloadReducer(failed, { type: "pick" });
+    const open = vaultDownloadReducer(failed, pick);
     expect([open.picking, canRetry(open), vaultDownloadReducer(open, { type: "retryFailed" }) === open]).toEqual([true, false, true]);
     expect(vaultDownloadReducer(open, { type: "close" })).toBe(open);
     const back = vaultDownloadReducer(open, { type: "pickClosed" });
@@ -127,7 +129,7 @@ describe("picker, notes and run errors (#11, #17, #21: no useStates beside the r
   // #445: where a folder run saves rides its `start`; the next run / a close drops it, a picker over it keeps it.
   it.each<[string, Action[], string[] | null]>([
     ["its start sets it", [], ["amy"]],
-    ["a picker over the run keeps it", [{ type: "pick" }], ["amy"]],
+    ["a picker over the run keeps it", [pick], ["amy"]],
     ["a share run has none", [{ type: "close" }, { ...start, sink: "share" }], null],
   ])("savedAt: %s", (_n, after, dirs) => {
     const at = { root: {} as FileSystemDirectoryHandle, dirs: ["amy"] };
@@ -160,8 +162,31 @@ describe("picker, notes and run errors (#11, #17, #21: no useStates beside the r
     const s = vaultDownloadReducer(threw, { type: "retryFailed" });
     expect([s.runError, s.note, s.phase]).toEqual(["", "", "running"]);
   });
+  // #443 F10: the slot a start / permission ask holds is state, not a ref beside it.
+  // `holds`: holdsFiles (picker / busy / unsaved); the claim itself is its own column (R6).
+  it.each<[string, Action[], number, boolean, boolean]>([
+    ["a claim holds the slot", [{ type: "claim", id: 1 }], 1, false, false],
+    ["a second claim is refused", [{ type: "claim", id: 1 }, { type: "claim", id: 2 }], 1, false, false],
+    ["another's release changes nothing", [{ type: "claim", id: 1 }, { type: "release", id: 2 }], 1, false, false],
+    ["its own release ends it", [{ type: "claim", id: 1 }, { type: "release", id: 1 }], 0, false, false],
+    ["its own picker opens over it", [{ type: "claim", id: 1 }, pick], 1, true, true],
+    ["an accepted start ends it", [{ type: "claim", id: 1 }, pick, start], 0, false, true],
+    ["a closed picker leaves it to its release", [{ type: "claim", id: 1 }, pick, { type: "pickClosed" }],
+      1, false, false],
+    ["no claim over a busy run", [start, { type: "claim", id: 1 }], 0, false, true],
+    ["no claim over an open picker", [pick, { type: "claim", id: 1 }], 0, true, true],
+  ])("claim: %s", (_n, actions, claim, picking, holds) => {
+    const s = run(actions);
+    expect([s.claim, s.picking, holdsFiles(s)]).toEqual([claim, picking, holds]);
+  });
+  it("claim: a held slot turns Retry off until released", () => {
+    const failed = run([{ type: "itemStart", attempt: 1, id: 1 }, { type: "itemFailed", attempt: 1, id: 1, error: "x" }],
+      run([start, direct, listed([1])]));
+    const held = vaultDownloadReducer(failed, { type: "claim", id: 3 });
+    expect([canRetry(held), canRetry(vaultDownloadReducer(held, { type: "release", id: 3 }))]).toEqual([false, true]);
+  });
   it("pick is refused while a run holds files", () => {
-    expect(vaultDownloadReducer(running, { type: "pick" })).toBe(running);
+    expect(vaultDownloadReducer(running, pick)).toBe(running);
   });
 });
 
@@ -279,6 +304,28 @@ describe("paths", () => {
   ])("safeName(%j) = %j", (s, want) => {
     expect(safeName(s)).toBe(want);
   });
+  // F18: two models whose names make one folder each get their own; every other model keeps its plain folder.
+  const amy = { id: "1", nickname: "Amy" };
+  it.each<[string, { id: string; nickname?: string | null; name?: string | null } | null, { id: string; nickname?: string | null }[], string]>([
+    ["unique name: the plain folder", amy, [amy, { id: "2", nickname: "Bea" }], "Amy"],
+    ["no registry yet: the plain folder", amy, [], "Amy"],
+    ["another model, same name: id suffix", amy, [amy, { id: "2", nickname: "Amy" }], "Amy (1)"],
+    ["same once made safe, other case: id suffix", { id: "1", nickname: "Amy/B" }, [{ id: "2", nickname: "amy_b" }], "Amy_B (1)"],
+    ["only itself in the registry: plain", amy, [amy], "Amy"],
+    ["no nickname: name, then id", { id: "7", name: "Cat" }, [], "Cat"],
+    ["no account row: the id", null, [], "7"],
+  ])("creatorDir: %s", (_n, account, all, want) => {
+    expect(creatorDir(account?.id ?? "7", account, all)).toBe(want);
+  });
+  // X4: a long shared name keeps its ` (<id>)` within the 80-char limit, so the two folders never merge.
+  it("creatorDir: two models with one 90-char name get distinct folders, each ending in its id", () => {
+    const long = "L".repeat(90);
+    const all = [{ id: "123456", nickname: long }, { id: "123457", nickname: long }];
+    const dirs = all.map((a) => creatorDir(a.id, a, all));
+    expect(dirs[0]).not.toBe(dirs[1]);
+    expect(dirs.map((d) => [d.length <= 80, d.endsWith(` (${d === dirs[0] ? "123456" : "123457"})`)]))
+      .toEqual([[true, true], [true, true]]);
+  });
   it.each<[string, unknown[], string | null, string]>([
     ["forced folder wins", [{ type: "custom", name: "A", hasMedia: true }], "Chosen/x", "Chosen_x"],
     ["first custom folder", [{ type: "messages", name: "Messages" }, { type: "custom", name: "Beach" }], null, "Beach"],
@@ -332,7 +379,7 @@ describe("share sink (phones)", () => {
   it.each<[string, DlState, DlSink | null, DlMode, number, DlAccess, string, boolean]>([
     ["no sink", initialDownloadState, null, "selection", 1, "all", DOWNLOAD_OFF, false],
     ["desktop, running: queues", running, "folder", "selection", 1, "all", "", false],
-    ["picker open", run([{ type: "pick" }]), "folder", "vault", 0, "all", BUSY_OFF, false],
+    ["picker open", run([pick]), "folder", "vault", 0, "all", BUSY_OFF, false],
     ["desktop, listing: queues", run([start]), "folder", "selection", 1, "all", "", false],
     ["phone, running: names the run", run([shareStart, listed([1, 2])]), "share", "selection", 1, "all",
       `${BUSY_OFF}: amy · 0/2`, false],
@@ -352,8 +399,27 @@ describe("share sink (phones)", () => {
     ["restricted chatter, folder", initialDownloadState, "folder", "folder", 0, "folders", "", false],
     ["restricted chatter, selection", initialDownloadState, "folder", "selection", 3, "folders", "", false],
     ["a finished run", run([{ type: "cancel" }], running), "folder", "vault", 0, "all", "", false],
+    // #443 F10: a Retry's permission ask (or a start before its picker) holds the slot: the button says so instead
+    // of doing nothing; with jobs waiting the press still queues.
+    ["a held slot (claim), nothing queued", run([{ type: "claim", id: 1 }], run([{ type: "cancel" }], running)),
+      "folder", "selection", 1, "all", BUSY_OFF, false],
+    ["a held slot (claim), jobs waiting: queues",
+      run([{ type: "enqueue", job: { accountId: "acc-bea", creator: "bea", mode: "vault", label: "whole vault",
+        source: "mirror" } }, { type: "cancel" }, { type: "claim", id: 1 }], running),
+      "folder", "selection", 1, "all", "", false],
   ])("downloadGate: %s", (_n, st, sink, mode, count, access, reason, desktopOnly) => {
-    expect(downloadGate(st, sink, mode, count, access)).toEqual({ reason, desktopOnly });
+    if (_n.includes("claim")) expect(st.claim).toBe(1);   // the row really holds the slot
+    // Rows named "…: queues" are the ones whose press joins the queue (the label says "Add … to queue").
+    expect(downloadGate(st, sink, mode, count, access)).toEqual({ reason, desktopOnly, queues: _n.endsWith(": queues") });
+  });
+  // #F13: one label rule for the selection bar, the rail's folder item and the Extras drawer.
+  it.each<[string, DlState, DlSink, DlMode, string, string]>([
+    ["desktop, idle", initialDownloadState, "folder", "folder", "folder", "Download folder"],
+    ["desktop, a run busy", running, "folder", "selection", "selected", "Add selected to queue"],
+    ["phone, a folder", initialDownloadState, "share", "folder", "full folder", "Download full folder (desktop only)"],
+    ["phone, a selection", initialDownloadState, "share", "selection", "selected", "Download selected"],
+  ])("downloadLabel: %s", (_n, st, sink, mode, noun, label) => {
+    expect(downloadLabel(downloadGate(st, sink, mode, 1, "all"), noun)).toBe(label);
   });
   it.each<[string, Parameters<typeof dlAccess>[0], DlAccess]>([
     ["owner (query disabled)", { isLoading: false, isError: false }, "all"],
@@ -367,7 +433,7 @@ describe("share sink (phones)", () => {
   // #6: unsaved phone files are never dropped by a new run or a plain close.
   it.each<[string, DlState, boolean]>([
     ["idle", initialDownloadState, false],
-    ["picker open", run([{ type: "pick" }]), true],
+    ["picker open", run([pick]), true],
     ["running", running, true],
     ["phone, fetched files unsaved", unsavedPhone, true],
     ["phone, all saved", run([{ type: "batchSaved", index: 0, attempt: 1 }], unsavedPhone), false],
@@ -603,6 +669,34 @@ describe("queue (folder sink)", () => {
   ])("dedupe: %s -> %s queued", (_n, j, n) => {
     expect(run([enq(j)], withQueue).jobs.length).toBe(n);
   });
+  // F19: selections never dedupe; the queue stops at JOBS_MAX with a visible note, and every Download says why.
+  it.each<[string, number, number, string]>([
+    ["one under the cap: queued", JOBS_MAX - 1, JOBS_MAX, ""],
+    ["at the cap: refused with the note", JOBS_MAX, JOBS_MAX, QUEUE_FULL_OFF],
+  ])("queue cap: %s", (_n, waiting, after, note) => {
+    const sel = (i: number): DlJobArgs => ({ ...job("acc-bea", "bea", "selection"), media: [media(i)] });
+    const full = run(Array.from({ length: waiting }, (_, i) => enq(sel(i))), running);
+    expect(full.jobs.length).toBe(waiting);
+    const next = run([enq(sel(999))], full);
+    expect(next.jobs.length).toBe(after);
+    expect(next.note).toBe(note);
+    expect(downloadGate(next, "folder", "selection", 1, "all").reason).toBe(after >= JOBS_MAX ? QUEUE_FULL_OFF : "");
+  });
+  // X6: the cap holds at every append: a run failing with the queue full adds no retry job and keeps its own Retry.
+  it("queue cap: a run that fails with JOBS_MAX waiting queues no retry job; its manual Retry stays", () => {
+    const sel = (i: number): DlJobArgs => ({ ...job("acc-bea", "bea", "selection"), media: [media(i)] });
+    const full = run(Array.from({ length: JOBS_MAX }, (_, i) => enq(sel(i))), running);
+    const failed = run([1, 2, 3].flatMap((id): Action[] => [{ type: "itemStart", attempt: 1, id },
+      { type: "itemFailed", attempt: 1, id, error: "x" }]), full);
+    expect(failed.phase).toBe("done");
+    expect(failed.jobs.length).toBe(JOBS_MAX);
+    expect(failed.jobs.some((j) => j.retryOf != null)).toBe(false);
+    expect(canRetry(failed)).toBe(true);
+    const later = run([{ type: "retryLater" }], failed);
+    expect(later.jobs.length).toBe(JOBS_MAX);
+    expect(later.note).toBe(QUEUE_FULL_OFF);
+    expect(canRetry(later)).toBe(true);
+  });
   it("the running job itself is not queued again", () => {
     const folderRun = run([{ ...start, mode: "folder", folder: { id: 5, name: "f5" } }, listed([1])]);
     expect(run([enq({ ...job("acc-amy", "amy", "folder", 5) })], folderRun).jobs).toEqual([]);
@@ -664,9 +758,9 @@ describe("queue (folder sink)", () => {
     expect(run([{ type: "resumed" }], closed).paused).toBe(false);
     expect(run([{ type: "clearQueue" }], closed)).toMatchObject({ jobs: [], paused: false });
   });
-  it("keepAccounts: a removed model's run is cancelled and its queued jobs dropped; others stay", () => {
+  it("keepAccounts: a removed model's run is dropped and its queued jobs too; others stay", () => {
     const s = run([{ type: "keepAccounts", ids: ["acc-cat"] }], withQueue);
-    expect(s.phase).toBe("cancelled");
+    expect(s).toMatchObject({ phase: "idle", items: [], accountId: "" });
     expect(s.jobs.map((j) => j.creator)).toEqual(["cat"]);
     const all = ["acc-amy", "acc-bea", "acc-cat"];
     expect(vaultDownloadReducer(withQueue, { type: "keepAccounts", ids: all })).toBe(withQueue);
@@ -734,6 +828,31 @@ describe("retry jobs (a run a queued job replaces keeps its Retry)", () => {
     expect(r.finished.map((f) => [f.creator, f.stalled, f.failed])).toEqual([["amy", 1, 0], ["bea", 0, bOut === "failed" ? 1 : 0]]);
     expect(r.jobs).toHaveLength(retriesAfterB.length - 1);
   });
+  // F1: a retry job's own failures never queue another retry, else two jobs failing for good (OF down) re-queue each
+  // other forever and the provider launches each one.
+  it.each<[string, number]>([["both fail every time", 0], ["both fail, then OF is back", 2]])(
+    "two jobs failing: the queue drains (%s)", (_n, okAfter) => {
+      const head = (s: DlState): Action => {
+        const j = s.jobs[0];
+        return { type: "start", mode: j.mode, label: j.label, accountId: j.accountId, creator: j.creator,
+                 folder: j.folder ?? null, qid: j.qid, ...(j.retryOf != null ? { retryOf: j.retryOf } : {}) };
+      };
+      let s = end({ 1: "failed", 2: "failed", 3: "failed" }, run([enq], running));
+      let starts = 0;
+      while (s.jobs.length && starts < 20) {
+        const j = s.jobs[0];
+        const ids = j.items ? j.items.map((i) => i.id) : [7, 8];
+        s = run([head(s), { type: "listed", attempt: s.attempt + 1,
+                            items: j.items ?? toItems(ids.map((i) => media(i)), null) }], s);
+        starts += 1;
+        const out = starts > okAfter && okAfter > 0 ? "done" : "failed";
+        s = end(Object.fromEntries(ids.map((id) => [id, out])) as Record<number, "done" | "failed">, s);
+      }
+      expect(s.jobs).toEqual([]);
+      expect(starts).toBe(3);   // B, A's retry, B's retry: a retry never queues another
+      expect(s.phase).toBe("done");
+      if (!okAfter) expect(canRetry(s)).toBe(true);   // the last retry's failures keep the card's manual Retry
+    });
   it("the share sink never queues a retry job", () => {
     const phone = run([{ ...start, sink: "share" }, listed([1])]);
     expect(retryJobOf(end({ 1: "failed" }, phone))).toBeNull();
@@ -750,11 +869,35 @@ describe("retry jobs (a run a queued job replaces keeps its Retry)", () => {
     ["a finished run of a removed model: the card goes (no Retry left)", run([{ type: "itemStart", attempt: 1, id: 1 },
       { type: "itemFailed", attempt: 1, id: 1, error: "x" }, { type: "cancel" }], running), ["acc-bea"], true],
     ["a finished run of a kept model stays", run([{ type: "cancel" }], running), ["acc-amy"], false],
+    // F3: access removed mid-run: the phone's fetched files (its Save would share them), links and Retry go too
+    ["a busy phone run of a removed model: its fetched files go", run([{ ...start, sink: "share" }, listed([1, 2]),
+      { type: "itemStart", attempt: 1, id: 1 }, { type: "itemDone", attempt: 1, id: 1, source: "relay", bytes: 5 }]),
+     ["acc-bea"], true],
+    ["a busy folder run of a removed model: the card goes", run([{ type: "itemStart", attempt: 1, id: 1 },
+      { type: "itemFailed", attempt: 1, id: 1, error: "x" }, { type: "links", ok: true, attempt: 1 }], running),
+     ["acc-bea"], true],
   ])("keepAccounts: %s", (_n, from, ids, gone) => {
     const s = vaultDownloadReducer(from, { type: "keepAccounts", ids });
     if (gone) {
-      expect(s).toMatchObject({ phase: "idle", items: [], seq: from.seq, attempt: from.attempt });
-      expect(canRetry(s)).toBe(false);
+      expect(s).toMatchObject({ phase: "idle", items: [], batches: [], links: "none", accountId: "", seq: from.seq,
+                                attempt: from.attempt });
+      expect([canRetry(s), unsaved(s), holdsFiles(s)]).toEqual([false, 0, false]);
     } else expect(s).toBe(from);
+  });
+  // X3: access to the picker's model removed while the picker is open: its start, once the picker resolves, is refused.
+  it.each<[string, string[], DlState["phase"]]>([
+    ["removed while picking: refused, picker ended", ["acc-bea"], "idle"],
+    ["kept while picking: starts", ["acc-amy", "acc-bea"], "listing"],
+  ])("keepAccounts over an open picker: %s", (_n, ids, phase) => {
+    const s = run([{ type: "pick", accountId: "acc-amy" }, { type: "keepAccounts", ids }, start]);
+    expect(s).toMatchObject({ phase, picking: false });
+    expect(s.attempt).toBe(phase === "idle" ? 0 : 1);
+  });
+  it("keepAccounts: a removed model's finished lines go, a kept one's stay", () => {
+    const amyDone = run([{ type: "cancel" }], running);
+    const bea = run([{ ...start, accountId: "acc-bea", creator: "bea" }], amyDone);
+    expect(bea.finished.map((f) => f.creator)).toEqual(["amy"]);
+    expect(run([{ type: "keepAccounts", ids: ["acc-bea"] }], bea).finished).toEqual([]);
+    expect(run([{ type: "keepAccounts", ids: ["acc-amy"] }], bea).finished.map((f) => f.creator)).toEqual(["amy"]);
   });
 });

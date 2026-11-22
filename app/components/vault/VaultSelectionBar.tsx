@@ -26,7 +26,7 @@ export default function VaultSelectionBar({
   onClear,
   onDownload,
   downloadOff = "",
-  downloadQueues = false,
+  downloadLabel: dlLabel = "Download selected",
 }: {
   count: number;
   /** Of `count`, the ticks the Photo / Video filter hides (`hiddenByFilter`): every action still takes them. */
@@ -43,10 +43,9 @@ export default function VaultSelectionBar({
   onDownload?: () => void;
   /** Why Download is off (no sink here, a download is running, over the phone's cap); shown next to it; "" when on. */
   downloadOff?: string;
-  /** A download runs: the press joins the queue ("Add selected to queue"). */
-  downloadQueues?: boolean;
+  /** The button's name (`downloadLabel`: "Add selected to queue" while a press queues). */
+  downloadLabel?: string;
 }) {
-  const dlLabel = downloadQueues ? "Add selected to queue" : "Download selected";
   return (
     <div className="absolute bottom-4 left-3 right-3 md:left-5 md:right-6 z-10 min-h-[38px] px-3 md:px-6 py-1 rounded-lg border border-accent/40 bg-panel/95 backdrop-blur-sm flex flex-wrap items-center gap-x-6 gap-y-1">
       {hidden > 0 ? (

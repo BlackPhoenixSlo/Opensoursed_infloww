@@ -224,6 +224,7 @@ function PostThumb({ media = [] }: { media?: S4SMedia[] }) {
     <span className="relative h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-bg-elev-1">
       {/* eslint-disable-next-line @next/next/no-img-element -- a Relay-served still, not a Next asset */}
       <img src={s4sMediaUrl(m.id)} alt={`${media.length > 1 ? `1 of ${media.length}, ` : ""}S4S ${m.media_type}`}
+        loading="lazy" decoding="async"   // W30 F25: each still is a live read on its Creator's session
         onError={() => setBroken(true)} className="h-full w-full object-cover" />
       {m.media_type === "video" && (
         <span aria-hidden className="absolute inset-0 grid place-items-center">

@@ -20,7 +20,7 @@ import { DeniedPagePanel } from "@/components/shell/DeniedPage";
 import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import { useInDesktopApp } from "@/hooks/useInDesktopApp";
 import { SETTINGS_TABS } from "@/lib/nav";
-import { BRAND_NAME } from "@/lib/brand";
+import { DESKTOP_TITLE, DESKTOP_URL } from "@/lib/brand";
 
 export default function SettingsShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -43,8 +43,8 @@ export default function SettingsShell({ children }: { children: React.ReactNode 
               router. Hidden below sm and inside the desktop app. */}
           {!inApp && (
             <a
-              href="/download"
-              title={`Get the ${BRAND_NAME} desktop app for Mac, Windows and Linux`}
+              href={DESKTOP_URL}
+              title={DESKTOP_TITLE}
               className="hidden sm:flex items-center gap-1.5 h-8 px-3 rounded border border-[var(--if-line)] text-[length:var(--if-fs)] text-[var(--if-fg-2)] hover:text-[var(--if-fg)] whitespace-nowrap"
             >
               <span aria-hidden="true">&#8595;</span>

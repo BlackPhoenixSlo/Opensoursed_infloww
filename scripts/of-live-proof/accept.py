@@ -40,7 +40,8 @@ COMMITTED_SWEEP = ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-20.json"
 # The pages re-swept on the 2026-11-21 tree (the dated file stays frozen; ticket 10's phase1-v2 precedent): the pages
 # whose Live passes (D1) un-greyed a control, Phase 1 statements/stats/earnings and the 11 home/state-* pages included,
 # each page's Not-yet set otherwise unchanged.
-COMMITTED_OVERLAYS = (ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-21-live.json",)
+COMMITTED_OVERLAYS = (ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-21-live.json",
+                      ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-21-own-bubbles.json")   # ticket 33: messages/chat at SWEEP_QUERY
 SWEEP_SECTIONS = {3: ("settings", "profile")}   # the Phase spec's Acceptance `dead.py --sweep-out` sections
 RETRYABLE = re.compile(r"Page\.goto: Timeout|no Mirror frame")
 LOCK_HELD = "refused: lock held"

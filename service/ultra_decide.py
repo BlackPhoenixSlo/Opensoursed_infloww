@@ -18,12 +18,12 @@ folder (ts.FOLDER_ARG) may be "$<earlier of_folder_create step>.id" on its own a
   substitute      a step's args with its recorded references filled from earlier results (KeyError: missing)
   started         a step's state just before its call (a send's filled refs as `resolved`, for may_send)
   owner_check     the row a step names whose Creator the executor reads before the call (PAGE_PICK's page)
-  digest          sha256 over the canonical post-chain plan: what the owner's OK must echo
+  digest          sha256 over the plan id + the canonical post-chain plan: what the owner's OK must echo
   plan_path       the app page of a plan (/ultra/plans/<id>): MCP open_url and the end notification's link
   outcome         a step's call result → done | failed | uncertain (a send that may have gone out, a write with
                   no answer)
   error_text      a failed call's error detail → one plain sentence ("OnlyFans answered 500: …"), capped
-  step_end        a step's call result → its stored state {id, state, open_url, error?, result?, note?}
+  step_end        a step's call result → its stored state {id, state, open_url, error?, result?, note?, ended_at?}
   may_send        whether a send call is a `started` step of a `running` plan, with that step's tool and args
   close           a run's states once it stopped: started → uncertain, pending → skipped (end, crash, restart)
   (what the owner reads — the card, the end line: ultra_card)
@@ -144,11 +144,16 @@ def _judge_path(tool: td.Tool, loc: tuple, path: str, judge: Mapping[str, Any]) 
     return path == "ids"
 
 
-def _defaults(tool: td.Tool, args: Mapping[str, Any]) -> dict[str, Any]:
-    """A send's args with every omitted field's default written in: the stored plan, its sha, the card and the
-    request all carry the same explicit values."""
-    return {**{k: f.get_default(call_default_factory=True) for k, f in tool.args.model_fields.items()
-               if not f.is_required()}, **args}
+# A send's referenced arg (only ever a whole top-level value) → a valid stand-in while its other args are read.
+_STAND_IN: dict[str, Any] = {uj.SEND_ARG: [1], **{f: 1 for f in ts.FOLDER_ARG.values()}}
+
+
+def _send_args(tool: td.Tool, args: Mapping[str, Any], ref_locs: list[tuple]) -> dict[str, Any]:
+    """A valid send's args as its model reads them ("false" → False, "10" → 10, defaults written in), each
+    reference kept as written: the stored plan, its sha, the card and the request all carry the same values."""
+    keys = {loc[0] for loc in ref_locs}
+    read = tool.args.model_validate({**args, **{k: _STAND_IN[k] for k in keys}}).model_dump(by_alias=True)
+    return {**read, **{k: args[k] for k in keys}}
 
 
 def _check_step(raw: Any, seen: dict[str, dict[str, Any]],
@@ -222,7 +227,8 @@ def _check_step(raw: Any, seen: dict[str, dict[str, Any]],
     aid = args.get("account_id")
     if isinstance(aid, str) and aid not in owned:
         errors.append(_err(sid, "account_id", "not one of your Creators"))
-    step = {"id": sid, "tool": tool.name, "args": _defaults(tool, args) if tool.effect == "send" else dict(args)}
+    step = {"id": sid, "tool": tool.name,
+            "args": _send_args(tool, args, ref_locs) if tool.effect == "send" and not errors else dict(args)}
     return ({**step, "refs": refs} if refs else step), errors
 
 
@@ -330,8 +336,10 @@ def plan_path(plan_id: str) -> str:
     return f"/ultra/plans/{plan_id}"
 
 
-def digest(plan_json: Mapping[str, Any]) -> str:
-    canon = json.dumps(plan_json, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def digest(plan_json: Mapping[str, Any], plan_id: str) -> str:
+    """Bound to the plan id: two identical plans never share an OK."""
+    canon = json.dumps({"plan_id": plan_id, "plan": plan_json}, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False)
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
@@ -396,13 +404,16 @@ def error_text(detail: Any) -> str:
 
 
 def step_end(step_id: str, effect: str, result: Mapping[str, Any] | None,
-             resolved: Mapping[str, Any] | None = None) -> dict[str, Any]:
+             resolved: Mapping[str, Any] | None = None, ended_at: str | None = None) -> dict[str, Any]:
     """A step's call result (None = no answer) → its stored state: {id, state, open_url, error?, result?, note?,
-    resolved?}. `result` = {id}: the id a done step made (a send's OnlyFans mass message / post id), so it can be
-    found again; only a short scalar, never the body. `note`: a done mass that went to fewer fans than approved
-    (toolbox_sends.kept_note). `resolved`: the started state's (started), kept."""
+    resolved?, ended_at?}. `result` = {id}: the id a done step made (a send's OnlyFans mass message / post id), so
+    it can be found again; only a short scalar, never the body. `note`: a done mass that went to fewer fans than
+    approved (toolbox_sends.kept_note). `resolved`: the started state's (started), kept. `ended_at`: when its call
+    answered (ISO UTC); a report file's link dies report_files.TTL_S after it, not after the plan ends."""
     state = outcome(effect, result)
     out: dict[str, Any] = {"id": step_id, "state": state, "open_url": (result or {}).get("open_url")}
+    if ended_at:
+        out["ended_at"] = ended_at
     if resolved:
         out["resolved"] = dict(resolved)
     if state != "done":

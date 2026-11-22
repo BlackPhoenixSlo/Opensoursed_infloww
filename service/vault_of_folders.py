@@ -37,6 +37,7 @@ from auth import assert_account_owned
 from chatters import allowed_folder_ids_for_chatter
 from db.engine import get_session
 from db.models import VaultFolder, VaultFolderItem, VaultItem
+from of_client import OFAPIError
 from vault_of_folders_decide import chunks, hide_selection, next_folder_ids, parse_folder_ids, parse_threshold, too_many
 
 # Same logger name as before the split, so log routing/filters are unchanged.
@@ -79,12 +80,22 @@ async def list_duplicates(
     """
     assert_account_owned(account_id)
     allowed = await allowed_folder_ids_for_chatter(account_id)
+    # Read before the scan: a pass that ends mid-scan wrote thumbs this scan may have missed,
+    # so the reply still says running and the modal polls once more.
+    was_running = vault_dupes.backfill_running(account_id)
     res = await vault_dupes.find_duplicates(account_id, threshold, allowed=allowed)
-    # Items with no cached thumb were never hashed, so they could not be in any
-    # set. Fetch them in the background; the modal polls while `running`.
-    missing = await vault_dupes.missing_thumb_ids(account_id, allowed)
-    vault_dupes.start_thumb_backfill(account_id, missing)
     backfill = vault_dupes.backfill_status(account_id)
+    if was_running:
+        # The pass in flight owns the missing list: don't re-walk the mirror on every poll.
+        backfill = {**(backfill or {"total": 0, "done": 0, "failed": 0}), "running": True}
+        missing_n = max(0, backfill["total"] - backfill["done"])
+    else:
+        # Items with no cached thumb were never hashed, so they could not be in any
+        # set. Fetch them in the background; the modal polls while `running`.
+        missing = await vault_dupes.missing_thumb_ids(account_id, allowed)
+        vault_dupes.start_thumb_backfill(account_id, missing, allowed)
+        backfill = vault_dupes.backfill_status(account_id)
+        missing_n = len(missing)
 
     def _slim(r: dict, **extra: Any) -> dict[str, Any]:
         return {
@@ -108,7 +119,7 @@ async def list_duplicates(
         for c in res["clusters"][:max(1, int(limit))]
     ]
     return {**{k: v for k, v in res.items() if k != "clusters"},
-            "account_id": account_id, "missing_thumbs": len(missing),
+            "account_id": account_id, "missing_thumbs": missing_n,
             "backfill": backfill,
             "returned": len(clusters), "clusters": clusters}
 
@@ -139,6 +150,17 @@ async def get_folder_plan(
     await assert_owner_scope(account_id)
     picked = _topics_or_422(topics)
     return await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo, topics=picked, split=split)
+
+
+def _flag(payload: dict, key: str, default: bool) -> bool:
+    """A JSON boolean option: absent / null → `default`; anything but true / false → 400 `bad_<key>`
+    (`bool("false")` is True)."""
+    raw = payload.get(key)
+    if raw is None:
+        return default
+    if not isinstance(raw, bool):
+        raise HTTPException(status_code=400, detail={"error": f"bad_{key}"})
+    return raw
 
 
 def _topics_or_422(raw: Any) -> list[str]:
@@ -244,22 +266,41 @@ async def _push_folder_to_of(
 
     created = False
     if not of_list_id:
-        res = await asyncio.to_thread(client.create_vault_list, name[:120])
-        of_list_id = (res or {}).get("id")
-        if not of_list_id:
-            raise RuntimeError(f"OF returned no list id: {str(res)[:120]}")
+        of_list_id = await asyncio.shield(_create_and_bind(client, folder_id, name))
         created = True
-        async with get_session() as s:
-            await s.execute(
-                update(VaultFolder)
-                .where(VaultFolder.id == folder_id)
-                .values(of_list_id=int(of_list_id))
-            )
-            await s.commit()
 
     if media_ids:
-        await asyncio.to_thread(client.add_media_to_vault_list, int(of_list_id), media_ids)
+        try:
+            await asyncio.to_thread(client.add_media_to_vault_list, int(of_list_id), media_ids)
+        except OFAPIError as e:
+            # A kept binding (reused or revived folder) whose list was deleted
+            # on OF: rebind to a fresh list, once. A list we just made 404ing
+            # is not that, so it raises.
+            if created or getattr(e.response, "status_code", None) != 404:
+                raise
+            of_list_id = await asyncio.shield(_create_and_bind(client, folder_id, name))
+            created = True
+            await asyncio.to_thread(client.add_media_to_vault_list, int(of_list_id), media_ids)
     return {"of_list_id": int(of_list_id), "created": created}
+
+
+async def _create_and_bind(client, folder_id: int, name: str) -> int:
+    """Create the OF list and bind its id as ONE unit. Callers `asyncio.shield`
+    it: a client disconnect cancelling the request between the create and the
+    commit would leave a real OF list nothing points at, and the next run would
+    mint a second one with the same name."""
+    res = await asyncio.to_thread(client.create_vault_list, name[:120])
+    of_list_id = (res or {}).get("id")
+    if not of_list_id:
+        raise RuntimeError(f"OF returned no list id: {str(res)[:120]}")
+    async with get_session() as s:
+        await s.execute(
+            update(VaultFolder)
+            .where(VaultFolder.id == folder_id)
+            .values(of_list_id=int(of_list_id))
+        )
+        await s.commit()
+    return int(of_list_id)
 
 
 async def _mirror_ai_folders_to_of(
@@ -271,7 +312,9 @@ async def _mirror_ai_folders_to_of(
     which is why it is opt-in per request rather than implied by "apply".
 
     Binds `VaultFolder.of_list_id` on success so a re-run ADDS to the same OF
-    list instead of creating a second one with the same name. A folder that
+    list instead of creating a second one with the same name. ADDS ONLY: OF has
+    no remove-one-media call, so what a rebuild dropped stays on the list; each
+    folder reports that count as `of_stale` (local mirror), never "exact". A folder that
     already carries an `of_list_id` is reused. Failures are reported per folder
     and never roll back the internal folder — a folder that exists locally but
     not on OF is recoverable; losing the grouping is not.
@@ -312,6 +355,16 @@ async def _mirror_ai_folders_to_of(
                         made["folder_id"], made["name"], exc_info=True)
             out.append({**made, "of_error": str(e)[:200]})
 
+    # OF has no remove-one-media call, so a reused list keeps what this build no longer puts there (a photo
+    # reclassed from free to paid stays in the free list). Not removed; counted from the local mirror and
+    # reported per folder as `of_stale` so the result never reads as an exact copy.
+    stale = await _stale_on_of(account_id, {
+        int(r["of_list_id"]): {int(i["media_id"]) for i in (by_name.get(r["name"]) or {}).get("items") or []}
+        for r in out if r.get("of_list_id")})
+    for r in out:
+        if r.get("of_list_id"):
+            r["of_stale"] = stale.get(int(r["of_list_id"]), 0)
+
     # ── Phase 2: the read-back, off the request ──────────────────────
     # Detached for the same reason Collect and the flags sweep are: it is one
     # OF page per 100 items across every list, and holding the operator's
@@ -321,6 +374,24 @@ async def _mirror_ai_folders_to_of(
     list_ids = [int(r["of_list_id"]) for r in out if r.get("of_list_id")]
     if list_ids:
         asyncio.create_task(_readback_membership(client, account_id, list_ids))
+    return out
+
+
+async def _stale_on_of(account_id: str, planned: dict[int, set[int]]) -> dict[int, int]:
+    """Per OF list id: how many live mirror items the local `of_folder_ids` puts in that list although `planned`
+    (the list's media ids in this build) no longer does. One read of the account's filed items."""
+    if not planned:
+        return {}
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(VaultItem.media_id, VaultItem.of_folder_ids).where(
+                VaultItem.account_id == account_id, VaultItem.removed_at.is_(None),
+                func.coalesce(VaultItem.of_folder_ids, "").notin_(("", "[]"))))).all()
+    out = dict.fromkeys(planned, 0)
+    for mid, raw in rows:
+        for lid in parse_folder_ids(raw):
+            if lid in out and int(mid) not in planned[lid]:
+                out[lid] += 1
     return out
 
 
@@ -493,6 +564,11 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
     the lanes and retire every `-solo` folder in the same call. `topics` likewise (a list of slugs; unknown
     → 422): previewed topic folders not posted back would be retired. `split` likewise (absent → on): the other
     naming's topic folders are retired.
+
+    `expected_retire` (list of folder ids, the preview's `changes.retired`): only those stale folders are retired;
+    a stale folder the preview did not show stays live and comes back under `skipped_retire`. Absent → every
+    stale folder retires (the old behaviour). Not a list of ints → 400 `bad_expected_retire`.
+    `solo` / `split` / `mirror_to_of`: JSON booleans; anything else → 400 `bad_<field>`.
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
@@ -506,23 +582,30 @@ async def apply_folder_plan(payload: dict = Body(...)) -> dict[str, Any]:
         keep = parse_threshold(payload.get("keep"), vault_scripts.DEFAULT_KEEP_SCRIPTS, 20)
     except ValueError:
         raise HTTPException(status_code=400, detail={"error": "bad_keep"}) from None
+    raw_expected = payload.get("expected_retire")
+    if raw_expected is not None and not (isinstance(raw_expected, list)
+                                         and all(type(x) is int for x in raw_expected)):
+        raise HTTPException(status_code=400, detail={"error": "bad_expected_retire"})
     return {"account_id": account_id, **await build_ai_folders(
-        account_id, keep=keep, solo=bool(payload.get("solo")), topics=_topics_or_422(payload.get("topics")),
-        split=bool(payload.get("split", True)), mirror_to_of=bool(payload.get("mirror_to_of")))}
+        account_id, keep=keep, solo=_flag(payload, "solo", False), topics=_topics_or_422(payload.get("topics")),
+        split=_flag(payload, "split", True), mirror_to_of=_flag(payload, "mirror_to_of", False),
+        expected_retire=None if raw_expected is None else set(raw_expected))}
 
 
 async def build_ai_folders(account_id: str, *, keep: int, solo: bool, topics: list[str], split: bool,
-                           mirror_to_of: bool) -> dict[str, Any]:
+                           mirror_to_of: bool, expected_retire: set[int] | None = None) -> dict[str, Any]:
     """The apply's body (plan → internal AI- folders → optional OF mirror → cache drop),
-    shared with prepare content (full_ai_prepare), which never mirrors."""
+    shared with prepare content (full_ai_prepare), which never mirrors (and passes no `expected_retire`)."""
     plan = await vault_scripts.plan_ai_folders(account_id, keep=keep, solo=solo, topics=topics, split=split)
-    result = await vault_scripts.apply_ai_folders(account_id, plan)
+    result = await vault_scripts.apply_ai_folders(account_id, plan, expected_retire=expected_retire)
 
     if mirror_to_of:
         result["created"] = await _mirror_ai_folders_to_of(
             account_id, result["created"], plan)
         result["of_mirrored"] = sum(1 for c in result["created"] if c.get("of_list_id"))
         result["of_failed"] = sum(1 for c in result["created"] if c.get("of_error"))
+        # Adds only: items left on a reused OF list that this build no longer puts there (`_stale_on_of`).
+        result["of_stale"] = sum(c.get("of_stale") or 0 for c in result["created"])
 
     try:
         await vault_cache.invalidate(account_id)

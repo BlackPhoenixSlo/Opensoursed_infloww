@@ -8,9 +8,11 @@
   • `typing` frames are transcoded (Fan touch) but never written to event_inbox.
   • A provider id dedups instead of failing the insert (the partial index's
     WHERE must be in the ON CONFLICT target, or SQLite refuses it).
-  • A full queue displaces the oldest frame that is not a Fan's DM, or drops the
-    incoming one when all are DMs (one `queue_full` either way); a stop transcodes
-    the queued DMs first; `enqueue` never awaits or writes.
+  • Two lanes (Fans' DMs, the rest) under one cap, drained in arrival order across
+    both. A full queue displaces the oldest frame that is not a Fan's DM, in O(1),
+    or drops the incoming one when all are DMs (one `queue_full` either way); a
+    stop transcodes the queued DMs first, and what its deadline leaves (queued and
+    in the worker's hand) is counted lost; `enqueue` never awaits or writes.
 
 Run:  ./venv/bin/python service/tests/test_persist_batch.py
 """
@@ -56,10 +58,10 @@ async def _run_worker(items, *, insert=None):
     orig_t = event_transcoder.transcode
     events_persist.insert_events, event_transcoder.transcode = _insert, _transcode
     events_persist._persist_batch = _persist
-    events_persist._persist_queue = asyncio.Queue()
+    events_persist._persist_queue = events_persist._Lanes(10_000)
     try:
         for ev in items:
-            events_persist._persist_queue.put_nowait(events.ed.PersistItem(
+            events_persist._persist_queue.put(events.ed.PersistItem(
                 ev["__account_id"], events.ed.first_key(ev),
                 {k: v for k, v in ev.items() if not k.startswith("__")}, ev))
         task = asyncio.create_task(events_persist._persist_worker_loop())
@@ -168,7 +170,7 @@ async def _overflow(queued, incoming):
     """Fill a maxsize-3 queue with `queued` through the real `enqueue`, then enqueue each of
     `incoming`; return (the queued frames in order, drops added, telemetry recorder)."""
     tel, real_tel = _Telemetry(), events_persist.write_telemetry
-    events_persist._persist_queue = asyncio.Queue(maxsize=3)
+    events_persist._persist_queue = events_persist._Lanes(3)
     try:
         for ev in queued:
             _enqueue(ev)
@@ -177,8 +179,8 @@ async def _overflow(queued, incoming):
         for ev in incoming:
             _enqueue(ev)
         out = []
-        while not events_persist._persist_queue.empty():
-            out.append(events_persist._persist_queue.get_nowait().event)
+        while (it := events_persist._persist_queue.take()) is not None:
+            out.append(it.event)
         return out, events_persist._persist_drops - drops0, tel
     finally:
         events_persist.write_telemetry = real_tel
@@ -221,7 +223,7 @@ async def case_stop_transcodes_dms_first():
     tel, real_tel = _Telemetry(), events_persist.write_telemetry
     orig_t = event_transcoder.transcode
     event_transcoder.transcode, events_persist.write_telemetry = _transcode, tel
-    events_persist._persist_queue = asyncio.Queue()
+    events_persist._persist_queue = events_persist._Lanes(100)
     try:
         _enqueue(first)
         events_persist._persist_worker_task = asyncio.create_task(events_persist._persist_worker_loop())
@@ -256,6 +258,122 @@ async def case_enqueue_never_awaits():
     got, drops, _ = await _overflow([dm(1), other("typing"), dm(2)], [dm(3), other("toasts")])
     assert got == [dm(1), dm(2), dm(3)] and drops == 2, (got, drops)
     assert of_writer._queued == queued0 and not of_writer._pending, "enqueue must not queue a write"
+
+
+async def case_mixed_lanes_drain_in_arrival_order():
+    """W30-mu #3: DMs and other frames sit in two lanes; the worker still transcodes them in arrival order."""
+    items = [other("typing", 1), dm(1), other("toasts", 2), dm(2), dm(3), other("typing", 3)]
+    transcoded: list[dict] = []
+
+    async def _transcode(ev):
+        transcoded.append(ev)
+
+    orig_t = event_transcoder.transcode
+    event_transcoder.transcode = _transcode
+    events_persist._persist_queue = events_persist._Lanes(100)
+    try:
+        for ev in items:
+            _enqueue(ev)
+        assert len(events_persist._persist_queue.dms) == 3 and len(events_persist._persist_queue.rest) == 3
+        task = asyncio.create_task(events_persist._persist_worker_loop())
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if len(transcoded) >= len(items):
+                break
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        assert transcoded == items, transcoded
+    finally:
+        event_transcoder.transcode = orig_t
+        events_persist._persist_queue = None
+
+
+async def case_overflow_keeps_arrival_order_across_lanes():
+    queued = [other("typing"), dm(1), other("toasts"), dm(2)]
+    tel, real_tel = _Telemetry(), events_persist.write_telemetry
+    events_persist._persist_queue = events_persist._Lanes(4)
+    try:
+        for ev in queued:
+            _enqueue(ev)
+        events_persist.write_telemetry = tel
+        _enqueue(dm(3))
+        out = []
+        while (it := events_persist._persist_queue.take()) is not None:
+            out.append(it.event)
+        assert out == [dm(1), other("toasts"), dm(2), dm(3)], out
+        assert tel.drops == {"queue_full": 1} and tel.dequeues == 1, (tel.drops, tel.dequeues)
+    finally:
+        events_persist.write_telemetry = real_tel
+        events_persist._persist_queue = None
+
+
+async def case_overflow_all_dms_counts_the_dropped_dm():
+    dm0 = events_persist._persist_dm_drops
+    await _overflow([dm(1), dm(2), dm(3)], [dm(4), other("typing")])
+    assert events_persist._persist_dm_drops - dm0 == 1, "only the dropped DM counts as a DM drop"
+
+
+async def case_overflow_is_constant_time():
+    """A full 2000-frame queue under a burst: each overflow is O(1) (the old take-all/refill
+    reshuffled the whole queue on the loop per frame: ~2000 get/put per incoming frame)."""
+    import time as _time
+    tel, real_tel = _Telemetry(), events_persist.write_telemetry
+    events_persist._persist_queue = events_persist._Lanes(events_persist._PERSIST_QUEUE_MAX)
+    events_persist.write_telemetry = tel
+    try:
+        for i in range(events_persist._PERSIST_QUEUE_MAX):
+            _enqueue(dm(i) if i % 2 else other("typing", i))
+        t0 = _time.perf_counter()
+        for i in range(5000):
+            _enqueue(other("toasts", i))
+        took = _time.perf_counter() - t0
+        assert events_persist._persist_queue.qsize() == events_persist._PERSIST_QUEUE_MAX
+        assert tel.drops == {"queue_full": 5000}, tel.drops
+        assert took < 1.0, f"5000 overflows took {took:.2f}s"
+    finally:
+        events_persist.write_telemetry = real_tel
+        events_persist._persist_queue = None
+
+
+async def case_stop_deadline_counts_queued_and_inflight_loss():
+    """A stop whose drain runs out of time: the worker's batch in hand and every queued frame (DMs
+    included) are counted lost, never silently dropped."""
+    first, backlog = other("online"), [dm(1), other("typing"), dm(2)]
+    transcoded: list[dict] = []
+    never = asyncio.Event()
+
+    async def _transcode(ev):
+        transcoded.append(ev)
+        if ev is first:
+            await never.wait()
+
+    tel, real_tel = _Telemetry(), events_persist.write_telemetry
+    orig_t, orig_s = event_transcoder.transcode, events_persist._STOP_DRAIN_S
+    event_transcoder.transcode, events_persist.write_telemetry = _transcode, tel
+    events_persist._STOP_DRAIN_S = 0.1
+    events_persist._persist_queue = events_persist._Lanes(100)
+    try:
+        _enqueue(first)
+        events_persist._persist_worker_task = asyncio.create_task(events_persist._persist_worker_loop())
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if transcoded:
+                break
+        for ev in backlog:
+            _enqueue(ev)
+        await asyncio.wait_for(events_persist.stop_persist_worker(), 10)
+        assert transcoded == [first], transcoded
+        assert tel.drops.get("shutdown_queued") == 3 and tel.drops.get("shutdown_inflight") == 1, tel.drops
+    finally:
+        event_transcoder.transcode, events_persist.write_telemetry = orig_t, real_tel
+        events_persist._STOP_DRAIN_S = orig_s
+        events_persist._persist_queue = None
+        if events_persist._persist_worker_task is not None:
+            events_persist._persist_worker_task.cancel()
+            events_persist._persist_worker_task = None
 
 
 async def case_provider_id_dedups_instead_of_failing():

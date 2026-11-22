@@ -211,6 +211,83 @@ async def case_transient_error_marks_nothing():
     assert aid not in await account_health.dead_session_map() and evicted == []
 
 
+class _Pooled:
+    """A pooled OF client (real client_pool, real eviction) whose `/users/me` answers a dead session; `swap_to`:
+    a re-bootstrap pools that fresh client while the read is in flight."""
+
+    def __init__(self, aid: str, swap_to=None) -> None:
+        self.aid, self.swap_to, self.closed = aid, swap_to, False
+
+    def me(self):
+        import client_pool
+        if self.swap_to is not None:
+            client_pool._POOL[self.aid] = self.swap_to
+        raise OFAPIError('400 {"error":{"code":301,"message":"Wrong user."}}')
+
+    def close_signed_sessions(self):
+        self.closed = True
+
+
+async def _pooled_me_fails(aid: str, swap: bool):
+    import client_pool
+    _reset()
+    fresh = _Pooled(aid) if swap else None
+    stale = _Pooled(aid, swap_to=fresh)
+    client_pool._POOL[aid] = stale
+    try:
+        try:
+            await server.shared_refresher_reads(aid)
+        except HTTPException:
+            pass
+        return stale, fresh, client_pool._POOL.get(aid), await account_health.dead_session_map()
+    finally:
+        client_pool._POOL.pop(aid, None)
+
+
+async def case_dead_session_on_a_replaced_client_keeps_the_fresh_one_and_flags_nothing():
+    """W30-mu #5: the read started on a client a re-bootstrap replaced mid-read: the fresh client stays pooled
+    (`evict(only=)`) and the Creator is not marked dead on the old session's answer."""
+    aid = "acct-r30"
+    stale, fresh, pooled, dead = await _pooled_me_fails(aid, swap=True)
+    assert pooled is fresh and not fresh.closed, ("the fresh client kept", pooled)
+    assert aid not in dead, dead
+
+
+async def case_dead_session_on_the_current_client_evicts_it_and_flags():
+    aid = "acct-r31"
+    stale, _fresh, pooled, dead = await _pooled_me_fails(aid, swap=False)
+    assert pooled is None and stale.closed, ("the dead client evicted", pooled)
+    assert aid in dead and dead[aid].reason == "wrong_user", dead
+
+
+async def case_dead_session_on_a_cold_pool_flags_only_the_client_the_read_built():
+    """W30-mu #47: nothing pooled when the reads started (`peek` None), so the failure once evicted whichever client
+    was pooled by then: a re-bootstrap's fresh one. Now the client that issued the read (the one `_load_client`
+    built for it) is the one evicted, only while pooled; a replacement stays and nothing is flagged."""
+    import client_pool
+    aid = "acct-r32"
+    _reset()
+    fresh = _Pooled(aid)
+    stale = _Pooled(aid, swap_to=fresh)
+    orig_get = client_pool.get
+
+    def build(a):
+        client_pool._POOL[a] = stale
+        return stale
+    client_pool.get = build
+    try:
+        try:
+            await server.shared_refresher_reads(aid)
+        except HTTPException:
+            pass
+        pooled, dead = client_pool._POOL.get(aid), await account_health.dead_session_map()
+    finally:
+        client_pool.get = orig_get
+        client_pool._POOL.pop(aid, None)
+    assert pooled is fresh and not fresh.closed, ("the fresh client kept", pooled)
+    assert aid not in dead, dead
+
+
 ME = {"id": 1, "notificationsCount": 2}
 
 

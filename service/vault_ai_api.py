@@ -12,7 +12,7 @@ into the `vault_items` mirror, so afterward the grid + search are served LOCALLY
   GET  /admin/vault-ai/items?account_id=&...           → read from the mirror (local search)
 
 The sweep walks OF in the describe sweep's priority order (rail folders whole, newest,
-oldest; `vault_collect_plan`), pausing every COLLECT_PAUSE_EVERY new items for the
+oldest; `vault_collect_plan`), pausing about every COLLECT_PAUSE_EVERY collected items for the
 operator, downloading each page's stills as it lands (`_run_collect`); it preserves every AI / operator
 field on conflict — only the mirror bookkeeping (raw_json, urls, last_seen_run_id)
 is refreshed. Describe (Qwen3-VL) and folder-membership passes layer on top later.
@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import case, func, literal, select, update
+from sqlalchemy import and_, case, func, literal, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (same one automations use)
@@ -52,7 +52,7 @@ import vault_stills
 import vault_harvest_terms  # which words the OF-search harvest asks
 import vault_tags  # the grid's tag chips: tag_match / facets SQL
 import vault_folder_prices  # the agency's per-folder prices (Full AI sell)
-import vault_settings  # the per-Creator switches: folder price is final, standard folders
+import vault_settings  # the per-Creator switches: folder price is final, standard folders, solo Sequences
 import vault_internal_folders  # the Inflowwww folders editor (list + edits of our own folders)
 from vault_category_icons import router as category_icons_router
 # NOTE: the OF payload-shape readers (`still_url`, `giphy_dm_id`) are NOT imported
@@ -249,7 +249,16 @@ class _Sweep:
         await _warm_store(self.client, aid, "posters",
                           [(vault_stills.poster_path(aid, mid, idx), u)
                            for mid, frames in drm_posters for idx, u in enumerate(frames)])
-        self.warmed |= fresh
+        # Only media whose every still is now on disk: a fetch that came back empty (an
+        # expired signature's 403) is retried when the walk meets the media again.
+        paths: dict[int, list[Path]] = {}
+        for mid, _ in thumbs:
+            paths.setdefault(mid, []).append(vault_stills.thumb_path(aid, mid))
+        for mid, _ in stills:
+            paths.setdefault(mid, []).append(vault_stills.image_path(aid, mid))
+        for mid, frames in drm_posters:
+            paths.setdefault(mid, []).extend(vault_stills.poster_path(aid, mid, i) for i in range(len(frames)))
+        self.warmed |= {mid for mid in fresh if all(p.is_file() for p in paths.get(mid, ()))}
         _warm_progress.pop(aid, None)   # back to the row's phase between batches
 
     async def page(self, items: list, folder_id: int | None = None) -> None:
@@ -266,7 +275,8 @@ class _Sweep:
                                     upserted=n, phase="media")
 
 
-COLLECT_PAUSE_EVERY = 2000      # new items between the button's "continue collecting?" asks
+COLLECT_PAUSE_EVERY = 2000      # items collected (seen) between the button's "continue collecting?" asks, checked
+                                # after each page (so about every 2000: up to a page over)
 COLLECT_PAUSE_TIMEOUT_S = 1800  # an ask nobody answers stops the walk (manual_running is not held forever)
 
 
@@ -299,7 +309,7 @@ async def _ask_to_continue(account_id: str, run_id: int, sweep: _Sweep) -> str:
 
 
 def _stopped_error(n: int, answer: str) -> str:
-    """A paused walk that did not go on: done, never a full walk (it carries an error)."""
+    """A paused walk that did not go on: ends phase STOPPED (never a walk, `vault_runs._walked`) with this error."""
     if answer == "timeout":
         return (f"stopped at {n} items: no answer to continue collecting "
                 f"in {round(COLLECT_PAUSE_TIMEOUT_S / 60)} min")
@@ -312,14 +322,17 @@ async def _run_collect(account_id: str, run_id: int, *, pause_every: int | None 
     (`vault_collect.folder_list`, also refilling the picker's cache the start just
     invalidated), then rounds of {the next 10 rail folders, each paged whole → the
     next 5 newest pages → the next oldest page} until All is walked (the two cursors
-    met or one hit the end; only that is a full walk, `vault_runs.full_walk_done`)
+    met or one hit the end with no shift under them; only that is a full walk,
+    `vault_runs.full_walk_done`)
     or capped at _MAX_PAGES All pages, and every folder is paged; then the video
     storyboards, newest first.
 
-    Every `pause_every` new items (default COLLECT_PAUSE_EVERY; 0 = never: prepare
-    content's harvest) it pauses and asks the operator; stop (or no answer within
-    COLLECT_PAUSE_TIMEOUT_S) skips the rest of the walk, still warms the storyboards
-    and ends done with `_stopped_error`."""
+    About every `pause_every` collected items (seen, checked after each page; default
+    COLLECT_PAUSE_EVERY; 0 = never: prepare content's harvest) it pauses and asks the
+    operator; stop (or no answer within COLLECT_PAUSE_TIMEOUT_S) skips the rest of the
+    walk, still warms the storyboards and ends status done, phase STOPPED (not a walk:
+    the collector's weekly re-walk and prepare content's harvest still run) with
+    `_stopped_error`."""
     every = COLLECT_PAUSE_EVERY if pause_every is None else pause_every
     try:
         # The button wins over the background collector: it stops its walk of
@@ -394,11 +407,21 @@ async def _run_collect(account_id: str, run_id: int, *, pause_every: int | None 
             await asyncio.sleep(0.02)   # light pacing between mp4 downloads
         _warm_progress.pop(account_id, None)
 
-        # Stopped by the operator, or by the page cap with All not walked: done,
-        # but not a whole-vault walk (`vault_runs.full_walk_done`).
-        error = stopped or (vault_runs.capped_error(_MAX_PAGES) if plan.capped else None)
+        # Stopped by the operator (phase STOPPED) or ended with OF's list shifted under it (items may
+        # be unseen, `vault_collect_plan` gap: phase UNVERIFIED): no walk at all (`vault_runs._walked`).
+        # By the page cap with All not walked: a walk, not a full one (`vault_runs.full_walk_done` false).
+        # A gap wins over the cap: a capped walk that lost items is still no walk.
+        if stopped:
+            phase, error = vault_runs.STOPPED, stopped
+        elif plan.gap:
+            phase, error = vault_runs.UNVERIFIED, vault_runs.GAP_ERROR
+        elif plan.capped:
+            phase, error = "done", vault_runs.capped_error(_MAX_PAGES)
+        else:
+            phase, error = "done", None
         total = len(sweep.seen)
-        await vault_runs.update_run(run_id, status="done", phase="done", pages_done=sweep.pages,
+        await vault_runs.update_run(run_id, status="done", phase=phase,
+                                    pages_done=sweep.pages,
                                     total_seen=total, upserted=total, error=error,
                                     finished_at=datetime.utcnow())
         log.info("vault_collect done account=%s run=%s items=%s", account_id, run_id, total)
@@ -441,7 +464,7 @@ async def continue_collect(account_id: str = Query(...)) -> dict[str, Any]:
 
 @router.post("/admin/vault-ai/collect/stop")
 async def stop_collect(account_id: str = Query(...)) -> dict[str, Any]:
-    """A paused Collect stops walking OF, warms what it has and ends done (not a full walk).
+    """A paused Collect stops walking OF, warms what it has and ends done, phase stopped (not a walk).
     409 when none is paused."""
     assert_account_owned(account_id)
     return _answer_pause(account_id, "stop")
@@ -710,6 +733,7 @@ def _overlay(item: VaultItem, manual_order: int | None = None) -> dict[str, Any]
     if ai is not None:
         base["_ai"]["fields"] = ai
     base["_ai"]["jev_picks"] = vault_jev_manual.stored(item.operator_overrides_json)
+    base["_ai"]["jev_ai"] = vault_jev_manual.ai_reading((ai or {}).get(vault_jev_rules.JEV_KEY))
     # Stable, signature-free cached-thumb URL (self-heals on miss). Frontend
     # prefers this over the expiring OF url so tiles never break.
     #
@@ -749,13 +773,20 @@ def _listing_where(type: str | None, query: str | None, tags: list[str]) -> list
 
 
 def _not_nude():
-    """SQL: Jev's current reading (`vault_jev_rules.current_sql`) says nothing is bare (lane5 "free") and no toy.
-    No reading, an old one or `review` is not "not nude" (absence ≠ safe; docs/plans/ultra-mode/issues/09)."""
+    """SQL half of "not nude": Jev's current reading (`vault_jev_rules.current_sql`) says nothing is bare (lane5
+    "free", every body answer "n"), no toy, no region flag reads bare (an operator lock included;
+    `vault_ai_brief.any_bare`) and no settled marker (`vault_ai_brief.SETTLED_KEY`). No reading, an old one or
+    `review` is not "not nude" (absence ≠ safe; docs/plans/ultra-mode/issues/09). The full rule also needs
+    `not vault_ai_brief.free_vetoed` (an unsettled dispute is Python-only) and a stored clip's worst body over its
+    frames (`vault_jev_rules.body_free`): `local_items` post-filters its page."""
     ai = func.coalesce(VaultItem.ai_fields_json, "")
     ai_ok = case((func.json_valid(ai), ai), else_=literal("{}"))
     j = lambda path: func.json_extract(ai_ok, f"$._jev.{path}")  # noqa: E731
+    body_n = [j(k) == "n" for k in vault_jev_rules.BODY]
+    not_bare = [func.coalesce(func.json_extract(ai_ok, f"$.{r}"), "") != "bare" for r in vault_ai_brief.VIS_REGIONS]
+    unsettled = func.json_type(ai_ok, f"$.{vault_ai_brief.SETTLED_KEY}").is_(None)
     return (vault_jev_rules.current_sql(VaultItem.ai_fields_json) & (j("lane5") == "free")
-            & (func.coalesce(j("tags.toy_any"), "") != "y"))
+            & (func.coalesce(j("tags.toy_any"), "") != "y") & and_(*body_n, *not_bare, unsettled))
 
 
 @router.get("/admin/vault-ai/items")
@@ -777,7 +808,9 @@ async def local_items(
     its per-folder manual_order: 0 first, 1,2,3… from front, then unpinned by
     date, then …-3,-2,-1 (so -1 is dead last). `tags` (repeatable): only items
     carrying every one of them (`vault_tags.tag_match`, the grid's tag chips). `not_nude`: only
-    media Jev currently reads as nothing bare, no toy (`_not_nude`)."""
+    media Jev currently reads as nothing bare, no toy (`_not_nude`) and the describe/flags passes don't
+    dispute (`vault_ai_brief.free_vetoed`, applied to the SQL page: a page may come back short, `hasMore`
+    still follows the SQL page)."""
     assert_account_owned(account_id)
     # Chatter folder limits, same rule as /api/of/v2/vault/media: a restricted
     # chatter gets only an allowed OF folder; All, internal folders and other
@@ -791,27 +824,36 @@ async def local_items(
     def _apply_common(st):
         return st.where(*where) if where else st
 
+    def _shown(item: VaultItem) -> bool:
+        if not not_nude:
+            return True
+        fields = load_json(item.ai_fields_json, None)
+        jev = (fields or {}).get(vault_jev_rules.JEV_KEY)   # a clip's body: worst over its frames (F1b)
+        return (not vault_ai_brief.free_vetoed(fields)
+                and isinstance(jev, dict) and vault_jev_rules.body_free(jev))
+
     out: list[dict[str, Any]] = []
     mo = VaultFolderItem.manual_order
 
     async def _append_ordered_page(s, stmt) -> bool:
-        """A folder view's page in manual_order (0 first, 1,2,3… from front, then
-        unpinned by date, then …-3,-2,-1) appended to `out`; returns has_more."""
-        bucket = case((mo.is_(None), 1), (mo >= 0, 0), else_=2)
+        """A folder view's page in `vault_internal_folders.listing_order` (0 first, 1,2,3… from
+        front, then unpinned by date, then …-3,-2,-1) appended to `out`; returns has_more."""
         stmt = _apply_common(stmt)
-        stmt = stmt.order_by(bucket, mo, VaultItem.created_at.desc(), VaultItem.media_id.desc()).limit(limit + 1).offset(offset)
+        stmt = stmt.order_by(*vault_internal_folders.listing_order(mo, VaultItem.created_at, VaultItem.media_id)
+                             ).limit(limit + 1).offset(offset)
         # Sort/page only keys and order values. Carrying each full media JSON
         # through the folder sort makes deep pages expensive on large vaults.
         page = stmt.with_only_columns(VaultItem.media_id, mo).subquery()
         page_order = page.c.manual_order
-        page_bucket = case((page_order.is_(None), 1), (page_order >= 0, 0), else_=2)
         hydrated = (select(VaultItem, page_order)
                     .join(page, (VaultItem.account_id == account_id)
                           & (VaultItem.media_id == page.c.media_id))
-                    .order_by(page_bucket, page_order, VaultItem.created_at.desc(), VaultItem.media_id.desc()))
+                    .order_by(*vault_internal_folders.listing_order(page_order, VaultItem.created_at,
+                                                                    VaultItem.media_id)))
         pairs = (await s.execute(hydrated)).all()
         for item, m_ord in pairs[:limit]:
-            out.append(_overlay(item, m_ord))
+            if _shown(item):
+                out.append(_overlay(item, m_ord))
         return len(pairs) > limit
 
     async with get_session() as s:
@@ -863,7 +905,8 @@ async def local_items(
             rows = (await s.execute(stmt)).scalars().all()
             has_more = len(rows) > limit
             for item in rows[:limit]:
-                out.append(_overlay(item))
+                if _shown(item):
+                    out.append(_overlay(item))
     return {"list": out, "hasMore": has_more, "source": "mirror"}
 
 
@@ -910,6 +953,7 @@ async def folder_from_tags(payload: dict = Body(...)) -> dict[str, Any]:
     `created_by="operator"`, so vault_scripts' reaper (created_by="vault_ai_script" AND `AI-`) never
     retires it. No OF write: publishing it is the existing /folders/{id}/publish. The name defaults to
     the tags joined and never lands on an existing live folder name (`vault_tags.unique_name`).
+    A pack rung's name (`vault_internal_folders.reserved_name`): 400 `reserved_name`.
     Owner scope: a folder-limited chatter is refused (403) as for the folder plan. More than
     `vault_tags.FOLDER_MAX_ITEMS` matches: 400 `too_many_items` with the count, nothing written."""
     account_id = str(payload.get("account_id") or "")
@@ -924,6 +968,11 @@ async def folder_from_tags(payload: dict = Body(...)) -> dict[str, Any]:
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail={"error": "bad_of_folder_id"}) from None
     name = str(payload.get("name") or "").strip()[:120] or vault_tags.default_folder_name(picked)
+    if vault_internal_folders.reserved_name(name):
+        # A pack rung's name: the picker would read this folder as its rung.
+        raise HTTPException(status_code=400, detail={
+            "error": "reserved_name",
+            "message": f"{name} is a pack rung's name; the Feet pack owns it."})
     where = _chip_scope(account_id, of_folder_id) + _listing_where(
         str(payload.get("type") or "all"), payload.get("query"), picked)
     async with get_session() as s:
@@ -1030,12 +1079,13 @@ router.include_router(vault_internal_folders.router)
 router.include_router(category_icons_router)
 
 
-# ── Per-Creator vault switches (`vault_settings`; both off by default) ──────
+# ── Per-Creator vault switches (`vault_settings`; solo_sequences on, the rest off by default) ──────
 
 
 @router.get("/admin/vault-ai/settings")
 async def get_vault_settings(account_id: str = Query(...)) -> dict[str, Any]:
-    """`{"folder_price_final": bool, "standard_folders": bool}`. Owner scope (403 for a folder-limited chatter)."""
+    """`{"folder_price_final": bool, "standard_folders": bool, "solo_sequences": bool}`. Owner scope (403 for a
+    folder-limited chatter)."""
     if not account_id:
         raise HTTPException(status_code=400, detail={"error": "account_id_required"})
     assert_account_owned(account_id)
@@ -1045,7 +1095,7 @@ async def get_vault_settings(account_id: str = Query(...)) -> dict[str, Any]:
 
 @router.put("/admin/vault-ai/settings")
 async def put_vault_settings(payload: dict = Body(...)) -> dict[str, Any]:
-    """Set one or both switches (JSON booleans); a key left out keeps its value. Owner scope."""
+    """Set any of the switches (JSON booleans); a key left out keeps its value. Owner scope."""
     account_id = str(payload.get("account_id") or "")
     if not account_id:
         raise HTTPException(status_code=400, detail={"error": "account_id_required"})
@@ -1218,17 +1268,9 @@ async def pack_triage(payload: dict = Body(...)) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail={"error": "verdicts_required"})
     await assert_media_visible(account_id, *verdicts)  # a chatter files only what it may see
 
-    try:
-        folders = await vault_pack_picker.triage(
-            account_id, cat, verdicts, allowed=await allowed_folder_ids_for_chatter(account_id))
-    except vault_pack_picker.NotFreeSafe as e:
-        # Jev says her body may be on show: never the free preview rung. Nothing was written.
-        raise HTTPException(status_code=400, detail={
-            "error": "not_free_safe", "rung": cat.free_rung, "media_ids": e.media_ids}) from None
-    except vault_pack_picker.PhotosOnly as e:
-        # A pack is photos only (owner, 2026-11-12): no clip on any rung. Nothing was written.
-        raise HTTPException(status_code=400, detail={
-            "error": f"{cat.name}_photos_only", "media_ids": e.media_ids}) from None
+    # Refusals (not_free_safe / <cat>_photos_only 400, not_in_mirror 404); nothing written.
+    folders = await vault_internal_folders.triage_or_400(
+        account_id, cat, verdicts, allowed=await allowed_folder_ids_for_chatter(account_id))
     return {
         "account_id": account_id,
         "category": cat.name,
@@ -1352,16 +1394,21 @@ _OF_SEARCH_TTL_S = 7 * 24 * 3600
 # (ass, cum, pussy, face, solo) hit exactly 240 on AE 562666533 (2026-11-13).
 _OF_SEARCH_PAGE = 100
 _OF_SEARCH_MAX_PAGES = 30
-# A cache row stamped at the old cap was truncated: re-ask OF instead of trusting it.
+# A cache row stamped at the old cap before the new cap shipped (#550, merged
+# 2026-11-13) was truncated: re-ask OF. A real 240 stamped since is trusted.
 _OF_SEARCH_LEGACY_CAP = 240
+_OF_SEARCH_LEGACY_BEFORE = datetime(2026, 11, 15)
 
 # The term list (seed taxonomy + the account's own describe/Jev vocabulary)
 # lives in `vault_harvest_terms`.
 
 
-async def _harvest_query(account_id: str, q: str, client: Any = None) -> dict[str, Any]:
+async def _harvest_query(account_id: str, q: str, client: Any = None,
+                         call: Any = None) -> dict[str, Any]:
     """Harvest OF's own vault search for `q` and fold the term into each matched
-    mirror item's of_terms/search_text. TTL-cached via vault_of_query_log."""
+    mirror item's of_terms/search_text. TTL-cached via vault_of_query_log. Pages go
+    through `call` (a `_paced_call`, shared across a keyword run). A walk an OF error
+    cut short still folds what it got but writes no cache row (asked again next time)."""
     q = (q or "").strip().lower()
     if not q:
         return {"query": q, "count": 0, "source": "empty", "ids": []}
@@ -1369,14 +1416,16 @@ async def _harvest_query(account_id: str, q: str, client: Any = None) -> dict[st
     async with get_session() as s:
         logrow = await s.get(VaultOfQueryLog, (account_id, q))
     if (logrow and (now - logrow.fetched_at).total_seconds() < _OF_SEARCH_TTL_S
-            and logrow.match_count != _OF_SEARCH_LEGACY_CAP):
+            and not (logrow.match_count == _OF_SEARCH_LEGACY_CAP
+                     and logrow.fetched_at < _OF_SEARCH_LEGACY_BEFORE)):
         async with get_session() as s:
             ids = [
                 r[0] for r in (
                     await s.execute(
                         select(VaultItem.media_id).where(
                             VaultItem.account_id == account_id,
-                            func.lower(func.coalesce(VaultItem.of_terms, "")).like(f"%{q}%"),
+                            # the whole JSON-quoted term: "ace" never matches "lace"
+                            func.lower(func.coalesce(VaultItem.of_terms, "")).like(f"%{json.dumps(q)}%"),
                         )
                     )
                 ).all()
@@ -1388,14 +1437,17 @@ async def _harvest_query(account_id: str, q: str, client: Any = None) -> dict[st
             client = await asyncio.to_thread(ax._make_client, account_id)
         except Exception:  # noqa: BLE001
             return {"query": q, "ids": [], "count": 0, "source": "no_client"}
+    call = call or _paced_call()
     matched: list[int] = []
     offset = 0
+    complete = True
     for _ in range(_OF_SEARCH_MAX_PAGES):
         try:
-            resp = await asyncio.to_thread(
+            resp = await call(
                 client.vault_media, limit=_OF_SEARCH_PAGE, offset=offset, type="all", sort="desc", query=q,
             )
         except Exception:  # noqa: BLE001
+            complete = False
             break
         items = (resp or {}).get("list") or []
         if not items:
@@ -1420,16 +1472,18 @@ async def _harvest_query(account_id: str, q: str, client: Any = None) -> dict[st
                 .where(VaultItem.account_id == account_id, VaultItem.media_id == mid)
                 .values(of_terms=json.dumps(sorted(terms)), search_text=new_search)
             )
-        await s.execute(
-            sqlite_insert(VaultOfQueryLog)
-            .values(account_id=account_id, query=q, match_count=len(matched), fetched_at=now)
-            .on_conflict_do_update(
-                index_elements=["account_id", "query"],
-                set_={"match_count": len(matched), "fetched_at": now},
+        if complete:
+            await s.execute(
+                sqlite_insert(VaultOfQueryLog)
+                .values(account_id=account_id, query=q, match_count=len(matched), fetched_at=now)
+                .on_conflict_do_update(
+                    index_elements=["account_id", "query"],
+                    set_={"match_count": len(matched), "fetched_at": now},
+                )
             )
-        )
         await s.commit()
-    return {"query": q, "ids": matched, "count": len(matched), "source": "of"}
+    return {"query": q, "ids": matched, "count": len(matched),
+            "source": "of" if complete else "of_partial"}
 
 
 @router.post("/admin/vault-ai/search-of")
@@ -1469,8 +1523,9 @@ async def _run_harvest_keywords(account_id: str) -> None:
         done = 0
         matches = 0
         _kw_progress[account_id] = {"total": total, "done": 0, "matches": 0}
+        call = _paced_call()
         for kw in terms:
-            r = await _harvest_query(account_id, kw, client=client)
+            r = await _harvest_query(account_id, kw, client=client, call=call)
             matches += int(r.get("count") or 0)
             done += 1
             _kw_progress[account_id] = {"total": total, "done": done, "matches": matches}
@@ -1543,6 +1598,7 @@ def _item_edit_view(item: VaultItem, locked: list[str]) -> dict[str, Any]:
     """Wire shape for an edited mirror row — every editable field read through
     effective_value() so the operator sees the override that just won, not a raw
     column. `video_description` is surfaced raw for the FE (S9 overlay reads it)."""
+    fields = _ai_fields_view(item)
     return {
         "media_id": item.media_id,
         "id": item.media_id,
@@ -1556,8 +1612,9 @@ def _item_edit_view(item: VaultItem, locked: list[str]) -> dict[str, Any]:
         "suggested_price_cents": effective_value(item, "suggested_price_cents"),
         "describe_status": item.describe_status,
         "locked_fields": locked,
-        "fields": _ai_fields_view(item),
+        "fields": fields,
         "jev_picks": vault_jev_manual.stored(item.operator_overrides_json),
+        "jev_ai": vault_jev_manual.ai_reading((fields or {}).get(vault_jev_rules.JEV_KEY)),
     }
 
 
@@ -1685,14 +1742,20 @@ def _jev_edit(item: VaultItem, patch: dict[str, Any], overrides: dict[str, Any],
     `_jev` (`vault_jev_manual.overlay`), the flags + `explicitness_tier` re-mapped from it. A body / lane pick
     is the operator's answer for what is bare, so it frees the vis flags they locked before (a lane also the
     tier, unless this same edit sets the tier: `keep_tier`); otherwise the old lock would keep a flag the new
-    lane contradicts. Taking back a reading the picks alone made leaves the flags and the tier unknown."""
+    lane contradicts. Only a pick SET does (clearing one leaves the locks); a butt pick alone decides only
+    `anus_vis`, the breasts / crotch / penetration / lane picks the lane, so all three. Taking back a reading
+    the picks alone made leaves the flags and the tier unknown."""
     picks = vault_jev_manual.merged(vault_jev_manual.stored(overrides), patch)
     if picks:
         overrides[vault_jev_manual.PICKS_KEY] = picks
     else:
         overrides.pop(vault_jev_manual.PICKS_KEY, None)
-    unlock = [*vault_ai_brief.VIS_REGIONS] if any(k in patch for k in vault_jev_manual.BODY_PICKS) else []
-    if "lane" in patch and not keep_tier:
+    set_ = {k for k, v in patch.items() if v is not None}
+    if set_ & {*vault_jev_manual.LANE_PICKS, "lane"}:
+        unlock = [*vault_ai_brief.VIS_REGIONS]
+    else:
+        unlock = ["anus_vis"] if "butt" in set_ else []
+    if "lane" in set_ and not keep_tier:
         unlock.append(vault_jev_flags.TIER_COLUMN)
     for k in unlock:
         locked.discard(k)

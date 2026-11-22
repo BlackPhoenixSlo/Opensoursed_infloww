@@ -1185,4 +1185,26 @@ def case_writer_hosts_store_by_put_and_never_read_back():
         assert stored == v, f"{p} not stored"
 
 
+def case_the_audit_log_keeps_key_names_never_values():
+    """W30 F1: the audit middleware writes a row for every key save above (self-serve
+    and founder); /admin/audit returns its payload. Names + set/cleared only."""
+    import json as _json
+    from db.models import Action
+
+    async def _rows():
+        async with get_session() as s:
+            return (await s.execute(select(Action.action, Action.payload_json).where(
+                Action.action.like("PUT /admin/%llm-keys")))).all()
+    rows = asyncio.run(_rows())
+    acts = {a for a, _ in rows}
+    assert "PUT /admin/my-llm-keys" in acts and f"PUT /admin/users/{_MANAGED['agency']}/llm-keys" in acts, acts
+    blob = " ".join(p or "" for _, p in rows)
+    for raw in ("sk-from-the-ui", "sk-set-by-founder", "ng-writer-key-1234", "or-writer-key-5678",
+                os.environ["ADMIN_PASSWORD"]):
+        assert raw not in blob, f"audit payload kept {raw!r}: {blob}"
+    payloads = [_json.loads(p) for _, p in rows if p]
+    assert {"nanogpt": "set", "openrouter": "set"} in payloads, payloads
+    assert {"admin_password": "set", "providers": {HOUSE_PROVIDER: "set"}} in payloads, payloads
+
+
 _harness.run()

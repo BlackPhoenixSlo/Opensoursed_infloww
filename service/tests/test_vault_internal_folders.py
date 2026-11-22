@@ -26,9 +26,11 @@ Real HTTP with real owner / second owner / folder-limited chatter logins
                                   gone from the list, 404 after / for another account's folder
   case_rebuild_spares_edited_ai   an edited AI folder survives `apply_ai_folders`, a fresh AI-x is built
                                   beside it; an unedited one is rewritten in place
+  case_rebuild_rechecks_ownership_at_write  W30 C2: a folder adopted between the rebuild's read and write
+                                  keeps the operator's members, is not retired; reported `skipped_adopted`
   case_scope                      second owner 403 everywhere; folder-limited chatter: list [], writes 403
                                   folder_not_allowed; nothing written
-  case_pure_tables                folder_kind / reserved_name / place_before / listing_sort_key
+  case_pure_tables                folder_kind / reserved_name / place_before
 
 Run: ./venv/bin/python service/tests/test_vault_internal_folders.py   (exit 0 = pass)
 """
@@ -470,6 +472,61 @@ async def case_rebuild_spares_edited_ai():
     assert kinds == [("AI-x", "ai"), ("AI-x", "own"), ("AI-y", "ai")], kinds
 
 
+async def case_add_and_adopt_commit_as_one():
+    """W30 F7: the add and the adopt are one commit. Split, a rebuild landing between them (here: when the
+    route opens a second session) rewrote the still-generated folder and wiped the operator's add."""
+    from contextlib import asynccontextmanager
+    z = await _mk("AI-z", by=SCRIPT, items=((11, 0),), aid=BID)
+    orig, opened = vif.get_session, [0]
+
+    @asynccontextmanager
+    async def hooked():
+        opened[0] += 1
+        if opened[0] == 2:
+            await vault_scripts.apply_ai_folders(BID, {"folders": [
+                {"name": "z", "items": [{"media_id": 11, "manual_order": 0}], "source": "script"}]})
+        async with orig() as s:
+            yield s
+    vif.get_session = hooked
+    try:
+        r = _post(f"/{z}/add", {"media_ids": [12]}, aid=BID)
+    finally:
+        vif.get_session = orig
+    assert r.status_code == 200 and r.json()["adopted"] == [z], r.text
+    assert set(await _members(z, BID)) == {11, 12}, "the operator's add survives"
+    assert (await _row(z)).created_by == "operator"
+
+
+async def case_rebuild_rechecks_ownership_at_write():
+    """W30 C2: an operator add that adopts a generated folder after the rebuild read ownership, before it
+    writes, keeps the operator's membership: the rebuild skips that folder (`skipped_adopted`), and never
+    retires an adopted stale one either."""
+    u = await _mk("AI-u", by=SCRIPT, items=((13, 0),), aid=BID)
+    w = await _mk("AI-w", by=SCRIPT, items=((15, 0),), aid=BID)
+    orig = vault_scripts._owned_ai_folders
+
+    async def hooked(s, account_id):
+        owned = await orig(s, account_id)
+        for f in (u, w):
+            r = _post(f"/{f}/add", {"media_ids": [14]}, aid=BID)
+            assert r.status_code == 200 and r.json()["adopted"] == [f], r.text
+        return owned
+    vault_scripts._owned_ai_folders = hooked
+    try:
+        out = await vault_scripts.apply_ai_folders(BID, {"folders": [
+            {"name": "u", "items": [{"media_id": 16, "manual_order": 0}], "source": "script"}]},
+            expected_retire={w})
+    finally:
+        vault_scripts._owned_ai_folders = orig
+    assert set(await _members(u, BID)) == {13, 14}, "the operator's add survives the rewrite"
+    assert set(await _members(w, BID)) == {14, 15}
+    for f in (u, w):
+        row = await _row(f)
+        assert (row.created_by, row.deleted_at) == ("operator", None), (f, row.created_by, row.deleted_at)
+    assert sorted(e["folder_id"] for e in out["skipped_adopted"]) == sorted([u, w]), out
+    assert out["created"] == [] and out["retired"] == [], out
+
+
 async def case_scope():
     f = await _mk("sc", items=(1, 2), by=SCRIPT)
     rows_before, folders_before = await _item_rows(), await _folder_count()
@@ -515,13 +572,6 @@ def case_pure_tables():
             assert str(e) == "bad_before"
         else:
             raise AssertionError(("bad_before expected", order, moved, before))
-    key = vif.listing_sort_key
-    new, old = T0, T0 - timedelta(hours=1)
-    rows = [(7, -1, new), (8, -2, new), (5, None, old), (4, None, new), (9, None, None), (3, 2, old), (2, 0, old),
-            (1, 1, new), (6, None, new)]
-    got = [m for m, _, _ in sorted(rows, key=lambda r: key(*r))]
-    # 0,1,2 / NULL newest first (tie at `new`: higher id first), no date last / -2, -1.
-    assert got == [2, 1, 3, 6, 4, 5, 9, 8, 7], got
 
 
 _harness.run()

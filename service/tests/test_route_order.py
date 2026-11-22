@@ -214,6 +214,9 @@ kind / language narrowing, per-row tags); docstrings reworded. No route row chan
 Golden refresh (2026-11-21, OFM_NEW_WRITES_ENABLED switch): adds GET /api/of/ofm-writes (of_ofm_writes_probe) right
 before POST /campaigns/share-access; the 13 gated writes take a no-param dependency (no schema change); no existing row
 moves; diff = that row + the sha.
+Golden refresh (2026-11-21, OFM_NEW_WRITES_ENABLED per Creator): adds GET and PUT /admin/ofm-writes/{account_id}
+(get_ofm_writes_creator, put_ofm_writes_creator: a Creator's force-off, Settings › OF Manager writes) right after GET
+/api/of/ofm-writes; no existing row moves; diff = those two rows + the sha.
 
 Run: ./venv/bin/python service/tests/test_route_order.py   (exit 0 = green)
 Golden refresh (2026-11-20, main c0f0ef88a): adds POST /admin/unconfirmed-sends/dismiss (#882) and
@@ -235,11 +238,42 @@ Golden refresh (2026-11-21, merge main into spec/ofm-not-yet): main's golden plu
 above, regenerated with --write-golden; diff vs main's golden = those rows + the sha.
 Golden refresh (2026-11-21, ofm-not-yet rwl r1 #5): PATCH /api/of/v2/users/me's docstring (switch off: `about` as
 main sent it); no route row changes; diff = the sha (measured: the old docstring == the prior golden).
+Golden refresh (2026-11-22, ofm-not-yet follow-up #7): GET and PUT /admin/ofm-writes/{account_id} move from
+server.py to ofm_writes_api's router (included right after of_consent_api's), so their two rows move from after GET
+/api/of/ofm-writes to after the of-consent rows; no path shares their prefix; no other row moves; diff = those two
+rows, the sha unchanged (measured).
 Golden refresh (2026-11-21, Keep running indefinite): schema _PatchBody (PATCH /admin/promotions/{id}) docstring
 says the Re-create limit is optional; no route row changes; diff = the sha (measured: the old promotions_api.py
 passes the prior golden).
 Golden refresh (2026-11-21, merge main into spec/ofm-not-yet again): both refreshes above; regenerated with
 --write-golden.
+Golden refresh (2026-11-22, ofm-not-yet follow-up): PUT /admin/ofm-writes/{account_id} docstring names every
+principal; no route row changes; diff = the sha.
+Golden refresh (2026-11-22, rwl W30): one wired module's sha only; OpenAPI diff = one word in a request
+body's description, measured; no row moves.
+Golden refresh (2026-11-22, rwl W30 vault download): GET /admin/vault-ai/download/resign's docstring adds the
+no-`u` / `_u_ok` sentence (cac96823c); no route row changes; re-pinned after rebase on main
+(measured: OpenAPI diff vs 539ef7c15 is exactly that description).
+Golden refresh (2026-11-22, rwl W30 full-ai-page #6): GET /admin/full-ai/rules' mode enum drops "shadow"
+(test | live) and its docstring line says so; no route row changes; diff = the sha.
+Golden refresh (2026-11-22, rwl W30 vault-ai-folders): descriptions only (route docstrings in vault_of_folders /
+vault_ai_api); no route row changes; diff = the sha. Round 2: /admin/vault-ai/items docstring (not_nude rule).
+Golden refresh (2026-11-22, rwl W30 help-bot F1): GET do-caps docstring names every do-mode flow's opt-in
+(`can_do`) (690bd1e63); no route row changes; diff = the sha (measured: OpenAPI diff vs 84f8471ff is exactly that
+description).
+Golden refresh (2026-11-22, rwl W30 smart-messages F30): RetryBody gains required `since` (DismissBody now
+inherits it) + the unconfirmed-sends module docstring; no route row changes; diff = the sha.
+Golden refresh (2026-11-22, W30-mu #1, re-pinned after rebase on main 53aeb4a9a): POST /api/of/v2/chats/mark-as-read
+and POST /api/of/v2/chats/{chat_id}/mark-as-read docstrings say the local unread clears only once the platform took
+the write (else 502); no route row changes (measured: OpenAPI diff vs e0ac52fdb is exactly those two descriptions).
+Golden refresh (2026-11-22, rwl W30 dashboard-stats F4/F8): GET /admin/stats/fan-report's docstring (growth: a
+Creator with OF days has its rows on UTC days) and GET /admin/stats/chatting-stats' (`chatter_ids`); no route row
+changes; diff = the sha re-pinned after rebase on main.
+Golden refresh (2026-11-22, rwl W30 promos F3): PATCH /admin/promotions/{id} body (_PatchBody) description says
+an omitted Re-create limit keeps a Kept campaign's; no route row changes; diff = the sha (measured: OpenAPI diff
+vs main's promotions_api is exactly that description).
+Golden refresh (2026-11-22, rwl W30 settings-theme F2): GET + DELETE /admin/errors docstrings name
+`_errors_where` (was `_errors_scope`); no route row changes; diff = the sha (re-pinned after rebase on #958).
 """
 from __future__ import annotations
 

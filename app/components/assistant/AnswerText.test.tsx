@@ -12,13 +12,17 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach } from "vitest";
 
 import { AnswerText } from "./AnswerText";
+import { openablePages } from "./prepass";
+
+/** Every page an owner may open: these cases are about the text, not the role (rwl W30 S3: `pages` is required). */
+const ALL = openablePages({ chatterOnly: false, grantedPages: null });
 
 afterEach(cleanup);
 
 describe("AnswerText", () => {
   it("runs onNavigate when a link is clicked (the phone sheet closes on it)", () => {
     const onNavigate = vi.fn();
-    render(<AnswerText text="Open **Creators → Manage creators**." onNavigate={onNavigate} />);
+    render(<AnswerText pages={ALL} text="Open **Creators → Manage creators**." onNavigate={onNavigate} />);
     const link = screen.getByRole("link", { name: "Creators → Manage creators" });
     link.addEventListener("click", (e) => e.preventDefault()); // jsdom: no real navigation
     fireEvent.click(link);
@@ -27,7 +31,7 @@ describe("AnswerText", () => {
 
   it("renders bold as emphasis and never as asterisks", () => {
     const { container } = render(
-      <AnswerText text="Go to **Growth → Profile promotion**, set a **Name**." />,
+      <AnswerText pages={ALL} text="Go to **Growth → Profile promotion**, set a **Name**." />,
     );
     expect(container.textContent).not.toContain("**");
     expect(screen.getByText("Name").tagName).toBe("STRONG");
@@ -35,24 +39,24 @@ describe("AnswerText", () => {
 
   it("links the click path inside bold", () => {
     // Where it points is answerLinks.test.ts's job; here, that it is a link.
-    render(<AnswerText text="Go to **Growth → Profile promotion** and press Create." />);
+    render(<AnswerText pages={ALL} text="Go to **Growth → Profile promotion** and press Create." />);
     const link = screen.getByRole("link", { name: "Growth → Profile promotion" });
     // The link sits INSIDE the bold run — bold and linked, not one or other.
     expect(link.closest("strong")).not.toBeNull();
   });
 
   it("links a half-bolded path as one path", () => {
-    // Resolved span by span, the bold "Settings" would link on its own to
-    // Your Account; as one path, every piece of it opens one place.
-    render(<AnswerText text="Open Growth → **Smart lists** → **Settings**, then Save." />);
+    // Resolved span by span, each bold label would link on its own; as one
+    // path, every piece of it opens one place.
+    render(<AnswerText pages={ALL} text="Open Analytics → **Message dashboard** → **PPV**, then filter." />);
     const links = screen.getAllByRole("link");
-    expect(links.map((l) => l.textContent)).toEqual(["Growth → ", "Smart lists"]);
+    expect(links.map((l) => l.textContent)).toEqual(["Analytics → ", "Message dashboard", " → ", "PPV"]);
     expect(new Set(links.map((l) => l.getAttribute("href"))).size).toBe(1);
   });
 
   it("renders bullet and numbered lists as lists", () => {
     const { container } = render(
-      <AnswerText
+      <AnswerText pages={ALL}
         text={"Steps:\n\n1. Open the tab\n2. Tick Enabled\n\n- one note\n- another"}
       />,
     );
@@ -63,7 +67,7 @@ describe("AnswerText", () => {
 
   it("folds a wrapped continuation into the item above it", () => {
     const { container } = render(
-      <AnswerText text={"1. Open the tab\n   and then save it\n2. Done"} />,
+      <AnswerText pages={ALL} text={"1. Open the tab\n   and then save it\n2. Done"} />,
     );
     const items = container.querySelectorAll("ol li");
     expect(items).toHaveLength(2);
@@ -72,7 +76,7 @@ describe("AnswerText", () => {
 
   it("rejoins hard-wrapped prose into one paragraph", () => {
     const { container } = render(
-      <AnswerText text={"This sentence was\nwrapped by the model.\n\nSecond."} />,
+      <AnswerText pages={ALL} text={"This sentence was\nwrapped by the model.\n\nSecond."} />,
     );
     const ps = container.querySelectorAll("p");
     expect(ps).toHaveLength(2);
@@ -81,27 +85,27 @@ describe("AnswerText", () => {
 
   it("renders inline code and does not linkify inside it", () => {
     const { container } = render(
-      <AnswerText text="Set `hours_to_live` and see Growth → Profile promotion." />,
+      <AnswerText pages={ALL} text="Set `hours_to_live` and see Growth → Profile promotion." />,
     );
     expect(container.querySelector("code")?.textContent).toBe("hours_to_live");
     expect(screen.getAllByRole("link")).toHaveLength(1);
   });
 
   it("degrades an unclosed bold to a visible asterisk, not a swallowed answer", () => {
-    const { container } = render(<AnswerText text="A **stray marker here." />);
+    const { container } = render(<AnswerText pages={ALL} text="A **stray marker here." />);
     expect(container.textContent).toBe("A **stray marker here.");
   });
 
   it("never emits raw HTML from the model", () => {
     const { container } = render(
-      <AnswerText text={'<img src=x onerror="alert(1)"> and **bold**'} />,
+      <AnswerText pages={ALL} text={'<img src=x onerror="alert(1)"> and **bold**'} />,
     );
     expect(container.querySelector("img")).toBeNull();
     expect(container.textContent).toContain("<img src=x");
   });
 
   it("mutes the whole answer when the turn carried an error", () => {
-    const { container } = render(<AnswerText text="Budget used up." muted />);
+    const { container } = render(<AnswerText pages={ALL} text="Budget used up." muted />);
     expect(container.firstElementChild?.className).toContain("text-fg-dim");
   });
 });

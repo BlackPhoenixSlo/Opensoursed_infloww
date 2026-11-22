@@ -89,6 +89,9 @@ describe("DiscoverCreators", () => {
     // A visible Request, and the Primary post's first still (none on a post with no media).
     expect(within(partner).getByRole("button", { name: "Request" })).toBeInTheDocument();
     expect(within(partner).getByRole("img", { name: "1 of 3, S4S photo" })).toHaveAttribute("src", "/admin/s4s/media/71");
+    // W30 F25: a still loads only when its card scrolls into view (each is a live vault read)
+    expect(within(partner).getByRole("img", { name: "1 of 3, S4S photo" })).toHaveAttribute("loading", "lazy");
+    expect(within(partner).getByRole("img", { name: "1 of 3, S4S photo" })).toHaveAttribute("decoding", "async");
 
     const sibling = screen.getByRole("article", { name: "Fixture Sibling" });
     expect(within(sibling).getByText("Your agency")).toBeInTheDocument();

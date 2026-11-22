@@ -9,7 +9,7 @@ const run = (actions: OlderPagerAction[], from: OlderPager = initialOlderPager()
 const start = (seq: number): OlderPagerAction => ({ type: "start", seq });
 const page = (seq: number, hasMore: boolean, progressed = true): OlderPagerAction => ({ type: "page", seq, hasMore, progressed });
 const fail = (seq: number): OlderPagerAction => ({ type: "fail", seq });
-const head = (hasMore: boolean): OlderPagerAction => ({ type: "head", hasMore });
+const head = (hasMore: boolean, settled = false): OlderPagerAction => ({ type: "head", hasMore, settled });
 
 describe("olderPagerReducer", () => {
   it.each<[string, OlderPagerAction[], OlderPager["status"]]>([
@@ -38,12 +38,32 @@ describe("olderPagerReducer", () => {
     expect(run(actions).status).toBe(want);
   });
 
+  it.each<[string, OlderPagerAction[], boolean]>([
+    ["a new chat is not settled", [], false],
+    ["a head page that gave a cursor settles it", [head(true, true)], true],
+    ["a head page with no cursor (empty thread) does not", [head(true, false)], false],
+    ["settled survives a load and its page", [head(true, true), start(1), page(1, true)], true],
+    ["settled survives a failure", [head(true, true), start(1), fail(1)], true],
+    ["a later head page with no cursor never unsettles", [head(true, true), head(true, false)], true],
+    ["a head page saying nothing older settles and exhausts at once", [head(false, true)], true],
+    ["a head page settles a pager already exhausted", [start(1), page(1, false), head(true, true)], true],
+  ])("headSettled: %s", (_name, actions, want) => {
+    expect(run(actions).headSettled).toBe(want);
+  });
+
+  it("a new chat's pager is never settled, even one starting exhausted", () => {
+    expect(initialOlderPager(true).headSettled).toBe(false);
+    expect(initialOlderPager(false).headSettled).toBe(false);
+  });
+
   it("an action that changes nothing keeps the same state object", () => {
     const s = run([start(1)]);
     expect(olderPagerReducer(s, start(2))).toBe(s);
     expect(olderPagerReducer(s, page(9, true))).toBe(s);
     const done = run([head(false)]);
     expect(olderPagerReducer(done, head(true))).toBe(done);
+    const settled = run([head(true, true)]);
+    expect(olderPagerReducer(settled, head(true, true))).toBe(settled);
   });
 
   it("a chat whose prefetched head page said nothing older starts exhausted", () => {

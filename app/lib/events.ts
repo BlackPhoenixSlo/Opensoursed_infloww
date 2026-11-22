@@ -40,8 +40,7 @@ import {
   decide, eventsUrl, follow, initialBusState, isConnected,
 } from "./eventBusReducer";
 import { resolveShareToken } from "./shareToken";
-import { setRelayOffset } from "./ageClock";
-import { serverOffset } from "@/components/chat/dataAge";
+import { serverOffset, setRelayOffset } from "./ageClock";
 
 export type { EventEnvelope, Scope } from "./eventBusReducer";
 

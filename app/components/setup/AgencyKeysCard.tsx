@@ -15,8 +15,8 @@
  */
 
 import { useTenantKeys } from "@/hooks/useTenantKeys";
-import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
-import KeyLink from "@/components/setup/KeyLink";
+import { LABELS, clearConfirm } from "@/components/setup/providerFields";
+import KeyFieldHint from "@/components/setup/KeyFieldHint";
 import type { KeyDraft } from "@/hooks/useKeyDraft";
 import { Badge } from "@/components/ui/primitives";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -118,10 +118,9 @@ export default function AgencyKeysCard({ keys, pending }: {
                 type="button"
                 disabled={pending}
                 onClick={async () => {
-                  // One click here stops every automation on every account this
+                  // One click here can stop every automation on every account this
                   // owner runs — the calls fail closed with no key. Worth a beat.
-                  const label = LABELS[name] ?? name;
-                  if (await ifConfirm(`Remove your ${label}? Your models stop replying until you add one.`, { danger: true })) {
+                  if (await ifConfirm(clearConfirm(name), { danger: true })) {
                     void clear(name);
                   }
                 }}
@@ -139,14 +138,7 @@ export default function AgencyKeysCard({ keys, pending }: {
             autoComplete="off"
             onChange={(e) => setField(name, e.target.value)}
           />
-          {wrongFieldWarning(name, draft[name] ?? "") ? (
-            <p className="text-[11px] text-warn" role="alert">
-              {wrongFieldWarning(name, draft[name] ?? "")}
-            </p>
-          ) : (
-            HELP[name] && <p className="text-[11px] text-fg-dim">{HELP[name]}</p>
-          )}
-          <KeyLink name={name} />
+          <KeyFieldHint name={name} value={draft[name] ?? ""} />
         </div>
       ))}
     </div>

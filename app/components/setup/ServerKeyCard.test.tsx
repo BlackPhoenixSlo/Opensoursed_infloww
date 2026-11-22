@@ -1,5 +1,5 @@
 /**
- * The Drive key on Settings → AI keys. A master edits the server's
+ * A server key card on Settings → AI keys, here the Drive key. A master edits the server's
  * GOOGLE_DRIVE_API_KEY through the same masked /admin/secrets store as the
  * "Server keys" card: the raw value never comes back, a blank field keeps it,
  * and clear sends "". Anyone else gets a line and no master-only read.
@@ -13,7 +13,7 @@ let session: { user: { is_admin?: boolean } | null } = { user: null };
 vi.mock("@/contexts/UserContext", () => ({ useUser: () => session }));
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), put: vi.fn() } }));
 
-import DriveKeyCard from "./DriveKeyCard";
+import ServerKeyCard from "./ServerKeyCard";
 import { relay } from "@/lib/relay";
 
 const get = relay.get as unknown as Mock;
@@ -37,7 +37,7 @@ function renderCard() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <DriveKeyCard />
+      <ServerKeyCard name="GOOGLE_DRIVE_API_KEY" intro="Share it as Anyone with the link can view." savedNote="Saved." />
     </QueryClientProvider>,
   );
 }
@@ -48,7 +48,7 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe("DriveKeyCard", () => {
+describe("ServerKeyCard (the Drive key)", () => {
   it("for a master, shows only the Drive key, masked, and saves just that field", async () => {
     session = { user: { is_admin: true } };
     get.mockResolvedValue(status(false));

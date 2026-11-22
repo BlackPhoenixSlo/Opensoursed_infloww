@@ -40,6 +40,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_chat_tease.py  (exit 0 = pass)
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+from _jev_fixtures import mapped  # noqa: E402
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, IDS, NANO, OWNER_A, TURN, _body, _db, _guarded, _picks, _put_draft, _reply, _rows, _system, _vault,
@@ -303,7 +304,7 @@ def _row(mid, lane="$10"):
     """A vault row as test_full_ai_ride builds it (a dressed photo, settled)."""
     j = {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": lane, "state": {}, "kind": "photo",
          "breasts_bare": "n", "crotch_bare": "n", "penetration": "n", "tags": {}}
-    fields = vault_ai_brief.settled_reading({**DRESSED, vault_jev_rules.JEV_KEY: j})
+    fields = vault_ai_brief.settled_reading(mapped({**DRESSED, vault_jev_rules.JEV_KEY: j}))
     return {"media_id": mid, "kind": "photo", "created_at": T + timedelta(minutes=mid),
             "duration_seconds": None, "fields": fields, "describe_status": "described", "score": 0,
             "refs": set(), "packs": set()}
@@ -404,6 +405,22 @@ async def case_ride_soft_only():
     assert isinstance(got, Pick) and got.media == (4,) and got.price_cents == 300, got
     got = await _ride([*big, _row(5, lane="$10")], 0)
     assert isinstance(got, Pick) and got.media == (5,) and got.price_cents == 0, got
+
+
+async def case_free_ride_bounds():
+    """W30 #1: a free tease quote rides only a free-safe photo listed at most $10 (the soft level)
+    whose price is not a final folder price; every other priced photo stays priced or gives no ride.
+    Spec phase-05 › Send: "price 0 (Free item, free Chat tease photo)" is a designed send."""
+    from automations.full_ai_sell import Refusal
+    over = {**_row(1), "folder_cents": 2500}                  # a non-final $25 folder: above soft
+    assert await _ride([over], 0) == Refusal("no_match")
+    final = {**_row(2), "folder_cents": 1000, "folder_final": True}
+    got = await _ride([final, over], 0)
+    assert isinstance(got, Pick) and got.media == (2,) and got.price_cents == 1000, got
+    soft = {**_row(3), "folder_cents": 1000}                  # a non-final $10 folder: free ride OK
+    got = await _ride([soft, over], 0)
+    assert isinstance(got, Pick) and got.media == (3,) and got.price_cents == 0, got
+    assert got.list_cents <= fs.LEVEL_CENTS["soft"], got
 
 
 def _request_sha(questions, state_keys) -> str:

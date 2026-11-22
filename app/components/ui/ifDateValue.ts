@@ -3,7 +3,7 @@
 
 export type DateMode = "date" | "time" | "datetime-local";
 
-const pad = (n: number) => String(n).padStart(2, "0");
+export const pad = (n: number) => String(n).padStart(2, "0");
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const TIME = /^\d{2}:\d{2}/;
 
@@ -23,6 +23,8 @@ export function joinValue(mode: DateMode, day: string, time: string): string {
 
 export const dayKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 export const timeKey = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+/** A Date as `datetime-local` text (local wall time, minutes). */
+export const dateTimeKey = (d: Date) => joinValue("datetime-local", dayKey(d), timeKey(d));
 
 /** `YYYY-MM` moved `by` months. */
 export function shiftMonth(month: string, by: number): string {

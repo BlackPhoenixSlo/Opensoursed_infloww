@@ -23,7 +23,7 @@ export function FullAiRevenue({ accountId }: { accountId: string }) {
   if (!v.live) return <p className="text-[14px] text-fg-dim" data-testid="full-ai-revenue-not-live">Not live yet.</p>;
   return (
     <div className="space-y-4" data-testid="full-ai-revenue">
-      <p className="text-[12px] text-muted">Live since {v.since}. Money: cleared, every kind, first 14 days per Fan.</p>
+      <p className="text-[12px] text-muted">Live since {v.since}. Money: cleared + pending, every kind, first 14 days per Fan.</p>
       <div className="overflow-x-auto">
         <table className={IF_TABLE.table} aria-label="Revenue per arm">
           <thead>

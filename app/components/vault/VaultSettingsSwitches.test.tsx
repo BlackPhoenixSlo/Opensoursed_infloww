@@ -1,6 +1,6 @@
 /**
- * The Creator's two vault switches: both off until tapped, one PUT per tap, and the Set price modal's promise
- * follows "Folder price is final" (off: the old line; on: the saved price cannot be changed).
+ * The Creator's vault switches: two off and "Sequences: solo only" on until tapped, one PUT per tap, and the Set
+ * price modal's promise follows "Folder price is final" (off: the old line; on: the saved price cannot be changed).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
@@ -17,7 +17,7 @@ vi.mock("@/lib/relay", async (orig) => {
 import { FolderPriceModal } from "@/components/vault/VaultFolderRail";
 import VaultSettingsSwitches from "@/components/vault/VaultSettingsSwitches";
 
-const OFF = { folder_price_final: false, standard_folders: false };
+const OFF = { folder_price_final: false, standard_folders: false, solo_sequences: true };  // the defaults
 
 beforeEach(() => {
   h.get.mockReset();
@@ -26,20 +26,36 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("VaultSettingsSwitches", () => {
-  it("shows both switches off and saves one tap as one PUT", async () => {
+  it("shows the defaults (two off, solo on) and saves one tap as one PUT", async () => {
     h.get.mockResolvedValue({ account_id: "1000001", ...OFF });
     h.put.mockResolvedValue({ account_id: "1000001", ...OFF, folder_price_final: true });
     renderWithProviders(<VaultSettingsSwitches accountId="1000001" />);
     const price = await screen.findByRole("switch", { name: "Folder price is final" });
     const standard = screen.getByRole("switch", { name: "Standard folders" });
+    const solo = screen.getByRole("switch", { name: "Sequences: solo only" });
     expect(price).toHaveAttribute("aria-checked", "false");
     expect(standard).toHaveAttribute("aria-checked", "false");
+    expect(solo).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("Fill never puts partner (BG/GG) content into Sequences.")).toBeInTheDocument();
     fireEvent.click(price);
     await waitFor(() => expect(price).toHaveAttribute("aria-checked", "true"));
     expect(h.put).toHaveBeenCalledTimes(1);
     expect(h.put.mock.calls[0].slice(0, 2)).toEqual(
       ["/admin/vault-ai/settings", { account_id: "1000001", folder_price_final: true }]);
     expect(standard).toHaveAttribute("aria-checked", "false");
+    expect(solo).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("turning \"Sequences: solo only\" off is one PUT of solo_sequences: false", async () => {
+    h.get.mockResolvedValue({ account_id: "1000001", ...OFF });
+    h.put.mockResolvedValue({ account_id: "1000001", ...OFF, solo_sequences: false });
+    renderWithProviders(<VaultSettingsSwitches accountId="1000001" />);
+    const solo = await screen.findByRole("switch", { name: "Sequences: solo only" });
+    fireEvent.click(solo);
+    await waitFor(() => expect(solo).toHaveAttribute("aria-checked", "false"));
+    expect(h.put).toHaveBeenCalledTimes(1);
+    expect(h.put.mock.calls[0].slice(0, 2)).toEqual(
+      ["/admin/vault-ai/settings", { account_id: "1000001", solo_sequences: false }]);
   });
 
   it("a failed save says so and leaves the switch as it was", async () => {

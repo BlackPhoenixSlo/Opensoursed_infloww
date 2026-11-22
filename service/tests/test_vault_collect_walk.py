@@ -12,7 +12,8 @@ the picker routes read (same keys), thumbs for every media with a live link, new
 (manual Collect, a person mid-walk, a proxy change) pause at the cursor without an
 error; the page cap is not a full walk; one bad folder page does not stop the walk;
 thumb workers stop together; old auto rows are pruned; every OF call is inside an
-of_pacing walk.
+of_pacing walk. A thumbs pass with every file on disk parses no raw_json and checks
+the files off the event loop; only the missing ones' payloads are read.
 
 Run: ./venv/bin/python service/tests/test_vault_collect_walk.py   (exit 0 = pass)
 """
@@ -257,6 +258,38 @@ async def case_thumbs_skip_expired_links():
     files = sorted(int(p.stem) for p in (vault_stills.THUMB_DIR / "accTx").glob("*.jpg"))
     assert files == list(range(2, 251, 2)), (len(files), files[:3])
     assert not any(u.endswith("?Expires=7") for u in _thumb_fetches), _thumb_fetches[:3]
+
+
+async def case_thumbs_present_cost_no_payload_reads():
+    """#851: the pass ran `is_file` + `load_json` per live row on the event loop every run (12.6k rows on AE)."""
+    await _reset("accTp")
+    await vc.tick()
+    assert len(_thumb_fetches) == 250
+    loop_thread = threading.current_thread()
+    parsed: list = []
+    on_loop: list = []
+    real_load, real_path = vc.load_json, vault_stills.thumb_path
+
+    def counting_load(raw, default):
+        parsed.append(1)
+        return real_load(raw, default)
+
+    def watched_path(aid, mid):
+        if threading.current_thread() is loop_thread:
+            on_loop.append(mid)
+        return real_path(aid, mid)
+    vc.load_json, vault_stills.thumb_path = counting_load, watched_path
+    try:
+        _thumb_fetches.clear()
+        await vc._thumbs("accTp", _CLIENTS["accTp"])
+        assert not parsed and not _thumb_fetches, (len(parsed), len(_thumb_fetches))
+        assert not on_loop, f"{len(on_loop)} file checks on the event loop"
+        for mid in (3, 120, 250):
+            (vault_stills.THUMB_DIR / "accTp" / f"{mid}.jpg").unlink()
+        await vc._thumbs("accTp", _CLIENTS["accTp"])
+        assert len(parsed) == 3 and len(_thumb_fetches) == 3, (len(parsed), _thumb_fetches)
+    finally:
+        vc.load_json, vault_stills.thumb_path = real_load, real_path
 
 
 async def case_one_account_at_a_time():

@@ -17,6 +17,8 @@ with upstream 500 "signed session retired" instead of OF's 400.
   (watch:signed_pool_503 counts them).
   case_dead_session_on_a_replaced_client_keeps_the_fresh_one: a 101 met on a
       client the pool already replaced evicts nothing; the fresh one stays live.
+      Nor does it mark the Creator session-dead (the fresh client re-marks if truly dead);
+  case_dead_session_on_the_pooled_client_marks_it: a 101 on the pooled client does.
   case_preloaded_client_late_101_keeps_the_fresh_one: the same for a client
       loaded before _proxy (mass send's bound method) and named by `client=`.
   case_evict_only: client_pool.evict(aid, only=c) drops c only while pooled.
@@ -134,7 +136,8 @@ def _status_logged(method: str) -> tuple[HTTPException, list[str]]:
         server.log.removeHandler(h)
 
 
-server._kick_mark_session_dead = lambda *a, **k: None  # the flag's own tests: test_agency_notifications
+MARKED: list[str] = []
+server._kick_mark_session_dead = lambda aid, *a, **k: MARKED.append(aid)  # the flag's own tests: test_agency_notifications
 
 
 def case_retired_read_reruns_on_the_current_client():
@@ -183,11 +186,21 @@ def case_dead_session_on_a_replaced_client_keeps_the_fresh_one():
         client_pool.get(AID)           # ...and a later read built the fresh one
         raise _otp()                   # this read's own 101 comes back after both
     built = _with_pool([replaced_then_101, lambda c: {"ok": True}])
+    MARKED.clear()
     e = _status("GET")
     assert e.status_code == 502 and e.detail["upstream_status"] == 400, (e.status_code, e.detail)
     assert len(built) == 2 and client_pool._POOL.get(AID) is built[1], "fresh client evicted"
     assert not built[1].retired, "fresh client's signed sessions retired"
+    assert MARKED == [], f"late 101 from a retired client paused the Creator: {MARKED}"  # W30 #9
     assert _proxy("GET") == {"ok": True}
+
+
+def case_dead_session_on_the_pooled_client_marks_it():
+    _with_pool([_answers_101])
+    MARKED.clear()
+    e = _status("GET")
+    assert e.status_code == 502, e.status_code
+    assert MARKED == [AID], MARKED
 
 
 def case_preloaded_client_late_101_keeps_the_fresh_one():

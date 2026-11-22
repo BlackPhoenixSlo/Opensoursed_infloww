@@ -204,6 +204,30 @@ def case_house_keys_are_master_only():
     assert master.get("/admin/secrets").status_code == 200
 
 
+def case_the_audit_row_keeps_house_key_names_never_values():
+    """W30 N1: the route is a `credential_write`, so the audit middleware (which reads the
+    flag after the handler ran) stores which keys were set or cleared, never a value, even
+    for a name the secret-name rule would keep (a provider's, or an env-style `*_KEY` kept
+    as set/cleared rather than "***")."""
+    import json
+    from sqlalchemy import select
+    from db.models import Action
+    _reset(SHARE_TOKEN="")
+    asyncio.run(_seed("secrets_audit_master", is_admin=True))
+    master = _login("secrets_audit_master")
+    r = master.put("/admin/secrets", json={"HELP_ASSISTANT_DEEPSEEK_KEY": "sk-house-audit-1234",
+                                           "DEEPSEEK_API_KEY": ""})
+    assert r.status_code == 200, r.text
+
+    async def _rows():
+        async with get_session() as s:
+            return (await s.execute(select(Action.payload_json).where(
+                Action.action == "PUT /admin/secrets"))).scalars().all()
+    rows = asyncio.run(_rows())
+    assert rows and all("sk-house-audit-1234" not in (p or "") for p in rows), rows
+    assert json.loads(rows[-1]) == {"HELP_ASSISTANT_DEEPSEEK_KEY": "set", "DEEPSEEK_API_KEY": "cleared"}, rows
+
+
 def case_founder_password_bootstraps_from_the_ui_then_locks():
     """The second factor has to be settable once, and only once, from here.
 
@@ -510,6 +534,7 @@ _harness.run(
     case_masked_placeholder_is_refused_not_stored,
     case_masked_write_over_http_is_a_400,
     case_house_keys_are_master_only,
+    case_the_audit_row_keeps_house_key_names_never_values,
     case_founder_password_bootstraps_from_the_ui_then_locks,
     case_founder_password_still_falls_back_to_env,
     case_env_rotates_a_store_bootstrapped_founder_password,

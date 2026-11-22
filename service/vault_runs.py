@@ -5,9 +5,11 @@
   manual_running     accounts a manual Collect is sweeping right now (process-local)
   AUTO_PHASE_PREFIX  every collector run's phase starts with it
   update_run         set fields on one VaultCacheRun row
+  STOPPED            the phase of a stopped manual Collect (not a walk)
+  UNVERIFIED         the phase of a manual Collect OF's list shifted under (GAP_ERROR; not a walk)
   walked_since       a whole-vault walk (or a capped one) finished since — the collector's schedule
   full_walk_done     THE "the whole vault was walked" question (`complete`)
-  capped_error       the error text a page-capped walk ends done with
+  capped_error       the error text a page-capped walk ends done with (GAP_ERROR: one OF's list shifted under)
   latest_manual_run  the Collect button's latest run (auto:* runs excluded)
   prune_auto_runs    bound the collector's run rows per account
   upsert_page        one OF vault/media page into the mirror
@@ -30,6 +32,8 @@ from jsonsafe import load_json
 manual_running: set[str] = set()
 AUTO_PHASE_PREFIX = "auto:"
 AUTO_RUNS_KEPT = 10   # newest collector rows kept per account (+ its newest walk)
+STOPPED = "stopped"   # the phase of a manual Collect the operator stopped (or left paused): done, never a walk
+UNVERIFIED = "unverified"   # the phase of a manual Collect that ended with a gap (GAP_ERROR): done, never a walk
 
 
 async def update_run(run_id: int, **fields: Any) -> None:
@@ -47,11 +51,16 @@ def capped_error(max_pages: int) -> str:
     return f"walk capped at {max_pages} pages (hasMore still true)"
 
 
+GAP_ERROR = ("walk not verified: OF's list shifted mid-walk (items removed), some items may be unseen; "
+             "not counted as a walk, so the next scheduled walk runs again")   # `vault_collect_plan` gap
+
+
 def _walked():
     """A finished vault walk: a manual Collect (phase "done") or a collector run that
     paged All (phase "auto:done" with pages_done > 0 — a hot-set-only refresh leaves
-    0). One the page cap stopped counts too; it carries `capped_error` (a done row
-    has an error only then)."""
+    0). One the page cap stopped counts too; it carries `capped_error` (`full_walk_done`
+    false). A Collect the operator stopped mid-walk (phase STOPPED) or whose list shifted
+    under it (phase UNVERIFIED, GAP_ERROR: items may be unseen) is no walk at all."""
     return (VaultCacheRun.status == "done") & or_(
         VaultCacheRun.phase == "done",
         (VaultCacheRun.phase == f"{AUTO_PHASE_PREFIX}done") & (VaultCacheRun.pages_done > 0))

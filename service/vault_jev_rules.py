@@ -31,6 +31,13 @@ VERSION = "v8+nn.10"
 JEV_KEY = "_jev"
 # `_jev.review` of a held clip (`vault_jev_pass.held_blob`; `vault_ai_brief`: disputed, never in a free lane).
 HELD = "fetch_failed"
+# `_jev.status` of a clip whose sources kept failing (`vault_jev_pass.RETRY_MAX` holds): no reading (not `current`),
+# never re-read by a sweep, review (never free). The one predicate: `gave_up`.
+GAVE_UP = "jev_gave_up"
+# Jev-pass visit statuses about the item, not the sweep (`vault_sweep.NEUTRAL` reads these): a held clip inside its
+# retry backoff (`vault_jev_pass.retry_due`), and an item skipped because TypeSafe's daily cap tripped this sweep.
+RETRY_WAIT = "jev_retry_wait"
+JEV_CAPPED = "jev_capped"
 # The kinds Jev reads (photos: one still; videos: 12 frames, `video_blob`) — the only kinds with flags.
 JEV_KINDS = ("photo", "video")
 # A video blob's frame source + combine (12 frames @720p, top-3 escalation, max lane): `current` needs it too.
@@ -244,6 +251,28 @@ def blob(d: dict[str, Any], scores: dict[str, float], *, passes: list[str], tok:
     }
 
 
+def gave_up(fields: dict[str, Any] | None) -> bool:
+    """The row's `_jev` is a clip the Jev pass gave up on (`vault_jev_pass.held_blob(terminal=True)`): status
+    GAVE_UP, or the pre-F4 shape of the same stamp (status ok, `review` HELD, no frames, its `retries` count). The
+    sweeps neither fetch nor reselect it; Describe skips it as terminal (`vault_ai_vision_decide.is_terminal`); it is
+    no reading (`current` False: not mapped, not fed, never a duplicate's source)."""
+    j = (fields or {}).get(JEV_KEY)
+    if not isinstance(j, dict) or j.get("review") != HELD:
+        return False
+    return j.get("status") == GAVE_UP or (j.get("status") == "ok" and j.get("frames") == [] and "retries" in j)
+
+
+GAVE_UP_MARK = "gave_up"   # `_jev` key a terminal hold sets (`vault_jev_pass.held_blob`); picks / failed re-reads keep it
+
+
+def retries_spent(fields: dict[str, Any] | None) -> bool:
+    """The Jev pass stopped retrying this clip: `gave_up`, or a gave-up hold an operator pick (`vault_jev_manual`)
+    or a failed re-read (`vault_jev.merge`) has since rewritten (its GAVE_UP_MARK stays). No sweep fetches it; a
+    successful read (a new blob) clears it. Unlike `gave_up` it says nothing about pricing (W30 C2)."""
+    j = (fields or {}).get(JEV_KEY)
+    return gave_up(fields) or (isinstance(j, dict) and j.get(GAVE_UP_MARK) is True)
+
+
 def current(fields: dict[str, Any] | None) -> bool:
     """The row carries a successful `_jev` of this VERSION (nothing for a sweep to do). A blob without `state` (made
     before the region states were stored, same VERSION) is not current: the flags mapper needs it to tell a region
@@ -252,20 +281,30 @@ def current(fields: dict[str, Any] | None) -> bool:
     j = (fields or {}).get(JEV_KEY)
     return (isinstance(j, dict) and j.get("v") == VERSION and j.get("status") == "ok" and "lane5" in j
             and isinstance(j.get("state"), dict)
-            and (j.get("kind") != "video" or (j.get("vv") == VIDEO_VERSION and isinstance(j.get("frames"), list))))
+            and (j.get("kind") != "video" or (j.get("vv") == VIDEO_VERSION and isinstance(j.get("frames"), list)))
+            and not gave_up(fields))
+
+
+def json_or_empty(col: Any) -> Any:
+    """A JSON text column as SQL JSON1 can read it: its text when valid, else "{}" (NULL / junk reads as no keys)."""
+    ai = func.coalesce(col, "")
+    return case((func.json_valid(ai), ai), else_=literal("{}"))
 
 
 def current_sql(col: Any) -> Any:
     """`current` as a SQL predicate (SQLAlchemy, SQLite JSON1) over an ai_fields JSON text column: the same rules,
     so a listing filter and the Python check agree (tests/test_toolbox case_current_sql)."""
     ai = func.coalesce(col, "")
-    ok = case((func.json_valid(ai), ai), else_=literal("{}"))
+    ok = json_or_empty(col)
     j = lambda path: func.json_extract(ok, f"$.{JEV_KEY}.{path}")  # noqa: E731
     kind = lambda path: func.json_type(ok, f"$.{JEV_KEY}{path}")  # noqa: E731
     video = func.coalesce(j("kind"), "") == "video"
+    # `gave_up`'s pre-F4 shape (status ok, review HELD, no frames, `retries`)
+    legacy_gave_up = ((func.coalesce(j("review"), "") == HELD) & kind(".retries").isnot(None)
+                      & (kind(".frames") == "array") & (func.json_array_length(ok, f"$.{JEV_KEY}.frames") == 0))
     return ((func.instr(ai, f'"{JEV_KEY}"') > 0) & (kind("") == "object") & (j("v") == VERSION)
             & (j("status") == "ok") & kind(".lane5").isnot(None) & (kind(".state") == "object")
-            & (~video | ((j("vv") == VIDEO_VERSION) & (kind(".frames") == "array"))))
+            & (~video | ((j("vv") == VIDEO_VERSION) & (kind(".frames") == "array"))) & ~legacy_gave_up)
 
 
 MANUAL = "manual"   # `_jev["made"]`: a blob built from operator picks alone (`vault_jev_manual`), no Jev reading
@@ -343,18 +382,152 @@ def unpack(vals: list[Any], order: Order) -> dict[str, Any]:
     return out
 
 
+def order_of(qs: dict[str, dict]) -> Order:
+    """A question spec's (`vault_jev.Q`, …) positional layout: (question, its Choice options | None for a Noul)."""
+    return [(k, None if q["type"] == "noul" else list(q["criteria"])) for k, q in qs.items()]
+
+
+# Each pass's positional layout in a STORED video frame (`pack`): a storage contract, so frozen here rather than
+# built from `vault_jev`'s questions — a question change needs a VIDEO_VERSION bump and a new layout. Tests pin it
+# equal to `order_of(vault_jev.Q / Q2 / crop_questions)` AND to a sha256 per VIDEO_VERSION, so an edit under the
+# same version fails (test_vault_jev case_video_order_pinned).
+ORDER: dict[str, Order] = {
+  "1": [
+    ('person_present', None), ('people_count', ['one', 'two_or_more', 'none']), ('nipple_visible_a', None),
+    ('nipple_visible_b', None), ('nipple_through_fabric', None), ('vulva_visible_a', None),
+    ('vulva_visible_b', None), ('butt_cheeks_bare', None), ('penetration', None), ('penetration_b', None),
+    ('breasts_state_a', ['bare', 'sheer_covered', 'sexy_covered', 'normal_covered', 'hidden_not_worn', 'not_visible']),
+    ('breasts_state_b', ['not_visible', 'hidden_not_worn', 'normal_covered', 'sexy_covered', 'sheer_covered', 'bare']),
+    ('crotch_state_a', ['bare', 'sheer_covered', 'sexy_covered', 'normal_covered', 'hidden_not_worn', 'not_visible']),
+    ('crotch_state_b', ['not_visible', 'hidden_not_worn', 'normal_covered', 'sexy_covered', 'sheer_covered', 'bare']),
+    ('butt_state_a', ['bare', 'sheer_covered', 'sexy_covered', 'normal_covered', 'hidden_not_worn', 'not_visible']),
+    ('added_text', ['caption_text', 'emoji_or_sticker_only', 'nothing_added']), ('watermark', None),
+    ('clothing_print_text', None), ('censor_edit', None),
+    ('toy', ['no_toy', 'toy_visible_not_in_use', 'toy_touching_or_inserted']),
+    ('feet_detail_a', ['not_in_picture', 'bare', 'socks', 'stockings_fishnets_nylons', 'heels', 'other_shoes']),
+    ('feet_detail_b', ['other_shoes', 'heels', 'stockings_fishnets_nylons', 'socks', 'bare', 'not_in_picture']),
+    ('feet_focus', None),
+    ('outfit', ['nude', 'topless_with_bottoms', 'lingerie_or_bodysuit', 'swimwear', 'everyday_clothes', 'sheet_or_towel']),
+    ('setting', ['bedroom', 'bathroom', 'living_room', 'kitchen', 'outdoors', 'car', 'gym', 'other']),
+    ('mirror_selfie', None), ('hair', ['down', 'ponytail_or_bun', 'braids', 'covered_or_not_visible']),
+    ('self_touch', None), ('legs_spread', None), ('mouth_tease', None), ('topless', None), ('see_through', None),
+    ('pulling_clothes', None), ('tongue_out', None), ('smiling', None), ('jewelry', None), ('phone_visible', None),
+    ('pose', ['standing', 'sitting', 'kneeling', 'lying_on_back', 'lying_on_stomach', 'lying_on_side', 'all_fours_or_bent_over', 'close_up_no_pose']),
+    ('framing', ['face_close_up', 'face_and_chest', 'upper_body', 'most_of_body', 'full_body', 'body_part_close_up', 'body_no_face']),
+    ('face_visible', ['full_face', 'partial_face', 'no_face']), ('facing', ['toward_camera', 'side', 'away']),
+    ('looking_at_camera', None), ('breasts_focus', None), ('butt_focus', None), ('crotch_focus', None),
+    ('wears_heels', None), ('wears_stockings_or_fishnets', None), ('wears_socks', None), ('bare_toes_visible', None),
+    ('soles_visible', None), ('feet_in_water', None), ('multi_panel', None),
+  ],
+  "2": [
+    ('nipple_visible_a', None), ('nipple_visible_b', None), ('vulva_visible_a', None), ('vulva_visible_b', None),
+    ('breasts_state_a', ['bare', 'sheer_covered', 'sexy_covered', 'normal_covered', 'hidden_not_worn', 'not_visible']),
+    ('breasts_state_b', ['not_visible', 'hidden_not_worn', 'normal_covered', 'sexy_covered', 'sheer_covered', 'bare']),
+    ('crotch_state_a', ['bare', 'sheer_covered', 'sexy_covered', 'normal_covered', 'hidden_not_worn', 'not_visible']),
+    ('crotch_state_b', ['not_visible', 'hidden_not_worn', 'normal_covered', 'sexy_covered', 'sheer_covered', 'bare']),
+    ('penetration', None), ('penetration_b', None), ('topless', None), ('nipple_through_fabric', None),
+  ],
+  "L": [
+    ('vulva_visible_a', None), ('vulva_visible_b', None),
+  ],
+}
+RESP = {"1": "resp", "2": "resp2", "L": "respL"}   # pass → its bench record key
+NN = ("FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED")   # the classes NN_D34 reads, stored per frame
+
+
+def frame_recs(jev: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
+    """A stored video `_jev`'s frames back as bench records + NudeNet scores: `video_final` over them re-derives
+    the stored lane without a refetch."""
+    recs = [{RESP[p]: {"answers": unpack(f[p], ORDER[p])} for p in ORDER if p in f} for f in jev["frames"]]
+    return recs, [dict(zip(NN, f["nn"])) for f in jev["frames"]]
+
+
+# The three body answers a free check reads (each must be a plain "n"). A clip's are the WORST over its frames on a
+# free clip (F1b: a clean frame can win the max-frame tie over one with an unsure body, and a free clip must not hide
+# it): `video_blob` stores them stamped `body` BODY_WORST; a stored clip without the stamp re-derives them from its
+# packed frames at read (`body`), no re-read.
+BODY = ("breasts_bare", "crotch_bare", "penetration")
+BODY_WORST = "worst"
+# An operator region pick (`vault_jev_manual`) → the body answer it sets; its inverse says which pick owns one.
+REGION_BODY = {"breasts": "breasts_bare", "crotch": "crotch_bare", "penetration": "penetration"}
+_PICKED = {v: k for k, v in REGION_BODY.items()}
+
+
+def worst(vals: Any) -> str:
+    """The most-bare of some body answers: "y" if any is, "n" only if all are, else "unsure" (missing included)."""
+    vals = list(vals)
+    return "y" if "y" in vals else "n" if vals and all(v == "n" for v in vals) else "unsure"
+
+
+def worst_body(ds: list[dict[str, Any]]) -> dict[str, str]:
+    """`worst` per BODY answer over derived frames."""
+    return {k: worst(d.get(k) for d in ds) for k in BODY}
+
+
+UNDECODED = "undecoded"   # `body`: a stored frame that does not re-derive — no reading at all, not Jev half-seeing
+
+
+def body(jev: dict[str, Any]) -> dict[str, Any]:
+    """The body answers (`BODY`) a free check reads off one current `_jev`: its own, except a free clip stored
+    before `video_blob` kept the worst over its frames (no `body` stamp) — re-derived from its packed frames
+    (`frame_recs`, no refetch; F1b), worse of the two; frames that do not re-derive read UNDECODED (not free, and
+    a dispute: `undecoded`). An operator's pick (`vault_jev_manual`: the lane, or that region) keeps its own answer."""
+    own = {k: jev.get(k) for k in BODY}
+    op = set(jev.get("op") or ())
+    if (jev.get("kind") != "video" or jev.get("body") == BODY_WORST or read_lane(jev) != "free"
+            or "lane" in op or not jev.get("frames")):
+        return own
+    try:
+        derived = worst_body(video_final(*frame_recs(jev))[0])
+    except Exception:  # noqa: BLE001 — a frame that does not re-derive: no reading, never free (W30 C1)
+        return {k: own[k] if _PICKED[k] in op else UNDECODED for k in BODY}
+    return {k: own[k] if _PICKED[k] in op else worst((own[k], derived[k])) for k in BODY}
+
+
+def undecoded(jev: Any) -> bool:
+    """A current `_jev` whose stored frames do not re-derive (`body` UNDECODED): a dispute
+    (`vault_ai_brief._contradictions` jev_bare_unflagged), never free."""
+    return current({JEV_KEY: jev}) and UNDECODED in body(jev).values()
+
+
+def bare_regions(jev: Any, b: dict[str, Any] | None = None) -> dict[str, bool] | None:
+    """The flag regions (`breasts_vis` / `vulva_vis` / `anus_vis`) a current, settled `_jev` reads bare — what the
+    flags mapper (`vault_jev_flags.reading`) stamps "bare", and what `vault_ai_brief._contradictions` holds stored
+    flags to (jev_bare_unflagged). None when it is not a current reading in a price lane. By the FINAL lane, and a
+    firm `body` "y" is bare in any lane (settle nn.10 can file one free; F1a) unless the operator picked the lane
+    (`vault_jev_manual`: the pick wins). `b`: its `body`, when the caller already has it."""
+    lane = read_lane(jev) if isinstance(jev, dict) else None   # a review clip: what it read
+    if not current({JEV_KEY: jev}) or lane not in (*PAID, "free"):
+        return None
+    firm = "lane" not in (jev.get("op") or ())
+    b = b if b is not None else body(jev)   # a free clip's: the worst over its frames (F1b)
+    bare_b = lane == "$10" or (b["breasts_bare"] == "y" and (firm or lane in ("$50", "$100")))
+    bare_v = lane == "$50" or (lane == "$100" and jev.get("crotch_bare") != "n") \
+        or (firm and b["crotch_bare"] == "y")
+    return {"breasts_vis": bare_b, "vulva_vis": bare_v, "anus_vis": lane == "$100" and not bare_v}
+
+
+def body_free(jev: dict[str, Any]) -> bool:
+    """FREE GUARD on the body: every `body` answer a plain "n" (y / unsure / missing: not free). The one check the
+    topic folders, the pack picker's free rung and the not-nude listing all read (W30 R1)."""
+    return all(v == "n" for v in body(jev).values())
+
+
 def video_blob(ds: list[dict[str, Any]], top: int, recs: list[dict[str, Any]], scores: list[dict[str, float]], *,
                frames: list[dict[str, Any]], passes: list[str], tok: int, px: list[list[int]], at: str, src: str,
                review: str | None, nbytes: int) -> dict[str, Any]:
     """A video's `_jev`: the max frame's photo-shaped `blob` (the flags mapper and the describe facts read it
     unchanged) + `kind` video, `vv`, the max `frame`, every frame's packed answers (`frames`), the frame source
-    (`src` preview | 720 | 240 | full | poster), `review` (why the reading may be too low: no_720 | over_cap | poster_only | long |
+    (`src` preview | 720 | 240 | full | poster), a free clip's body answers the worst over its frames (`BODY`),
+    `review` (why the reading may be too low: no_720 | over_cap | poster_only | long |
     few_frames; `vault_ai_brief` keeps such a video out of every free lane) and the downloaded `bytes`. A review
     reading under $100 is `lane5` "review" (an unknown tier: `vault_pack_picker` never prefills it free), its own
     lane kept as `read_lane5` (`read_lane`, what the flags mapper reads); a $100 one cannot be priced too low."""
     b = blob(ds[top], scores[top], passes=passes, tok=tok, px=px[top], at=at, answers=overlay(recs[top], ds[top]))
     b.update(kind="video", vv=VIDEO_VERSION, frame=top, frames=frames, src=src, review=review or None,
-             bytes=int(nbytes))
+             bytes=int(nbytes), body=BODY_WORST)
+    if b["lane5"] == "free":
+        b.update(worst_body(ds))
     if review and b["lane5"] != "$100":
         b.update(lane5="review", read_lane5=b["lane5"])
     return b

@@ -11,7 +11,7 @@
  * Per-account list. UI merges these with the OF welcome at render time.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   relay, RelayError, type FillApplyResult, type FillPlan, type FillUndoEntry, type FillUndoResult, type SavedReply,
@@ -254,14 +254,26 @@ export function fillPlanKey(accountId: string | null, sequence: string | null) {
   return [KEY, accountId, "fill-plan", sequence] as const;
 }
 
+/** A Fill plan is never persisted (the `saved-replies` prefix is): a reload's restored "Ready to fill" would be
+ *  a stale verdict. Every way a plan enters the cache carries this meta. */
+const FILL_PLAN_META = { persist: false } as const;
+
+/** Put `plan` in the cache as the Sequence's Fill plan, created with `FILL_PLAN_META` when no dialog holds it. */
+function seedFillPlan(qc: QueryClient, account: string, sequence: string, plan: FillPlan) {
+  const queryKey = fillPlanKey(account, sequence);
+  qc.getQueryCache().build(qc, { queryKey, meta: FILL_PLAN_META });
+  qc.setQueryData(queryKey, plan);
+}
+
 /** The read-only Fill plan of one Sequence (`POST …/fill/plan`), read fresh on every mount (`staleTime` 0). */
-export function useFillPlan(accountId: string | null, sequence: string | null, enabled: boolean) {
+export function useFillPlan(accountId: string | null, sequence: string | null) {
   return useQuery<FillPlan>({
     queryKey: fillPlanKey(accountId, sequence),
-    enabled: enabled && !!accountId && !!sequence,
+    enabled: !!accountId && !!sequence,
     queryFn: () => relay.post<FillPlan>(fillUrl("plan", accountId), { sequence }),
     staleTime: 0,
     refetchOnWindowFocus: false,
+    meta: FILL_PLAN_META,
   });
 }
 
@@ -275,6 +287,8 @@ export function stalePlan(err: unknown): FillPlan | null {
 /** One press's Fill (`POST …/fill/apply {sequence}`, no fingerprint). A non-`ok` answer, and a 409 `stale`
  *  (`stalePlan`, still thrown), seed the Sequence's Fill plan with their plan, so the dialog opens on it. The
  *  list is refetched on success AND on error: a committed write whose answer was lost still reaches the cards.
+ *  The answer waits for that refetch, so the page's Fill lock (`fill.inflight`) holds until it ends; one that
+ *  failed leaves the list query in error, which keeps the page's lock until a reload succeeds.
  *  `account`: the Creator the press went out on, passed with it (the hook's render may already show another). */
 export function useFillApply() {
   const qc = useQueryClient();
@@ -282,21 +296,21 @@ export function useFillApply() {
     mutationFn: async ({ account, sequence }) => {
       try {
         const r = await relay.post<FillApplyResult>(fillUrl("apply", account), { sequence });
-        if (r.status !== "ok" && r.plan) qc.setQueryData(fillPlanKey(account, sequence), r.plan);
+        if (r.status !== "ok" && r.plan) seedFillPlan(qc, account, sequence, r.plan);
         return r;
       } catch (e) {
         const fresh = stalePlan(e);
-        if (fresh) qc.setQueryData(fillPlanKey(account, sequence), fresh);
+        if (fresh) seedFillPlan(qc, account, sequence, fresh);
         throw e;
       } finally {
-        void qc.invalidateQueries({ queryKey: [KEY, account] });
+        await qc.invalidateQueries({ queryKey: [KEY, account] });
       }
     },
   });
 }
 
 /** A Fill notice's Undo (`POST …/fill/undo {sequence, undo}`), the Undo list passed verbatim; the list is
- *  refetched on success and on error. `account`: the Creator the notice was written on (not always the one shown). */
+ *  refetched on success and on error, before the answer (as `useFillApply`). `account`: the Creator the notice was written on (not always the one shown). */
 export function useFillUndo() {
   const qc = useQueryClient();
   return useMutation<FillUndoResult, Error, { account: string; sequence: string; undo: FillUndoEntry[] }>({
@@ -304,7 +318,7 @@ export function useFillUndo() {
       try {
         return await relay.post<FillUndoResult>(fillUrl("undo", account), body);
       } finally {
-        void qc.invalidateQueries({ queryKey: [KEY, account] });
+        await qc.invalidateQueries({ queryKey: [KEY, account] });
       }
     },
   });

@@ -9,6 +9,11 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() } }));
 vi.mock("@/lib/shareToken", () => ({ resolveShareToken: () => null }));
+// The provider's account list (`useAccounts`): the models that still exist.
+const accts = vi.hoisted(() => ({ ids: ["acc-a", "acc-b"] }));
+vi.mock("@/hooks/useAccounts", () => ({
+  useAccounts: () => ({ isSuccess: true, data: { accounts: accts.ids.map((id) => ({ id })), watchers: [] } }),
+}));
 // `hold.on`: a share run counts every fetched file as huge, so any unsaved file holds the workers in room() (as
 // >= SHARE_HELD_BYTES unsaved would) without the test allocating 400 MB.
 const hold = vi.hoisted(() => ({ on: false }));
@@ -20,9 +25,9 @@ vi.mock("@/components/vault/vaultDownloadReducer", async (orig) => {
 
 import { relay, type VaultMedia } from "@/lib/relay";
 
-import { useVaultDownload } from "./VaultDownloadPanel";
+import { useVaultDownload, useVaultDownloadContext, VaultDownloadProvider } from "./VaultDownloadPanel";
 import { linksFor, STALL_MS, type StartArgs } from "./vaultDownload";
-import { canRetry, summarize, unsaved } from "./vaultDownloadReducer";
+import { BUSY_OFF, canRetry, downloadGate, summarize, unsaved } from "./vaultDownloadReducer";
 
 const get = relay.get as unknown as ReturnType<typeof vi.fn>;
 const picker = vi.fn();
@@ -51,6 +56,7 @@ const deferred = <T,>() => {
 const closed = () => new DOMException("closed", "AbortError");
 
 beforeEach(() => {
+  accts.ids = ["acc-a", "acc-b"];
   hold.on = false;
   fetched.length = 0;
   failId = 2;
@@ -122,6 +128,30 @@ describe("useVaultDownload: one run, its own model", () => {
     expect(result.current.state).toMatchObject({ accountId: "acc-a", creator: "Amy" });
     expect(fetched.every((u) => u.includes("account_id=acc-a"))).toBe(true);
     expect(fetched).toHaveLength(2);
+  });
+
+  // X3: access to A removed while A's picker is open: accepting the picker afterwards writes and fetches nothing.
+  it("a model removed while its picker is open: the picked folder gets nothing, the start is refused", async () => {
+    const pick = deferred<FileSystemDirectoryHandle>();
+    picker.mockReturnValueOnce(pick.promise);
+    const touched: string[] = [];
+    const spy = (path: string): FileSystemDirectoryHandle => ({
+      getDirectoryHandle: async (n: string) => { touched.push(`${path}/${n}/`); return spy(`${path}/${n}`); },
+      getFileHandle: async (n: string) => {
+        touched.push(`${path}/${n}`);
+        return { createWritable: async () => new WritableStream<Uint8Array>() };
+      },
+    }) as unknown as FileSystemDirectoryHandle;
+    const { result } = renderHook(() => useVaultDownload());
+    let started: Promise<boolean> = Promise.resolve(true);
+    act(() => { started = result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.picking).toBe(true));
+    act(() => result.current.keepAccounts(["acc-b"]));   // Amy removed, her picker still open
+    await act(async () => pick.resolve(spy("root")));
+    await expect(started).resolves.toBe(false);
+    expect(result.current.state).toMatchObject({ phase: "idle", picking: false, accountId: "" });
+    expect(touched).toEqual([]);
+    expect(fetched).toEqual([]);
   });
 
   it("Retry failed while another start's picker is open does nothing (no second queue)", async () => {
@@ -245,7 +275,7 @@ describe("useVaultDownload: the queue (folder sink)", () => {
     const { result } = renderHook(() => useVaultDownload());
     act(() => { void result.current.start(runA); });
     await waitFor(() => expect(result.current.state.phase).toBe("running"));
-    expect(result.current.queueing).toBe(true);
+    expect(downloadGate(result.current.state, result.current.sink, "selection", 1, "all").queues).toBe(true);
     let queued: boolean | undefined;
     await act(async () => { queued = await result.current.start(selB); });
     expect(queued).toBe(true);
@@ -358,6 +388,27 @@ describe("useVaultDownload: the queue (folder sink)", () => {
     expect(written).toContain("Amy/Unfiled/2.jpg");
   });
 
+  it("while Retry's permission ask is open, the Download controls say a download holds the slot (no silent no-op)", async () => {
+    failId = 2;
+    const ask = deferred<PermissionState>();
+    const written: string[] = [];
+    picker.mockResolvedValueOnce(Object.assign(rec(written, ""), { requestPermission: vi.fn(() => ask.promise) }));
+    const { result } = renderHook(() => useVaultDownload());
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("done"));
+    failId = null;
+    act(() => result.current.retryFailed());
+    // Bug: the gate said "" (enabled) while the hook's private ref refused every start.
+    expect(downloadGate(result.current.state, "folder", "selection", 1, "all").reason).toBe(BUSY_OFF);
+    let started: boolean | null = null;
+    await act(async () => { started = await result.current.start(runB); });
+    expect(started).toBe(false);
+    await act(async () => { ask.resolve("granted"); });
+    await waitFor(() => expect(result.current.state.phase).toBe("done"));
+    expect(result.current.state.claim).toBe(0);
+    expect(downloadGate(result.current.state, "folder", "selection", 1, "all").reason).toBe("");
+  });
+
   it("Clear queue drops the waiting jobs; Cancel current ends only the run", async () => {
     const { slow } = slowA();
     picker.mockResolvedValueOnce(rec([], ""));
@@ -390,7 +441,7 @@ describe("useVaultDownload: the queue (folder sink)", () => {
     expect(fetched.some((u) => u.includes("media_id=9"))).toBe(false);
   });
 
-  it("keepAccounts without the run's model (removed mid-run) cancels it and aborts its fetches", async () => {
+  it("keepAccounts without the run's model (removed mid-run) drops it and aborts its fetches", async () => {
     const { signals } = slowA();
     picker.mockResolvedValueOnce(rec([], ""));
     const { result } = renderHook(() => useVaultDownload());
@@ -399,7 +450,19 @@ describe("useVaultDownload: the queue (folder sink)", () => {
     act(() => result.current.keepAccounts(["acc-a", "acc-b"]));
     expect(result.current.state.phase).toBe("running");
     act(() => result.current.keepAccounts(["acc-b"]));
-    expect(result.current.state.phase).toBe("cancelled");
+    expect(result.current.state).toMatchObject({ phase: "idle", items: [], accountId: "" });
+    expect(signals.every((s) => s.aborted)).toBe(true);
+  });
+
+  it("the provider itself drops the run of a model that left the account list (no separate guard to mount)", async () => {
+    const { signals } = slowA();
+    picker.mockResolvedValueOnce(rec([], ""));
+    const { result, rerender } = renderHook(() => useVaultDownloadContext(), { wrapper: VaultDownloadProvider });
+    act(() => { void result.current.start(runA); });
+    await waitFor(() => expect(result.current.state.phase).toBe("running"));
+    accts.ids = ["acc-b"];   // Amy removed mid-run
+    rerender();
+    await waitFor(() => expect(result.current.state).toMatchObject({ phase: "idle", items: [], accountId: "" }));
     expect(signals.every((s) => s.aborted)).toBe(true);
   });
 });

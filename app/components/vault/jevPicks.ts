@@ -72,20 +72,11 @@ export function picksFromAi(ai: Record<string, unknown>): JevPicks {
   return out;
 }
 
-/** What the AI's reading says for `key` (`vault_jev_manual.value`): for a key already picked, the reading's own
- *  answer the server kept (`_jev.ai`). null: nothing read. */
-export function aiValue(jev: unknown, key: JevKey): string | null {
-  if (!jev || typeof jev !== "object") return null;
-  const j = jev as Record<string, unknown>;
-  if (Array.isArray(j.op) && j.op.includes(key)) {
-    const v = (j.ai as Record<string, unknown> | undefined)?.[key];
-    return typeof v === "string" ? v : null;
-  }
-  if (j.made === "manual") return null;
-  const v = key === "lane" ? j.lane5
-    : key === "breasts" || key === "crotch" || key === "butt" ? (j.state as Record<string, unknown> | undefined)?.[key]
-    : key === "penetration" ? j.penetration
-    : (j.tags as Record<string, unknown> | undefined)?.[key];
+/** What the AI's reading says for `key`: `_ai.jev_ai` (`vault_jev_manual.ai_reading` — for a picked key, the
+ *  reading's own answer the server kept). null: nothing read. */
+export function aiValue(ai: Record<string, unknown>, key: JevKey): string | null {
+  const reading = ai.jev_ai;
+  const v = reading && typeof reading === "object" ? (reading as Record<string, unknown>)[key] : undefined;
   return typeof v === "string" ? v : null;
 }
 

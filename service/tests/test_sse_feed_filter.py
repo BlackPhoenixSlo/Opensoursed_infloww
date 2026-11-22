@@ -28,7 +28,7 @@ AID = "4242"
 
 async def _with_queues(fn):
     """Run `fn(sub, persisted)` with a live persist queue and one SSE subscriber."""
-    persisted: asyncio.Queue = asyncio.Queue()
+    persisted = events_persist._Lanes(10_000)
     events_persist._persist_queue = persisted
     sub = await events.subscribe(f"model:{AID}")
     try:
@@ -38,10 +38,11 @@ async def _with_queues(fn):
         events_persist._persist_queue = None
 
 
-def _drain(q: asyncio.Queue) -> list:
+def _drain(q) -> list:
+    """Everything queued on an SSE subscriber queue (asyncio.Queue) or the persist queue (events_persist._Lanes)."""
     out = []
     while not q.empty():
-        out.append(q.get_nowait())
+        out.append(q.take() if isinstance(q, events_persist._Lanes) else q.get_nowait())
     return out
 
 

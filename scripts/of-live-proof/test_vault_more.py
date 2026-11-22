@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 
 import ui_steps
 import undo_driver
+import undo_log
 from fake_layer import Recorder
 from live_entry import live_refusal
 from proof_core import Proof, Request, Run, Write, decide
@@ -289,6 +290,108 @@ def test_trigger_reversal_only_for_an_id_bound_undo():
     hide = Write("PUT", "/api2/v2/vault/media/hidden", relay="/admin/vault-ai/items/{media}/hide")
     line = _line(5, path="/api2/v2/vault/media/hidden", method="PUT")
     assert undo_driver.trigger_reversal(hide, {"row": 1, "wire_seq": 3}, "/api2/v2/vault/media/hidden", [line]) is None
+
+
+# ── follow-up #6: only a 2xx in-page reversal is the undo ──
+
+PPV, MSG = ALL["p2.bubble-unsend-ppv"], "/api2/v2/messages/9"
+
+
+@pytest.mark.parametrize("status, shown, sends", [
+    (500, [("9", "oi-proof-r", 3)], True),    # the UI's Unsend failed, the PPV still there: the driver sends its own
+    (500, [], False),                          # gone anyway: the failed line stays the record (the row FAILS loudly)
+    (500, None, False),                        # the fresh read failed: nothing sent
+    (200, [("9", "oi-proof-r", 3)], True),    # round 2 #21: 2xx (e.g. `{"success": false}`) but still shown: ours
+    (200, [], False),                          # 2xx and gone: the trigger's own is the record
+    (200, None, False),                        # 2xx, the fresh read failed: the trigger's line stays the record
+])
+def test_a_failed_in_page_unsend_is_no_undo_the_driver_sends_its_own_while_the_ppv_shows(status, shown, sends):
+    calls, reads = [], []
+
+    def read(tag):
+        reads.append(tag)
+        if shown is None:
+            raise RuntimeError("read failed")
+        return shown
+    wire = [_line(5, path=MSG, status=status)]
+    row = {"row": 1, "arm": 0, "wire_seq": 3, "of_id": "9"}
+    [(revs, unsent)] = undo_driver._send_all(
+        PPV, [row], lambda *a, **k: calls.append(a) or wire.append(_line(8, path=MSG)) or (200, "{}"),
+        lambda: wire, lambda r: {"id": "9", "account": "c1"}, {}, "c1", None, read=read)
+    assert unsent is None and reads == ["before-undo-retry"]
+    if sends:
+        assert calls == [("DELETE", "/api/of/v2/messages/9", None)]
+        assert (revs[0]["seq"], revs[0]["status"], revs[0]["relay"]) == (8, 200, "/api/of/v2/messages/9")
+    else:
+        assert calls == [] and (revs[0]["seq"], revs[0]["status"], revs[0]["by"]) == (5, status, "trigger")
+
+
+def _thread(ids, more, marked=()):
+    """A stubbed `get` answering the Proof fan's one page: message ids (newest first), `hasMore`, the marked ones."""
+    page = {"list": [{"id": i, "text": "oi-proof-r" if i in marked else "hi", "price": 3 if i in marked else 0}
+                     for i in ids], "hasMore": more}
+    return lambda path, params: page
+
+
+_BEFORE = (range(20, 10, -1), True)   # the PPV's chat before the send: ten messages on page one, older ones beyond
+
+
+@pytest.mark.parametrize("after, gone", [
+    ((range(20, 10, -1), True), True),         # the PPV unsent, nothing new: the page still reaches back to 20
+    ((range(23, 13, -1), True), True),         # three new messages: the page reaches back past 20
+    ((range(35, 25, -1), True), False),        # fifteen new ones pushed the PPV (21) past page one: unknown, not gone
+    ((range(35, 25, -1), False), True),        # ... but the page is the whole thread: gone
+    ((range(21, 11, -1), True, (21,)), False),  # still shown
+    (([], True), False),                       # an empty page that says there is more: unknown
+])
+def test_the_ppv_counts_as_gone_only_on_a_page_that_reaches_back_past_the_send(after, gone):
+    """W30 W2: a PPV pushed past the read's one page (`hasMore`) is unknown, never gone: neither the effect
+    (ppv_gone) nor the after-undo check (Proof.same) holds, so the row closes FAILED and blocks the next run."""
+    before = PPV.of_read(_thread(*_BEFORE), "555")
+    read = PPV.of_read(_thread(*after), "555")
+    assert bool(PPV.effect(before, read)) is gone
+    assert bool((PPV.same or undo_log.reads_equal)(before, read)) is gone
+    closed = {"row": 1, "effect": True, "reversals": [], "reads": {"before": before, "after_undo": read}}
+    differs = any("after-undo read differs" in p for p in undo_log.verify_undo([], [closed], PPV.same))
+    assert differs is not gone
+
+
+@pytest.mark.parametrize("after, gone", [
+    ((range(35, 25, -1), True), False),   # an empty chat before the send, a full page after: the PPV may be beyond it
+    ((range(35, 25, -1), False), True),   # ... the page is the whole thread: gone
+])
+def test_an_empty_chat_before_the_send_proves_nothing_about_a_page_that_says_more(after, gone):
+    """W30 final [deepseek]: `before` empty (newest None) counted any `hasMore` page as reaching back to the send."""
+    before = PPV.of_read(_thread([], False), "555")
+    read = PPV.of_read(_thread(*after), "555")
+    assert bool(PPV.effect(before, read)) is gone
+    assert bool((PPV.same or undo_log.reads_equal)(before, read)) is gone
+
+
+def test_the_ppv_read_page_bounds_are_never_taken_for_a_shown_message():
+    """W30 S3: still_shown looks for the PPV's bare id; the page bounds ride the `_page` bookkeeping key it skips."""
+    got = PPV.of_read(_thread(range(20, 10, -1), True, (14,)), "555")
+    assert got == {"marked": [("14", "oi-proof-r", 3)], "_page": {"newest": 20, "oldest": 11, "more": True}}
+    assert not undo_driver.still_shown(lambda tag: got, "20") and not undo_driver.still_shown(lambda tag: got, "11")
+    assert undo_driver.still_shown(lambda tag: got, "14")
+    assert PPV.of_read(_thread([], False), "555")["_page"] == {"newest": None, "oldest": None, "more": False}
+
+
+def test_a_failed_in_page_reversal_with_no_budget_left_sends_nothing():
+    """vault.more.delete's undo has max 1 (the UI's Delete spent it): its failed reversal stays the record, unread."""
+    calls, reads = [], []
+    [(revs, _)] = undo_driver._send_all(DELETE, [{"row": 1, "arm": 0, "wire_seq": 3, "of_id": "9"}],
+                                        lambda *a, **k: calls.append(a) or (200, "{}"), lambda: [_line(5, status=500)],
+                                        lambda r: {"id": "9", "account": "c1"}, {}, "c1", None,
+                                        read=lambda tag: reads.append(tag) or [["9"]])
+    assert calls == reads == [] and revs[0]["status"] == 500
+
+
+@pytest.mark.parametrize("spent, kind", [(1, "reversal"), (2, "refused")])
+def test_the_guard_leaves_the_ppv_undo_room_for_the_drivers_own_delete(spent, kind):
+    run = Run(proof=PPV, proof_fan="555", created=frozenset({"9"}), spent={("arm", 0): 1, ("undo", 0): spent})
+    v = decide(Request(method="DELETE", host="onlyfans.com", path=MSG, body=None, at=None), run)
+    assert v.kind == kind and (kind == "reversal" or v.cls == "over_count"), v
 
 
 def test_send_takes_the_trigger_reversal_and_sends_nothing():

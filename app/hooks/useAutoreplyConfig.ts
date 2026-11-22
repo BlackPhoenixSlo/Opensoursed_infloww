@@ -10,8 +10,9 @@
  * recent messages) — to the fans in the picked audience only. Default OFF.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
+import { switchPayload } from "@/components/growth/autoReplyForm";
 import { relay, type RelayContext } from "@/lib/relay";
 
 const KEY = "autoreply-config";
@@ -65,17 +66,37 @@ interface AutoreplyConfigResponse {
   vision_key?: AutoreplyKeyState;
 }
 
+const readConfig = (accountId: string) =>
+  relay.get<AutoreplyConfigResponse>(`/admin/autoreply-config?account_id=${encodeURIComponent(accountId)}`, BG_CTX);
+
 export function useAutoreplyConfig(accountId: string | null) {
   return useQuery<AutoreplyConfigResponse>({
     queryKey: [KEY, accountId],
     enabled: !!accountId,
-    queryFn: () =>
-      relay.get<AutoreplyConfigResponse>(
-        `/admin/autoreply-config?account_id=${encodeURIComponent(accountId!)}`,
-        BG_CTX,
-      ),
+    queryFn: () => readConfig(accountId!),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
+  });
+}
+
+/** The blob as stored now (a fresh read into the cache): a PUT built on it never writes back a config another
+ *  tab or operator has since replaced, as one built on an old cached copy would. */
+function readAutoreplyConfigFresh(qc: QueryClient, accountId: string): Promise<AutoreplyConfigResponse> {
+  return qc.fetchQuery({ queryKey: [KEY, accountId], queryFn: () => readConfig(accountId), staleTime: 0 });
+}
+
+/** The header switch: one PUT of the blob as stored now (fresh read, not the cached copy) with only `enabled`
+ *  changed; its own pending/error, apart from the page Save's. Refused (an error) when switching on with no source. */
+export function useSwitchAutoreply(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation<unknown, Error, boolean>({
+    mutationFn: async (on) => {
+      const fresh = await readAutoreplyConfigFresh(qc, accountId);
+      const config = switchPayload(fresh.defaults ?? {}, fresh.config ?? {}, on);
+      if (!config) throw new Error("pick who gets replies (folders or new fans) and Save first");
+      return relay.put(`/admin/autoreply-config`, { account_id: accountId, config });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
 

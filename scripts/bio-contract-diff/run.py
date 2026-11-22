@@ -224,8 +224,10 @@ def main() -> int:
             _wait(f"http://127.0.0.1:{p_pb}/api/health", "PocketBase")
 
             stack = Stack(ui=False, fault=None, logdir=out, sidecars={"bio": ("slop/lib/bio.py", "BIO_PORT", "/internal/healthz")})
+            # EDGE_PROXIES = the cases' X-Forwarded-For range (10.9.x.y): ours believes CF-IPCountry/X-Country only
+            # from an edge hop (client_addr.from_edge); v2 always does.
             stack.relay_env[0].update(BIO_PRIMARY_HOSTS="localhost,ofl.test", BIO_REVEAL_LIMIT_PER_MINUTE=str(LIMIT),
-                                      BIO_ESCAPE_TAP="1")
+                                      BIO_ESCAPE_TAP="1", EDGE_PROXIES="10.9.0.0/16")
             stack.__enter__()
             db = stack.db
             p_bio = stack.extra_ports["BIO_PORT"]

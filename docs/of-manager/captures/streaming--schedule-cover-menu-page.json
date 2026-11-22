@@ -57,5 +57,11 @@
  },
  "evidence": [
   "r13-schedule-add-cover-menu-open.html"
- ]
+ ],
+ "proof": {
+  "kind": "live",
+  "verdict": "parked",
+  "undo": "none",
+  "reason": "page capture for ticket 28 (Add cover's menu markup); Add cover stays unwired: ticket 85 parked (isScheduledStreamsAllowed false on the Proof Creator), ticket 86 moot; Live proof pending (ticket 92)"
+ }
 }

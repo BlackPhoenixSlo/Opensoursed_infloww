@@ -238,13 +238,26 @@ def case_unknown_hosts_never_query():
         store.resolve_host_row = real
 
 
+@contextlib.contextmanager
+def _edge(*nets: str):
+    """EDGE_PROXIES for the block (the test client's peer is 127.0.0.1)."""
+    saved = client_addr.EDGE_PROXIES
+    client_addr.EDGE_PROXIES = tuple(ipaddress.ip_network(n) for n in nets)
+    try:
+        yield
+    finally:
+        client_addr.EDGE_PROXIES = saved
+
+
 def case_ping_records_a_view():
     before = _daily()
-    r = call("POST", "/v/alice", cf_ipcountry="de", user_agent="x Instagram y")
+    with _edge("127.0.0.1/32"):
+        r = call("POST", "/v/alice", cf_ipcountry="de", user_agent="x Instagram y")
     assert (r.status_code, r.content, r.headers["cache-control"]) == (204, b"", "no-store")
     asyncio.run(store.flush())
     assert set(_daily()) - set(before) == {(PID, "", "DE", "instagram", "", 1, 0)}
-    call("POST", "/v/Alice", cf_ipcountry="DE", user_agent="x Instagram y")
+    with _edge("127.0.0.1/32"):
+        call("POST", "/v/Alice", cf_ipcountry="DE", user_agent="x Instagram y")
     asyncio.run(store.flush())
     assert (PID, "", "DE", "instagram", "", 2, 0) in _daily(), "same day/key → one row, counted up"
     r = call("POST", "/v/nobody")
@@ -271,6 +284,28 @@ def case_reveal():
     assert (r.status_code, r.content) == (403, b'{"error":"Cross-origin request refused"}')
     r = call("GET", f"/.netlify/functions/reveal?id={KEY}", origin="http://evil.test")
     assert r.status_code == 403
+
+
+def case_location_headers_only_from_the_edge():
+    """CF-IPCountry / X-Country / regions are believed only from an EDGE_PROXIES hop (client_addr.edge's rule):
+    sent by any other client they are ignored, so the stats say XX and the geo pick sees the default (US)."""
+    same = {"sec_fetch_site": "same-origin"}
+    geo = f"/.netlify/functions/reveal?id={KEY2}&trackingId=geo"
+    spoof = {"cf_ipcountry": "FR", "x_country": "GB", "x_region": "ENG", **same}
+    for nets, xff, country, code in ((("127.0.0.1/32",), None, "FR", None), ((), None, "XX", GEO_CODE),
+                                     (("127.0.0.1/32",), "100.64.0.9", "XX", GEO_CODE),
+                                     (("100.64.0.0/10",), "100.64.0.9", "FR", None)):
+        asyncio.run(store.flush())
+        before = _daily()
+        hop = {"x_forwarded_for": xff} if xff else {}
+        with _edge(*nets):
+            assert call("POST", "/v/alice", **spoof, **hop).status_code == 204
+            r = call("GET", geo, **spoof, **hop)
+        asyncio.run(store.flush())
+        want = DEST + "-2" + (f"/c{code}" if code else "")  # not US: Second's default code, empty
+        assert r.json() == {"realUrl": want}, (nets, xff, r.json())
+        new = {(row[1], row[2]) for row in set(_daily()) - set(before)}
+        assert new == {("", country), (LID2, country)}, (nets, xff, new)
 
 
 def case_path_mode():

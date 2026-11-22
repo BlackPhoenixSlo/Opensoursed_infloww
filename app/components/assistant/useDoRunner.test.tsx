@@ -95,7 +95,7 @@ function ConfigHarness() {
 
 describe("useDoRunner: full_ai_config apply (phase 03c)", () => {
   it.each([
-    [200, () => Promise.resolve({ rev: 5 }), "Draft updated. Make draft live on the page sends it to fans.", true],
+    [200, () => Promise.resolve({ rev: 5 }), "Draft updated. Make draft live on the page copies it to the Live settings.", true],
     [409, () => Promise.reject(new RelayError(409, { detail: "stale", rev: 6 })), "The draft changed since you saw it. Ask again.", false],
     [422, () => Promise.reject(new RelayError(422, { errors: ["reply_speed: bad"] })), "Not applied: reply_speed: bad", false],
   ])("Apply → one PUT on the draft's rev; %i ends done with its line", async (status, answer, line, invalidates) => {

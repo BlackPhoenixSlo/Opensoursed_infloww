@@ -35,6 +35,14 @@ RETRY_BUDGET = 3
 # backstop (service/vault_ai_api.py:108,269), so ~10 pauses is a full walk; 20 is twice that. Overturned by a vault
 # that legitimately needs more.
 COLLECT_PAUSE_BUDGET = 20
+# ASSUMPTION (rung 4): how long one run waits on a Collect whose status stays `running` (a stranded flag answers
+# 200 `running: true` forever) before it opens `collect_still_running` (not sticky: the next run re-checks and
+# awaits it). A full 20k-item walk is ~10 pauses; 4 h is well past it. Overturned by a walk that needs longer.
+COLLECT_WAIT_S = 4 * 3600
+# ASSUMPTION (rung 4): how long one run awaits a describe sweep whose status stays 200 `running: true` (a stranded
+# flag) before it stops polling it and pauses `describe_still_running`, its sweep_start left in flight (reserved;
+# the next run awaits it). A sweep is one 250-item step; 2 h is well past one. Overturned by a step that needs longer.
+DESCRIBE_WAIT_S = 2 * 3600
 ZERO_SWEEPS_OPEN = 2        # sweeps in a row that describe nothing -> open no_progress
 DAY_S = 86400
 # The purposes the Describe cap ledger pools (service/llm_client.py `_DESCRIBE_PURPOSES`); the report sums
@@ -148,9 +156,10 @@ def sweep_outcome(before: Mapping[str, Any], after: Mapping[str, Any] | None,
     got = int(after.get("described") or 0)
     if got >= goal:
         return _done(before, goal)
-    # ASSUMPTION (spec): a Jev cap is read from `progress.error` naming `jev_capped`.
-    if progress.get("capped") or (
-            "jev_capped" in str(progress.get("error") or "") and got < int(before.get("target") or 0)):
+    # A Jev cap: the sweep's structured `jev_capped` (W30 F12: its first-error field may name an earlier
+    # failure), else `progress.error` naming it (a relay from before the flag).
+    jev_capped = progress.get("jev_capped") or "jev_capped" in str(progress.get("error") or "")
+    if progress.get("capped") or (jev_capped and got < int(before.get("target") or 0)):
         return "defer"
     if got <= int(before.get("described") or 0) and int(before.get("zero_sweeps") or 0) + 1 >= ZERO_SWEEPS_OPEN:
         return "open:no_progress"
@@ -200,6 +209,17 @@ def error_class(progress: Mapping[str, Any] | None) -> str | None:
     stop = p.get("stop") if isinstance(p.get("stop"), Mapping) else {}
     text = str(p.get("error") or stop.get("message") or "stopped")
     return re.sub(r"\d+", "#", text.split(":")[0] if p.get("aborted") else text)[:80]
+
+
+# Why a sweep is left in flight (`Wave.unsettled`), worst first: an unmeasured spend beats a stranded flag beats a
+# start whose answer never came.
+UNSETTLED = ("recount_unreadable", "describe_still_running", "start_unanswered")
+
+
+def unsettled_pause(codes: Iterable[str]) -> str:
+    """The pause reason for sweeps left in flight: the first of UNSETTLED among their codes."""
+    have = set(codes)
+    return next(c for c in UNSETTLED if c in have)
 
 
 def pause_reason(window: Mapping[str, Any]) -> str | None:
@@ -277,7 +297,10 @@ def resume(journal_lines: Iterable[Mapping[str, Any]], now: float | None = None)
     `sticky` (open), `sweep` (the in-flight `sweep_start` line), `zero_sweeps` (trailing sweeps that described
     nothing, cap-deferred ones not counted). A deferral whose `until` is at or before `now` is pending. An open
     whose reason is not in STICKY_OPEN keeps state open with `sticky` False: the next run re-checks it. An open or
-    defer line while a `sweep_start` is in flight is ignored: only its `sweep` line settles it.
+    defer line while a `sweep_start` is in flight is ignored: only its `sweep` line settles it. A `sweep_start` is
+    the reservation journaled before the start POST; a `sweep` line with outcome `not_started` closes one the relay
+    refused (not a sweep: not in `sweeps`, not a zero-progress sweep). An in-flight `sweep` carries `lost_start`
+    (the lost answer's HTTP status, 0 = none) until a `start_answer` line records a clear 200 / 409.
     Run: latest `run_start` ceiling / eligible, `spent_mc` = run_spend of every sweep line, `sweeps`.
     3b: `fills`, `applies` from `fill_state` (the apply kinds)."""
     journal_lines = list(journal_lines)
@@ -294,12 +317,23 @@ def resume(journal_lines: Iterable[Mapping[str, Any]], now: float | None = None)
             ceiling, eligible_n = ln.get("ceiling_mc"), ln.get("eligible")
         elif kind == "sweep_start":
             c = cr(ln.get("creator"))
-            c.update(state="running", sweep=dict(ln))
+            # its start is unanswered until a `start_answer` line says otherwise: a run killed during the POST
+            # left a lost start (0 = no answer), settled only against this cap_before (W30 F37/F40)
+            c.update(state="running", sweep={**ln, "lost_start": 0})
+        elif kind in ("lost_start", "start_answer") and "sweep" in cr(ln.get("creator")):
+            sw = cr(ln.get("creator"))["sweep"]
+            if kind == "lost_start":
+                sw["lost_start"] = ln.get("http")
+            else:
+                sw.pop("lost_start", None)
         elif kind == "sweep":
-            sweeps.append(ln)
             c = cr(ln.get("creator"))
             c.pop("sweep", None)
             outcome = str(ln.get("outcome") or "continue")
+            if outcome == "not_started":   # a reservation the relay refused: no sweep, no spend, no zero count
+                c["state"] = "pending"
+                continue
+            sweeps.append(ln)
             if outcome != "defer":
                 added = int(ln.get("after") or 0) - int(ln.get("before") or 0)
                 c["zero_sweeps"] = c["zero_sweeps"] + 1 if added <= 0 else 0
@@ -355,6 +389,12 @@ def ids(raw: Any) -> list[int]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def fill_fields(r: Mapping[str, Any]) -> tuple[list[int], list[int], int]:
+    """What a Fill writes on a row (media ids, previews, price in cents), as compared: a row, an Option or a
+    backup row alike."""
+    return ids(r.get("media")), ids(r.get("previews")), int(r.get("price_cents") or 0)
 
 
 def row_of(r: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -457,8 +497,7 @@ def readback(plan: Mapping[str, Any], before_rows: Any, undo: Iterable[Mapping[s
     bad = False
     for o in ws:
         r = now.get(int(o["id"]))
-        if r is None or (list(r.get("media") or []), list(r.get("previews") or []), int(r.get("price_cents") or 0)) \
-                != (ids(o.get("media")), ids(o.get("previews")), int(o.get("price_cents") or 0)):
+        if r is None or fill_fields(r) != fill_fields(o):
             bad = True
     for rid, e in entries.items():
         r = now.get(rid)
@@ -483,9 +522,7 @@ def reconstruct_undo(plan: Mapping[str, Any], before_rows: Any,
     rows = [now.get(int(o["id"])) for o in ws]
     if all(r is not None and not r.get("media") for r in rows):
         return None, False
-    if any(r is None or (list(r.get("media") or []), list(r.get("previews") or []), int(r.get("price_cents") or 0))
-           != (ids(o.get("media")), ids(o.get("previews")), int(o.get("price_cents") or 0))
-           for o, r in zip(ws, rows)):
+    if any(r is None or fill_fields(r) != fill_fields(o) for o, r in zip(ws, rows)):
         return None, True
     return [{"id": int(o["id"]), "media_ids": list(r["media"]), "previews": list(r.get("previews") or []),
              "price_cents": int(r.get("price_cents") or 0),
@@ -503,8 +540,7 @@ def backup_mismatch(expected: Iterable[Mapping[str, Any]], got: Mapping[int, Map
             return f"row_missing:{rid}"
         if str(g.get("account_id")) != str(x["creator"]):
             return f"row_account:{rid}"
-        if (list(g.get("media") or []), list(g.get("previews") or []), int(g.get("price_cents") or 0)) != \
-                (list(row.get("media") or []), list(row.get("previews") or []), int(row.get("price_cents") or 0)):
+        if fill_fields(g) != fill_fields(row):
             return f"row_values:{rid}"
     return None
 
@@ -593,16 +629,21 @@ def next_action(entry: Mapping[str, Any]) -> str:
 
 
 def fill_outcome(entry: Mapping[str, Any]) -> str:
-    """One Sequence's end: `filled`; `readback_mismatch` (a claimed op, not undone, whose read-back failed,
-    whatever was planned after it); `uncertain` (whatever was planned after it); else the latest op's end since
+    """One Sequence's end: `readback_mismatch` (a claimed op, not undone, whose read-back failed, whatever was
+    planned after it, and whatever its Undo list); `filled` (a write, not undone, whose read-back passed);
+    `unverified` (a write, not undone, not read back yet: never counted filled); `uncertain` (whatever was
+    planned after it); else the latest op's end since
     its plan (`undone`, `stale`, `in_flight`, or the apply status: `not_landed`, `http_<n>`, a Fill status);
     else the plan's first gate reason (`status:<s>`, `media_not_live`, ...); `not_applied` for a passed plan not
     yet sent; `unplanned`."""
     ops = list(entry.get("ops") or [])
-    if any(filled(op) and op["undo"] is None for op in ops):
-        return "filled"
     if any(mismatched(op) and op["undo"] is None for op in ops):
         return "readback_mismatch"
+    wrote = [op for op in ops if filled(op) and op["undo"] is None]
+    if any(op["readback"] is not None for op in wrote):   # read back, and not mismatched (above): verified
+        return "filled"
+    if wrote:
+        return "unverified"
     if any(uncertain(op) for op in ops):
         return "uncertain"
     acted = [op for op in ops if op["i"] > int(entry.get("plan_i", -1))]

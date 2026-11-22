@@ -415,6 +415,7 @@ def _structural_bodies(api: str, at: datetime) -> dict:
 
 # Every proof whose post or queue write the guard may let through as fan-visible: the effort's two (Q15) at most.
 FAN_VISIBLE_PROOFS = {"queue--send-message-right-now", "queue--publish-now"}
+FAN_VISIBLE_PROOFS |= {"new-post--cotag-immediate"}   # ticket 98
 
 
 def test_every_proofs_post_and_queue_write_is_fan_visible_unless_far_scheduled():
@@ -430,10 +431,15 @@ def test_every_proofs_post_and_queue_write_is_fan_visible_unless_far_scheduled()
                 continue
             path = re.sub(r"\{[^/{}]+\}", "77", w.path)
             for name, body in _structural_bodies(api, AT).items():
-                body = {**dict(w.body_must or {}), **body}
+                # a Co-tag proof's post carries its declared tag (Write.payload, follow-up #5)
+                tag = {"rfTag": [2001], "userTags": [2001]} if p.may_tag else {}
+                if p.may_tag:   # ... and its exact draft text (W30 W1)
+                    tag["text"] = f"oi-proof-x {'cotag-scheduled' if 'scheduled' in p.id else 'cotag-immediate'}"
+                body = {**dict(w.body_must or {}), **body, **tag}
                 for of in ("live", "fake"):
                     v = decide(R(w.method, path, body), Run(proof=p, of=of, proof_fan=FAN, quiet_hour=QUIET,
-                                                             created=frozenset({"77"})))
+                                                             created=frozenset({"77"}), cotag_partner="2001",
+                                                             marker="oi-proof-x"))
                     if v.kind == "refused":
                         continue
                     if name != "far":

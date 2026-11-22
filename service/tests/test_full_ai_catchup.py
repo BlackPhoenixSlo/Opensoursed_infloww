@@ -483,15 +483,20 @@ async def case_race_with_inbound_hook_one_send():
     await _msg(aid, fan, mid, "in", "hey are you there", _ago(30))
     real = wd._imminent_pending_job
 
+    import webhook_dispatch_decide as wdd
+    real_targets = wdd.targets_fan
+
     async def blind(*_a, **_kw):                                               # the race window
         await asyncio.sleep(0)
         return None
     wd._imminent_pending_job = blind
+    wdd.targets_fan = lambda *_a, **_kw: False      # the sweep's one pending-job read (W30 F11) too
     try:
         with world(fake=ChatsOF([_chat(fan, mid, _ago(30))])):
             res, _ = await asyncio.gather(cu.run_pass(aid), wd.on_inbound_message(aid, fan, mid))
     finally:
         wd._imminent_pending_job = real
+        wdd.targets_fan = real_targets
     assert res["queued"] == 1, res
     jobs = await _jobs(aid)
     assert len(jobs) == 2 and all(json.loads(j.payload_json)["only_fan_ids"] == [fan] for j in jobs), jobs

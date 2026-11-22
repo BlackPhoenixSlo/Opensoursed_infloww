@@ -15,7 +15,9 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { cachedUnreadView, chatListAccountKey, chatRowKey, chatsQueryKey, useChatList, listPaintKey } from "@/hooks/useChatList";
+import {
+  cachedUnreadView, chatListAccountKey, chatsQueryKey, useCachedChatPages, useChatList, listPaintKey,
+} from "@/hooks/useChatList";
 import { useUnreadMessagesPrefetch } from "@/hooks/useUnreadMessagesPrefetch";
 import { useTrailingDebounce } from "@/hooks/useTrailingDebounce";
 import { prefetchChatMessages } from "@/hooks/useChatMessages";
@@ -40,7 +42,8 @@ import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import { MP } from "@/lib/messagesPro";
 import { ofMeQuery } from "@/lib/ofMe";
 import { cn } from "@/lib/utils";
-import { badgeUnreadView, UNREAD_VIEW_MAX_AGE_MS, type UnreadView } from "@/lib/chatsCache";
+import { badgeUnreadView, chatRowKey, UNREAD_VIEW_MAX_AGE_MS, type UnreadView } from "@/lib/chatsCache";
+import { relayNow } from "@/lib/ageClock";
 import { describeLoadError, relay, setRelayFocus, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, lastMessageFromFan } from "@/lib/fanId";
@@ -398,30 +401,28 @@ export function FanList({
     });
   }, [displayRows, isFromSeed, listKey]);
 
-  // Chip counts — derived from already-cached data, zero new fetches.
-  // useChatList re-renders ChatList whenever SSE patches the chats cache
-  // (useInboxRealtime patches EVERY ["chats", ...] cache, including the
-  // active one we subscribe to), so reading qc.getQueryData at render
-  // time picks up fresh values without an extra subscription.
+  // Chip counts — derived from already-cached data, zero new fetches. The
+  // All and Unread lists' entries are subscribed to (useCachedChatPages): a
+  // live patch of them re-counts whatever chip is active (a folder, Owe).
   const allFilterKey = useMemo(
     () => chatsQueryKey(scope.kind, accountKey, { query: query || null }),
     [scope.kind, accountKey, query],
   );
+  const allCached = useCachedChatPages(allFilterKey);
   const allChipBase = useMemo<OFChatItem[]>(() => {
     // When the All filter is the active query, the live rows ARE the all set.
     if (active.kind === "builtin" && active.key === "all") return allRows;
-    const cached = qc.getQueryData<{ pages: { rows: OFChatItem[] }[] }>(allFilterKey);
-    if (!cached?.pages) return [];
+    if (!allCached?.pages) return [];
     const out: OFChatItem[] = [];
     const seen = new Set<string>();
-    for (const p of cached.pages) for (const c of p.rows) {
-      const k = `${c.__accountId ?? ""}:${c.withUser.id}`;
+    for (const p of allCached.pages) for (const c of p.rows) {
+      const k = chatRowKey(c);
       if (seen.has(k)) continue;
       seen.add(k);
       out.push(c);
     }
     return out;
-  }, [active, allRows, qc, allFilterKey]);
+  }, [active, allRows, allCached]);
   // The active chip's count is All's rule over the chip's own rows.
   const activeCount = useMemo(
     () => attentionCount(chipRows, isUnresponded),
@@ -443,14 +444,16 @@ export function FanList({
   // young (badgeUnreadView); `viewExpired` re-renders when it ages out.
   const onUnreadChip = active.kind === "builtin" && active.key === "unread";
   const [viewExpired, expireView] = useReducer((n: number) => n + 1, 0);
-  // `allRows` only cues the re-read, as for allChipBase: a live patch moves both lists.
+  // `unreadCached` and `allRows` only cue the re-read: the Unread entry changed (on any chip), or the live
+  // list did (re-checking the view's age).
+  const unreadCached = useCachedChatPages(unreadFilterKey);
   const unreadView = useMemo<UnreadView | null>(
-    () => (query ? null : badgeUnreadView(cachedUnreadView(qc, unreadFilterKey), onUnreadChip, Date.now())),
-    [query, allRows, qc, unreadFilterKey, onUnreadChip, viewExpired], // eslint-disable-line react-hooks/exhaustive-deps
+    () => (query ? null : badgeUnreadView(cachedUnreadView(qc, unreadFilterKey), onUnreadChip, relayNow())),
+    [query, unreadCached, allRows, qc, unreadFilterKey, onUnreadChip, viewExpired], // eslint-disable-line react-hooks/exhaustive-deps
   );
   useEffect(() => {
     if (!unreadView || onUnreadChip) return;
-    const t = setTimeout(expireView, Math.max(0, unreadView.asOf + UNREAD_VIEW_MAX_AGE_MS - Date.now()));
+    const t = setTimeout(expireView, Math.max(0, unreadView.asOf + UNREAD_VIEW_MAX_AGE_MS - relayNow()));
     return () => clearTimeout(t);
   }, [unreadView, onUnreadChip]);
   const { allCount, oweReplyCount } = useMemo(

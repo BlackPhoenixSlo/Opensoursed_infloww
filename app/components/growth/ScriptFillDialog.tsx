@@ -33,7 +33,7 @@ export function ScriptFillDialog({ accountId, dialog, busy, onFill, onDescribeRe
 }) {
   const qc = useQueryClient();
   const planKey = fillPlanKey(accountId, dialog.sequence);
-  const planQ = useFillPlan(accountId, dialog.sequence, true);
+  const planQ = useFillPlan(accountId, dialog.sequence);
   const sweep = useVaultSweep({
     kind: "describe-all",
     accountId,
@@ -44,6 +44,7 @@ export function ScriptFillDialog({ accountId, dialog, busy, onFill, onDescribeRe
     plan: planQ.data,
     sweep: { running: sweep.running, starting: sweep.busy && !sweep.running, progress: sweep.progress },
     refusal: dialog.refusal,
+    now: Date.now(),
   });
 
   async function describe() {

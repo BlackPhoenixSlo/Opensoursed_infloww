@@ -25,6 +25,7 @@ from types import SimpleNamespace  # noqa: E402
 from sqlalchemy import delete, func, select, text  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
+from _jev_fixtures import mapped  # noqa: E402
 from _full_ai_fixtures import QUIET, FakeJev, FakeWriterHTTP, _fake_jev  # noqa: E402
 import automation_executor as ax  # noqa: E402
 import client_pool  # noqa: E402
@@ -232,7 +233,7 @@ def _vault(items: dict[int, str], *, tags: dict | None = None):
                 s.add(VaultItem(account_id=A, media_id=mid, kind="photo",
                                 created_at=T0 + timedelta(days=mid), tags="[]",
                                 describe_status="described", of_folder_ids="[]",
-                                ai_fields_json=json.dumps({**DRESSED, vault_jev_rules.JEV_KEY: _jev(lane, tags)})))
+                                ai_fields_json=json.dumps(mapped({**DRESSED, vault_jev_rules.JEV_KEY: _jev(lane, tags)}))))
 
     async def drop():
         async with get_session() as s:

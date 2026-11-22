@@ -188,10 +188,10 @@ function purchaseCard(tpl: Element, m: ThreadMessage): HTMLElement {
  */
 export function applyChatLinks(doc: Document, page: string, chat: string, data: MirrorData, listQuery = "") {
   const q = `?chat=${encodeURIComponent(chat)}${listQuery ? `&${listQuery}` : ""}`;
-  if (page !== "messages/chat") {
-    keepQuery(doc, "messages/chat", q);
-    track(doc, () => keepQuery(doc, "messages/chat", ""));
-  }
+  // The chat page's own State links (Message price, …) carry the fan from the URL, not from the thread: a click before
+  // the thread arrives otherwise opens the dialog with no chat and its Save has nowhere to go back to.
+  keepQuery(doc, "messages/chat", q);
+  track(doc, () => keepQuery(doc, "messages/chat", ""));
   for (const a of doc.querySelectorAll<HTMLAnchorElement>("a[data-oi-chat-link]")) {
     setAttr(doc, a, "href", chatHref(a.dataset.oiChatLink === "pinned" ? PINNED_PAGE : GALLERY_PAGE, chat, listQuery));
     if (a.dataset.oiChatLink !== "pinned" || data.pinnedCount === undefined) continue;

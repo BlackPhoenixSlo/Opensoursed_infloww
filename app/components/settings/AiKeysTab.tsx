@@ -9,13 +9,15 @@
  */
 
 import AgencyKeysCard from "@/components/setup/AgencyKeysCard";
-import DriveKeyCard, { ServerKeyCard } from "@/components/setup/DriveKeyCard";
+import ServerKeyCard from "@/components/setup/ServerKeyCard";
 import AccessTokensCard from "@/components/settings/AccessTokensCard";
 import AiSpendCapCard from "@/components/settings/AiSpendCapCard";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { useSaveTenantKeys } from "@/hooks/useTenantKeys";
 import { IF_BTN_PRIMARY, Section, SettingsPanel } from "@/components/settings/SettingsPanel";
 
+const DRIVE_INTRO = "Lets Vault Pro import from a Google Drive folder link. A plain Google API key with the Drive API "
+  + "enabled — the folder itself must be shared as \"Anyone with the link can view\".";
 const NOTE = "text-[length:var(--if-fs-sm)] leading-5 text-[var(--if-fg-2)]";
 
 export default function AiKeysTab() {
@@ -45,11 +47,15 @@ export default function AiKeysTab() {
         <ServerKeyCard
           name="TYPESAFE_API_KEY"
           intro="Used for any agency that has not saved its own TypeSafe key above."
-          savedNote="Saved — Jev uses it on its next read."
+          savedNote="Saved — Jev (the off-script check, Full AI, the vault AI) uses it on its next call for every agency without its own key."
         />
       </Section>
       <Section title="Google Drive (server key)">
-        <DriveKeyCard />
+        <ServerKeyCard
+          name="GOOGLE_DRIVE_API_KEY"
+          intro={DRIVE_INTRO}
+          savedNote="Saved — Drive import works on the next upload."
+        />
       </Section>
       <Section>
         <AccessTokensCard />

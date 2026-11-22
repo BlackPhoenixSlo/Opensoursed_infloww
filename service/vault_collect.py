@@ -24,8 +24,9 @@ per VAULT_COLLECT_GAP_S. Each walk, recorded as one `vault_cache_runs` row:
                   prunes the account's older auto rows (vault_runs.prune_auto_runs).
 
 Deletions stay lazy: nothing here removes mirror rows. A media OF has deleted is
-stamped `removed_at` when a still request for it 404s on re-sign
-(vault_stills.resolve_fresh), not by the walk.
+stamped `removed_at` when a still request for it 404s on re-sign, or when OF
+refuses it on a send and the by-id re-check 404s (both vault_stills.resolve_fresh;
+_send_failure.recheck_rejected_media), not by the walk.
 
 Picking (one per tick): an unfinished `auto:*` run (resume) → an account a proxy
 switch asked to re-warm (`request_rewarm`, whatever its last run's age) → an account
@@ -370,8 +371,7 @@ async def cache_picker_head(aid: str, list_id: int | None, resp: Any,
     await vault_cache.put(aid, key, head, started_at=started_at)
 
 
-async def hot_folders(aid: str, client: Any, call: OfCall, *, run_id: int | None = None,
-                      on_page: Callable[[list], Awaitable[None]] | None = None) -> int:
+async def hot_folders(aid: str, client: Any, call: OfCall) -> int:
     """Hot pass steps (a)-(b): the folder list, then page 0 of every dropdown folder,
     each cached under the picker route's key and upserted. Returns rows upserted."""
     folders = await folder_list(aid, client, call)
@@ -379,16 +379,13 @@ async def hot_folders(aid: str, client: Any, call: OfCall, *, run_id: int | None
     for f in folders:  # the picker's dropdown: custom folders that have media
         if f.get("type") == "custom" and f.get("hasMedia") and f.get("id") is not None:
             try:
-                written = await _media_page(aid, client, call, list_id=f["id"], offset=0,
-                                            run_id=run_id)
+                written = await _media_page(aid, client, call, list_id=f["id"], offset=0)
             except Preempted:
                 raise
             except Exception as e:  # noqa: BLE001 — one bad folder must not cost the full walk
                 log.warning("vault collect: folder %s page failed account=%s: %s", f["id"], aid, e)
                 continue
             n += len(written)
-            if on_page is not None:   # the caller's work on the page: its errors are its own
-                await on_page(written)
     return n
 
 
@@ -401,25 +398,37 @@ async def _hot(aid: str, client: Any) -> int:
 
 
 async def _thumbs(aid: str, client: Any) -> None:
+    """Warm the thumb of every live still-bearing row with none on disk, newest first (THUMB_WARM_MAX caps), live
+    links only. The pass reads light columns, checks the files off the event loop and parses `raw_json` only for
+    the rows still missing one (#851: every run read and parsed every row, 12.6k on AE)."""
     async with get_session() as s:
         rows = (await s.execute(
-            select(VaultItem.media_id, VaultItem.kind, VaultItem.raw_json, VaultItem.thumb_url)
+            select(VaultItem.media_id, VaultItem.kind, VaultItem.thumb_url)
             .where(VaultItem.account_id == aid, VaultItem.removed_at.is_(None))
             .order_by(VaultItem.created_at.desc())
         )).all()
+
+    def _missing() -> list[tuple[Any, Any, str | None]]:
+        return [(mid, path, turl) for mid, kind, turl in rows if vault_mirror.has_still(kind)
+                for path in (vault_stills.thumb_path(aid, mid),) if not path.is_file()]
+    missing = await asyncio.to_thread(_missing)
     now = time.time()
     todo: list[tuple[Any, str]] = []
-    for mid, kind, raw, turl in rows:
+    for i in range(0, len(missing), 500):   # payloads in chunks, newest first, until the cap is met
         if THUMB_WARM_MAX and len(todo) >= THUMB_WARM_MAX:
             break
-        if not vault_mirror.has_still(kind):
-            continue
-        path = vault_stills.thumb_path(aid, mid)
-        if path.is_file():
-            continue
-        url = vault_frames.pick_thumb(load_json(raw, {}) or {}) or turl
-        if url and not vault_stills.signed_url_expired(url, now):
-            todo.append((path, url))
+        chunk = missing[i:i + 500]
+        async with get_session() as s:
+            raws = dict((await s.execute(
+                select(VaultItem.media_id, VaultItem.raw_json)
+                .where(VaultItem.account_id == aid, VaultItem.media_id.in_([m for m, _, _ in chunk]))
+            )).all())
+        for mid, path, turl in chunk:
+            if THUMB_WARM_MAX and len(todo) >= THUMB_WARM_MAX:
+                break
+            url = vault_frames.pick_thumb(load_json(raws.get(mid), {}) or {}) or turl
+            if url and not vault_stills.signed_url_expired(url, now):
+                todo.append((path, url))
     queue: asyncio.Queue = asyncio.Queue()
     for t in todo:
         queue.put_nowait(t)

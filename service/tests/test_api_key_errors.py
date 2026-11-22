@@ -481,6 +481,91 @@ def case_no_key_cannot_switch_an_ai_automation_on():
     assert r.status_code == 200, (r.status_code, r.text)
 
 
+async def case_a_static_funnel_walker_switches_on_without_a_key():
+    """W30-SM F8: the funnel walker bills an LLM only for a generated step. A Creator
+    whose funnel broadcasts all have written messages switches it on with no key;
+    once one of its broadcasts walks a generated step, no key → 424."""
+    from db.models import MassMessageFunnel, MassRun
+    aid = "keyerr_alpha_static_funnel"
+    await _account(aid, _ISO["a"])
+
+    async def _broadcast(steps):
+        async with get_session() as s:
+            f = MassMessageFunnel(name=f"kf_{len(steps)}_{uuid.uuid4().hex[:6]}", opening_message="hey",
+                                  media_indices="[]", steps_json=json.dumps(steps))
+            s.add(f)
+            await s.flush()
+            s.add(MassRun(account_id=aid, funnel_id=f.id, status="ok", recipient_count=1))
+    await _broadcast([{"step": 1, "messages": ["hi"]}, {"step": 2, "messages": ["again"]}])
+    c = _login("keyerr_agency_alpha", "alpha-pw")
+    on = {"account_id": aid, "kind": "reply_mass_funnel", "enable": True}
+    r = await asyncio.to_thread(c.post, "/admin/automation-rules/switch", json=on)
+    assert r.status_code == 200, ("static steps call no LLM", r.status_code, r.text)
+    r = await asyncio.to_thread(c.post, "/admin/automation-rules/switch", json={**on, "enable": False})
+    assert r.status_code == 200, (r.status_code, r.text)
+    await _broadcast([{"step": 1, "generate": True, "prompt": "tease him"}])
+    r = await asyncio.to_thread(c.post, "/admin/automation-rules/switch", json=on)
+    assert r.status_code == 424, ("a generated step needs a key", r.status_code, r.text)
+
+
+async def case_an_aged_out_generated_funnel_needs_no_key():
+    """W30-SM F23: only broadcasts the walker still walks count. An old generated
+    broadcast past the discovery window with nobody pending is never walked →
+    no key needed; a fan still pending on it makes it walked again → 424."""
+    from datetime import datetime, timedelta
+    from automations.reply_mass_funnel import DISCOVERY_WINDOW_DAYS
+    from db.models import FunnelState, MassMessageFunnel, MassRun
+    aid = "keyerr_alpha_old_funnel"
+    await _account(aid, _ISO["a"])
+    async with get_session() as s:
+        f = MassMessageFunnel(name=f"kf_old_{uuid.uuid4().hex[:6]}", opening_message="hey",
+                              media_indices="[]",
+                              steps_json=json.dumps([{"step": 1, "generate": True, "prompt": "x"}]))
+        s.add(f)
+        await s.flush()
+        old = MassRun(account_id=aid, funnel_id=f.id, status="ok", recipient_count=1,
+                      started_at=datetime.utcnow() - timedelta(days=DISCOVERY_WINDOW_DAYS + 1))
+        s.add(old)
+        await s.flush()
+        run_id = old.id
+    c = _login("keyerr_agency_alpha", "alpha-pw")
+    on = {"account_id": aid, "kind": "reply_mass_funnel", "enable": True}
+    r = await asyncio.to_thread(c.post, "/admin/automation-rules/switch", json=on)
+    assert r.status_code == 200, ("an aged-out broadcast is not walked", r.status_code, r.text)
+    r = await asyncio.to_thread(c.post, "/admin/automation-rules/switch", json={**on, "enable": False})
+    assert r.status_code == 200, (r.status_code, r.text)
+    async with get_session() as s:
+        s.add(FunnelState(mass_run_id=run_id, fan_id=1, status="pending"))
+    r = await asyncio.to_thread(c.post, "/admin/automation-rules/switch", json=on)
+    assert r.status_code == 424, ("a pending fan keeps it walked", r.status_code, r.text)
+
+
+async def case_a_broadcast_still_sending_counts_for_the_walker_key():
+    """W30-SM F34: the broadcast turns the walker on (ensure_funnel_walker) before
+    it closes its run, so the new run is still `running`. Its generated step needs
+    a key all the same: no key → refused (424), no rule switched on."""
+    from db.models import AutomationRule, MassMessageFunnel, MassRun
+    from funnels_api import ensure_funnel_walker
+    aid = "keyerr_alpha_sending_funnel"
+    await _account(aid, _ISO["a"])
+    async with get_session() as s:
+        f = MassMessageFunnel(name=f"kf_run_{uuid.uuid4().hex[:6]}", opening_message="hey",
+                              media_indices="[]",
+                              steps_json=json.dumps([{"step": 1, "generate": True, "prompt": "x"}]))
+        s.add(f)
+        await s.flush()
+        s.add(MassRun(account_id=aid, funnel_id=f.id, status="running", recipient_count=1))
+    try:
+        await ensure_funnel_walker(aid)
+        raise AssertionError("a generated walker switched on with no key")
+    except LLMKeyError as e:
+        assert e.kind == "missing", e
+    async with get_session() as s:
+        on = (await s.execute(select(AutomationRule).where(
+            AutomationRule.account_id == aid, AutomationRule.is_enabled.is_(True)))).scalars().all()
+    assert on == [], [r.kind for r in on]
+
+
 def case_one_agency_cannot_read_anothers_key_status():
     c = _login("keyerr_agency_bravo", "bravo-pw")
     r = c.get("/admin/ai-key-status",

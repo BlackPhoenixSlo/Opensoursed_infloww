@@ -48,7 +48,8 @@ import vault_jev_rules
 PROSE, V6, V2, VID = "prose", "v6", "v2", "vid"
 JEV_FED = (PROSE, V6, VID)
 RECIPE_V = "d51.2"           # bump on any change to the prompts, facts, struct or scrub below
-PX = {PROSE: 640, V6: 960}   # long edge sent per path (v2: the stored still as today; vid: the 400px storyboard)
+PX = {PROSE: 640, V6: 960, VID: 400}   # long edge sent per path (v2: the stored still as today; vid: storyboard size,
+#                                        a ~720p preview frame cut to it, W30 F13)
 DESCRIBE_KEY = "_describe"
 # The Jev Choice questions whose probabilities `facts` reads (stored as `_jev.C`, `vault_jev_rules.blob`).
 FACT_CHOICES = vault_jev_rules.FACT_CHOICES

@@ -151,6 +151,18 @@ def _as_id(v) -> int | None:
     return None
 
 
+def queue_id(frame: dict) -> int | None:
+    """OF's `queueId` on a message frame (a mass copy), or None: a bool, a missing or a non-numeric
+    value is not one. One rule for the stored rows (`messages_unsent._queue_id_of`) and live OF reads."""
+    qid = frame.get("queueId") if isinstance(frame, dict) else None
+    if isinstance(qid, bool) or qid is None:
+        return None
+    try:
+        return int(qid)
+    except (TypeError, ValueError):
+        return None
+
+
 def reply_to_id(frame: dict) -> int | None:
     """The OF message id this message frame quote-replies to: `replyToMessage.id` (the embedded
     original, see above), else `replyToMessageId` (`app/lib/relayTypes.ts`); None when neither

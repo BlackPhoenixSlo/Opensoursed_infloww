@@ -4,7 +4,7 @@
  * millicents (`ai_spend_today`, the `grok_daily_cost` rows llm_client reserves
  * against).
  *
- *   • Up to 2 decimals, 0 to MAX_CAP_DOLLARS; 0 = every AI call refused.
+ *   • Up to 2 decimals, 0 to MAX_CAP_DOLLARS; 0 = paid model calls refused (TypeSafe/Jev checks still run).
  *   • The server refuses an EDIT above $100/day (account_config_rules
  *     MAX_DAILY_COST_CAP_CENTS) but takes a stored cap above it back unchanged,
  *     so a legacy cap is never a field the owner cannot save past.

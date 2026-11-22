@@ -138,16 +138,16 @@ def _stats_utc_days() -> None:
 
 def _bot_check_fails_open() -> None:
     """Every bot-check token passes without asking Cloudflare (bug class: the siteverify verdict ignored, the
-    gate fails open). `verify_tracking_link` looks `_turnstile_passes` up at call time: a failing token gets the
+    gate fails open). `turnstile.check` looks `turnstile.passes` up at call time: a failing token gets the
     target and counts a click, and siteverify sees no calls. GATE_VERIFY, GATE_COUNT and STATS_SUMMARY (the
     passes' days) go red, and GATE_THROTTLE (its probe's failing tokens pass, count clicks and reach no
     siteverify)."""
-    import tracking_links_api as tla
+    import turnstile
 
     async def always(_secret, _token, _ip):
         return True
 
-    tla._turnstile_passes = always
+    turnstile.passes = always
 
 
 def _verify_unthrottled() -> None:

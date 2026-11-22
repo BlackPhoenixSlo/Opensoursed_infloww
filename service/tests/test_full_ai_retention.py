@@ -2,6 +2,8 @@
 """Full AI ledger retention (ticket 72, spec phase-04a › Retention, ADR-0034), in db_retention.evict_audit_logs_once:
 non-test `ai_decisions` rows older than FULL_AI_JSON_RETAIN_S (default 90 days) lose `jev_json` + `reply_json` and
 stay; never a `sending` row nor the newest row of its (account, fan, mode). Test rows' shipped 7-day delete pinned.
+W30 #11: a tease-priced row keeps `reply_json.chat_tease.cents` (and nothing else), so `full_ai_test.is_tease` still
+counts it: the live loader folds every row of the Fan (`teases_sent_of`, Spacing), not a 90-day window.
 
 Run: ./venv/bin/python service/tests/test_full_ai_retention.py   (prints "all cases passed")
 """
@@ -17,6 +19,7 @@ from sqlalchemy import func, select  # noqa: E402
 
 import db_retention  # noqa: E402
 from db.engine import get_session  # noqa: E402
+from automations import full_ai_test  # noqa: E402
 from db.models import Account, AiDecision  # noqa: E402
 
 AID = "acct_fa_json_retention"
@@ -42,7 +45,8 @@ async def _add(fan, mode, status, age: timedelta, **kw) -> int:
         k, at = next(_key), _now() - age
         row = AiDecision(account_id=AID, fan_id=fan, mode=mode, trigger_kind="inbound", trigger_key=f"k{k}",
                          route="sell", heat=2, route_row="wants_content", question_version="v4",
-                         router_model="jev-1", writer_model="w-1", jev_json=JEV, jev_ms=812, reply_json=REPLY,
+                         router_model="jev-1", writer_model="w-1", jev_json=JEV, jev_ms=812,
+                         reply_json=kw.pop("reply_json", REPLY),
                          status=status, created_at=at, updated_at=at,
                          offer_price_cents=1500, offer_list_cents=2000, offer_media_json='{"locked": [1]}',
                          offer_item_ref='{"ref": 1}', offer_message_id=1000 + k, outcome="bought",
@@ -194,7 +198,37 @@ async def case_env_window_and_zero_disables():
     assert db_retention._FULL_AI_JSON_RETAIN_S == 90 * 24 * 60 * 60
 
 
+async def case_old_tease_row_stays_a_tease():
+    """W30 #11: an old offer_moment row priced by the tease price Jev (and a free one, cents 0) keeps only
+    `reply_json.chat_tease.cents`: `is_tease` and `teases_sent_of` read the same before and after; a malformed
+    reply_json is NULLed as before; a second pass changes nothing."""
+    await _reset()
+    tease = await _add(40, "live", "sent", 120 * D, reply_json='{"chat_tease": {"cents": 300, "options": [0, 300]},'
+                       ' "ride": true, "parts": ["hey"]}')
+    free = await _add(40, "live", "sent", 110 * D, reply_json='{"chat_tease": {"cents": 0}, "parts": ["x"]}')
+    bad = await _add(40, "live", "sent", 100 * D, reply_json="not json")
+    await _add(40, "live", "sent", 1 * D)
+    async with get_session() as s:
+        rows = list((await s.execute(select(AiDecision).where(AiDecision.id.in_((tease, free))))).scalars())
+    assert all(full_ai_test.is_tease(r) for r in rows)
+    res = await db_retention.evict_audit_logs_once()
+    after = await _rows()
+    assert res["ai_decisions_json"] == 3, res
+    assert after[tease]["reply_json"] == '{"chat_tease":{"cents":300}}', after[tease]["reply_json"]
+    assert after[free]["reply_json"] == '{"chat_tease":{"cents":0}}', after[free]["reply_json"]
+    assert after[bad]["reply_json"] is None and all(after[i]["jev_json"] is None for i in (tease, free, bad))
+    async with get_session() as s:
+        rows = list((await s.execute(select(AiDecision).where(AiDecision.account_id == AID)
+                                     .order_by(AiDecision.id))).scalars())
+    assert [full_ai_test.is_tease(r) for r in rows] == [True, True, False, False], rows
+    assert len(full_ai_test.teases_sent_of(rows)) == 2, full_ai_test.teases_sent_of(rows)
+    before = await _rows()
+    res = await db_retention.evict_audit_logs_once()
+    assert res["ai_decisions_json"] == 0 and await _rows() == before, res
+
+
 _harness.run(
+    case_old_tease_row_stays_a_tease,
     case_old_terminal_rows_lose_json_and_stay,
     case_newest_row_kept_until_a_newer_one_lands,
     case_sending_row_untouched,

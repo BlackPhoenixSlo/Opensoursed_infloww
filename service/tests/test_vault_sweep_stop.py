@@ -69,4 +69,17 @@ async def case_sweep_stop_is_published():
     assert prog["error"] == "Stopped: NudeNet missing.", prog
 
 
+
+async def case_a_jev_cap_after_another_failure_is_published_apart():
+    """W30 F12: `error` keeps the first detail, so a Jev cap behind a fetch failure rides in `jev_capped`."""
+    async def v(m):
+        if m == 0:
+            return {"ok": False, "status": "fetch_failed", "detail": "fetch failed: 502"}
+        return {"ok": False, "status": "jev_capped", "detail": "Jev daily cap reached"}
+    _res, prog = await _run([0, 1], v)
+    assert (prog["error"], prog["jev_capped"]) == ("fetch failed: 502", True), prog
+    _res, prog = await _run([0], v)
+    assert prog["jev_capped"] is False, prog
+
+
 _harness.run()

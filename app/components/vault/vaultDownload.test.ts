@@ -7,7 +7,7 @@ vi.mock("@/lib/shareToken", () => ({ resolveShareToken: () => "tok" }));
 import { relay, type VaultMedia } from "@/lib/relay";
 
 import {
-  HEAD_MS, RELAY_BUSY, STALL_MS, abortableSleep, folderSink, listAll, LIVE_PAGE_GAP_MS, runQueue, shareFiles, shareSink,
+  HEAD_MS, RELAY_BUSY, SETUP_MS, STALL_MS, abortableSleep, folderSink, listAll, LIVE_PAGE_GAP_MS, runQueue, shareFiles, shareSink,
   startDownload, writeLinks,
 } from "./vaultDownload";
 import {
@@ -20,11 +20,12 @@ const get = relay.get as unknown as ReturnType<typeof vi.fn>;
 // ── a fake directory tree, Chrome's rules: getFileHandle(create) makes the file (0 bytes) at once, without create a
 // missing one throws; files[path] = bytes, written only on a clean close (an abort keeps what was there) ──
 type Files = Record<string, number>;
-/** `write(path)`: runs before each chunk written to that file (a slow / failing disk). */
-type DirOpts = { write?: (path: string) => Promise<void> };
+/** `write(path)`: runs before each chunk written to that file (a slow / failing disk); `dirAt(path)` before each
+ *  directory lookup (a stalled one). */
+type DirOpts = { write?: (path: string) => Promise<void>; dirAt?: (path: string) => Promise<void> };
 function dir(files: Files, path: string, o: DirOpts = {}): FileSystemDirectoryHandle {
   return {
-    getDirectoryHandle: async (n: string) => dir(files, `${path}${n}/`, o),
+    getDirectoryHandle: async (n: string) => { await o.dirAt?.(`${path}${n}/`); return dir(files, `${path}${n}/`, o); },
     removeEntry: async (n: string) => { delete files[`${path}${n}`]; },
     getFileHandle: async (n: string, f?: { create?: boolean }) => {
       if (!(`${path}${n}` in files)) {
@@ -125,6 +126,16 @@ describe("source chain", () => {
     expect(Object.fromEntries(relayUrl.searchParams)).toEqual({ account_id: "acc", media_id: "1", u: cdn(1), t: "tok" });
     expect(s.directStrikes).toBe(1);
     expect(s.items[0]).toMatchObject({ status: "done", source: "relay", bytes: 6 });
+  });
+
+  // F16: a refused CDN answer's body is cancelled, not left holding its connection.
+  it("a non-2xx direct answer's body is cancelled before the re-sign", async () => {
+    get.mockResolvedValue({ url: cdn(1, "new") });
+    const cancelled: string[] = [];
+    const refused = (u: string) => new Response(new ReadableStream({ cancel: () => { cancelled.push(u); } }), { status: 403 });
+    const { s } = await go([media(1)], true, async (u) => (u.startsWith("https://") ? refused(u) : body(2)));
+    expect(cancelled).toEqual([cdn(1), cdn(1, "new")]);
+    expect(s.items[0]).toMatchObject({ status: "done", source: "relay" });
   });
 
   it("after MAX strikes direct is off for the rest of the run", async () => {
@@ -263,10 +274,45 @@ describe("attempts + links (#5, #9)", () => {
     const refusing = { getDirectoryHandle: async () => { throw new DOMException("no", "NotAllowedError"); } } as unknown as
       FileSystemDirectoryHandle;
     const f = { txtName: "a.txt", htmlName: "a.html", txt: "t", html: "h", validUntil: null, rows: [] };
-    await expect(writeLinks(refusing, ["amy"], f)).resolves.toBe(false);
+    const sig = new AbortController().signal;
+    await expect(writeLinks(refusing, ["amy"], f, sig)).resolves.toBe(false);
     const files: Files = {};
-    await expect(writeLinks(dir(files, ""), ["amy"], f)).resolves.toBe(true);
+    await expect(writeLinks(dir(files, ""), ["amy"], f, sig)).resolves.toBe(true);
     expect(files).toEqual({ "amy/a.txt": 1, "amy/a.html": 1 });
+  });
+
+  // F15: two selections of one Creator both write into `<creator>/`; the second keeps the first's file.
+  // R2: only a pair another job wrote this page-load is kept; one from before (an earlier visit) is overwritten.
+  it("writeLinks: an earlier visit's pair is overwritten; this page-load's jobs (one picked folder) get -2, then -3", async () => {
+    const files: Files = { "amy/a.txt": 7, "amy/a.html": 7 };
+    const f = { txtName: "a.txt", htmlName: "a.html", txt: "t", html: "h", validUntil: null, rows: [] };
+    const root = dir(files, "");   // the queue's jobs share the picked folder
+    const sig = new AbortController().signal;
+    for (let i = 0; i < 3; i++) await expect(writeLinks(root, ["amy"], f, sig)).resolves.toBe(true);
+    expect(files).toEqual({ "amy/a.txt": 1, "amy/a.html": 1, "amy/a-2.txt": 1, "amy/a-2.html": 1,
+                            "amy/a-3.txt": 1, "amy/a-3.html": 1 });
+  });
+
+  // X2: a write left behind at its deadline (signal aborted) never lands, and the next run never takes its names.
+  it("writeLinks: a cancelled write never lands over the next run's pair", async () => {
+    const files: Files = {};
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let first = true;
+    const root = dir(files, "", { write: async () => { if (first) { first = false; await gate; } } });
+    const late = { txtName: "a.txt", htmlName: "a.html", txt: "late!", html: "late!", validUntil: null, rows: [] };
+    const next = { ...late, txt: "ok", html: "ok" };
+    const ac = new AbortController();
+    const p1 = writeLinks(root, ["amy"], late, ac.signal);
+    await new Promise((r) => setTimeout(r, 5));   // its first write hangs
+    ac.abort(new DOMException("no answer", "TimeoutError"));
+    await expect(writeLinks(root, ["amy"], next, new AbortController().signal)).resolves.toBe(true);
+    const saved = Object.fromEntries(Object.entries(files).filter(([, n]) => n === 2));
+    release();
+    await expect(p1).resolves.toBe(false);
+    expect(Object.values(files).some((n) => n === 5)).toBe(false);   // nothing of the cancelled write landed
+    expect(Object.fromEntries(Object.entries(files).filter(([, n]) => n === 2))).toEqual(saved);
+    expect(Object.keys(saved)).toHaveLength(2);
   });
 
   it("a queued job: no picker (the queue's folder), its own creator's path; gone from the queue: nothing runs", async () => {
@@ -407,7 +453,7 @@ describe("listAll", () => {
   it("pages live OF by 100 with a gap between pages", async () => {
     get.mockResolvedValueOnce({ list: [media(1)], hasMore: true })
        .mockResolvedValueOnce({ list: [media(2)], hasMore: true })
-       .mockResolvedValueOnce({ list: [], hasMore: true });
+       .mockResolvedValueOnce({ list: [], hasMore: false });
     const sleep = vi.fn(async () => {});
     const out = await listAll("acc", null, "live", new AbortController().signal, sleep);
     expect(out.map((m) => m.id)).toEqual([1, 2]);
@@ -421,6 +467,12 @@ describe("listAll", () => {
     await expect(listAll("acc", 12, "mirror", new AbortController().signal, async () => {}))
       .rejects.toThrow(/listing incomplete/);
     expect(get).toHaveBeenCalledTimes(2);
+  });
+  // X5: an empty page that still says hasMore is no end: the earlier pages are not the whole folder.
+  it("an empty page while hasMore: listing incomplete", async () => {
+    get.mockResolvedValueOnce({ list: [media(1)], hasMore: true }).mockResolvedValueOnce({ list: [], hasMore: true });
+    await expect(listAll("acc", 12, "mirror", new AbortController().signal, async () => {}))
+      .rejects.toThrow(/listing incomplete/);
   });
   it("more than LIST_MAX_PAGES pages: listing incomplete", async () => {
     let n = 0;
@@ -493,6 +545,68 @@ describe("startDownload (#28, #33, #34)", () => {
     let attempt = 0;
     await expect(startDownload(args(), d, "share", (_k, n) => { attempt = n; })).rejects.toThrow("relay 500");
     expect([attempt, d.get().phase]).toEqual([1, "listing"]);
+  });
+});
+
+// F4: a stall before the first item (the account's direct check, a listing page, the links file) ends within
+// SETUP_MS: the run goes on without it or ends with a reason, so it can't hold the queue behind it.
+describe("setup deadline", () => {
+  const never = (_p: string, _c?: unknown, signal?: AbortSignal) => new Promise((_, no) => {
+    signal?.addEventListener("abort", () => no(signal.reason));
+  });
+  const harness = () => {
+    let s: DlState = initialDownloadState;
+    return { send: (a: Action) => { s = vaultDownloadReducer(s, a); }, get: () => s,
+             signal: new AbortController().signal };
+  };
+  const sel = { accountId: "acc", creator: "amy", mode: "selection" as const, label: "1 selected",
+                media: [media(1)], source: "mirror" as const };
+  const settle = async <T,>(p: Promise<T>) => {
+    let out: { ok: T } | { err: unknown } | null = null;
+    p.then((ok) => { out = { ok }; }, (err) => { out = { err }; });
+    await vi.advanceTimersByTimeAsync(SETUP_MS + 100);
+    return out as { ok: T } | { err: unknown } | null;
+  };
+
+  it("a links file write that never settles: the run goes on (links failed), the item downloads", async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue({ direct: false });
+      vi.stubGlobal("fetch", vi.fn(async () => body(3)));
+      vi.stubGlobal("window", { location: { origin: "http://x" } });
+      const files: Files = {};
+      const root = dir(files, "", { write: async (p) => { if (p.includes("/links-")) await new Promise(() => {}); } });
+      const d = harness();
+      expect(await settle(startDownload(sel, d, "folder", () => {}, root))).toEqual({ ok: undefined });
+      expect(d.get()).toMatchObject({ phase: "done", links: "failed" });
+      expect(files["amy/Unfiled/1.jpg"]).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("the account's direct check never answers: relay only, the item downloads", async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockImplementation(never);
+      vi.stubGlobal("fetch", vi.fn(async () => body(3)));
+      const d = harness();
+      expect(await settle(startDownload(sel, d, "share", () => {}))).toEqual({ ok: undefined });
+      expect(d.get().items.map((i) => [i.status, i.source])).toEqual([["done", "relay"]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("a listing page that never answers: the run throws 'listing stalled' (the caller ends it)", async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockImplementation((p: string, c?: unknown, signal?: AbortSignal) => (
+        p.startsWith("/admin/vault-ai/download/info") ? Promise.resolve({ direct: false }) : never(p, c, signal)));
+      const out = await settle(startDownload({ ...sel, mode: "folder", media: undefined, folder: { id: 7, name: "A" } },
+                                             harness(), "share", () => {}));
+      expect(out && "err" in out && String((out.err as Error).message)).toMatch(/^listing stalled/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -638,6 +752,103 @@ describe("folder sink copies", () => {
     } }, async () => body(10));
     expect(s.items[0]).toMatchObject({ status: "failed", error: "disk full" });
     expect(files).toEqual({});
+  });
+
+  // F2: attempt A (stalled, its write still winding down) made the file; attempt B (its retry) wrote it and is done;
+  // A's late cleanup must not remove B's file.
+  it.each<[string, boolean]>([["the same sink (Retry)", true], ["a new sink on the same folder (a retry job)", false]])(
+    "a stalled attempt's late cleanup never removes the file its replacement wrote: %s", async (_n, same) => {
+      const files: Files = {};
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      let first = true;
+      const root = dir(files, "", { write: async () => { if (first) { first = false; await gate; } } });
+      const [it1] = toItems([media(1)], null);
+      const a = folderSink(root, "amy");
+      const acA = new AbortController();
+      const open = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4)); } });   // never ends
+      const pA = a(it1, open, acA.signal);
+      await new Promise((r) => setTimeout(r, 5));
+      expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });   // A made it, its write hangs
+      acA.abort(new DOMException("stalled", "TimeoutError"));
+      const b = same ? a : folderSink(root, "amy");
+      await b(it1, body(6).body!, new AbortController().signal);
+      expect(files).toEqual({ "amy/Unfiled/1.jpg": 6 });
+      release();
+      await expect(pA).rejects.toBeTruthy();
+      expect(files).toEqual({ "amy/Unfiled/1.jpg": 6 });   // B's file survives A's cleanup
+    });
+
+  // R3: B took over the file A made and failed too: B removes it (A, no longer its owner, can't), nothing half-written.
+  it("a replacement that took over a stalled attempt's new file and failed removes it", async () => {
+    const files: Files = {};
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let first = true;
+    const root = dir(files, "", { write: async () => { if (first) { first = false; await gate; } } });
+    const [it1] = toItems([media(1)], null);
+    const a = folderSink(root, "amy");
+    const acA = new AbortController();
+    const pA = a(it1, new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4)); } }), acA.signal);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });   // A made it, its write hangs
+    acA.abort(new DOMException("stalled", "TimeoutError"));
+    const short = new ReadableStream<Uint8Array>({ start(c) { c.error(new Error("short read")); } });
+    await expect(folderSink(root, "amy")(it1, short, new AbortController().signal)).rejects.toThrow("short read");
+    expect(files).toEqual({});
+    release();
+    await expect(pA).rejects.toBeTruthy();
+    expect(files).toEqual({});
+  });
+
+  // X1: ownership is per picked folder: a stalled attempt in root A gives nothing to a write into root B.
+  it("a failed write into another picked folder never removes that folder's file there before", async () => {
+    const filesA: Files = {};
+    const filesB: Files = { "amy/Unfiled/1.jpg": 5 };
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const rootA = dir(filesA, "", { write: async () => { await gate; } });
+    const [it1] = toItems([media(1)], null);
+    const acA = new AbortController();
+    const pA = folderSink(rootA, "amy")(it1, new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4)); } }),
+                                        acA.signal);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(filesA).toEqual({ "amy/Unfiled/1.jpg": 0 });   // A made it in root A, its write hangs
+    const short = new ReadableStream<Uint8Array>({ start(c) { c.error(new Error("short read")); } });
+    await expect(folderSink(dir(filesB, ""), "amy")(it1, short, new AbortController().signal)).rejects.toThrow("short read");
+    expect(filesB).toEqual({ "amy/Unfiled/1.jpg": 5 });   // B's own earlier file stays
+    acA.abort(new DOMException("stalled", "TimeoutError"));
+    release();
+    await expect(pA).rejects.toBeTruthy();
+  });
+
+  // X1: an attempt aborted while its directory lookup hung never takes the file over from its retry.
+  it("an attempt aborted during a stalled directory lookup never removes its retry's file", async () => {
+    const files: Files = {};
+    let openDir!: () => void;
+    const dirGate = new Promise<void>((r) => { openDir = r; });
+    let writeOn!: () => void;
+    const writeGate = new Promise<void>((r) => { writeOn = r; });
+    let lookups = 0;
+    const root = dir(files, "", {
+      dirAt: async (path) => { if (path === "amy/Unfiled/" && (lookups += 1) === 1) await dirGate; },
+      write: async () => { await writeGate; },
+    });
+    const [it1] = toItems([media(1)], null);
+    const a = folderSink(root, "amy");
+    const acA = new AbortController();
+    const pA = a(it1, body(6).body!, acA.signal);
+    await new Promise((r) => setTimeout(r, 5));
+    acA.abort(new DOMException("stalled", "TimeoutError"));   // A stalled in its lookup
+    const pB = a(it1, body(6).body!, new AbortController().signal);   // its Retry: makes the file, writing
+    await new Promise((r) => setTimeout(r, 5));
+    expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });
+    openDir();   // A's lookup answers late
+    await expect(pA).rejects.toBeTruthy();
+    expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });   // B's file still there
+    writeOn();
+    await expect(pB).resolves.toBeNull();
+    expect(files).toEqual({ "amy/Unfiled/1.jpg": 6 });
   });
 
   it("whole vault: an item in 2 custom folders is written once per folder, fetched once", async () => {

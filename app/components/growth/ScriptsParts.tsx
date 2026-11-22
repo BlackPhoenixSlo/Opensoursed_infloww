@@ -482,7 +482,7 @@ export function ScriptRow({
       </div>
       {/* #47, #48: edit, share, delete (or remove), 16px left padding, 24px apart. */}
       <div className="flex items-center gap-6 pl-4 py-2 text-fg-dim">
-        <button type="button" aria-label="Edit" onClick={onEdit} className="hover:text-fg">
+        <button type="button" aria-label="Edit" onClick={onEdit} disabled={busy} className="hover:text-fg">
           <Pencil size={16} aria-hidden />
         </button>
         <button type="button" aria-label="Share script" onClick={onShare} className="hover:text-fg">

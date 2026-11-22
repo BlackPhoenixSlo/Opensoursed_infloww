@@ -99,8 +99,8 @@ neuters that loop, so
        `got` / `done` on one counter in this process (no await between ask and
        the pool's queue, nor between the grant and got), `wait_ms` and the
        pool's `n`, so a scenario can check the pool's order and cap from outside;
-       `in_use` = the pool's peak permits out so far (a run may free its permit
-       mid-run around a model call, so got..done is not "held").
+       `in_use` = the pool's peak permits out so far, reserve included (a run may
+       free its permit mid-run around a model call, so got..done is not "held").
   POST /__slop/automation-tick  one `automation_executor._drain_due_jobs_once()`
        pass, answered when every task it spawned (and the dead-session probe)
        has finished: {spawned, tasks, ms}. `tasks`: [account, kind] per run task THIS
@@ -915,20 +915,27 @@ def _wire(app) -> None:
         app.on_event("startup")(start_supervisor)
 
     slot_seq = itertools.count()   # one clock for every run's slot stamps (ask < got < done, totally ordered)
-    # `in_use`: the pool's own peak of permits handed out (n - free, after every event), since a
-    # run may give its permit back mid-run (run_slot.freed around a model call) and take it back:
-    # its got..done span is not "held" any more. Watches the shell's _step, so a decide() fault
-    # that lets runs past the cap drives it above n.
+    # `in_use`: the pool's own peak of permits handed out (n - free plus reserve - reserve_free,
+    # after every event), since a run may give its permit back mid-run (run_slot.freed around a
+    # model call) and take it back: its got..done span is not "held" any more. These runs are not
+    # operator runs, so a reserve permit counts too: a decide() fault that lets runs past the cap
+    # (or into the reserve) drives it above n. Watches the shell's _step: gone (renamed) = an
+    # error, never a silent 0.
     pool_peak = {"pool": None, "in_use": 0}
 
     def _watch_pool(pool) -> None:
         if pool_peak["pool"] is pool:
             return
-        pool_peak["pool"], real = pool, pool._step
+        real = getattr(pool, "_step", None)
+        if not callable(real):
+            raise RuntimeError(f"slop relay: {type(pool).__name__} has no _step to watch (renamed?): "
+                               "the run-slot peak `in_use` cannot be measured")
+        pool_peak["pool"] = pool
 
         def step(ev) -> None:
             real(ev)
-            pool_peak["in_use"] = max(pool_peak["in_use"], pool.n - pool.free)
+            pool_peak["in_use"] = max(pool_peak["in_use"],
+                                      pool.n - pool.free + pool.reserve - pool.reserve_free)
 
         pool._step = step
 

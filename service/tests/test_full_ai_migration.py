@@ -23,6 +23,19 @@
   case_duplicate_offer_message_refused  a second row on (account, offer_message_id) is
                                     refused; NULL offer_message_id never clashes
   case_head_is_0120                 one head; 0120_full_ai_offers sits on 0119
+  case_0130_adds_offer_attempt_at   0129 -> 0130 adds the nullable ai_decisions.offer_attempt_at
+                                    (W30 F3: the carrier POST was attempted); again = no-op;
+                                    downgrade drops it. The 0121..0129 steps touch other tables,
+                                    so the ai_decisions upgrades stamp across them.
+  case_0130_marks_legacy_attempts   W30 C4: 0130 stamps `offer_attempt_at = created_at` on legacy live
+                                    priced rows that may have POSTed (`sending`; `sent` / `unconfirmed`
+                                    with no `offer_message_id`), no other row; a rerun over the column
+                                    stamps nothing
+  case_init_db_marks_legacy_attempts_once  the same on the boot whose catch-up adds the column (init_db,
+                                    `data_migrations` marker): reap then keeps a legacy `sending` Offer,
+                                    settle links a legacy `sent` row's card; a second boot stamps nothing
+                                    new; nor does a boot with the column but no marker (W30 L5c: a dev
+                                    DB new code wrote)
 
 Run: ./venv/bin/python service/tests/test_full_ai_migration.py  (exit 0 = pass)
 """
@@ -50,6 +63,7 @@ TEST_CHAT, BEFORE_TEST_CHAT = "0119_full_ai_test_chat", "0118_owner_tokens"
 NEW_COLUMNS = (("ai_decisions", "reply_json"), ("account_ai_config", "full_ai_config_json"))
 OFFERS = "0120_full_ai_offers"
 OFFER_INDEX = "uq_ai_decisions_offer_message"
+ATTEMPT, BEFORE_ATTEMPT = "0130_ai_decisions_offer_attempt", "0129_keep_running_rules_heal"
 OFFER_COLUMNS = {"offer_price_cents": "INTEGER", "offer_list_cents": "INTEGER",
                  "offer_media_json": "TEXT", "offer_item_ref": "TEXT", "offer_message_id": "BIGINT",
                  "outcome": "VARCHAR", "outcome_at": "DATETIME", "join_src": "VARCHAR"}
@@ -58,7 +72,7 @@ COLUMNS = ("id", "account_id", "fan_id", "mode", "trigger_kind", "trigger_key", 
            "anchor_message_id", "anchor_created_at", "arm", "salt_ver", "route", "heat",
            "route_row", "question_version", "router_model", "writer_model", "jev_json",
            "jev_ms", "jev_error", "status", "created_at", "updated_at", "reply_json",
-           *OFFER_COLUMNS)
+           *OFFER_COLUMNS, "offer_attempt_at")
 
 
 # The tables 0116 -> 0119 alter besides ai_decisions, at their pre-0117 minimum.
@@ -116,6 +130,13 @@ def _alembic(url: str, fn, rev: str) -> None:
         os.environ["CHATTERLY_DB_URL"] = prior
 
 
+def _to_attempt(url: str) -> None:
+    """Upgrade to 0120, stamp across 0121..0129 (other tables), then 0130."""
+    _alembic(url, command.upgrade, OFFERS)
+    _alembic(url, command.stamp, BEFORE_ATTEMPT)
+    _alembic(url, command.upgrade, ATTEMPT)
+
+
 def case_upgrade_matches_create_all():
     with tempfile.TemporaryDirectory(prefix="full_ai_migration_") as tmp:
         old, fresh = Path(tmp) / "old.db", Path(tmp) / "fresh.db"
@@ -125,7 +146,7 @@ def case_upgrade_matches_create_all():
             for ddl in _OLD_TABLES:
                 con.execute(sa.text(ddl))
             con.execute(sa.text(f"INSERT INTO alembic_version VALUES ('{PRIOR}')"))
-        _alembic(url, command.upgrade, OFFERS)
+        _to_attempt(url)
         full = sa.create_engine(f"sqlite:///{fresh}")
         Base.metadata.create_all(full)
         got, want = _shape(old), _shape(fresh)
@@ -139,9 +160,11 @@ def case_upgrade_matches_create_all():
 
         # Again over a table that is already there (a box init_db brought it to).
         _alembic(url, command.stamp, PRIOR)
-        _alembic(url, command.upgrade, OFFERS)
+        _to_attempt(url)
         assert _shape(old) == want
 
+        _alembic(url, command.downgrade, BEFORE_ATTEMPT)
+        _alembic(url, command.stamp, OFFERS)
         _alembic(url, command.downgrade, PRIOR)
         assert TABLE not in sa.inspect(engine).get_table_names()
         engine.dispose()
@@ -330,6 +353,130 @@ def case_head_is_0120():
     script = ScriptDirectory.from_config(_cfg())
     assert len(script.get_heads()) == 1, script.get_heads()  # later migrations chain after 0120
     assert script.get_revision(OFFERS).down_revision == TEST_CHAT
+
+
+def case_0130_adds_offer_attempt_at():
+    with tempfile.TemporaryDirectory(prefix="full_ai_migration_") as tmp:
+        old, url, engine = _old_db(tmp, OFFERS)
+        _alembic(url, command.stamp, BEFORE_ATTEMPT)
+        assert "offer_attempt_at" not in _cols(old, TABLE)
+        _alembic(url, command.upgrade, ATTEMPT)
+        assert _cols(old, TABLE)["offer_attempt_at"] == ("DATETIME", 0), _cols(old, TABLE)
+        before = _shape(old)
+        _alembic(url, command.stamp, BEFORE_ATTEMPT)      # again over the column (init_db added it)
+        _alembic(url, command.upgrade, ATTEMPT)
+        assert _shape(old) == before
+        _alembic(url, command.downgrade, BEFORE_ATTEMPT)
+        assert "offer_attempt_at" not in _cols(old, TABLE)
+        assert "join_src" in _cols(old, TABLE)            # 0120's columns stay
+        engine.dispose()
+    assert ScriptDirectory.from_config(_cfg()).get_revision(ATTEMPT).down_revision == BEFORE_ATTEMPT
+
+
+# W30 C4: (fan, mode, status, price, offer_message_id, outcome, stamped by the backfill)
+LEGACY = ((1, "live", "sending", 1000, None, None, True),
+          (2, "live", "sent", 1000, None, None, True),
+          (3, "live", "unconfirmed", 1000, None, None, True),
+          (4, "live", "sent", 1000, 555, None, False),
+          (5, "live", "no_send", 1000, None, None, False),
+          (6, "live", "sent", None, None, None, False),          # a tease: price NULL
+          (7, "test", "sent", 1000, None, None, False),
+          (8, "live", "sent", 0, None, None, False),             # a Free item
+          (9, "live", "sent", 1000, None, "bought", False))
+LEGACY_MEDIA = 7401
+ATTEMPT_MARKER = "20261122_full_ai_offer_attempt"
+
+
+def _seed_legacy(con, acct: str, at: str, rows=LEGACY) -> None:
+    for fan, mode, status, price, mid, outcome, _ in rows:
+        con.execute(sa.text(
+            "INSERT INTO ai_decisions (account_id, fan_id, mode, trigger_kind, trigger_key, route, heat, "
+            "route_row, question_version, status, created_at, updated_at, offer_price_cents, offer_media_json, "
+            "offer_message_id, outcome) VALUES (:a, :f, :m, 'inbound', :k, 'sell_now', 2, 'sell', 'v', :s, :t, :t, "
+            ":p, :media, :mid, :o)"),
+            {"a": acct, "f": fan, "m": mode, "k": str(100 + fan), "s": status, "t": at, "p": price,
+             "media": f'{{"locked": [{LEGACY_MEDIA}], "previews": []}}', "mid": mid, "o": outcome})
+
+
+def _attempts(con, acct: str) -> dict[int, object]:
+    return dict(con.execute(sa.text("SELECT fan_id, offer_attempt_at FROM ai_decisions WHERE account_id = :a"),
+                            {"a": acct}).all())
+
+
+def _want(at: str, rows=LEGACY) -> dict[int, object]:
+    return {fan: at if stamped else None for fan, *_, stamped in rows}
+
+
+def case_0130_marks_legacy_attempts():
+    at = "2026-11-20 10:00:00.000000"
+    with tempfile.TemporaryDirectory(prefix="full_ai_migration_") as tmp:
+        old, url, engine = _old_db(tmp, OFFERS)
+        _alembic(url, command.stamp, BEFORE_ATTEMPT)
+        with engine.begin() as con:
+            _seed_legacy(con, "legacy", at)
+        _alembic(url, command.upgrade, ATTEMPT)
+        with engine.begin() as con:
+            got = _attempts(con, "legacy")
+            _seed_legacy(con, "later", at, LEGACY[:1])          # written after the upgrade: never stamped
+        assert got == _want(at), got
+        _alembic(url, command.stamp, BEFORE_ATTEMPT)            # again over the column
+        _alembic(url, command.upgrade, ATTEMPT)
+        with engine.begin() as con:
+            assert _attempts(con, "later") == {1: None}, _attempts(con, "later")
+        engine.dispose()
+
+
+def case_init_db_marks_legacy_attempts_once():
+    import asyncio
+    from datetime import datetime, timedelta
+
+    from automations import full_ai_live, full_ai_settle
+    from db.engine import get_session, init_db
+    from db.models import Message
+
+    acct, created = "legacy_boot", datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)
+    at = created.strftime("%Y-%m-%d %H:%M:%S.%f")
+    engine = sa.create_engine(f"sqlite:///{_harness.DB_PATH}")
+    with engine.begin() as con:
+        con.execute(sa.text("INSERT OR IGNORE INTO accounts (id, is_active_default, created_at) "
+                            "VALUES (:a, 0, CURRENT_TIMESTAMP)"), {"a": acct})
+        con.execute(sa.text("DELETE FROM data_migrations WHERE name = :n"), {"n": ATTEMPT_MARKER})
+        _seed_legacy(con, acct, at)
+        con.execute(sa.text("ALTER TABLE ai_decisions DROP COLUMN offer_attempt_at"))   # a pre-0130 box
+    asyncio.run(init_db())
+    with engine.begin() as con:
+        got = _attempts(con, acct)
+        _seed_legacy(con, "legacy_boot_2", at, LEGACY[:1])    # after the first boot: never stamped
+    stamped = {f: v is not None for f, v in got.items()}
+    assert stamped == {f: s for f, *_, s in LEGACY}, got
+
+    async def after_boot():
+        reaped = await full_ai_live.reap(acct)
+        async with get_session() as s:
+            s.add(Message(account_id=acct, fan_id=2, message_id=974_001, direction="out", body="for u",
+                          created_at=created + timedelta(seconds=5), price_cents=1000,
+                          media_ids=f"[{LEGACY_MEDIA}]", media_count=1))
+        return reaped, await full_ai_settle.settle_pull(acct, 2)
+
+    reaped, settled = asyncio.run(after_boot())
+    asyncio.run(init_db())
+    with engine.begin() as con:
+        kept = con.execute(sa.text("SELECT status, offer_price_cents FROM ai_decisions WHERE account_id = :a "
+                                   "AND fan_id = 1"), {"a": acct}).one()
+        linked = con.execute(sa.text("SELECT offer_message_id FROM ai_decisions WHERE account_id = :a "
+                                     "AND fan_id = 2"), {"a": acct}).scalar()
+        again = _attempts(con, "legacy_boot_2")
+        con.execute(sa.text("DELETE FROM data_migrations WHERE name = :n"), {"n": ATTEMPT_MARKER})
+    asyncio.run(init_db())                                    # column there, no marker: stamp none
+    with engine.begin() as con:
+        dev = _attempts(con, "legacy_boot_2")
+        marked = con.execute(sa.text("SELECT 1 FROM data_migrations WHERE name = :n"),
+                             {"n": ATTEMPT_MARKER}).first() is not None
+    engine.dispose()
+    assert (reaped, tuple(kept)) == (1, ("unconfirmed", 1000)), (reaped, kept)
+    assert (settled, linked) == (1, 974_001), (settled, linked)
+    assert again == {1: None}, again
+    assert (dev, marked) == ({1: None}, True), (dev, marked)
 
 
 _harness.run()

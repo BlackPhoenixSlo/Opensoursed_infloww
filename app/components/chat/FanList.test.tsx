@@ -365,6 +365,27 @@ describe("FanList", () => {
     expect(screen.getByRole("button", { name: "Unread 1" })).toBeInTheDocument();
   });
 
+  it("on another chip (Pinned), a live patch of All's cache re-counts the Unread chip (W30-mu #20)", async () => {
+    routeRelay("filter=pinned", () => ({ list: [], hasMore: false }));
+    serveChats([CHATS[0], { ...CHATS[1], hasUnread: false, unreadMessagesCount: 0 }, CHATS[2]]);
+    const user = userEvent.setup();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, qc);
+    await rowOf("Fixture Fan Three");
+    expect(screen.getByRole("button", { name: "Unread 1" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Pinned" }));
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
+    const allKey = ["chats", "model", ACCOUNT_ID, null, null, null, 25];
+    act(() => {
+      qc.setQueryData(allKey, (d: { pages: { rows: OFChatItem[] }[] }) => ({
+        ...d,
+        pages: d.pages.map((pg) => ({ ...pg, rows: pg.rows.map((c) => c.withUser.id === FANS[1].id
+          ? { ...c, hasUnread: true, unreadMessagesCount: 1 } : c) })),
+      }));
+    });
+    expect(await screen.findByRole("button", { name: "Unread 2" })).toBeInTheDocument();
+  });
+
   it("a chat read elsewhere leaves the Unread badge once the Unread list, read live and complete, no longer holds it, on every chip after; All's cache is left alone", async () => {
     // All (cached): Fan One unread. Unread (live, complete): empty — OF, another
     // chatter or an automation read it; the All set (the relay's cached window) still says unread.

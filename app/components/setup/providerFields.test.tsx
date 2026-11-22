@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
-import { HELP, KEY_URLS, LABELS, keyUrl, wrongFieldWarning } from "./providerFields";
+import { HELP, KEY_URLS, LABELS, clearConfirm, keyUrl, wrongFieldWarning } from "./providerFields";
 
 /**
  * Pins the one paste mistake this card can make silently: a DeepSeek key
@@ -52,6 +54,21 @@ describe("typesafe provider copy", () => {
   });
 });
 
+describe("clearConfirm", () => {
+  it("says a cleared TypeSafe key falls back to the server's, which pays", () => {
+    const own = clearConfirm("typesafe");
+    expect(own).toMatch(/^Remove your TypeSafe \(Jev\) API key\?/);
+    expect(own).toMatch(/server's key and the server pays/);
+    expect(own).not.toMatch(/stop replying/);
+    expect(clearConfirm("typesafe", "ann")).toMatch(/^Remove @ann's TypeSafe/);
+  });
+  it("names other providers by label on both forms", () => {
+    expect(clearConfirm("deepinfra")).toBe("Remove your DeepInfra API key? Your models stop replying until you add one.");
+    expect(clearConfirm("deepinfra", "ann")).toBe("Remove @ann's DeepInfra API key? Their models stop replying until one is added.");
+    expect(clearConfirm("newvendor")).toMatch(/^Remove your newvendor\?/);
+  });
+});
+
 describe("Full AI Chat Writer host copy", () => {
   it("labels NanoGPT and names its Writer and site", () => {
     expect(LABELS.nanogpt).toMatch(/NanoGPT/);
@@ -76,6 +93,19 @@ describe("keyUrl", () => {
     expect(keyUrl("DEEPSEEK_API_KEY")).toBe(KEY_URLS.deepseek);
     expect(keyUrl("HELP_ASSISTANT_ANTHROPIC_KEY")).toBe(KEY_URLS.anthropic);
     expect(keyUrl("GOOGLE_DRIVE_API_KEY")).toBe(KEY_URLS.google);
+  });
+  it("links every vendor key in the server's secrets_store KNOWN (read from the source, no hand copy)", () => {
+    const src = readFileSync(resolve(__dirname, "..", "..", "..", "service", "secrets_store.py"), "utf8");
+    const known = [...src.matchAll(/^ {4}"([A-Z][A-Z0-9_]*)": \{/gm)].map((m) => m[1]);
+    expect(known).toContain("TYPESAFE_API_KEY");
+    const vendorless = new Set(["ADMIN_PASSWORD", "SHARE_TOKEN"]);
+    for (const k of known) {
+      if (vendorless.has(k)) continue;
+      expect(keyUrl(k), k).toMatch(/^https:\/\//);
+    }
+  });
+  it("points TypeSafe at its keys page (docs.typesafe.ai/quickstart)", () => {
+    expect(KEY_URLS.typesafe).toBe("https://console.typesafe.ai/keys");
   });
   it("has no link for vendorless keys", () => {
     expect(keyUrl("ADMIN_PASSWORD")).toBeNull();

@@ -143,6 +143,11 @@ class _ConfigBody(BaseModel):
 async def put_autoreply_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     assert_account_owned(body.account_id)
     clean = _validate(body.config)
+    # On with neither source would reply to nobody. The save replaces the stored
+    # blob, so the engine reads the posted keys over the defaults: check that.
+    eff = {**_defaults(), **clean}
+    if eff["enabled"] and not eff["folders_enabled"] and not eff["new_fans_enabled"]:
+        raise HTTPException(422, "pick who gets replies: folders or new fans")
     now = datetime.utcnow()
     payload = json.dumps(clean)
     async with get_session() as s:

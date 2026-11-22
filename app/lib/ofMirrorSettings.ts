@@ -416,7 +416,7 @@ export function useOfSettings(frameRef: RefObject<HTMLIFrameElement | null>, src
   const root = usePathname() === "/of-manager/settings";
   const page = /^\/of-mirror\/pages\/settings\/(.+)\.html$/.exec(src)?.[1] ?? "";
   const sources = page ? sourcesFor(page) : [];
-  const newWrites = useOfmNewWrites(!!page); // OFM_NEW_WRITES_ENABLED (ofMirrorNewWrites)
+  const newWrites = useOfmNewWrites(!!page, accountId); // OFM_NEW_WRITES_ENABLED (ofMirrorNewWrites)
   const values = useQueries({
     queries: sources.map((s) => ({
       // "me" shares useOfIdentity's cache entry.

@@ -482,3 +482,32 @@ def test_images_step_walks_past_a_broken_and_a_hanging_tile(pw):
     assert not got[8]["complete"], got[8]
     assert all(t["complete"] and t["width"] > 0 for n, t in enumerate(got) if n not in (5, 8)), got
     assert marks == 0   # the walk's marks are gone before the settled shot
+
+
+# ticket 101: the proof list's order is the driver's, not the caller's
+def test_driver_order_is_the_proof_list_order_whatever_the_given_order():
+    from proof_core import order, order_group
+    from proofs import ORDER
+    given = [ALL[i] for i in reversed(phase6.IDS)]
+    got = [p.id for p in order(given, canon=ORDER)]
+    assert got == list(phase6.IDS)
+    groups = [order_group(ALL[i]) for i in got]
+    assert groups == [0] * 5 + [1] * 4 + [2] * 3   # reads, Fan-invisible writes, Fan-reaching writes
+
+
+def test_prove_orders_by_the_proof_list():
+    src = (phase6.HERE / "prove.py").read_text()
+    assert "order([ALL[i] for i in proof_ids if i in ALL], canon=ORDER)" in src
+
+
+# ticket 101: `--fault delete-500` reaches a Phase 6 run: an undo's DELETE of a list (tracer) or a post (the upload,
+# dedupe, Co-tag and Publish now proofs) answers 500, so the run stops on its FAILED row before any Fan-reaching proof
+@pytest.mark.parametrize("method, path, fires", [
+    ("DELETE", "/api2/v2/lists/901", True), ("DELETE", "/api2/v2/posts/900070000000001", True),
+    ("POST", "/api2/v2/posts", False), ("DELETE", "/api2/v2/trials/5", False),
+    ("DELETE", "/api2/v2/messages/queue/5", False), ("DELETE", "/api2/v2/posts/7/comments", False),
+], ids=["tracer list", "post", "post create", "trial (trial-delete-500's)", "queue item", "a post's sub-path"])
+def test_delete_500_fires_on_a_list_or_post_delete(method, path, fires):
+    import fake_layer
+    hit = {"method": method, "path": path, "tagged": False, "query": "", "body": None}
+    assert fake_layer.Recorder(lambda *a: None, "delete-500")._fires(hit) is fires

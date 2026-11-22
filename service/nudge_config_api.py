@@ -31,6 +31,7 @@ from auth import assert_account_owned
 from automation_rules_api import ensure_kind_rule
 from db.engine import get_session
 from db.models import AccountAiConfig
+import permissions
 
 log = logging.getLogger("of-relay.nudge_config_api")
 
@@ -91,9 +92,44 @@ def _validate_config(cfg: dict) -> dict:
         else:
             raise HTTPException(422, "quiet_hours must be [start, end]")
     if "slots" in cfg:
-        if not isinstance(cfg["slots"], dict):
-            raise HTTPException(422, "slots must be an object")
-        out["slots"] = cfg["slots"]  # shape is free-form (day → slot → {text,image})
+        out["slots"] = _validate_slots(cfg["slots"])
+    return out
+
+
+_BUCKETS = {"default", "weekday", "weekend", "monday", "tuesday", "wednesday", "thursday",
+            "friday", "saturday", "sunday"}
+_SLOTS = {"morning_1", "morning_2", "afternoon_1", "afternoon_2", "evening", "night"}
+
+
+def _validate_slots(slots) -> dict:
+    """day bucket → slot → {text: [str], image: [vault id]}: the sender iterates
+    `text` and int()s each image, so a string line or a non-numeric id is refused
+    here, not mis-sent. Digit-string ids become ints; other entry keys drop. A
+    legacy `null` day or slot (the sender skips it: inherited) drops = absent."""
+    if not isinstance(slots, dict):
+        raise HTTPException(422, "slots must be an object")
+    out: dict = {}
+    for b, pools in slots.items():
+        if b not in _BUCKETS:
+            raise HTTPException(422, f"slots: unknown day {b!r}")
+        if pools is None:
+            continue
+        if not isinstance(pools, dict):
+            raise HTTPException(422, f"slots.{b} must be an object")
+        for k, e in pools.items():
+            if k not in _SLOTS:
+                raise HTTPException(422, f"slots.{b}: unknown slot {k!r}")
+            if e is None:
+                continue
+            if not isinstance(e, dict):
+                raise HTTPException(422, f"slots.{b}.{k} must be an object")
+            text, image = e.get("text") or [], e.get("image") or []
+            if not isinstance(text, list) or not all(isinstance(t, str) for t in text):
+                raise HTTPException(422, f"slots.{b}.{k}.text must be a list of lines")
+            if not isinstance(image, list) or not all(
+                    not isinstance(i, bool) and str(i).strip().isdigit() for i in image):
+                raise HTTPException(422, f"slots.{b}.{k}.image must be a list of vault media ids")
+            out.setdefault(b, {})[k] = {"text": text, "image": [int(i) for i in image]}
     return out
 
 
@@ -116,9 +152,24 @@ class _ConfigBody(BaseModel):
     config: dict
 
 
-@router.put("/admin/nudge-config")
+_PUT_PATH = "/admin/nudge-config"
+_BULK_PATH = "/admin/nudge-config/bulk"
+
+
+async def _assert_page(account_ids: list[str], path: str) -> None:
+    """The role middleware's page check for the Creators named in the BODY (it
+    reads only ?account_id= / X-Account-Id): owned is not enough, the caller's
+    role in each Creator's Agency must serve this route. One check for all."""
+    pages = permissions.route_pages(path, "PUT") or ()
+    refusal, _ = await permissions.route_refusal(pages, "PUT", path, list(account_ids))
+    if refusal is not None:
+        raise refusal
+
+
+@router.put(_PUT_PATH)
 async def put_nudge_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     assert_account_owned(body.account_id)
+    await _assert_page([body.account_id], _PUT_PATH)
     clean = _validate_config(body.config)
     now = datetime.utcnow()
     payload = json.dumps(clean)
@@ -233,19 +284,22 @@ async def _saved_slots(s, account_id: str) -> dict:
     return slots if isinstance(slots, dict) else {}
 
 
-@router.put("/admin/nudge-config/bulk")
+@router.put(_BULK_PATH)
 async def put_nudge_config_bulk(body: _BulkBody = Body(...)) -> dict[str, Any]:
     """Share ONE config to many models: every setting and line is copied, each
     model keeps its own slot images (vault ids never cross accounts), and each
     model's 60s rule follows the shared `enabled` — the same switch a single
-    save syncs."""
+    save syncs, only when sent (`enabled` in the reply: null when not)."""
     if not body.account_ids:
         raise HTTPException(422, "account_ids cannot be empty")
     for aid in body.account_ids:
         assert_account_owned(aid)  # 403 on any non-owned id BEFORE any write
+    await _assert_page(body.account_ids, _BULK_PATH)   # and on any whose Agency refuses the page
     clean = _validate_config(body.config)
-    enabled = bool(clean.get("enabled", True))
-    shared_slots = clean.get("slots") if isinstance(clean.get("slots"), dict) else None
+    # Only a SENT `enabled` syncs the rules, as a single save (an omitted key
+    # must not switch every target on or park a running one).
+    enabled = clean.get("enabled")
+    shared_slots = clean.get("slots")   # validated: a dict, or absent
     now = datetime.utcnow()
     applied: list[dict[str, str]] = []
     async with get_session() as s:
@@ -255,7 +309,7 @@ async def put_nudge_config_bulk(body: _BulkBody = Body(...)) -> dict[str, Any]:
             # No slots sent: the model keeps its own (a whole-blob write must not wipe them).
             cfg["slots"] = own if shared_slots is None else _with_own_images(shared_slots, own)
             await _upsert_config(s, aid, json.dumps(cfg), now)
-            action = await ensure_kind_rule(
+            action = "unchanged" if enabled is None else await ensure_kind_rule(
                 s, aid, "nudge_online", enable=enabled, name="Nudge online",
                 every_seconds=_DETECT_EVERY_S, persist_off=True)
             applied.append({"account_id": aid, "rule": action})

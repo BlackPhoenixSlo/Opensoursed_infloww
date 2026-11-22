@@ -48,7 +48,8 @@
   case_price_ok_table          any price named = the PPV price; None / 0 (a
                                tease, a Free item): no price may be named
   case_fallback_caption_table  counts + kinds per kind; only offer has the
-                               price; each fallback passes its own audit
+                               price; each fallback passes its own audit; a
+                               tagged Pick's names the locked count (W30 #20)
   case_clamp_quote_table       (ticket 47) worked quotes: floor = max($10,
                                67 % of list up to a dollar), no amount = floor,
                                above list = list, cents round up to a dollar
@@ -65,6 +66,7 @@ from __future__ import annotations
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
 
 import inspect  # noqa: E402
+from _jev_fixtures import mapped  # noqa: E402
 from dataclasses import replace  # noqa: E402
 import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
@@ -118,7 +120,7 @@ def _flags(vulva="not_in_frame", breasts="not_in_frame", anus="not_in_frame", *,
 
 def _jev(lane5, *, kind="photo", read_lane5=None, breasts="n", crotch="n", pen="n", review=False, **tags):
     """A current `_jev` blob (`vault_jev_rules.current`): this VERSION, status ok, `lane5`, `state`;
-    a clip also `vv` jv1 and `frames`. `tags` are Noul answers (`vault_topic_folders._tag`)."""
+    a clip also `vv` jv1 and `frames`. `tags` are Noul answers (`vault_topic_folders.jev_tag`)."""
     j = {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": lane5, "state": {}, "kind": kind,
          "breasts_bare": breasts, "crotch_bare": crotch, "penetration": pen, "tags": dict(tags)}
     if kind == "video":
@@ -144,7 +146,8 @@ SHELF_0 = {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none
 
 
 def _with_jev(fields, jev):
-    return {**fields, vault_jev_rules.JEV_KEY: jev}
+    """`fields` + `jev`, the flags as the mapper writes them (a paid lane is never stored sfw — W30 D1)."""
+    return mapped({**fields, vault_jev_rules.JEV_KEY: jev})
 
 
 def _price(fields, kind="photo"):
@@ -849,6 +852,16 @@ def case_claim_ok_tagged_table():
         ("not now, heres a video of my feet", FEET_VID_ASKED, False, "the phrase starts past the cue"),
         ("not just a feet video, 3 pics", FEET_VID_ASKED, False, "not just: the phrase is affirmed"),
         ("no feet rn babe, heres the video", FEET_VID_ASKED, False, "a later video is no continuation"),
+        # W30 #4b: a cue reaches only its own clause (split at . ! ? ; : , and line breaks)
+        ("No video of my feet. Videos right here, plus 3 pics for $25", FEET_VID_ASKED, False,
+         "the next sentence's video is claimed"),
+        ("no vid! this video tho", PICS3_ASKED_VID, False, "a cue before the sentence end"),
+        ("no video of my feet. 3 pics tho", FEET_VID_ASKED, True, "the denial in its own sentence"),
+        # W30 #19: but / though / tho / although / however start a clause too
+        ("No video but videos here", PICS3_ASKED_VID, False, "the video after but is claimed"),
+        ("no vid tho videos for u", PICS3_ASKED_VID, False, "the video after tho is claimed"),
+        ("no vid however these videos", PICS3_ASKED_VID, False, "the video after however is claimed"),
+        ("no vid of that babe but ive got 3 pics", PICS3_ASKED_VID, True, "the denial before but stays"),
     ]
     for text, pick, want, why in rows:
         assert fs.claim_ok(text, pick) is want, (why, text)
@@ -858,15 +871,20 @@ def case_claim_ok_tagged_table():
 
 
 def case_caption_fails_names_each_check():
-    """rwl3 A10: `caption_fails` = the three Claim audit checks by name, [] when all pass."""
-    for text, pick, price, want in [
-        ("3 pics for u babe, $34", _cpick({"photo": 3}, price=3400), 3400, []),
-        ("heres the video, $34", _cpick({"photo": 3}, price=3400), 3400, ["claim"]),
-        ("3 pics for $40", _cpick({"photo": 3}, price=3400), 3400, ["price"]),
-        ("3 pics for u babe", PICS3_ASKED_VID, 3400, ["disclose"]),
-        ("heres the video, $40", PICS3_ASKED_VID, 3400, ["claim", "price", "disclose"]),
+    """rwl3 A10: `caption_fails` = the Claim audit checks by name, [] when all pass; W30 #16: with
+    `differs` (a caption shipping alone) `states_terms` too, as "terms"."""
+    for text, pick, price, differs, want in [
+        ("3 pics for u babe, $34", _cpick({"photo": 3}, price=3400), 3400, False, []),
+        ("heres the video, $34", _cpick({"photo": 3}, price=3400), 3400, False, ["claim"]),
+        ("3 pics for $40", _cpick({"photo": 3}, price=3400), 3400, False, ["price"]),
+        ("3 pics for u babe", PICS3_ASKED_VID, 3400, False, ["disclose"]),
+        ("heres the video, $40", PICS3_ASKED_VID, 3400, False, ["claim", "price", "disclose"]),
+        ("no vid babe, these pics for $34", PICS3_ASKED_VID, 3400, False, []),
+        ("no vid babe, these pics for $34", PICS3_ASKED_VID, 3400, True, ["terms"]),
+        ("no vid babe, 3 pics for $34", PICS3_ASKED_VID, 3400, True, []),
     ]:
-        assert fs.caption_fails(text, pick, price) == want, (text, fs.caption_fails(text, pick, price))
+        got = fs.caption_fails(text, pick, price, differs=differs)
+        assert got == want, (text, differs, got)
 
 
 def case_discloses_table():
@@ -893,6 +911,7 @@ def case_discloses_table():
         ("cant wait for u to see this vid style set, 3 pics", PICS3_ASKED_VID, False, "cue 6 words back"),
         ("no video of that, these pics instead", PICS3_ASKED_VID, True, "both"),
         ("not just a vid babe, 3 pics", PICS3_ASKED_VID, False, "rwl3 A6: not just discloses nothing"),
+        ("no worries. feet vid? 3 pics", FEET_VID_ASKED, False, "W30 #4b: the cue in another sentence"),
     ]
     for text, pick, want, why in rows:
         assert fs.discloses(text, pick) is want, (why, text)
@@ -902,6 +921,56 @@ def case_discloses_table():
 
 
 FEET_VID_ASKED = _tagged({"photo": 3}, "video", asked_subject="feet", subject="anything")
+
+
+def case_states_terms_table():
+    """W30 #4a: a caption that ships alone (a Pick not what he asked for) states the deal: the price
+    when priced and each locked kind's count, every count the LOCKED one (NEW-172), an excused asked
+    noun's count aside."""
+    two_plus = replace(_tagged({"photo": 2}, "video", price=2500),
+                       facts={**_tagged({"photo": 2}, "video").facts, "shown_kinds": {"photo": 3}})
+    three_plus = replace(FEET_VID_ASKED, facts={**FEET_VID_ASKED.facts, "shown_kinds": {"photo": 4}})
+    mixed = _tagged({"photo": 2, "video": 1}, "photo", asked_subject="feet")
+    one = _tagged({"photo": 1}, "video")
+    rows = [
+        ("no vid babe, unlock 3 pics for $25", two_plus, 2500, False, "the shown count, not the locked one"),
+        ("no vid babe, unlock 2 pics for $25", two_plus, 2500, True, "the locked count and the price"),
+        ("no feet vid, 4 pics for $34", three_plus, 3400, False, "locked 3 + 1 preview is no 4"),
+        ("no feet vid, 3 pics for $34", three_plus, 3400, True, "the locked count"),
+        ("no feet vid, 3 pics just for u", three_plus, 3400, False, "a priced card names its price"),
+        ("no feet vid, these pics for $34", three_plus, 3400, False, "no count"),
+        ("no feet vid but a pic for u, $34", three_plus, 3400, False, "a / an counts one"),
+        ("no vid of that babe, but a photo of me just for u", replace(one, price_cents=0), None, True,
+         "a Free item names no price; a counts one"),
+        ("i dont have a feet video babe, but 3 pics for $34", three_plus, 3400, True, "an excused count aside"),
+        ("no feet pics, 2 pics and a vid for $25", replace(mixed, price_cents=2500), 2500, True, "each kind"),
+        ("no feet pics, 2 pics for $25", replace(mixed, price_cents=2500), 2500, False, "the clip uncounted"),
+        # W30 #19: a negated price / count states nothing
+        ("no vid babe, 2 pics, not $25", two_plus, 2500, False, "a negated price"),
+        ("no vid babe, 2 pics never $25", two_plus, 2500, False, "a negated price, no comma"),
+        ("no vid babe, not 2 pics, its $25", two_plus, 2500, False, "a negated count"),
+        ("no vid babe, not just 2 pics, its $25", two_plus, 2500, True, "not just affirms the count"),
+        ("no vid babe but 2 pics for $25", two_plus, 2500, True, "the count after but is affirmative"),
+    ]
+    for text, pick, price, want, why in rows:
+        assert fs.states_terms(text, pick, price) is want, (why, text)
+
+
+def case_count_readers_table():
+    """W30 #12: `claim_ok` and `states_terms` read counts through one `_counts`; each keeps its policy:
+    "a" / "an" is no count to claim_ok and one to states_terms; an excused asked noun's count is no
+    claim to states_terms only; a price ("$12.50") is one token, never a count, to both."""
+    two = _tagged({"photo": 2}, "video", price=2500)
+    rows = [
+        # (text, pick, price, claim_ok, states_terms, why)
+        ("no vid babe, a pic for $25", two, 2500, True, False, "a pic over 2: over-delivery / not the count"),
+        ("no vid babe, 2 pics for $25, so $12.50 per pic", two, 2500, True, True, "a decimal price, no count"),
+        ("i dont have 2 feet videos babe, but 3 pics for $34", FEET_VID_ASKED, 3400, False, True,
+         "an excused noun's count: claim_ok still checks it"),
+        ("no vid babe, 3 pics for $25", two, 2500, False, False, "a wrong count fails both"),
+    ]
+    for text, pick, price, claim, terms, why in rows:
+        assert (fs.claim_ok(text, pick), fs.states_terms(text, pick, price)) == (claim, terms), (why, text)
 
 
 def case_real_formats_table():
@@ -977,6 +1046,13 @@ def case_fallback_caption_table():
         got = fs.fallback_caption(pick, "offer")
         assert got == want, got
         assert fs.claim_ok(got, pick) and fs.price_ok(got, pick.price_cents) and fs.discloses(got, pick), got
+    # W30 #20: a tagged Pick's fallback ships alone, so it names the LOCKED count (NEW-172), never
+    # locked + previews, and passes the "terms" check; an untagged one still counts what the bubble shows.
+    two_plus = replace(SHOWN3, facts={**SHOWN3.facts, "asked": {"subject": "anything", "format": "video"},
+                                      "nearest": "format"})
+    got = fs.fallback_caption(two_plus, "offer")
+    assert got == "not what u asked for babe, this one's 2 pics, $100 to unlock", got
+    assert fs.caption_fails(got, two_plus, two_plus.price_cents, differs=True) == [], got
 
 
 

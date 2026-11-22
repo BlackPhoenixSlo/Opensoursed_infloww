@@ -3,7 +3,8 @@
 Enrolment is derived, no row: `live_at` = the Creator's first live `ai_decisions` row; a Fan's
 `enrolled_at` = his first inbound `messages` row at / after it (intent to treat: a Fan Full AI never
 answered still counts). Arm = `full_ai_decide.arm_of`, never a stored column. Money =
-`transactions.amount_cents`, every kind, `status='cleared'` (the stats contract), `occurred_at` in
+`transactions.amount_cents`, every kind, cleared + pending (`full_ai_owned.TX_STATUSES`: pending sales
+count in every earnings total, refunds / chargebacks never), `occurred_at` in
 [enrolled, +14 d); only Fans enrolled 14 d or more ago enter the mean, the rest are `in_window`.
 Routes = live priced rows (price > 0) with an `offer_message_id`: buy rates, not revenue proof.
 Reads only: settles nothing (Turn start and the periodic job do).
@@ -16,6 +17,7 @@ from typing import Any, Iterable, get_args
 from sqlalchemy import func, select
 
 from automations.full_ai_decide import Route, arm_of
+from automations.full_ai_owned import TX_STATUSES
 from db.engine import get_session
 from db.models import AiDecision, Message, Transaction
 from isotime import iso_z
@@ -28,10 +30,11 @@ _ORDER = {r: i for i, r in enumerate(get_args(Route))}
 
 
 def readout(live_at: datetime | None, cohort: Iterable[tuple[int, datetime, str]],
-            txs: Iterable[tuple[int, datetime, int, str]],
+            txs: Iterable[tuple[int, datetime, int]],
             offers: Iterable[tuple[str, int | None, int | None, str | None]],
             now: datetime, holdout: bool = False) -> dict[str, Any]:
-    """cohort = [(fan_id, enrolled_at, arm)]; txs = [(fan_id, occurred_at, amount_cents, status)];
+    """cohort = [(fan_id, enrolled_at, arm)]; txs = [(fan_id, occurred_at, amount_cents)], already
+    the counted statuses (`load` filters them);
     offers = [(route, offer_price_cents, offer_message_id, outcome)]. No holdout: one group `all`
     whatever the Arm (two treated groups side by side would read as a comparison)."""
     out: dict[str, Any] = {"live_since": iso_z(live_at), "note": HOLDOUT if holdout else NO_HOLDOUT,
@@ -39,9 +42,8 @@ def readout(live_at: datetime | None, cohort: Iterable[tuple[int, datetime, str]
     if live_at is None:
         return out
     money: dict[int, list[tuple[datetime, int]]] = {}
-    for fan, at, cents, status in txs:
-        if status == "cleared":
-            money.setdefault(fan, []).append((at, cents))
+    for fan, at, cents in txs:
+        money.setdefault(fan, []).append((at, cents))
     arms = {a: {"fans": 0, "in_window": 0, "complete": 0, "cents": 0, "cents_per_fan": None}
             for a in (("treatment", "holdout") if holdout else ("all",))}
     for fan, enrolled, arm in cohort:
@@ -82,9 +84,9 @@ async def load(account_id: str) -> tuple[datetime | None, list, list, list]:
         cohort = [(fan, at, arm_of(account_id, fan))
                   for fan, at in (await s.execute(select(enrol.c.fan_id, enrol.c.at))).all()]
         txs = (await s.execute(
-            select(Transaction.fan_id, Transaction.occurred_at, Transaction.amount_cents, Transaction.status)
+            select(Transaction.fan_id, Transaction.occurred_at, Transaction.amount_cents)
             .join(enrol, enrol.c.fan_id == Transaction.fan_id)
-            .where(Transaction.account_id == account_id, Transaction.status == "cleared",
+            .where(Transaction.account_id == account_id, Transaction.status.in_(TX_STATUSES),
                    Transaction.occurred_at >= enrol.c.at))).all()
         offers = (await s.execute(
             select(AiDecision.route, AiDecision.offer_price_cents, AiDecision.offer_message_id,

@@ -33,11 +33,12 @@ from sqlalchemy import select, update  # noqa: E402
 import _agency_fixtures as fx  # noqa: E402
 import automation_executor as executor  # noqa: E402
 import automations.priority_mass as pm  # noqa: E402
+from automations import _send_failure  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, Blacklist, Fan, List as ListModel, ListMember, Message,
     PriorityMassRecipient, PriorityMassRun, ScheduledJob, SensitiveWord, SkipList,
-    VaultSend,
+    VaultItem, VaultSend,
 )
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -67,6 +68,7 @@ class FakeOF:
         self.sent: list[tuple[int, str, dict]] = []
         self.fail: dict[int, Exception] = {}
         self.truncate = False
+        self.byid: list[int] = []     # by-id vault reads; every id reads deleted (404)
         self._next_id = 9_200_000_000_000
 
     def _page(self, rows, limit, offset):
@@ -94,6 +96,12 @@ class FakeOF:
 
     def get_user(self, fan_id):
         return {"id": int(fan_id), "subscribedOn": "2026-01-01"}
+
+    def vault_media_by_id(self, media_id):
+        self.byid.append(int(media_id))
+        err = Exception("404")
+        err.response = type("R", (), {"status_code": 404})()
+        raise err
 
 
 PACED: list[dict] = []
@@ -412,11 +420,108 @@ def case_send_outcomes_unreachable_no_id_rate_limit_and_rejected_media():
         bad.response = Resp()
         media = _use_fake(FakeOF(fans=[6, 7]))
         media.fail[6] = bad
+        async with get_session() as s:
+            s.add(VaultItem(account_id=aid, media_id=900, kind="photo",
+                            created_at=datetime.utcnow()))
         rid3 = await _new_run(aid, media=(900,))
         res = await _leg(aid, rid3)
         assert res.get("reason") == "media_rejected" and media.sent == [], res
         run = await _run_row(rid3)
         assert run.status == pm.ERROR and "media" in run.last_error, run.last_error
+        # The refused media was deleted on OF: re-checked by id (detached), it leaves the mirror.
+        await asyncio.gather(*list(_send_failure._RECHECK_TASKS))
+        assert media.byid == [900], media.byid
+        async with get_session() as s:
+            assert (await s.get(VaultItem, (aid, 900))).removed_at is not None
+    _sandboxed(go)
+
+
+def case_a_run_deferred_past_its_deadline_skips_the_rest_and_ends():
+    """A rate limit re-queues the fan leg after leg; once no fan has left
+    pending for `_STALL_DEADLINE` since the run was made, the next leg skips
+    every pending fan ("deadline"), sends nothing, queues no leg and the run
+    is done."""
+    async def go():
+        aid = "pm_deadline"
+        await _seed_account(aid)
+        fake = _use_fake(FakeOF(fans=[1, 2]))
+        from types import SimpleNamespace
+        from of_client import OFAPIError
+        fake.fail[1] = OFAPIError('400 {"message":"Please allow 10 seconds"}',
+                                  response=SimpleNamespace(status_code=400))
+        rid = await _new_run(aid)
+        await _leg(aid, rid)
+        assert {st for st, _ in (await _recipients(rid)).values()} == {pm.PENDING}
+        async with get_session() as s:
+            await s.execute(update(PriorityMassRun).where(PriorityMassRun.id == rid).values(
+                created_at=datetime.utcnow() - timedelta(hours=49)))
+            await s.execute(update(ScheduledJob).where(
+                ScheduledJob.account_id == aid).values(status="done"))
+        res = await _leg(aid, rid)
+        assert res.get("done") and fake.sent == [], (res, fake.sent)
+        assert await _recipients(rid) == {1: (pm.SKIPPED, "deadline"),
+                                          2: (pm.SKIPPED, "deadline")}, await _recipients(rid)
+        assert (await _run_row(rid)).status == pm.DONE and await _queued_legs(aid) == []
+    _sandboxed(go)
+
+def case_an_old_run_still_sending_is_not_past_its_deadline():
+    """The deadline is on progress, not age: a run made 49 h ago whose last fan
+    was sent an hour ago stays pending through a deferred leg; once that send
+    is 49 h old the next leg skips the rest ("deadline")."""
+    async def go():
+        aid = "pm_progress"
+        await _seed_account(aid)
+        fake = _use_fake(FakeOF(fans=[1, 2, 3]))
+        from types import SimpleNamespace
+        from of_client import OFAPIError
+        fake.fail[2] = OFAPIError('400 {"message":"Please allow 10 seconds"}',
+                                  response=SimpleNamespace(status_code=400))
+        rid = await _new_run(aid)
+        await _leg(aid, rid)
+        assert (await _recipients(rid))[1][0] == pm.SENT, await _recipients(rid)
+
+        async def age(sent_h: float) -> None:
+            async with get_session() as s:
+                await s.execute(update(PriorityMassRun).where(PriorityMassRun.id == rid).values(
+                    created_at=datetime.utcnow() - timedelta(hours=49)))
+                await s.execute(update(PriorityMassRecipient).where(
+                    PriorityMassRecipient.run_id == rid, PriorityMassRecipient.fan_id == 1,
+                ).values(updated_at=datetime.utcnow() - timedelta(hours=sent_h)))
+                await s.execute(update(ScheduledJob).where(
+                    ScheduledJob.account_id == aid).values(status="done"))
+        await age(1)
+        fake.fail[3] = OFAPIError('400 {"message":"Please allow 10 seconds"}',
+                                  response=SimpleNamespace(status_code=400))
+        res = await _leg(aid, rid)      # deferred again, but not past the deadline
+        got = await _recipients(rid)
+        assert not res.get("done") and got[2] == got[3] == (pm.PENDING, None), (res, got)
+        await age(49)
+        res = await _leg(aid, rid)
+        got = await _recipients(rid)
+        assert res.get("done") and got[2] == got[3] == (pm.SKIPPED, "deadline"), (res, got)
+    _sandboxed(go)
+
+
+def case_a_crash_claim_sweep_is_no_progress_for_the_deadline():
+    """A run made 49 h ago whose only activity is a claim a crash left 49 h ago:
+    the sweep marks it unknown without counting as progress, so the same leg
+    skips the pending fan ("deadline") and sends nothing."""
+    async def go():
+        aid = "pm_stale_claim"
+        await _seed_account(aid)
+        fake = _use_fake(FakeOF(fans=[1, 2]))
+        rid = await _new_run(aid, status=pm.RUNNING)
+        old = datetime.utcnow() - timedelta(hours=49)
+        async with get_session() as s:
+            await s.execute(update(PriorityMassRun).where(PriorityMassRun.id == rid).values(
+                created_at=old))
+            await s.execute(PriorityMassRecipient.__table__.insert(), [
+                {"run_id": rid, "fan_id": 1, "status": pm.CLAIMED, "updated_at": old},
+                {"run_id": rid, "fan_id": 2, "status": pm.PENDING, "updated_at": old}])
+        res = await _leg(aid, rid)
+        got = await _recipients(rid)
+        assert res.get("done") and fake.sent == [], (res, fake.sent)
+        assert got == {1: (pm.UNKNOWN, "interrupted"), 2: (pm.SKIPPED, "deadline")}, got
     _sandboxed(go)
 
 

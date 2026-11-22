@@ -93,6 +93,7 @@ from fan_lease import (  # noqa: F401 — re-exports
     _sweep_expired_leases,
     acquire_fan_lease,
     fan_on_cooldown,
+    fans_on_cooldown,
     release_fan_lease,
     start_fan_cooldown,
 )
@@ -279,7 +280,8 @@ def wake_supervisor() -> None:
 # long cadence into a sweep per event. For dispatch_plan.REPOKE_KINDS a poke under
 # the floor is deferred, not spent: the plan (dispatch_plan.Repoke) keeps it for the
 # first pass past the floor, so an event right after a run waits at most the floor
-# plus one tick, not a whole cadence. Other kinds (send_welcome) spend it. Only an enabled rule's loop re-adds it, so a poke for a
+# plus one tick, not a whole cadence; so is one inside quiet hours (kept for the band's
+# end). Other kinds (send_welcome) spend it. Only an enabled rule's loop re-adds it, so a poke for a
 # pair with no enabled rule is cleared. (purchase_followup's cadence IS 60 s, so
 # there a poke only saves the wait for the supervisor's next tick.)
 _poked: set[tuple[str, str]] = set()
@@ -629,6 +631,8 @@ async def _materialize_due_rules() -> int:
                     _poked.add(pair)   # running, or under the floor: fire once more later
                     continue
                 case dispatch_plan.Skip(reason="quiet_hours"):
+                    if pair in poked and pair[1] in dispatch_plan.REPOKE_KINDS:
+                        _poked.add(pair)   # its event still owes a run: fire after the band
                     log.info("automation_rule_quiet_hours rule_id=%s account=%s kind=%s",
                              rule.id, acct, rule.kind)
                     continue

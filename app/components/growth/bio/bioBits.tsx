@@ -4,7 +4,7 @@
  *  address with Copy and Open. */
 import { ExternalLink } from "lucide-react";
 
-import { CopyButton } from "@/components/growth/_bits";
+import { CopyButton } from "@/components/ui/CopyButton";
 import type { BioMode } from "@/hooks/useBioPages";
 import { cn } from "@/lib/utils";
 

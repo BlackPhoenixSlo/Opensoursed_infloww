@@ -1,11 +1,17 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { QueryClient } from "@tanstack/react-query";
+import { createElement, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyData, rowsOf } from "./ofMirrorData";
-import { chatDraftKey, collectMessage, DRAFT_EVENT, loadChatDraft } from "./ofMirrorChat";
-import { bindMessageMenu, COPIED_TEXT, countdown, messageItems, messageWrites, stampReads, unsendLeft, type MenuMessage, type MessageRead, type MessageMenuContext, type MessageWrites } from "./ofMirrorMessageMenu";
+import { applyScript, chatDraftKey, collectMessage, DRAFT_EVENT, loadChatDraft } from "./ofMirrorChat";
+import { countdown } from "./ofMirrorThread";
+import { bindMessageMenu, COPIED_TEXT, messageItems, messageWrites, stampReads, unsendLeft, type MenuMessage, type MessageRead, type MessageMenuContext, type MessageWrites } from "./ofMirrorMessageMenu";
+import { bubbleExtras, scriptFromMessage } from "./ofMirrorBubbleExtras";
 import { NOT_YET, SELECT_MODEL } from "./ofMirrorWrites";
+import { NOT_CONFIRMED, useUnsendMessage } from "@/hooks/useUnsendMessage";
+import { HANDOFF_TITLE } from "./ofMirrorHandoffs";
 import { relay, type OFMessage } from "./relay";
 
 const page = (p: string) => {
@@ -44,6 +50,7 @@ const ctx = (over: Partial<MessageMenuContext> = {}): MessageMenuContext => ({
   storage: sessionStorage,
   accountId: "acc",
   copy: vi.fn(() => Promise.resolve()),
+  newWrites: true,
   ...over,
 });
 /** The chat page with the fixture thread drawn (as useOfData does) and the menus bound. */
@@ -64,22 +71,24 @@ const button = (d: Document, text: string) => [...modal(d)!.querySelectorAll<HTM
 
 describe("OF's message ⋮ items (ItemActions, 13560)", () => {
   it("the fan's message: copy, like, reply, bookmark, pin, hide, report (off; only with canReport); the Creator's: copy, reply, bookmark, pin, forward and tag (off), unsend with its countdown", () => {
-    expect(messageItems(theirs, { mine: false, limited: false, left: 0 }).map((i) => [i.label, !!i.off])).toEqual([["Copy message text", false], ["Like", false], ["Reply", false], ["Bookmark", false], ["Pin", false], ["Hide", false], ["Report", true]]);
-    expect(messageItems({ ...theirs, canReport: undefined }, { mine: false, limited: false, left: 0 }).map((i) => i.key)).not.toContain("report");
-    expect(messageItems({ ...theirs, canReport: false }, { mine: false, limited: false, left: 0 }).map((i) => i.key)).not.toContain("report");
+    expect(messageItems(theirs, { mine: false, limited: false, left: 0, chat: null }).map((i) => [i.label, !!i.off])).toEqual([["Copy message text", false], ["Like", false], ["Reply", false], ["Bookmark", false], ["Pin", false], ["Hide", false], ["Report", true]]);
+    expect(messageItems({ ...theirs, canReport: undefined }, { mine: false, limited: false, left: 0, chat: null }).map((i) => i.key)).not.toContain("report");
+    expect(messageItems({ ...theirs, canReport: false }, { mine: false, limited: false, left: 0, chat: null }).map((i) => i.key)).not.toContain("report");
+    // ticket 42: with the open chat, Report is a hand-off to that chat's onlyfans.com page, not off.
+    expect(messageItems(theirs, { mine: false, limited: false, left: 0, chat: "2006" }).find((i) => i.key === "report")).toEqual({ key: "report", label: "Report", href: "https://onlyfans.com/my/chats/chat/2006/" });
     const own = { ...mine, media: [{ id: 1, type: "photo" }] } as MenuMessage;
-    const items = messageItems(own, { mine: true, limited: false, left: 125 });
+    const items = messageItems(own, { mine: true, limited: false, left: 125, chat: null });
     expect(items.map((i) => [i.label, !!i.off])).toEqual([["Copy message text", false], ["Reply", false], ["Bookmark", false], ["Pin", false], ["Forward", true], ["Add a tag", true], ["Unsend 2:05", false]]);
     expect(countdown(59)).toBe("0:59");
   });
 
   it("OF's conditions: no Like on a restricted or blocked fan's message, no Copy on locked text, Unlike / Unpin / Unbookmark by state, Add to collection (off) once bookmarked, no Unsend once its window is over", () => {
-    expect(messageItems(theirs, { mine: false, limited: true, left: 0 }).map((i) => i.key)).not.toContain("like");
-    expect(messageItems({ ...theirs, lockedText: true }, { mine: false, limited: false, left: 0 }).map((i) => i.key)).not.toContain("copy");
-    const labels = messageItems({ ...theirs, isLiked: true, isPinned: true, isAddedToBookmarks: true }, { mine: false, limited: false, left: 0 }).map((i) => i.label);
+    expect(messageItems(theirs, { mine: false, limited: true, left: 0, chat: null }).map((i) => i.key)).not.toContain("like");
+    expect(messageItems({ ...theirs, lockedText: true }, { mine: false, limited: false, left: 0, chat: null }).map((i) => i.key)).not.toContain("copy");
+    const labels = messageItems({ ...theirs, isLiked: true, isPinned: true, isAddedToBookmarks: true }, { mine: false, limited: false, left: 0, chat: null }).map((i) => i.label);
     expect(labels).toEqual(expect.arrayContaining(["Unlike", "Unpin", "Unbookmark", "Add to collection"]));
-    expect(messageItems({ ...theirs, canBePinned: false }, { mine: false, limited: false, left: 0 }).map((i) => i.key)).not.toContain("pin");
-    expect(messageItems(mine, { mine: true, limited: false, left: 0 }).map((i) => i.key)).not.toContain("unsend");
+    expect(messageItems({ ...theirs, canBePinned: false }, { mine: false, limited: false, left: 0, chat: null }).map((i) => i.key)).not.toContain("pin");
+    expect(messageItems(mine, { mine: true, limited: false, left: 0, chat: null }).map((i) => i.key)).not.toContain("unsend");
   });
 });
 
@@ -154,7 +163,7 @@ describe("the menu on the chat page", () => {
     expect(sessionStorage.getItem(chatDraftKey("acc", "2006"))).toContain("reply_text");
   });
 
-  it("Unsend asks first, then sends; Report is disabled (NOT_YET) and sends nothing", async () => {
+  it("Unsend asks first, then sends; Report (ticket 42) is OF's link to the chat's onlyfans.com page and sends nothing", async () => {
     const w = writes();
     const { d } = chatPage({ writes: w });
     openMenu(d, mine);
@@ -166,10 +175,18 @@ describe("the menu on the chat page", () => {
     expect(modal(d)).toBeNull();
     const post = vi.spyOn(relay, "post");
     openMenu(d, theirs);
-    const report = d.querySelector<HTMLElement>("#oi-msg-menu [data-oi-msg-action='report']")!;
-    expect([report.getAttribute("aria-disabled"), report.title]).toEqual(["true", NOT_YET]);
-    report.click();
+    const report = d.querySelector<HTMLAnchorElement>("#oi-msg-menu [data-oi-msg-action='report']")!;
+    expect([report.tagName, report.href, report.target, report.rel, report.hasAttribute("data-oi-wired"), report.title]).toEqual(["A", "https://onlyfans.com/my/chats/chat/2006/", "_blank", "noopener noreferrer", true, HANDOFF_TITLE]);
+    expect([report.getAttribute("aria-disabled"), report.classList.contains("v-list-item--disabled"), report.textContent!.trim()]).toEqual([null, false, "Report"]);
+    // Its click reaches the browser (a new tab): the binder's capture listener leaves it alone; the menu closes after.
+    let prevented: boolean | null = null;
+    const seen = (ev: Event) => { prevented = ev.defaultPrevented; ev.preventDefault(); };
+    d.addEventListener("click", seen);
+    report.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    d.removeEventListener("click", seen);
     await flush();
+    expect(prevented).toBe(false);
+    expect(d.getElementById("oi-msg-menu")).toBeNull();
     expect(modal(d)).toBeNull();
     expect(Object.values(w).filter((f) => f !== w.unsend).every((f) => f.mock.calls.length === 0)).toBe(true);
     expect(post).not.toHaveBeenCalled();
@@ -299,5 +316,281 @@ describe("messageWrites: the exact Relay requests, the thread patched first and 
     vi.spyOn(relay, "put").mockResolvedValue({});
     await w.hide(id);
     expect(qc.getQueryData<MenuMessage[]>(["messages", "acc", 2006])!.some((m) => String(m.id) === id)).toBe(false);
+  });
+
+  // W30 W3: the pinned page draws from `chat-pinned`; an unsend that left it there kept the bubble + Unsend PPV.
+  // W30 S1: the in-flight guard lives in useUnsendMessage, so the Messages list's button (a second hook) shares it.
+  it("pinned page: a second confirm while the unsend is out sends nothing, from the menu or another caller; on success the bubble leaves the pinned cache", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
+    const pinnedKey = ["chat-pinned", "acc", "2006"];
+    qc.setQueryData(pinnedKey, [mine, theirs]);
+    let answer!: (r: unknown) => void;
+    const del = vi.spyOn(relay, "delete").mockImplementation(() => new Promise((r) => (answer = r)));
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: qc }, children);
+    const menu = renderHook(() => useUnsendMessage("acc", 2006), { wrapper }).result.current;
+    const button = renderHook(() => useUnsendMessage("acc", 2006), { wrapper }).result.current; // as UnsendMessageButton
+    const first = messageWrites("acc", "2006", qc, menu.unsendOne).unsend(mine as OFMessage);
+    const again = messageWrites("acc", "2006", qc, menu.unsendOne).unsend(mine as OFMessage); // the writes rebuilt while it is out
+    const row = button.unsendOne({ id: String(mine.id) } as OFMessage);
+    expect(del).toHaveBeenCalledTimes(1);
+    answer({ success: true });
+    expect(await Promise.all([first, again, row])).toEqual([{ success: true }, { success: true }, { success: true }]);
+    expect(qc.getQueryData<MenuMessage[]>(pinnedKey)!.map((m) => m.id)).toEqual([theirs.id]);
+    const later = button.unsendOne(mine as OFMessage); // settled: a later unsend is its own request
+    expect(del).toHaveBeenCalledTimes(2);
+    answer({ success: true });
+    await later;
+  });
+
+  it("pinned page: a refused or unsent (null) unsend leaves the pinned bubble", async () => {
+    const qc = new QueryClient();
+    const pinnedKey = ["chat-pinned", "acc", "2006"];
+    qc.setQueryData(pinnedKey, [mine]);
+    await expect(messageWrites("acc", "2006", qc, vi.fn(() => Promise.reject(new Error(NOT_CONFIRMED)))).unsend(mine as OFMessage)).rejects.toThrow(NOT_CONFIRMED);
+    await messageWrites("acc", "2006", qc, vi.fn(() => Promise.resolve(null))).unsend(mine as OFMessage);
+    expect(qc.getQueryData<MenuMessage[]>(pinnedKey)!.map((m) => m.id)).toEqual([mine.id]);
+  });
+});
+
+// ticket 33: the own bubble's extras (Countdown, Copy as draft, Unsend PPV).
+describe("bubbleExtras: per own/fan, priced/free, window open/closed", () => {
+  const free = { id: 1, text: "hi", price: 0 } as MenuMessage;
+  const ppv = { id: 2, text: "ppv", price: 5 } as MenuMessage;
+  const tip = { id: 3, text: "", price: 5, isTip: true } as MenuMessage;
+  it.each([
+    ["own PPV, window open", ppv, 90, true, { countdown: "1:30", copyDraft: true, unsendPpv: true }],
+    ["own PPV, window closed", ppv, 0, true, { countdown: null, copyDraft: true, unsendPpv: false }],
+    ["own free, window open", free, 65, true, { countdown: "1:05", copyDraft: false, unsendPpv: false }],
+    ["own free, window closed", free, 0, true, { countdown: null, copyDraft: false, unsendPpv: false }],
+    ["own tip (never priced)", tip, 30, true, { countdown: "0:30", copyDraft: false, unsendPpv: false }],
+    ["fan's PPV, window open", ppv, 90, false, { countdown: null, copyDraft: false, unsendPpv: false }],
+    ["fan's free", free, 0, false, { countdown: null, copyDraft: false, unsendPpv: false }],
+  ] as const)("%s", (_, m, left, own, want) => {
+    expect(bubbleExtras(m, left, own)).toEqual(want);
+  });
+});
+
+describe("scriptFromMessage: the bubble as the script applyScript applies (text, price, media ids)", () => {
+  const base = { taggedUsers: [], gifId: null };
+  it.each([
+    ["a PPV with media and previews", { id: 1, text: "<p>hey babe</p>", price: 5, media: [{ id: 61 }, { id: "62" }], previews: [61], lockedText: true },
+      { text: "hey babe", displayText: "<p>hey babe</p>", price: 5, lockedText: true, media: [{ id: 61 }, { id: 62 }], previews: [61] }],
+    ["formatted text keeps OF's markup", { id: 2, text: "<p><strong>bold</strong></p>", price: 3, media: [] },
+      { text: "bold", displayText: "<p><strong>bold</strong></p>", price: 3, lockedText: false, media: [], previews: [] }],
+    ["free: price 0 (applyScript then drops previews and locked text)", { id: 3, text: "<p>free</p>", price: 0, media: [{ id: 7 }], previews: [7], lockedText: true },
+      { text: "free", displayText: "<p>free</p>", price: 0, lockedText: true, media: [{ id: 7 }], previews: [7] }],
+    ["a tip is never priced", { id: 4, text: "", price: 5, isTip: true, media: [] },
+      { text: "", displayText: "", price: 0, lockedText: false, media: [], previews: [] }],
+  ] as const)("%s", (_, m, want) => {
+    expect(scriptFromMessage(m as unknown as MenuMessage)).toEqual({ ...want, ...base });
+  });
+
+  it("a tagged PPV keeps its tags (OF's releaseForms): the draft's tags, sent again as rfTag / rfGuest / rfPartner", () => {
+    const m = { id: 5, text: "<p>us</p>", price: 9, media: [{ id: 61 }], releaseForms: [
+      { id: 71, name: "Co", type: "user" }, { id: 72, name: "Guest", type: "guest" }, { id: 73, name: "Form", type: "document" }, { id: 74 }] } as unknown as MenuMessage;
+    const s = scriptFromMessage(m);
+    expect([s.taggedUsers, s.tags]).toEqual([[71, 74], [
+      { id: 71, type: "user", name: "Co" }, { id: 72, type: "guest", name: "Guest" }, { id: 73, type: "document", name: "Form" }, { id: 74, type: "user", name: "" }]]);
+    applyScript(sessionStorage, "acc", "2006", s, null);
+    const body = collectMessage("us", loadChatDraft(sessionStorage, "acc", "2006"));
+    expect(body).toMatchObject({ price: 9, media_files: [61], tagged_users: [71, 74], rf_guest: [72], rf_partner: [73] });
+  });
+});
+
+describe("the own bubble's extras on the chat page", () => {
+  const ME = { id: 1 };
+  const ppv = { id: 501, text: "<p>ppv</p>", createdAt: "2026-10-10T12:01:00Z", fromUser: ME, price: 5, media: [{ id: 61 }], cancelSeconds: 90 } as unknown as MenuMessage;
+  const old = { ...ppv, id: 502, cancelSeconds: 0 } as MenuMessage;
+  const theirsPpv = { ...ppv, id: 503, fromUser: { id: 2006 } } as unknown as MenuMessage;
+  const msgs = [ppv, old, theirsPpv];
+  const draw = (over: Partial<MessageMenuContext> = {}, left: Record<string, number> = { 501: 90 }) => {
+    const d = page("chat");
+    applyData(d, "messages/chat", { chat: "2006", thread: { fan: FAN, messages: msgs } });
+    const c = ctx({ message: (id) => msgs.find((m) => String(m.id) === id), left: (m) => left[String(m.id)] ?? 0, ...over });
+    unbinds.push(bindMessageMenu(d, c));
+    return { d, left };
+  };
+  const extras = (d: Document, id: number) =>
+    [...d.querySelectorAll<HTMLElement>(`[data-oi-msg="${id}"] [data-oi-bubble]`)].map((e) => [e.dataset.oiBubble, e.textContent, e.title === NOT_YET, e.hasAttribute("data-oi-wired")]);
+  const btn = (d: Document, id: number, key: string) => d.querySelector<HTMLElement>(`[data-oi-msg="${id}"] [data-oi-bubble='${key}']`)!;
+
+  it("own PPV with 90s left: Countdown 1:30 (ticking), Copy as draft, Unsend PPV, each Wired with the Not-yet title; expired: Copy as draft only; the fan's: none", () => {
+    vi.useFakeTimers();
+    try {
+      const { d, left } = draw();
+      expect(extras(d, 501)).toEqual([["countdown", "1:30", true, true], ["copy-draft", "Copy as draft", true, true], ["unsend-ppv", "Unsend PPV", true, true]]);
+      expect(d.querySelector(`[data-oi-msg="501"] [data-oi-bubble='countdown']`)!.getAttribute("aria-label")).toBe("Countdown");
+      expect(extras(d, 502)).toEqual([["copy-draft", "Copy as draft", true, true]]);
+      expect(extras(d, 503)).toEqual([]);
+      left[501] = 89;
+      vi.advanceTimersByTime(1000);
+      expect(extras(d, 501)[0][1]).toBe("1:29");
+      left[501] = 0;
+      vi.advanceTimersByTime(1000);
+      expect(extras(d, 501).map((e) => e[0])).toEqual(["copy-draft"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Copy as draft fills this chat's draft (text, price, media; a reply kept) and sends nothing", () => {
+    const w = writes();
+    const { d } = draw({ writes: w });
+    sessionStorage.setItem(chatDraftKey("acc", "2006"), JSON.stringify({ text: "old", media_files: [9], thumbs: ["x"], reply_to: "11", reply_text: "hi", giphy_id: "g" }));
+    const heard = vi.fn((e: Event) => (e as CustomEvent).detail);
+    d.addEventListener(DRAFT_EVENT, heard);
+    btn(d, 501, "copy-draft").click();
+    expect(heard).toHaveReturnedWith({ text: true });
+    const draft = loadChatDraft(sessionStorage, "acc", "2006");
+    expect(draft).toEqual({ text: "ppv", price: 5, media_files: [61], thumbs: [""], reply_to: "11", reply_text: "hi" });
+    expect(Object.values(w).every((f) => f.mock.calls.length === 0)).toBe(true);
+  });
+
+  it("Unsend PPV asks (the button expanded while it is open); Cancel sends nothing; Unsend unsends this message once and notes Unsent", async () => {
+    const w = writes();
+    const { d } = draw({ writes: w });
+    btn(d, 501, "unsend-ppv").click();
+    expect([modal(d)!.textContent?.includes("Unsend this message?"), btn(d, 501, "unsend-ppv").getAttribute("aria-expanded")]).toEqual([true, "true"]);
+    button(d, "Cancel").click();
+    await flush();
+    expect([modal(d), w.unsend.mock.calls.length, btn(d, 501, "unsend-ppv").getAttribute("aria-expanded")]).toEqual([null, 0, "false"]);
+    btn(d, 501, "unsend-ppv").click();
+    button(d, "Unsend").click();
+    await flush();
+    expect(w.unsend.mock.calls).toEqual([[ppv]]);
+    expect([modal(d), d.getElementById("oi-note")!.textContent]).toEqual([null, "Unsent"]);
+    expect(Object.values(w).filter((f) => f !== w.unsend).every((f) => f.mock.calls.length === 0)).toBe(true);
+  });
+
+  it("a stale Unsend PPV (the window closed since its draw) sends nothing and goes; with no model nothing is sent", async () => {
+    const w = writes();
+    const { d, left } = draw({ writes: w });
+    const stale = btn(d, 501, "unsend-ppv");
+    left[501] = 0;
+    stale.click();
+    await flush();
+    expect([modal(d), w.unsend.mock.calls.length, stale.isConnected]).toEqual([null, 0, false]);
+    unbinds.pop()!();
+    const none = draw({ writes: null }).d;
+    btn(none, 501, "unsend-ppv").click();
+    expect([modal(none), none.getElementById("oi-note")!.textContent]).toEqual([null, SELECT_MODEL]);
+  });
+
+  it("a refused unsend: the dialog closes, a red note under the bubble", async () => {
+    const w = writes({ unsend: vi.fn(() => Promise.reject(new Error("502 Bad Gateway"))) });
+    const { d } = draw({ writes: w });
+    btn(d, 501, "unsend-ppv").click();
+    button(d, "Unsend").click();
+    await flush();
+    await flush();
+    const n = d.getElementById("oi-note")!;
+    expect([modal(d), n.textContent, n.style.color, n.previousElementSibling?.getAttribute("data-oi-msg")]).toEqual([null, "Could not unsend: 502 Bad Gateway", "rgb(255, 69, 69)", "501"]);
+  });
+
+  it("one unsend path: the menu's Unsend refused shows the same red note; a bubble drawn again only on the next redraw gets it there", async () => {
+    let fail!: (e: Error) => void;
+    const w = writes({ unsend: vi.fn(() => new Promise((_, rej) => (fail = rej))) });
+    const { d } = draw({ writes: w });
+    openMenu(d, ppv);
+    pick(d, "unsend");
+    button(d, "Unsend").click();
+    // As useUnsendMessage: the bubble goes at once and is drawn again after the error.
+    const bubble = d.querySelector<HTMLElement>('[data-oi-msg="501"]')!;
+    const [parent, next] = [bubble.parentElement!, bubble.nextSibling];
+    bubble.remove();
+    fail(new Error("502 Bad Gateway"));
+    await flush();
+    await flush();
+    expect([modal(d), d.getElementById("oi-note")]).toEqual([null, null]);
+    parent.insertBefore(bubble, next);
+    await flush();
+    const n = d.getElementById("oi-note")!;
+    expect([n.textContent, n.style.color, n.previousElementSibling?.getAttribute("data-oi-msg")]).toEqual(["Could not unsend: 502 Bad Gateway", "rgb(255, 69, 69)", "501"]);
+  });
+
+  it("OFM_NEW_WRITES_ENABLED off: no extra drawn on any bubble (main); the menu's own Unsend stays", () => {
+    const w = writes();
+    const { d } = draw({ writes: w, newWrites: false });
+    expect([extras(d, 501), extras(d, 502), d.querySelector("[data-oi-bubble-extras]")]).toEqual([[], [], null]);
+    expect(openMenu(d, ppv).map((i) => i.dataset.oiMsgAction)).toContain("unsend");
+  });
+
+  it("an Unsend PPV confirm open when the switch goes off: the rebind closes it, its Unsend sends nothing, no extra stays", async () => {
+    const w = writes();
+    const { d } = draw({ writes: w });
+    btn(d, 501, "unsend-ppv").click();
+    const yes = button(d, "Unsend");
+    unbinds.pop()!();
+    unbinds.push(bindMessageMenu(d, ctx({ writes: w, message: (id) => msgs.find((m) => String(m.id) === id), left: () => 90, newWrites: false })));
+    expect([modal(d), d.querySelector("[data-oi-bubble-extras]")]).toEqual([null, null]);
+    yes.click();
+    await flush();
+    expect(w.unsend.mock.calls.length).toBe(0);
+  });
+
+  it("OFM_NEW_WRITES_ENABLED off: no ticker runs; the open menu's Unsend countdown ticks only while it is open", () => {
+    const every = vi.spyOn(window, "setInterval");
+    const stop = vi.spyOn(window, "clearInterval");
+    const { d } = draw({ newWrites: false });
+    expect(every).not.toHaveBeenCalled();
+    openMenu(d, ppv);
+    expect(every).toHaveBeenCalledTimes(1);
+    const id = every.mock.results[0].value;
+    d.body.click();
+    expect(stop).toHaveBeenCalledWith(id);
+  });
+
+  it.each([
+    ["resolves null (useUnsendMessage sent nothing)", () => Promise.resolve(null), "Could not unsend: nothing was sent"],
+    ["is not confirmed by OF (useUnsendMessage throws on a 2xx without success: true)", () => Promise.reject(new Error(NOT_CONFIRMED)), `Could not unsend: ${NOT_CONFIRMED}`],
+  ])("an unsend that %s: no Unsent, a red note under the bubble", async (_, reply, text) => {
+    const w = writes({ unsend: vi.fn(reply) });
+    const { d } = draw({ writes: w });
+    btn(d, 501, "unsend-ppv").click();
+    button(d, "Unsend").click();
+    await flush();
+    await flush();
+    const n = d.getElementById("oi-note")!;
+    expect([modal(d), n.textContent, n.style.color, n.previousElementSibling?.getAttribute("data-oi-msg")]).toEqual([null, text, "rgb(255, 69, 69)", "501"]);
+  });
+
+  it("the window closes while the confirm stands open: Unsend sends nothing, a red note says so", async () => {
+    const w = writes();
+    const { d, left } = draw({ writes: w });
+    btn(d, 501, "unsend-ppv").click();
+    left[501] = 0;
+    button(d, "Unsend").click();
+    await flush();
+    const n = d.getElementById("oi-note")!;
+    expect([modal(d), w.unsend.mock.calls.length, n.textContent, n.style.color]).toEqual([null, 0, "The unsend window has closed", "rgb(255, 69, 69)"]);
+  });
+
+  it("a bubble drawn after the bind: its ⋮ is Wired on the redraw, as the bind's", async () => {
+    const { d } = draw();
+    const more = d.querySelector<HTMLElement>('[data-oi-msg="501"] button[data-oi-msg-menu]')!;
+    const copy = more.closest("[data-oi-msg]")!.cloneNode(true) as HTMLElement;
+    copy.dataset.oiMsg = "502";
+    copy.querySelector("button[data-oi-msg-menu]")!.removeAttribute("data-oi-wired");
+    d.querySelector('[data-oi-msg="502"]')!.replaceWith(copy);
+    await flush();
+    expect(copy.querySelector("button[data-oi-msg-menu]")!.hasAttribute("data-oi-wired")).toBe(true);
+  });
+
+  it("the open menu's Unsend m:ss ticks on the same second's draw and goes when the window closes", () => {
+    vi.useFakeTimers();
+    try {
+      const { d, left } = draw();
+      openMenu(d, ppv);
+      const item = () => d.querySelector("#oi-msg-menu [data-oi-msg-action='unsend']")?.textContent?.trim() ?? null;
+      expect(item()).toBe("Unsend 1:30");
+      left[501] = 75;
+      vi.advanceTimersByTime(1000);
+      expect(item()).toBe("Unsend 1:15");
+      left[501] = 0;
+      vi.advanceTimersByTime(1000);
+      expect(item()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

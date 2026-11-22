@@ -1,5 +1,5 @@
 """service/script_fill_api.py — Fill one Growth > Scripts Sequence with the Creator's own vault media
-(docs/spec/phase-01-fill-engine-and-describe-target.md, sub-phase 1b; ADR-0045, ADR-0046).
+(docs/spec/phase-01-fill-engine-and-describe-target.md, sub-phase 1b; ADR-0048, ADR-0046).
 
   POST /admin/saved-replies/fill/plan?account_id=   {sequence}               -> 200 FillPlan
   POST /admin/saved-replies/fill/apply?account_id=  {sequence, fingerprint?} -> 200 {status, plan, applied, undo}
@@ -17,7 +17,8 @@ factored out unchanged so the blocked sentence below reads the same rule.
 Inputs `script_fill_decide.plan_over_vault` gets (it gates, builds Shoots and plans): the Sequence rows; the
 Creator's live vault (`load_rows` rows stamped with `account_id`, `review_state`, `operator_overrides_json`,
 laid over by `script_fill_decide.effective`), its dupe sets and prints; every live media id; media on the
-Creator's other Sequences (`script_fill_decide.sequence_media_ids`); the Creator's `standard_folders` switch;
+Creator's other Sequences (`script_fill_decide.sequence_media_ids`); the Creator's `standard_folders` and
+`solo_sequences` switches;
 coverage (`vault_ai_vision.describe_coverage` at `DESCRIBE_TARGET`); the blocked sentence; and
 `template_prices` (below).
 
@@ -98,7 +99,7 @@ import asyncio
 import json
 import weakref
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -265,10 +266,12 @@ class _Vault:
     """The Creator's live vault as Fill reads it."""
 
     def __init__(self, items: list[dict[str, Any]], groups: list[list[int]], prints: dict[int, Any],
-                 live: dict[int, tuple[str, str | None]], standard_folders: bool) -> None:
+                 live: dict[int, tuple[str, str | None]], standard_folders: bool,
+                 solo_sequences: bool) -> None:
         self.items, self.groups, self.prints = items, groups, prints
         self.live = live                      # {media_id: (kind, thumb_url)} of every live row
         self.standard_folders = standard_folders
+        self.solo_sequences = solo_sequences
 
 
 async def _load_vault(account_id: str, s: Any = None) -> _Vault:
@@ -288,7 +291,9 @@ async def _load_vault(account_id: str, s: Any = None) -> _Vault:
     else:
         got_live = (await s.execute(query)).all()
     extra = {int(m): (rs, ov, kind, thumb) for m, rs, ov, kind, thumb in got_live}
-    standard = bool((await vault_settings.load(account_id)).get("standard_folders"))
+    switches = await vault_settings.load(account_id)
+    standard = bool(switches.get("standard_folders"))
+    solo = bool(switches.get("solo_sequences", True))
     items = []
     for r in rows:
         if int(r["media_id"]) not in extra:
@@ -297,7 +302,7 @@ async def _load_vault(account_id: str, s: Any = None) -> _Vault:
         items.append(decide.effective({**r, "account_id": account_id, "review_state": rs,
                                        "operator_overrides_json": ov}))
     live = {m: (kind, thumb) for m, (_rs, _ov, kind, thumb) in extra.items()}
-    return _Vault(items, [[int(m) for m in g] for g in groups], prints, live, standard)
+    return _Vault(items, [[int(m) for m in g] for g in groups], prints, live, standard, solo)
 
 
 def _vault_media(mid: int, vault: _Vault) -> dict[str, Any]:
@@ -306,6 +311,28 @@ def _vault_media(mid: int, vault: _Vault) -> dict[str, Any]:
     if thumb:
         entry["files"] = {"thumb": {"url": thumb}}
     return entry
+
+
+class _PlanInputs(NamedTuple):
+    recs: list[SavedReply]                    # the Sequence's rows (apply writes these)
+    used: set[int]                            # media on the Creator's other Sequences
+    template: dict[int, int]                  # {step: cents} from the Agency's same-named Sequence
+
+
+async def _plan_inputs(s: Any, account_id: str, sequence: str, agency: str | None) -> _PlanInputs:
+    """Every Sequence-side input `plan_over_vault` reads, on `s`: the one chain plan and apply share, so a new
+    input can't reach one route only (a one-sided input would make every fingerprinted apply 409 `stale`)."""
+    return _PlanInputs(await _sequence(s, account_id, sequence), await _used_ids(s, account_id, sequence),
+                       await _template_prices(s, account_id, sequence, agency))
+
+
+async def _plan(inputs: _PlanInputs, vault: _Vault, cov: dict[str, Any], blocked: str | None,
+                account_id: str) -> dict[str, Any]:
+    """`plan_over_vault` over these inputs, off the loop."""
+    return await asyncio.to_thread(
+        decide.plan_over_vault, [_row_dict(r) for r in inputs.recs], vault.items, inputs.used, vault.groups,
+        vault.prints, cov, blocked, account_id=account_id, standard_folders=vault.standard_folders,
+        solo_sequences=vault.solo_sequences, live_ids=set(vault.live), template_prices=inputs.template)
 
 
 # ── Routes ────────────────────────────────────────────────────────────
@@ -318,14 +345,9 @@ async def fill_plan(body: _PlanBody = Body(...), account_id: str = Query("")) ->
     cov, blocked = await _describe_inputs(account_id)   # outside the gate, as apply: no vault-row work in it
     async with _plan_gate():                  # loads too: their row work runs on the loop (module docstring)
         async with get_session() as s:
-            rows = [_row_dict(r) for r in await _sequence(s, account_id, body.sequence)]
-            used = await _used_ids(s, account_id, body.sequence)
-            template = await _template_prices(s, account_id, body.sequence, agency)
+            inputs = await _plan_inputs(s, account_id, body.sequence, agency)
         vault = await _load_vault(account_id)
-        return await asyncio.to_thread(
-            decide.plan_over_vault, rows, vault.items, used, vault.groups, vault.prints, cov, blocked,
-            account_id=account_id, standard_folders=vault.standard_folders, live_ids=set(vault.live),
-            template_prices=template)
+        return await _plan(inputs, vault, cov, blocked, account_id)
 
 
 @router.post("/fill/apply")
@@ -336,15 +358,10 @@ async def fill_apply(body: _ApplyBody = Body(...), account_id: str = Query("")) 
     cov, blocked = await _describe_inputs(account_id)
     agency = await _agency(account_id)
     async with _plan_gate(), immediate_session() as s:   # gate first, released after the transaction ends
-        recs = await _sequence(s, account_id, body.sequence)
-        rows = [_row_dict(r) for r in recs]
-        used = await _used_ids(s, account_id, body.sequence)
-        template = await _template_prices(s, account_id, body.sequence, agency)
+        inputs = await _plan_inputs(s, account_id, body.sequence, agency)
+        recs = inputs.recs
         vault = await _load_vault(account_id, s)
-        plan = await asyncio.to_thread(
-            decide.plan_over_vault, rows, vault.items, used, vault.groups, vault.prints, cov, blocked,
-            account_id=account_id, standard_folders=vault.standard_folders, live_ids=set(vault.live),
-            template_prices=template)
+        plan = await _plan(inputs, vault, cov, blocked, account_id)
         if body.fingerprint and body.fingerprint != plan["fingerprint"]:
             raise HTTPException(status_code=409, detail={"error": "stale", "plan": plan})
         if plan["status"] != "ok":

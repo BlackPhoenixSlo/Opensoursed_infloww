@@ -1,5 +1,6 @@
-"""dead.py's Messages rows (tickets 16 and 31; dead.py's MODULES): chat Find, select mode and the folders dialog's Sort
-(PHASE1, READS and their mocks, in dead.py's shapes), the folders' pin write (ALLOWED_RE) and the chat Mores (MARKED)."""
+"""dead.py's Messages rows (tickets 16, 31 and 33; dead.py's MODULES): chat Find, select mode and the folders dialog's Sort
+(PHASE1, READS and their mocks, in dead.py's shapes), the folders' pin write (ALLOWED_RE), the chat Mores (MARKED) and
+the chat page swept on the synthetic chat (SWEEP_QUERY) for my own bubble's extras."""
 import re
 from dead_lib import READ_ONLY
 PHASE1=[]; READS=[]; SOURCES={}; V2={}; ALLOWED_RE=[]
@@ -99,3 +100,23 @@ MARKED=[
      ".b-chat__header .b-dropdown-wrapper > button.m-btn-vertical-dots:not(.m-size-sm)", False, 1),
     (lambda p: p.startswith("messages/chat/state-"), ".b-chat__message button.m-size-sm.m-btn-vertical-dots", False, 9),
 ]
+# ticket 33: my own bubble's extras on the chat page (ofMirrorBubbleExtras bindBubbleExtras): Countdown, Copy as draft and Unsend
+# PPV, Wired with the Not-yet title kept until their Live pass (D1). The bare chat page opens no thread, so the sweep
+# opens it on the synthetic chat (SWEEP_QUERY); its newest message is mine (dead.py's users/me, id 1): a $5 PPV, text
+# only (no media to load), its unsend window 3600 s from the read, so open for the whole run.
+SWEEP_QUERY={"messages/chat": f"chat={CHAT16}"}
+SOURCES[f"/api/of/v2/chats/{CHAT16}/messages"]["list"][:0]=[{**msg16(11003,"Synthetic PPV",19), "fromUser":{"id":1},
+    "isFree":False, "price":5, "cancelSeconds":3600}]
+# A chat page with ?chat= mounts the app's Fan insights (FanDrawer), whose Sales and unsold PPVs need their shapes
+# (empty), for the selected Creator (1).
+SOURCES[f"/admin/fans/1/{CHAT16}/ppv-history"]={"items":[],"summary":{"max_cents":0,"avg_cents":0}}
+SOURCES[f"/api/of/v2/chats/{CHAT16}/media"]={"list":[],"hasMore":False}
+# On it: the extras (Countdown, Copy as draft, Unsend PPV) and the thread's three ⋮ (drawn after the bind; the page's
+# nine hidden template bubbles aside) are Wired.
+MARKED+=[(lambda p: p=="messages/chat", "[data-oi-bubble]", False, 3),
+         (lambda p: p=="messages/chat", ".b-chat__message button[data-oi-msg-menu]", True, 3)]
+# ticket 42 (D22): no HANDOFF row. The three Reports (header menu, message menu, another creator's post menu) are drawn
+# as hand-off links only with a chat or post open, inside menus opened by a click; on the bare header-menu State page
+# Report stays disabled (Not-yet). Measured 2026-11-21: opening that page on ?chat= let the sweep list Report but skip it
+# (the Record voice panel an earlier control opens lies on top) and cost Tag other creators' Read-only probe. The
+# hand-offs are content_writes.py's ticket 42 rows: popup to the exact URL, aborted, nothing sent.

@@ -128,6 +128,10 @@ class Write:
     # `{upload}` filled by the route's reply (OF's upload item, a non-empty processId, else no PATCH). It holds only
     # when the picture read back after the undo is the kept one by `undo_driver.picture_match` (undo_driver.undo).
     relay_upload: RelayUpload | None = None
+    # ofm-not-yet follow-up #5: an arm's declared payload, (body, run, at) -> why this request's body is outside it,
+    # or None (`at`: Request.at, when it is sent; W30 W1: a scheduled post's date is bound to it). The Live guard refuses such a write `unarmed` before it leaves (decide, class 4), whatever the proof's own
+    # steps sent; an arm with none takes any body its other rules pass.
+    payload: Callable | None = None
 
     def __post_init__(self):
         if self.host is not None and not _HOSTNAME.fullmatch(self.host):
@@ -214,6 +218,9 @@ class Proof:
     # ticket 60: (before read) -> a park reason when OnlyFans's side is not set for the trigger (a switch the control
     # needs is off and no captured body can turn it on), else None; checked before the page opens, so nothing is sent.
     ready: Callable | None = None
+    # ticket 98: only a Co-tag proof's POST /posts may carry a tag (a tag notification cannot be undone), and then only
+    # the run's named partner (`cotag_problems`); any other proof's tagged post is refused, partner or not.
+    may_tag: bool = False
 
     @property
     def hosts(self) -> tuple:
@@ -271,6 +278,18 @@ class Run:
     fan_visible_done: tuple = ()
     quiet_hour: datetime | None = None          # start of the run's declared quiet hour (aware)
     hosts: tuple = ()                           # the armed proof's Proof.hosts, set only by relay_live's arm; () between proofs
+    cotag_partner: str | None = None            # --cotag-partner (ofm-not-yet ticket 98): a post's only Co-tag
+    marker: str | None = None                   # the run's marker (`oi-proof-<run id>`), set by relay_live's arm
+
+
+def marker_problem(text: Any, run: Run) -> str | None:
+    """Round 2 #22: why `text` does not carry this run's exact marker (a whole token, so another run's
+    `oi-proof-<id>` or a longer one never passes), or None. No marker armed: refused."""
+    if not run.marker:
+        return "no run marker armed"
+    if re.search(rf"(?<![A-Za-z0-9_-]){re.escape(run.marker)}(?![A-Za-z0-9_-])", str(text or "")):
+        return None
+    return f"the text lacks this run's marker {run.marker}"
 
 
 @dataclass(frozen=True)
@@ -567,6 +586,56 @@ def _fan_visible_proof(proof: Proof) -> bool:
         w.method.upper() == "PUT" and _PUBLISH.match(_api(w.path)) for w in proof.arm)
 
 
+_COTAG_KEYS = ("rfTag", "userTags", "rfGuest", "rfPartner")
+
+
+def cotag_tagged(body: Any) -> bool:
+    """Whether a post body carries any Co-tag (a non-empty tag array, or anything truthy where one goes)."""
+    return isinstance(body, dict) and any(body.get(k) for k in _COTAG_KEYS)
+
+
+def cotag_problems(body: Any, partner: str | None) -> list:
+    """Ticket 98's one Co-tag rule (the guard's backstop and the proof's wire check): why a post body's Co-tags are
+    not exactly the run's named partner. An untagged post (every tag array absent or empty) has none; a tagged one
+    needs a partner, `rfTag` and `userTags` each exactly [partner], `rfGuest` and `rfPartner` empty. Ids: digits only
+    (an int or a string of digits), then compared as strings, so "02001" is not 2001."""
+    if why := _unreadable_post(body):
+        return [why]
+    if not cotag_tagged(body):
+        return []
+    if not partner:
+        return ["a Co-tagged post with no Co-tag partner named (--cotag-partner)"]
+    out = []
+    for k in ("rfTag", "userTags"):
+        got = body.get(k)
+        ids = [str(x) for x in got if isinstance(x, (int, str)) and not isinstance(x, bool) and str(x).isdigit()] \
+            if isinstance(got, list) else None
+        if ids is None or len(ids) != len(got) or ids != [str(partner)]:
+            out.append(f"Co-tag {k} is {str(got)[:80]}, not exactly the named partner [{partner}]")
+    out += [f"Co-tag {k} is {str(body[k])[:80]}, not empty" for k in ("rfGuest", "rfPartner") if body.get(k)]
+    return out
+
+
+def cotag_refusal(body: Any, partner: str | None) -> str | None:
+    """The guard's backstop (decide, class 7): `cotag_problems`' first, or None."""
+    return next(iter(cotag_problems(body, partner)), None)
+
+
+def _unreadable_post(body: Any) -> str | None:
+    """Why the backstop cannot read a post body (form-encoded, raw text), or None."""
+    return None if isinstance(body, dict) else f"the post body is not a JSON object: {str(body)[:80]}"
+
+
+def _post_tag_refusal(body: Any, proof: Proof, partner: str | None) -> str | None:
+    """decide's class 7 Co-tag backstop for a POST /posts (ticket 98): a Co-tag proof's (Proof.may_tag) tags exactly
+    the named partner; any other proof's post carries no tag, and an unreadable body is refused, not passed unread."""
+    if proof.may_tag:
+        return cotag_refusal(body, partner)
+    if cotag_tagged(body):
+        return f"{proof.id} may not tag (only a Co-tag proof's post carries a tag; a tag notification cannot be undone)"
+    return _unreadable_post(body)
+
+
 def decide(request: Request, run: Run) -> Verdict:
     method, host = request.method.upper(), request.host.lower()
     api, body, proof = _api(request.path), request.body, run.proof
@@ -599,6 +668,8 @@ def decide(request: Request, run: Run) -> Verdict:
     key, w = _match(proof, method, request.path, body, run, host)
     if w is None:
         return _refused("unarmed", f"{method} {api} (body included) is not armed for {proof.id}")
+    if w.payload is not None and (why := w.payload(body, run, request.at)):
+        return _refused("unarmed", f"{method} {api}: {why}, outside {proof.id}'s declared payload", key=key)
     if run.spent.get(key, 0) >= w.max:
         return _refused("over_count", f"{method} {api}: armed {w.max}, already spent", key=key)
     stream = "stream_start" in proof.tags or _stream_path(method, api)
@@ -670,6 +741,8 @@ def decide(request: Request, run: Run) -> Verdict:
                 and (_fan_visible_proof(proof) or _fan_visible(method, api, body, proof, key, request.at))):
             return _refused("fan_visible", "outside fake mode a fan-visible proof's POST /posts carries an empty "
                             f"mediaFiles, not {str(media)[:80]}", key=key)
+        if method == "POST" and api == "/posts" and (why := _post_tag_refusal(body, proof, run.cotag_partner)):
+            return _refused("post", why, key=key)
 
     # Fan-visible publishes: capped for the whole effort (owner-proxy Q15), decided before reversal and allow.
     fan_visible = _fan_visible(method, api, body, proof, key, request.at)
@@ -691,15 +764,33 @@ def decide(request: Request, run: Run) -> Verdict:
                    key=key, fan_visible=fan_visible)
 
 
-def order(proofs, ran=()):
-    """Lockout proofs last (stable); refuses a non-lockout proof once a lockout proof has run."""
+_FAN_REACHING = frozenset({"fan_visible", "delete_at_once", "message"})
+
+
+def order_group(proof: Proof) -> int:
+    """ADR-0042's run order (ofm-not-yet ticket 101): 0 a read (no armed write), 1 a write no Fan can see, 2 a
+    Fan-reaching write (tagged fan_visible, delete_at_once or message, or arming a schedule publish), 3 a Lockout
+    proof."""
+    if is_lockout(proof):
+        return 3
+    if not proof.arm:
+        return 0
+    return 2 if _FAN_REACHING & proof.tags or _fan_visible_proof(proof) else 1
+
+
+def order(proofs, ran=(), canon=()):
+    """The run order, whatever order the proofs were given in: by `order_group` (reads, Fan-invisible writes,
+    Fan-reaching writes, Lockout last), inside a group by `canon` (the proof list's id order, `proofs.ORDER`), then
+    as given. Refuses a non-lockout proof once a lockout proof has run."""
     proofs = list(proofs)
     done = next((p for p in ran if is_lockout(p)), None)
     if done is not None:
         late = [p.id for p in proofs if not is_lockout(p)]
         if late:
             raise ValueError(f"{late[0]!r} after lockout proof {done.id!r}: lockout proofs run last")
-    return [p for p in proofs if not is_lockout(p)] + [p for p in proofs if is_lockout(p)]
+    rank = {pid: n for n, pid in enumerate(canon)}
+    return [p for _, p in sorted(enumerate(proofs), key=lambda ip: (order_group(ip[1]), rank.get(ip[1].id, len(rank)),
+                                                                   ip[0]))]
 
 
 def fake_only_refused(proofs, of: str) -> list:

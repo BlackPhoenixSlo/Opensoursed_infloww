@@ -24,10 +24,11 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal, NamedTuple
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func
 from sqlalchemy.sql.elements import ColumnElement
 
 import vault_ai_brief
+import vault_collect_plan
 import vault_describe_jev
 import vault_jev_flags
 import vault_jev_manual
@@ -112,7 +113,7 @@ def next_attempt(model: str, refused_or_blank: bool) -> str | None:
 # 'failed'` recorded. The flags sweep has always filtered this way; the describe
 # sweep and its cost estimate never did, so the estimate quoted a total the sweep
 # could not meet.
-_DESCRIBABLE_KINDS = ("photo", "video")
+_DESCRIBABLE_KINDS = vault_jev_rules.JEV_KINDS   # one definition: every describable kind is a Jev kind (W30 F17)
 
 DescribeMode = Literal["force", "restage", "undescribed"]
 
@@ -149,13 +150,16 @@ def describe_selection(account_id: str, mode: DescribeMode,
         # as stale and gets re-scanned. So does a photo / clip whose describe
         # is not Jev-fed (`_describe.path`, the meta's first key, not in
         # JEV_FED): a v2 / pre-Jev describe, whatever its prompt version.
-        jev_fed = or_(*(VaultItem.ai_fields_json.like(
-            f'%"{vault_describe_jev.DESCRIBE_KEY}": {{"path": "{p}"%') for p in vault_describe_jev.JEV_FED))
+        # Read with json_extract (SQLite JSON1, as `vault_jev_rules.current_sql`), not LIKE on key order and
+        # spacing (W30 F18); an invalid / NULL blob reads as no marker (stale).
+        ok = vault_jev_rules.json_or_empty(VaultItem.ai_fields_json)
+        key = lambda path: func.coalesce(func.json_extract(ok, path), "")  # noqa: E731
+        jev_fed = key(f"$.{vault_describe_jev.DESCRIBE_KEY}.path").in_(vault_describe_jev.JEV_FED)
         return and_(base,
                     (VaultItem.describe_status != "described")
                     | (VaultItem.describe_status.is_(None))
                     | (VaultItem.ai_fields_json.is_(None))
-                    | (~VaultItem.ai_fields_json.like(f'%"_prompt_version": "{pv}"%'))
+                    | (key("$._prompt_version") != pv)
                     | (VaultItem.kind.in_(JEV_KINDS) & ~jev_fed))
     if mode == "undescribed":
         # Everything not already described — INCLUDING blocked_drm, with
@@ -180,14 +184,13 @@ TERMINAL_STATUSES = frozenset({"refused", "blocked_drm", "gone"})
 
 def is_terminal(describe_status: str | None, fields: Mapping[str, Any] | None) -> bool:
     """A Terminal failure: a not-described Describable item whose status is `refused`, `blocked_drm` or
-    `gone`, or whose `_jev` is the terminal held blob (`vault_jev_pass.held_blob(terminal=True)`: status ok,
-    review held — the sweeps stop fetching it). The non-terminal hold has status `fetch_failed`: retried."""
+    `gone`, or whose `_jev` the Jev pass gave up on (`vault_jev_rules.retries_spent`: the sweeps stop fetching it).
+    The non-terminal hold has status `fetch_failed`: retried."""
     if describe_status == "described":
         return False
     if describe_status in TERMINAL_STATUSES:
         return True
-    j = (fields or {}).get(JEV_KEY)
-    return isinstance(j, Mapping) and j.get("status") == "ok" and j.get("review") == vault_jev_rules.HELD
+    return vault_jev_rules.retries_spent(dict(fields or {}))
 
 
 def coverage(rows: Iterable[tuple[str | None, Mapping[str, Any] | None]], target: int) -> dict[str, int]:
@@ -233,8 +236,8 @@ def with_jev(res: Mapping[str, Any], jev_res: Mapping[str, Any] | None) -> dict[
     out["jev_cost_millicents"] = jc
     if jev_res.get("lane5"):
         out["jev_lane5"] = jev_res["lane5"]
-    if jev_res.get("detail") and not jev_res.get("ok"):
-        out["jev_detail"] = str(jev_res["detail"])[:200]
+    if jev_res.get("notice"):   # a sweep-wide line (the Jev cap), read by `vault_sweep.run`
+        out["notice"] = jev_res["notice"]
     return out
 
 
@@ -338,11 +341,11 @@ JEV_KINDS = vault_jev_rules.JEV_KINDS
 def jev_for_copy(src_ai: Mapping[str, Any], own_ai: Mapping[str, Any],
                  picks: Mapping[str, Any] | None = None) -> Any:
     """The `_jev` a duplicate should carry: the source's when it is a good
-    answer (`status == "ok"`), under the copy's own operator picks
-    (`vault_jev_manual`; the source's `at` kept, so a copied describe still
+    answer (`status == "ok"`, not a clip the Jev pass gave up on: `vault_jev_rules.retries_spent`), under the copy's own
+    operator picks (`vault_jev_manual`; the source's `at` kept, so a copied describe still
     matches it), else the copy's own (or None: none at all)."""
     src = src_ai.get(JEV_KEY)
-    if isinstance(src, dict) and src.get("status") == "ok":
+    if isinstance(src, dict) and src.get("status") == "ok" and not vault_jev_rules.retries_spent({JEV_KEY: src}):
         # the source's own picks are not the copy's: a copy with none holds the source's AI reading
         return vault_jev_manual.overlay(src, picks or {}, vault_jev_manual.kind_of(src))
     return own_ai.get(JEV_KEY)
@@ -407,9 +410,10 @@ def _put_unlocked(vals: dict[str, Any], locked: Collection[str],
 
 # ── Walk order ──────────────────────────────────────────────────────
 
-PRIORITY_FOLD = 10     # each round: the next `fold` folders,
-PRIORITY_TOP = 500     # then the next `top` newest,
-PRIORITY_BOTTOM = 100  # then the next `bottom` oldest
+# Collect's round (`vault_collect_plan`), in items: one source, so Describe's order cannot drift from it (W30 F16).
+PRIORITY_FOLD = vault_collect_plan.FOLD                                   # each round: the next `fold` folders,
+PRIORITY_TOP = vault_collect_plan.TOP_PAGES * vault_collect_plan.PAGE     # then the next `top` newest,
+PRIORITY_BOTTOM = vault_collect_plan.BOTTOM_PAGES * vault_collect_plan.PAGE  # then the next `bottom` oldest
 
 
 def rail_folder_ids(pages: Iterable[Mapping[str, Any] | None]) -> list[int]:
@@ -543,6 +547,24 @@ def reuse_plan(groups: Iterable[Sequence[int]], order: Sequence[int],
         elif len(walked) > 1:
             followers[walked[0]] = walked[1:]
     return ReusePlan(copy_now, followers)
+
+
+def lead_plan(groups: Iterable[Sequence[int]], leads: Sequence[int]) -> ReusePlan:
+    """The `ReusePlan` of a NAMED run (the single describe, flags-all `media_ids`):
+    every lead gets its own call, even one whose set already has an answer (the
+    operator asked for that item), and every other member of its set follows
+    its first lead — answered or not, as a forced sweep's riders do — so the set
+    keeps one answer (each copy under its own locks / picks). No `copy_now`."""
+    want = list(dict.fromkeys(int(m) for m in leads))
+    named = set(want)
+    followers: dict[int, list[int]] = {}
+    for g in groups:
+        members = [int(m) for m in g]
+        first = next((m for m in want if m in members), None)
+        rest = [m for m in members if m not in named]
+        if first is not None and rest:
+            followers.setdefault(first, []).extend(rest)
+    return ReusePlan({}, followers)
 
 
 def build_flags_copy(prev: Mapping[str, Any], src_ai: Mapping[str, Any], *,

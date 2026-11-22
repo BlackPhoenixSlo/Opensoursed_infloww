@@ -36,8 +36,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { readAuthSnapshot, writeAuthSnapshot } from "@/lib/authSnapshot";
 import { clearSendStash } from "@/lib/sendStash";
 import { clearRefusedOffers } from "@/components/chat/refusedOffers";
+import { stopBulkUnsends } from "@/components/settings/useBulkUnsend";
 import { clearInline, takeInline } from "@/lib/inlineBoot";
 import { forgetScreenBundles } from "@/lib/screenBundle";
+import { forgetCreatorColsQueue } from "@/lib/creatorColsQueue";
+import { forgetAll as forgetStatsLastGood } from "@/lib/ofMirrorStatsLastGood";
+import { keptStorage } from "@/lib/chatSlots";
 import { forgetScope } from "@/lib/screenEntry";
 import { clearPersistedCache } from "@/lib/rqPersister";
 import { forgetPush } from "@/lib/webPush";
@@ -127,16 +131,21 @@ interface UserContextValue {
 const UserContext = createContext<UserContextValue | null>(null);
 
 /** Drop the previous identity's in-memory stores: unsent messages (a send
- *  waiting on its files) and refused schedules' drafts. Shared between
- *  UserContext + ChatterContext, as `wipeIdentityStorage` is. */
+ *  waiting on its files), refused schedules' drafts, the Statistics pages'
+ *  last good figures and a layout save still queued; a bulk unsend going
+ *  stops. Shared between UserContext + ChatterContext, as `wipeIdentityStorage` is. */
 export function clearIdentityMemory(): void {
   clearInline();
   forgetScreenBundles();
   clearSendStash();
   clearRefusedOffers();
+  stopBulkUnsends();
+  forgetStatsLastGood();
+  forgetCreatorColsQueue();
 }
 
-/** Wipe every chatterly storage key not on the preserve allowlist, and the
+/** Wipe every chatterly storage key not on the preserve allowlist (nor kept
+ *  by a plugin, lib/chatSlots `keptStorage`), and the
  *  persisted React Query snapshot. Shared between UserContext + ChatterContext
  *  so both principals get the same aggressive wipe on identity switch.
  *  Resolves once the snapshot delete has committed (await it before a hard
@@ -153,7 +162,7 @@ export function wipeIdentityStorage(): Promise<void> {
         const k = storage.key(i);
         if (!k) continue;
         if (!k.startsWith("chatterly:") && !k.startsWith("chatterly-")) continue;
-        if (IDENTITY_PRESERVE_KEYS.has(k)) continue;
+        if (IDENTITY_PRESERVE_KEYS.has(k) || keptStorage(k)) continue;
         victims.push(k);
       }
       for (const k of victims) storage.removeItem(k);

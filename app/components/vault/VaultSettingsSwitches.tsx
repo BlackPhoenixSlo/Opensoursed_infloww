@@ -1,7 +1,8 @@
 "use client";
 
-/** Ours: the Creator's two vault switches (`useVaultSettings`), both off by default. In the Extras drawer, for
- *  whoever may edit the folders (not a folder-limited chatter). Each is one server boolean, saved on the tap. */
+/** Ours: the Creator's vault switches (`useVaultSettings`; "Sequences: solo only" on by default, the rest off). In
+ *  the Extras drawer, for whoever may edit the folders (not a folder-limited chatter). Each is one server boolean,
+ *  saved on the tap. */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -18,6 +19,11 @@ const ROWS: { key: keyof VaultSettings; label: string; help: string }[] = [
     key: "standard_folders",
     label: "Standard folders",
     help: "Sorts described media into a fixed list of categories. Media in Needs Review is not sold until you file it.",
+  },
+  {
+    key: "solo_sequences",
+    label: "Sequences: solo only",
+    help: "Fill never puts partner (BG/GG) content into Sequences.",
   },
 ];
 

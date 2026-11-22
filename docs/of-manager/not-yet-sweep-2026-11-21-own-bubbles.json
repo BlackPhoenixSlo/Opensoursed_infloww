@@ -1,0 +1,17 @@
+[
+ [
+  "messages/chat",
+  {
+   "ny": [
+    "More",
+    "Countdown",
+    "Copy as draft",
+    "Unsend PPV"
+   ],
+   "dis": [
+    "Send"
+   ],
+   "ro": []
+  }
+ ]
+]

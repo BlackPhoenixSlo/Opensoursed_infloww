@@ -64,11 +64,21 @@ export function autoUnsendReducer(state: AutoUnsendForm, action: AutoUnsendActio
  *  (`not wants_mass`, unsend_messages.py). */
 export const canSave = (s: AutoUnsendForm) => s.text.on || s.img.on || s.price.on;
 
+/** What Save sends: a new rule (`create`, always with a policy) or a patch of the saved one (`update`, `ruleId`). */
+export type SaveBody =
+  | { kind: "create"; is_enabled: boolean; payload: { policy: Record<string, number> } }
+  | { kind: "update"; id: number; is_enabled: boolean; payload?: { policy: Record<string, number> } };
+
 /** The Save's body, or null when Save is off. A saved rule can always be turned off: with no class on it keeps its
- *  saved policy (no payload sent), as the class rows hide while the rule is off. */
-export function saveBody(s: AutoUnsendForm, hasRule: boolean): { is_enabled: boolean; payload?: { policy: Record<string, number> } } | null {
-  if (canSave(s)) return { is_enabled: s.enabled, payload: buildPayload(s) };
-  return hasRule && !s.enabled ? { is_enabled: false } : null;
+ *  saved policy (no payload sent), as the class rows hide while the rule is off. `ruleId` = the saved rule's, or null. */
+export function saveBody(s: AutoUnsendForm, ruleId: number | null): SaveBody | null {
+  if (canSave(s)) {
+    const payload = buildPayload(s);
+    return ruleId == null
+      ? { kind: "create", is_enabled: s.enabled, payload }
+      : { kind: "update", id: ruleId, is_enabled: s.enabled, payload };
+  }
+  return ruleId != null && !s.enabled ? { kind: "update", id: ruleId, is_enabled: false } : null;
 }
 
 /** The rule's payload: the hours of each class that is on. */

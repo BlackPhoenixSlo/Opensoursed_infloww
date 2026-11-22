@@ -100,15 +100,8 @@ def _normalize_target(url: Any) -> str | None:
 
 
 # ── Cloudflare Turnstile ("Bot check before redirect") ────────────────
-# The keys, the siteverify client and its in-flight cap live in turnstile.py
-# (the bio app gates its Reveal with the same); the names below are this
-# module's own seams (tests patch _turnstile_passes here).
-TURNSTILE_VERIFY_URL = turnstile.VERIFY_URL
-_MAX_TOKEN = turnstile.MAX_TOKEN
-_turnstile_keys = turnstile.keys
-bot_check_available = turnstile.available
-_verify_url = turnstile.verify_url
-_turnstile_passes = turnstile.passes
+# The keys, the token check, the siteverify client and its in-flight cap live in
+# turnstile.py (the bio app gates its Reveal with the same).
 
 
 # Per-client verify budget (client_addr: the trusted hop's address, an IPv6
@@ -252,9 +245,8 @@ async def follow_tracking_link(slug: str, request: Request):
     resolve the target, leave the session, and only then attempt the write.
     """
     link_id, target, gated = await _lookup(slug)
-    keys = _turnstile_keys()
-    gate = bool(gated and keys)
-    if gate:
+    keys = turnstile.keys()
+    if gated and keys:
         try:
             ref = click_classify.ref_family(request.headers.get("referer"))
         except Exception as e:
@@ -283,14 +275,10 @@ async def verify_tracking_link(slug: str, request: Request, body: _VerifyBody = 
         return JSONResponse({"detail": "too many checks, retry shortly"}, status_code=429,
                             headers={"Cache-Control": "no-store", "Retry-After": str(wait)})
     link_id, target, gated = await _lookup(slug)
-    keys = _turnstile_keys()
-    gate = bool(gated and keys)
+    gate = bool(gated and turnstile.keys())
     if gate:
-        token = (body.token or "").strip()
-        ok = False
-        if token and len(token) <= _MAX_TOKEN:
-            ip = str(client_addr.client_address(request)) if request.client else None
-            ok = await _turnstile_passes(keys[1], token, ip)
+        ip = str(client_addr.client_address(request)) if request.client else None
+        ok = await turnstile.check(body.token, ip)
         if not ok:
             log.info("tracking bot check failed slug=%s verdict=%s", slug, ok)
             return JSONResponse({"detail": "bot check failed"}, status_code=503 if ok is None else 403,
@@ -309,7 +297,7 @@ async def list_tracking_links(account_id: str = Query(...)) -> dict[str, Any]:
             select(TrackingLink).where(TrackingLink.account_id == account_id)
             .order_by(TrackingLink.created_at.desc())
         )).scalars().all()
-    return {"links": [_serialize(r) for r in rows], "bot_check_available": bot_check_available()}
+    return {"links": [_serialize(r) for r in rows], "bot_check_available": turnstile.available()}
 
 
 class _CreateBody(BaseModel):

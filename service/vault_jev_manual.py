@@ -15,9 +15,10 @@ duplicate's copy (`vault_ai_vision_decide.jev_for_copy`). Options are the Jev qu
                penetration y) and clears a clip's `review` / `read_lane5`. Not picked: a breasts / crotch /
                penetration pick re-ranks the lane on the verdicts (pen y $100, crotch y $50, breasts y $10, an
                unsure left keeps the read lane, else free); `vault_jev_rules.lane_rule` needs probabilities.
-  no reading   a lane (picked or ranked) builds a whole current blob (every FACT_CHOICES in `C`, uniform where not
+  no reading   (none yet, or a clip the Jev pass gave up on: `rules.retries_spent`, its retry state kept) a lane
+               (picked or ranked) builds a whole current blob (every FACT_CHOICES in `C`, uniform where not
                picked, so the flags / tier map it; Describe waits for the scan, `ai_read`); none: `status` "manual" (not current, the sweep still reads
-               the item and its picks are laid over the reading).
+               the item, unless it gave up, and its picks are laid over the reading).
   failed read  a reading whose re-read failed (status error / fetch_failed, fields kept) with a lane known after
                the picks (not a clip's review) is current again: `status` ok, so the flags map it.
 
@@ -57,7 +58,7 @@ KEYS = (*CHOICE_Q, *TOGGLES, "lane")
 LANE_PICKS = ("breasts", "crotch", "penetration")
 BODY_PICKS = (*REGIONS, "penetration", "lane")
 MANUAL = rules.MANUAL
-_VERDICT = {"breasts": "breasts_bare", "crotch": "crotch_bare", "penetration": "penetration"}
+_VERDICT = rules.REGION_BODY   # region pick → the body answer it sets (one map, `vault_jev_rules`)
 _COERCE = {"$10": "breasts_bare", "$50": "crotch_bare", "$100": "penetration"}
 # a feet toggle's footwear, for a feet_detail Jev left not_in_picture (first y wins; else bare)
 _FEET_DETAIL = (("wears_heels", "heels"), ("wears_stockings_or_fishnets", "stockings_fishnets_nylons"),
@@ -121,6 +122,20 @@ def value(jev: Mapping[str, Any] | None, key: str) -> Any:
     if key == "penetration":
         return j.get("penetration")
     return (j.get("tags") or {}).get(key)
+
+
+def ai_reading(jev: Any) -> dict[str, str]:
+    """What the AI's own reading says per pick key (the popup's unset option, served as `jev_ai`): a picked
+    key's kept `ai` answer; a manual blob (nothing read) says nothing for the rest. Keys with no answer left out."""
+    if not isinstance(jev, Mapping):
+        return {}
+    op, kept = set(jev.get("op") or ()), jev.get("ai") or {}
+    out: dict[str, str] = {}
+    for k in KEYS:
+        v = kept.get(k) if k in op else (None if jev.get("made") == MANUAL else value(jev, k))
+        if isinstance(v, str):
+            out[k] = v
+    return out
 
 
 # ── path writes, recorded so they can be undone ─────────────────────
@@ -204,8 +219,9 @@ class _Writer:
 
 
 def _read(b: Mapping[str, Any]) -> bool:
-    """`b` carries a reading to lay picks over (a lane and the region states), not just a manual skeleton."""
-    return "lane5" in b and isinstance(b.get("state"), dict)
+    """`b` carries a reading to lay picks over (a lane and the region states), not just a manual skeleton. A clip the
+    Jev pass gave up on (`rules.retries_spent`) has none: its picks build a manual blob (`made`, not `ai_read`)."""
+    return "lane5" in b and isinstance(b.get("state"), dict) and not rules.retries_spent({rules.JEV_KEY: b})
 
 
 def _fine(b: Mapping[str, Any]) -> str:

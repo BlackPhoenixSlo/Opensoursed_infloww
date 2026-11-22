@@ -76,3 +76,31 @@ describe("UnconfirmedSends · It went through", () => {
     expect(row.getByRole("button", { name: "It went through" })).toHaveProperty("disabled", false);
   });
 });
+
+describe("UnconfirmedSends · Retry", () => {
+  it("POSTs retry with the listed since", async () => {
+    relay.post.mockImplementation(async () => { rows = []; return { status: "retried" }; });
+    const row = await mount();
+    await click(row.getByRole("button", { name: "Retry" }));
+    expect(relay.post).toHaveBeenCalledWith(
+      "/admin/unconfirmed-sends/retry?account_id=acc1",
+      { kind: "funnel", fan_id: "42", mass_run_id: 7, since: "2026-11-20T10:00:00Z" },
+      { accountId: "acc1" },
+    );
+    expect(screen.queryByTestId("unconfirmed-send-row")).toBeNull();
+  });
+
+  it("a 409 (the row changed since it was listed) keeps the row with the message and refetches it", async () => {
+    relay.post.mockImplementation(async () => {
+      rows = [{ ...ROW, since: "2026-11-20T10:20:00Z" }];          // a newer attempt
+      throw new RelayError(409, {}, "this row changed since it was listed: refresh");
+    });
+    const row = await mount();
+    const gets = relay.get.mock.calls.length;
+    await click(row.getByRole("button", { name: "Retry" }));
+    expect(row.getByRole("alert").textContent).toBe("this row changed since it was listed: refresh");
+    expect(screen.getByTestId("unconfirmed-send-row")).toBeTruthy();
+    expect(row.getByRole("button", { name: "Retry" })).toHaveProperty("disabled", false);
+    expect(relay.get.mock.calls.length).toBeGreaterThan(gets);
+  });
+});

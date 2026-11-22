@@ -13,6 +13,10 @@ fake `fetch(offset)` -> (rows, truncated, fetch offsets).
   case_list_members_repeat:      a repeated members page returns all seen IDs; complete iff
                                they number OF's usersCount (one get_list, only then)
                                and marks the result truncated.
+  case_list_members_tail_only:  usersCount clears only a TAIL repeat (the last page's row
+                               ids again, other fields may differ); a repeat of an
+                               earlier page or an empty page with hasMore
+                               stays incomplete even when the count matches.
   case_find_list_id:           a list found by name on a complete or an incomplete
                                read; absent on a complete read -> None; absent on an
                                incomplete read raises ListLookupIncomplete.
@@ -27,8 +31,14 @@ fake `fetch(offset)` -> (rows, truncated, fetch offsets).
                                incomplete (maybe truncated by an unseen cap).
   case_schedules_full_chunk_reread: a full chunk whose days are each under the
                                page lists everything via one-day reads, complete.
-  case_schedules_bad_replies:  string / bare list / no list / list not a list /
-                               syncInProcess -> incomplete, never an empty range.
+  case_schedules_bad_replies:  string / bare list / no list / list not a list ->
+                               incomplete, no rows; syncInProcess / hasMore (on
+                               every day too) -> incomplete WITH the rows it listed.
+  case_schedules_bad_chunk_reads_on: a bad chunk does not stop the walk; the far
+                               chunk (carrier date) is still read.
+  case_schedules_chunk_hasmore_rereads_by_day: a chunk saying hasMore is re-read
+                               by day like a full one; plain days -> complete.
+  case_schedules_day_hasmore_is_gap: a one-day read saying hasMore -> incomplete.
 
 Run: ./venv/bin/python service/tests/test_of_paging.py   (exit 0 = pass)
 """
@@ -102,6 +112,8 @@ def case_repeat_short_end():
          {0: full, 100: ["x", 7]}, 100, True, [0, 100]),
         ("short page then empty -> complete",
          {0: full, 100: [{"id": 200}, {"id": 201}]}, 102, False, [0, 100, 102]),
+        ("envelope: empty page that says hasMore -> incomplete",
+         {0: {"list": full, "hasMore": True}, 100: {"list": [], "hasMore": True}}, 100, True, [0, 100]),
         ("envelope short page with hasMore then empty -> complete",
          {0: {"list": full[:30], "hasMore": True}, 30: {"list": [], "hasMore": False}}, 30, False, [0, 30]),
         ("normal end: hasMore false -> complete",
@@ -150,6 +162,45 @@ def case_list_members_repeat():
     c = Counted(3)
     c.list_users_in = lambda lid, limit, offset: [{"id": i} for i in (1, 2, 3)][offset:]
     assert of_paging.list_member_ids(c, 7) == ({1, 2, 3}, False) and c.counts == 0   # complete: no GET
+
+
+def case_list_members_tail_only():
+    """OF re-serves a list's LAST page past its end (AE 2026-11-11), so only that
+    repeat may be cleared by a matching usersCount."""
+    p1 = [{"id": i} for i in range(1, 101)]
+    p2 = [{"id": i} for i in range(101, 151)]
+
+    class C:
+        def __init__(self, pages):
+            self.pages, self.counts = pages, 0
+
+        def list_users_in(self, lid, limit, offset):
+            return self.pages.get(offset, [])
+
+        def get_list(self, lid):
+            self.counts += 1
+            return {"id": lid, "usersCount": 150}
+    rows = [
+        # (name, pages, want incomplete)
+        ("tail repeat + count -> complete", {0: p1, 100: p2, 150: p2}, False),
+        ("earlier page repeated + count -> incomplete", {0: p1, 100: p2, 150: p1}, True),
+        # The same rows re-served with other fields changed is still the tail (row ids).
+        ("tail repeat, a row's lastSeen moved + count -> complete",
+         {0: p1, 100: p2, 150: [{**u, "lastSeen": "now"} for u in p2]}, False),
+        ("tail repeat, envelope offset echo differs + count -> complete",
+         {0: {"list": p1, "hasMore": True, "offset": 0},
+          100: {"list": p2, "hasMore": True, "offset": 100},
+          150: {"list": p2, "hasMore": True, "offset": 150}}, False),
+        ("empty envelope with hasMore + count -> incomplete",
+         {0: {"list": p1, "hasMore": True}, 100: {"list": p2, "hasMore": True},
+          150: {"list": [], "hasMore": True}}, True),
+    ]
+    bad = []
+    for name, pages, want in rows:
+        ids, inc = of_paging.list_member_ids(C(pages), 7)
+        if (len(ids), inc) != (150, want):
+            bad.append(f"{name}: {(len(ids), inc)!r} != {(150, want)!r}")
+    assert not bad, "\n".join(bad)
 
 
 def case_find_list_id():
@@ -304,11 +355,66 @@ def case_schedules_bad_replies():
     for label, reply in [("string", "<html>oops</html>"),
                          ("bare list", [_srow(1, 5)]),
                          ("no list", {"error": {"code": 0, "message": "x"}}),
-                         ("list not a list", {"list": "nope"}),
-                         ("syncInProcess", {"list": [_srow(1, 5)], "syncInProcess": True})]:
+                         ("list not a list", {"list": "nope"})]:
         rows, why = of_paging.schedules_in_window(_Cal([], reply=reply), 30, today=_TODAY)
         assert why, (label, rows)
         assert rows == [], (label, rows)
+    # A readable list that cannot be trusted complete: its rows come back WITH
+    # the reason (a listed carrier is still deletable; absence proves nothing).
+    for label, extra in [("syncInProcess", {"syncInProcess": True}),
+                         ("hasMore", {"hasMore": True})]:
+        reply = {"list": [_srow(1, 5)], **extra}
+        rows, why = of_paging.schedules_in_window(_Cal([], reply=reply), 30, today=_TODAY)
+        assert why and label in why, (label, why)
+        assert [r["entity"]["id"] for r in rows] == [1], (label, rows)
+
+
+def case_schedules_bad_chunk_reads_on():
+    """A bad chunk does not stop the walk: the far chunks (where a carrier
+    sits) are still read and returned, with the reason."""
+    class _Syncing(_Cal):
+        def schedules(self, **kw):
+            reply = super().schedules(**kw)
+            if kw["publish_date"] <= (_TODAY + timedelta(days=8)).isoformat() <= kw["publish_date_end"]:
+                reply["syncInProcess"] = True
+            return reply
+    rows, why = of_paging.schedules_in_window(_Syncing([_srow(1, 4), _srow(2, 30)]), 30,
+                                              today=_TODAY)
+    assert why and "syncInProcess" in why, why
+    assert sorted(r["entity"]["id"] for r in rows) == [1, 2], rows
+
+
+class _MoreOn(_Cal):
+    """_Cal that adds hasMore:true to every reply `more(lo, hi)` picks."""
+    def __init__(self, rows, more):
+        super().__init__(rows)
+        self.more = more
+
+    def schedules(self, **kw):
+        reply = super().schedules(**kw)
+        if self.more(kw["publish_date"], kw["publish_date_end"]):
+            reply["hasMore"] = True
+        return reply
+
+
+def case_schedules_chunk_hasmore_rereads_by_day():
+    """W30 F31: a chunk that says hasMore is re-read day by day like a full
+    one; days that answer plainly make the listing complete."""
+    cal = _MoreOn([_srow(1, 3), _srow(2, 20)],
+                  lambda lo, hi: _span((lo, hi)) > 1)
+    rows, why = of_paging.schedules_in_window(cal, 30, today=_TODAY)
+    assert why is None, why
+    assert any(_span(w) == 1 for w in cal.windows), cal.windows
+    assert sorted(r["entity"]["id"] for r in rows) == [1, 2], rows
+
+
+def case_schedules_day_hasmore_is_gap():
+    """W30 F31: a one-day read that says hasMore is the gap (fail-closed)."""
+    bad = (_TODAY + timedelta(days=3)).isoformat()
+    cal = _MoreOn([_srow(1, 3), _srow(2, 20)], lambda lo, hi: lo <= bad <= hi)
+    rows, why = of_paging.schedules_in_window(cal, 30, today=_TODAY)
+    assert why and f"{bad}:" in why and "hasMore" in why, why
+    assert sorted(r["entity"]["id"] for r in rows) == [1, 2], rows
 
 
 def _span(w) -> int:

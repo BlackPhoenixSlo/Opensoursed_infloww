@@ -89,12 +89,16 @@ _FULL_AI_TEST_RETAIN_S = int(os.environ.get("FULL_AI_TEST_RETAIN_S", str(7 * 24 
 # (`jev_json`, `reply_json`) is NULLed, every other column kept (spec phase-04a › Retention). Never a
 # `sending` row (in flight) nor the newest row of its (account, fan, mode): the live loader folds it
 # (`asked`, `typo_state`, the saved scene). Batched by FULL_AI_JSON_BATCH rows a statement.
+# One key stays: a tease-priced row keeps `{"chat_tease": {"cents": N}}` (W30 #11), as `full_ai_test.is_tease`
+# reads it and the live loader folds every row of the Fan (`teases_sent_of`, Spacing), not a window.
 _FULL_AI_JSON_RETAIN_S = int(os.environ.get("FULL_AI_JSON_RETAIN_S", str(90 * 24 * 60 * 60)))
 _FULL_AI_JSON_BATCH = int(os.environ.get("FULL_AI_JSON_BATCH", "2000"))
+_TEASE_KEEP = ("CASE WHEN json_valid({c}) AND json_extract({c}, '$.chat_tease.cents') IS NOT NULL"
+               " THEN json_object('chat_tease', json_object('cents', json_extract({c}, '$.chat_tease.cents'))) END")
 _FULL_AI_JSON_NULL = (
-    "UPDATE ai_decisions SET jev_json = NULL, reply_json = NULL WHERE id IN ("
+    f"UPDATE ai_decisions SET jev_json = NULL, reply_json = {_TEASE_KEEP.format(c='reply_json')} WHERE id IN ("
     " SELECT d.id FROM ai_decisions d WHERE d.mode != 'test' AND d.created_at < :cutoff"
-    " AND d.status != 'sending' AND (d.jev_json IS NOT NULL OR d.reply_json IS NOT NULL)"
+    f" AND d.status != 'sending' AND (d.jev_json IS NOT NULL OR d.reply_json IS NOT {_TEASE_KEEP.format(c='d.reply_json')})"
     " AND EXISTS (SELECT 1 FROM ai_decisions n WHERE n.account_id = d.account_id AND n.fan_id = d.fan_id"
     " AND n.mode = d.mode AND (n.created_at, n.id) > (d.created_at, d.id))"
     " LIMIT :batch)")

@@ -17,14 +17,19 @@ Cases:
   case_bearer_raw_send_routes    — a bearer's raw POST to the mass / post routes → 403, OnlyFans never called.
   case_happy_path                — read → write with a `$pick...` reference → send with literal ids: each step done
                                    in order; the folder gets the referenced media id; the send carries its literal
-                                   media id and the post-chain text byte-for-byte;
+                                   media id and the post-chain text byte-for-byte; each step its own ended_at;
                                    the mass's OnlyFans id kept on its step; step open_urls (no separate report, in view or plan_status); one ultra_done notification linking the plan; audit: one
                                    row per inner write/send naming Creator A, none for /admin/ultra/plans*; a
                                    second OK → 409 (no second run).
   case_double_ok_race            — two OKs at once (asyncio.gather): one 200, one 409, one executor run (one post).
-  case_send_gate                 — toolbox.call of a send with a made-up plan_step, a pending step, an awaiting plan or
-                                   args other than the started step's → 403, OnlyFans never called; the started
-                                   step of a running plan with its exact args goes out.
+  case_ok_stale_digest_refused   — W30 C1: an awaiting row whose stored hash is not the plan-bound digest of its
+                                   stored plan (a pre-F8 row, or plan_json edited after the card): the OK, even
+                                   echoing that stored hash → 409 "propose it again"; no run, still awaiting_ok.
+  case_ok_commit_fails           — W30 F7: the OK's commit raises: no run, no _TASKS placeholder left; the plan is
+                                   still awaiting_ok and a second OK runs it.
+  case_send_gate                 — toolbox.call of a send with a made-up plan_step, a pending step, an awaiting plan,
+                                   args other than the started step's or another plan owner → 403, OnlyFans never
+                                   called; the started step of the owner's running plan with its exact args goes out.
   case_send_5xx_uncertain        — OF answers 500 (the mass route 502): the send is uncertain, its error one
                                    sentence ("OnlyFans answered 500: …"), the plan failed, later steps skipped,
                                    OnlyFans called exactly once (no retry).
@@ -40,8 +45,14 @@ Cases:
                                    stays `running` until a cancel (no executor here) marks it interrupted; no
                                    ultra_done notification.
   case_row_ended_elsewhere_stops_run — the row leaves running mid-step: the next save misses, the run stops
-                                   (no step 2 call), the row is never written back to running; no notification.
+                                   (no step 2 call), the row is never written back to running; no notification;
+                                   no end-save retried and logged as an error.
   case_expiry_never_over_running — a stale expiry read never turns a running row expired.
+  case_cancel_during_started_save — W30 F3: a cancel landing while the `started` save runs: the step is never
+                                   called (skipped), the plan cancelled, OnlyFans never called.
+  case_cancel_during_send_gate   — W30 C2: a cancel landing while toolbox's send gate reads the plan: the send
+                                   never goes out (OnlyFans never called), that step and the next skipped, the
+                                   plan cancelled.
   case_start_save_fails          — the `started` save raises: the step was never called → skipped, not uncertain.
   case_executor_crash            — the executor raises mid-step: the plan ends failed, the started step uncertain,
                                    the later step skipped (never left pending).
@@ -64,6 +75,7 @@ _harness.bootstrap()
 import asyncio  # noqa: E402
 import itertools  # noqa: E402
 import json  # noqa: E402
+import logging  # noqa: E402
 import time  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
@@ -235,7 +247,7 @@ async def case_propose_stores_post_chain() -> None:
         v = (await _get(c, pid)).json()
         assert out["expires_at"] == v["expires_at"] and out["steps"] == v["steps"], (out, v)
         assert out["open_url"] == "https://app.example.com" + ud.plan_path(pid)
-        assert v["source"] == "mcp" and v["sha256"] == ud.digest({"summary": "Halloween push", "steps": v["steps"]})
+        assert v["source"] == "mcp" and v["sha256"] == ud.digest({"summary": "Halloween push", "steps": v["steps"]}, pid)
         card = v["card"][0]
         assert card["effect"] == "send" and card["text"] == _CHAINED, card
         assert dict(map(tuple, card["rows"]))["Audience"] == "lists fans", card
@@ -340,6 +352,10 @@ async def case_happy_path() -> None:
         assert "report" not in v and [s["open_url"] for s in v["step_states"]][1:] == [
             "/growth/vault-pro", "/growth/smart-messages"], v["step_states"]
         assert v["step_states"][2]["result"] == {"id": 4242} and "result" not in v["step_states"][0], v
+        # W30 F14: each step's own end time (a report file's link counts from it, not from finished_at)
+        at = lambda x: datetime.fromisoformat(x.removesuffix("Z"))  # noqa: E731
+        ends = [at(s["ended_at"]) for s in v["step_states"]]
+        assert all(at(v["approved_at"]) <= e <= at(v["finished_at"]) for e in ends) and ends == sorted(ends), v
         st = await _tool(c, "plan_status", {"plan_id": pid})
         assert "report" not in st and st["step_states"] == v["step_states"], st
         rows = await _actions(since)
@@ -377,6 +393,56 @@ async def case_double_ok_race() -> None:
     assert runs == [pid] and v["status"] == "done" and [k for k, _ in OF.calls] == ["post"], (runs, v, OF.calls)
 
 
+async def case_ok_stale_digest_refused() -> None:
+    import hashlib
+    OF.reset()
+    plan = {"summary": "old row", "steps": [_post("a")]}
+    pid = "c" * 32
+    for sha in (hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                ud.digest({**plan, "summary": "the card showed this"}, pid)):
+        async with get_session() as s:
+            await s.execute(delete(UltraPlan).where(UltraPlan.id == pid))
+            s.add(UltraPlan(id=pid, owner_user_id=OWNER_A, source="mcp", plan_json=json.dumps(plan),
+                            plan_sha256=sha, status="awaiting_ok", created_at=datetime.utcnow(),
+                            step_states=json.dumps([{"id": "a", "state": "pending"}])))
+        async with _client() as c:
+            r = await _ok(c, pid, sha)
+            assert r.status_code == 409 and "propose it again" in r.text, r.text
+            assert (await _get(c, pid)).json()["status"] == "awaiting_ok"
+    assert pid not in ultra_run._TASKS and OF.calls == [], OF.calls
+    async with get_session() as s:
+        await s.execute(delete(UltraPlan).where(UltraPlan.id == pid))
+
+
+async def case_ok_commit_fails() -> None:
+    import contextlib
+    OF.reset()
+    real, opened = ultra_run.get_session, []
+
+    @contextlib.asynccontextmanager
+    async def commit_fails():  # approve's 2nd session (its flip) fails at commit; the 1st is its _row read
+        async with real() as s:
+            yield s
+            opened.append(1)
+            if len(opened) == 2:
+                raise RuntimeError("commit failed")
+    async with _client() as c:
+        pid = (await _propose(c, _post()))["plan_id"]
+        sha = (await _get(c, pid)).json()["sha256"]
+        ultra_run.get_session = commit_fails
+        try:
+            await ultra_run.approve(pid, OWNER_A, sha, toolbox.Creds(cookie=COOKIE_A["Cookie"]))
+            raise AssertionError("the commit's error must surface")
+        except RuntimeError:
+            pass
+        finally:
+            ultra_run.get_session = real
+        assert pid not in ultra_run._TASKS and (await _get(c, pid)).json()["status"] == "awaiting_ok"
+        assert (await _ok(c, pid, sha)).status_code == 200
+        v = await _until_final(c, pid)
+    assert v["status"] == "done" and [k for k, _ in OF.calls] == ["post"], (v, OF.calls)
+
+
 async def case_send_gate() -> None:
     OF.reset()
     tool, creds = ud.TOOLS["mass_send"], toolbox.Creds(cookie=COOKIE_A["Cookie"])
@@ -388,7 +454,7 @@ async def case_send_gate() -> None:
         async with get_session() as s:
             await s.execute(delete(UltraPlan).where(UltraPlan.id == pid))
             s.add(UltraPlan(id=pid, owner_user_id=OWNER_A, source="mcp", plan_json=json.dumps(plan),
-                            plan_sha256=ud.digest(plan), status=status,
+                            plan_sha256=ud.digest(plan, pid), status=status,
                             step_states=json.dumps([{"id": "mass", "state": state}])))
     try:
         for step, status, state, a in [("x", "running", "started", args), (f"{pid}:mass", "running", "pending", args),
@@ -396,11 +462,14 @@ async def case_send_gate() -> None:
                                        (f"{pid}:mass", "running", "started", {**args, "text": "other"}),
                                        (f"{pid}:other", "running", "started", args)]:
             await put(status, state)
-            r = await toolbox.call(tool, a, creds, plan_step=step)
+            r = await toolbox.call(tool, a, creds, plan_step=step, plan_owner=OWNER_A)
             assert r["error"] == {"status": 403, "detail": toolbox.SEND_REFUSED}, (step, status, state, r)
-        assert OF.calls == [], OF.calls
         await put("running", "started")
-        r = await toolbox.call(tool, args, creds, plan_step=f"{pid}:mass")
+        for owner in (None, "someone-else"):  # W30 F18: the started step of another owner's plan (or no owner)
+            r = await toolbox.call(tool, args, creds, plan_step=f"{pid}:mass", plan_owner=owner)
+            assert r["error"] == {"status": 403, "detail": toolbox.SEND_REFUSED}, (owner, r)
+        assert OF.calls == [], OF.calls
+        r = await toolbox.call(tool, args, creds, plan_step=f"{pid}:mass", plan_owner=OWNER_A)
         assert "error" not in r and r["id"] == 4242, r
         assert [k for k, _ in OF.calls] == ["mass"], OF.calls
     finally:
@@ -560,11 +629,31 @@ async def case_end_save_fails() -> None:
         assert pid not in ultra_run._CANCEL
 
 
+class _Errors(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.ERROR)
+        self.lines: list[str] = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+
 async def case_row_ended_elsewhere_stops_run() -> None:
     """m1: the row leaves running while step 1 runs (ended elsewhere): the next per-step save misses, the run
-    stops before step 2's call and never writes the row back to running; no notification."""
+    stops before step 2's call and never writes the row back to running; no notification; W30 F16: no second
+    save attempt logged as an error."""
     OF.reset()
     OF.post_sleep = 0.5
+    errors = _Errors()
+    ultra_run.log.addHandler(errors)
+    try:
+        await _ended_elsewhere()
+    finally:
+        ultra_run.log.removeHandler(errors)
+    assert not errors.lines, errors.lines
+
+
+async def _ended_elsewhere() -> None:
     async with _client() as c:
         pid = (await _propose(c, _post(), _mass()))["plan_id"]
         assert (await _ok(c, pid, (await _get(c, pid)).json()["sha256"])).status_code == 200
@@ -585,7 +674,7 @@ async def case_expiry_never_over_running() -> None:
     plan = {"summary": "raced", "steps": [_post("a")]}
     async with get_session() as s:
         s.add(UltraPlan(id="e" * 32, owner_user_id=OWNER_A, source="mcp", plan_json=json.dumps(plan),
-                        plan_sha256=ud.digest(plan), status="running", created_at=datetime.utcnow() - timedelta(minutes=11),
+                        plan_sha256=ud.digest(plan, "e" * 32), status="running", created_at=datetime.utcnow() - timedelta(minutes=11),
                         step_states=json.dumps([{"id": "a", "state": "started"}])))
     real, ud.expired = ud.expired, lambda *_a: True  # the stale read: it saw awaiting_ok
     try:
@@ -595,6 +684,44 @@ async def case_expiry_never_over_running() -> None:
     assert row.status == "running" and row.finished_at is None, row.status
     async with get_session() as s:
         assert (await s.get(UltraPlan, "e" * 32)).status == "running"
+
+
+async def case_cancel_during_started_save() -> None:
+    OF.reset()
+    real = ultra_run._save
+
+    async def save(pid, states, status="running"):
+        await real(pid, states, status)
+        if any(s["state"] == "started" for s in states) and pid not in ultra_run._CANCEL:
+            await ultra_run.cancel(pid, OWNER_A)  # lands before the executor reads its next line
+    async with _client() as c:
+        pid = (await _propose(c, _post(), _mass()))["plan_id"]
+        ultra_run._save = save
+        try:
+            assert (await _ok(c, pid, (await _get(c, pid)).json()["sha256"])).status_code == 200
+            v = await _until_final(c, pid)
+        finally:
+            ultra_run._save = real
+    assert v["status"] == "cancelled" and _states(v) == ["skipped", "skipped"] and OF.calls == [], (v, OF.calls)
+
+
+async def case_cancel_during_send_gate() -> None:
+    OF.reset()
+    real = toolbox._plan_send
+
+    async def gate(t, args, plan_step, owner):
+        ok = await real(t, args, plan_step, owner)
+        await ultra_run.cancel(plan_step.partition(":")[0], OWNER_A)  # lands while the gate's read is awaited
+        return ok
+    async with _client() as c:
+        pid = (await _propose(c, _post(), _mass()))["plan_id"]
+        toolbox._plan_send = gate
+        try:
+            assert (await _ok(c, pid, (await _get(c, pid)).json()["sha256"])).status_code == 200
+            v = await _until_final(c, pid)
+        finally:
+            toolbox._plan_send = real
+    assert v["status"] == "cancelled" and _states(v) == ["skipped", "skipped"] and OF.calls == [], (v, OF.calls)
 
 
 async def case_start_save_fails() -> None:
@@ -667,7 +794,7 @@ async def case_restart_recovery() -> None:
     states = [{"id": "a", "state": "done"}, {"id": "b", "state": "started"}, {"id": "c", "state": "pending"}]
     async with get_session() as s:
         s.add(UltraPlan(id="f" * 32, owner_user_id=OWNER_A, source="mcp", plan_json=json.dumps(plan),
-                        plan_sha256=ud.digest(plan), status="running", step_states=json.dumps(states)))
+                        plan_sha256=ud.digest(plan, "f" * 32), status="running", step_states=json.dumps(states)))
     assert await ultra_run.recover() >= 1
     async with _client() as c:
         v = (await _get(c, "f" * 32)).json()

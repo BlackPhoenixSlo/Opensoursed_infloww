@@ -133,10 +133,9 @@ def edge(request: Request) -> tuple[Addr | str, str]:
     docker network can spoof the header. Set TRUSTED_PROXIES to the proxies'
     own addresses to close that gap.
     """
-    peer = request.client.host if request.client else "unknown"
-    hop = _proxied_hop(request, peer)
+    peer, hop, at_edge = _hop(request)
     country = "XX"
-    if _in(hop, EDGE_PROXIES):
+    if at_edge:
         c = request.headers.get("cf-ipcountry", "").strip().upper()
         if valid_country(c):
             country = c
@@ -146,6 +145,19 @@ def edge(request: Request) -> tuple[Addr | str, str]:
 
 def client_address(request: Request) -> Addr | str:
     return edge(request)[0]
+
+
+def from_edge(request: Request) -> bool:
+    """The hop our proxies saw is in EDGE_PROXIES, so that CDN's location headers (CF-IPCountry, ...) may be
+    believed: `edge`'s rule for its country."""
+    return _hop(request)[2]
+
+
+def _hop(request: Request) -> tuple[str, Addr | None, bool]:
+    """(socket peer, the hop our proxies saw, that hop is in EDGE_PROXIES)."""
+    peer = request.client.host if request.client else "unknown"
+    hop = _proxied_hop(request, peer)
+    return peer, hop, _in(hop, EDGE_PROXIES)
 
 
 def trusted_peer(request: Request) -> bool:

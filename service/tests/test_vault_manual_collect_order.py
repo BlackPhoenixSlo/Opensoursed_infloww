@@ -13,7 +13,7 @@ the page cap still ends capped (not complete); storyboards warm newest first;
 pause after COLLECT_PAUSE_EVERY new items (status "paused", OF idle), continue
 resumes, stop → storyboards warmed + done, not complete; an unanswered pause
 auto-stops; continue/stop 409 when nothing is paused; prepare content's harvest
-never pauses.
+never pauses; a still whose fetch came back empty is fetched again (W30 F19).
 
 Run: ./venv/bin/python service/tests/test_vault_manual_collect_order.py   (exit 0 = pass)
 """
@@ -49,10 +49,14 @@ _JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
 _fetches: list[str] = []
 _warmed: list[str] = []
 _FAIL_ONCE: set[str] = set()   # urls whose next fetch raises (a CDN blow-up mid-warm)
+_EMPTY_ONCE: set[str] = set()  # urls whose next fetch yields nothing (an expired signature's 403)
 
 
 def _fake_fetch(client, url):
     _fetches.append(url)
+    if url in _EMPTY_ONCE:
+        _EMPTY_ONCE.discard(url)
+        return None
     if url in _FAIL_ONCE:
         _FAIL_ONCE.discard(url)
         raise RuntimeError("cdn reset (fake)")
@@ -166,9 +170,9 @@ async def case_call_order_folders_then_newest_until_met():
     assert of.calls == [
         ("lists", 50, 0),                   # folder list
         ("media", 100, 0, 7, "desc"),       # folder 7 whole (25 items; 8 empty, posts built-in)
-        ("media", 100, 0, None, "desc"),    # newest pages … OF says no more on the third
-        ("media", 100, 100, None, "desc"),
-        ("media", 100, 200, None, "desc"),
+        ("media", 100, 0, None, "desc"),    # newest pages (step 99: one shared id) … no more on the third
+        ("media", 100, 99, None, "desc"),
+        ("media", 100, 198, None, "desc"),
     ], of.calls
     assert (run.status, run.phase, run.error) == ("done", "done", None), (run.status, run.phase, run.error)
     assert (run.total_seen, run.upserted) == (250, 250), "an item counted twice"
@@ -187,14 +191,14 @@ async def case_call_order_folders_then_newest_until_met():
 
 
 async def case_rounds_interleave_and_cursors_meet():
-    """1300 items, folder 7 = 130 (two pages): folder whole → desc 0-400 → asc 0 →
-    desc 500-900 → asc 100 → desc 1000 → desc 1100 (ids 200..101) meets asc."""
+    """1300 items, folder 7 = 130 (two pages): folder whole → desc pages 0-4 → asc 0 →
+    desc pages 5-9 → asc 99 → desc 990 → desc 1089 (ids 211..112) meets asc (All cursors step 99)."""
     of, run = await _collect("accR", 1300)
     assert [c[2] for c in of.calls if c[0] == "media" and c[3] == 7] == [0, 100], of.calls
     assert of.calls.index(("media", 100, 100, 7, "desc")) < of.calls.index(("media", 100, 0, None, "desc"))
-    want = ([("desc", o) for o in range(0, 500, 100)] + [("asc", 0)]
-            + [("desc", o) for o in range(500, 1000, 100)] + [("asc", 100)]
-            + [("desc", 1000), ("desc", 1100)])
+    want = ([("desc", o) for o in range(0, 495, 99)] + [("asc", 0)]
+            + [("desc", o) for o in range(495, 990, 99)] + [("asc", 99)]
+            + [("desc", 990), ("desc", 1089)])
     assert _all_calls(of) == want, _all_calls(of)
     assert (run.status, run.error, run.total_seen) == ("done", None, 1300), (run.status, run.error)
     assert (await api.cache_summary(account_id="accR"))["complete"] is True
@@ -206,7 +210,7 @@ async def case_each_batch_on_disk_before_the_next_call():
     assert of.on_disk_at_call[1] == set(), "stills before any media page"
     assert of.on_disk_at_call[2] == folder7, "folder not usable before the newest pages"
     assert of.on_disk_at_call[3] == folder7 | set(range(151, 251)), "newest 100 not warmed before the next"
-    assert of.on_disk_at_call[4] == folder7 | set(range(51, 251)), "second page not warmed before the third"
+    assert of.on_disk_at_call[4] == folder7 | set(range(52, 251)), "second page not warmed before the third"
 
 
 async def case_page_cap_is_not_a_full_walk():
@@ -216,7 +220,7 @@ async def case_page_cap_is_not_a_full_walk():
         of, run = await _collect("accCap", 350)
     finally:
         api._MAX_PAGES = saved
-    assert _all_calls(of) == [("desc", 0), ("desc", 100)], _all_calls(of)
+    assert _all_calls(of) == [("desc", 0), ("desc", 99)], _all_calls(of)
     assert run.status == "done" and run.error == vault_runs.capped_error(2), run.error
     s = await api.cache_summary(account_id="accCap")
     assert s["complete"] is False, s
@@ -233,7 +237,7 @@ async def case_folder_list_failure_does_not_stop_the_walk():
     head start, never the Collect."""
     of, run = await _collect("accL", 250, fail_lists=True)
     assert of.calls == [("lists", 50, 0)] + [
-        ("media", 100, o, None, "desc") for o in (0, 100, 200)], of.calls
+        ("media", 100, o, None, "desc") for o in (0, 99, 198)], of.calls
     assert (run.status, run.error, run.total_seen) == ("done", None, 250), (run.status, run.error)
     assert (await api.cache_summary(account_id="accL"))["complete"] is True
 
@@ -246,7 +250,17 @@ async def case_failed_warm_is_retried_by_the_walk():
     assert run.status == "done" and run.total_seen == 250, (run.status, run.error)
     assert _fetches.count("https://cdn.example/accW/t20.jpg") == 2, "failed thumb never retried"
     assert vault_stills.thumb_path("accW", 20).is_file()
-    assert ("media", 100, 200, None, "desc") in of.calls
+    assert ("media", 100, 198, None, "desc") in of.calls
+
+
+async def case_empty_warm_is_retried_by_the_walk():
+    """W30 F19: a still whose fetch came back empty (nothing written) is not counted as downloaded:
+    the newest walk fetches it again."""
+    _EMPTY_ONCE.add("https://cdn.example/accE/t20.jpg")   # 20: new on folder 7's page
+    of, run = await _collect("accE", 250)
+    assert run.status == "done", (run.status, run.error)
+    assert _fetches.count("https://cdn.example/accE/t20.jpg") == 2, "empty thumb never retried"
+    assert vault_stills.thumb_path("accE", 20).is_file()
 
 
 async def case_pause_every_2000_then_continue():
@@ -288,7 +302,7 @@ async def case_stop_warms_and_is_not_a_full_walk():
         api.COLLECT_PAUSE_EVERY = saved
     run = await _run(r["run_id"])
     assert len(of.calls) == n_calls, "OF called after stop"
-    assert (run.status, run.phase) == ("done", "done"), (run.status, run.phase)
+    assert (run.status, run.phase) == ("done", "stopped"), (run.status, run.phase)   # stopped: not a walk (F2)
     assert run.error == f"stopped by operator at {st['total_seen']} items", run.error
     # Folder 7 (100) + desc 0-200 (1000..701) → 370 new at the pause: clips 1000 and 995, not 3.
     assert _warmed == [f"https://cdn.example/{aid}/v{i}.mp4" for i in (1000, 995)], _warmed

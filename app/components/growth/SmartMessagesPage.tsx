@@ -12,7 +12,7 @@
  * - The header row (`InflowwPageHeader`): the page title, and at the row's
  *   right the bundle's right box (#18). On Automated Messages the creator
  *   column (`CreatorRail`, as Smart lists') sits left of the tab's body and
- *   picks the Creator every read and write of that tab uses; Mass Messages has
+ *   picks the Creator every read and write of that tab uses, Mass Auto Unsend's column the same pick; Mass Messages has
  *   none, as the panels there list every active Creator and take no Creator. The right box holds "Learn" (Not
  *   wired: the bundle opens Infloww's own blog) and "New Message", which opens the one
  *   "Create message" pop-up (`CreateMessagePopUp`), whose Automated messages
@@ -57,9 +57,10 @@ export default function SmartMessagesPage({
   automatedMessageCards?: ReactNode;
 }) {
   const accounts = useActiveAccounts();
-  // The column's pick, else the first active Creator.
+  // The column's pick while active, else the first active Creator. One pick for every creator column
+  // (Automated, Mass Auto Unsend) and New Message, so a composer never opens on a Creator the page isn't showing.
   const [picked, setPicked] = useState<string | null>(null);
-  const accountId = picked ?? accounts[0]?.id ?? null;
+  const accountId = accounts.some((a) => a.id === picked) ? picked : accounts[0]?.id ?? null;
 
   const bodies: Record<TabKey, ReactNode> = {
     automated: (
@@ -68,7 +69,7 @@ export default function SmartMessagesPage({
       </CreatorRail>
     ),
     mass: <MassMessagesSection />,
-    unsend: <MassAutoUnsendSection />,
+    unsend: <MassAutoUnsendSection accountId={accountId} onPick={setPicked} />,
     scheduled: <ScheduledSection />,
   };
   const [tab, setTab] = useState<TabKey>("automated");

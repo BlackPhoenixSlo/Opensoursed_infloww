@@ -17,8 +17,9 @@ import type { BundleForm, BundleSettings } from "@/lib/ofMirrorOffers";
 import type { Bundle } from "@/lib/ofMirrorSubscription";
 import { SUB_ROUTES } from "@/lib/ofSubRoutes";
 
-import { relay } from "@/lib/relay";
+import { relay, RelayError } from "@/lib/relay";
 import type { LinkMetaPayload } from "@/components/growth/LinkMetaFields";
+import { landed } from "@/components/growth/createPromotionForm";
 
 // ── Free-trial links ──────────────────────────────────────────────────
 
@@ -423,22 +424,19 @@ export interface PromoCampaign {
   /** How many times it has been re-armed so far. */
   reactivate_count: number;
   last_reactivated_at: string | null;
-  /** Why Inflowwww turned Keep running off (service/promo_create_guard.OFF_TEXT's keys), until a re-tick. */
-  keep_warning?: string | null;
-  /** What holds Keep running now: unknown (a create OnlyFans has not shown yet), backoff (after a failed create),
-   *  budget (3 re-creates an hour, 8 a day), fence (this server does not create promos: the owner sets it up) or
-   *  retick (ticked before this server's setup or the Free-trial limit: tick Keep running again), switch (Re-create at
-   *  90% filled is off on this server) or clock (OnlyFans' clock is off from ours: `keep_wait` says so). */
+  /** Only "switch" is read: Re-create at 90% filled is off on this server (the rest of what holds Keep running is in
+   *  `keep_lines`). */
   keep_blocked?: string | null;
   /** A Free trial's re-creates left before Keep running turns off (null: no limit). */
   recreates_left?: number | null;
-  /** When a backoff or budget hold ends (relay UTC, zone-less). */
-  keep_blocked_until?: string | null;
   /** Re-create at 90% filled: the second tick under Keep running (acts only on a Claim cap of 10 or more). */
   preempt?: boolean;
   /** Why the last run did not re-create the live Kept promo early (service/promo_keep_decide wait_reason; null: not
    *  waiting). */
   keep_wait?: string | null;
+  /** The card's finished lines (service/promotions_api.keep_lines): `lead` + " until <until>" + ": " + `text`, or just
+   *  `text` with no lead; `off`: someone must act. */
+  keep_lines: { lead: string | null; text: string; off: boolean; until: string | null }[];
   created_at: string | null;
   source: "mirror" | "onlyfans";
   /** Revenue and its fans, over every OF promo the campaign was re-armed as. */
@@ -515,6 +513,8 @@ export function useCreatePromotion(accountId: string | null) {
     mutationFn: (body) =>
       relay.post<PromoCreated>("/admin/promotions", { account_id: accountId, ...body }),
     onSuccess: () => invalidatePromos(qc, accountId),
+    // 409 create_landed: the earlier create is on OnlyFans — the list shows it.
+    onError: (e) => { if (e instanceof RelayError && landed(e.body)) void invalidatePromos(qc, accountId); },
   });
 }
 
@@ -522,7 +522,8 @@ export function useDeletePromotion(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, number>({
     mutationFn: (id) => relay.delete(`/admin/promotions/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: [PROMO_KEY, accountId] }),
+    // Settled, not success: the relay unticks a Kept row before OF's delete, which may fail.
+    onSettled: () => invalidatePromos(qc, accountId),
   });
 }
 

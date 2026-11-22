@@ -375,7 +375,8 @@ async def chatting_stats(
     The Automation sentinel and the Unattributed sales get no row. Under
     Role enforcement a chatter whose Data scope is not "all" gets only its
     own row (`permissions.scoped_employee_ids`), as `per_employee`, and
-    ``chatter_only=true`` keeps the Chatter role's (`permissions.role_holders`).
+    ``chatter_only=true`` keeps the Chatter role's (`permissions.role_holders`)
+    and answers that roster as `chatter_ids` (an owner session; else null).
 
     `bucket` (hour, day, week or month) answers the charts instead: the
     window's time series (`_chatting_series`), of every Employee in scope
@@ -464,7 +465,10 @@ async def chatting_stats(
             "fans_chatted_per_clocked_hour": hourly(row["fans_chatted"]),
         })
     out.sort(key=lambda x: x["sales_cents"], reverse=True)
-    return {"employees": out, "attribution_fallback": fallback}
+    # chatter_only: the Chatter role's whole roster (active or not), which the Timesheet's scheduled hours filter by;
+    # owner sessions only, as the Timesheet is.
+    roster = sorted(own) if chatter_only and own is not None and not is_chatter else None
+    return {"employees": out, "attribution_fallback": fallback, "chatter_ids": roster}
 
 
 # A chart point's figures: Sales, and Message statistics' four lines.

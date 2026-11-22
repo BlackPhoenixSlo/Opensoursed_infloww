@@ -30,10 +30,11 @@ import fans as fans_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, AutomationRule, Blacklist, Fan, LifecycleMessageClaim, Message,
-    ScheduledJob, SkipList, SubscriberSnapshot, Transaction,
+    ScheduledJob, SkipList, SubscriberSnapshot, Transaction, VaultItem,
 )
 import automation_executor as executor  # noqa: E402
 import automations.lifecycle_messages as lm  # noqa: E402
+from automations import _send_failure  # noqa: E402
 import lifecycle_message_config_api as api  # noqa: E402
 
 TEXT = "hey {name}, don't go 🥺"
@@ -75,6 +76,8 @@ class FakeOF:
         self.price: float | None = None
         self.refuse: set[int] = set()
         self.discount_error: str | None = None
+        self.reject_media = False         # refuse any media (OF's `mediaFiles` 400)
+        self.byid: list[int] = []         # by-id vault reads; every id reads deleted (404)
         self._next_id = 9_100_000_000_000
 
     def follow_user(self, fan_id):
@@ -102,6 +105,8 @@ class FakeOF:
         self.calls.append("send")
         if int(chat_id) in self.refuse:
             raise RuntimeError("400 Cannot send message to this user")
+        if self.reject_media and kw.get("media_files"):
+            raise _OFStatus(400, {"errors": {"mediaFiles": ["not found"]}})
         self._next_id += 1
         self.sent.append((int(chat_id), text))
         self.kw.append(kw)
@@ -116,6 +121,18 @@ class FakeOF:
         if self.price is not None:
             u["subscribePrice"] = self.price
         return u
+
+    def vault_media_by_id(self, media_id):
+        self.byid.append(int(media_id))
+        raise _OFStatus(404)
+
+
+class _OFStatus(Exception):
+    """An OF error carrying its status (and JSON body) on `.response`."""
+    def __init__(self, status: int, body=None):
+        super().__init__(f"{status}")
+        resp = type("R", (), {"status_code": status, "json": staticmethod(lambda: body)})
+        self.response = resp
 
 
 PURPOSES: list[str | None] = []
@@ -529,6 +546,29 @@ def case_media_a_price_and_auto_unsend_ride_on_the_message():
         assert len(jobs) == 1 and json.loads(jobs[0].payload_json) == {
             "targets": [{"message_id": msg_id, "fan_id": 62}]}, jobs
         assert jobs[0].run_at > datetime.utcnow() + timedelta(minutes=59), jobs[0].run_at
+    _sandboxed(go)
+
+
+def case_refused_media_is_rechecked_once_and_a_deleted_one_leaves_the_vault():
+    """OF refuses the media (deleted there): the text goes alone, and one by-id
+    re-check (404, deduped across fans) stamps the mirror row removed."""
+    async def go():
+        fake = _use_fake()
+        fake.reject_media = True
+        aid = "lm_deleted_media"
+        await _seed_account(aid)
+        async with get_session() as s:
+            s.add(VaultItem(account_id=aid, media_id=806, kind="photo",
+                            created_at=datetime.utcnow()))
+        await _seed_fan(aid, 65, birthday=_today_mmdd())
+        await _seed_fan(aid, 66, birthday=_today_mmdd())
+        await _enable(aid, lm.BIRTHDAY, media_ids=[806], price_cents=1200)
+        res = await _run(lm.BIRTHDAY, aid)
+        await asyncio.gather(*list(_send_failure._RECHECK_TASKS))   # the re-check runs detached
+        assert res.get("sent") == 2 and fake.kw == [{"media_files": []}] * 2, (res, fake.kw)
+        assert fake.byid == [806], fake.byid
+        async with get_session() as s:
+            assert (await s.get(VaultItem, (aid, 806))).removed_at is not None
     _sandboxed(go)
 
 
@@ -1248,6 +1288,7 @@ _harness.run(
     case_frequency_once_greets_a_fan_once_ever_every_time_once_per_event,
     case_the_effective_and_expiry_dates_bound_what_is_sent,
     case_media_a_price_and_auto_unsend_ride_on_the_message,
+    case_refused_media_is_rechecked_once_and_a_deleted_one_leaves_the_vault,
     case_under_once_a_forced_test_is_never_held_back_and_never_counts,
     case_a_fan_who_owns_the_media_gets_the_text_alone_free,
     case_dry_run_sends_and_claims_nothing,

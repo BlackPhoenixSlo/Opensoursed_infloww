@@ -108,18 +108,25 @@ class _Sub:
     queue always gets single frames); `st` is its decaying events/s
     (ed.Stream), `open` the batch still taking events, `batches`/`coalesced`
     counters for /admin/events/stats. `tab`: an app tab's stream
-    (`is_app_tab`), whose clamp is Open-tab (`open_tab_accounts`)."""
+    (`is_app_tab`), whose clamp is Open-tab (`open_tab_accounts`). `readable`: the
+    Creators whose chats its role may read (None: every one; server.sse_events),
+    the rest get `chat_responded` without its `message` (`_for`). `ended`: it was handed a stream-ending frame
+    (ENDS_STREAM); nothing more is queued for it and its stream ends once the queue drains, whether or not that
+    frame survived an overflow."""
     __slots__ = ("q", "scope", "accounts", "agencies", "lost", "batching",
-                 "st", "open", "batches", "coalesced", "tab")
+                 "st", "open", "batches", "coalesced", "tab", "readable", "ended")
 
     def __init__(self, scope: str, accounts: frozenset[str] | None,
-                 agencies: frozenset[str], tab: bool = False):
+                 agencies: frozenset[str], tab: bool = False,
+                 readable: frozenset[str] | None = None):
         self.q: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAX)
         self.scope = scope
         self.accounts = accounts
         self.agencies = agencies
         self.tab = tab
+        self.readable = readable
         self.lost = False
+        self.ended = False
         self.batching = False
         self.st = ed.Stream(rate_at=time.monotonic())
         self.open: _Batch | None = None
@@ -211,10 +218,11 @@ async def subscribe(
 
 
 def _register(scope: str, accounts: frozenset[str] | None,
-              agencies: frozenset[str], tab: bool = False) -> _Sub:
+              agencies: frozenset[str], tab: bool = False,
+              readable: frozenset[str] | None = None) -> _Sub:
     global _loop
     _loop = asyncio.get_running_loop()
-    sub = _Sub(scope, accounts, agencies, tab)
+    sub = _Sub(scope, accounts, agencies, tab, readable)
     _subs[sub.q] = sub
     return sub
 
@@ -248,6 +256,12 @@ async def unsubscribe(scope: str, q: asyncio.Queue) -> None:
     _subs.pop(q, None)
 
 
+def ring_seq() -> int:
+    """The last seq the rings handed out: server.sse_events reads it before a session's grants, `sse_stream`'s
+    `granted_at`."""
+    return _ring.seq
+
+
 def subscriber_count(scope: str | None = None) -> int:
     """For health / debug."""
     return sum(1 for s in list(_subs.values()) if scope is None or s.scope == scope)
@@ -256,6 +270,18 @@ def subscriber_count(scope: str | None = None) -> int:
 def _wants(sub: _Sub, event: dict) -> bool:
     """Whether `event` may reach `sub` (events_decide "Routing")."""
     return ed.wants(sub.scope, sub.accounts, sub.agencies, event)
+
+
+def _for(sub: _Sub, frame: ew.Frame) -> ew.Frame:
+    """`frame` as `sub` gets it: a copy without the reply's `message` when its role may not read that
+    Creator's chats (ed.strips_message), else `frame` itself. Live (`_deliver`) and replay alike."""
+    if not ed.strips_message(sub.readable, frame):
+        return frame
+    out = ew.Frame(frame)
+    out["chat_responded"] = {k: v for k, v in frame["chat_responded"].items() if k != "message"}
+    out.eid = getattr(frame, "eid", None)
+    out.t = getattr(frame, "t", time.monotonic())
+    return out
 
 
 # ── Event ingest ────────────────────────────────────────────────────
@@ -333,6 +359,12 @@ _ANNOUNCE_MAX_AGE = timedelta(hours=48)
 _JS_SAFE_INT = 2 ** 53 - 1
 
 
+def js_safe_id(fid: int) -> int | str:
+    """A fan id as the browser keys its caches (app/lib/fanId.ts `fanIdFromParam`): the number while JS holds it
+    exactly, else the string (a Fansly snowflake past 2^53 reaches the browser rounded as a JSON number)."""
+    return fid if abs(fid) <= _JS_SAFE_INT else str(fid)
+
+
 async def announce_transaction(
     account_id: object, fan_id: int, *, occurred_at: datetime | None = None, capped: bool = False,
     **fields: object,
@@ -352,7 +384,7 @@ async def announce_transaction(
     try:
         fid = int(fan_id)
         await broadcast({
-            "transaction_recorded": {"fan_id": fid if abs(fid) <= _JS_SAFE_INT else str(fid), **fields},
+            "transaction_recorded": {"fan_id": js_safe_id(fid), **fields},
             "__account_id": str(account_id),
         })
     except Exception:
@@ -376,10 +408,13 @@ def _fanout(event: dict) -> int:
     ends = ed.first_key(frame) in ed.ENDS_STREAM
     delivered = 0
     for sub in list(_subs.values()):
-        if not _wants(sub, frame):
+        if sub.ended or not _wants(sub, frame):
             continue
         delivered += 1
         _deliver(sub, frame, ends, knobs)
+        # Synchronous: a reply published after a revocation never reaches this stream. Only sse_stream's
+        # subscribers (`batching`) end; a bare `subscribe()` queue never does.
+        sub.ended = ends and sub.batching
     return delivered
 
 
@@ -387,6 +422,7 @@ def _deliver(sub: _Sub, frame: ew.Frame, ends: bool, knobs: ed.Knobs) -> None:
     """Hand `frame` to `sub` as ed.decide_stream says: into its open batch, as
     a new batch when its rate calls for one, else on its own (see
     "Load-adaptive batching"). The open batch is the queue item itself."""
+    frame = _for(sub, frame)
     if not sub.batching:
         _put(sub, frame)
         return
@@ -628,6 +664,7 @@ def sse_stats() -> dict:
 async def sse_stream(
     request: Request, scope: str, *, accounts: frozenset[str] | None = None,
     agencies: frozenset[str] = frozenset(), last_event_id: str | None = None, tab: bool = False,
+    readable: frozenset[str] | None = None, granted_at: int | None = None,
 ) -> AsyncIterator[bytes]:
     """Yield SSE-formatted bytes for one subscriber. Handles:
       • Initial `: connected` comment so the browser's onopen fires.
@@ -645,15 +682,20 @@ async def sse_stream(
       • Ending after an `assignment_changed` it was sent: its Creators may
         have changed, and the browser's reconnect reads them afresh. The
         same after a `sessions_revoked`: a revoked cookie's reconnect is 401.
+        Once one was handed to it (`_Sub.ended`) nothing more is queued, and the
+        stream ends when its queue drains even if an overflow dropped that frame.
+      • Ending at once, before any frame, when one landed after `granted_at`
+        (`ring_seq` when the caller read the session's grants): those grants
+        may be stale, so the browser's reconnect reads them afresh.
       • Graceful unsubscribe when the client disconnects.
 
-    `accounts` / `agencies` / `tab`: see `subscribe`. The bytes: events_wire.
+    `accounts` / `agencies` / `tab`: see `subscribe`; `readable`: see `_Sub`. The bytes: events_wire.
     """
     import shared_refresher
     fresh_on = shared_refresher.ENABLED
     # Register and read the rings in one synchronous step: every event up to
     # the head is in the rings, every later one lands in the queue.
-    sub = _register(scope, accounts, agencies, tab)
+    sub = _register(scope, accounts, agencies, tab, readable)
     sub.batching = True
     # A replay is a burst by definition: batched whenever batching is on,
     # so a tab waking from idle applies it in one pass, not hundreds.
@@ -662,17 +704,19 @@ async def sse_stream(
                        sees_any=lambda key: ed.sees(sub.scope, sub.accounts, key, any_scope=True))
     q = sub.q
     try:
+        if granted_at is not None and ed.ended_since(_ring, granted_at, lambda f: _wants(sub, f)):
+            return
         yield ew.CONNECTED
         for e in replay:
             if isinstance(e, ed.Resync):
                 yield ew.RESYNC
             elif isinstance(e, ed.Emit):
-                yield ew.sse_out(e.frames)
+                yield ew.sse_out([_for(sub, f) for f in e.frames])
             elif isinstance(e, ed.Head):
                 yield ew.head(e.eid)
         last_beat = time.monotonic()
         while True:
-            if _closing or await request.is_disconnected():
+            if _closing or await request.is_disconnected() or (sub.ended and q.empty()):
                 return
             if sub.lost:
                 sub.lost = False

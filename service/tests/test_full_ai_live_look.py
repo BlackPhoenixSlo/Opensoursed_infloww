@@ -10,7 +10,7 @@ OF faked (`LiveOF` behind `ax._make_client`), Jev + Writers faked, temp DB.
   case_inbound_after_bubble_1     his DM after bubble 1: the rest still sends, `sent`
   case_check_at_index_1           a reason only at index 1: one bubble, `sent`, cut.index 1, rate turn given back
   case_pre_look_stands_down       reason on the pre-look: no Jev call, no row, no lease, `skipped`
-  case_loader_feeds_check         a loader's result is `look.facts[name]`; loaders run bubbles + 1 times
+  case_loader_feeds_check         a loader's result is `look.facts[name]`; loaders run 2n + 1 times (pre-look; look + gate per bubble)
   case_ppv_unbuilt                a `ppv` last bubble, no `ppv` sender: text bubbles go, the PPV does not,
                                   cut ppv_unbuilt, Offer columns NULL, offer_dropped stood_down
   case_ppv_sender_results         fake `ppv` sender: attributed -> no 2nd messages row; unknown -> no
@@ -39,7 +39,7 @@ from _full_ai_live_fixtures import (  # noqa: E402
     LiveOF, dm, leases, live_rows, out_rows, payload, seed_live, world,
 )
 import run_slot  # noqa: E402
-from automations import full_ai_live, full_ai_test  # noqa: E402
+from automations import full_ai_live, full_ai_look, full_ai_test  # noqa: E402
 from automations.full_ai_sell import Pick  # noqa: E402
 
 os.environ.setdefault("NANOGPT_API_KEY", "test-nanogpt-house-key")
@@ -62,13 +62,13 @@ def _patched(obj, name, value):
 @contextlib.contextmanager
 def _checks(*extra: tuple[int, tuple]):
     """Insert (index, tuple) entries into LAST_LOOK for the block."""
-    saved = list(full_ai_live.LAST_LOOK)
+    saved = list(full_ai_look.LAST_LOOK)
     for at, entry in extra:
-        full_ai_live.LAST_LOOK.insert(at, entry)
+        full_ai_look.LAST_LOOK.insert(at, entry)
     try:
         yield
     finally:
-        full_ai_live.LAST_LOOK[:] = saved
+        full_ai_look.LAST_LOOK[:] = saved
 
 
 @contextlib.contextmanager
@@ -93,12 +93,12 @@ def _reply(row) -> dict:
 
 
 def _at(name: str) -> int:
-    return [n for n, _l, _c in full_ai_live.LAST_LOOK].index(name)
+    return [n for n, _l, _c in full_ai_look.LAST_LOOK].index(name)
 
 
 async def case_last_look_order():
     names = ["off_switch", "fans_list", "who_owns", "human_yield", "overtaken", "offer_valid"]
-    assert [n for n, _l, _c in full_ai_live.LAST_LOOK] == names
+    assert [n for n, _l, _c in full_ai_look.LAST_LOOK] == names
     aid, fan, mid = "fa_lk_order", 701, 9101
     rid = await seed_live(aid)
     await dm(aid, fan, mid)
@@ -112,9 +112,9 @@ async def case_last_look_order():
         called.append(("overtaken", look.index))
         return "overtaken"
     with _checks((0, ("first", None, first))):
-        full_ai_live.LAST_LOOK[_at("overtaken")] = ("overtaken", None, never)
+        full_ai_look.LAST_LOOK[_at("overtaken")] = ("overtaken", None, never)
         res, w = await _run(aid, fan, mid, rid)
-    assert [n for n, _l, _c in full_ai_live.LAST_LOOK] == names
+    assert [n for n, _l, _c in full_ai_look.LAST_LOOK] == names
     assert await live_rows(aid) == []
     # Pre-look: "first" goes, "overtaken" (here: always a reason) stands the Turn down.
     assert res == {"skipped": "overtaken:overtaken"}, res
@@ -133,7 +133,7 @@ async def case_last_look_order():
         called.append(("loud", look.index))
         return "loud" if look.index >= 0 else None
     with _checks((0, ("first", None, first))):
-        full_ai_live.LAST_LOOK[_at("overtaken")] = ("loud", loud_load, loud)
+        full_ai_look.LAST_LOOK[_at("overtaken")] = ("loud", loud_load, loud)
         res, w = await _run(aid, fan, mid, rid)
     (row,) = await live_rows(aid)
     sd = _reply(row)["stood_down"]
@@ -224,8 +224,9 @@ async def case_loader_feeds_check():
         res, w = await _run(aid, fan, mid, rid)
     (row,) = await live_rows(aid)
     n = len(_reply(row)["parts"])
-    assert row.status == "sent" and len(loads) == n + 1 == w.of.calls + 1, (loads, n)
-    assert seen == [{"index": i, "sent": max(i, 0)} for i in range(-1, n)], seen
+    # The pre-look once, then each bubble twice: its look and the write gate's (`gate` runs every slot).
+    assert row.status == "sent" and n == w.of.calls and len(loads) == 2 * n + 1, (loads, n)
+    assert seen == [{"index": -1, "sent": 0}] + [{"index": i, "sent": i} for i in range(n) for _ in "lg"], seen
 
 
 async def case_ppv_unbuilt():

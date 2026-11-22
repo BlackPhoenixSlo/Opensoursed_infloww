@@ -4,7 +4,9 @@
 The switch (runtime_switches, default off) gates every write route the effort added (server._OFM_WRITES):
 off, each answers 404 before any OF call, as does the Mirror's probe GET /api/of/ofm-writes; on, each
 reaches the (faked) OF client and the probe answers {"on": true}. PATCH /users/me takes `avatar`/`header`
-only while it is on. OF is faked (`server._get_client`): no request leaves the process.
+only while it is on. Per Creator: on for a Creator = env on, not forced off box-wide, and that Creator not forced off
+by its owner (PUT /admin/ofm-writes/{id}); the probe answers for the request's Creator. OF is faked
+(`server._get_client`): no request leaves the process.
 
 Run:  ./venv/bin/python service/tests/test_ofm_new_writes.py
 """
@@ -23,6 +25,7 @@ import server  # noqa: E402
 
 _IDS = fx.seed_two_agencies()
 A = _IDS["creator_a"]
+B = _IDS["creator_b"]
 SWITCH = "OFM_NEW_WRITES_ENABLED"
 PROBE = "/api/of/ofm-writes"
 PNG_1PX = bytes.fromhex(
@@ -109,8 +112,46 @@ def _fake_of():
         server._get_client, server._resolve_account_id = get, resolve
 
 
-def _send(client, method, path, kw):
-    return client.request(method, path, headers={"X-Account-Id": A}, **kw)
+def _send(client, method, path, kw, aid=A):
+    return client.request(method, path, headers={"X-Account-Id": aid}, **kw)
+
+
+@contextlib.contextmanager
+def _fake_of_any_creator():
+    """OF faked; the request's Creator is its X-Account-Id, ownership-checked as `_resolve_account_id` does (the
+    fixture's Creators have no registry meta, so the real one 404s them)."""
+    fake = _FakeOF()
+    get, resolve = server._get_client, server._resolve_account_id
+
+    def _resolve(req):
+        aid = req.headers["x-account-id"]
+        server.assert_account_owned(aid)
+        return aid
+    server._get_client = lambda *_a, **_k: fake
+    server._resolve_account_id = _resolve
+    try:
+        yield fake
+    finally:
+        server._get_client, server._resolve_account_id = get, resolve
+
+
+@contextlib.contextmanager
+def _global_off():
+    """Settings › System's box-wide force-off (the cached override), Creator rows kept."""
+    saved = runtime_switches._overrides
+    runtime_switches._overrides = {**saved, SWITCH: {"value": False, "updated_at": "t", "updated_by": "x"}}
+    try:
+        yield
+    finally:
+        runtime_switches._overrides = saved
+
+
+def _probe(client, aid):
+    return client.get(PROBE, headers={"X-Account-Id": aid}).status_code
+
+
+def _force(client, aid, off):
+    return client.put(f"/admin/ofm-writes/{aid}", json={"forced_off": off})
 
 
 def case_switch_defaults_off():
@@ -213,6 +254,24 @@ def case_security_patch_takes_fully_private_only_when_on():
         assert fake.calls == ["patch_security_settings"], fake.calls
 
 
+def case_inline_new_key_read_asks_the_creator_only_when_it_matters():
+    """server._new_writes_for (follow-up #11): the request's Creator is resolved only for a body with a new key (or
+    `ask`, PATCH /users/me's formatted Bio), and only once the switch is on box-wide."""
+    asked = []
+    saved = server._current_aid
+    server._current_aid = lambda: asked.append(1) or A
+    keys = frozenset({"isPrivate"})
+    try:
+        with _switch("1"):
+            assert server._new_writes_for({"showPostsTips": True}, keys) is False and asked == []
+            assert server._new_writes_for({"isPrivate": True}, keys) is True and asked == [1]
+            assert server._new_writes_for({"about": "<b>x</b>"}, keys, ask=True) is True and asked == [1, 1]
+        with _switch(None):
+            assert server._new_writes_for({"isPrivate": True}, keys) is False and asked == [1, 1]
+    finally:
+        server._current_aid = saved
+
+
 def case_env_turns_it_on_and_the_db_override_can_only_force_it_off():
     """Panel D30: a Settings › System click must not enable live writes on a client box; it can still stop them."""
     sw = runtime_switches.BY_NAME[SWITCH]
@@ -234,6 +293,160 @@ def case_env_turns_it_on_and_the_db_override_can_only_force_it_off():
                 assert runtime_switches.describe(SWITCH)["effective"] is want, (env, override)
     finally:
         runtime_switches._overrides = saved
+
+
+def case_per_creator_env_off_refuses_every_creator_and_no_override_enables():
+    owner_a, owner_b = fx.login_owner("agency_a_owner"), fx.login_owner("agency_b_owner")
+    with _switch(None), _fake_of_any_creator() as fake:
+        assert (_probe(owner_a, A), _probe(owner_b, B)) == (404, 404)
+        r = _force(owner_a, A, False)   # clearing a force-off never turns it on
+        assert r.status_code == 200 and r.json()["on"] is False and r.json()["server_on"] is False, r.text
+        assert _probe(owner_a, A) == 404
+        assert _send(owner_a, "DELETE", "/api/of/v2/sessions", {}).status_code == 404
+        assert fake.calls == [], fake.calls
+    sw = runtime_switches.BY_NAME[SWITCH]
+    assert sw.off_only
+    for bad in ((True, A), (False, "")):   # a Creator row only ever forces off; a Creator is named
+        try:
+            _run(runtime_switches.set_override(SWITCH, bad[0], by="t", account_id=bad[1]))
+            raise AssertionError(f"{bad} must be refused")
+        except ValueError:
+            pass
+    try:
+        _run(runtime_switches.set_override("FULL_AI_CHAT_OFF", True, by="t", account_id=A))
+        raise AssertionError("a switch that is not off_only has no Creator row")
+    except ValueError:
+        pass
+
+
+def case_per_creator_force_off_refuses_that_creator_only():
+    owner_a, owner_b = fx.login_owner("agency_a_owner"), fx.login_owner("agency_b_owner")
+    with _switch("1"), _fake_of_any_creator() as fake:
+        try:
+            assert (_probe(owner_a, A), _probe(owner_b, B)) == (200, 200)
+            r = _force(owner_a, A, True)
+            assert r.status_code == 200, r.text
+            v = r.json()
+            assert (v["forced_off"], v["on"], v["server_on"], v["changed_by"]) == (True, False, True, "agency_a_owner"), v
+            assert v["changed_at"].endswith("Z") and "+" not in v["changed_at"], v   # naive UTC, sent as UTC
+            assert runtime_switches.on(SWITCH) and not runtime_switches.on(SWITCH, A) and runtime_switches.on(SWITCH, B)
+            assert (_probe(owner_a, A), _probe(owner_b, B)) == (404, 200)
+            for method, path, kw in ROUTES:
+                assert _send(owner_a, method, path, kw).status_code == 404, (method, path)
+            assert fake.calls == [], fake.calls   # 404 before any OF call
+            # the inline reads too: A's new keys refused, B's taken
+            sec = "/api/of/v2/users/me/settings/security"
+            assert _send(owner_a, "PATCH", sec, {"json": {"isPrivate": True}}).status_code == 422
+            assert _send(owner_a, "PATCH", "/api/of/v2/users/me", {"json": {"header": ""}}).status_code == 422
+            assert _send(owner_b, "PATCH", sec, {"json": {"isPrivate": True}}, aid=B).status_code == 200
+            assert _send(owner_b, "PATCH", "/api/of/v2/users/me", {"json": {"header": ""}}, aid=B).status_code == 200
+            for method, path, kw in ROUTES:
+                assert _send(owner_b, method, path, kw, aid=B).status_code == 200, (method, path)
+            # the row survives a reload (boot) and stays out of Settings › System's list
+            _run(runtime_switches.load())
+            assert not runtime_switches.on(SWITCH, A)
+            assert [d["env"] for d in runtime_switches.describe_all()] == [s.env for s in runtime_switches.SWITCHES]
+            assert _force(owner_a, A, False).json()["on"] is True   # cleared: back to the box-wide value
+            assert _probe(owner_a, A) == 200
+            # Settings › System's box-wide force-off beats every Creator (a write re-reads the cache, so none inside)
+            with _global_off():
+                assert (_probe(owner_a, A), _probe(owner_b, B)) == (404, 404)
+                assert owner_a.get(f"/admin/ofm-writes/{A}").json() | {"changed_at": None} == {
+                    "account_id": A, "server_on": False, "forced_off": False, "on": False,
+                    "changed_by": None, "changed_at": None}
+        finally:
+            _force(owner_a, A, False)
+
+
+def case_not_loaded_reads_off_for_every_creator_until_load():
+    """A failed boot load (`_loaded` False, cache empty) must not read a forced-off Creator on: env on, the switch
+    is off box-wide and for every Creator, and the probe 404s, until load() reads the table."""
+    owner_a, owner_b = fx.login_owner("agency_a_owner"), fx.login_owner("agency_b_owner")
+    with _switch("1"), _fake_of_any_creator() as fake:
+        try:
+            assert _force(owner_a, A, True).status_code == 200
+            saved = runtime_switches._overrides
+            runtime_switches._overrides, runtime_switches._loaded = {}, False   # boot load() failed
+            try:
+                assert not runtime_switches.loaded()
+                assert not runtime_switches.on(SWITCH) and not runtime_switches.describe(SWITCH)["effective"]
+                assert not runtime_switches.on(SWITCH, A) and not runtime_switches.on(SWITCH, B)
+                assert (_probe(owner_a, A), _probe(owner_b, B)) == (404, 404)
+                assert _send(owner_b, "DELETE", "/api/of/v2/sessions", {}, aid=B).status_code == 404
+                assert fake.calls == [], fake.calls
+            finally:
+                runtime_switches._overrides = saved
+            _run(runtime_switches.load())   # the retry reads the table: as before
+            assert runtime_switches.loaded()
+            assert runtime_switches.on(SWITCH) and not runtime_switches.on(SWITCH, A) and runtime_switches.on(SWITCH, B)
+            assert (_probe(owner_a, A), _probe(owner_b, B)) == (404, 200)
+        finally:
+            runtime_switches._loaded = True
+            _force(owner_a, A, False)
+
+
+def case_force_off_holds_when_the_reread_after_commit_fails():
+    """The row commits, then the cache re-read fails: the committed force-off (box-wide or a Creator's) is enforced
+    anyway, and clearing it after another failed re-read lets writes back."""
+    owner_a = fx.login_owner("agency_a_owner")
+    real = runtime_switches._read_rows
+
+    async def _fail():
+        raise RuntimeError("db gone")
+    with _switch("1"), _fake_of_any_creator() as fake:
+        try:
+            runtime_switches._read_rows = _fail
+            assert _force(owner_a, A, True).status_code == 200
+            assert not runtime_switches.on(SWITCH, A) and runtime_switches.on(SWITCH, B)
+            assert _probe(owner_a, A) == 404
+            assert _send(owner_a, "DELETE", "/api/of/v2/sessions", {}).status_code == 404
+            _run(runtime_switches.set_override(SWITCH, False, by="t"))
+            assert not runtime_switches.on(SWITCH) and not runtime_switches.on(SWITCH, B)
+            assert fake.calls == [], fake.calls
+            _run(runtime_switches.set_override(SWITCH, None, by="t"))
+            assert _force(owner_a, A, False).status_code == 200
+            assert runtime_switches.on(SWITCH, A)
+        finally:
+            runtime_switches._read_rows = real
+            _run(runtime_switches.set_override(SWITCH, None, by="t"))
+            _force(owner_a, A, False)
+        assert runtime_switches.loaded() and runtime_switches.on(SWITCH, A)
+
+
+def case_per_creator_force_off_is_the_creators_owner_only():
+    owner_a, chatter_a = fx.login_owner("agency_a_owner"), fx.login_chatter("chatter_a")
+    with _switch("1"):
+        try:
+            assert _force(owner_a, B, True).status_code == 403   # another agency's Creator
+            assert owner_a.get(f"/admin/ofm-writes/{B}").status_code == 403
+            assert _force(chatter_a, A, True).status_code == 403   # a chatter reads, never writes
+            assert chatter_a.get(f"/admin/ofm-writes/{A}").status_code == 200
+            assert fx._harness.make_client().put(f"/admin/ofm-writes/{A}", json={"forced_off": True}).status_code in (401, 403)
+            assert _force(owner_a, A, "yes").status_code == 422
+            # the Master's "view as" owner_a is read-only; an owner access token is not on the token allowlist
+            view_as = fx.login_owner("agency_master")
+            r = view_as.post("/admin/impersonate", json={"user_id": _IDS["agency_a_owner"],
+                                                         "admin_password": os.environ["ADMIN_PASSWORD"]})
+            assert r.status_code == 200, r.text
+            assert _force(view_as, A, True).status_code == 403
+            assert view_as.get(f"/admin/ofm-writes/{A}").status_code == 200   # reads, as the owner does
+            token = fx.mint_token(fx.login_owner("agency_a_owner"))
+            r = fx._harness.make_client().put(f"/admin/ofm-writes/{A}", json={"forced_off": True},
+                                              headers={"Authorization": f"Bearer {token}"})
+            import token_auth
+            assert r.status_code == 403 and token_auth.REFUSED in r.text, (r.status_code, r.text)
+            assert runtime_switches.on(SWITCH, A) and runtime_switches.on(SWITCH, B)
+            # the Master holds every Creator: it may, as on PUT /admin/of-consent
+            master = fx.login_owner("agency_master")
+            assert _force(master, B, True).status_code == 200 and not runtime_switches.on(SWITCH, B)
+            assert _force(master, B, False).status_code == 200 and runtime_switches.on(SWITCH, B)
+        finally:
+            _force(owner_a, A, False)
+
+
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
 
 
 _harness.run()

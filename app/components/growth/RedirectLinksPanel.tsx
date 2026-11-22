@@ -1,12 +1,13 @@
 "use client";
 
-import { useId, useReducer, useState } from "react";
+import { useId, useReducer, useRef, useState } from "react";
 
 import { Plus } from "lucide-react";
 
 import { Badge, Button, Input } from "@/components/ui/primitives";
 import { HbButton, HbModal } from "@/components/ui/infloww";
-import { CopyButton, errMsg } from "@/components/growth/_bits";
+import { errMsg } from "@/components/growth/_bits";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { CreatorFilter, GrowthHbFrame, RowMenu } from "@/components/growth/LinksListFrame";
 import { SectionTitle, StatCard } from "@/components/home/ReportsCharts";
 import {
@@ -72,7 +73,7 @@ export function RedirectLinksPanel({ accountId, onAccountChange }: {
       {links.length > 0 && (
         <section aria-labelledby={clicksId} className="mb-8">
           <SectionTitle id={clicksId} label="Clicks"
-            tip="Clicks on the Creator's redirect links, by day in the report time zone; a bot-checked link counts passed checks only" />
+            tip={`Clicks on the Creator's redirect links, by day in the report time zone${botAvailable ? "; a bot-checked link counts passed checks only since the bot check was turned on" : ""}`} />
           <ul aria-label="Redirect link totals" className="flex flex-col md:flex-row gap-4 md:gap-0">
             {summaryCards(summary, verifiedSummary(summary, links, botAvailable)).map((c) => (
               <StatCard key={c.key} stat={c.key} label={c.title} value={c.value ?? DASH} tip={c.sub}
@@ -173,15 +174,21 @@ function CreateRedirectModal({ accountId, botAvailable, onClose }: {
 }) {
   const createM = useCreateTrackingLink(accountId);
   const [form, dispatch] = useReducer(redirectFormReducer, INITIAL_FORM);
+  // Enter again before `isPending` re-renders (or at all: the form's submit ignores the disabled button) must not
+  // create a second link.
+  const busy = useRef(false);
 
   async function create() {
+    if (busy.current) return;
     const why = formError(form);
     if (why) { dispatch({ type: "fail", err: why }); return; }
+    busy.current = true;
     try {
       // A target the relay refuses comes back as its 422 detail, shown as the error.
       await createM.mutateAsync(buildPayload(form, botAvailable));
       onClose();
     } catch (e) { dispatch({ type: "fail", err: errMsg(e, "Create failed") }); }
+    finally { busy.current = false; }
   }
 
   return (

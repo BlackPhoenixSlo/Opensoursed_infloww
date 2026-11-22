@@ -17,8 +17,10 @@
  *   profile page (POST /posts/{id}/pin, OF's toggle), Edit post (its text in place: PUT /posts/{id} {text}, the
  *   relay's sparse edit, so media and price stay), Archive post (POST /posts/{id}/archive) and Delete post (DELETE
  *   /posts/{id}, only on a second click, which the item asks for). Each success refetches the page's rows.
- *   Another creator's post's More has OF's "Copy link to post" only (https://onlyfans.com/<post id>/<author's handle>,
- *   to the clipboard; hide and report have no Relay route), disabled with the tooltip without the handle (ofMirrorFeedsPosts).
+ *   Another creator's post's More has OF's "Copy link to post" (https://onlyfans.com/<post id>/<author's handle>,
+ *   to the clipboard; hide has no Relay route) and Report (ticket 42, D22: that post's onlyfans.com page in a new tab,
+ *   ofMirrorHandoffs reportHandoffUrl, `inferred`, titled "opens onlyfans.com", nothing through the Relay), disabled with
+ *   the tooltip without the handle (ofMirrorFeedsPosts).
  * - A post's picture, and a My profile Media tab tile: its files (ofMirrorPostCard's stamp) in the Vault's viewer, the
  *   first one first, previous and next through the rest (OF's media viewer); a locked file is not among them.
  * A failure shows the status note in red. The clicks it owns never reach bindWrites' click fallback, and the boxes it
@@ -33,6 +35,7 @@ import { plain } from "@/lib/ofMirrorData";
 import { nameOf } from "@/lib/ofMirrorDom";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { message, note, NOT_YET } from "@/lib/ofMirrorWrites";
+import { asHandoff, HANDOFF_TITLE, reportHandoffUrl } from "@/lib/ofMirrorHandoffs";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { proxyImage } from "@/lib/mediaUrl";
 import { bindUserLists, openUsers } from "@/lib/ofMirrorStatsKit";
@@ -70,13 +73,15 @@ const POST_STATS = ".b-post__tools__item.m-with-text-button button:not([at-attr=
 
 export const postPath = (id: string) => `/api/of/v2/posts/${encodeURIComponent(id)}`;
 
-/** The More menu's items: action, label (pin's by the row's state), OF's danger mark; another creator's post: its link only. */
-const items = (pinned: boolean, own = true): [string, string, boolean][] => own ? [
+/** The More menu's items: action, label (pin's by the row's state), OF's danger mark, a hand-off's URL; another creator's
+ *  post: its link and, with `report` (ticket 42: its onlyfans.com page), Report as a hand-off. */
+type Item = [action: string, label: string, danger: boolean, href?: string];
+const items = (pinned: boolean, own = true, report: string | null = null): Item[] => own ? [
   ["pin", pinned ? "Unpin from your profile page" : "Pin to your profile page", false],
   ["edit", "Edit post", false],
   ["archive", "Archive post", false],
   ["delete", "Delete post", true],
-] : [["copy", "Copy link to post", false]];
+] : [["copy", "Copy link to post", false], ...(report ? [["report", "Report", true, report] as Item] : [])];
 
 /** The row's Likes or Comments count (OF's test id `id`), plus `delta`; its word follows (a row with no such count is left alone). */
 function bump(row: Element, id: string, word: string, delta: number) {
@@ -118,8 +123,11 @@ function openMenu(doc: Document, row: Element, more: Element, own = true) {
   const list = doc.createElement("div");
   list.className = "v-list m-dropdown-v-list v-sheet theme--light shown";
   for (const el of [menu, list]) for (const a of scope) el.setAttribute(a.name, a.value);
-  for (const [action, label, danger] of items(!!row.querySelector("div.b-post.m-pinned"), own)) {
-    const item = doc.createElement("div");
+  const [postId, username] = [row.getAttribute("data-oi-post"), row.getAttribute("data-oi-username")];
+  const report = postId && username ? reportHandoffUrl("post", { postId, username }) : null;
+  for (const [action, label, danger, href] of items(!!row.querySelector("div.b-post.m-pinned"), own, report)) {
+    const item = href ? asHandoff(doc.createElement("a"), href) : doc.createElement("div");  // ticket 42: a hand-off is OF's link
+    if (href) item.title = HANDOFF_TITLE;
     item.setAttribute("role", "menuitem");
     item.tabIndex = 0;
     item.className = `v-list-item v-list-item--link theme--light m-with-rectangle-hover m-tb-sm${danger ? " m-danger" : ""}`;
@@ -397,6 +405,8 @@ export function bindPostActions(doc: Document, h: PostHandlers): () => void {
     }
 
     const item = t.closest<HTMLElement>(`${MENU} [data-oi-action]`);
+    // ticket 42: Report's click is the browser's (a new tab to onlyfans.com); the menu closes after it.
+    if (item?.matches("a[href]")) return void doc.defaultView?.setTimeout(() => closeMenus(doc), 0);
     if (!item) return;
     owned();
     const action = item.dataset.oiAction!;

@@ -65,7 +65,12 @@ vi.mock("@/contexts/ScopeContext", async (importOriginal) => ({
 vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCounts: () => ({}) }));
 vi.mock("@/components/growth/MassMessagesSection", () => ({
   default: () => <div data-testid="mass-section">mass section</div>,
-  MassAutoUnsendSection: () => <div data-testid="unsend-section">unsend section</div>,
+  // Its creator column, cut to what the page wires: the Creator shown and a pick of the second one.
+  MassAutoUnsendSection: ({ accountId, onPick }: { accountId?: string | null; onPick?: (id: string) => void }) => (
+    <div data-testid="unsend-section" data-account={accountId ?? ""}>
+      unsend section<button type="button" onClick={() => onPick?.("acc-2")}>unsend rail: Model B</button>
+    </div>
+  ),
   ScheduledSection: () => <div data-testid="scheduled-section">scheduled section</div>,
 }));
 // The mass composer's own contexts (employee, vault) are its tests'; here, only the Creator it opens on.
@@ -715,6 +720,17 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
     await act(async () => { fireEvent.click(nextButton()); });
     const dialog = screen.getByRole("dialog", { name: "Priority mass message" });
     await waitFor(() => expect((within(dialog).getAllByRole("combobox")[0] as HTMLSelectElement).value).toBe(B.id));
+  });
+
+  it("the Mass Auto Unsend column shares the pick: its Creator is the composer's, both ways", async () => {
+    await mount("/growth/smart-messages?tab=unsend");
+    expect(screen.getByTestId("unsend-section")).toHaveAttribute("data-account", A.id);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "unsend rail: Model B" })); });
+    expect(screen.getByTestId("unsend-section")).toHaveAttribute("data-account", B.id);
+    await openPopUp();
+    await act(async () => { fireEvent.click(within(popUp()).getByRole("button", { name: new RegExp(`^${valueOf(108).split(" / ")[0]}`) })); });
+    await act(async () => { fireEvent.click(nextButton()); });
+    expect(screen.getByRole("dialog", { name: "mass composer standard" })).toHaveAttribute("data-account", B.id);
   });
 
   it.each([

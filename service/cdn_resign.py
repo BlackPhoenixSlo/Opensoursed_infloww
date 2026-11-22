@@ -33,6 +33,10 @@ not hold the media is checked against its (createdAt, id) range and its neighbou
 media still not found, or a mirror with no row for it, falls back to the by-id read. Each window is read at most
 once per FRESH_TTL_S (`_pages`), so drift costs at most one extra read per window, never one per file; a window
 read that failed in transit fails its media FAIL_TRANSIENT_S and makes no by-id read (the same 429 would answer).
+After an egress switch the cached window's urls are the ones that 403 now (signed for the old IP): a url that came
+from a window read is re-read through that window once, not by id (#444). Once per cached read: a window read again
+this way is not read again for a dead url of another of its media (that one goes by id), so a file OF really refuses
+costs one extra read per window per FRESH_TTL_S, not one per file.
 """
 from __future__ import annotations
 
@@ -42,11 +46,12 @@ import threading
 import time
 from datetime import datetime
 from itertools import islice
-from typing import Any, Awaitable, Callable, Iterator
+from typing import Any, Awaitable, Callable, Iterator, NamedTuple
 from urllib.parse import urlsplit
 
 from sqlalchemy import and_, func, or_, select
 
+import of_pacing
 import relay_coalesce
 import vault_runs
 import vault_stills
@@ -67,7 +72,16 @@ _fresh: dict[tuple[str, str], tuple[str, float]] = {}   # (account, host+path) -
 _failed: dict[tuple[str, int], float] = {}              # (account, media id) -> monotonic time it may retry
 _Key = tuple[datetime, int]                              # a media's listing sort key: (createdAt, id)
 _Page = tuple[frozenset[int], "_Key | None", "_Key | None"]   # a window read: its ids, lowest key, highest key
-_pages: dict[tuple[str, int], tuple[float, _Page | None]] = {}  # (account, offset) -> (expiry, read | None=failed)
+
+
+class _Window(NamedTuple):
+    """A remembered window read."""
+    until: float          # monotonic expiry
+    page: _Page | None    # None: the read failed
+    reread: bool          # read again for a stale url (`_page(force=True)`): not forced again
+
+
+_pages: dict[tuple[str, int], _Window] = {}   # (account, offset) -> its last read
 
 
 def _put(d: dict, k: Any, v: Any) -> None:
@@ -158,33 +172,34 @@ async def _read_page(account_id: str, offset: int, client: Any) -> _Page | None:
     return frozenset(int(m["id"]) for m in items), min(keys, default=None), max(keys, default=None)
 
 
-async def _page(account_id: str, offset: int, client: Any) -> _Page | None:
+async def _page(account_id: str, offset: int, client: Any, force: bool = False) -> _Page | None:
     """The window at `offset`: read once per FRESH_TTL_S (a failed read is remembered FAIL_TRANSIENT_S), shared by
-    concurrent callers."""
+    concurrent callers. `force`: a remembered read is read again for a stale url, unless it already was such a
+    re-read (module doc)."""
     with _lock:
         hit = _pages.get((account_id, offset))
-    if hit is not None and time.monotonic() < hit[0]:
-        return hit[1]
+    if hit is not None and time.monotonic() < hit.until and (hit.page is None or not force or hit.reread):
+        return hit.page
 
     async def read() -> _Page | None:
         got = await _read_page(account_id, offset, client)
         with _lock:
             _put(_pages, (account_id, offset),
-                 (time.monotonic() + (FRESH_TTL_S if got is not None else FAIL_TRANSIENT_S), got))
+                 _Window(time.monotonic() + (FRESH_TTL_S if got is not None else FAIL_TRANSIENT_S), got, force))
         return got
     return await relay_coalesce.coalesce(("cdn_resign_page", account_id, offset), read)
 
 
-async def _via_page(account_id: str, media_id: int, client: Any) -> str:
+async def _via_page(account_id: str, media_id: int, client: Any, force: bool = False) -> str:
     """Re-sign `media_id` by reading its listing window (module doc): "hit" (its urls are remembered), "failed" (a
-    window read failed in transit) or "miss" (not found that way: read it by id)."""
+    window read failed in transit) or "miss" (not found that way: read it by id). `force`: see `_page`."""
     pos = await _position(account_id, media_id)
     if pos is None:
         return "miss"
     n, want = pos
     off = n // PAGE * PAGE
     for _ in range(2):   # the mirror's window, then once the neighbour on the media's side
-        page = await _page(account_id, off, client)
+        page = await _page(account_id, off, client, force)
         if page is None:
             return "failed"
         ids, lo, hi = page
@@ -209,10 +224,15 @@ def _close(r: Any) -> None:
         pass
 
 
-async def resign(account_id: str, media_id: int, failed_u: str, client: Any) -> str | None:
+async def resign(account_id: str, media_id: int, failed_u: str, client: Any, kind: str) -> str | None:
     """A freshly signed url for `failed_u`'s host+path, from the media's listing window or else one by-id read of
     `media_id` (module doc); None when OF has no such media, the read failed, or OF handed back the very url that
-    just failed. Concurrent callers for one window / media share the read."""
+    just failed. Concurrent callers for one window / media share the read. Its OF reads run as an `of_pacing` walk
+    of `kind` (the caller's: paced on the Creator, counted `walk:<kind>`)."""
+    return await of_pacing.walk(account_id, kind, lambda: _resign(account_id, media_id, failed_u, client))
+
+
+async def _resign(account_id: str, media_id: int, failed_u: str, client: Any) -> str | None:
     key = (account_id, int(media_id))
     with _lock:
         until = _failed.get(key)
@@ -221,7 +241,13 @@ async def resign(account_id: str, media_id: int, failed_u: str, client: Any) -> 
     cur = current(account_id, failed_u)
     if cur != failed_u:  # another request re-signed it meanwhile
         return cur
+    with _lock:
+        seen = _fresh.get((account_id, _base(failed_u)))
+    handed = seen is not None and seen[0] == failed_u   # we gave this url out (a window or by-id read)
     via = await _via_page(account_id, int(media_id), client)
+    if via == "hit" and handed and current(account_id, failed_u) == failed_u:
+        # The failed url is one a window read handed out (an egress switch since): read the window again once.
+        via = await _via_page(account_id, int(media_id), client, force=True)
     if via == "failed":
         _fail(key, FAIL_TRANSIENT_S)
         return None
@@ -244,10 +270,10 @@ async def resign(account_id: str, media_id: int, failed_u: str, client: Any) -> 
 
 
 async def fetch(account_id: str, media_id: int | None, u: str, client: Any,
-                get: Callable[[str], Awaitable[Any]]) -> tuple[Any, str]:
+                get: Callable[[str], Awaitable[Any]], kind: str) -> tuple[Any, str]:
     """GET `u` with `get` and return (the response, the url it came from); the caller owns and closes it. With an
     account and a media id: the url re-signed earlier for that file is used up front (`current`), and a 403
-    re-signs once (`resign`) and GETs the fresh url; when no fresh url comes, the 403 comes back (closed). A retry
+    re-signs once (`resign`, a walk of `kind`) and GETs the fresh url; when no fresh url comes, the 403 comes back (closed). A retry
     that still 403s marks the media failed and forgets the fresh url, so the next request with it makes no OF read
     for FAIL_TTL_S."""
     if not (account_id and media_id):
@@ -257,7 +283,7 @@ async def fetch(account_id: str, media_id: int | None, u: str, client: Any,
     if r.status_code != 403:
         return r, u
     await asyncio.to_thread(_close, r)
-    new = await resign(account_id, media_id, u, client)
+    new = await resign(account_id, media_id, u, client, kind)
     if new is None:
         return r, u
     r = await get(new)

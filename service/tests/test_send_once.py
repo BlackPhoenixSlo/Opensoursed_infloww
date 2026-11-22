@@ -111,6 +111,16 @@ async def _get(aid: str, *, as_=None) -> list[dict]:
 
 
 async def _retry(aid: str, *, as_=None, **body) -> dict:
+    """No `since` given → the row's as listed now (the app always sends the listed one);
+    an unlisted row → an old time (unmarked / 404 / 403 answer before it matters)."""
+    if "since" not in body:
+        try:
+            listed = await _get(aid, as_=as_)
+        except HTTPException:
+            listed = []
+        body["since"] = next((r["since"] for r in listed if r["kind"] == body["kind"]
+                              and r["fan_id"] == str(body["fan_id"])
+                              and r["mass_run_id"] == body.get("mass_run_id")), "2020-01-01T00:00:00Z")
     tok = _owner(*(as_ or (aid,)))
     try:
         return await usa.retry_unconfirmed_send(account_id=aid, body=usa.RetryBody(**body))

@@ -90,6 +90,11 @@ WaitReason = Literal["of_unreachable", "promo_already_live", "inferred_cap_untru
 # A Wait that holds a due create until `cooldown_ends` (the run reports it as skipped and
 # re-checks just past it); "nothing_due" with an end is the Cooldown's.
 HOLD_REASONS: frozenset[str] = frozenset({"breaker_hold", "backoff", "budget"})
+# What create_hold answers, and every `wait_reason` (why a live Kept promo is not pre-empted);
+# the card's line text (promotions_api) is keyed by these, a relay test holds the two together.
+HoldReason = Literal["backoff", "budget"]
+PreemptWait = Literal["second_live", "end_unconfirmed", "clock", "count_untrusted", "cooldown",
+                      "no_recovery_slot", "breaker_hold", "backoff", "budget"]
 
 
 @dataclass(frozen=True)
@@ -103,7 +108,7 @@ class Wait:
     kept: int | None = None
     tally: Tally | None = None
     cooldown_ends: datetime | None = None
-    wait_reason: str | None = None
+    wait_reason: PreemptWait | None = None
 
 
 @dataclass(frozen=True)
@@ -255,7 +260,7 @@ def decide(i: Inputs) -> Verdict:
     return _budget(i, v) if isinstance(v, AfterEnd) else v
 
 
-def _preempt(i: Inputs, c: Kept, p: dict, n_live: int) -> Verdict | str | None:
+def _preempt(i: Inputs, c: Kept, p: dict, n_live: int) -> Verdict | PreemptWait | None:
     """Fill or Timed for the Kept campaign `c` whose promo `p` is live, or why not (the
     waiting line). None: Pre-emption does not apply (switch, tick, cap < 10) or nothing is
     owed yet (a Trusted count under the threshold, the end not near)."""
@@ -338,7 +343,7 @@ def recovery_slot(auto_times: Sequence[datetime], now: datetime) -> bool:
 
 
 def create_hold(auto_times: Sequence[datetime], not_before: datetime | None,
-                now: datetime) -> tuple[str, datetime] | None:
+                now: datetime) -> tuple[HoldReason, datetime] | None:
     """Create back-off, then the Create budget (BUDGET_HOUR per rolling hour, BUDGET_DAY per
     rolling day of automatic creates): (reason, until) while an automatic create is held."""
     if not_before is not None and now < not_before:

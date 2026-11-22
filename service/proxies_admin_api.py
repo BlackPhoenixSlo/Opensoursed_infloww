@@ -23,13 +23,14 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import accounts as account_registry
 import proxies as proxy_registry
 import proxy_health
 import proxy_probe
+from audit_log import credential_write
 from auth import assert_account_owned
 from brand import BRAND_NAME
 from relay_host import get_request_user as _get_request_user
@@ -249,7 +250,7 @@ def _proxy_owner() -> str | None:
     return user.id if user is not None else None
 
 
-@router.post("/admin/proxies/bulk")
+@router.post("/admin/proxies/bulk", dependencies=[Depends(credential_write)])  # `text` holds the passwords
 def admin_proxies_bulk(body: _ProxyBulkBody = Body(...)) -> dict[str, Any]:
     """Paste many proxies at once, one per line (formats: docs/proxies.md).
     Blank and `#` lines are skipped. Passwords never appear in the response."""

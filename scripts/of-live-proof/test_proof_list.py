@@ -137,11 +137,13 @@ def test_phase_cli_runs_isolated(tmp_path, phase):
 
 def test_phase2_sweep_check_passes_on_the_dated_sweep_with_the_live_overlay(tmp_path):
     """D1, Phase 2: the dated sweep with the 2026-11-21 re-sweep of its Live-passed pages over it (home/index, vault/list,
-    the list page) has no problem; the bare dated file still flags those passes (the guard is not relaxed)."""
+    the list page) and the 2026-11-21 messages/chat re-sweep at dead.py SWEEP_QUERY (ticket 33's own bubbles, their three
+    controls Not yet) has no problem; the bare dated file still flags those passes (the guard is not relaxed)."""
     docs = HERE.parents[1] / "docs" / "of-manager"
     cmd = [sys.executable, "-I", str(HERE / "proofs" / "phase2.py"), "--check-sweep", str(docs / "not-yet-sweep-2026-11-20.json"),
            str(docs / "captures")]
-    out = subprocess.run([*cmd, "--overlay", str(docs / "not-yet-sweep-2026-11-21-live.json")], capture_output=True, text=True, cwd=tmp_path)
+    overlays = ["--overlay", str(docs / "not-yet-sweep-2026-11-21-live.json"), "--overlay", str(docs / "not-yet-sweep-2026-11-21-own-bubbles.json")]
+    out = subprocess.run([*cmd, *overlays], capture_output=True, text=True, cwd=tmp_path)
     assert out.returncode == 0, out.stdout + out.stderr
     out = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp_path)
     assert out.returncode == 1 and "still has the Not-yet title" in out.stdout, out.stdout

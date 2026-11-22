@@ -35,7 +35,7 @@ import { nextHref as pickNext } from "@/components/auth/nextPath";
 import {
   Badges, Bang, EyeIcon, EyeOffIcon, HINT, INPUT, INPUT_LOGIN, Logo, Notice, PINK, PINK_TEXT, UNDERLINE, WRAP,
 } from "@/components/auth/SiteLook";
-import { BRAND_NAME } from "@/lib/brand";
+import { BRAND_NAME, DESKTOP_PLATFORMS, DESKTOP_URL } from "@/lib/brand";
 import { errText } from "@/lib/errText";
 
 type Mode = "login" | "register";
@@ -276,7 +276,7 @@ export default function Landing({ next }: { next?: string } = {}) {
   // the app. The server renders as if in the app, so it appears after hydration on the web and never flashes there.
   const download = !inApp && (
     <p className="mt-2 text-sm text-pretty text-white/[0.62]">
-      <a className={LINK} href="/download">Download the desktop app</a> for Mac, Windows and Linux.
+      <a className={LINK} href={DESKTOP_URL}>Download the desktop app</a> for {DESKTOP_PLATFORMS}.
     </p>
   );
 

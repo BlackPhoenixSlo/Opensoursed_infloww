@@ -24,7 +24,8 @@ Include-only automation audience — resolver, fence, at-fire, API.
       manual stamp sends (the creation route stamps every human schedule).
   case_fence_build_verify_zero_diff:
       AUTOFENCE reconcile = adds before removals + verify; an un-addable id is
-      skipped-and-counted; a verify mismatch raises AudienceHalt.
+      skipped-and-counted; a transient add failure (timeout) halts
+      fence_add_failed; a verify mismatch raises AudienceHalt.
   case_mass_send_attaches_fence:
       enforce-mode list broadcast carries the stable fence id in
       excluded_user_lists; original user_lists audience is UNCHANGED.
@@ -43,6 +44,7 @@ import _harness  # MUST be first — binds a throwaway temp DB
 _harness.bootstrap()
 
 import os  # noqa: E402
+from _of_fixtures import UNLISTABLE_403, of_error  # noqa: E402
 
 # House pattern for driving /admin route coroutines directly (test_ai_chatter,
 # test_account_isolation_gate case14): re-open the 08-10 fail-closed auth gate.
@@ -100,7 +102,7 @@ class FakeOF:
 
     def add_user_to_list(self, list_id, user_id):
         if int(user_id) in self.fail_add:
-            raise RuntimeError("Unable to add user to user list")
+            raise of_error(403, UNLISTABLE_403)
         self.added.append((int(list_id), int(user_id)))
         self.lists.setdefault(int(list_id), set()).add(int(user_id))
         return {}
@@ -118,7 +120,6 @@ class FakeOF:
     def send_mass_message(self, text=None, **kw):
         self.mass_sent.append({"text": text, **kw})
         return {"id": 88_000 + len(self.mass_sent)}
-
 
 def _use_fake(fake) -> FakeOF:
     ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
@@ -270,6 +271,21 @@ def case_fence_build_verify_zero_diff():
     fake2 = FakeOF(lists={701: set()}, fail_add=(5,))
     built2 = _build_autofence_blocking(fake2, 701, {4, 5})
     assert built2 == {"size": 1, "unaddable": 1}, built2
+
+    # A transient add failure (timeout / 429 / 5xx) is not an un-addable fan:
+    # that fan would sit outside the fence, so the build halts.
+    from curl_cffi.requests import exceptions as curl_exc
+
+    class TimeoutOF(FakeOF):
+        def add_user_to_list(self, list_id, user_id):
+            if int(user_id) == 5:
+                raise curl_exc.Timeout("curl: (28) Operation timed out")
+            return super().add_user_to_list(list_id, user_id)
+    try:
+        _build_autofence_blocking(TimeoutOF(lists={703: set()}), 703, {4, 5})
+        assert False, "a timed-out add must halt the fence build"
+    except AudienceHalt as e:
+        assert e.reason == "fence_add_failed", e.reason
 
     # Verify mismatch → AudienceHalt (here: a removal that silently fails).
     class StickyOF(FakeOF):

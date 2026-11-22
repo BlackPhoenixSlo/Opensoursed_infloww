@@ -19,7 +19,7 @@ import {
 import { MENU_ITEM, MENU_PANEL, Menu, useOutsideClose } from "@/components/ui/Menu";
 import { EmptyState, IfButton, IfModal, IfNativeSelect } from "@/components/ui/infloww";
 import { useVaultAccountId } from "@/components/vault/VaultAccount";
-import { type DlGate } from "@/components/vault/vaultDownloadReducer";
+import { downloadLabel, type DlGate } from "@/components/vault/vaultDownloadReducer";
 import {
   buildPayload, canSave, folderPriceReducer, formatPrice, initForm,
 } from "@/components/vault/folderPriceForm";
@@ -293,7 +293,7 @@ function FolderDeleteModal({ folder, onDelete, onCancel }: {
 export default function VaultFolderRail({
   folders, allCounts = null, loading, error, onRetry, selectedId, onSelect, onChanged, onDownloadFolder,
   downloadFolderGate,
-  downloadQueues = false, standardRows, standardMobile, standardSelected = false,
+  standardRows, standardMobile, standardSelected = false,
 }: {
   /** The folders to list, in OF's order. */
   folders: VaultList[];
@@ -310,10 +310,8 @@ export default function VaultFolderRail({
   onChanged: () => void;
   /** Ours: the row menu's "Download folder". */
   onDownloadFolder: (f: VaultList) => void;
-  /** `downloadGate` for a folder: off = disabled with the reason as its title; desktop only = "(desktop only)". */
+  /** `downloadGate` for a folder: off = disabled with the reason as its title; its label is `downloadLabel`. */
   downloadFolderGate: DlGate;
-  /** A download runs: the item joins the queue ("Add folder to queue"). */
-  downloadQueues?: boolean;
   standardRows?: ReactNode;
   standardMobile?: ReactNode;
   standardSelected?: boolean;
@@ -396,8 +394,7 @@ export default function VaultFolderRail({
     { label: "Rename", onClick: () => setNameModal({ folder: f }) },
     ...(prices ? [{ label: priceOf(f) == null ? "Set price" : "Edit price", onClick: () => setPriceModal(f) }] : []),
     { label: "Delete", onClick: () => setDeleteModal(f) },
-    { label: downloadFolderGate.desktopOnly ? "Download folder (desktop only)"
-        : downloadQueues ? "Add folder to queue" : "Download folder",
+    { label: downloadLabel(downloadFolderGate, "folder"),
       onClick: () => onDownloadFolder(f), disabled: !!downloadFolderGate.reason,
       title: downloadFolderGate.reason || undefined },
   ];

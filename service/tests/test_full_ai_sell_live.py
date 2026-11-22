@@ -339,8 +339,9 @@ def case_media_refused():
 
 
 def case_raise_after_send_keeps_offer():
-    """send_priced raises after OF took the PPV (its attribution write): unknown, never a drop —
-    the Offer columns stay, the row is linked, the next Turn reads it as the Pending offer."""
+    """send_priced raises after OF took the PPV (its attribution write): never a drop — the Offer
+    columns stay, the row is linked, the bubble keeps OF's id (W30 F15: `MaybeSent` carries it, so
+    the Turn is not cut), the next Turn reads it as the Pending offer."""
     _live_on()
     fan = 962
     from automations import full_ai_ppv
@@ -358,7 +359,8 @@ def case_raise_after_send_keeps_offer():
         full_ai_ppv.write_outbound_attribution = real
     assert len(_ppv_sends(of)) == 1, of.sent
     assert r1.offer_price_cents and r1.offer_message_id is not None, (r1.offer_price_cents, r1.offer_message_id)
-    assert "offer_dropped" not in reply(r1) and reply(r1)["cut"]["reason"] == "ppv_unconfirmed", reply(r1)
+    assert "offer_dropped" not in reply(r1) and "cut" not in reply(r1), reply(r1)
+    assert reply(r1)["parts"][-1].get("message_id") == r1.offer_message_id, reply(r1)
     assert full_ai_owned.open_offer_live(R(live_rows(A, fan)), datetime.utcnow()).id == r1.id
 
 

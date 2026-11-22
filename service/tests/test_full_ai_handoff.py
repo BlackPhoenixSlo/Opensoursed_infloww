@@ -2,16 +2,19 @@
 """test_full_ai_handoff — the Welcome handoff for a Fan Full AI Chat claims (spec 04b ticket 78).
 
 `welcome_turn.enqueue_turn_handoff` over a temp DB; job rows read from `scheduled_jobs`. A Fan is
-claimed by patching `full_ai_owner_io._live` to True (main: False for every Creator).
+claimed by patching `full_ai_live.live_rule` (Mode live: the enabled rule's id; main: None for every
+Creator). The job is `full_ai_live.enqueue`'s (W30 F10): its payload shape, due at the reply speed and
+no sooner than the Welcome rest.
 
-  case_claimed_wcfi_on            one `full_ai_chat` job {only_fan_ids, anchor, _rule_id}, 165 s out;
-                                  no `welcome_chatter_for_info` job
+  case_claimed_wcfi_on            one `full_ai_chat` job {only_fan_ids, anchor, _rule_id, tries}, 165 s
+                                  out (his DM is old: its reply-speed due has passed); no
+                                  `welcome_chatter_for_info` job
   case_claimed_wcfi_off           the same one job (today: none)
   case_unclaimed_today            off the Fans list / `_live` false / Full AI rule off: today's row
                                   byte-for-byte, or none with Get to know fans off
   case_media_only_and_no_inbound  newest inbound media only: anchored on it; no inbound row: today's path
-  case_hook_same_anchor_rule_off  the hook's job and the handoff job carry one anchor; rule off before
-                                  the claim: both cancelled with RULE_OFF_REASON through run_once
+  case_hook_same_anchor_rule_off  the hook's pending job absorbs the handoff (one job, his anchor); rule
+                                  off before the claim: cancelled with RULE_OFF_REASON through run_once
   case_claimed_ids_raises         a Full AI fault: today's path
   case_wcfi_handoff_cases_unedited  test_welcome_chatter_for_info.py matches origin/main
 
@@ -32,6 +35,7 @@ from sqlalchemy import select, update  # noqa: E402
 
 import automation_executor as ax  # noqa: E402
 import webhook_dispatch as wd  # noqa: E402
+from automations import full_ai_live  # noqa: E402
 from automations import full_ai_owner_io as io  # noqa: E402
 from automations import welcome_turn  # noqa: E402
 from db.engine import get_session  # noqa: E402
@@ -66,8 +70,8 @@ def _patch(mod, name, value):
 
 def _live(on: bool = True):
     async def fake(account_id):
-        return on
-    return _patch(io, "_live", fake)
+        return await ax.enabled_rule_id(account_id, KIND) if on else None
+    return _patch(full_ai_live, "live_rule", fake)
 
 
 async def _account(*, wcfi: bool, full_ai: bool = True, fans: dict | None = None) -> tuple[str, int]:
@@ -123,7 +127,8 @@ async def _assert_full_ai(aid: str, fan: int, rid: int, anchor: int) -> None:
     assert kind == KIND, kind
     (job,) = await _jobs(aid)
     assert job.kind == KIND and job.status == "pending", (job.kind, job.status)
-    assert json.loads(job.payload_json) == {"only_fan_ids": [fan], "anchor": anchor, "_rule_id": rid}, job.payload_json
+    assert json.loads(job.payload_json) == {"only_fan_ids": [fan], "anchor": anchor, "_rule_id": rid,
+                                            "tries": 0}, job.payload_json
     _due_165(job, t0, t1)
 
 
@@ -195,20 +200,19 @@ async def case_hook_same_anchor_rule_off():
     aid, rid = await _account(wcfi=True)
     fan, mid = 16, 1501
     await _msg(aid, fan, mid, "in", T0)
-    await wd._full_ai_hook(aid, fan, mid)
     with _live():
+        await wd._full_ai_hook(aid, fan, mid)
         assert await welcome_turn.enqueue_turn_handoff(aid, fan) == KIND
-    hook_job, handoff_job = await _jobs(aid)
-    assert hook_job.kind == handoff_job.kind == KIND, (hook_job.kind, handoff_job.kind)
-    assert json.loads(hook_job.payload_json) == json.loads(handoff_job.payload_json) == {
-        "only_fan_ids": [fan], "anchor": mid, "_rule_id": rid}, (hook_job.payload_json, handoff_job.payload_json)
+    (hook_job,) = await _jobs(aid)                          # his pending job absorbs the handoff
+    assert hook_job.kind == KIND, hook_job.kind
+    assert json.loads(hook_job.payload_json) == {
+        "only_fan_ids": [fan], "anchor": mid, "_rule_id": rid, "tries": 0}, hook_job.payload_json
     async with get_session() as s:
         await s.execute(update(AutomationRule).where(AutomationRule.id == rid).values(is_enabled=False))
         await s.execute(update(ScheduledJob).where(ScheduledJob.account_id == aid)
                         .values(run_at=datetime.utcnow() - timedelta(seconds=1)))
-    for _ in range(2):
-        res = await ax.run_once(aid, KIND)
-        assert res["status"] == "skipped" and res["reason"] == "rule_disabled", res
+    res = await ax.run_once(aid, KIND)
+    assert res["status"] == "skipped" and res["reason"] == "rule_disabled", res
     for job in await _jobs(aid):
         assert (job.status, job.last_error) == ("cancelled", RULE_OFF_REASON), (job.id, job.status, job.last_error)
 

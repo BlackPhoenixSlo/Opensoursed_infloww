@@ -35,7 +35,7 @@ Request captures.
 | 2 | `read` / `critical_read` | GET, HEAD, OPTIONS pass, except a `_denied` path, or a Critical-topic path the armed proof does not list in `reads` |
 | 3 | `critical` | always refused, armed or not: `POST`/`PATCH /payouts/requests`, the `_denied` mirror, the Critical topic patterns (`proof_core._TOPICS`), a `PATCH /users/me` body with `username`/`email`/`phone`/`password` |
 | 3b | `capture_abort` | under `capture --abort` every other write is recorded and never sent |
-| 4 | `unarmed`, `over_count`, `no_undo` | no proof armed; not this proof's write; armed count (`max`, default 1) spent; an undo whose `{id}` or any Write whose `{created}` (ticket 34) the arms it reverses (every arm when `reverses` is None) did not create, or an undo before any write; an armed write of a proof with no undo (unless `irreversible` + `owner_go` names the proof) |
+| 4 | `unarmed`, `over_count`, `no_undo` | no proof armed; not this proof's write; a body outside its arm's declared payload (`Write.payload`: this run's exact marker, `Run.marker` from the arm, `marker_problem`; the PPV proof's price and one locked medium, the Co-tag proofs' tag and no media); armed count (`max`, default 1) spent; an undo whose `{id}` or any Write whose `{created}` (ticket 34) the arms it reverses (every arm when `reverses` is None) did not create, or an undo before any write; an armed write of a proof with no undo (unless `irreversible` + `owner_go` names the proof) |
 | 5 | `oauth`, `mocked`, `stream`, `lockout` | an oauth proof never writes; a mocked proof never writes live; stream start (tag, or `POST /streams`) needs `owner_go` `stream` and a pinned `body_must`; lockout (tag, or a block-IP/country path or body key) needs `lockout` and a pinned `body_must` |
 | 6 | `mass_message` | chat send only to the Proof fan; `messages/queue` only with `userIds` exactly `[Proof fan]` and empty `userLists`; queue edit / `PUT /schedules/{id}/publish` only on an id this proof created; Proof fan unset refuses all of them |
 | 7 | `post` | a post write needs `isScheduled` with `scheduledDate` at least 30 min ahead, or the `delete_at_once` tag |
@@ -60,11 +60,12 @@ refused.
 | live writes ≥ 5 s apart | Relay waits before forwarding (`pace_wait`); `pace_problems` re-checks the wire log after every run |
 | Critical never | class 3 in both enforcement points; no flag; a Critical capture runs only with `--abort` (refused before start otherwise) |
 | stream start, irreversible | need the owner's named go. Currently refused only (D27): under `--of live` such proofs never start (`not_started`), and no CLI flag passes a go; the owner-go run path is ticket 126 |
+| proof order | `order()` (ofm-not-yet ticket 101) runs reads (no armed write), then writes no Fan can see, then Fan-reaching writes (`fan_visible`, `delete_at_once`, `message`, or a schedule publish), then Lockout, whatever order `--proof` gave; inside a group the proof list's order (`proofs.ORDER`, Phase 6's "Proof order") wins, then the given order |
 | lockout last | `order()` puts lockout proofs last and refuses a non-lockout proof after one; `--lockout`, session-alive check after each lockout write and its revert, and session-lost stop are ticket 126 |
-| every write undone | class 4 refuses a write with no undo; Undo log row opened `pending` before forwarding; a failed undo stops the run (later proofs `<id>: not run`), exit non-zero |
+| every write undone | class 4 refuses a write with no undo; Undo log row opened `pending` before forwarding; a failed undo stops the run (later proofs `<id>: not run`), exit non-zero; where the undo's `max` leaves room (the PPV's 2), a trigger's own reversal counts only while a fresh read no longer shows the item (`still_shown`), else the driver sends its own (a 2xx `{"success": false}` included); elsewhere it counts only answered 2xx |
 | lost reply never retried | row stays `pending`, write found by `Proof.find` in the after-write read, then undone; libcurl's own resend is blocked (`FRESH_CONNECT` on writes) |
 | one run per Creator | lock `$TMPDIR/ofm-live-proof-<creator>.lock` (pid, evidence), shared by every lane; stale (dead pid) taken over and reported |
-| earlier `pending` row blocks | any `pending` row in an earlier same-mode run's `undo-log.jsonl` refuses the run; clear by hand by appending `{"row": N, "state": "cleared by hand", ...}` |
+| earlier `pending` row blocks | any `pending` row in an earlier same-mode run's `undo-log.jsonl` refuses the run (live: also a `FAILED` or `not reversible` row, `unresolved_rows`); clear by hand by appending `{"row": N, "state": "cleared by hand", ...}`; live runs also list their log in `$TMPDIR/ofm-live-proof-<creator>.undo-index.json` (beside the lock) so other worktrees' unresolved logs block too; resolved logs drop out, a listed log that is gone blocks until its path is removed by hand |
 | nice ≥ 10 | `run.sh` and `main` renice; every child checked (`niceness_low` fails the run) |
 
 ## Modes and flags
@@ -85,7 +86,8 @@ scripts/of-live-proof/run.sh --of fake|live [--session-dir <dir>] serve
 | `--of live` | Relay at onlyfans.com with a temp copy of `--session-dir` (required, no default; must hold `latest.json`) |
 | `--proof` | comma-separated ids (default `tracer.create-list`); unknown id exits 2; a `PENDING` id parks |
 | `--proof-fan <id>\|none` | fake default is FakeOF's fan; `none` unsets (message proofs park); live never defaults |
-| `--fault` (fake only) | `delete-500` (tracer's DELETE answers 500), `lost-reply` (a list, vault folder or trial link create applied, connection dropped), `cdn-src` (a vault tile src on a CDN host), `trial-delete-500` (the trial link's DELETE answers 500), `rename-ignored` (a vault folder PATCH answered 200, not applied: `vault.more.rename` must fail), `post-drop-label`, `post-drop-expiry`, `post-drop-target` (a post stored without its labels, expiry or target, answered 200: `p2.post-labels-expiry-target` must fail), `email-off` (the account starts with Email notifications and New Likes Summary off, as live: `settings--email-update-frequency` must park), `wrong-creator` (run expects another Creator; preflight must refuse) |
+| `--cotag-partner <id>\|none` | ticket 98's Co-tag partner; fake default is FakeOF's taggable creator; `none` unsets (both Co-tag proofs park); live never defaults; the guard refuses any other Co-tag. Fake faults: `cotag-extra` (the app's post gains a second creator: the guard refuses it, FakeOF sees no create); `lost-reply` also drops the immediate Co-tagged post's create |
+| `--fault` (fake only) | `delete-500` (tracer's list DELETE, or a post's DELETE, answers 500: the undo fails; ofm-not-yet ticket 101), `lost-reply` (a list, vault folder or trial link create applied, connection dropped), `cdn-src` (a vault tile src on a CDN host), `trial-delete-500` (the trial link's DELETE answers 500), `rename-ignored` (a vault folder PATCH answered 200, not applied: `vault.more.rename` must fail), `post-drop-label`, `post-drop-expiry`, `post-drop-target` (a post stored without its labels, expiry or target, answered 200: `p2.post-labels-expiry-target` must fail), `unsend-delete-500` (a message's DELETE answers 500: `p2.bubble-unsend-ppv` must fail, the app's red note shown), `email-off` (the account starts with Email notifications and New Likes Summary off, as live: `settings--email-update-frequency` must park), `wrong-creator` (run expects another Creator; preflight must refuse) |
 
 Exit 0 only when every proof passed (or parked), the census, pacing, off-host, niceness, trees, teardown and
 session-leak checks held, and every Undo log row is `undone`. CLI refusals exit 2 before anything starts:
@@ -235,6 +237,10 @@ nice -n 10 scripts/of-live-proof/run.sh --of live --session-dir <same> --proof t
 ```
 
 Also manual: the owner names the Proof fan (`--proof-fan`) before any message or PPV proof.
+
+For the attended run (ticket 98): only the two Co-tag proofs (`Proof.may_tag`) may send a tagged post. The guard
+refuses an upload, dedupe or publish-now post that the Relay's co-performer auto-tag tagged (fail safe). For those
+proofs to pass live, use solo media or set the auto-tag off.
 
 ## Tests
 

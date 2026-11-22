@@ -331,6 +331,9 @@ async def _gate_skip_reason(
 
 # ── Content composition (tease pools) ────────────────────────────────
 
+_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
 def _pick_pool(slots: dict, slot: str, weekday_name: str) -> dict:
     """Day-bucket lookup for this time-slot, per FIELD: the lines come from the
     most specific bucket that has lines and the images from the most specific
@@ -356,6 +359,15 @@ def _choose_idx(st, fan_id: int, pool_len: int, repeat_mode: str) -> int:
     if repeat_mode == "same":
         return min(int(st.last_variation_idx), pool_len - 1)
     return (int(st.last_variation_idx) + 1) % pool_len
+
+
+def _image_idx(st, fan_id: int, n: int, repeat_mode: str) -> int:
+    """An image pool whose size differs from the lines' rotates on its own: the
+    fan's seed, plus one per nudge he got (`new`); `same` holds the seed's."""
+    base = int(fan_id) % n
+    if repeat_mode == "same" or st is None:
+        return base
+    return (base + int(getattr(st, "nudge_count", 0) or 0)) % n
 
 
 class _SampleFan:
@@ -401,6 +413,10 @@ async def _compose_messages(
     h = (int(hour) if hour is not None else welcome_compose._model_hour(off)) % 24
     slot = welcome_compose._slot_key(h)
     weekday = weekday or welcome_compose._model_weekday(off)
+    if slot == "night" and h < 5:
+        # The night slot runs 21-5: its small hours belong to the night that began
+        # the day before (Friday 02:00 = Thursday night's lines).
+        weekday = _DAYS[(_DAYS.index(weekday.lower()) - 1) % 7] if weekday.lower() in _DAYS else weekday
 
     if fan_id is not None:
         async with get_session() as s:
@@ -426,7 +442,16 @@ async def _compose_messages(
     text = ""
     if cfg.get("nudge_line_text", True) and texts:
         text = substitute_placeholders(texts[nidx], fan, name=name)
-    media = _slot_media(cfg, pool, h, nidx) if cfg.get("nudge_line_image", True) else []
+    # As many images as lines: line i rides with image i. Else (a day's own images
+    # under inherited lines) the image rotates by itself, never pinned to one.
+    imgs = pool.get("image") or []
+    if not imgs or len(imgs) == len(texts):
+        iidx = nidx
+    elif randomize:
+        iidx = random.randrange(len(imgs))
+    else:
+        iidx = _image_idx(st, seed, len(imgs), cfg.get("repeat_mode", "new"))
+    media = _slot_media(cfg, pool, h, iidx) if cfg.get("nudge_line_image", True) else []
     if text or media:
         out.append({"kind": "nudge", "text": text, "media": media, "idx": nidx})
 

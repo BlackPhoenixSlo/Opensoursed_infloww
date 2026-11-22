@@ -16,6 +16,7 @@ import { discountShown, maxDiscount } from "./fanDiscount";
 import { relatedOnly } from "./ofMirrorDataQueries";
 import { frameNavigate } from "./ofMirrorPost";
 import { ELSEWHERE } from "./ofMirrorTooltip";
+import { HANDOFF_TITLE } from "./ofMirrorHandoffs";
 import { NOT_YET, SELECT_MODEL } from "./ofMirrorWrites";
 import { relay } from "./relay";
 
@@ -303,17 +304,54 @@ describe("the chat's ⋮ menu (messages/chat/state-header-menu): OF's items for 
     expect(bad.d.getElementById("oi-note")!.textContent).toBe("Could not restrict: 403 Forbidden");
   });
 
-  it("Report is disabled (OF's form sends captcha data the mirror cannot fill): NOT_YET, no link, and a click sends nothing", async () => {
+  // ticket 42 (D22): Report hands off to the chat's onlyfans.com page (OF's form sends captcha data the mirror cannot fill).
+  it("Report is OF's link to the chat's onlyfans.com page: a new tab, Wired, 'opens onlyfans.com', not disabled; its click is the browser's and sends nothing", async () => {
     const relayPost = vi.spyOn(relay, "post");
     const { d, c } = menu();
-    const r = item(d, "report");
-    expect([r.getAttribute("aria-disabled"), r.title, r.classList.contains("v-list-item--disabled"), r.querySelector("a.of-state-link")]).toEqual(["true", NOT_YET, true, null]);
-    r.click();
+    const r = item(d, "report") as HTMLAnchorElement;
+    expect([r.tagName, r.href, r.target, r.rel, r.hasAttribute("data-oi-wired"), r.title]).toEqual(["A", `https://onlyfans.com/my/chats/chat/${FAN_ID}/`, "_blank", "noopener noreferrer", true, HANDOFF_TITLE]);
+    expect([r.getAttribute("aria-disabled"), r.classList.contains("v-list-item--disabled"), r.querySelector("a.of-state-link"), text(r)]).toEqual([null, false, null, "Report"]);
+    // Its click reaches the browser (a new tab): the binder's capture listener leaves it alone.
+    let prevented: boolean | null = null;
+    const seen = (ev: Event) => { prevented = ev.defaultPrevented; ev.preventDefault(); };
+    d.addEventListener("click", seen);
+    r.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    d.removeEventListener("click", seen);
     await flush();
+    expect(prevented).toBe(false);
     expect(modal(d)).toBeNull();
     expect(c.navigate).not.toHaveBeenCalled();
     expect(Object.values(c.writes!).every((f) => (f as ReturnType<typeof vi.fn>).mock.calls.length === 0)).toBe(true);
     expect(relayPost).not.toHaveBeenCalled();
+    // A rebind (the fan refreshed) keeps the one link.
+    bind(d, "messages/chat/state-header-menu", c);
+    expect(d.querySelectorAll(".of-state-menu [data-oi-menu='report']")).toHaveLength(1);
+    expect((item(d, "report") as HTMLAnchorElement).href).toBe(`https://onlyfans.com/my/chats/chat/${FAN_ID}/`);
+  });
+
+  it("a rebind with no chat after one drops the link: no href or target, disabled, NOT_YET, its click prevented", async () => {
+    const { d, c, unbind } = menu();
+    expect(item(d, "report").getAttribute("href")).toBe(`https://onlyfans.com/my/chats/chat/${FAN_ID}/`);
+    unbind();
+    bind(d, "messages/chat/state-header-menu", { ...c, chat: null });
+    const r = item(d, "report");
+    expect([r.getAttribute("href"), r.getAttribute("target"), r.getAttribute("rel"), r.getAttribute("aria-disabled"), r.title, r.classList.contains("v-list-item--disabled")])
+      .toEqual([null, null, null, "true", NOT_YET, true]);
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+    r.dispatchEvent(ev);
+    await flush();
+    expect(ev.defaultPrevented).toBe(true);
+    expect(modal(d)).toBeNull();
+    expect(c.navigate).not.toHaveBeenCalled();
+  });
+
+  it("with no chat open Report stays disabled (NOT_YET) and a click sends nothing", async () => {
+    const { d, c } = menu({ chat: null });
+    const r = item(d, "report");
+    expect([r.tagName, r.getAttribute("aria-disabled"), r.title, r.classList.contains("v-list-item--disabled")]).toEqual(["DIV", "true", NOT_YET, true]);
+    r.click();
+    await flush();
+    expect(c.navigate).not.toHaveBeenCalled();
   });
 
   it("Hide chat and Mute stay ofMirrorChat's (this binder leaves them alone)", () => {

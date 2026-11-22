@@ -192,25 +192,13 @@ export function MessageList(props: MessageListProps) {
     () => pickEagerMediaIds(messages, ownerUserId),
     [messages, ownerUserId],
   );
-  // Each bubble gets only its own eager ids, as a set that keeps its identity
-  // while the eager pick stays the same (the pick is rebuilt every update):
-  // NO_EAGER for all but the ≤2 bubbles holding an eager tile.
+  // One eager set that keeps its identity while the eager pick stays the same
+  // (the pick is rebuilt every update): the ≤2 bubbles holding an eager tile
+  // get it, every other bubble NO_EAGER, so no other bubble's prop changes.
   const eagerKey = [...eagerMediaIds].sort().join(",");
-  const eagerSets = useMemo(() => {
-    // Every non-empty subset of the (≤2, pickEagerMediaIds) ids, keyed in eagerKey's sorted order.
-    const ids = eagerKey ? eagerKey.split(",") : [];
-    const sets = new Map<string, Set<string>>();
-    for (let mask = 1; mask < 1 << ids.length; mask++) {
-      const sub = ids.filter((_, i) => mask & (1 << i));
-      sets.set(sub.join(","), new Set(sub));
-    }
-    return sets;
-  }, [eagerKey]);
-  const eagerFor = (m: OFMessage): Set<string> => {
-    if (eagerSets.size === 0 || !m.media?.length) return NO_EAGER;
-    const own = [...new Set(m.media.map((x) => String(x.id)))].filter((id) => eagerMediaIds.has(id)).sort();
-    return own.length ? eagerSets.get(own.join(",")) ?? NO_EAGER : NO_EAGER;
-  };
+  const eagerSet = useMemo(() => new Set(eagerKey ? eagerKey.split(",") : []), [eagerKey]);
+  const eagerFor = (m: OFMessage): Set<string> =>
+    m.media?.some((x) => eagerSet.has(String(x.id))) ? eagerSet : NO_EAGER;
 
   // id → message lookup for resolving `replyToMessageId` in O(1). Built once
   // per messages change instead of an O(n) `all.find` inside the render

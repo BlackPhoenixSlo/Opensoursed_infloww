@@ -104,7 +104,32 @@ export function cachedCountSum(ids: readonly string[], countOf: CachedCount): nu
   return ids.reduce((sum, id) => sum + (countOf(id) ?? 0), 0);
 }
 
-/** "Mark all read"'s Creators: every one not known to be at 0 (no OF write for nothing). */
-export function markAllTargets(ids: readonly string[], countOf: CachedCount): string[] {
-  return ids.filter((id) => countOf(id) !== 0);
+/** "Mark all read"'s Creators: every one not known to be at 0 (no OF write for nothing). Known: its cached 0 was
+ *  read (`readAt`, epoch ms) after `since`, the last notification this tab saw arrive (any Creator's). */
+export function markAllTargets(
+  ids: readonly string[], countOf: CachedCount, readAt: (accountId: string) => number, since: number,
+): string[] {
+  return ids.filter((id) => !(countOf(id) === 0 && readAt(id) > since));
+}
+
+/** "Mark all read"'s outcome line: null when every write went through. */
+export function markAllStatus(failed: number, of: number): string | null {
+  return failed > 0 ? `${failed} of ${of} Creator${of === 1 ? "" : "s"} failed` : null;
+}
+
+/** "Mark all read"'s run: whether one is going, and the last run's outcome line (`markAllStatus`). */
+export interface MarkAllState { marking: boolean; status: string | null }
+
+export type MarkAllAction = { type: "start" } | { type: "done"; failed: number; of: number };
+
+export const initialMarkAll: MarkAllState = { marking: false, status: null };
+
+/** A run clears the last outcome while it goes; its end sets the new one. */
+export function markAllReducer(_state: MarkAllState, action: MarkAllAction): MarkAllState {
+  switch (action.type) {
+    case "start":
+      return { marking: true, status: null };
+    case "done":
+      return { marking: false, status: markAllStatus(action.failed, action.of) };
+  }
 }

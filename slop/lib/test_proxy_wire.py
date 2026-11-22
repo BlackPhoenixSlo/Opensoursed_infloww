@@ -49,6 +49,21 @@ def test_100_continue_keeps_the_body_while_refusing():
     assert up.endswith(b"BODY") and cl.endswith(b"200 OK\r\n\r\n")
 
 
+def test_100_continue_split_across_reads_keeps_the_body_while_refusing():
+    up, cl = asyncio.run(_relay([b"POST / HTTP/1.1\r\nExpect: 100-continue\r\n\r\n", b"", b"BODY", b""],
+                                [b"HTTP/1.1 100 Cont", b"inue\r\n\r\n", b"HTTP/1.1 200 OK\r\n\r\n", b""], True))
+    assert up.endswith(b"BODY") and cl.endswith(b"200 OK\r\n\r\n")
+
+
+def test_answered_splits():
+    assert pw._answered(b"HTTP/1.1 10") == (False, b"HTTP/1.1 10")  # may still be 100
+    assert pw._answered(b"HTTP/1.1 100 Continue\r\n") == (False, b"HTTP/1.1 100 Continue\r\n")
+    assert pw._answered(b"HTTP/1.1 100 Continue\r\n\r\n") == (False, b"")
+    assert pw._answered(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n")[0]  # final answer in the same read
+    assert pw._answered(b"HTTP/1.1 101 Switching")[0] and pw._answered(b"HTTP/1.1 200")[0]
+    assert pw._answered(b"\x16\x03\x01\x02\x00")[0]  # TLS bytes: the answer at once, as before
+
+
 def test_second_request_closes_the_tunnel_only_while_refusing():
     req = b"GET / HTTP/1.1\r\n\r\n"
     up, _ = asyncio.run(_relay([req, req], [b"HTTP/1.1 200 OK\r\n\r\n", b""], True))

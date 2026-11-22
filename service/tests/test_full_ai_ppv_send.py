@@ -14,7 +14,8 @@ no network, no LLM.
   case_purchase_stamp_owns         `is_paid` flip + `ownership.try_stamp_message`: the vault rows read
                                    purchased, `owned_or_seen_media` = locked (mutation target)
   case_media_rejected_clears       `mediaFiles` reject: one OF call, Offer NULL, dropped media, no
-                                   vault row, out of `sent_media_of` / `open_offer_of`
+                                   vault row, out of `sent_media_of` / `open_offer_of`; locked +
+                                   preview ids re-checked by id, a 404 leaves the mirror
   case_unreachable_clears          "Cannot send message": CLEAR send, the fan skip-listed
   case_timeout_read_back           timeout + read-back finds it: SENT with that id; finds nothing /
                                    read-back raises: UNCONFIRMED, row kept, `full_ai_ppv_unconfirmed`
@@ -39,6 +40,7 @@ import json  # noqa: E402
 import logging  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
+from datetime import datetime  # noqa: E402
 from itertools import count  # noqa: E402
 
 from sqlalchemy import select, update  # noqa: E402
@@ -46,11 +48,11 @@ from sqlalchemy import select, update  # noqa: E402
 from _of_fixtures import FakeOF, PpvFailOF  # noqa: E402
 import audience_include  # noqa: E402
 import ownership  # noqa: E402
-from automations import full_ai_ppv, full_ai_test  # noqa: E402
+from automations import _send_failure, full_ai_ppv, full_ai_test  # noqa: E402
 from automations.full_ai_ppv import CLEAR, SENT, UNCONFIRMED, send_outcome, send_priced  # noqa: E402
 from automations.full_ai_sell import Pick  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, AiDecision, Message, SkipList, VaultSend  # noqa: E402
+from db.models import Account, AiDecision, Message, SkipList, VaultItem, VaultSend  # noqa: E402
 from of_client import OFAPIError  # noqa: E402
 
 A = "86000001"
@@ -100,6 +102,18 @@ class MediaRejectOF(FakeOF):
         return super().send_message(chat_id, text, **kw)
 
 
+class GoneMediaOF(PpvFailOF):
+    """PpvFailOF whose by-id vault read 404s every id (the creator deleted them on OF)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.byid: list[int] = []
+
+    def vault_media_by_id(self, media_id):
+        self.byid.append(int(media_id))
+        raise OFAPIError("404 not found", response=_Resp(404, {}))
+
+
 class ReadFailOF(PpvFailOF):
     def get_messages(self, chat_id, **kw):
         raise RuntimeError("read failed too")
@@ -147,6 +161,7 @@ async def _reserve(pick: Pick, *, route: str = "sell_now") -> tuple[int, int, di
 
 async def _send(fake, rid: int, fan: int, ppv: dict, **kw):
     kw.setdefault("send_purpose", "gated")
+    kw.setdefault("min_gap_s", 2.0)        # full_ai_live.WRITE_GAP_S's default (its env knob unset)
     return await send_priced(fake, row_id=rid, account_id=A, fan_id=fan,
                              text="this one is just for u", ppv=ppv, **kw)
 
@@ -246,8 +261,17 @@ async def case_purchase_stamp_owns():
 
 async def case_media_rejected_clears():
     rid, fan, ppv = await _reserve(_pick())
-    fake = PpvFailOF(_media_reject(), taken=False)
+    async with get_session() as s:
+        for mid in LOCKED + PREVIEWS:
+            if await s.get(VaultItem, (A, mid)) is None:
+                s.add(VaultItem(account_id=A, media_id=mid, kind="photo", created_at=datetime.utcnow()))
+    fake = GoneMediaOF(_media_reject(), taken=False)
     out = await _send(fake, rid, fan, ppv)
+    await asyncio.gather(*list(_send_failure._RECHECK_TASKS))   # the re-check runs detached
+    assert sorted(fake.byid) == sorted(LOCKED + PREVIEWS), fake.byid
+    async with get_session() as s:
+        for mid in LOCKED + PREVIEWS:
+            assert (await s.get(VaultItem, (A, mid))).removed_at is not None, mid
     assert out == (CLEAR, None, "media"), out
     assert len(fake.attempts) == 1 and fake.sent == [], (fake.attempts, fake.sent)
     r = await _row(rid)
@@ -383,11 +407,12 @@ async def case_send_purpose():
     try:
         rid, fan, ppv = await _reserve(_pick())
         await _send(FakeOF(), rid, fan, ppv)
-        assert seen == [("gated", "full_ai_ppv")], seen
+        # W30 F8 / S8: the POST goes through the write seam, which audits it (once).
+        assert seen == [("gated", "of_write_paced")], seen
         seen.clear()
         rid, fan, ppv = await _reserve(_pick(0, media=(8621,), previews=()), route="make_right")
         await _send(FakeOF(), rid, fan, ppv)
-        assert seen == [("gated", "full_ai_ppv"), ("gated", "send_dropping_bad_media")], seen
+        assert seen == [("gated", "of_write_paced"), ("gated", "send_dropping_bad_media")], seen
         # Untagged: the harness's test mode raises before any OF call; the row stays reserved.
         rid, fan, ppv = await _reserve(_pick())
         fake = FakeOF()

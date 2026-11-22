@@ -127,7 +127,8 @@ throughput. Two watch checks keep looking after the run.
   `target_remaining` is a refusal, exit 2.
 - **Collect** (3a). For a Creator with `complete` false: at most one Collect per run (journal `collect` line). Start
   it, poll status every 10 s, answer each pause with `continue` (pauses come every 2,000 new items and stop the walk if
-  unanswered for 30 min, `service/vault_ai_api.py:269`), wait for the end, re-read `cache/summary`. Still `complete`
+  unanswered for 30 min, `service/vault_ai_api.py:269`), wait for the end (at most `COLLECT_WAIT_S`, 4 h: a status
+  still `running` then opens `collect_still_running`, not sticky, W30 F6), re-read `cache/summary`. Still `complete`
   false (a page-capped walk, `service/vault_runs.py:68`) → the Creator is worked on what the mirror holds, and is open
   with `mirror_incomplete` unless it reaches target 1,000.
 - **Describe wave** (3a). Up to `--slots` (default 3) Creators sweep at once, picked in roster order; the claim is per
@@ -135,11 +136,19 @@ throughput. Two watch checks keep looking after the run.
   (`vault_ai_vision.py:233,243`), so 3 sweeps do not triple throughput; the report measures it. Per Creator: `goal` =
   Phase 1's `coverage.goal` at target 1,000; `t = next_target(described, goal)` = the next multiple of 250 above the
   described count, capped at `goal`; read `target_remaining` at `t`; 0 at `goal` → done; 0 below → raise `t`; else
-  read the cap, check the ceiling, POST describe-all with `target: t`, journal `sweep_start {t, before, cap_before}`.
+  read the cap, check the ceiling, journal `sweep_start {t, before, cap_before}` (the reservation, BEFORE the paid
+  POST: a kill after the relay accepted it is awaited and recounted on resume, W30 F5), POST describe-all with
+  `target: t`; a refused start closes the reservation with a zero-spend `sweep` line, outcome `not_started`. A
+  lost answer (transport / 5xx, or a run killed during the POST: a `sweep_start` with no `start_answer` line) keeps
+  the reservation in flight, settled only against its own `cap_before`: at a zero recount the same start is POSTed
+  again after a poll (409 = the lost one claimed it), never re-baselined; out of retries it stays in flight and the
+  run pauses `start_unanswered` (W30 F34/F37/F40).
   Every 10 s the driver polls each running sweep; on `running: false` it reads the cap again, journals `sweep {t,
   before, after, progress, cap_before, cap_after, started, ended}`, recounts, and frees the slot for that Creator's
-  next step or the next Creator. `sweep_outcome`: 429 `daily_cap_reached`, `progress.capped`, or `progress.error`
-  naming `jev_capped` with fewer described after than the sweep's slice → `defer` until next 00:00 UTC; 424 /
+  next step or the next Creator. A sweep still `running` after `DESCRIBE_WAIT_S` (2 h) of this run's polls is no
+  longer polled: no `sweep` line, so its reservation stays in flight, and the run pauses `describe_still_running`
+  (the next run awaits it, W30 F44). `sweep_outcome`: 429 `daily_cap_reached`, `progress.capped`, or `progress.jev_capped`
+  (else `progress.error` naming it) with fewer described after than the sweep's slice → `defer` until next 00:00 UTC; 424 /
   `key_error` → open `key`; `jev.ready` false before a sweep → open `jev_not_ready`; two sweeps in a row that add no
   described item → open `no_progress` (with `progress.error`/`stop`). A 409 on start means a sweep runs: await it in
   that slot.
@@ -184,20 +193,28 @@ throughput. Two watch checks keep looking after the run.
   plans' write set with the media, previews and price the journal's before rows show (so a restore brings those rows
   back; an empty or wrong file fails, since `integrity_check` alone says `ok` on an empty DB). A copy taken
   in-container per the ae-deploy procedure; the driver never opens the live DB. Journal records path, size, sha256.
+  The file checks refuse the whole run; the row check runs per Sequence just before its apply POST, and a missing
+  or changed row skips only that Sequence (`backup:row_values` / `backup:row_missing`, plan left pending). A lost
+  apply response being reconciled is not row-checked at start: a backup taken after the crash holds its landed
+  values (W30 F2).
 - **Apply** (3b). Per gated plan, one at a time: journal `apply_intent {sequence, fingerprint, before rows, write
   set}` (write set = the plan's Options with media whose before row has none; a `free_unfilled` Option is not in it);
   call apply with the fingerprint; journal `apply {undo, applied}`; re-read the Scripts list; `readback` →
   `readback ok|mismatch:<reasons>` where reasons are `undo_short` (a write-set id missing from the Undo list),
   `values` (media ids, previews or price differ from the plan, or an Undo entry's `price_cents` differs from the row's
   price now, or its `price_set` is not exactly "before price 0 and the Option paid") and `removed_media`
-  (`removed_media_ids` not empty).
+  (`removed_media_ids` not empty). A Scripts list that cannot be read writes no `readback` line: the Sequence is
+  `unverified` (never counted filled), the wave pauses (`pause unverified`), and the next apply run reads it back.
+  A failed read-back beats `filled` whatever the Undo list (W30 F3).
 - **Lost response** (3b). On resume, an `apply_intent` with no `apply` line → re-read the Scripts list: write-set rows
   still empty → the apply never landed, re-plan; rows equal to the intent's plan → `reconstruct_undo` builds Phase 1
   `UndoEntry`s from the intent (media and previews now, `price_cents` = price now, `price_set` = before price 0 and the
   Option paid) and journals `apply {reconstructed: true}`; rows that differ from the plan → `uncertain`, listed, never
-  undone automatically.
+  undone automatically. A Scripts list that cannot be read leaves it in flight: the run ends `pause in_flight`, exit 3
+  (W30 F43).
 - **Undo** (3b). Newest apply first, skipping ones already journaled `undone`; Undo lists sent verbatim; journal
-  per-row results, `kept` rows `left` with their reason.
+  per-row results, `kept` rows `left` with their reason. An undo the next run must send again (a bare 404, another
+  refusal, a lost answer not read back as undone) ends the run `pause undo_unsettled`, exit 3 (W30 F43).
 - **Watch `script_fill_coverage`** (3b). SQL per account with live `vault_items` rows and no `account_health` dead or
   deactivated mark: describable (`kind IN ('photo','video')`, `removed_at IS NULL`), described (`describe_status =
   'described'`), terminal (not described and `describe_status IN ('refused','blocked_drm','gone')`, or
@@ -355,8 +372,9 @@ ASSUMPTION: the sanitised report goes to `.scratch/script-fill-content/rollout-r
 there, `.scratch/` never deploys); overturned by the owner naming a docs path.
 ASSUMPTION: `script_fill_coverage` cannot see `has_session` or watcher role (on-disk meta, not in the DB); it relies on
 watchers having no vault rows and `account_health` marks (rung 5); overturned if a watcher shows vault rows.
-ASSUMPTION: a Jev cap is read from `progress.error` naming `jev_capped` (rung 3: the sweep publishes its first item
-error there; no structured field exists); overturned by a Phase 1 or later field carrying item-status counts.
+ASSUMPTION (overturned W30 F12): a Jev cap was read from `progress.error` naming `jev_capped`, but that field keeps
+the first item error, so an earlier fetch failure masked the cap. `vault_sweep` now publishes `jev_capped` (any item
+failed on the Jev cap); the driver reads it, and the error text only from a relay without the flag.
 ASSUMPTION: a page-capped mirror under 1,000 described is open `mirror_incomplete`, not done (rung 4: open is
 reversible, done hides it); overturned by the owner accepting capped mirrors.
 ASSUMPTION: with no journal lock, two drivers on one journal are prevented only by the operator (coordinator ruling 4);

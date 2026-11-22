@@ -51,10 +51,11 @@ describe("AiSpendCapCard", () => {
       { account_id: "acc1", config: { ...CONFIG, daily_cost_cap_cents: 550 } }]);
   });
 
-  it("refuses more than 2 decimals and over $100, and says 0 pauses AI", async () => {
+  it("refuses more than 2 decimals and over $100, and says 0 pauses paid model calls, not TypeSafe", async () => {
     renderCard();
     const input = await box();
-    expect(screen.getByText(/0 pauses all AI for this creator/)).toBeTruthy();
+    expect(screen.getByText(/0 pauses paid model calls .* TypeSafe checks still run/)).toBeTruthy();
+    expect(screen.queryByText(/every AI call|all AI/)).toBeNull();
     fireEvent.change(input, { target: { value: "2.555" } });
     expect(saveBtn().disabled).toBe(true);
     expect(screen.getByText("Enter a dollar amount, e.g. 5 or 2.50")).toBeTruthy();

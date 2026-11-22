@@ -67,6 +67,7 @@ class _FakeOF:
         self.client._http_call = self._http_call
         self.calls: list[tuple[str, str]] = []
         self.delay_s = 0.0
+        self.unsend_reply = {"success": True}   # OF's DELETE /messages/{id} answer (of_sends.unsend_message)
         self._lock = threading.Lock()
 
     def _http_call(self, method: str, url: str, *, json_body=None):
@@ -83,6 +84,8 @@ class _FakeOF:
             return _Resp(url, 200, {"list": [], "hasMore": False})
         if path == "/api2/v2/users/list":
             return _Resp(url, 200, {})
+        if method == "DELETE" and re.fullmatch(r"/api2/v2/messages/\d+", path):
+            return _Resp(url, 200, self.unsend_reply)
         return _Resp(url, 200, {"n": n, "path": path})
 
     def gets(self, path: str) -> int:
@@ -331,6 +334,21 @@ def case_pin_unpin_and_unsend_drop_that_chat_and_unsend_without_fan_drops_all():
     assert r.status_code == 200, r.text
     warm()
     assert counts() == (4, 4), (counts(), fake.calls)
+
+
+def case_a_refused_unsend_still_drops_that_chat():
+    """Round 2 #20: OF's 2xx refusal (`success: false`) leaves the message row live but the chat detail drops anyway
+    (a re-read is harmless)."""
+    fake = _fresh()
+    fake.unsend_reply = {"success": False}
+    h = {"X-Account-Id": A}
+    _get("/api/of/v2/chats/60")
+    _get("/api/of/v2/chats/61")
+    r = OWNER_A.request("DELETE", "/api/of/v2/messages/9004", headers=h, content=json.dumps({"withUserId": 61}))
+    assert r.status_code == 200 and r.json() == {"success": False}, r.text
+    _get("/api/of/v2/chats/60")
+    _get("/api/of/v2/chats/61")
+    assert (fake.gets("/api2/v2/chats/60"), fake.gets("/api2/v2/chats/61")) == (1, 2), fake.calls
 
 
 def case_an_outbound_echo_drops_the_accounts_details():

@@ -16,6 +16,10 @@ vi.mock("next/link", () => ({
 
 import { renderWithProviders } from "@/test-utils";
 import { AnswerText } from "./AnswerText";
+import { openablePages } from "./prepass";
+
+/** Every page an owner may open: these cases are about the text, not the role (rwl W30 S3: `pages` is required). */
+const ALL = openablePages({ chatterOnly: false, grantedPages: null });
 
 /** The relay's 403 as `request` throws it: a status on the error. */
 const forbidden = () => Object.assign(new Error("relay 403"), { status: 403 });
@@ -36,14 +40,14 @@ afterEach(cleanup);
 describe("AnswerText markers", () => {
   it("a 403 reads 'Not available for your role', never $0", async () => {
     serve({ "/admin/stats/revenue": forbidden() });
-    renderWithProviders(<AnswerText text="Here's today: [[data:revenue|today|this]]" focus="1001" />);
+    renderWithProviders(<AnswerText pages={ALL} text="Here's today: [[data:revenue|today|this]]" focus="1001" />);
     expect(await screen.findByText("Not available for your role")).toBeTruthy();
     expect(screen.queryByText("$0")).toBeNull();
   });
 
   it("an invalid marker is dropped silently: no card, no brackets", async () => {
     serve({});
-    const { container } = renderWithProviders(<AnswerText text="Online now [[data:online_fans|now|all]]." focus="1001" />);
+    const { container } = renderWithProviders(<AnswerText pages={ALL} text="Online now [[data:online_fans|now|all]]." focus="1001" />);
     expect(container.textContent).toBe("Online now.");
     expect(screen.queryByTestId("assistant-data-card")).toBeNull();
     expect(relayGet).not.toHaveBeenCalled();
@@ -56,7 +60,7 @@ describe("AnswerText markers", () => {
       "/admin/stats/per-model": { per_model: [] },
     });
     renderWithProviders(
-      <AnswerText
+      <AnswerText pages={ALL}
         text={"[[data:revenue|7d|this]] [[data:top_tippers|7d|this]] [[data:per_model|7d|all]]"}
         focus="1001"
       />,
@@ -70,7 +74,7 @@ describe("AnswerText markers", () => {
   it("strips the model's digits beside a marker; the card shows the live figure", async () => {
     serve({ "/admin/stats/fan-report": { top_fans: [{ fan_id: 1, fan_name: null, username: "lena", total_cents: 12300 }] } });
     const { container } = renderWithProviders(
-      <AnswerText text="Your 3 best fans spent $4,000 [[data:top_spenders|this_month|all]]. Settings has 3 tabs." />,
+      <AnswerText pages={ALL} text="Your 3 best fans spent $4,000 [[data:top_spenders|this_month|all]]. Settings has 3 tabs." />,
     );
     expect(await screen.findByText("@lena")).toBeTruthy();
     expect(screen.getByText("$123")).toBeTruthy();
@@ -92,13 +96,13 @@ describe("AnswerText markers", () => {
 
   it("unread sums every account's live chat count for 'all'", async () => {
     serveUnread({ "1001": 4, "1002": 3 });
-    renderWithProviders(<AnswerText text="Unread: [[data:unread|now|all]]" focus="1001" accountIds={["1001", "1002"]} />);
+    renderWithProviders(<AnswerText pages={ALL} text="Unread: [[data:unread|now|all]]" focus="1001" accountIds={["1001", "1002"]} />);
     expect(await screen.findByText("7")).toBeTruthy();
   });
 
   it("unread 'all' waits for the roster: no '0' while it loads", async () => {
     serveUnread({});
-    renderWithProviders(<AnswerText text="Unread: [[data:unread|now|all]]" focus="1001" accountIds={null} />);
+    renderWithProviders(<AnswerText pages={ALL} text="Unread: [[data:unread|now|all]]" focus="1001" accountIds={null} />);
     await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/settings/applied", expect.anything()));
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByText("Loading…")).toBeTruthy();
@@ -108,7 +112,7 @@ describe("AnswerText markers", () => {
 
   it("unread 'all' with no models connected says so, never '0'", async () => {
     serveUnread({});
-    renderWithProviders(<AnswerText text="Unread: [[data:unread|now|all]]" focus="1001" accountIds={[]} />);
+    renderWithProviders(<AnswerText pages={ALL} text="Unread: [[data:unread|now|all]]" focus="1001" accountIds={[]} />);
     expect(await screen.findByText("No models connected")).toBeTruthy();
     expect(screen.queryByText("0")).toBeNull();
   });
@@ -118,7 +122,7 @@ describe("AnswerText markers", () => {
     ["one account with no count", { "1001": 4, "1002": undefined }],
   ])("unread 'all' with %s is an error, never a partial sum", async (_name, byAccount) => {
     serveUnread(byAccount);
-    renderWithProviders(<AnswerText text="Unread: [[data:unread|now|all]]" focus="1001" accountIds={["1001", "1002"]} />);
+    renderWithProviders(<AnswerText pages={ALL} text="Unread: [[data:unread|now|all]]" focus="1001" accountIds={["1001", "1002"]} />);
     expect(await screen.findByText("Couldn't load this right now")).toBeTruthy();
     expect(screen.queryByText("4")).toBeNull();
   });
@@ -126,7 +130,7 @@ describe("AnswerText markers", () => {
   it("revenue by model shows the top 5 and says how many more", async () => {
     const rows = Array.from({ length: 7 }, (_, i) => ({ account_id: `m${i}`, display_name: `Model ${i}`, total_revenue_cents: (7 - i) * 100 }));
     serve({ "/admin/stats/per-model": { per_model: rows } });
-    renderWithProviders(<AnswerText text="By model: [[data:per_model|7d|all]]" focus="1001" />);
+    renderWithProviders(<AnswerText pages={ALL} text="By model: [[data:per_model|7d|all]]" focus="1001" />);
     expect(await screen.findByText("Model 4")).toBeTruthy();
     expect(screen.queryByText("Model 5")).toBeNull();
     expect(screen.getByText("Top 5 models · 2 more")).toBeTruthy();
@@ -139,7 +143,7 @@ describe("AnswerText markers", () => {
       }
       return Promise.resolve({ rows: [{ total_cents: 500 }] });
     });
-    renderWithProviders(<AnswerText text="Today: [[data:revenue|today|this]]" focus="1002" />); // app scope: 1001
+    renderWithProviders(<AnswerText pages={ALL} text="Today: [[data:revenue|today|this]]" focus="1002" />); // app scope: 1001
     expect(await screen.findByText("$5")).toBeTruthy();
     const [path] = relayGet.mock.calls.find(([p]) => String(p).startsWith("/admin/stats/revenue"))!;
     const from = new URL(String(path), "http://x").searchParams.get("from");
@@ -149,7 +153,7 @@ describe("AnswerText markers", () => {
   it("a chat marker is a button into the fan's chat once the handle resolves; else plain text", async () => {
     relayGet.mockImplementation((path: string) =>
       path === "/api/of/v2/users/lena" ? Promise.resolve({ id: 555 }) : Promise.reject(new Error("404")));
-    renderWithProviders(<AnswerText text="Reply to [[chat:@lena]] and [[chat:@ghost]]." focus="1001" canChat />);
+    renderWithProviders(<AnswerText pages={ALL} text="Reply to [[chat:@lena]] and [[chat:@ghost]]." focus="1001" canChat />);
     const link = await screen.findByRole("link", { name: "Open @lena's chat" });
     expect(link.getAttribute("href")).toBe("/messages-pro/1001/555");
     expect(screen.getByText("Reply to @lena and @ghost.")).toBeTruthy();
@@ -160,7 +164,7 @@ describe("AnswerText markers", () => {
   it("no chat button when the session may not open Messages Pro: the handle stays plain text", async () => {
     relayGet.mockImplementation((path: string) =>
       path === "/api/of/v2/users/lena" ? Promise.resolve({ id: 555 }) : Promise.reject(new Error("404")));
-    renderWithProviders(<AnswerText text="Reply to [[chat:@lena]]." focus="1001" canChat={false} />);
+    renderWithProviders(<AnswerText pages={ALL} text="Reply to [[chat:@lena]]." focus="1001" canChat={false} />);
     expect(screen.getByText("Reply to @lena.")).toBeTruthy();
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByRole("link")).toBeNull();

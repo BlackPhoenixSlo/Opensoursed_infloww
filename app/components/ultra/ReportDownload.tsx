@@ -4,7 +4,7 @@
  * A done report_file step's download (service/report_recipe_api.py GET /admin/reports/files/{id}: the held file for
  * 15 minutes, then 404). Fetched via relayFile + saveBlob, so a dead link never saves the relay's JSON as the
  * "report": a 404 shows the expired line instead of the link, any other refusal shows its words under it. Once the
- * plan's finished_at + 15 minutes has passed, the expired line shows with no request.
+ * step's ended_at + 15 minutes has passed, the expired line shows with no request.
  */
 import { useEffect, useState } from "react";
 
@@ -16,24 +16,25 @@ import { relayFile, RelayError } from "@/lib/relay";
 const FILE_TTL_MS = 15 * 60_000;
 export const REPORT_EXPIRED = "This link has expired (links last 15 minutes). Ask Ultra for the report again.";
 
-const deadAt = (finishedAt: string | null) => (finishedAt ? Date.parse(finishedAt) + FILE_TTL_MS : NaN);
+const deadAt = (endedAt: string | null) => (endedAt ? Date.parse(endedAt) + FILE_TTL_MS : NaN);
 
-export function ReportDownload({ fileId, finishedAt, fallbackName }: {
+export function ReportDownload({ fileId, endedAt, fallbackName }: {
   fileId: string;
-  finishedAt: string | null;
+  /** When the step's call answered (its state's ended_at): the server held the file from then. */
+  endedAt: string | null;
   fallbackName: string;
 }) {
   // The one state: what the last click (or the expiry timer) found; expiry by time is also read from props each render.
   const [problem, setProblem] = useState<{ kind: "expired" } | { kind: "error"; text: string } | null>(null);
   useEffect(() => {
-    const left = deadAt(finishedAt) - Date.now();
+    const left = deadAt(endedAt) - Date.now();
     if (!(left > 0)) return;
     const t = window.setTimeout(() => setProblem({ kind: "expired" }), left);
     return () => window.clearTimeout(t);
-  }, [finishedAt]);
+  }, [endedAt]);
 
   // eslint-disable-next-line react-hooks/purity -- expiry is wall-clock by nature; the timer above re-renders at the boundary
-  if (problem?.kind === "expired" || deadAt(finishedAt) <= Date.now()) {
+  if (problem?.kind === "expired" || deadAt(endedAt) <= Date.now()) {
     return <p data-step-download-expired className="mt-2 break-words text-[13px] text-warn">{REPORT_EXPIRED}</p>;
   }
   const path = `/admin/reports/files/${encodeURIComponent(fileId)}`;

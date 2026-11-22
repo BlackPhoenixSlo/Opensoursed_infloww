@@ -44,11 +44,14 @@ def valid(domain: str) -> bool:
     return len(domain) <= 253 and bool(HOSTNAME.fullmatch(domain))
 
 
+VERIFIED = ("pending_cert", "live")  # bio_pages/decide.py VERIFIED (stdlib-only copy, pinned by its test)
+
+
 def read_domains(db: Path) -> list[str]:
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
     try:
-        rows = con.execute("SELECT DISTINCT domain FROM bio_custom_domains "
-                           "WHERE status IN ('pending_cert', 'live')").fetchall()
+        rows = con.execute("SELECT DISTINCT domain FROM bio_custom_domains WHERE status IN "
+                           f"({', '.join('?' * len(VERIFIED))})", VERIFIED).fetchall()
     finally:
         con.close()
     return sorted({str(r[0]) for r in rows})
@@ -186,7 +189,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--db", type=Path, default=Path("/root/opensoursed_infloww/service/data/chatterly.db"))
     p.add_argument("--out", type=Path, default=Path("/root/traefik-dynamic/bio-custom-domains.yml"))
-    p.add_argument("--upstream", default="http://127.0.0.1:8791")
+    p.add_argument("--upstream", default="http://127.0.0.1:8790")  # README: public BIO_PORT
     p.add_argument("--entrypoint", default="websecure")
     p.add_argument("--resolver", default="letsencrypt")
     p.add_argument("--state", type=Path, default=Path("/var/lib/bio-custom-domains/state.json"))

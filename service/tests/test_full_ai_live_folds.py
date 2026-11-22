@@ -98,7 +98,8 @@ SPECS = [
      "outcome": "bought", "omid": 81, "scene": {"n": 1, "stage": "opening", "heat": 2}},
     {"ago": 50, "his": "omg", "scene": {"n": 2, "stage": "building", "heat": 3}},
     {"ago": 40, "his": "more", "route": "sell_now", "route_row": "chat_tease",
-     "offer": _offer(0, [713], kind="free"), "scene": {"n": 3, "stage": "building", "heat": 3}},
+     # A live Free item is Owned only once OF gave its id (W30 F12: a reaped id-less one was never sent).
+     "offer": _offer(0, [713], kind="free"), "omid": 84, "scene": {"n": 3, "stage": "building", "heat": 3}},
     {"ago": 30, "his": "hmm", "route": "sell_now", "route_row": "scene_offer",
      "offer": _offer(2500, [721], [702], fmt="video", desc="her in the shower"), "outcome": "declined", "omid": 82},
     {"ago": 10, "his": "and now?", "route": "sell_now", "route_row": "sell", "offer": _offer(2000, [722]),

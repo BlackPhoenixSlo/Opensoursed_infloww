@@ -16,7 +16,7 @@ import { MoneyRail } from "@/components/MoneyRail";
 import { AssistantProvider, AssistantWidget } from "@/components/assistant/AssistantWidget";
 import { DeepLinkTarget } from "@/components/DeepLinkTarget";
 import { PageCreatorProvider } from "@/contexts/PageCreatorContext";
-import { VaultDownloadAccountGuard, VaultDownloadProvider } from "@/components/vault/VaultDownloadPanel";
+import { VaultDownloadProvider } from "@/components/vault/VaultDownloadPanel";
 
 import { BRAND_ICONS, BRAND_NAME } from "@/lib/brand";
 import { BOOT_PATH_HEADER } from "@/lib/inlineBoot";
@@ -217,7 +217,6 @@ export default async function RootLayout({
               <AssistantProvider>
                 {/* Vault Pro's download, above the routes: leaving the page keeps the run; sign-out ends it. */}
                 <VaultDownloadProvider>
-                  <VaultDownloadAccountGuard />
                   <ImpersonationBanner />
                   <AppShell>{children}</AppShell>
                   <NotificationToaster />

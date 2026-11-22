@@ -22,7 +22,7 @@ OF faked (`OwnerOF` behind `ax._make_client`), Jev + Writers faked, the other La
   case_app_reads_clear        no outside item: text+card 3 reads (pre, bubble 1, card), card alone 2, all
                               sent; our own sent bubbles in the read never stand down (also with their
                               `messages` rows missing); a raising read sends as today
-  case_welcome_handoff        his DM, a welcome after it, the hook's job + the handoff job: one reply; the
+  case_welcome_handoff        his DM, a welcome after it, the hook's job absorbs the handoff: one reply; the
                               sweep's pre-look (client None) makes 0 get_messages
   case_job_start_skips        off-list / top spend / hard skip / advancing walk: skipped, 0 Router, 0 rows;
                               off-list answered by Get to know fans, the other three by no Lane
@@ -52,10 +52,10 @@ import automation_executor as ax  # noqa: E402
 import llm_client  # noqa: E402
 import webhook_dispatch as wd  # noqa: E402
 from _full_ai_fixtures import KIND, QUIET, _seed  # noqa: E402
-from _full_ai_live_fixtures import LiveOF, clear_pause, live_rows, paused, payload, seed_live, world  # noqa: E402
+from _full_ai_live_fixtures import LiveOF, live_rows, paused, payload, seed_live, world  # noqa: E402
 from _full_ai_live_helpers import reply as _reply  # noqa: E402
 from automation_executor import run_once  # noqa: E402
-from automations import autoreply, full_ai_live, full_ai_test, welcome_turn  # noqa: E402
+from automations import autoreply, full_ai_live, full_ai_look, full_ai_test, welcome_turn  # noqa: E402
 from automations import full_ai_owner_io as io  # noqa: E402
 from automations.full_ai_sell import Pick  # noqa: E402
 from automations._skiplist import MANUAL_RESTRICT_REASON  # noqa: E402
@@ -477,12 +477,11 @@ async def case_welcome_handoff():
                 ScheduledJob.account_id == aid, ScheduledJob.kind == KIND))).scalars())
             await s.execute(update(ScheduledJob).where(ScheduledJob.account_id == aid, ScheduledJob.kind == KIND)
                             .values(run_at=datetime.utcnow() - timedelta(seconds=1)))
-        assert len(jobs) == 2 and {json.loads(j.payload_json)["anchor"] for j in jobs} == {mid}, jobs
+        # The hook's pending job absorbs the handoff (W30 F10: `full_ai_live.enqueue`): one job.
+        assert len(jobs) == 1 and {json.loads(j.payload_json)["anchor"] for j in jobs} == {mid}, jobs
         first = await run_once(aid, KIND)
-        await clear_pause(aid, fan)
-        second = await run_once(aid, KIND)
     (row,) = await live_rows(aid)
-    assert (first["status"], second["status"], row.status) == ("ok", "ok", "sent"), (first, second)
+    assert (first["status"], row.status) == ("ok", "sent"), first
     assert of.calls == len(_reply(row)["parts"]) and len(w.jev.calls) == 1
     # The sweep's pre-look (client None) on an open Turn with a human item on OF: 0 OF-app reads
     # (the sweep itself is ticket 68).
@@ -494,7 +493,7 @@ async def case_welcome_handoff():
     of2.chat = [{"id": 7_900_000_000_002, "createdAt": datetime.utcnow().isoformat() + "+00:00", "text": "x",
                  "fromUser": {"id": 1}}]
     with world(of2):
-        why = await full_ai_live._look(full_ai_live.Look(aid, fan2, (at, mid2), None, None, None, -1, 0))
+        why = await full_ai_look.last_look(full_ai_look.Look(aid, fan2, (at, mid2), None, None, None, -1, 0))
     assert why is None and of2.reads == 0, (why, of2.reads)
 
 
@@ -561,8 +560,8 @@ def case_slot_partition():
     """Each `who_owns` reason is answered by exactly one of the four 04b slots."""
     from automations import full_ai_owner
     from automations.full_ai_owner import Stop
-    slots = (full_ai_live.off_switch, full_ai_live.fans_list, full_ai_live.who_owns, full_ai_live.human_yield)
-    look = full_ai_live.Look("a", 1, (datetime.utcnow(), 1), None, None, None, -1, 0, {"off_switch": None})
+    slots = (full_ai_look.off_switch, full_ai_look.fans_list, full_ai_look.who_owns, full_ai_look.human_yield)
+    look = full_ai_look.Look("a", 1, (datetime.utcnow(), 1), None, None, None, -1, 0, {"off_switch": None})
     for r in full_ai_owner.REASONS:
         with _patched(full_ai_owner, "who_owns", lambda _f, r=r: Stop(r)):
             hits = [c.__name__ for c in slots if c(look) == r]

@@ -20,8 +20,9 @@ WHAT A `visit` MUST RETURN. A dict — the shape `_describe_one` / `_jev_and_fla
 return, plus the optional `extra` a visit that settles riders adds:
 
     ok               truthy ⇒ the item was processed. Anything else is a failure.
-    status           "capped" ⇒ the day's budget is gone; the sweep STOPS. Every
-                     other value is informational.
+    status           "capped" ⇒ the day's budget is gone; the sweep STOPS. "jev_capped"
+                     (the Jev cap, one item's failure) sets the snapshot's `jev_capped`,
+                     whatever error came first. Every other value is informational.
     detail           why it failed, for the operator. The FIRST one is kept.
     cost_millicents  optional; summed across the run.
     jev_cost_millicents  optional; the Jev pass's part of `cost_millicents`,
@@ -68,6 +69,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any, NamedTuple
 
+import vault_jev_rules
 from llm_client import LLMKeyError, key_error_payload
 
 log = logging.getLogger("of-relay.vault_sweep")
@@ -79,16 +81,23 @@ CHUNK = 50
 BREAK_AFTER = 25
 # Statuses about the ITEM itself (a DRM clip, a deleted file, a kind the pass skips): neither a failure that
 # counts toward the breaker nor a success that resets it — a vault can open with 25 DRM clips.
-NEUTRAL = frozenset({"blocked_drm", "gone", "not_in_mirror", "not_flaggable"})
+# A clip the Jev pass gave up on, or one waiting out its retry backoff (`vault_jev_pass`), is about the item too; and
+# `jev_capped` (TypeSafe's own daily cap row tripped: the rest of the sweep skips Jev, no fetch, no call, while items
+# Jev already read still describe — `vault_jev_pass` module doc) is no failure streak either: counted, it tripped
+# the breaker with a false "items in a row failed… fix it" (F6).
+NEUTRAL = frozenset({"blocked_drm", "gone", "not_in_mirror", "not_flaggable", vault_jev_rules.GAVE_UP,
+                     vault_jev_rules.RETRY_WAIT, vault_jev_rules.JEV_CAPPED})
 
 
 class SweepStop(Exception):
     """A cause no retry fixes and that is not an API key (NudeNet missing, Jev down): the sweep stops and
-    publishes `stop` = `payload()`. `message` says what is wrong, `fix` what to do; no ids, no keys."""
+    publishes `stop` = `payload()`. `message` says what is wrong, `fix` what to do; no ids, no keys.
+    `jev_cost_millicents`: what the stopping visit's Jev call already spent (counted in progress, W30 C6)."""
 
-    def __init__(self, message: str, fix: str) -> None:
+    def __init__(self, message: str, fix: str, *, jev_cost_millicents: int = 0) -> None:
         super().__init__(message)
         self.message, self.fix = message, fix
+        self.jev_cost_millicents = jev_cost_millicents
 
     def payload(self) -> dict[str, str]:
         return {"message": self.message, "fix": self.fix}
@@ -136,16 +145,19 @@ async def run(
     total = len(ids) + extra_total + len(settled)
     done = failed = cost = jev_cost = 0
     capped = False
+    jev_capped = False    # any item failed on the Jev cap (a structured signal; `error` keeps the first detail)
     first_error = ""
     key_error: dict | None = None
     stop: dict | None = None
+    notice = ""           # a sweep-wide skip worth its own line (the Jev cap: `vault_jev_pass.CAP_SKIP`), W30 R5
     streak = 0            # failures in a row (the breaker)
     streak_error = ""     # the streak's first detail
 
     def _count(r: dict[str, Any]) -> None:
-        nonlocal done, failed, cost, jev_cost, first_error
+        nonlocal done, failed, cost, jev_cost, first_error, jev_capped
         if not r.get("ok"):
             failed += 1
+            jev_capped = jev_capped or r.get("status") == "jev_capped"
             if not first_error and r.get("detail"):
                 first_error = str(r["detail"])[:200]
         cost += int(r.get("cost_millicents") or 0)
@@ -157,16 +169,18 @@ async def run(
 
     def _publish() -> None:
         into[key] = {"total": total, "done": done, "failed": failed,
-                     "capped": capped, "cost_millicents": cost,
+                     "capped": capped, "jev_capped": jev_capped, "cost_millicents": cost,
                      "error": first_error, "key_error": key_error, "stop": stop}
         if jev_cost:  # the Jev v8 pass's share (vault_jev), on its own cap row
             into[key]["jev_cost_millicents"] = jev_cost
+        if notice:    # shown beside `error`, not only when it happens to be the first failure
+            into[key]["notice"] = notice
 
     _publish()
     sem = asyncio.Semaphore(concurrency)
 
     async def _one(mid: int) -> None:
-        nonlocal done, failed, cost, capped, first_error, key_error, stop, streak, streak_error
+        nonlocal done, failed, cost, capped, first_error, key_error, stop, streak, streak_error, notice
         async with (hold(mid) if hold else nullcontext()), sem, gate():  # hold first, then per-sweep + global
             if capped or key_error or stop:
                 return
@@ -183,10 +197,9 @@ async def run(
                 return
             except SweepStop as e:  # the server, not the item — stop
                 stop = e.payload()
-                first_error = first_error or e.message
                 log.warning("%s: stopped: %s", label, e.message)
-                failed += 1
-                done += 1
+                _count({"ok": False, "detail": e.message, "cost_millicents": e.jev_cost_millicents,
+                        "jev_cost_millicents": e.jev_cost_millicents})
                 _publish()
                 return
             except Exception as e:  # noqa: BLE001 — one bad item costs ONE item
@@ -195,6 +208,8 @@ async def run(
                        "detail": f"{type(e).__name__}: {e}"[:200]}
             if res.get("status") == "capped":
                 capped = True
+            if res.get("notice") and not notice:   # a sweep-wide line (the Jev cap), first one kept
+                notice = str(res["notice"])[:200]
             if res.get("ok"):
                 streak, streak_error = 0, ""
             elif res.get("status") not in NEUTRAL:

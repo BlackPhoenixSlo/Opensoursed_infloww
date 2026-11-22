@@ -63,7 +63,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass, replace
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, NamedTuple
 
 from sqlalchemy import select
 
@@ -121,7 +121,7 @@ class Refusal:
 # Ask subject -> the TOPICS it retrieves (ticket 10 r3). feet reads the Feet-pack rungs instead
 # (no feet topic, by owner); lingerie is Jev's outfit tag, a split topic of its own here.
 _LINGERIE = vtf.Topic("lingerie", "lingerie", "in lingerie or a bodysuit", "split",
-                      lambda j, f: vtf._tag(j, "outfit") == "lingerie_or_bodysuit")
+                      lambda j, f: vtf.jev_tag(j, "outfit") == "lingerie_or_bodysuit")
 _TOPICS: dict[str, tuple[vtf.Topic, ...]] = {
     subject: tuple(vtf.BY_SLUG[s] for s in slugs) for subject, slugs in {
         "butt": ("butt_tease", "butt_bare"), "tits": ("tits", "boobs_closeup"),
@@ -765,6 +765,67 @@ def _continues(words: list[str], i: int, excused: set[int]) -> bool:
     return j in excused
 
 
+# A clause boundary (W30 #4b): a cue negates only words in its own clause ("No video of my feet.
+# Videos right here" claims the video). A contrast word starts a clause too, kept in it (W30 #19:
+# "No video but videos here" claims the video).
+_CLAUSE = re.compile(r"[.!?;:,\n]+|(?=\b(?:but|though|tho|although|however)\b)")
+
+
+def _clauses(text: str) -> list[list[str]]:
+    """`_neg_words(text)` clause by clause; their concatenation is the whole text's."""
+    return [_words(c) for c in _CLAUSE.split(_NT.sub("nt", text.lower()))]
+
+
+class _Count(NamedTuple):
+    n: int          # "a" / "an": 1
+    article: bool   # the count is "a" / "an"
+    noun: str       # the kind noun counted
+    at: int         # the noun's index among `_words(low)`
+
+
+def _counts(low: str) -> list[_Count]:
+    """Every count before a kind noun in `low` (lower-cased): a digit or number word right before
+    one, or with one word between that is no number or `_NOT_A_COUNT` word ("5 hot videos").
+    Tokenized whole (`_TOKEN`), so a price ("$12.50") is one token, never a count. The one count
+    reader `claim_ok` and `states_terms` share (W30 #12); each applies its own policy. Pure."""
+    toks = _TOKEN.findall(low)
+    at, words = [], 0
+    for t in toks:
+        at.append(words)
+        words += t.isalpha()
+    out = []
+    for i, tok in enumerate(toks):
+        n = int(tok) if tok.isdigit() else _NUMBER_WORDS.get(tok)
+        nxt = toks[i + 1:i + 3]
+        if n is None or not nxt:
+            continue
+        if nxt[0] in _KIND_NOUNS:
+            j = i + 1
+        elif (len(nxt) == 2 and nxt[1] in _KIND_NOUNS and nxt[0].isalpha()   # "5 hot videos"
+              and nxt[0] not in _NOT_A_COUNT and nxt[0] not in _NUMBER_WORDS):
+            j = i + 2
+        else:
+            continue
+        out.append(_Count(n, tok in ("a", "an"), toks[j], at[j]))
+    return out
+
+
+def _excused(clauses: list[list[str]], mask: frozenset[str]) -> set[int]:
+    """Indices (into the clauses joined) of the asked words a negation cue excuses: an asked word
+    (`mask`) with a cue among the `_EXCUSE_WINDOW` words before it in its clause, or continuing an
+    excused one (`_continues`)."""
+    out: set[int] = set()
+    at = 0
+    for words in clauses:
+        local: set[int] = set()
+        for i, w in enumerate(words):
+            if w in mask and (_negated(words, i, _EXCUSE_WINDOW) or _continues(words, i, local)):
+                local.add(i)
+        out |= {at + i for i in local}
+        at += len(words)
+    return out
+
+
 def _asked_mask(asked: dict) -> frozenset[str]:
     """His ask's words: the asked format's kind nouns (a video ask: clip words too) and the asked
     subject's words."""
@@ -801,43 +862,26 @@ def claim_ok(text: str, pick: Pick) -> bool:
 
     A Pick carrying `facts["asked"]` (not what he asked for, client rule 2026-11-16): a kind noun
     of the ASKED format (a video ask: a clip word too) or a subject word of the ASKED subject is
-    excused when a negation cue (`_NEG_CUES`) is among the 3 words before it ("no vid of that babe
-    but ive got 3 pics", "i havent filmed that one"), and so is an asked word right after an excused
-    one, past "of" / "my" / "ur" / "your" only (`_continues`: "dont have a feet video", "no video of
-    my feet"; owner 2026-11-17 replay); the count check and everything else are unchanged. An
-    untagged Pick reads as before."""
+    excused when a negation cue (`_NEG_CUES`) is among the 3 words before it in its clause
+    (`_CLAUSE`, W30 #4b; "no vid of that babe but ive got 3 pics", "i havent filmed that one"), and
+    so is an asked word right after an excused one, past "of" / "my" / "ur" / "your" only
+    (`_continues`: "dont have a feet video", "no video of my feet"; owner 2026-11-17 replay); the
+    count check and everything else are unchanged. An untagged Pick reads as before."""
     low = text.lower()
     pics, vids, _auds = _buckets(pick.facts["kinds"])
     # what the bubble shows: the locked items plus the free previews beside them
     seen_pics, seen_vids, _ = _buckets(pick.facts.get("shown_kinds", pick.facts["kinds"]))
     asked = pick.facts.get("asked")
     said = _neg_words(low) if asked else _words(low)
-    excused: set[int] = set()
-    if asked:
-        mask = _asked_mask(asked)
-        for i, w in enumerate(said):
-            if w in mask and (_negated(said, i, _EXCUSE_WINDOW) or _continues(said, i, excused)):
-                excused.add(i)
+    excused = _excused(_clauses(low), _asked_mask(asked)) if asked else set()
     for i, w in enumerate(said):
         have = seen_vids if w in _VID_NOUNS or w in _CLIP_WORDS else seen_pics if w in _PIC_NOUNS else None
         if i not in excused and have is not None and (have == 0 or (w.endswith("s") and have == 1)):
             return False
     if not seen_vids and _PLAY.search(low):
         return False
-    toks = _TOKEN.findall(low)
-    for i, tok in enumerate(toks):
-        n = int(tok) if tok.isdigit() else None if tok in ("a", "an") else _NUMBER_WORDS.get(tok)
-        nxt = toks[i + 1:i + 3]
-        if n is None or not nxt:
-            continue
-        if nxt[0] in _KIND_NOUNS:
-            noun = nxt[0]
-        elif (len(nxt) == 2 and nxt[1] in _KIND_NOUNS and nxt[0].isalpha()   # "5 hot videos"
-              and nxt[0] not in _NOT_A_COUNT and nxt[0] not in _NUMBER_WORDS):
-            noun = nxt[1]
-        else:
-            continue
-        if n not in ((vids, seen_vids) if noun in _VID_NOUNS else (pics, seen_pics)):
+    for c in _counts(low):
+        if not c.article and c.n not in ((vids, seen_vids) if c.noun in _VID_NOUNS else (pics, seen_pics)):
             return False
     desc = set(_words(" ".join(pick.facts.get("descriptions", [pick.facts["description"]]))))
     allowed = set(_SUBJECT_WORDS.get(pick.subject, ()))
@@ -851,7 +895,8 @@ def claim_ok(text: str, pick: Pick) -> bool:
 def discloses(text: str, pick: Pick) -> bool:
     """The text tells him the piece is not what he asked for (client rule 2026-11-16): True for a
     Pick without `facts["asked"]`; for one with it, (a) a negation cue within the 4 words before
-    one of his ask's words (`_asked_mask`: "no feet vid rn") or (b) a plain disclosure (`_DISCLOSE`:
+    one of his ask's words in its clause (`_asked_mask`, `_CLAUSE`: "no feet vid rn") or (b) a plain
+    disclosure in one clause (`_DISCLOSE`:
     "not what u asked for", "only got pics", "closest i have"), and, when no locked item is of the
     asked photo / video format (`real_formats`), a kind noun of a format it holds ("3 pics"); an
     audio-only Pick needs no noun. A negation elsewhere ("can't wait for u to see these") is no
@@ -863,8 +908,8 @@ def discloses(text: str, pick: Pick) -> bool:
         return True
     words = _neg_words(text)
     mask = _asked_mask(asked)
-    if not (any(w in mask and _negated(words, i, _DISCLOSE_WINDOW) for i, w in enumerate(words))
-            or _DISCLOSE.search(" ".join(words))):
+    if not any(any(w in mask and _negated(c, i, _DISCLOSE_WINDOW) for i, w in enumerate(c))
+               or _DISCLOSE.search(" ".join(c)) for c in _clauses(text)):
         return False
     real = real_formats(pick)
     if asked.get("format") in ("photo", "video") and asked["format"] not in real and real:
@@ -873,11 +918,50 @@ def discloses(text: str, pick: Pick) -> bool:
     return True
 
 
-def caption_fails(text: str, pick: Pick, price_cents: int | None) -> list[str]:
-    """The Claim audit's checks on `text` (`claim_ok`, `price_ok` at `price_cents`, `discloses`):
-    the names of those it fails ("claim", "price", "disclose"); [] passes. Pure."""
+def _affirmed_amount(text: str) -> bool:
+    """An amount (`_AMOUNT`) with no negation cue among the `_EXCUSE_WINDOW` words before it in its
+    clause: "2 pics, not $10" names no price (W30 #19)."""
+    for m in _AMOUNT.finditer(text):
+        words = _clauses(text[:m.start()])[-1]
+        if not _negated([*words, ""], len(words), _EXCUSE_WINDOW):
+            return True
+    return False
+
+
+def states_terms(text: str, pick: Pick, price_cents: int | None) -> bool:
+    """A caption that ships alone (a Pick not what he asked for, `full_ai_turn._caption`, W30 #4a)
+    states the deal DIFFERS_RULE asks for: priced, it names an amount not negated in its clause
+    (`price_ok` checks it is the price); every count before a kind noun (`_counts`, "a" / "an" one,
+    unlike claim_ok) is that kind's LOCKED count, never the shown one (NEW-172, owner 2026-11-17), and
+    each locked photo / video kind has one not negated in its clause ("not 2 pics" states none, W30
+    #19; a wrong one fails either way). A count of an excused asked noun ("dont have a feet video") is
+    no claim. Pure."""
+    if price_cents and not _affirmed_amount(text):
+        return False
+    pics, vids, _auds = _buckets(pick.facts["kinds"])
+    asked = pick.facts.get("asked")
+    clauses = _clauses(text)
+    excused = _excused(clauses, _asked_mask(asked)) if asked else set()
+    negated = _excused(clauses, _KIND_NOUNS)
+    counted: set[str] = set()
+    for c in _counts(_NT.sub("nt", text.lower())):    # `at` in `_neg_words` space, as `excused`
+        if c.at in excused:
+            continue
+        kind = "video" if c.noun in _VID_NOUNS else "photo"
+        if c.n != (vids if kind == "video" else pics):
+            return False
+        if c.at not in negated:
+            counted.add(kind)
+    return {k for k, held in (("photo", pics), ("video", vids)) if held} <= counted
+
+
+def caption_fails(text: str, pick: Pick, price_cents: int | None, *, differs: bool) -> list[str]:
+    """The Claim audit's checks on `text` (`claim_ok`, `price_ok` at `price_cents`, `discloses`; with
+    `differs`, a caption that ships alone for a Pick not what he asked for, `states_terms` too, W30 #16):
+    the names of those it fails ("claim", "price", "disclose", "terms"); [] passes. Pure."""
     return [c for c, good in (("claim", claim_ok(text, pick)), ("price", price_ok(text, price_cents)),
-                              ("disclose", discloses(text, pick))) if not good]
+                              ("disclose", discloses(text, pick)),
+                              ("terms", not differs or states_terms(text, pick, price_cents))) if not good]
 
 
 def _amount_re(signs: str, words: str) -> re.Pattern:
@@ -951,15 +1035,18 @@ def _money(cents: int) -> str:
 def fallback_caption(pick: Pick, kind: Literal["offer", "tease", "free"]) -> str:
     """The plain caption a twice-failed (or too late) audit sends instead: the counts and kinds the
     bubble shows, free previews included (`_media_phrase` over `facts["shown_kinds"]`), plus OLD-AIC-12's terms wording with the price only for an `offer`
-    ("1 vid, $25 to unlock"); a tease and a Free item name no money ("4 pics"). Pure.
+    ("1 vid, $25 to unlock"); a tease and a Free item name no money ("4 pics"). A Pick not what he
+    asked for names the LOCKED counts (`facts["kinds"]`, NEW-172; W30 #20): it ships alone, so it
+    passes `states_terms`. Pure.
     ASSUMPTION: the bare clause, as old `pack_claim.compose_caption` sent with no voice line.
     Overturned if the owner wants a flirt line beside it (old `ppv_send._FALLBACK_CAPTION`).
     A Pick carrying `facts["asked"]` leads with a plain disclosure (client rule 2026-11-16): "not
     what u asked for babe, this one's 3 pics, $34 to unlock"; it passes `claim_ok`, `price_ok`
     and `discloses`."""
-    phrase = _media_phrase(pick.facts.get("shown_kinds", pick.facts["kinds"]))
     if pick.facts.get("asked"):
-        phrase = f"not what u asked for babe, this one's {phrase}"
+        phrase = f"not what u asked for babe, this one's {_media_phrase(pick.facts['kinds'])}"
+    else:
+        phrase = _media_phrase(pick.facts.get("shown_kinds", pick.facts["kinds"]))
     return f"{phrase}, {_money(pick.price_cents)} to unlock" if kind == "offer" else phrase
 
 

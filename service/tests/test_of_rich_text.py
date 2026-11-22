@@ -163,6 +163,11 @@ def case_rich_html_only_when_formatted():
         ("<p>a<script>b</script></p>", None),
         ("<strong>not a paragraph</strong>", None),
         ("plain", None), ("", None), (None, None),
+        # An escaped literal tag: its plain text would be formatted at the send (`of_text`), so the markup stays.
+        ("<p>&lt;b&gt;hi&lt;/b&gt;</p>", "<p>&lt;b&gt;hi&lt;/b&gt;</p>"),
+        ('<p><span class="m-editor-fs__default m-editor-fc__default">&lt;i&gt;x&lt;/i&gt;</span></p>',
+         '<p><span class="m-editor-fs__default m-editor-fc__default">&lt;i&gt;x&lt;/i&gt;</span></p>'),
+        ("<p>&lt;3 u &amp; code &lt;VIP20&gt;</p>", None),   # prose in angles goes as written: plain is enough
     ]:
         assert of_rich_html(body) == want, (body, of_rich_html(body))
 

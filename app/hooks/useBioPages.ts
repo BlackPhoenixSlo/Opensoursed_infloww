@@ -24,7 +24,8 @@ export const isStockIcon = (icon: string | null): icon is StockIcon => STOCK_ICO
 /** A page's custom domain. `status`: "pending" (waiting for DNS), "pending_cert" (getting the certificate), "live".
  *  One page's own read adds the records to set (ofl.ink v2's: A, AAAA when the server has one, TXT
  *  `_oflink` = `oflink-verify=<token>`, names relative to the zone) and the last check's time. */
-export interface BioDomainRecord { type: string; name: string; value: string }
+/** `name` relative to the zone as the API guesses it (last two labels; `@` = the domain itself), `fqdn` the full name. */
+export interface BioDomainRecord { type: string; name: string; fqdn?: string; value: string }
 export interface BioDomain { domain: string; status: string; records?: BioDomainRecord[]; checked?: string | null }
 
 export interface BioListRow {
@@ -157,7 +158,7 @@ export function useDeleteBioPage(pid: string) {
 }
 
 /** A write under `/{pid}`: its answer is the page. A refused one re-reads the page (a 409 "the links changed"). */
-function usePageWrite<V>(pid: string, call: (v: V) => Promise<BioPage>) {
+function usePageWrite<V, P extends BioPage = BioPage>(pid: string, call: (v: V) => Promise<P>) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: call,
@@ -195,8 +196,9 @@ export const useBioBackgroundFromVault = (pid: string) =>
   usePageWrite(pid, (m: { id: number; type: string }) =>
     relay.post<BioPage>(`${pagePath(pid)}/background/vault`, { media_id: m.id, type: m.type }));
 
+/** Answers the page and the created link (service/bio_pages/admin.py create_link). */
 export const useCreateBioLink = (pid: string) =>
-  usePageWrite(pid, (body: LinkBody) => relay.post<BioPage>(`${pagePath(pid)}/links`, body));
+  usePageWrite(pid, (body: LinkBody) => relay.post<BioPage & { link: BioLink }>(`${pagePath(pid)}/links`, body));
 
 export const usePatchBioLink = (pid: string) =>
   usePageWrite(pid, ({ lid, body }: { lid: string; body: LinkBody }) => relay.patch<BioPage>(linkPath(pid, lid), body));

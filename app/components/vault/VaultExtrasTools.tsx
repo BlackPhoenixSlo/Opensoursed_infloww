@@ -90,7 +90,7 @@ export default function VaultExtrasTools({
   accountId: string;
   onClose: () => void;
   isCollecting: boolean;
-  /** The Collect is waiting on "continue collecting?" (it asks every 2000 new items; `last_run.status`). */
+  /** The Collect is waiting on "continue collecting?" (it asks about every 2000 collected items; `last_run.status`). */
   collectPaused?: boolean;
   /** null for a restricted chatter: the count is whole-vault. */
   totalSeen: number | null;
@@ -280,7 +280,7 @@ export default function VaultExtrasTools({
         </button>
       </div>
 
-      {/* The Collect asks every 2000 new items; unanswered for 30 min it stops on its own (vault_ai_api). */}
+      {/* The Collect asks about every 2000 collected items; unanswered for 30 min it stops on its own (vault_ai_api). */}
       {isCollecting && collectPaused && onCollectAnswer && (
         <div
           data-testid="vault-collect-paused"
@@ -327,7 +327,7 @@ export default function VaultExtrasTools({
           )}
         >
           {describeStopped.text}
-          <span className="block opacity-70 mt-0.5 break-words">{describeStopped.detail}</span>
+          <span className="block opacity-70 mt-0.5 break-words whitespace-pre-line">{describeStopped.detail}</span>
         </div>
       )}
 

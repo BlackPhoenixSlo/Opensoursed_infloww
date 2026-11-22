@@ -22,6 +22,7 @@ REQUESTS=[]       # {"proof", "steps", "fill"} or {"page", "steps", "want": [[me
 RED_NOTES=[]      # {"page", "steps", "fail": [method, path], "kept": js, "note": text}
 READS={}          # GET /api/of/v2/<path> -> JSON
 AFTER=[]          # (method, path regex, fn(reads, match, body))
+VIEWS={}          # proof id -> page with a query, for check 1 (phase_check.py docstring)
 
 INIT=""           # a script run in every page and frame before its own (phase_check.py docstring)
 
@@ -136,7 +137,8 @@ _COVER=("(() => { const at = (s) => { const el = [...document.querySelectorAll(s
         " const tools = [...document.querySelectorAll('[data-oi-tool]')].filter(t => t.checkVisibility() && at(`[data-oi-tool='${t.dataset.oiTool}']`) === 'reachable').map(t => t.dataset.oiTool);"
         " return [at(\"%s\"), at(\"%s\"), at(\"%s\"), b && [b.hasAttribute('data-oi-msg-menu'), b.disabled], tools]; })()") % (_MSG_MORE, _LIST_MORE, _HEAD_MORE, _MSG_MORE)
 # The chat page's items, as it shows them (measured on messages/chat?chat=9001; no Pin: message 11 has no canBePinned).
-_MSG_WANT=[["Copy message text", False], ["Like", False], ["Reply", False], ["Bookmark", False], ["Hide", False], ["Report", True]]
+# ticket 42: Report is a hand-off to the chat's onlyfans.com page now, so enabled (was ["Report", True]; measured 2026-11-21).
+_MSG_WANT=[["Copy message text", False], ["Like", False], ["Reply", False], ["Bookmark", False], ["Hide", False], ["Report", False]]
 # Message 11's menu Like label (the thread draws no like state; the menu reads it) and #oi-note right after its bubble
 # when there is a note.
 _LIKE_STATE=("(() => { const b = document.querySelector(\"%s\"); b?.click(); const l = document.querySelector(\"%s\")?.textContent.trim() ?? null;"
@@ -267,5 +269,60 @@ RED_NOTES+=[{"page":_LIST, "steps":steps, "fail":["POST","/api/of/v2/upload"], "
                                 *(([label, _RECORD_BUTTON[label], _RECORD_BUTTON[label]], _record_want(label, False)[0])
                                   for label in ("Record video", "Record voice")))]
 
+# ticket 33: my own bubbles' extras on the chat page (ofMirrorBubbleExtras bindBubbleExtras): an own PPV (13,
+# $5, media 62, 90 s left) shows Countdown m:ss ticking, Copy as draft and Unsend PPV; an expired own PPV (14) keeps
+# only Copy as draft. Copy as draft fills the Chat draft (`oi:chat:1:9001`) and sends nothing; Unsend PPV's confirm:
+# Cancel sends nothing, Unsend sends the one message delete (useUnsendMessage, this chat only). The stale click (a
+# button whose window closed since the last draw) is vitest's (ofMirrorMessageMenu.test.ts): a draw each second and on
+# every redraw removes such a button before a mouse reaches it.
+_PPV={"text":"<p>ppv</p>","fromUser":_ME,"price":5,"media":[{"id":62,"type":"photo","canView":True}],"isFree":False}
+# Older than ticket 31's two, so they draw above them: ticket 31's cover rows keep message 11 where they measured it.
+READS["/api/of/v2/chats/9001/messages"]["list"][:0]=[
+    {"id":13,"createdAt":"2026-10-10T11:58:00Z","cancelSeconds":90,**_PPV},
+    {"id":14,"createdAt":"2026-10-10T11:59:00Z","cancelSeconds":0,**_PPV}]
+_BUBBLE="[data-oi-msg='%s'] [data-oi-bubble='%s']"
+_UNSEND_BTN="css="+_BUBBLE % (13, "unsend-ppv")
+_CONFIRM_BTN="css=#oi-msg-confirm footer button:has-text('%s')"
+_UNSEND=["DELETE","/api/of/v2/messages/13",{"withUserId":9001}]
+# Countdown read twice 1.1 s apart: m:ss both times (90 s window) and changed; the expired bubble's extras.
+_TICK=("(async () => { const c = () => document.querySelector(\"%s\")?.textContent ?? null; const a = c();"
+       " await new Promise(r => setTimeout(r, 1100)); const b = c(); return [/^1:[0-5]\\d$/.test(a ?? ''), a !== b, /^1:[0-5]\\d$/.test(b ?? '')]; })()") % (_BUBBLE % (13, "countdown"))
+_EXTRAS="[...document.querySelectorAll(\"[data-oi-msg='%s'] [data-oi-bubble]\")].map(e => e.dataset.oiBubble)"
+_CHAT_DRAFT="(() => { const d = JSON.parse(sessionStorage.getItem('oi:chat:1:9001') || '{}'); return [d.text ?? null, d.price ?? null, d.media_files ?? null, document.querySelector(\"[contenteditable][aria-label='Textbox field']\")?.textContent ?? null]; })()"
+_BUBBLE_KEPT="(() => { const b = document.querySelector(\"[data-oi-msg='13']\"); const n = document.getElementById('oi-note'); return [!!b, !n || n.previousElementSibling === b]; })()"
+REQUESTS+=[
+    {"page":"messages/chat?chat=9001", "steps":[], "want":[], "after":[_TICK, [True, True, True]]},
+    {"page":"messages/chat?chat=9001", "steps":[], "want":[], "after":["[%s, %s]" % (_EXTRAS % 13, _EXTRAS % 14), [["countdown","copy-draft","unsend-ppv"], ["copy-draft"]]]},
+    {"page":"messages/chat?chat=9001", "steps":["css="+_BUBBLE % (13, "copy-draft")], "want":[], "after":[_CHAT_DRAFT, ["ppv", 5, [62], "ppv"]]},
+    {"page":"messages/chat?chat=9001", "steps":[_UNSEND_BTN, _CONFIRM_BTN % "Cancel"], "want":[], "after":[_BUBBLE_KEPT, [True, True]]},
+    # Last of the rows on message 13: its AFTER hook drops it from the pass's reads (the refetch shows it gone).
+    {"page":"messages/chat?chat=9001", "steps":[_UNSEND_BTN, _CONFIRM_BTN % "Unsend"], "want":[_UNSEND],
+     "after":["[!!document.querySelector(\"[data-oi-msg='13']\"), document.getElementById('oi-note')?.textContent ?? null]", [False, "Unsent"]]},
+]
+def _unsent(reads, m, body):
+    t=reads["/api/of/v2/chats/9001/messages"]; t["list"]=[x for x in t["list"] if str(x["id"])!=m[1]]
+AFTER+=[("DELETE", r"/api/of/v2/messages/(\d+)", _unsent)]
+# The refused unsend: the bubble stays (useUnsendMessage restores it), the red note under it; message 13 served again.
+# Check 1 opens the three on chat 9001 (the bare chat page draws no own bubble).
+VIEWS|={i: "messages/chat?chat=9001" for i in ("p2.bubble-countdown", "p2.bubble-copy-draft", "p2.bubble-unsend-ppv")}
+RED_NOTES+=[{"page":"messages/chat?chat=9001", "steps":[_UNSEND_BTN, _CONFIRM_BTN % "Unsend"], "fail":_UNSEND[:2],
+             "reads":{"/api/of/v2/chats/9001/messages": READS["/api/of/v2/chats/9001/messages"]},
+             "kept":_BUBBLE_KEPT, "note":"Could not unsend: synthetic failure", "sent":[_UNSEND]}]
+
+# ticket 42 (D22): the three Reports hand off to onlyfans.com (app/lib/ofMirrorHandoffs.ts reportHandoffUrl: chat measured, post `inferred`;
+# no Relay route, no capture record, no proof): a new tab to exactly the URL (aborted), zero Relay requests, the label
+# "opens onlyfans.com", trigger and end screenshots (phase_check.handoff_rows, Single Creator). The chat header menu's
+# and fan message 11's menu's on chat 9001; another creator's post on Home, on a feed of one synthetic post (77 by the
+# placeholder @synthcreator, the author inline: not among /users/list's) served for that row only.
+_CHAT_REPORT="https://onlyfans.com/my/chats/chat/9001/"
+_POST_REPORT="https://onlyfans.com/77/synthcreator"
+_THEIRS={"id":77,"text":"<p>theirs</p>","postedAt":"2026-10-10T10:05:00Z","author":{"id":4242,"username":"synthcreator","name":"Synth Creator"},"media":[]}
+HANDOFFS=[
+    {"page":"messages/chat/state-header-menu?chat=9001", "steps":["css=.of-state-menu a[data-oi-menu='report']"], "handoff":_CHAT_REPORT, "text":"Report"},
+    {"page":"messages/chat?chat=9001", "steps":["css="+_MSG_MORE, "css=#oi-msg-menu a[data-oi-msg-action='report']"], "handoff":_CHAT_REPORT, "text":"Report"},
+    {"page":"home/index", "steps":["css=[data-oi-post='77'] .b-post__tools__more button", "css=[data-oi-post-menu] a[data-oi-action='report']"],
+     "handoff":_POST_REPORT, "text":"Report", "reads":{"/api/of/v2/posts":[_THEIRS]}},
+]
+
 if __name__=="__main__":
-    phase_check.run("content-writes", phase2.PROOFS, REQUESTS, RED_NOTES, READS, AFTER, init=INIT)
+    phase_check.run("content-writes", phase2.PROOFS, REQUESTS, RED_NOTES, READS, AFTER, init=INIT, views=VIEWS, handoffs=HANDOFFS)

@@ -44,7 +44,9 @@ import { scheduledSendsKey } from "@/hooks/useServerScheduledSends";
 import type { OFChatItem, OFMessage } from "@/lib/relay";
 import { isValidFanId, sameUserId, type FanId } from "@/lib/fanId";
 import {
-  applyReply, bumpChatPages, fanRowMatcher, freshestFanRow, mayAddRow, parseReply, type ChatPages, type Reply,
+  applyReply, bumpChatPages, fanRowMatcher, freshestFanRow, mayAddRow, parseReply, patchChatCaches, rowNewerThan,
+  type ChatPages,
+  type Reply,
 } from "@/lib/chatsCache";
 import { insertByCreatedAt, insertMsg, toUtcIso } from "@/lib/threadCache";
 
@@ -190,13 +192,8 @@ export function applyCachedReply(
   qc: QueryClient, accountId: string, reply: Reply,
   patchRoster?: (accountId: string, fn: (cur: RosterCount) => RosterCount) => void,
 ): void {
-  const qs = qc.getQueryCache().findAll({ queryKey: ["chats"] });
   const prior = findFanChatRow(qc, accountId, reply.fanId);
-  for (const q of qs) {
-    const data = q.state.data as ChatPages | undefined;
-    const next = applyReply(q.queryKey, data, accountId, reply);
-    if (next !== data) qc.setQueryData(q.queryKey, next);
-  }
+  patchChatCaches(qc, accountId, (data, { key }) => applyReply(key, data, accountId, reply));
   const delta = patchRoster && rosterDeltaForEvent({ isOutbound: true, existing: prior, eventCreatedAt: reply.createdAt });
   if (delta && (delta.dUnread !== 0 || delta.dOwe !== 0)) patchRoster!(accountId, (cur) => applyRosterDelta(cur, delta));
 }
@@ -393,20 +390,19 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
         const seedAccount = q.queryKey[2];
         if (seedAccount != null && String(seedAccount) !== accountId) return;
         const existing = data.list.find(isFanRow) ?? null;
-        const lastAt = existing?.lastMessage?.createdAt;
-        if (lastAt && Date.parse(toUtcIso(lastAt)) > evtMs) return;
+        if (rowNewerThan(existing, evtMs)) return;
         const row = bumpRow(existing);
         if (!row) return;
         qc.setQueryData(q.queryKey, { ...data, list: [row, ...data.list.filter((c) => !isFanRow(c))] });
       });
 
-      qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
-        const data = q.state.data as ChatPages | undefined;
-        if (!data?.pages?.length) return;
-        // New row only where lib/chatsCache `mayAddRow`; otherwise a fan-less cache keeps its reference.
-        const mayAdd = mayAddRow(q.queryKey, accountId);
-        const pages = bumpChatPages(data.pages, isFanRow, (e) => (e || mayAdd ? bumpRow(e) : null));
-        if (pages !== data.pages) qc.setQueryData(q.queryKey, { ...data, pages });
+      // New row only where lib/chatsCache `mayAddRow` (never on a replay); otherwise a fan-less cache keeps its
+      // reference. Replayed over a page read before it (`patchChatCaches`), a row showing a newer message stays.
+      patchChatCaches(qc, accountId, (data, { key, replay }) => {
+        const mayAdd = !replay && mayAddRow(key, accountId);
+        const pages = bumpChatPages(data.pages, isFanRow,
+          (e) => (e ? (replay && rowNewerThan(e, evtMs) ? null : bumpRow(e)) : mayAdd ? bumpRow(null) : null));
+        return pages === data.pages ? data : { ...data, pages };
       });
     });
 

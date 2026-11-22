@@ -17,7 +17,8 @@ import { Plus, Search } from "lucide-react";
 
 import { ExtraTag, Input } from "@/components/ui/primitives";
 import { EmptyState, HbButton, HbFilterLg, HbModal } from "@/components/ui/infloww";
-import { ConfirmDeleteButton, CopyButton, errMsg } from "@/components/growth/_bits";
+import { ConfirmDeleteButton, errMsg } from "@/components/growth/_bits";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { FieldLabel } from "@/components/growth/LinkMetaFields";
 import { CreatorFilter, LEAD, Switch, TD, TH, dateOnly, useReportTz } from "@/components/growth/LinksListFrame";
 import {

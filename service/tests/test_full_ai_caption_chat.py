@@ -373,8 +373,8 @@ def case_differs_rule():
     assert user.index("THE SET HE GETS") < user.index(note) < user.index("\n\nTHE PRICE\n"), user
     # The shape it asks for passes the Claim audit at the right price (locked or shown count), not a wrong one.
     good = "not what u asked for babe, no feet vid, but 3 pics of me topless on the bed, plus one u can see, $45"
-    assert full_ai_sell.caption_fails(good, near, 4500) == []
-    assert full_ai_sell.caption_fails(good.replace("$45", "$40"), near, 4500) == ["price"]
+    assert full_ai_sell.caption_fails(good, near, 4500, differs=True) == []
+    assert full_ai_sell.caption_fails(good.replace("$45", "$40"), near, 4500, differs=True) == ["price"]
     free = Pick(**{**near.__dict__, "price_cents": 0})
     fs = fc.messages(_tfacts("live", rows), free, None)
     assert fs[0]["content"] == fc.HEAD + fc.differs_rule(False) + _OLD_TAIL, fs[0]["content"]

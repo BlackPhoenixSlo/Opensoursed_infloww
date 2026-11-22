@@ -38,7 +38,7 @@ On each box, check the chosen port is free with `ss -ltn` before deploying.
 ## 1. DNS (owner)
 
 - public: `new.ofl.ink  A  <the public box IP>`
-- AE: `ae.ofl.ink  A  187.126.20.230`
+- AE: `ae.ofl.ink  A  <the AE box IP>`
 
 No AAAA (unless the box's Traefik listens on v6). Check: `dig +short new.ofl.ink` = the box IP. LE's HTTP-01
 challenge needs the record live before step 5.
@@ -131,6 +131,9 @@ Verify:
 - Limiter: if `.env` sets `TRUSTED_PROXIES`, it must cover the `<project>_default` network gateway
   (`docker network inspect <project>_default`), else every visitor shares one limiter key [i]. Functional check: a
   test page, exceed the ping limit from the laptop (429), then ping from the box (204); delete the test page.
+- Location: a visitor's country/region (stats, Geo links) is read from CF-IPCountry / X-Country / region headers
+  only when the hop is in `EDGE_PROXIES` (Cloudflare in front, deploy/ae/EDGE-CDN.md); otherwise stats say `XX`
+  and Geo links see the default (US).
 - Recreate gap: a curl loop every 0.2 s on `/internal/healthz` during
   `docker compose up -d --force-recreate openinflowwww-bio`; record the longest gap (target ≤ 5 s [g]).
 - After each box ships: append a `bio_counter_loss` line to that sweep's WATCH.md (CLAUDE.md "Post-deploy
@@ -154,10 +157,22 @@ sees TXT `_oflink.<domain>` = `oflink-verify=<token>` (v2's record, so a domain 
 least one A and every A = `BIO_SERVER_IP`, every AAAA = `BIO_SERVER_IPV6` (none is fine), and no CAA refusing
 letsencrypt.org → `live` once
 `https://<domain>/internal/healthz` answers 200 with a valid certificate. The bio service serves `pending_cert` and
-`live` hosts (the certificate's HTTP-01 challenge and the probe need it). Only one page may hold a domain past
-`pending`; an account holds at most 10.
+`live` hosts (the certificate's HTTP-01 challenge and the probe need it). One page at a time holds a domain past
+`pending`; an account holds at most 10. Current DNS wins: another page may save the same domain (`pending`), and its
+check moves the domain to it once the TXT holds only its own token (and A/AAAA/CAA pass). The old page drops to
+`pending` with a fresh token. While the domain is held, a DNS error or a TXT naming both tokens leaves the newcomer
+`pending`; a check that raced a change answers 409 (reload).
+
+Bot check on custom domains (inferred, not measured): with the Turnstile keys set, a Link with `bot_check` Reveals
+only on a hostname the Turnstile widget allows. Add each custom domain to the widget's hostname list in the
+Cloudflare dashboard (Free plan: up to 10 hostnames; "Any Hostname" is Enterprise), else gated Links on that domain
+fail to open (the page shows "Couldn't open this link"). Live status does not check this.
 
 Install (per box, once; public box paths shown):
+
+Needs host mode's port: path mode publishes no bio host port, so first add the §3 override's
+`ports: ["127.0.0.1:${BIO_PORT}:8788"]` (the Traefik route file is optional), else every custom domain answers 502
+and stays `pending_cert`.
 
 1. `.env`: `BIO_SERVER_IP=<the box's public IPv4>` (the address its Traefik answers on; optional
    `BIO_SERVER_IPV6` only if Traefik answers on v6 too), then recreate the relay
@@ -169,16 +184,18 @@ Install (per box, once; public box paths shown):
    ```
    The service runs `deploy/bio/sync-custom-domains.py` (stdlib python3) every minute: it reads
    `bio_custom_domains` read-only and writes `/root/traefik-dynamic/bio-custom-domains.yml` (one `websecure` router
-   with `certResolver: letsencrypt` per `pending_cert`/`live` domain, all to `http://127.0.0.1:8791`, the bio
-   service's host port; JSON, which Traefik reads as YAML). At most 5 new domains per run; no write when nothing
-   changed. Another box edits the unit's flags (`--db`, `--out`, `--upstream`, `--env-file`).
+   with `certResolver: letsencrypt` per `pending_cert`/`live` domain, all to `http://127.0.0.1:8790`, public's
+   `BIO_PORT`; JSON, which Traefik reads as YAML). At most 5 new domains per run; no write when nothing
+   changed. Another box edits the unit's flags (`--db`, `--out`, `--upstream` = its `BIO_PORT`, AE 8798,
+   `--env-file`).
 3. Verify: `systemctl start bio-custom-domains.service; journalctl -u bio-custom-domains -n 5` (a `routers=` line on
    the first write), `cat /root/traefik-dynamic/bio-custom-domains.yml` (`{}` with no domains), and
    `docker logs traefik-traefik-1 --since 5m | grep -i error` clean.
 
 DNS drift: the timer re-resolves each routed domain's A record hourly; one that has not named `BIO_SERVER_IP` for
 24 h loses its router (logged `dropped_dns=`), and gets it back once it resolves here again. The row stays as it is
-(the timer never writes the DB); the owner checks or removes it in the editor.
+(the timer never writes the DB); the owner checks or removes it in the editor, or another page's check takes it
+over (above).
 
 Rollback: `systemctl disable --now bio-custom-domains.timer`, `rm /root/traefik-dynamic/bio-custom-domains.yml`
 (Traefik drops the routers), unset `BIO_SERVER_IP` and recreate the relay. Rows stay in the DB.

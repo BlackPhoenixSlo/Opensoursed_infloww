@@ -78,9 +78,10 @@ It prints one `{"check","want","got"}` line per check and exits 1 on a failure (
 
     python3 -I scripts/of-mirror-check/settings_writes.py
 
-dark.py checks that the frame follows our theme (`chatterly:theme` dark, then light) with OF's own `m-mode-dark` on its `<html>` on home, messages/chat, settings/fans and settings/display, with no light first paint (an init script in every frame records the `<html>` class when the parser finishes,
-readyState `interactive`, and at DOMContentLoaded, both before any load event: dark must have `m-mode-dark` then; window-level
-listeners, since the frame's page reuses the window of its initial about:blank, where alone Playwright runs init scripts),
+dark.py checks that the frame follows our theme (`chatterly:theme` dark, then light) with OF's own `m-mode-dark` on its `<html>` on home, messages/chat, settings/fans and settings/display, with no light first paint (a script a route puts first in each mirror page's `<head>` records the `<html>` class when the
+parser finishes, readyState `interactive`, and at DOMContentLoaded, both before any load event: dark must have `m-mode-dark` then;
+not an init script: the frame's page reuses the window of its initial about:blank, where alone Playwright runs those, and
+window listeners added there recorded nothing on 3 of the 4 pages; with the generator's boot script stripped these rows fail),
 and, live, no light frame: in dark, a CDP screencast (`Page.startScreencast`, every frame) runs from navigation start until the
 mirror frame has loaded, and every frame after the `<iframe>` element exists must have a mean luminance under 0.4 inside the
 frame's box (Pillow decodes the PNGs, else a canvas in a throwaway page; it prints frame count and max luminance, and fails with
@@ -539,7 +540,9 @@ runtime state (D18): each proof has one capture record, found as `phase2.py --ch
 pass`), has no "Not available in Inflowwww yet" title, else still has it (D1). The switch probe GET
 `/api/of/ofm-writes` answers on (OFM_NEW_WRITES_ENABLED, as of-live-proof runs the Relay; dead.py's mock too); a proof
 tagged `ofm_new_writes` (Record video and Record voice, the vault folder page's More) is also checked in a switch-off
-pass (the probe answered 404): found, not Wired, its Not-yet title kept, nothing sent. Its tables, filled by the Phase 2
+pass (the probe answered 404): found, not Wired, its Not-yet title kept, nothing sent; one with a `VIEWS` page (ticket
+33's own-bubble extras) must not be drawn there, once that page's anchor (phase_check `ANCHORS`, an own bubble on
+messages/chat; `anchors=` per proof) is drawn, so a page that drew no data never passes as absent. Its tables, filled by the Phase 2
 control tickets: `REQUESTS`: the steps send exactly the proof's capture record's request with `X-Account-Id: 1`, then
 the read-back; `RED_NOTES`: a mocked 502 on the write shows the red `#oi-note` and the page keeps its last saved state;
 no console errors. With empty tables it loads home/index. No All-Creators pass: OF Manager has no All creators;
@@ -552,7 +555,8 @@ records from another folder. Screenshots: `/tmp/of-mirror-shots/inapp-content-wr
     PORT=3091 python3 -I scripts/of-mirror-check/content_writes.py
     PORT=3091 python3 -I scripts/of-mirror-check/content_writes.py --plant /tmp/rows.json
 
-Committed plants: `plants/phase2-clean.json` must print `content-writes ok`; `plants/phase2-fail.json` must exit 1 (missing control, Live pass on an unwired control, title dropped without a pass, proof without a record).
+Committed plants: `plants/phase2-clean.json` must print `content-writes ok`; `plants/phase2-fail.json` must exit 1 (missing control, Live pass on an unwired control, title dropped without a pass, proof without a record); `plants/phase2-anchor-missing.json` (chat 9001's messages
+served empty) must exit 1 on the switch-off pass's anchor checks.
 
 golive.py is Phase 4's Mirror check (`docs/spec/ofm-not-yet/phase-04-go-live.md`, Testing Decisions; ticket 83), on
 the same harness `phase_check.py`: the stream schedule form (`streaming/dashboard/create`), the dashboard
@@ -574,8 +578,19 @@ its `SWEPT` pages (the three Phase 4 pages, checked against the sweep's pages) l
 
 Committed plants: `plants/phase4-clean.json` must print `golive ok`; `plants/phase4-fail.json` must exit 1 (missing
 control in a proof and in a row's steps, a Live pass on a control that keeps the title, a parked record whose control
-lost it, a request to a non-localhost host, and that request's console error). A plant's `init` marks Add cover Wired, so
-the title check fails alone.
+lost it, a request to a non-localhost host, and that request's console error). A plant's `init` marks the format button
+(`[g-btn.m-with-round-hover]`) Wired, so the title check fails alone (not Add cover: its real parked record,
+`streaming--add-cover.json`, would make a plant's Add cover proof find two records).
+
+What stays Not-yet on the Phase 4 pages (ticket 90; each record parked with its reason in
+`docs/of-manager/captures/streaming--*.json`): the schedule form's search box and Search button are wired (ticket 84)
+but keep the title until their Live proof (ticket 91, D1); Add cover stays unwired (ticket 85 parked: OF reports
+`isScheduledStreamsAllowed` false on the Proof Creator, so no cover body was captured; 86 moot with it); the format
+button waits on its panel's State page (ticket 87, rides ticket 28); View stats waits on its modal's State page and a
+stats read that answers 200 (ticket 88, rides 28; it answers 403 today); Go live's rows, switches, description and
+Start Live Video stay track B (D7: gate open, owner stream go pending). Go live never reads
+`GET /api/of/v2/users/settings/streams` (ticket 89 moot, D28). Generator edits for ticket 28:
+`.scratch/ofm-not-yet/phase4-generator-edits-for-28.md`.
 
 Phase 1's sections under the v2 mock (`docs/of-manager/not-yet-sweep-2026-11-20-phase1-v2.json`; per-label remainder
 in `.scratch/ofm-not-yet/phase1-remainder.md`):

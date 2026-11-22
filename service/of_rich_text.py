@@ -334,11 +334,16 @@ _FORMAT = re.compile(r"<(?:strong|em)>|m-editor-f[cs]__(?!default\b)")
 def of_rich_html(body: str | None) -> str | None:
     """A scraped OF body's sanitized markup when it carries formatting (bold, italic, a non-default OF colour or
     size class), else None: plain text, markup that is only paragraphs and breaks, and OF's default-classed spans
-    (every segment of an unformatted message) need no copy beside the plain text."""
+    (every segment of an unformatted message) need no copy beside the plain text. Except when that plain text would
+    itself read as markup at the send boundary (an escaped literal `&lt;b&gt;x&lt;/b&gt;` is the plain `<b>x</b>`,
+    which `of_text` would make bold): then the markup is kept, so the fan reads it as written."""
     if not is_of_html(body):
         return None
     clean = sanitize_of_html(body)
-    return clean if _FORMAT.search(clean) else None
+    if _FORMAT.search(clean):
+        return clean
+    plain = of_plain(clean)
+    return clean if of_plain(plain) != plain else None
 
 
 def of_plain(text: str | None) -> str:

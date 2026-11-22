@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""`vault_settings`: the two per-Creator vault switches, both OFF by default, and what off means.
+"""`vault_settings`: the per-Creator vault switches (two OFF, `solo_sequences` ON by default), and what off means.
 
   case_seed                       owner / other owner / folder-limited chatter logins
-  case_default_off_and_routes     no row = both off; PUT sets one, keeps the other; bad bodies 400
+  case_default_off_and_routes     no row = two off, solo_sequences on; PUT sets one, keeps the others; bad
+                                  bodies 400; a row whose solo_sequences is NULL (pre-0131) reads it as on
   case_scope                      another owner's account and a folder-limited chatter -> 403
   case_standard_off_is_inert      off: sync creates no folder, listing is empty, a describe places nothing,
                                   a leftover Needs Review folder does not take media out of the sale pool,
@@ -23,7 +24,7 @@ import uuid  # noqa: E402
 from datetime import datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
-from sqlalchemy import func, select  # noqa: E402
+from sqlalchemy import func, select, update  # noqa: E402
 
 import vault_settings  # noqa: E402
 import vault_standard_folders as folders  # noqa: E402
@@ -32,13 +33,13 @@ from automations import full_ai_sell as sell, full_ai_turn as turn  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, Chatter, ChatterFolderAccess, ChatterUser, User, UserAccount, VaultFolder, VaultFolderItem,
-    VaultFolderPrice, VaultItem,
+    VaultAccountSetting, VaultFolderPrice, VaultItem,
 )
 from vault_standard_rules import REVIEW, key  # noqa: E402
 
 AID, OTHER = "accVS", "accVSother"
 URL = "/admin/vault-ai/settings"
-OFF = {"folder_price_final": False, "standard_folders": False}
+OFF = {"folder_price_final": False, "standard_folders": False, "solo_sequences": True}  # the defaults
 C: dict[str, object] = {}
 
 
@@ -72,20 +73,36 @@ async def case_seed():
 
 
 async def case_default_off_and_routes():
+    assert OFF == vault_settings.DEFAULTS and OFF["solo_sequences"] is True
     assert await vault_settings.load(AID) == OFF
     got = C["owner"].get(URL, params={"account_id": AID})
     assert got.status_code == 200 and got.json() == {"account_id": AID, **OFF}, got.text
     r = C["owner"].put(URL, json={"account_id": AID, "folder_price_final": True})
     assert r.status_code == 200 and r.json() == {"account_id": AID, "folder_price_final": True,
-                                                 "standard_folders": False}, r.text
+                                                 "standard_folders": False, "solo_sequences": True}, r.text
     r = C["owner"].put(URL, json={"account_id": AID, "standard_folders": True})
-    assert r.json() == {"account_id": AID, "folder_price_final": True, "standard_folders": True}, r.text
+    assert r.json() == {"account_id": AID, "folder_price_final": True, "standard_folders": True,
+                        "solo_sequences": True}, r.text
+    r = C["owner"].put(URL, json={"account_id": AID, "solo_sequences": False})
+    assert r.json() == {"account_id": AID, "folder_price_final": True, "standard_folders": True,
+                        "solo_sequences": False}, r.text
+    assert C["owner"].get(URL, params={"account_id": AID}).json()["solo_sequences"] is False
     assert await vault_settings.load(OTHER) == OFF, "per Creator"
     for body in ({"account_id": AID}, {"account_id": AID, "standard_folders": 1},
-                 {"account_id": AID, "folder_price_final": "yes"}, {"standard_folders": True}):
+                 {"account_id": AID, "folder_price_final": "yes"}, {"standard_folders": True},
+                 {"account_id": AID, "solo_sequences": None}):
         assert C["owner"].put(URL, json=body).status_code == 400, body
     r = C["owner"].put(URL, json={"account_id": AID, **OFF})
     assert r.status_code == 200 and await vault_settings.load(AID) == OFF
+    # A row from before 0131 has solo_sequences NULL: it reads as on, and the other switches as stored.
+    await vault_settings.put(OTHER, standard_folders=True)
+    async with get_session() as s:
+        await s.execute(update(VaultAccountSetting).where(VaultAccountSetting.account_id == OTHER)
+                        .values(solo_sequences=None))
+        await s.commit()
+    assert await vault_settings.load(OTHER) == {**OFF, "standard_folders": True}
+    await vault_settings.put(OTHER, standard_folders=False)
+    assert await vault_settings.load(OTHER) == OFF
 
 
 async def case_scope():

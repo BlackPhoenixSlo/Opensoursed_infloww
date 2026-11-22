@@ -34,6 +34,15 @@ export class RelayError extends Error {
   }
 }
 
+/** The fans a refused mark-all still cleared (service read_flip.acked_fans): the relay's 502 body
+ *  `{detail: {upstream_body: {acked_fan_ids}}}`; [] for any other error. */
+export function ackedFanIds(err: unknown): (number | string)[] {
+  const body = err instanceof RelayError
+    ? (err.body as { detail?: { upstream_body?: { acked_fan_ids?: unknown } } } | null) : null;
+  const ids = body?.detail?.upstream_body?.acked_fan_ids;
+  return Array.isArray(ids) ? ids.filter((f): f is number | string => typeof f === "number" || typeof f === "string") : [];
+}
+
 /** The relay's typed answer when an AI feature's API key is missing, empty or
  *  rejected (`llm_client.key_error_payload`, served as a 424). The relay owns
  *  every sentence here; the app shows them, it does not re-compose them. */

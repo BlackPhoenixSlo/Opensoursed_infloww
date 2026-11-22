@@ -16,13 +16,14 @@
  * (`POST /users/notifications/read`, what OF web sends when a notifications tab opens).
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { skipToken, useQueries, useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
+import { useCallback, useEffect, useReducer, useRef } from "react";
+import { skipToken, useQueries, useQuery, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
-import { cachedCountSum, markAllTargets } from "@/components/notificationBellReducer";
+import { cachedCountSum, initialMarkAll, markAllReducer, markAllTargets } from "@/components/notificationBellReducer";
 import { useOfReadGate } from "@/hooks/useOfReadGate";
 import { relay } from "@/lib/relay";
 import { gateOptions } from "@/lib/ofReadGate";
+import { lastNotifArrival } from "@/lib/notifSettings";
 
 interface NotifCountResp { all?: number }
 
@@ -30,15 +31,31 @@ const NO_IDS: readonly string[] = [];
 /** The count's key, for the lease-gain refetch. */
 export const COUNT_ROOTS = ["of-notif-count"] as const;
 
+/** Per QueryClient (its count entries), per Creator, when the count read (or mark-read) that last answered was asked
+ *  (epoch ms; set on its answer, so a read in flight leaves the last one's). "Mark all read" dates a cached 0 by
+ *  this, not by when it landed: an arrival between ask and answer may postdate the 0 (W30-mu #49). */
+const countAskedAt = new WeakMap<QueryClient, Map<string, number>>();
+function askedAt(qc: QueryClient): Map<string, number> {
+  let m = countAskedAt.get(qc);
+  if (!m) countAskedAt.set(qc, (m = new Map()));
+  return m;
+}
+
 export function useOfNotifCount(accountId: string | null, staleMs = 30_000) {
+  const qc = useQueryClient();
   const gate = useOfReadGate(accountId ? [accountId] : NO_IDS, COUNT_ROOTS)(accountId ?? "");
   const { enabled, ...gated } = gateOptions(gate);
   const q = useQuery<number>({
     queryKey: ["of-notif-count", accountId],
     // A badge: background (queued behind clicks, lib/relaySchedule), dropped when its screen goes (signal).
     queryFn: accountId && enabled !== false
-      ? async ({ signal }) => Number((await relay.get<NotifCountResp>(
-        "/api/of/v2/users/notifications/count", { accountId, priority: "background" }, signal))?.all) || 0
+      ? async ({ signal }) => {
+        const asked = Date.now();
+        const n = Number((await relay.get<NotifCountResp>(
+          "/api/of/v2/users/notifications/count", { accountId, priority: "background" }, signal))?.all) || 0;
+        askedAt(qc).set(accountId, asked);
+        return n;
+      }
       : skipToken,
     staleTime: staleMs,
     retry: false,
@@ -61,6 +78,7 @@ export function useMarkOfNotifsRead() {
   const qc = useQueryClient();
   return useCallback(async (accountId: string): Promise<boolean> => {
     let resp: { counters?: NotifCountResp } | undefined;
+    const asked = Date.now();
     try {
       resp = await relay.post<{ counters?: NotifCountResp }>(NOTIF_READ_PATH, undefined, { accountId });
     } catch {
@@ -69,8 +87,10 @@ export function useMarkOfNotifsRead() {
     const all = resp?.counters?.all;
     // A count read still in flight (the panel-close re-read) may predate the write: drop it.
     await qc.cancelQueries({ queryKey: ["of-notif-count", accountId] });
-    if (typeof all === "number") qc.setQueryData<number>(["of-notif-count", accountId], all);
-    else void qc.invalidateQueries({ queryKey: ["of-notif-count", accountId] });
+    if (typeof all === "number") {
+      qc.setQueryData<number>(["of-notif-count", accountId], all);
+      askedAt(qc).set(accountId, asked);
+    } else void qc.invalidateQueries({ queryKey: ["of-notif-count", accountId] });
     return true;
   }, [qc]);
 }
@@ -91,27 +111,40 @@ export function useCachedOfNotifSum(ids: readonly string[]): number {
 /**
  * "Mark all read" over live Creators: one mark-read each, serially (up to 50
  * Creators, each an OF write on its own proxy), skipping any whose cached
- * count is 0. A second call while one runs does nothing.
+ * count is a 0 asked since the last arrival (lib/notifSettings
+ * `lastNotifArrival`; `countAskedAt`). A second call while one runs does nothing. Resolves
+ * whether every write went through; `status` names the failed ones' share
+ * until the next run (`markAllReducer`).
  */
 export function useMarkAllOfNotifsRead() {
   const qc = useQueryClient();
   const markOfNotifsRead = useMarkOfNotifsRead();
-  const [marking, setMarking] = useState(false);
+  const [{ marking, status }, dispatch] = useReducer(markAllReducer, initialMarkAll);
   const running = useRef(false);
-  const markAll = useCallback(async (liveIds: readonly string[]) => {
-    if (running.current) return;
+  const markAll = useCallback(async (liveIds: readonly string[]): Promise<boolean> => {
+    if (running.current) return false;
     running.current = true;
-    setMarking(true);
+    dispatch({ type: "start" });
+    let failed = 0;
+    // A cached 0's date: its read's ask time when known (a value written after it, a creator_warmed, dates no
+    // later than that ask), else when it landed.
+    const readAt = (aid: string) => {
+      const landed = qc.getQueryState(countKey(aid))?.dataUpdatedAt ?? 0;
+      const asked = askedAt(qc).get(aid);
+      return asked === undefined ? landed : Math.min(landed, asked);
+    };
+    const targets = markAllTargets(liveIds, (aid) => qc.getQueryData<number>(countKey(aid)), readAt, lastNotifArrival());
     try {
-      for (const id of markAllTargets(liveIds, (aid) => qc.getQueryData<number>(countKey(aid)))) {
-        await markOfNotifsRead(id);
+      for (const id of targets) {
+        if (!(await markOfNotifsRead(id))) failed++;
       }
     } finally {
       running.current = false;
-      setMarking(false);
+      dispatch({ type: "done", failed, of: targets.length });
     }
+    return failed === 0;
   }, [qc, markOfNotifsRead]);
-  return { marking, markAll };
+  return { marking, markAll, status };
 }
 
 /**

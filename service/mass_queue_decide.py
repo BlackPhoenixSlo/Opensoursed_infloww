@@ -7,6 +7,7 @@ enqueue), in that order, and calls these through the module attribute:
 
     threshold_refusal      -> the 422 text for thresholds + online-only, before any read
     threshold_count_refusal-> the 422 text for a thresholded audience of 0 / too many
+    nobody_left_refusal    -> the 422 text for a send with no audience left after the guards
     strip_excluded         -> user_ids minus the excluded ids (mirrors of_client's subtraction)
     needs_exclude_list     -> whether the excluded ids must ride the Auto_Exclude list
     pending_placeholders   -> explicit recipients OF did not echo (optimistic rows)
@@ -42,6 +43,19 @@ def threshold_count_refusal(n: int, cap: int) -> str | None:
                 f"one send takes at most {cap}. Raise a "
                 "threshold or pick a smaller list — nothing was sent.")
     return None
+
+
+def nobody_left_refusal(asked: int, listed_out: int) -> str:
+    """The 422 text for a send with no audience left: `asked` = the caller's
+    distinct fan ids, `listed_out` = those the opt-out/queued guards kept but
+    the excluded lists then held (all of them, as nobody is left)."""
+    if listed_out:
+        return (f"nobody left to send to: the excluded lists hold all {listed_out} fan(s) "
+                "left after the opt-out and already-queued checks; nothing was sent")
+    if asked:
+        return (f"nobody left to send to: {asked} of {asked} fan(s) skipped "
+                "(opted out or already queued); nothing was sent")
+    return "nobody left to send to: no fan, list or online audience picked; nothing was sent"
 
 
 def strip_excluded(user_ids: list, excluded: list) -> list:

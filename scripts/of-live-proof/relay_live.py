@@ -10,7 +10,8 @@ lives here (precedent: scripts/demo-shots/promo_proof_relay.py, slop/lib/relay.p
 Loopback-only routes:
   POST /__proof/arm {proof: id|null, of, proof_fan, owner_go: [..], lockout, capture_abort, quiet_hour}   arm or
                            disarm; `quiet_hour` (ISO, aware) starts the run's declared quiet hour (Run.quiet_hour),
-                           fake mode only (a live arm carrying it is answered 400)
+                           fake mode only (a live arm carrying it is answered 400); `cotag_partner` (ticket 98):
+                           a POST /posts's only allowed Co-tag (Run.cotag_partner)
   GET  /__proof/wire       the wire log so far (one entry per request, completed)
   GET  /__proof/session    OnlyFans's /users/me through the undecorated route (no 60 s cache)
   GET  /__proof/of-read?path=/api2/v2/...&query=<qs>   the driver's own OnlyFans-side read (ticket 11, prove.py
@@ -94,7 +95,10 @@ POSTS_PATH = "/api2/v2/posts"
 # /streams/users/blocked`, its proof's read arm; no body, so the path's username: the row's `username`, or OF's
 # default handle `u<id>` naming the found id itself). A create path is a string or a regex (a named group is a sent
 # field). A read path without `{id}` is such a list read: exactly one row carries the id, and its field must match. A
-# create path not here has no read-back, so its found id is refused, never exempted.
+# create path not here has no read-back, so its found id is refused, never exempted. A chat send (the PPV proof's, to
+# the Proof fan the guard held it to) is read back on the driver's own thread read (`read_id_query`), its sent text
+# (the run's marker, Write.payload) exact on the one row with the id (follow-up #10). A read path's `{name}` other
+# than `{id}` takes the create path's named group.
 READ_BACK = {
     ("POST", POSTS_PATH): (POSTS_PATH + "/{id}", {}, "text", ("rawText", "text")),
     ("POST", "/api2/v2/messages/queue"): ("/api2/v2/messages/queue/{id}", {"format": "scheduled"}, "text",
@@ -106,6 +110,8 @@ READ_BACK = {
     ("PUT", "/api2/v2/users/links"): ("/api2/v2/users/links", {}, "link", ("url",)),
     ("POST", re.compile(r"/api2/v2/streams/users/(?P<username>[A-Za-z0-9._-]+)/block")): (
         "/api2/v2/streams/users/blocked", {"limit": 50}, "username", ("username",)),
+    ("POST", re.compile(r"/api2/v2/chats/(?P<fan>\d+)/messages")): (*read_id_query("message", None, "{fan}"), "text",
+                                                                    ("rawText", "text")),
 }
 # A write whose reply carries no id (the publish answers `{success}`) takes the id of what it acted on: only an id
 # one of the armed proof's own create writes on one of those paths got in its reply (no read: that id is the Relay's
@@ -416,7 +422,8 @@ def _found_mismatch(of_get, request, row, of_id: str, rows) -> str | None:
     want = g[field] if in_path else sent.get(field) if isinstance(sent, dict) else None
     if not isinstance(want, str) or not want:   # an empty name matches any unnamed item: never taken
         return f"row {row['row']}'s write sent no {field} to match"
-    listed, path = "{id}" not in path, path.format(id=of_id)
+    listed = "{id}" not in path
+    path = path.format(**(g.groupdict() if isinstance(g, re.Match) else {}), id=of_id)
     try:
         got = of_get(request, path, dict(params))
     except Exception as e:  # noqa: BLE001  (a refused or failed read takes no id)
@@ -458,7 +465,9 @@ def proof_routes(app, of_get) -> None:
                        capture_abort=bool(b.get("capture_abort")), proof_fan=b.get("proof_fan"),
                        owner_go=frozenset(b.get("owner_go") or ()), lockout=bool(b.get("lockout")),
                        fan_visible_done=_run.fan_visible_done, hosts=tuple(proof.hosts) if proof else (),
-                       quiet_hour=datetime.fromisoformat(b["quiet_hour"]) if b.get("quiet_hour") else None)
+                       quiet_hour=datetime.fromisoformat(b["quiet_hour"]) if b.get("quiet_hour") else None,
+                       cotag_partner=str(b["cotag_partner"]) if b.get("cotag_partner") else None,   # ticket 98
+                       marker=str(b["marker"]) if b.get("marker") else None)   # round 2 #22: payloads bind to it
             registered.clear()
         return {"armed": pid}
 

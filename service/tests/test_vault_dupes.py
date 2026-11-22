@@ -37,6 +37,9 @@ Cases:
       items with no cached thumb are fetched in the background on a scan
       (audio and already-hashed rows are not), the next scan covers them, and
       a finished pass is not relaunched by the modal's polling (cooldown).
+  case_backfill_scope_and_mid_scan_finish:
+      cooldown is per scope (a chatter's pass doesn't block the owner's); a poll
+      during a pass skips the mirror walk and stays running if it ends mid-scan.
   case_hide_marks_mirror_removed:
       a successful hide sends exactly the approved ids to OF and soft-deletes
       those mirror rows so the grid/picker/automations stop seeing them.
@@ -513,6 +516,69 @@ async def case_backfill_scans_unrendered_items() -> None:
         vault_stills.THUMB_DIR, vault_stills.bytes_for = orig_dir, orig_bf
 
 
+async def case_backfill_scope_and_mid_scan_finish() -> None:
+    """W30 F21/F22: a folder-restricted pass does not put the whole vault in cooldown; a poll that
+    starts while a pass runs neither re-walks the mirror nor reports running=false when the pass ends
+    mid-scan (the scan may have missed its last thumbs)."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    import vault_of_folders
+    import vault_stills
+
+    aid = _next_account()
+    await _seed_account(aid)
+    gate = asyncio.Event()
+    asked: list[int] = []
+
+    async def fake_bytes_for(account_id, media_id, path, pick):
+        asked.append(media_id)
+        await gate.wait()
+        return vault_stills.Still(None, "fetch_failed")
+
+    async def until_idle() -> None:
+        for _ in range(200):
+            if not vault_dupes.backfill_running(aid):
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("backfill never finished")
+
+    orig = (vault_stills.THUMB_DIR, vault_stills.bytes_for, vault_dupes.find_duplicates,
+            vault_dupes.missing_thumb_ids)
+    vault_stills.THUMB_DIR = Path(tempfile.mkdtemp())
+    vault_stills.bytes_for = fake_bytes_for
+    try:
+        gate.set()
+        assert vault_dupes.start_thumb_backfill(aid, [1], frozenset({12}))
+        await until_idle()
+        assert vault_dupes.start_thumb_backfill(aid, [1, 2]), "restricted pass blocked the whole vault"
+        await until_idle()
+        assert not vault_dupes.start_thumb_backfill(aid, [1, 2]), "same scope: cooldown"
+
+        gate.clear()
+        assert vault_dupes.start_thumb_backfill(aid, [3], frozenset({13}))
+        walked: list[str] = []
+        real_find, real_missing = orig[2], orig[3]
+
+        async def find_while_pass_ends(account_id, threshold, allowed=None):
+            gate.set()
+            await until_idle()                  # the pass ends during the scan
+            return await real_find(account_id, threshold, allowed=allowed)
+
+        async def missing(account_id, allowed=None):
+            walked.append(account_id)
+            return await real_missing(account_id, allowed)
+
+        vault_dupes.find_duplicates, vault_dupes.missing_thumb_ids = find_while_pass_ends, missing
+        r = await vault_of_folders.list_duplicates(account_id=aid, threshold=2, limit=200)
+        assert r["backfill"]["running"], ("pass ended mid-scan, reply said done", r["backfill"])
+        assert walked == [], "mirror re-walked while a pass ran"
+    finally:
+        (vault_stills.THUMB_DIR, vault_stills.bytes_for, vault_dupes.find_duplicates,
+         vault_dupes.missing_thumb_ids) = orig
+
+
 _harness.run(
     case_hash_roundtrip,
     case_original_is_earliest,
@@ -520,6 +586,7 @@ _harness.run(
     case_video_duration_gate,
     case_cluster_matches_allpairs,
     case_backfill_scans_unrendered_items,
+    case_backfill_scope_and_mid_scan_finish,
     case_hide_refuses_original,
     case_hide_refuses_non_duplicate,
     case_hide_skips_sent_unless_allowed,

@@ -41,7 +41,9 @@ import { useAccounts } from "@/hooks/useAccounts";
 import { relay } from "@/lib/relay";
 import { isArmed, resetReadGate } from "@/lib/ofReadGate";
 import { resetRosterCountsModuleState } from "./useRosterCounts";
-import { COALESCE_MS, RESYNC_MIN_MS, SALES_MIN_MS, useAccountStateEvents, warmMark } from "./useAccountStateEvents";
+import {
+  COALESCE_MS, RESYNC_MIN_MS, SALES_MIN_MS, flipCachedReadState, useAccountStateEvents, warmMark,
+} from "./useAccountStateEvents";
 
 function emit(type: string, e: Record<string, unknown> = {}) {
   act(() => { for (const fn of handlers.get(type) ?? []) fn(e, type); });
@@ -377,5 +379,39 @@ describe("useAccountStateEvents", () => {
     expect(qc.getQueryData(key)).toBe(before);
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 7, unread: 0, at: 5_001 } });
     expect((qc.getQueryData(key) as { pages: { rows: { hasUnread: boolean }[] }[] }).pages[0].rows[0].hasUnread).toBe(false);
+  });
+
+  it("flips order by their Relay stamp per fan, not by arrival; a mark-all leaves a fan flipped after it (W30-mu #44)", () => {
+    const qc = makeTestQueryClient();
+    const row = (fid: number, unread: boolean) =>
+      ({ __accountId: "a1", withUser: { id: fid }, hasUnread: unread, unreadMessagesCount: unread ? 1 : 0 });
+    const key = ["chats", "model", "a1", null, null, null, 25];
+    qc.setQueryData(key, { pages: [{ rows: [row(7, false), row(8, false), row(9, true)], hasMore: false, askedAt: 1 }],
+      pageParams: [0] });
+    mount(qc);
+    const unreadOf = () => (qc.getQueryData(key) as { pages: { rows: ReturnType<typeof row>[] }[] }).pages[0].rows
+      .map((c) => `${c.withUser.id}:${c.hasUnread ? 1 : 0}`);
+    emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 7, unread: 1, at: 200 } });
+    emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 7, unread: 0, at: 100 } });
+    expect(unreadOf()).toEqual(["7:1", "8:0", "9:1"]);            // the older read, arriving late, changes nothing
+    emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 8, unread: 1, at: 300 } });
+    emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: "all", unread: 0, at: 250 } });
+    expect(unreadOf()).toEqual(["7:0", "8:1", "9:0"]);            // all read but fan 8, marked unread after it
+    emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 9, unread: 1, at: 240 } });
+    expect(unreadOf()).toEqual(["7:0", "8:1", "9:0"]);            // older than the mark-all
+  });
+
+  it("this tab's own flip records no stamp: a newer remote flip the Relay stamped before the tab's clock applies (W30-mu #50)", () => {
+    const qc = makeTestQueryClient();
+    const key = ["chats", "model", "a1", null, null, null, 25];
+    qc.setQueryData(key, { pages: [{ rows: [{ __accountId: "a1", withUser: { id: 7 }, hasUnread: false,
+      unreadMessagesCount: 0 }], hasMore: false, askedAt: 1 }], pageParams: [0] });
+    mount(qc);
+    const unread = () => (qc.getQueryData(key) as { pages: { rows: { hasUnread: boolean }[] }[] }).pages[0].rows[0]
+      .hasUnread;
+    flipCachedReadState(qc, "a1", { fanId: 7, unread: true, at: 500 }, { own: true });   // stamped after the answer
+    expect(unread()).toBe(true);
+    emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 7, unread: 0, at: 400 } });
+    expect(unread()).toBe(false);
   });
 });

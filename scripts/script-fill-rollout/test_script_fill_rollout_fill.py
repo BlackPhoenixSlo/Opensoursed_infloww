@@ -228,7 +228,8 @@ def test_next_action(name, lines, want):
     ("ok + empty undo + failed read-back", [P_OK, INTENT, OK_EMPTY, RB_BAD], "readback_mismatch", 1),
     ("ok + empty undo + failed read-back, re-planned", [P_OK, INTENT, OK_EMPTY, RB_BAD, P_OK],
      "readback_mismatch", 1),
-    ("filled + failed read-back", [P_OK, *FILLED[:2], RB_BAD], "filled", 1),
+    ("filled + failed read-back", [P_OK, *FILLED[:2], RB_BAD], "readback_mismatch", 1),
+    ("filled, not read back (read-back list unreadable)", [P_OK, *FILLED[:2]], "unverified", 0),
     ("ok + empty undo + clean read-back (legit zero-write)", [P_OK, INTENT, OK_EMPTY, RB_CLEAN], "ok", 0),
     ("filled + clean read-back", [P_OK, *FILLED], "filled", 0),
 ])
@@ -265,6 +266,7 @@ def test_fill_counts_reasons_and_eligibility():
 # ── Driver, fill side ───────────────────────────────────────────────────────
 
 FILL_P = "/admin/saved-replies/fill"
+SCRIPTS_P = "/admin/saved-replies"
 A_SEQ, SHARED, CONFLICT, RES = "Shower Tease 3", "Shared Sequence", "Conflict Ladder", "FM12"
 
 
@@ -347,24 +349,44 @@ def test_live_apply_refuses_without_a_good_backup(world, tmp_path):
     empty = tmp_path / "empty.db"
     empty.write_bytes(b"")
     assert run(url, tmp_path, "apply", "--live", "--backup", str(empty)) == 2
-    short = make_backup(tmp_path / "short.db", fake, skip={a.seqs[A_SEQ][1]["id"]})
-    assert run(url, tmp_path, "apply", "--live", "--backup", short) == 2
     old = make_backup(tmp_path / "old.db", fake)
     os.utime(old, (time.time() - 7 * 3600,) * 2)
     assert run(url, tmp_path, "apply", "--live", "--backup", old) == 2
-    a.seqs[SHARED][1]["price"] = 700                                        # backup no longer holds this value
-    stale_vals = make_backup(tmp_path / "vals.db", fake)
-    a.seqs[SHARED][1]["price"] = 0
-    assert run(url, tmp_path, "apply", "--live", "--backup", stale_vals) == 2
     assert [(x["ok"], (x["reason"] or "").split(":")[0]) for x in kinds(tmp_path, "backup")] == [
-        (False, "no --backup"), (False, "tables_missing"), (False, "row_missing"), (False, "older_than_6h"),
-        (False, "row_values")]
+        (False, "no --backup"), (False, "tables_missing"), (False, "older_than_6h")]
     assert fill_posts(fake, "apply") == [] and not kinds(tmp_path, "apply_intent")
+    # A row missing (A_SEQ) or holding other values (SHARED) skips only that Sequence; the rest is applied.
+    a.seqs[SHARED][1]["price"] = 700                                        # backup no longer holds this value
+    bad_rows = make_backup(tmp_path / "rows.db", fake, skip={a.seqs[A_SEQ][1]["id"]})
+    a.seqs[SHARED][1]["price"] = 0
+    assert run(url, tmp_path, "apply", "--live", "--backup", bad_rows) == 0
+    assert fill_posts(fake, "apply") == [(b.id, SHARED)]
     assert run(url, tmp_path, "apply", "--live", "--backup", good) == 0
-    (ok,) = [x for x in kinds(tmp_path, "backup") if x["ok"]]
+    assert sorted(fill_posts(fake, "apply")) == sorted([(b.id, SHARED), (a.id, A_SEQ), (a.id, SHARED)])
+    ok = [x for x in kinds(tmp_path, "backup") if x["ok"]][-1]
     data = Path(good).read_bytes()
     assert (ok["path"], ok["size"], ok["sha256"]) == (str(Path(good).resolve()), len(data),
                                                      hashlib.sha256(data).hexdigest())
+
+
+def test_dry_run_and_live_skip_a_sequence_the_backup_does_not_hold_alike(world, tmp_path, capsys):
+    """W30 F32: dry run and live name one skip per Sequence (`backup_skip`); the start-of-run refusal names the
+    file checks it ran, not the rows."""
+    a, b, fake, url, good = world
+    assert run(url, tmp_path, "apply", "--live") == 2
+    refused = capsys.readouterr()
+    assert "integrity_check" in refused.out + refused.err and "every row" not in refused.out + refused.err
+    a.seqs[SHARED][1]["price"] = 700
+    bad_rows = make_backup(tmp_path / "rows.db", fake, skip={a.seqs[A_SEQ][1]["id"]})
+    a.seqs[SHARED][1]["price"] = 0
+    assert run(url, tmp_path, "apply", "--backup", bad_rows) == 0
+    dry = capsys.readouterr().out
+    assert f"apply {a.id} {A_SEQ}: would skip (backup:row_missing) [dry run]" in dry, dry
+    assert f"apply {a.id} {SHARED}: would skip (backup:row_values) [dry run]" in dry, dry
+    assert run(url, tmp_path, "apply", "--live", "--backup", bad_rows) == 0
+    live = capsys.readouterr().out
+    assert f"apply {a.id} {A_SEQ}: the backup does not hold the rows to write (backup:row_missing)" in live, live
+    assert f"apply {a.id} {SHARED}: the backup does not hold the rows to write (backup:row_values)" in live, live
 
 
 def test_apply_reads_back_keeps_fixed_price_isolates_creators_and_never_applies_twice(world, tmp_path):
@@ -431,6 +453,23 @@ def test_lost_response_is_reconciled_by_read_back_without_a_second_apply(world, 
     assert run(url, tmp_path, "undo", "--live", *canary) == 0                  # the rebuilt list undoes it
     s = a.seqs[A_SEQ]
     assert [r["media"] for r in s] == [[]] * 4 and [r["price"] for r in s] == [0, 0, 2000, 0]
+
+
+def test_lost_response_with_an_unreadable_list_stays_in_flight_and_pauses(world, tmp_path, monkeypatch):
+    """W30 F43: the reconcile cannot read the Scripts list, so the lost apply is still unresolved: exit 3 (pause
+    `in_flight`), never a green 0; the next run with the list back settles it without a second apply."""
+    a, b, fake, url, backup = world
+    canary = ("--creator", a.id, "--sequence", A_SEQ)
+    orig = _crash_on_journal(monkeypatch, "apply")
+    with pytest.raises(Crash):
+        run(url, tmp_path, "apply", "--live", "--backup", backup, *canary)
+    monkeypatch.setattr(core.Journal, "write", orig)
+    fake.fail[(SCRIPTS_P, a.id)] = 401
+    assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == core.EXIT_PAUSED
+    assert kinds(tmp_path, "pause")[-1]["reason"] == "in_flight" and not kinds(tmp_path, "apply")
+    del fake.fail[(SCRIPTS_P, a.id)]
+    assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
+    assert fake.applies == [(a.id, A_SEQ)] and kinds(tmp_path, "apply")[0]["reconstructed"] is True
 
 
 def test_apply_that_never_landed_is_replanned_and_applied_once(world, tmp_path, monkeypatch):
@@ -528,6 +567,21 @@ def test_read_back_mismatch_journals_and_pauses_the_wave(world, tmp_path, capsys
     assert fake.applies == [(a.id, SHARED), (a.id, A_SEQ)]   # a re-run goes on; the mismatched one is not re-sent
 
 
+def test_unreadable_read_back_is_unverified_and_pauses(world, tmp_path):
+    a, b, fake, url, backup = world
+    canary = ("--creator", b.id, "--sequence", SHARED)
+    fake.fail[(SCRIPTS_P, b.id)] = lambda c: 401 if fake.applies else None   # the list dies after the write
+    assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 3
+    assert fake.applies == [(b.id, SHARED)] and not kinds(tmp_path, "readback")
+    (pause,) = kinds(tmp_path, "pause")
+    assert (pause["reason"], pause["sequence"]) == ("unverified", SHARED)
+    assert rd.fill_outcome(rd.resume(journal(tmp_path))["fills"][(b.id, SHARED)]) == "unverified"
+    del fake.fail[(SCRIPTS_P, b.id)]
+    assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0   # read back, never re-sent
+    assert fake.applies == [(b.id, SHARED)] and [x["ok"] for x in kinds(tmp_path, "readback")] == [True]
+    assert rd.fill_outcome(rd.resume(journal(tmp_path))["fills"][(b.id, SHARED)]) == "filled"
+
+
 def test_mismatch_with_an_empty_undo_list_is_never_applied_again(world, tmp_path, capsys):
     a, b, fake, url, backup = world
     canary = ("--creator", b.id, "--sequence", SHARED)   # a one-row write set: the short Undo list is empty
@@ -564,6 +618,19 @@ def test_undo_replays_newest_first_and_reports_edited_rows(world, tmp_path):
     assert left == {SHARED: [{"id": b.seqs[SHARED][0]["id"], "reason": "edited"}]}
     assert b.seqs[SHARED][0]["media"] == [8000001]
     assert run(url, tmp_path, "undo", "--live") == 0 and len(fake.undos) == 3   # already undone: skipped
+
+
+def test_undo_settles_a_404_only_when_the_sequence_is_gone(world, tmp_path):
+    a, b, fake, url, backup = world
+    assert run(url, tmp_path, "apply", "--live", "--backup", backup, "--creator", a.id, "--sequence", A_SEQ) == 0
+    fake.fail[(f"{FILL_P}/undo", a.id)] = 404              # a bare 404 (route/proxy), not sequence_not_found
+    assert run(url, tmp_path, "undo", "--live") == core.EXIT_PAUSED   # W30 F43: unsettled is never green
+    assert not kinds(tmp_path, "undo")                     # unsettled: the next undo run sends it again
+    assert kinds(tmp_path, "pause")[-1]["reason"] == "undo_unsettled"
+    del fake.fail[(f"{FILL_P}/undo", a.id)]
+    del a.seqs[A_SEQ]                                      # the Sequence is gone: sequence_not_found settles it
+    assert run(url, tmp_path, "undo", "--live") == 0
+    assert [(x["status"], x["error"]) for x in kinds(tmp_path, "undo")] == [("http_404", "sequence_not_found")]
 
 
 def test_report_fill_columns_are_sanitised_and_contact_sheet_is_host_only(serve, tmp_path):

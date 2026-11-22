@@ -31,6 +31,7 @@ import { relay, type OFMessage, type OFMessagesResp } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import type { SendFailure } from "@/lib/sendFailure";
 import { eventBus } from "@/lib/events";
+import { getPlatform } from "@/lib/platform";
 import { appendMsg, dropMsg, failMsg, reconcileMsg, THREAD_KEEP, toUtcIso, trimThread } from "@/lib/threadCache";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 
@@ -199,13 +200,11 @@ export function useChatMessages({
     oldestCursorRef.current =
       oldestCursorRef.current == null ? n : Math.min(oldestCursorRef.current, n);
   }, []);
-  // The chat (`accountId:fanId`) whose head page THIS mount has read, so its
-  // cursor is fetch-derived: `headSettled`. State, not a ref, so the read
-  // re-renders. A fresh cached thread a mount never fetches stays unsettled.
-  const [ownHead, setOwnHead] = useState<string | null>(null);
   const queryKey = ["messages", accountId, fanId] as const;
 
-  // The load-older pager (olderPager.ts): idle / loading / error / exhausted.
+  // The load-older pager (olderPager.ts): idle / loading / error / exhausted,
+  // and whether THIS mount read the chat's head page (`headSettled`: a fresh
+  // cached thread a mount never fetches stays unsettled).
   // Mirrored in a ref so loadOlder's re-entrancy check reads the state the
   // last dispatch left, not the last render's (two scroll triggers in one
   // tick must not both start a page).
@@ -239,7 +238,6 @@ export function useChatMessages({
   if (chatRef.current !== chatKey) {
     chatRef.current = chatKey;
     oldestCursorRef.current = null;
-    if (ownHead !== null) setOwnHead(null);
     const fresh = startPager();
     pagerRef.current = fresh;
     if (pager !== fresh) setPager(fresh);
@@ -284,10 +282,9 @@ export function useChatMessages({
         const { list, hasMore: more } = await fetchHeadPage(accountId, fanId, { signal });
         if (chatRef.current === `${accountId}:${fanId}`) {
           lowerCursor(list);
-          if (oldestCursorRef.current != null) setOwnHead(chatRef.current);
           // A head poll can only say "nothing older"; it never reopens a
           // pager the tail already exhausted (olderPager.ts).
-          dispatchPager({ type: "head", hasMore: more });
+          dispatchPager({ type: "head", hasMore: more, settled: oldestCursorRef.current != null });
         }
         perfDelivered(opId, "chat.messages", {
           count: list.length, hasMore: more, phase: "initial",
@@ -377,8 +374,11 @@ export function useChatMessages({
     const head = ridesPrefetch ? headOldest.get(`${accountId}:${fanId}`) : undefined;
     if (head != null && current.some((m) => Number(m.id) === head)) return head;
     // The oldest OF row: a ledger tip / mass placeholder (5e15+ synthetic ids)
-    // sorted to the top of a trimmed thread is no OF cursor.
-    const oldest = current.find((m) => Number(m.id) > 0 && Number(m.id) < MASS_PLACEHOLDER_MIN)?.id;
+    // sorted to the top of a trimmed thread is no OF cursor. Only on OF: a
+    // Fansly id is a snowflake (~9.5e17), above the band, and the synthetic
+    // rows come from OF's ledger and mass sends.
+    const fansly = getPlatform() === "fansly";
+    const oldest = current.find((m) => Number(m.id) > 0 && (fansly || Number(m.id) < MASS_PLACEHOLDER_MIN))?.id;
     return oldest == null ? null : Number(oldest);
   }, [qc, queryKey, accountId, fanId, ridesPrefetch]);
 
@@ -500,7 +500,7 @@ export function useChatMessages({
      *  can sit below a gap, see the header): this mount read the head page,
      *  or it rides a prefetch whose head page is in the cache. Only then may
      *  the sentinel load while the first load still pins (mayLoadOlder). */
-    headSettled: ownHead === chatKey
+    headSettled: pager.headSettled
       || (prefetchHead != null && (query.data ?? []).some((m) => Number(m.id) === prefetchHead)),
     refresh,
     appendLocal,

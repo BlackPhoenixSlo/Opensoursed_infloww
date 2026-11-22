@@ -20,23 +20,40 @@ log = logging.getLogger("relay.read_flip")
 
 def landed(result: Any) -> bool:
     """Whether a read write's answer is a success. A non-2xx raises in the clients; the Fansly shim
-    answers a rejected ack 200-style `{"success": False, "reason": "ack_rejected"}` without raising."""
+    answers a write it could not complete 200-style `{"success": False, "reason": ...}` without raising."""
     return not (isinstance(result, dict) and result.get("success") is False)
 
 
-async def set_local_unread(account_id: str, *, fan_id: int | None, value: int) -> None:
+def acked_fans(result: Any) -> list[int] | None:
+    """The fans a partial mark-all cleared (the Fansly shim's `{"partial": True, "acked_fan_ids": [...]}`:
+    capped, a failed scan, a backlog past the scan; ids as strings), or None for a whole answer."""
+    if not (isinstance(result, dict) and result.get("partial")):
+        return None
+    return [int(f) for f in result.get("acked_fan_ids") or [] if str(f).lstrip("-").isdigit()]
+
+
+async def set_local_unread(account_id: str, *, fan_id: int | None, value: int, at: int | None = None) -> None:
     """Mirror an OF read-state change into local `chats.unread_count` so the roster
     badge (a local aggregate) updates immediately instead of waiting for the next
     /chats reconcile. fan_id=None → every chat on the account (bulk mark-all-read).
+    A read (value 0) stamped `at` (epoch ms, taken before the write) leaves a chat
+    whose fan's last inbound message (`fans.last_message_received_at`) is newer:
+    that DM committed while the write was in flight, and its unread stands.
     Best-effort: own session, swallows errors."""
     try:
+        from datetime import datetime
         from db.engine import get_session as _gs
-        from db.models import Chat as _Chat
-        from sqlalchemy import update as _update
+        from db.models import Chat as _Chat, Fan as _Fan
+        from sqlalchemy import exists as _exists, update as _update
         async with _gs() as s:
             stmt = _update(_Chat).where(_Chat.account_id == account_id).values(unread_count=value)
             if fan_id is not None:
                 stmt = stmt.where(_Chat.fan_id == fan_id)
+            if value == 0 and at is not None:
+                cut = datetime.utcfromtimestamp(at / 1000)
+                stmt = stmt.where(~_exists().where(
+                    _Fan.account_id == _Chat.account_id, _Fan.fan_id == _Chat.fan_id,
+                    _Fan.last_message_received_at > cut))
             await s.execute(stmt)
             await s.commit()
     except Exception:
@@ -66,13 +83,15 @@ def now_ms() -> int:
 
 
 def publish(aid: str, fan_id: int | None, unread: int, at: int | None = None) -> None:
-    """`chat_read_changed {fan_id | "all", unread 0/1, at epoch ms}` once a read flip landed on OF, so every tab that
+    """`chat_read_changed {fan_id | "all", unread 0/1, at epoch ms}` once a read flip landed on OF (a fan id past 2^53,
+    a Fansly snowflake, as a string: a JSON number that big reaches the browser rounded), so every tab that
     can see the Creator (any-scope) flips the row in its cached chat lists without a re-read (app
     hooks/useAccountStateEvents.ts): another chatter's open list kept the old unread flag until it refetched.
     Best-effort: the write already landed."""
     try:
         import events  # noqa: PLC0415 — deferred: keeps this module's import light for the automations
-        events.publish({"chat_read_changed": {"fan_id": "all" if fan_id is None else int(fan_id), "unread": unread,
+        fid = "all" if fan_id is None else events.js_safe_id(int(fan_id))
+        events.publish({"chat_read_changed": {"fan_id": fid, "unread": unread,
                                               "at": at if at is not None else now_ms()},
                         "__account_id": str(aid)})
     except Exception:  # noqa: BLE001
@@ -80,27 +99,27 @@ def publish(aid: str, fan_id: int | None, unread: int, at: int | None = None) ->
 
 
 def _move_unread_total(aid: str, fan_id: int | None, unread: int, at: int | None) -> None:
-    """unread_total.on_read_flip (Knob off: returns at once), before the bust: it peeks the held row."""
-    try:
-        import unread_total  # noqa: PLC0415 — deferred: keeps this module's import light for the automations
-        unread_total.on_read_flip(aid, fan_id, unread, at)
-    except Exception:  # noqa: BLE001
-        log.warning("unread total move failed (account=%s fan=%s)", aid, fan_id, exc_info=True)
+    """unread_total.on_read_flip (Knob off: returns at once; never raises), before the bust: it peeks the held row."""
+    import unread_total  # noqa: PLC0415 — deferred: keeps this module's import light for the automations
+    unread_total.on_read_flip(aid, fan_id, unread, at)
 
 
-async def after_write(aid: str, fan_id: int | None, unread: int, result: Any, *, set_local: bool = True,
-                      at: int | None = None) -> bool:
-    """After a read write answered `result` (fan_id None: every chat): when it landed (`landed`), set the
-    local unread to `unread` (unless `set_local` is False: the caller already did), move the Unread total
-    (unread_total.on_read_flip, from the held row, so before the bust), drop the cached chat list / badges /
-    detail, publish `chat_read_changed` stamped `at` (`now_ms()` taken before the write); True. Not landed: nothing,
-    False."""
+async def after_write(aid: str, fan_id: int | None, unread: int, result: Any, *, at: int | None = None) -> bool:
+    """After a read write answered `result` (fan_id None: every chat), never before it: when it landed
+    (`landed`), set the local unread to `unread` (a read fenced by `at`: set_local_unread), move the Unread
+    total (unread_total.on_read_flip, from the held row, so before the bust), drop the cached chat list /
+    badges / detail, publish `chat_read_changed`
+    stamped `at` (`now_ms()` taken before the write); True. A partial mark-all (`acked_fans`) does that for
+    each acked fan alone, never `"all"`, and answers False. Not landed: nothing, False."""
     if not landed(result):
         log.info("read flip not landed account=%s fan=%s unread=%s result=%r", aid, fan_id, unread, result)
         return False
-    if set_local:
-        await set_local_unread(aid, fan_id=fan_id, value=unread)
-    _move_unread_total(aid, fan_id, unread, at)
-    bust_chat_list_and_badges(aid, fan_id)
-    publish(aid, fan_id, unread, at)
-    return True
+    acked = acked_fans(result) if fan_id is None else None
+    for fid in ([fan_id] if acked is None else acked):
+        await set_local_unread(aid, fan_id=fid, value=unread, at=at)
+        _move_unread_total(aid, fid, unread, at)
+        bust_chat_list_and_badges(aid, fid)
+        publish(aid, fid, unread, at)
+    if acked is not None:
+        log.info("read flip partial account=%s acked=%d result=%r", aid, len(acked), result)
+    return acked is None

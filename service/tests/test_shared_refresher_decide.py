@@ -16,7 +16,8 @@
   case_publish_on_first_track_and_change: entering `tracked` publishes once; re-entry keeps Last refresh, publishes.
   case_after_read:           ok writes Last refresh (the ask time); a failure keeps it, holds the Creator FLOOR_S.
   case_backoff_ladder:       failures in a row hold max(60, purchase_poll_decide.ladder_s(n)) from each ask, `at`
-                             kept, reset on ok; ticked, a failing Creator's attempts are never under 60 s apart.
+                             kept, reset on ok; ticked, a failing Creator's attempts are never under 60 s apart;
+                             a 1025th failure in a row still holds 900 s (no exponent overflow).
   case_live_of:              dead map -> "dead"; tracked, not readable (deactivated, no session, Fansly) -> None, never
                              "down"; socket stamp set -> "up", unset -> "down".
   case_dead_skip:            a Dead session: no Read, `live` "dead", `cycle_s` None, published.
@@ -264,6 +265,11 @@ def case_backoff_ladder():
         now += 5.0
     gaps = [y - x for x, y in zip(reads, reads[1:])]
     assert gaps == [60.0, 60.0, 120.0, 240.0, 480.0, 900.0][:len(gaps)] and len(gaps) >= 5, gaps
+    # W30-mu #6: a Creator failing for weeks (step ~1025 at 900 s each, ~10 days) once overflowed the ladder's
+    # exponent (OverflowError in after_read: no hold written, read every 5 s tick); it stays held 900 s.
+    st = d.after_read(State(step={A: 1024}), A, False, t)
+    assert st.held[A] == t + 900.0 and st.step[A] == 1025, (st.held, st.step)
+    assert _reads(d.plan(st, _inp(t + 5.0, [A]), K)[1]) == [], "held: no Read on the next tick"
 
 
 

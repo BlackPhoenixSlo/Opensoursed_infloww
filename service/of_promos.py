@@ -218,6 +218,8 @@ async def paged_of_fetch(
     max_pages: int = _MAX_PAGES,
     need_ids: set[int] | None = None,
     label: str = "of",
+    raise_dead: bool = False,
+    on_error=None,
 ) -> PagedRows | None:
     """Best-effort live OF fetch of a PAGED list endpoint. Returns the (possibly
     empty) normalised list on success, or None when the fetch failed (no session /
@@ -232,10 +234,24 @@ async def paged_of_fetch(
       page_call(client, offset, limit) -> raw OF response
       normalise(dict)                  -> flat dict carrying its id under `id_key`
       payload_keys                     -> dict spellings the rows live under, in order
+
+    `raise_dead` (an automation's read): a dead session (account_health.is_session_dead_error)
+    is raised, not None, so the executor parks the account instead of every later run asking OF.
+    `on_error(e)`: told the error behind a None (the caller's back-off reads its status).
     """
+    def dead(e: Exception) -> bool:
+        import account_health   # lazy: db-backed
+        if raise_dead and account_health.is_session_dead_error(e) is not None:
+            return True
+        if on_error is not None:
+            on_error(e)
+        return False
+
     try:
         client = await asyncio.to_thread(ax._make_client, account_id)
-    except Exception:
+    except Exception as e:
+        if dead(e):
+            raise
         log.info("%s OF client failed account=%s — mirror-only", label, account_id, exc_info=True)
         return None
 
@@ -245,7 +261,9 @@ async def paged_of_fetch(
     for page in range(max_pages):
         try:
             raw = await asyncio.to_thread(page_call, client, page * _PAGE, _PAGE)
-        except Exception:
+        except Exception as e:
+            if dead(e):
+                raise
             # A mid-page failure means we hold a PARTIAL history. Returning it
             # would look like "these rows no longer exist" to the caller, so
             # report unreachable instead and let it fail closed.
@@ -324,6 +342,8 @@ async def fetch_of_promos(
     *,
     need_ids: set[int] | None = None,
     max_pages: int = _MAX_PAGES,
+    raise_dead: bool = False,
+    on_error=None,
 ) -> list[dict] | None:
     """Best-effort live OF fetch of /promotions, PAGED, over paged_of_fetch (the
     shared skeleton /trials uses too).
@@ -332,7 +352,7 @@ async def fetch_of_promos(
     230-promo history — so paging stops on a short page. `need_ids` is an early
     exit: promo_reactivate only needs to locate its own armed campaigns, so it
     costs one request instead of two dozen. A call with `need_ids` never touches
-    the memo below.
+    the memo below. `raise_dead`, `on_error`: see paged_of_fetch.
 
     The memo: a read with no `need_ids` that hits the page cap is kept with its
     time and the account's mirrored of_promo_ids. Inside PROMO_HISTORY_REREAD_S of
@@ -356,6 +376,8 @@ async def fetch_of_promos(
             max_pages=max_pages,
             need_ids=need,
             label="promotions",
+            raise_dead=raise_dead,
+            on_error=on_error,
         )
 
     window = promo_history_reread_s()

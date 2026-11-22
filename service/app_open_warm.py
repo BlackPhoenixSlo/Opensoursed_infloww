@@ -70,7 +70,7 @@ in Relay memory by design: a restart's first open warms everything.
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import contextvars
 import logging
 import time
 from datetime import datetime, timezone
@@ -153,7 +153,7 @@ def _egress(account_id: str) -> tuple[str, str]:
         key = proxies.egress_identity(getattr(c, "proxy_url", None), proxies.registry())
     except Exception:
         return DIRECT, DIRECT
-    return (key, DIRECT) if key == DIRECT else (key, "p-" + hashlib.sha1(key.encode()).hexdigest()[:8])
+    return key, of_pacing.exit_label(key)
 
 
 def _current(account_id: str) -> bool:
@@ -335,7 +335,11 @@ def _enqueue(account_id: str, job: _Job, *, front: bool = False) -> bool:
     else:
         ex.jobs[account_id] = job
     if ex.task is None:
-        t = ex.task = asyncio.create_task(_work(key, ex), name=f"app-open-warm:{ex.label}")
+        # A fresh context: the worker serves every caller's jobs, so it must not carry the request (or
+        # principal, lane lease, run slot) of whichever one started it. Its walks are requestless, so
+        # `_background_reads` + `_bg_admission` give them the Creator's background lane, slot first.
+        t = ex.task = asyncio.create_task(_work(key, ex), name=f"app-open-warm:{ex.label}",
+                                          context=contextvars.Context())
         _tasks.add(t)
         t.add_done_callback(_tasks.discard)
     return took

@@ -7,7 +7,9 @@ promo_campaigns row auto_reactivate = 1, exactly one enabled rule of the kind ca
 promotions_api.KEEP_RUNNING_STEPS and the hourly trigger (created, named "Keep promos
 running", when missing); with several, the lowest id is kept on and the rest parked (their
 pending jobs cancelled, as automation_rules_api.ensure_kind_rule parks). Accounts without a
-Kept campaign are untouched. keep_warning rows are left alone.
+Kept campaign are untouched. keep_warning rows are left alone. A pending job of a fixed
+rule gets the live steps merged into its payload (it was queued with the old, maybe dry-run,
+ones); its other keys stay.
 
 Boxes upgrade through db.engine's init_db, which runs `heal` below once
 (`data_migrations` marker `20261121_keep_running_rules_heal`); this file runs the same on
@@ -38,6 +40,22 @@ STEPS = json.dumps({"dry_run": False, "cooldown_minutes": 2, "max_reactivations"
 TRIGGER = json.dumps({"every_seconds": 3600})
 
 
+def _live_jobs(conn, rule_id: int) -> None:
+    """The rule's pending jobs get the live steps merged in; their own keys (a Re-check's
+    `_recheck`, `_expiry_retries`, `_followup` …) stay."""
+    jobs = conn.execute(sa.text(
+        "SELECT id, payload_json FROM scheduled_jobs WHERE rule_id = :id AND status = 'pending'"),
+        {"id": rule_id}).all()
+    for job_id, raw in jobs:
+        try:
+            payload = json.loads(raw or "{}")
+        except ValueError:
+            payload = {}
+        payload = {**(payload if isinstance(payload, dict) else {}), **json.loads(STEPS)}
+        conn.execute(sa.text("UPDATE scheduled_jobs SET payload_json = :p WHERE id = :id"),
+                     {"p": json.dumps(payload), "id": job_id})
+
+
 def heal(conn) -> int:
     """Ensure the rule per Kept account (`conn`: a sync connection in a transaction).
     Returns the number of rules created or changed."""
@@ -65,6 +83,8 @@ def heal(conn) -> int:
             conn.execute(sa.text(
                 "UPDATE automation_rules SET is_enabled = :on, steps_json = :s, trigger_json = :t "
                 "WHERE id = :id"), {"on": True, "s": STEPS, "t": TRIGGER, "id": keep.id})
+            if "scheduled_jobs" in tables:   # a job it already queued carries the old (dry-run) steps
+                _live_jobs(conn, keep.id)
             changed += 1
         dupes = [r.id for r in rest if r.is_enabled]
         if dupes:

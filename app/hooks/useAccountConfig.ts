@@ -150,12 +150,17 @@ export function useAccountConfig(accountId: string | null) {
   });
 }
 
-export function useSaveAccountConfig(accountId: string | null) {
+/** `cap`: this Save edits the daily AI spend cap (AiSpendCapCard). Every other Save leaves it out (server: absent =
+ *  unchanged), so a stale echoed cap can't undo a limit set elsewhere. */
+export function useSaveAccountConfig(accountId: string | null, { cap = false }: { cap?: boolean } = {}) {
   const qc = useQueryClient();
   return useMutation<{ account_id: string; config: BrainConfig }, Error, BrainConfig>({
     mutationKey: ["account-config", accountId],
-    mutationFn: (config) =>
-      relay.put("/admin/account-config", { account_id: accountId, config }),
+    mutationFn: (config) => {
+      const { daily_cost_cap_cents, ...rest } = config;
+      return relay.put("/admin/account-config",
+        { account_id: accountId, config: cap ? { ...rest, daily_cost_cap_cents } : rest });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["account-config", accountId] });
       // A new model can need another provider's key (AiKeyNotice resolves it per kind).

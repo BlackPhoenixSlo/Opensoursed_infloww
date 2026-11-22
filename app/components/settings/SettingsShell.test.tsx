@@ -90,7 +90,7 @@ describe("Settings header", () => {
   });
 });
 
-// The 14 Settings tabs in nav order (docs/infloww-screens.md §3.10, plus Co-creator tag, OnlyFans consent, AI keys and the Audit log).
+// The 15 Settings tabs in nav order (docs/infloww-screens.md §3.10, plus Co-creator tag, OnlyFans consent, OF Manager writes, AI keys and the Audit log).
 const SETTINGS = [
   "/settings/account",
   "/settings/preferences",
@@ -103,6 +103,7 @@ const SETTINGS = [
   "/settings/messaging",
   "/settings/cotag",
   "/settings/consent",
+  "/settings/ofm-writes",
   "/settings/ai-keys",
   "/settings/audit",
   "/settings/about",
@@ -113,7 +114,7 @@ const rows = () => Array.from(document.querySelectorAll<HTMLAnchorElement>('[dat
 const hrefs = () => rows().map((r) => r.getAttribute("href"));
 
 describe("Tab list", () => {
-  it("lists the 14 Settings tabs in nav order, each with an icon", () => {
+  it("lists the 15 Settings tabs in nav order, each with an icon", () => {
     renderLayout();
     expect(hrefs()).toEqual(SETTINGS);
     for (const r of rows()) expect(r.querySelector("svg")).not.toBeNull();
@@ -131,11 +132,11 @@ describe("Tab list", () => {
     expect(current.map((r) => r.getAttribute("href"))).toEqual(["/settings/account"]);
   });
 
-  it("leaves the six Blob tabs, Security (organization), Co-creator tag, OnlyFans consent, AI keys and the Audit log out for a Chatter-only session", () => {
+  it("leaves the six Blob tabs, Security (organization), Co-creator tag, OnlyFans consent, OF Manager writes, AI keys and the Audit log out for a Chatter-only session", () => {
     session = { user: null, chatter: { username: "fixture-chatter" } };
     renderLayout();
     expect(hrefs()).toEqual(
-      SETTINGS.filter((h) => !BLOB.includes(h) && h !== "/settings/cotag" && h !== "/settings/consent" && h !== "/settings/ai-keys" && h !== "/settings/security-org" && h !== "/settings/audit"),
+      SETTINGS.filter((h) => !BLOB.includes(h) && h !== "/settings/cotag" && h !== "/settings/consent" && h !== "/settings/ofm-writes" && h !== "/settings/ai-keys" && h !== "/settings/security-org" && h !== "/settings/audit"),
     );
     expect(hrefs()).toHaveLength(3);
   });

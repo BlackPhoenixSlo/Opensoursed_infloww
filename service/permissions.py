@@ -242,7 +242,8 @@ def data_scope(ctx: AgencyContext, roles: dict[str, Any]) -> Scope:
 # line reopens it. Overturned if the owner wants uncalled routes unmapped.
 #
 # ASSUMPTION: the map is by path only, whatever the method, but for writes to
-# users/me and users/me/settings* (`route_pages`: OF settings only) and the
+# users/me and users/me/settings* (`route_pages`: OF settings only), a page's
+# read-only grants (`READ_ONLY_GRANTS`: reads only) and the
 # Function permissions below (`ACTIONS`, by method and path), and admin
 # routes no nav page calls (legacy, Settings-only, diagnostics) are UNMAPPED.
 # Rung 5: the spec's map is path prefixes. Overturned if another method or an
@@ -515,6 +516,8 @@ UNMAPPED: dict[str, str] = {
                                       " bell viewer sends as OF web does on open) and the Money rail (its /money read)",
     "/api/of/v2/giphy": "GIF search for every composer, no Creator data",
     "/api/of/ofm-writes": "the OF Manager's new-writes switch probe (server._ofm_new_writes_on), no Creator data",
+    "/admin/ofm-writes": "a Creator's OF Manager new-writes force-off (ofm_writes_api, Settings › OF Manager writes):"
+                         " the route checks the Creator is the session's; its PUT is owner-only there",
     "/admin/sensitive-words": "the Agency's Sensitive words list every composer warns on;"
                               " its writes are owner-only (chatters.py)",
     "/admin/_debug": "diagnostics, no nav page", "/admin/coalesce": "diagnostics, no nav page",
@@ -549,6 +552,25 @@ def _route_table() -> list[tuple[str, tuple[str, ...]]]:
 _ROUTES = _route_table()
 
 
+# A page's PAGE_MAP prefixes it only reads: it serves their GET/HEAD/OPTIONS, no write under them (`route_pages`).
+# Home's Pin to home dialog reads the lists (ofMirrorPinHome; the pin itself stays read-only); Collections, Messages
+# and the composers keep the lists write. Tracking links only reads them (its List select, useFanLists; the add-to-list
+# on a link's claimers runs inside /admin/link-meta and the create, W30 W9).
+READ_ONLY_GRANTS: dict[str, frozenset[str]] = {
+    "/of-manager/home": frozenset({"/api/of/v2/lists"}),
+    "/growth/tracking-links": frozenset({"/api/of/v2/lists"}),
+}
+
+
+def _writers(prefix: str, pages: tuple[str, ...]) -> tuple[str, ...]:
+    """`pages` but those granting `prefix` for reads only (`READ_ONLY_GRANTS`)."""
+    return tuple(h for h in pages if prefix not in READ_ONLY_GRANTS.get(h, ()))
+
+
+# A read-only grant always leaves a page serving the prefix's writes: never () for a mapped prefix (that would pass it).
+for _prefix, _pages in _ROUTES:
+    assert not _pages or _writers(_prefix, _pages), f"{_prefix}: every page granting it is read-only (READ_ONLY_GRANTS)"
+
 # Writes to the Creator's own OF account (profile, price, privacy and security
 # toggles, watermarks) are OF settings' alone, whichever pages read the same path.
 _OF_SETTINGS = "/of-manager/settings"
@@ -567,7 +589,9 @@ def route_pages(path: str, method: str) -> tuple[str, ...] | None:
         return (_OF_SETTINGS,)
     for prefix, pages in _ROUTES:
         if _matches(prefix, path):
-            return pages
+            if method.upper() in _READS:
+                return pages
+            return _writers(prefix, pages)   # a write drops the read-only grants (never down to (): asserted above)
     return None
 
 

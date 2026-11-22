@@ -82,6 +82,7 @@ from events import (  # noqa: E402
     is_app_tab,
     owner_audience,
     publish_chat_responded,
+    ring_seq as _sse_ring_seq,
     sessions_audience,
     sse_stats as _sse_stats,
     sse_stream,
@@ -89,6 +90,7 @@ from events import (  # noqa: E402
 )
 from events_persist import stop_persist_worker as _stop_persist_worker  # noqa: E402
 from employees import router as _employees_router, audit_middleware as _audit_middleware  # noqa: E402
+from audit_log import credential_write as _credential_write  # noqa: E402
 from permissions import role_enforcement_middleware  # noqa: E402
 from http_hooks import HookChain  # noqa: E402
 from fans import router as _fans_router  # noqa: E402
@@ -136,6 +138,7 @@ from vault_download_api import CUT_SHORT as _vault_cut_short, router as _vault_d
 from style_config_api import router as _style_config_router  # noqa: E402
 from account_config_api import router as _account_config_router  # noqa: E402
 from of_consent_api import router as _of_consent_router  # noqa: E402
+from ofm_writes_api import OFM_NEW_WRITES, router as _ofm_writes_router  # noqa: E402
 from of_live_window import router as _of_live_window_router  # noqa: E402
 from assistant_api import router as _assistant_router  # noqa: E402
 from assistant_draft import router as _assistant_draft_router  # noqa: E402
@@ -384,7 +387,7 @@ async def _sweep_stop_handler(request, exc):  # noqa: ANN001
     log.warning("sweep stop path=%s: %s", request.url.path, exc.message)
     return JSONResponse(status_code=424, content={"detail": {"error": "stopped", **exc.payload()}})
 
-# A refused report recipe (field errors, or another run of the Agency in flight): 400/429
+# A refused report recipe (field errors, another run of the Agency in flight, a file over the cap): 400/429/413
 # {detail, errors} from every report route (report_recipe_api).
 app.add_exception_handler(_report_recipe.RecipeError, _report_recipe_api.refused)
 
@@ -417,6 +420,7 @@ app.include_router(_style_config_router)
 app.include_router(_account_config_router)
 # A Creator's "Auto-accept OnlyFans consent" switch (/admin/of-consent/{id}); its PUT is owner-only.
 app.include_router(_of_consent_router)
+app.include_router(_ofm_writes_router)
 app.include_router(_of_live_window_router)
 # In-product help bot (POST /admin/assistant/ask). Under /admin/* so it
 # inherits the share-token gate + account-isolation middleware; chatters
@@ -846,7 +850,7 @@ def admin_secrets_status() -> dict[str, Any]:
     return {"keys": secrets_store.status()}
 
 
-@app.put("/admin/secrets")
+@app.put("/admin/secrets", dependencies=[Depends(_credential_write)])
 async def admin_secrets_set(request: Request) -> dict[str, Any]:
     """Set or clear keys. Body is a flat JSON object {KEY: value, …}; an empty
     string or null clears that key. Unknown keys are ignored. Returns the new
@@ -1052,7 +1056,7 @@ async def _persist_unhandled_errors(request: Request, call_next):
             # The request's headers, kept only where the principal owns them; an owner
             # naming no Employee is credited (its own); no principal: the Master's row.
             account_id, employee_id = await diag_api.owned_attribution(
-                *diag_api.header_attribution(request), owner_fallback=True)
+                *diag_api.header_attribution(request))
             async with get_session() as s:
                 s.add(_AE(
                     source="server",
@@ -1799,6 +1803,9 @@ async def _stop_push() -> None:
         await push_send.stop()
 
 
+_REGISTRY_DRAIN_S = 15.0   # shutdown's transport drain deadline (_stop_event_pumps)
+
+
 @app.on_event("shutdown")
 async def _stop_event_pumps() -> None:
     from of_session_registry import Registry
@@ -1843,14 +1850,29 @@ async def _stop_event_pumps() -> None:
         task.cancel()
     if background:
         await asyncio.gather(*background, return_exceptions=True)
-    await asyncio.to_thread(registry.drain)
+    # Bounded: compose's stop_grace_period (75 s) minus streams (5 s) and the automation
+    # drain (RELAY_DRAIN_S 45 s) leaves ~25 s; a stuck native worker must not eat the
+    # persist flush below. The caller's wait is bounded too: drain closes every session before its
+    # deadline loop, and a close stuck in native code would hold this past it (the thread is left).
+    try:
+        drained = await asyncio.wait_for(asyncio.to_thread(registry.drain, _REGISTRY_DRAIN_S),
+                                         _REGISTRY_DRAIN_S + 1.0)
+    except asyncio.TimeoutError:
+        registry.stop_event.set()   # drain's own timeout branch never ran: stop the idle sweeper
+        drained = False
+    if not drained:
+        left = [s for s in registry.snapshot() if s.active or s.pins or s.retiring]
+        log.warning("registry_drain_timeout after %.0fs: %d slot(s) still owned (active=%d pins=%d retiring=%d)",
+                    _REGISTRY_DRAIN_S, len(left), sum(s.active for s in left),
+                    sum(s.pins for s in left), sum(s.retiring for s in left))
 
     # Drain the persist worker last — pumps are already cancelled above, so
     # no new events are arriving. Anything still in the queue is dropped.
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await _stop_persist_worker()
 
-    # Pooled clients refuse new signed calls (registry.drain closed their handles).
+    # Drop the pooled clients: registry.drain closed their sessions to new calls (on a timeout the
+    # stuck owners keep theirs until they finish).
     client_pool.evict()
 
     # Close the pooled SQLite connections (db/engine.py), so the last one out
@@ -1938,6 +1960,21 @@ def resolve_account(explicit: str | None, active: Callable[[], str | None],
     return active()
 
 
+def _active_for(request: Request | None) -> Callable[[], str | None]:
+    """The active-account read, once per request (kept on `request.scope`): a headerless
+    read keys its cache by `_current_aid()` and fetches via `_get_client()`, each resolving;
+    a default flip between the two cached one Creator's body under another's key."""
+    scope = getattr(request, "scope", None)
+    if not isinstance(scope, dict):
+        return account_registry.get_active_account_id
+
+    def active() -> str | None:
+        if "relay.active_account_id" not in scope:
+            scope["relay.active_account_id"] = account_registry.get_active_account_id()
+        return scope["relay.active_account_id"]
+    return active
+
+
 def _resolve_account_id(request: Request | None) -> str:
     """Pick the account_id for this request, in priority order:
        1. `X-Account-Id` request header (UI sends this)
@@ -1968,7 +2005,7 @@ def _resolve_account_id(request: Request | None) -> str:
                      else chatter.account_ids if chatter is not None else None)
     reach = principal_ids if principal_ids is not None else account_registry.account_ids()
     aid = resolve_account(
-        explicit, account_registry.get_active_account_id,
+        explicit, _active_for(request),
         None if request is None else (lambda: request.method),
         len(reach))
     if isinstance(aid, Refuse):
@@ -2001,12 +2038,12 @@ def _get_client(request: Request | None = None) -> OFClient:
     return _load_client(_resolve_account_id(request))
 
 
-def _invalidate_client(account_id: str | None = None, only: OFClient | None = None) -> None:
+def _invalidate_client(account_id: str | None = None, only: OFClient | None = None) -> bool:
     """Drop pooled OFClient(s) so the next request reloads from disk.
     Used after re-bootstrap or proxy reassignment. None = every account (a
     proxy edit can affect any of them). `only`: just while the pool still
-    holds that client (client_pool.evict)."""
-    client_pool.evict(account_id, only=only)
+    holds that client (client_pool.evict); False when a replacement holds it."""
+    return client_pool.evict(account_id, only=only)
 
 
 def _kick_clear_session_dead(account_id: str) -> None:
@@ -2039,6 +2076,29 @@ def _kick_mark_session_dead(account_id: str, reason: str, via: str) -> None:
             log.exception("failed to mark session-dead account")
 
     _on_main_loop(_mark, f"session-dead-{account_id}")
+
+
+async def flag_dead_session(account_id: str, exc: BaseException, via: str, client: OFClient | None) -> bool:
+    """A requestless read's failure (`exc`, or the OF error under `_proxy`'s 502) that says OF rejected the session
+    (account_health.is_session_dead_error): evict `client`, the one the read started on (`client_pool.peek` before
+    it; None: unknown, whichever is pooled), only while the pool still holds it, and only then mark the Creator dead
+    (automations pause, the owner is told once). A replacement already pooled is a fresh session: kept, not flagged
+    (it re-flags itself if truly dead), as `_proxy` does. `via` names the caller in the log. The client `_proxy`
+    names on the OF error (`of_client`: the one that issued the read) wins over `client`, which a cold pool leaves
+    None. True when flagged; never raises (the read's own error is what its caller handles)."""
+    reason = account_health.is_session_dead_error(exc)
+    if not reason and exc.__cause__ is not None:
+        reason = account_health.is_session_dead_error(exc.__cause__)
+    issued = getattr(exc, "of_client", None) or getattr(exc.__cause__, "of_client", None) or client
+    if not reason or _invalidate_client(account_id, only=issued) is False:
+        return False
+    try:
+        if await account_health.mark_session_dead(account_id, reason):
+            log.warning("account_session_dead account=%s via=%s reason=%s — automations "
+                        "paused until the session recovers", account_id, via, reason)
+    except Exception:  # noqa: BLE001
+        log.exception("failed to mark session-dead account")
+    return True
 
 
 def _on_main_loop(make_coro, name: str) -> None:
@@ -2505,14 +2565,19 @@ def _bg_long_wait(aid: str, waited: float, where: str, outcome: str) -> None:
 
 
 @contextlib.asynccontextmanager
-async def _bg_admission(request: Request | None = None):
+async def _bg_admission(request: Request | None = None, *, own: bool = False):
     """Wait, on the event loop, for the Creator's background lane slot before a
     background request's OF read takes a worker thread; a no-op for user priority,
     for a request whose account does not resolve (it fails in the route as before)
     and inside an admission for the same Creator. Entered by the coalesce leader and
     relay_cache's sync fetch (relay_coalesce.admission), `_bg_admission_route`
     and the direct `to_thread(_proxy, ...)` background reads. With no request, the
-    `_background_reads` Creator's lane."""
+    `_background_reads` Creator's lane: a requestless walk enters it once, before it leads
+    any relay_cache lock or coalesce flight (permit before flight, as a request's
+    `_bg_admission_route`), else a slot holder joining its flight while it waits for a slot
+    deadlocks the lane (app_open_warm_reads, shared_refresher_reads). `own`: never reuse the
+    held lease (relay_cache's detached SWR refresh: it outlives the request whose lease it
+    inherited, so it takes its own slot before its key lock)."""
     req = request if request is not None else _request_ctx.get()
     aid = _bg_reads_aid.get() if req is None else None
     if req is not None and (req.headers.get("x-priority") or "").lower() == "background":
@@ -2521,7 +2586,7 @@ async def _bg_admission(request: Request | None = None):
         except HTTPException:
             aid = None
     held = _bg_lease.get()
-    if aid is None or (held is not None and held.aid == aid and not held.closed):
+    if aid is None or (not own and held is not None and held.aid == aid and not held.closed):
         yield
         return
     lane = _lanes_for(aid)[1]
@@ -2547,7 +2612,7 @@ async def _bg_admission(request: Request | None = None):
 
 
 relay_coalesce.priority_class = lambda: "background" if _current_priority() == "background" else "user"
-relay_coalesce.admission = lambda: _bg_admission()
+relay_coalesce.admission = lambda own=False: _bg_admission(own=own)
 
 
 def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, BgLane]:
@@ -2585,7 +2650,8 @@ def _background_reads(account_id: str):
     `X-Priority: background` request's: `_current_priority`, the coalesce/relay_cache class,
     `_bg_admission` on the Creator's background lane, and the chats window read
     (`_assemble_chats_page`) on its lane too. A request's own header still wins. Tasks and
-    `to_thread` workers started inside inherit it (contextvars). The Shared refresher's reads."""
+    `to_thread` workers started inside inherit it (contextvars). The Shared refresher's and the
+    App-open warm's reads."""
     token = _bg_reads_aid.set(str(account_id))
     try:
         yield
@@ -2741,6 +2807,7 @@ def _proxy(call, *, client: OFClient | None = None):
         raise HTTPException(status_code=403,
                             detail={"upstream_status": "refused_by_relay", "upstream_body": str(e)}) from e
     except OFAPIError as e:
+        issued = e.of_client = loaded[-1] if loaded else client   # the client that issued it (flag_dead_session)
         r = e.response
         status = r.status_code if r is not None else 500
         body = r.text[:2000] if r is not None else str(e)
@@ -2750,10 +2817,11 @@ def _proxy(call, *, client: OFClient | None = None):
         # still answers 502; the error middleware never sees an OFAPIError here.
         dead_reason = account_health.is_session_dead_error(e)
         if dead_reason and aid:
-            # Only the client that met it: a concurrent read already replaced it, keep the fresh one.
+            # Only the client that met it: a concurrent read already replaced it, keep the fresh one,
+            # and leave the Creator unflagged (the fresh client re-flags it if truly dead).
             # Neither known (a Fansly shim, a stubbed loader): evict as before.
-            _invalidate_client(aid, only=loaded[-1] if loaded else client)
-            _kick_mark_session_dead(aid, dead_reason, via="proxy")
+            if _invalidate_client(aid, only=issued):
+                _kick_mark_session_dead(aid, dead_reason, via="proxy")
         # 502 = bad gateway: we tried, OF didn't like it.
         raise HTTPException(
             status_code=502,
@@ -3409,6 +3477,12 @@ async def list_chats(
     )
     async def _fetch():
         _timing_detach_foreign()  # the SWR refresh runs this off the request's task
+        # The 429 hold gates the upstream read only (misses and the SWR refresh): a cached
+        # window is still served while it runs.
+        held = _CHATS_429_HOLD.check(coalesce_key)
+        if held is not None:
+            # OF 429'd this exact page moments ago: answer that, don't ask OF again (chats_page.HOLD_*).
+            raise HTTPException(status_code=held.status_code, detail=held.detail, headers=held.headers)
         def _read():
             value = _assemble_chats_page(
                 _get_client(), limit=limit, offset=offset, order=order,
@@ -3417,9 +3491,17 @@ async def list_chats(
             if is_badge_window:
                 _chats_window_fetched_at[aid] = _time_mod.monotonic()
             return value
-        value = await relay_coalesce.coalesce(
-            coalesce_key, lambda: asyncio.to_thread(_proxy, _read),
-        )
+        async def _upstream():
+            # Inside the detached flight: a waiter cancelled meanwhile doesn't lose OF's 429.
+            try:
+                return await asyncio.to_thread(_proxy, _read)
+            except HTTPException as e:
+                wait = of_pacing.retry_after(e)
+                if wait is not None:
+                    secs = _CHATS_429_HOLD.hold(coalesce_key, e, wait)
+                    log.info("list_chats 429 hold account=%s offset=%s for %.1fs", aid, offset, secs)
+                raise
+        value = await relay_coalesce.coalesce(coalesce_key, _upstream)
         # Reconcile OF's authoritative read state + last-message direction into
         # the local `chats` mirror the roster badge aggregates — from a FRESH OF
         # read only (a miss, ?refresh=1, or the background stale-while-revalidate
@@ -3436,23 +3518,12 @@ async def list_chats(
                     name=f"reconcile-chats-{aid}",
                 )
         return value
-    held = _CHATS_429_HOLD.check(coalesce_key)
-    if held is not None:
-        # OF 429'd this exact page moments ago: answer that, don't ask OF again (chats_page.HOLD_*).
-        raise HTTPException(status_code=held.status_code, detail=held.detail, headers=held.headers)
     with _of_read_timing("chats", aid):
-        try:
-            resp = await relay_cache.get_or_fetch(
-                "list_chats", aid, (limit, offset, order, filter, list_id, q),
-                ttl_seconds=_LIST_CHATS_TTL, fetcher=_fetch, bypass=refresh,
-                stale_while_revalidate=_LIST_CHATS_SWR,
-            )
-        except HTTPException as e:
-            wait = of_pacing.retry_after(e)
-            if wait is not None:
-                secs = _CHATS_429_HOLD.hold(coalesce_key, e, wait)
-                log.info("list_chats 429 hold account=%s offset=%s for %.1fs", aid, offset, secs)
-            raise
+        resp = await relay_cache.get_or_fetch(
+            "list_chats", aid, (limit, offset, order, filter, list_id, q),
+            ttl_seconds=_LIST_CHATS_TTL, fetcher=_fetch, bypass=refresh,
+            stale_while_revalidate=_LIST_CHATS_SWR,
+        )
         _timing_post_start()
         # Manual Refresh (?refresh=1) on the plain recent view just re-read the very
         # window the roster badge folds its counts from — drop the cached fold so
@@ -4268,21 +4339,24 @@ async def app_open_warm_reads(account_id: str) -> None:
     aid = str(account_id)
     import shared_refresher
     kept, asked = False, None
-    if shared_refresher.ENABLED:
-        asked = shared_refresher.ask_time()
-        kept = await _users_me_bypass(aid)
-        await shared_refresher.window_read(aid)      # on: only through the window-read hook (P1 Contract 9)
-    else:
-        await accounts_admin_api.rewarm_roster_count(aid)
-    for typ in _RAIL_MONEY_TYPES:
-        extras = (_RAIL_PAGE_SIZE, 0, typ)
-        await relay_cache.get_or_fetch(
-            "notifications", aid, extras, ttl_seconds=30.0,
-            fetcher=_warm_fetch(("notifications", aid) + extras, aid,
-                                lambda c, t=typ: c.notifications(limit=_RAIL_PAGE_SIZE, offset=0, type=t)))
-    await relay_cache.get_or_fetch(
-        "notifications_count", aid, (), ttl_seconds=30.0,
-        fetcher=_warm_fetch(("notifications_count", aid), aid, lambda c: c.notifications_count()))
+    # Background class, slot before any flight (see _bg_admission); the gate runs it requestless.
+    with _background_reads(aid):
+        async with _bg_admission():
+            if shared_refresher.ENABLED:
+                asked = shared_refresher.ask_time()
+                kept = await _users_me_bypass(aid)
+                await shared_refresher.window_read(aid)  # on: only through the window-read hook (P1 Contract 9)
+            else:
+                await accounts_admin_api.rewarm_roster_count(aid)
+            for typ in _RAIL_MONEY_TYPES:
+                extras = (_RAIL_PAGE_SIZE, 0, typ)
+                await relay_cache.get_or_fetch(
+                    "notifications", aid, extras, ttl_seconds=30.0,
+                    fetcher=_warm_fetch(("notifications", aid) + extras, aid,
+                                        lambda c, t=typ: c.notifications(limit=_RAIL_PAGE_SIZE, offset=0, type=t)))
+            await relay_cache.get_or_fetch(
+                "notifications_count", aid, (), ttl_seconds=30.0,
+                fetcher=_warm_fetch(("notifications_count", aid), aid, lambda c: c.notifications_count()))
     if kept:
         shared_refresher.note_refresh(aid, asked)
 
@@ -4311,24 +4385,19 @@ async def shared_refresher_reads(account_id: str,
     background scope, so the window holds the Creator's background lane too. True when the `/users/me` write-back
     was kept (`peek_fresh` finds the value read); False when discarded (an invalidation landed meanwhile,
     relay_cache latest-wins): it confirms nothing. Raises what a read raised. A dead-session answer from either
-    flags the Creator here (evict its client, `mark_session_dead`), as roster-counts does: no request is in flight,
-    so `_proxy` cannot, and the next tick reads it in the Dead-session map ("dead", never read again)."""
+    flags the Creator here (`flag_dead_session`, on the client that issued the read, else the one pooled when the
+    reads started), as roster-counts does: no request is in flight, so `_proxy` cannot, and the next tick reads it
+    in the Dead-session map ("dead", never read again)."""
     aid = str(account_id)
+    client = client_pool.peek(aid)
     try:
         with _background_reads(aid):
-            kept = await _users_me_bypass(aid)
-            if kept and window is not None:
-                await window()
+            async with _bg_admission():          # slot before any flight (see _bg_admission)
+                kept = await _users_me_bypass(aid)
+                if kept and window is not None:
+                    await window()
     except Exception as e:
-        dead_reason = account_health.is_session_dead_error(e.__cause__ or e)
-        if dead_reason:
-            _invalidate_client(aid)
-            try:
-                if await account_health.mark_session_dead(aid, dead_reason):
-                    log.warning("account_session_dead account=%s via=shared_refresher reason=%s — "
-                                "automations paused until the session recovers", aid, dead_reason)
-            except Exception:  # noqa: BLE001 — the read's own error is what the job sees
-                log.exception("failed to mark session-dead account")
+        await flag_dead_session(aid, e, "shared_refresher", client)
         raise
     return kept
 
@@ -4688,7 +4757,7 @@ async def _vault_read(aid: str, key: str, *, refresh: bool, revalidate: bool,
         t0 = datetime.utcnow()
         result = await fetch()
         if compare is not None and _listing_ids(compare) != _listing_ids(result):
-            await vault_cache.drop_view_pages(aid, key)
+            await vault_cache.drop_view_pages(aid, key, include_self=vault_cache._is_empty_listing(result))
         await vault_cache.put(aid, key, result, started_at=t0)
         return result
 
@@ -5326,13 +5395,20 @@ async def of_unsend_message(request: Request, message_id: int):
     # chat pane's DB seed (GET /admin/messages) paints it again on the next
     # reload as an EMPTY locked shell (the seed carries no media, and a PPV
     # row's body is blank). Best-effort: the upstream unsend already happened,
-    # so a mirror failure must not surface as a 500.
+    # so a mirror failure must not surface as a 500. Only on OF's `success: true`
+    # (unsend_message's answer): a 2xx refusal (`success: false`, `{}`) leaves
+    # the row live, as the app (useUnsendMessage) keeps the bubble. The cached
+    # chat detail drops either way (a re-read is harmless; lastMessage may be
+    # the unsent one; no fan -> whole account).
+    _bust_chat_detail(None, with_user_id)
+    if not (isinstance(resp, dict) and resp.get("success") is True):
+        log.warning("unsend not confirmed by OF message_id=%s: %r", message_id, resp)
+        return resp
     try:
         from messages import mark_unsent
         await mark_unsent(_resolve_account_id(request), message_id, fan_id=with_user_id)
     except Exception as e:
         log.warning("unsend mirror flip failed message_id=%s: %s", message_id, e)
-    _bust_chat_detail(None, with_user_id)  # lastMessage may be the unsent one; no fan -> whole account
     return resp
 
 class _WithUserBody(BaseModel):
@@ -5396,14 +5472,23 @@ def _bust_chat_list_and_badges(aid: str, chat_id: int | None = None) -> None:
     after an OF write that changes them (read_flip.bust_chat_list_and_badges)."""
     read_flip.bust_chat_list_and_badges(aid, chat_id)
 
+def _read_not_landed(result: Any) -> HTTPException:
+    """The 502 a read flip answers when the platform did not take all of it (read_flip.after_write False): the
+    Fansly shim's 200-style refusal (`ack_rejected`, `scan_failed`, `partial`) or a partial mark-all, so the app's
+    error path shows the failure instead of a read the next list read takes back."""
+    reason = result.get("reason") if isinstance(result, dict) else None
+    return HTTPException(status_code=502, detail={"upstream_status": reason or "partial", "upstream_body": result})
+
+
 @app.post("/api/of/v2/chats/mark-as-read")
 async def of_mark_all_chats_read():
-    """Mark EVERY chat as read (bulk no-arg endpoint)."""
+    """Mark EVERY chat as read (bulk no-arg endpoint). The local unread clears only for what the platform took
+    (read_flip.after_write); anything less answers 502 (`_read_not_landed`)."""
     aid = _current_aid()
     at = read_flip.now_ms()
-    await read_flip.set_local_unread(aid, fan_id=None, value=0)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_all_chats_read())
-    await read_flip.after_write(aid, None, 0, result, set_local=False, at=at)
+    if not await read_flip.after_write(aid, None, 0, result, at=at):
+        raise _read_not_landed(result)
     return result
 
 async def _paced_of_write(aid: str, call):
@@ -5418,16 +5503,17 @@ async def _paced_of_write(aid: str, call):
 
 @app.post("/api/of/v2/chats/{chat_id}/mark-as-read")
 async def of_mark_chat_read(chat_id: int):
-    """Mark chat as read (chat_id == fan id). Clears local unread_count too.
+    """Mark chat as read (chat_id == fan id). Clears local unread_count once the
+    platform took it (read_flip.after_write); a write it refused answers 502.
 
     Unpaced, bulk loops included: a read flip reaches no fan, and pacing it
     would reserve an 11 s write slot per chat ahead of the automations' fan
     sends."""
     aid = _current_aid()
     at = read_flip.now_ms()
-    await read_flip.set_local_unread(aid, fan_id=chat_id, value=0)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_read(chat_id))
-    await read_flip.after_write(aid, chat_id, 0, result, set_local=False, at=at)
+    if not await read_flip.after_write(aid, chat_id, 0, result, at=at):
+        raise _read_not_landed(result)
     return result
 
 @app.delete("/api/of/v2/chats/{chat_id}/mark-as-read")
@@ -5438,7 +5524,8 @@ async def of_mark_chat_unread(chat_id: int):
     aid = _current_aid()
     at = read_flip.now_ms()
     result = await asyncio.to_thread(_proxy, lambda: _platform_write("mark_chat_unread", "mark as unread")(chat_id))
-    await read_flip.after_write(aid, chat_id, 1, result, at=at)
+    if not await read_flip.after_write(aid, chat_id, 1, result, at=at):
+        raise _read_not_landed(result)
     return result
 
 @app.post("/api/of/v2/chats/{chat_id}/mute")
@@ -5835,19 +5922,20 @@ def of_tracking_links_shared_with_me(field: str | None = Query(None, description
     return _proxy(lambda: _get_client().tracking_links_shared_with_me(limit=limit, offset=offset, field=field, sort=sort))
 
 # ofm-not-yet's new OF write routes (ticket 63 onwards) are inert until the owner turns on OFM_NEW_WRITES_ENABLED
-# (runtime_switches, default off): each answers 404 before any OF call, as of_live_window's. The Mirror reads
-# GET /api/of/ofm-writes (app/lib/ofMirrorNewWrites.ts) and leaves those controls Not available while it is 404.
-OFM_NEW_WRITES = "OFM_NEW_WRITES_ENABLED"
-
-
-_ofm_new_writes_on = runtime_switches.require_switch(OFM_NEW_WRITES)
+# (runtime_switches, default off) for the request's Creator: the env turns it on box-wide; Settings › System can force
+# it off box-wide and the Creator's owner for one Creator (PUT /admin/ofm-writes/{id}, ofm_writes_api). Off, each
+# answers 404 before any OF call, as of_live_window's. The Mirror reads GET /api/of/ofm-writes for its Creator
+# (app/lib/ofMirrorNewWrites.ts) and leaves those controls Not available while it is 404.
+_ofm_new_writes_on = runtime_switches.require_switch(OFM_NEW_WRITES, account=_current_aid)
 _OFM_WRITES = [Depends(_ofm_new_writes_on)]
 
 
 @app.get("/api/of/ofm-writes", dependencies=_OFM_WRITES)
 def of_ofm_writes_probe():
-    """The OF Manager's new-writes switch probe: `{"on": true}`, or 404 while OFM_NEW_WRITES_ENABLED is off."""
+    """The OF Manager's new-writes switch probe for the request's Creator (X-Account-Id): `{"on": true}`, or 404
+    while OFM_NEW_WRITES_ENABLED is off for it."""
     return {"on": True}
+
 
 class _ShareCampaignBody(BaseModel):
     campaignId: int = Field(..., ge=1)
@@ -5973,15 +6061,22 @@ def _allowed_body(body: dict, allowed: frozenset[str]) -> dict:
     return body
 
 
+def _new_writes_for(body: dict, new_keys: frozenset[str], ask: bool = False) -> bool:
+    """OFM_NEW_WRITES_ENABLED on for the request's Creator; the Creator is asked only when the answer matters (`body`
+    carries one of `new_keys`, or `ask`), else False."""
+    return (ask or not new_keys.isdisjoint(body)) and runtime_switches.on_for(OFM_NEW_WRITES, _current_aid)
+
+
 @app.patch("/api/of/v2/users/me")
 def of_update_profile(body: dict = Body(...)):
     """PATCH /users/me — profile fields and the settings toggles OF saves here:
-    only the `_PROFILE_KEYS` the mirror sends (422 on any other). While OFM_NEW_WRITES_ENABLED is off the
-    `_PROFILE_NEW_KEYS` are refused too (422) and `about` goes as typed, as on main."""
-    new_writes = runtime_switches.on(OFM_NEW_WRITES)
+    only the `_PROFILE_KEYS` the mirror sends (422 on any other). While OFM_NEW_WRITES_ENABLED is off for the
+    request's Creator the `_PROFILE_NEW_KEYS` are refused too (422) and `about` goes as typed, as on main."""
+    formatted = isinstance(body.get("about"), str) and is_of_html(body["about"])
+    new_writes = _new_writes_for(body, _PROFILE_NEW_KEYS, ask=formatted)   # a formatted Bio asks too
     body = _allowed_body(body, _PROFILE_KEYS if new_writes else _PROFILE_KEYS - _PROFILE_NEW_KEYS)
     _check_profile_images(body)   # ticket 67
-    if new_writes and isinstance(body.get("about"), str) and is_of_html(body["about"]):
+    if new_writes and formatted:
         body = {**body, "about": sanitize_of_html(body["about"])}   # ticket 68: a formatted bio, OF's tags only
     result = _proxy(lambda: _get_client().update_profile(**body))
     # BC5 invalidation: many /users/me fields are mirrored under
@@ -6006,7 +6101,8 @@ def _settings_write(call: Callable[[], Any]) -> Any:
 @app.patch("/api/of/v2/users/me/settings/security")
 def of_patch_security_settings(body: dict = Body(...)):
     """One security-section toggle, `{key: value}`, as OF's settings pages send it (`_SECURITY_PATCH_KEYS`)."""
-    allowed = _SECURITY_PATCH_KEYS if runtime_switches.on(OFM_NEW_WRITES) else _SECURITY_PATCH_KEYS - _SECURITY_NEW_KEYS
+    allowed = (_SECURITY_PATCH_KEYS if _new_writes_for(body, _SECURITY_NEW_KEYS)
+               else _SECURITY_PATCH_KEYS - _SECURITY_NEW_KEYS)
     body = _allowed_body(body, allowed)
     return _settings_write(lambda: _get_client().patch_security_settings(body))
 
@@ -6775,6 +6871,26 @@ app.include_router(chat_screen_api.router)
 
 # ── Realtime: WS fan-out, stats ────────────────
 
+_CHAT_HISTORY = "/api/of/v2/chats/0/messages"  # a chat's history: what a role must grant to read reply text
+
+
+async def _chats_readable(accounts: frozenset[str] | None) -> frozenset[str] | None:
+    """The Creators among `accounts` whose chat history this chatter session's role grants (the role middleware's
+    own decision, `permissions.route_refusal` on a chat's messages read); None when it grants every one (enforcement
+    off, every linked Agency granting). `/events` strips `chat_responded`'s reply text for the rest. A refusal of
+    any kind (403, an Agency context's 503) reads as not granted: the stream still opens, without the text. Fails
+    closed: no page serving that read (`route_refusal` passes an unmapped route) grants none."""
+    import permissions
+    pages = permissions.route_pages(_CHAT_HISTORY, "GET")
+    if not pages:
+        log.warning("chats_readable_unmapped route=%s", _CHAT_HISTORY)
+        return frozenset()
+    if (await permissions.route_refusal(pages, "GET", _CHAT_HISTORY, [None]))[0] is None:
+        return None
+    return frozenset([a for a in sorted(accounts or ())
+                      if (await permissions.route_refusal(pages, "GET", _CHAT_HISTORY, [a]))[0] is None])
+
+
 @app.get("/events", include_in_schema=False)
 async def sse_events(
     request: Request, scope: str = Query("all"),
@@ -6798,6 +6914,7 @@ async def sse_events(
     `?lease=1`: the app renews its own View lease; an unmarked browser stream is a tab loaded
     before that and leases the session's Creators while open (view_lease "Legacy tabs").
     """
+    granted_at = _sse_ring_seq()  # a stream-ending frame after this ends the stream: these grants may predate it
     accounts = _require_actor_account_ids()
     if scope.startswith("model:") and accounts is not None and scope[len("model:"):] not in accounts:
         raise HTTPException(status_code=403, detail="not your account")
@@ -6807,9 +6924,11 @@ async def sse_events(
                 if user is not None
                 else chatter.owner_user_ids | {sessions_audience("chatter", chatter.id)}
                 if chatter is not None else frozenset())
+    readable = await _chats_readable(accounts) if chatter is not None else None
     body = sse_stream(request, scope, accounts=accounts, agencies=agencies,
                       last_event_id=request.headers.get("last-event-id") or last_event_id,
-                      tab=is_app_tab(lease, request.headers.get("referer")))
+                      tab=is_app_tab(lease, request.headers.get("referer")), readable=readable,
+                      granted_at=granted_at)
     import view_lease
     legacy = view_lease.legacy_stream_ids(lease, request.headers.get("referer"), accounts,
                                           account_registry.is_watcher)

@@ -167,6 +167,9 @@ async def case_save_as_folder():
 
     assert c.post("/admin/vault-ai/folders/from-tags",
                   json={"account_id": AID, "tags": []}).json()["detail"]["error"] == "tags_required"
+    # W30 F6: a pack rung's name (any case) is the picker's; a tag folder under it would become the rung.
+    r = c.post("/admin/vault-ai/folders/from-tags", json={"account_id": AID, "tags": ["feet"], "name": "Feet-Tease"})
+    assert r.status_code == 400 and r.json()["detail"]["error"] == "reserved_name", r.text
     r = c.post("/admin/vault-ai/folders/from-tags", json={"account_id": AID, "tags": ["nope"]})
     assert r.status_code == 400 and r.json()["detail"]["error"] == "no_items", r.text
     cap = vault_tags.FOLDER_MAX_ITEMS
@@ -191,6 +194,19 @@ async def case_chatter_scope():
     assert len(await _folders()) == before
 
 
+async def case_escaped_non_ascii_tag_matches():
+    """W30 F20: json.dumps stores "café" as "caf\\u00e9"; the raw-text prefilter must still find it."""
+    async with get_session() as s:
+        s.add(Account(id="accU", nickname="U"))
+    async with get_session() as s:
+        s.add_all([_item("accU", 301, col=["café"]), _item("accU", 302, ai={"tags": ["Café"]}),
+                   _item("accU", 303, col=["cafe"])])
+    async with get_session() as s:
+        got = set((await s.execute(select(VaultItem.media_id).where(
+            VaultItem.account_id == "accU", *vault_tags.tags_where(["café"])))).scalars())
+    assert got == {301, 302}, got
+
+
 def case_pure_helpers():
     assert vault_tags.parse_tags([" Feet", "feet", "", "LACE", None]) == ["feet", "lace"]
     assert len(vault_tags.parse_tags([str(i) for i in range(20)])) == vault_tags.MAX_TAGS
@@ -205,5 +221,6 @@ _harness.run(
     case_facets_counts,
     case_save_as_folder,
     case_chatter_scope,
+    case_escaped_non_ascii_tag_matches,
     case_pure_helpers,
 )

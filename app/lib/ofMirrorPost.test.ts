@@ -2136,10 +2136,13 @@ describe("Record video and Record voice on Home and New post", () => {
   it("Home borrows OF's recorder markup from New post's capture once; Back on the voice panel keeps nothing", async () => {
     const m = media();
     const { d, h, unbind } = bind("home/index");
+    // Fetched at bind (no round trip after the click), drawn only on the click.
+    expect(m.fetched).toHaveBeenCalledWith("/of-mirror/pages/new-post/index.html");
+    for (let i = 0; i < 3; i++) await flush();
     expect(d.querySelector(".js-chat__audiorecord-panel")).toBeNull();
     button(d, "Record voice").click();
-    for (let i = 0; i < 5; i++) await flush();
-    expect(m.fetched).toHaveBeenCalledWith("/of-mirror/pages/new-post/index.html");
+    await flush();
+    expect(m.fetched).toHaveBeenCalledTimes(1);
     const panel = d.querySelector<HTMLElement>(".js-chat__audiorecord-panel")!;
     expect(panel.style.display).toBe("");
     expect(d.querySelectorAll(".js-chat__audiorecord-panel")).toHaveLength(1);
@@ -2150,6 +2153,19 @@ describe("Record video and Record voice on Home and New post", () => {
     expect(panel.style.display).toBe("none");
     expect(h.upload).not.toHaveBeenCalled();
     expect(h.navigate).not.toHaveBeenCalled();
+    unbind();
+  });
+
+  it("Home: a failed prefetch of the recorder markup is silent; the click fetches again and draws it", async () => {
+    const m = media();
+    m.fetched.mockResolvedValueOnce(new Response("", { status: 503 }));
+    const { d, unbind } = bind("home/index");
+    for (let i = 0; i < 3; i++) await flush();
+    expect(d.getElementById("oi-note")).toBeNull();
+    button(d, "Record voice").click();
+    for (let i = 0; i < 5; i++) await flush();
+    expect(m.fetched).toHaveBeenCalledTimes(2);
+    expect(d.querySelector<HTMLElement>(".js-chat__audiorecord-panel")?.style.display).toBe("");
     unbind();
   });
 

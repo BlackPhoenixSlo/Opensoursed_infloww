@@ -48,6 +48,15 @@ def case_destination_table():
         (_link(), "1.5", "https://of.com/x"),
         (_link(), "12\n", "https://of.com/x"),
         (_link(), "0", "https://of.com/x/c0"),  # "0" is a truthy string
+        (_link("/local/path"), None, "/local/path"),
+        # a stored destination the editor's rule refuses is never answered (javascript:/data:, protocol-relative)
+        (_link("javascript:alert(1)"), None, None),
+        (_link("JavaScript:alert(1)//https://of.com"), "4242", None),
+        (_link("data:text/html,<script>alert(1)</script>"), None, None),
+        (_link("vbscript:msgbox(1)"), None, None),
+        (_link("//evil.test/x"), None, None),
+        (_link(" https://of.com/x"), None, None),
+        ({"destination": 5}, None, None),
     ]
     for link, tid, want in rows:
         got = d.reveal(link, tid, US)[0]
@@ -332,7 +341,7 @@ def case_reserved_matches_v2():
 
 def case_assets_pinned():
     # Re-pin with scripts/bio-contract-diff/corpus.py:ASSET_SHA256 after reviewing both asset versions.
-    pins = {"index.html": "9d3bf69e6730643866b6fd62695f8a3f", "script.js": "fa31e2e787cd4f0c536e9a8ce4a80271",
+    pins = {"index.html": "9d3bf69e6730643866b6fd62695f8a3f", "script.js": "dbe4593d76c5dee4c3303bc01a8c41a1",
             "style.css": "29d2294e4395b02c9ad9589f93a0bbef"}
     for name, md5 in pins.items():
         assert hashlib.md5((assets.PUBLIC / name).read_bytes()).hexdigest() == md5, name

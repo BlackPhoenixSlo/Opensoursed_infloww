@@ -4,7 +4,10 @@
 Pure over `rows` (the Fan's `ai_decisions` rows of the Turn's Mode, oldest first); the folds are
 `full_ai_test`'s, unchanged. One loader, `load_sold`, reads the other lanes.
 
-  owned_live(rows, cross)          owned_of(rows) | cross (`ownership.owned_or_seen_media`)
+  owned_live(rows, cross)          owned_of(rows) | cross (`ownership.owned_or_seen_media`); a Free item
+                                   counts once on OF (`offer_message_id`), not on a never-confirmed row
+  reserved_of(rows)                media of every attempted, unresolved priced Offer (`attempted`: may
+                                   be on OF, any age): never offered again until settle links it
   sent_live(rows, vault_media)     sent_media_of(rows) | every `vault_sends.media_id` of the Fan
   purchases_live(paid_msgs, txs)   ns(kind, amount_cents, occurred_at), oldest first: paid outbound
                                    priced messages (`ppv_message`, any lane) + `tip` / `ppv_post`
@@ -14,7 +17,8 @@ Pure over `rows` (the Fan's `ai_decisions` rows of the Turn's Mode, oldest first
                                    with no `offer_message_id` (never confirmed on OF)
   unconfirmed_of(rows, now, but)   newest priced row, id NULL, outcome NULL, <= UNCONFIRMED_S old,
                                    not row `but`
-  offer_still_valid(...)           the last look: None | "owned" | "unconfirmed"
+  offer_still_valid(...)           the last look: None | "owned" | "unconfirmed" (reserved media, or
+                                   any priced Offer still unconfirmed)
   load_sold(account, fan) -> Sold  the one loader
 
 A Free item is Owned for Full AI only (`owned_of`, price 0); nothing here stamps `vault_sends`
@@ -30,7 +34,8 @@ from sqlalchemy import select
 
 import ownership
 from automations import send_marker_decide
-from automations.full_ai_test import _offers, open_offer_of, owned_of, sent_media_of
+from automations.full_ai_settle import attempted
+from automations.full_ai_test import _media, _offers, open_offer_of, owned_of, sent_media_of
 from db.engine import get_session
 from db.models import Message, Transaction, VaultSend
 
@@ -48,7 +53,12 @@ class Sold(NamedTuple):
 
 
 def owned_live(rows, cross: set[int]) -> set[int]:
-    return owned_of(rows) | set(cross)
+    return owned_of([r for r in rows if r.offer_price_cents != 0 or r.offer_message_id is not None]) | set(cross)
+
+
+def reserved_of(rows) -> set[int]:
+    return {x for r in _offers(rows) if r.offer_price_cents > 0 and r.offer_message_id is None
+            and r.outcome is None and attempted(r) for x in _media(r, "locked", "previews")}
 
 
 def sent_live(rows, vault_media: set[int]) -> set[int]:
@@ -89,6 +99,8 @@ def offer_still_valid(ppv: dict, owned_now: set[int], rows_now, now: datetime, r
     ids = {int(x) for x in (ppv.get("media") or [])} | {int(x) for x in (ppv.get("previews") or [])}
     if ids & set(owned_now):
         return "owned"
+    if ids & reserved_of([r for r in rows_now if r.id != row_id]):
+        return "unconfirmed"
     if (ppv.get("price_cents") or 0) > 0 and unconfirmed_of(rows_now, now, row_id) is not None:
         return "unconfirmed"
     return None

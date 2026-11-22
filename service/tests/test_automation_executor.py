@@ -27,7 +27,8 @@ Plus the harness primitives every P4 automation depends on:
       the before-first-scan stop is unchanged; the Knob is read at call time.
   case_scrape_sweep_stops_at_its_time_budget:
       a sweep starts no new chat past SCRAPE_SWEEP_BUDGET_S, ends ok with
-      budget_stopped / chats_left, a `{}` run still marks full_sweep; 0 = no cap;
+      budget_stopped / chats_left, a `{}` run still marks full_sweep; the next sweep
+      starts with never-scraped, then oldest-scraped chats; 0 = no cap;
       an explicit fan_ids scrape is never capped.
   case_scrape_silent_mass_only_chat_costs_one_page_and_defers /
   case_scrape_not_silent_chats_are_backfilled_as_today /
@@ -497,7 +498,7 @@ async def case_scrape_desc_catch_up_no_refetch_start():
 
 class ScriptedSweepClient(FakeClient):
     """A `{}` sweep over `script` (chat id -> "ok" | "429" | "503" | "proxy" | "timeout" |
-    "404" | "parse"), in that order. "ok" serves one inbound message; the rest raise what
+    "404" | "parse" | "otp"), in that order. "ok" serves one inbound message; the rest raise what
     of_client raises for that OF answer. `tried` records each chat's page-1 read."""
 
     def __init__(self, script: list[tuple[int, str]]):
@@ -523,6 +524,10 @@ class ScriptedSweepClient(FakeClient):
             raise exc.Timeout("timed out")
         if how == "parse":
             raise json.JSONDecodeError("Expecting value", "<html>", 0)
+        if how == "otp":   # OF's 2FA demand: a dead session (account_health.is_session_dead_error)
+            from of_client import OFAPIError
+            raise OFAPIError('400 {"error":{"code":101,"message":"Confirm it is you",'
+                             '"payload":{"otpState":{},"strong":true}}}')
         return super().get_messages(chat_id, **kw)
 
 
@@ -622,6 +627,16 @@ async def case_scrape_sweep_stops_at_its_time_budget():
         assert isinstance(res, dict) and res["full_sweep"] is True, res
         assert res["budget_stopped"] is True and res["chats_left"] == 7, res
         assert res["chats_scanned"] == 3 and fake.tried == [7000, 7001, 7002], (res, fake.tried)
+        # The next sweep starts with the never-scraped tail, not chat 0 again (W30 #3).
+        t["now"] = 0.0
+        res, fake = await _sweep("acc_budget", script)
+        assert fake.tried == [7003, 7004, 7005], fake.tried
+        t["now"] = 0.0
+        res, fake = await _sweep("acc_budget", script)
+        assert fake.tried == [7006, 7007, 7008], fake.tried
+        t["now"] = 0.0
+        res, fake = await _sweep("acc_budget", script)   # then oldest-scraped first
+        assert fake.tried == [7009, 7000, 7001], fake.tried
         # 0 = no cap: every chat runs, no budget fields.
         os.environ["SCRAPE_SWEEP_BUDGET_S"] = "0"
         t["now"] = 0.0
@@ -642,6 +657,70 @@ async def case_scrape_sweep_stops_at_its_time_budget():
     finally:
         sc._clock = real_clock
         os.environ.pop("SCRAPE_SWEEP_BUDGET_S", None)
+
+
+async def case_scrape_budget_failing_chats_do_not_stay_first():
+    """W30 #32: never-scraped chats that fail and eat the budget leave no scrape stamp; ordered by
+    last ATTEMPT, the next sweep reaches the healthy ones instead of retrying the same three."""
+    from automations import scrape_chats as sc
+    real_clock = sc._clock
+    t = {"now": 0.0}
+
+    def tick() -> float:
+        now = t["now"]
+        t["now"] += 400.0
+        return now
+    script = [(7300 + i, "parse") for i in range(3)] + [(7303 + i, "ok") for i in range(4)]
+    try:
+        sc._clock = tick
+        res, fake = await _sweep("acc_budget", script)
+        assert isinstance(res, RuntimeError) and fake.tried == [7300, 7301, 7302], (res, fake.tried)
+        t["now"] = 0.0
+        res, fake = await _sweep("acc_budget", script)
+        assert fake.tried == [7303, 7304, 7305], f"failing chats stayed first: {fake.tried}"
+        # Bounded: only failing chats keep an attempt entry; a scraped one leaves none.
+        assert all(("acc_budget", c) in sc._attempted_at for c in (7300, 7301, 7302)), "failing chat lost its entry"
+        assert not any(("acc_budget", c) in sc._attempted_at for c in (7303, 7304, 7305)), \
+            "a scraped chat kept its attempt entry"
+    finally:
+        sc._clock = real_clock
+
+
+async def case_scrape_explicit_backfill_that_scraped_nothing_raises():
+    """W30 #8: a one-fan backfill whose read failed (429) scraped nothing: it raises, so the
+    bounded job retry applies (it used to complete as a success, history left deferred).
+    A 404 (fan gone) still completes; a run that scraped a chat still completes."""
+    from automations import scrape_chats as sc
+    real_sleep, sc._PAGE_SLEEP_S = sc._PAGE_SLEEP_S, 0
+    try:
+        await _seed_account("acc_bf_fail")
+        from of_client import OFAPIError
+        # One fan: its own typed error (#36); several fans: the summary RuntimeError.
+        for script, raises in (([(7400, "429")], OFAPIError), ([(7401, "404")], None),
+                               ([(7402, "ok"), (7403, "429")], None),
+                               ([(7405, "429"), (7406, "429")], RuntimeError)):
+            fake = ScriptedSweepClient(script)
+            ax._make_client = lambda account_id, f=fake: f  # type: ignore[attr-defined]
+            try:
+                res = await sc._automation_scrape_chats(
+                    "acc_bf_fail", {"fan_ids": [c for c, _ in script]}, run_id=0)
+            except (RuntimeError, OFAPIError) as e:
+                res = e
+            if raises is None:
+                assert isinstance(res, dict) and "full_sweep" not in res, (script, res)
+            else:
+                assert type(res) is raises, (script, res)
+        # W30 #36: the one fan's own error, typed, so the executor still sees a dead session.
+        import account_health
+        ax._make_client = lambda account_id: ScriptedSweepClient([(7404, "otp")])  # type: ignore[attr-defined]
+        try:
+            res = await sc._automation_scrape_chats("acc_bf_fail", {"fan_ids": [7404]}, run_id=0)
+        except (RuntimeError, OFAPIError) as e:
+            res = e
+        assert isinstance(res, OFAPIError), f"one-fan backfill lost OF's typed error: {res!r}"
+        assert account_health.is_session_dead_error(res) == "otp_required", res
+    finally:
+        sc._PAGE_SLEEP_S = real_sleep
 
 
 # ── A `{}` sweep defers a Silent mass-only chat's deep history (SCRAPE_EAGER_HISTORY) ──
@@ -783,6 +862,41 @@ async def case_scrape_cursor_write_clears_the_deferred_mark():
         assert hist.last_message_id == want and hist.history_deferred_at is None, \
             (how, hist.last_message_id, hist.history_deferred_at)
         assert ids[0] == 1 and ids[-1] == want, (how, ids[:3], ids[-3:])
+
+
+async def case_scrape_empty_explicit_backfill_clears_the_deferred_mark():
+    """W30 #14: a deferred row (cursor NULL) whose explicit backfill finds the chat empty on OF
+    drops the mark (else gen_info re-enqueues it every pass); a `{}` sweep's empty read keeps it."""
+    from datetime import datetime as _dt
+    aid = "acc_defer_empty"
+    await _seed_account(aid)
+    for fan, payload, cleared in ((5700, None, True), (5701, {}, False)):
+        async with get_session() as s:
+            s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=None,
+                                history_deferred_at=_dt.utcnow()))
+            await s.commit()
+        await _scrape(aid, DeepSweepClient(fan, []), {"fan_ids": [fan]} if payload is None else payload)
+        _, hist, _, _ = await _thread(aid, fan)
+        assert (hist.history_deferred_at is None) is cleared, (fan, hist.history_deferred_at)
+
+
+async def case_scrape_non_positive_limits_still_read_before_clearing_the_mark():
+    """W30 #35: a backfill payload with a non-positive limit (`recent_cap: -1`, `max_pages: 0`...) read
+    nothing yet counted the chat scanned and cleared its deferred mark. Such a limit takes the default:
+    OF is read, the cursor lands, and only then is the mark gone."""
+    from datetime import datetime as _dt
+    aid = "acc_defer_empty"   # an account other cases seed (the run-slot case counts accounts)
+    await _seed_account(aid)
+    for fan, bad in ((5710, {"recent_cap": -1}), (5711, {"max_pages": -1}), (5712, {"page_size": -5})):
+        async with get_session() as s:
+            s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=None,
+                                history_deferred_at=_dt.utcnow()))
+            await s.commit()
+        fake = DeepSweepClient(fan, [_of_msg(fan * 10 + 1, True, "hi", "2026-06-05T10:00:00+00:00", fan_id=fan)])
+        await _scrape(aid, fake, {"fan_ids": [fan], **bad})
+        _, hist, _, _ = await _thread(aid, fan)
+        assert fake.calls, f"{bad}: no OF read"
+        assert hist.last_message_id == fan * 10 + 1, (bad, hist.last_message_id)
 
 
 async def case_scrape_eager_history_knob_restores_todays_calls():
@@ -2136,9 +2250,13 @@ _harness.run(
     case_scrape_sweep_fail_fast_counts_only_in_a_row,
     case_scrape_sweep_fail_fast_before_first_scan_and_knob,
     case_scrape_sweep_stops_at_its_time_budget,
+    case_scrape_budget_failing_chats_do_not_stay_first,
+    case_scrape_explicit_backfill_that_scraped_nothing_raises,
     case_scrape_silent_mass_only_chat_costs_one_page_and_defers,
     case_scrape_not_silent_chats_are_backfilled_as_today,
     case_scrape_cursor_write_clears_the_deferred_mark,
+    case_scrape_empty_explicit_backfill_clears_the_deferred_mark,
+    case_scrape_non_positive_limits_still_read_before_clearing_the_mark,
     case_scrape_eager_history_knob_restores_todays_calls,
     case_scrape_deferred_backfill_counts_under_its_own_caller_kind,
     case_history_deferred_at_self_heals_on_init_db,

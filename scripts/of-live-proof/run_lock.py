@@ -59,3 +59,41 @@ def holds_lock(creator: str) -> bool:
 def release_lock(creator: str) -> None:
     if holds_lock(creator):
         _lock_path(creator).unlink(missing_ok=True)
+
+
+# Round 2 #23: the Creator's shared Undo index beside its run lock, so a run in another worktree (whose slop/evidence
+# this one never scans) still blocks the next. It only lists Undo log paths (absolute); the logs stay the source of
+# truth: the gate folds each listed log and drops it once it has no unresolved row (prove.earlier_pending).
+def _index_path(creator: str) -> Path:
+    return _lock_path(creator).with_suffix(".undo-index.json")
+
+
+def index_logs(creator: str) -> list[Path]:
+    """The Undo logs the Creator's shared index lists ([] when there is none). An index that exists but can't be read
+    raises ValueError: the gate blocks on it rather than reading it as empty."""
+    path = _index_path(creator)
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        raise ValueError(f"shared Undo index {path} unreadable: {e}") from e
+    got = json.loads(text)   # JSONDecodeError is a ValueError
+    if not isinstance(got, list) or not all(isinstance(p, str) for p in got):
+        raise ValueError(f"shared Undo index {path} is not a list of paths")
+    return [Path(p) for p in got]
+
+
+def index_update(creator: str, add: Path | None = None, drop=()) -> None:
+    """Add `add` (made absolute) and drop each of `drop` from the Creator's shared index, under the lock's guard
+    flock (as take_lock), so two runs' updates never lose one another's."""
+    path = _index_path(creator)
+    with open(f"{_lock_path(creator)}.guard", "a") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        gone = {str(Path(p).resolve()) for p in drop}
+        logs = [str(p) for p in index_logs(creator) if str(p) not in gone]
+        if add is not None and str(Path(add).resolve()) not in logs:
+            logs.append(str(Path(add).resolve()))
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")   # atomic: a reader never sees half a write
+        tmp.write_text(json.dumps(logs))
+        os.replace(tmp, path)

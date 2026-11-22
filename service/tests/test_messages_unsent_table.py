@@ -7,7 +7,8 @@ Which mirror rows an unsend OF accepted retires. Two tables:
                                 or a mere mention of the word does not.
     case_copy_with_other_body:  the body branch needs the same normalized text
                                 inside the slack window; other text, the same text
-                                hours later, or an unknown stamp stays.
+                                hours later, an unknown stamp, or another queue's
+                                copy (its queueId) stays.
 
   shells (temp DB) — one seeded row per case, each says which real shell
   (mark_mass_runs_unsent / mark_queue_copies_unsent / mark_unsent) must flip it,
@@ -75,6 +76,10 @@ def case_copy_with_other_body():
         ("other body in window", R(1, 3, body="something else", created_at=at), False),
         ("same body 3h later", R(1, 4, body="hi babe", created_at=SENT + timedelta(hours=3)), False),
         ("same body, no created_at", R(1, 5, body="hi babe"), False),
+        ("same body in window, another queue's copy",
+         R(1, 9, body="hi babe", created_at=at, raw_json=json.dumps({"queueId": QID + 1})), False),
+        ("same body in window, malformed frame",
+         R(1, 10, body="hi babe", created_at=at, raw_json='{"queueId": 555'), True),
     ], body="hi babe", sent_at=SENT)
     # Unknown stamp or an empty key leaves only the id branch.
     _check([("body match, no sent_at", R(1, 6, body="hi babe", created_at=SENT), False)],

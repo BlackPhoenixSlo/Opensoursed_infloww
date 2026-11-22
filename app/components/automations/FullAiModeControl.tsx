@@ -3,7 +3,7 @@
 /**
  * FullAiModeControl — the Full AI page's Mode control (ticket 74, the flip gate): Off / Live over
  * `useFullAiMode` (GET / PUT /admin/full-ai/mode). Live asks to confirm first ("Replies will be sent to fans on
- * OnlyFans") and is disabled while the server names a blocker (no Fans list, a Writer or TypeSafe key missing).
+ * OnlyFans") and is disabled while the server names a blocker (a Writer or TypeSafe key missing).
  * A legacy rule with no Mode reads "Shadow (records only)" until Off or Live is picked; Shadow itself is not
  * offered. Off stays pressable while the Mode read is loading or failed. FULL_AI_CHAT_OFF wins over the Mode: shown when set. One value (the confirm being open): plain useState.
  */

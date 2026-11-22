@@ -29,6 +29,7 @@ const h = vi.hoisted(() => {
         ],
         _ai: {
           description: "old desc", tags: ["a", "b"], describe_status: "described", suggested_price_cents: 1250,
+          jev_ai: { lane: "$50", breasts: "bare", crotch: "thong_covered", butt: "not_visible", penetration: "n" },
           fields: {
             acts: ["posing"], _prompt_version: "v2",
             _jev: {
@@ -49,6 +50,9 @@ const h = vi.hoisted(() => {
     addToOfFolder: vi.fn(),
     patch: vi.fn(),
     searchingOf: false,
+    ofFailed: false,
+    ofRetry: vi.fn(),
+    placeholder: false,
     mirrorItems: [] as Tile[],
     get: vi.fn(),
     summary: { data: { count: 0 } as { count: number; complete?: boolean }, isLoading: false },
@@ -61,6 +65,10 @@ const { BEACH } = h;
 vi.mock("@/components/vault/VaultAccount", () => ({
   useVaultAccountId: () => "1000001",
   useVaultAccount: () => ({ account: { id: "1000001", nickname: "Amy" } }),
+}));
+// The download provider's account list: this page's one model (it never leaves).
+vi.mock("@/hooks/useAccounts", () => ({
+  useAccounts: () => ({ isSuccess: true, data: { accounts: [{ id: "1000001" }], watchers: [] } }),
 }));
 vi.mock("@/lib/relay", async (orig) => {
   const mod = await orig<typeof import("@/lib/relay")>();
@@ -94,7 +102,8 @@ vi.mock("@/hooks/useVaultMedia", async (orig) => {
     useChatterFolderAccess: () => h.access,
     useVaultMedia: (o: { listId: unknown; type: string; enabled?: boolean }) => { h.liveOptions(o); return ({
       items: (o.listId == null ? h.ALL : h.IN_BEACH).filter((m) => o.type === "all" || m.type === o.type),
-      hasMore: false, isLoading: false, isFetchingNextPage: false, error: null, loadMore: () => {},
+      hasMore: false, isLoading: false, isFetchingNextPage: false, isPlaceholderData: h.placeholder, error: null,
+      loadMore: () => {},
     }); },
   };
 });
@@ -111,7 +120,8 @@ vi.mock("@/hooks/useVaultCache", async (orig) => {
     }); },
     describeMedia: h.describeMedia,
     addToOfFolder: h.addToOfFolder,
-    useOfSearch: (_a: string, q: string, on: boolean) => on && !!q && h.searchingOf,
+    useOfSearch: (_a: string, q: string, on: boolean) => ({ searching: on && !!q && h.searchingOf,
+                                                            failed: on && !!q && h.ofFailed, retry: h.ofRetry }),
   };
 });
 vi.mock("@/hooks/useVaultSweep", async (orig) => {
@@ -145,13 +155,14 @@ vi.mock("@/components/vault/VaultTile", () => ({
 vi.mock("@/components/vault/VaultPreviewMedia", () => ({ default: () => null }));
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultVideoPreview: () => null }));
 
+import { VaultBrowseMemory } from "./VaultBrowseMemory";
 import { VaultDownloadProvider } from "./VaultDownloadPanel";
 import VaultManagePanel, { FOLDER_LOADING } from "./VaultManagePanel";
 
 /** The panel as VaultProPage mounts it: under the page's one download (`extrasOpen`: the page's ⋯ opened the drawer). */
 const renderPanel = (extrasOpen = false, onCloseExtras = () => {}) =>
   renderWithProviders(
-    <VaultDownloadProvider><VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={onCloseExtras} /></VaultDownloadProvider>,
+    <VaultDownloadProvider><VaultBrowseMemory><VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={onCloseExtras} /></VaultBrowseMemory></VaultDownloadProvider>,
   );
 
 beforeAll(() => {
@@ -168,6 +179,9 @@ beforeEach(() => {
   h.liveOptions.mockClear();
   h.summary.data = { count: 0 };
   h.searchingOf = false;
+  h.ofFailed = false;
+  h.ofRetry.mockReset();
+  h.placeholder = false;
   h.mirrorItems = [];
   h.access = { isLoading: false, isError: false };
   h.describeMedia.mockReset();
@@ -182,6 +196,17 @@ const selectionBar = () => screen.queryByText("Selected");
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 describe("selection across a change of view", () => {
+  it("while the live grid still shows the previous folder's tiles, none of them can be ticked (#430)", () => {
+    renderPanel();
+    click("rail:Beach");
+    h.placeholder = true;   // the folder's first page is loading; the grid holds All media's pages
+    click("Select");
+    click("tile 10");
+    // Bug: a tick here downloaded the old folder's file into the new folder's directory.
+    expect(selectionBar()).toBeNull();
+    expect(screen.getByRole("button", { name: "Select all" })).toBeDisabled();
+  });
+
   it("switching folder clears the ticks, and Add to category sends only what is ticked now", async () => {
     renderPanel();
     click("Select");
@@ -370,6 +395,28 @@ describe("the Extras drawer's full download", () => {
     }
   });
 
+  // F13 (rwl W30 round 2): one gate per control. A run busy (a press would queue) but the scope off: the label never
+  // offers "Add … to queue" for a press that does nothing; label and title name the same state.
+  it("a run busy, the scope off: the drawer item and the selection bar say Download, the title why", async () => {
+    (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => Promise.resolve({});
+    h.access = { isLoading: false, isError: false };
+    h.get.mockImplementation((p: string) => (String(p).startsWith("/admin/vault-ai/download/info")
+      ? Promise.resolve({ direct: false }) : new Promise(() => {})));   // the listing hangs: the run stays busy
+    h.standardList = [{ id: 501, kind: "photo", slug: "beach", name: "Photos Beach", items: 1, priceable: true }];
+    render();
+    fireEvent.click(button());
+    await waitFor(() => expect(button()).toHaveTextContent("Add full vault to queue"));
+    click("standard:Photos Beach");
+    expect(button()).toHaveTextContent("Download full folder");
+    expect(button()).toHaveAttribute("title", "Select media to download from this category");
+    click("rail:not loaded");
+    click("Select");
+    click("tile 10");
+    const dlSel = screen.getByRole("button", { name: "Download selected" });
+    expect(dlSel).toBeDisabled();
+    expect(dlSel).toHaveAttribute("title", FOLDER_LOADING);
+  });
+
   // #24: the click downloads the scope it names, and closes the drawer so the download card shows: the listing carries the selected folder's id, or none.
   it.each<[string, string | null, string | null]>([
     ["All media: the whole vault", null, null],
@@ -413,9 +460,20 @@ describe("search while OF's own search runs", () => {
     expect(await screen.findByText("Searching OnlyFans…")).toBeInTheDocument();
     expect(screen.queryByText("No data")).toBeNull();
     h.searchingOf = false;
-    rerender(<VaultDownloadProvider><VaultManagePanel /></VaultDownloadProvider>);
+    rerender(<VaultDownloadProvider><VaultBrowseMemory><VaultManagePanel /></VaultBrowseMemory></VaultDownloadProvider>);
     expect(await screen.findByText("No data")).toBeInTheDocument();
     expect(screen.queryByText("Searching OnlyFans…")).toBeNull();
+  });
+
+  it("OF's search failed or ran out of time: an empty grid says so with a Retry, not 'No data'", async () => {
+    h.summary.data = { count: 12, complete: true };
+    h.ofFailed = true;
+    renderPanel();
+    fireEvent.change(screen.getByPlaceholderText("Search media by PPV caption"), { target: { value: "leggings" } });
+    expect(await screen.findByText("OnlyFans search failed")).toBeInTheDocument();
+    expect(screen.queryByText("No data")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(h.ofRetry).toHaveBeenCalledTimes(1);
   });
 
   it("with mirror hits already shown, a small line says more may come", async () => {
@@ -522,6 +580,30 @@ describe("the item popup", () => {
     expect(dialog()).toBeNull();
   });
 
+  it("with unsaved edits, Escape / ✕ / backdrop / stepping ask first; Cancel keeps the edit", async () => {
+    // W30 F24: closing threw the draft away without a word.
+    const ask = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      renderPanel();
+      click("tile 1");
+      fireEvent.change(descBox(), { target: { value: "new desc" } });
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+      click("Close details");
+      fireEvent.pointerDown(dialog()!.parentElement!);
+      click("Next item");
+      await flush();
+      expect(ask).toHaveBeenCalledTimes(4);
+      expect(dialog()).toHaveAccessibleName("Media #1");
+      expect(descBox().value).toBe("new desc");
+      ask.mockReturnValue(true);
+      click("Close details");
+      await flush();
+      expect(dialog()).toBeNull();
+    } finally {
+      ask.mockRestore();
+    }
+  });
+
   it("a hashtag removed with × and one typed + Enter go in the save, and nothing else", async () => {
     renderPanel();
     click("tile 1");
@@ -592,6 +674,6 @@ it("an unrestricted chatter's access loading → all keeps the hook order and sh
   const { rerender } = renderPanel();
   expect(screen.queryByRole("button", { name: "standard:Photos Beach" })).toBeNull();
   h.access = { isLoading: false, isError: false };
-  rerender(<VaultDownloadProvider><VaultManagePanel /></VaultDownloadProvider>);
+  rerender(<VaultDownloadProvider><VaultBrowseMemory><VaultManagePanel /></VaultBrowseMemory></VaultDownloadProvider>);
   expect(screen.getByRole("button", { name: "standard:Photos Beach" })).toBeInTheDocument();
 });

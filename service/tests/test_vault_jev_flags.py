@@ -36,6 +36,7 @@ import vault_describe_jev as vdj  # noqa: E402
 import vault_jev_flags as jf  # noqa: E402
 import vault_jev_rules as rules  # noqa: E402
 import vault_scripts  # noqa: E402
+from _jev_fixtures import video_jev  # noqa: E402
 
 GOLD = json.load(gzip.open(Path(__file__).parent / "fixtures" / "vault_describe_jev" / "golden.json.gz", "rt"))
 for _c in GOLD["cases"]:   # bench blobs predate the stored region states: empty = every hidden region covered
@@ -140,6 +141,10 @@ def case_apply_and_in_sync():
         assert not jf.in_sync({**prev, "_jev": bad}, ())
 
 
+def _applied(j: dict) -> dict:
+    return jf.apply({"_jev": j}, j)
+
+
 def case_tier_column():
     """The `explicitness_tier` column follows Jev's reading (folder picks and the admin read it): `column_tier`
     gives the mapped explicitness unless the column is operator-locked or there is no reading, and `row_in_sync`
@@ -156,6 +161,8 @@ def case_tier_column():
          "softcore"),
         ("no reading: unchanged", ({"explicitness": "explicit"}, "sfw", ()), "sfw"),
         ("failed Jev: unchanged", ({"_jev": {**j, "status": "error"}}, None, ()), None),
+        ("review clip read free: unknown (W30 F14)", (_applied(video_jev("free", review="long")), "sfw", ()), None),
+        ("review clip, column locked", (_applied(video_jev("free", review="long")), "sfw", {jf.TIER_COLUMN}), "sfw"),
     ):
         assert jf.column_tier(*args) == want, (name, jf.column_tier(*args), want)
     assert jf.row_in_sync(got, None, tier="hardcore")
@@ -259,7 +266,9 @@ def case_consumers_grid():
         describe = {**{k: r[k] for k in vdj.LANE_FIELDS}, "description": "x", "tags": [], "clothing_items": worn,
                     "acts": ["toy_insertion"] if lane5 == "$100" else ["posing"],
                     "penetration": "toy" if lane5 == "$100" else "none", "people_count": 1}
-        _consumers_ok(jf.apply({**describe, "_jev": j}, j), lane5, (lane5, bb, cb, outfit, st, worn))
+        # a firm "y" is bare in any lane (F1a): a free / $10 reading raises to what its bare regions price
+        shelf = "$50" if cb == "y" and lane5 in ("free", "$10") else "$10" if bb == "y" and lane5 == "free" else lane5
+        _consumers_ok(jf.apply({**describe, "_jev": j}, j), shelf, (lane5, bb, cb, outfit, st, worn))
         n += 1
     assert n > 1600, n
 

@@ -6,7 +6,6 @@ import gzip
 import json
 from pathlib import Path
 
-import vault_jev
 import vault_jev_rules as rules
 
 _GOLDEN = None
@@ -31,8 +30,8 @@ def video_jev(lane5: str = "free", *, review: str | None = None) -> dict:
         raise LookupError(lane5)
     recs, nn = [{"resp": g["rec"]["resp"]}], dict(g["nn"])
     ds, top = rules.video_final(recs, [nn])
-    frame = {"px": [1280, 720], "1": rules.pack(g["rec"]["resp"]["answers"], vault_jev.ORDER["1"]),
-             "nn": [nn.get(k, 0) for k in vault_jev._NN], "lane5": ds[0]["lane5"]}
+    frame = {"px": [1280, 720], "1": rules.pack(g["rec"]["resp"]["answers"], rules.ORDER["1"]),
+             "nn": [nn.get(k, 0) for k in rules.NN], "lane5": ds[0]["lane5"]}
     return rules.video_blob(ds, top, recs, [nn], frames=[frame], passes=["1"], tok=1000, px=[[1280, 720]],
                             at="2026-11-12T00:00:00", src="720", review=review, nbytes=1)
 
@@ -47,3 +46,9 @@ def photo_jev(lane5: str = "free") -> dict:
                 return rules.blob(d, g["nn"], passes=["1"], tok=1, px=[800, 1200], at="2026-11-12T00:00:00",
                                   answers=g["rec"]["resp"]["answers"])
     raise LookupError(lane5)
+
+
+def mapped(fields: dict) -> dict:
+    """`fields` (carrying a `_jev`) with the flags as the mapper writes them: a paid lane is never stored sfw (W30 D1)."""
+    import vault_jev_flags
+    return vault_jev_flags.apply(fields, fields.get(rules.JEV_KEY))

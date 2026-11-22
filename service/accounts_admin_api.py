@@ -28,12 +28,13 @@ import logging
 import time as _time_mod
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 import account_health
 import accounts as account_registry
+import client_pool
 import live_rev
 import notifications_api
 import proxies as proxy_registry
@@ -42,11 +43,13 @@ import relay_cache
 import shared_refresher
 import sign_rules
 import vault_cache
+from audit_log import credential_write
 from auth import assert_account_owned, require_actor_account_ids
 from chatters import get_request_chatter as _get_request_chatter
 from relay_host import assemble_chats_page as _assemble_chats_page
 from relay_host import chats_window_fetched_at as _chats_window_fetched_at
 from relay_host import get_request_user as _get_request_user
+from relay_host import flag_dead_session as _flag_dead_session
 from relay_host import invalidate_client as _invalidate_client
 from relay_host import kick_db_sync as _kick_db_sync
 from relay_host import list_chats_ttl
@@ -183,7 +186,7 @@ class _FanslySessionBody(BaseModel):
     make_active: bool = Field(True)
 
 
-@router.post("/admin/session/fansly")
+@router.post("/admin/session/fansly", dependencies=[Depends(credential_write)])  # a session blob
 def bootstrap_fansly_session(body: _FanslySessionBody = Body(...)) -> dict[str, Any]:
     """Register a Fansly account from a captured session blob.
 
@@ -531,6 +534,7 @@ async def admin_accounts_roster_counts(
         return _roster_answer({})
 
     async def _one(aid: str, *, bypass: bool = False) -> tuple[str, dict[str, int]]:
+        client = client_pool.peek(aid)       # the client this read starts on: only it is evicted on a dead session
         try:
             # Named async closure, not a lambda: get_or_fetch dispatches sync
             # fetchers to a thread, and a lambda returning a coroutine would
@@ -548,15 +552,7 @@ async def admin_accounts_roster_counts(
             # OF rejected the session itself: pause the Creator and tell its owner,
             # as `_proxy` does. This strip is the read an owner makes even for a
             # Creator nobody chats on.
-            dead_reason = account_health.is_session_dead_error(e)
-            if dead_reason:
-                _invalidate_client(aid)
-                try:
-                    if await account_health.mark_session_dead(aid, dead_reason):
-                        log.warning("account_session_dead account=%s via=roster-counts reason=%s — "
-                                    "automations paused until the session recovers", aid, dead_reason)
-                except Exception:  # noqa: BLE001 — the strip still answers
-                    log.exception("failed to mark session-dead account")
+            await _flag_dead_session(aid, e, "roster-counts", client)
             return aid, {"unread": 0, "owe_reply": 0, "as_of": 0}
 
     # OF is read only for a Creator this Relay's View lease holds (`view_lease`, ADR-0031), a `bust`, or the

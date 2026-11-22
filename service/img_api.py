@@ -168,6 +168,9 @@ _IMG_CACHE_BUDGET_BYTES = 2 * 1024 * 1024 * 1024
 # Every /img and /img/scrub answer's: a Creator's media, kept a week by the
 # browser (see `_stream_upstream`), never by a shared cache.
 _CACHE_CONTROL = "private, max-age=604800, stale-while-revalidate=86400, immutable"
+# The of_pacing walk kind of /img and /img/scrub's re-sign reads (`cdn_resign`): their own `walk:img_resign` counter
+# group, never mixed into a route's or another walk's.
+IMG_RESIGN = "img_resign"
 _img_cache_hits: int = 0
 _img_cache_misses: int = 0
 # Requests that missed on the first look, queued for a fetch slot, and found
@@ -627,7 +630,8 @@ async def proxy_image(
             def get(url: str) -> Any:
                 return run_in_threadpool(http.get, url, timeout=timeout_s, stream=True,
                                          headers=upstream_headers or None)
-            r, fetch_u = await cdn_resign.fetch(resign_aid, media_id, u, client, get)
+            # A re-sign's OF reads (window / by id) are paced on the Creator (#444), as walk `img_resign`.
+            r, fetch_u = await cdn_resign.fetch(resign_aid, media_id, u, client, get, IMG_RESIGN)
         except HTTPException:
             raise
         except Exception as e:

@@ -349,6 +349,20 @@ describe("AutoReplyPage", () => {
     expect(put.mock.calls[1][1].config).toMatchObject({ enabled: false, silence_min_minutes: 30 });
   });
 
+  it("the header switch builds on the blob as stored now, never the tab's old copy", async () => {
+    mockReads({ config: { list_ids: [11] } });
+    renderWithProviders(<AutoReplyPage />);
+    await screen.findByRole("switch", { name: "Fans in folders" });
+    // Another operator has since saved a new audience; this tab still caches the old one.
+    const base = get.getMockImplementation()!;
+    get.mockImplementation((path: string, ...rest: unknown[]) => path.startsWith("/admin/autoreply-config")
+      ? Promise.resolve({ account_id: "acc-a", config: { enabled: true, list_ids: [22], new_fans_enabled: true }, defaults: {} })
+      : base(path, ...rest));
+    fireEvent.click(within(screen.getByRole("banner")).getByRole("switch", { name: "Auto-reply" }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(put.mock.calls[0][1].config).toEqual({ enabled: false, list_ids: [22], new_fans_enabled: true });
+  });
+
   it("the header switch flips back and says why when its PUT fails", async () => {
     mockReads();
     put.mockRejectedValueOnce(new Error("blob refused"));

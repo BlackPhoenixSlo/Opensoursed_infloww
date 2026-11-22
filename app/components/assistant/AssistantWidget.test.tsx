@@ -30,7 +30,7 @@ const { relayPost, relayGet, relayPut, relayFile, saveBlob, nav, scope, employee
     loaded: true,
   },
   // A signed-in user (an owner) can ask about General; a chatter session can't.
-  signedIn: { user: { username: "vaerunner" } as { username: string } | null },
+  signedIn: { user: { username: "vaerunner" } as { username: string; user_id?: string } | null },
 }));
 
 vi.mock("@/lib/relay", () => {
@@ -610,6 +610,22 @@ describe("AssistantWidget: Do it for me", () => {
     expect(relayGet).toHaveBeenCalledWith("/admin/assistant/do-caps?account_id=1001", { accountId: "1001", employeeId: 7 });
   });
 
+  // rwl W30 S2: the caps were cleared on a new identity but never asked again on the same model → the fallback offered it.
+  it("a new identity on the same model asks do-caps again and goes by its answer", async () => {
+    signedIn.user = { username: "owner", user_id: "u1" };
+    const caps = { u1: { can_do: true }, u2: { can_do: false, reason: "not_allowed" } } as Record<string, object>;
+    relayGet.mockImplementation((path: string) => Promise.resolve(path.startsWith("/admin/assistant/do-caps")
+      ? { account_id: "1001", ...caps[signedIn.user?.user_id ?? ""] } : { turns: [] }));
+    const capsCalls = () => relayGet.mock.calls.filter(([p]) => String(p).startsWith("/admin/assistant/do-caps")).length;
+    await openPanel();
+    await waitFor(() => expect(capsCalls()).toBe(1));
+    expect(doCard()).toBeTruthy();
+    signedIn.user = { username: "someone", user_id: "u2" };
+    view.rerender(tree());
+    await waitFor(() => expect(capsCalls()).toBe(2));
+    await waitFor(() => expect(doCard()).toBeNull());
+  });
+
   it("no_key: the card shows disabled with the linked key hint; not_allowed: hidden", async () => {
     relayGet.mockImplementation((path: string) => Promise.resolve(
       path.startsWith("/admin/assistant/do-caps") ? { account_id: "1001", can_do: false, reason: "no_key" } : { turns: [] }));
@@ -723,10 +739,10 @@ describe("AssistantWidget: Do it for me", () => {
   it("a mass_edit plan: change + rules per model, Do it applies once and lists each rule's result", async () => {
     const rule = (id: number, account_id: string, account_name: string, name: string, is_enabled: boolean) => ({
       id, account_id, account_name, name, is_enabled, version: `v${id}`,
-      diffs: [{ field: "unsend_after_hours", label: "Unsend after", before: 8, after: null }],
+      diffs: [{ field: "unsend_after_hours", label: "Unsend after", before: 8, after: null, text: "Unsend after 8h → never" }],
     });
     const EDIT = {
-      scope: "all", match: null, changes: { unsend_after_hours: 0 }, already: 1, skipped: [],
+      scope: "all", match: null, changes: { unsend_after_hours: 0 }, change_lines: ["Unsend after → never"], already: 1, skipped: [],
       rules: [rule(11, "1001", "Ava", "Morning mass", true), rule(12, "1002", "Bea", "Night mass", false)],
     };
     relayPost.mockImplementation((path: string) => Promise.resolve(path === "/admin/assistant/draft"
@@ -775,7 +791,7 @@ describe("AssistantWidget: Do it for me", () => {
 
     await userEvent.click(within(plan).getByRole("button", { name: "Apply to draft" }));
     const res = await screen.findByTestId("do-config-result");
-    expect(within(res).getByText("Draft updated. Make draft live on the page sends it to fans.")).toBeTruthy();
+    expect(within(res).getByText("Draft updated. Make draft live on the page copies it to the Live settings.")).toBeTruthy();
     expect(relayPut.mock.calls).toEqual([[
       "/admin/full-ai/config/draft", { account_id: "1001", draft: CONFIG.after, rev: 4 }, { accountId: "1001", employeeId: 7 },
     ]]);

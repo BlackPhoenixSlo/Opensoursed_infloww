@@ -303,12 +303,14 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
     Blocking (sync OF client) — call via asyncio.to_thread. Raises AudienceHalt
     on any state that cannot be verified complete.
 
-    Per-user add failures (OF 403s the odd deleted/blocked/self id — the same
-    permanent stragglers that fail-closed 47/116 Auto_Exclude broadcasts) are
-    tolerated: an un-addable id is almost always also undeliverable. They are
-    REMOVED from the verification target and counted loudly, so the zero-diff
-    invariant stays exact against the achievable fence instead of wedging
-    forever on one deleted account. Returns size and unaddable."""
+    Per-user add refusals OF gives for good (`of_paging.unlistable`: the odd
+    deleted/blocked/self id — the same permanent stragglers that fail-closed
+    47/116 Auto_Exclude broadcasts) are tolerated: an un-addable id is almost
+    always also undeliverable. They are REMOVED from the verification target and
+    counted loudly, so the zero-diff invariant stays exact against the
+    achievable fence instead of wedging forever on one deleted account. Any
+    other add failure (timeout, 429, 5xx) halts (`fence_add_failed`): that fan
+    is not fenced. Returns size and unaddable."""
     current, truncated = of_paging.list_member_ids(client, of_list_id)
     if truncated:
         raise AudienceHalt("fence_crawl_truncated",
@@ -319,6 +321,10 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
         try:
             client.add_user_to_list(of_list_id, uid)
         except Exception as e:  # noqa: BLE001 — per-user tolerance, see docstring
+            if not of_paging.unlistable(e):
+                raise AudienceHalt("fence_add_failed",
+                                   f"list {of_list_id} add uid={uid} failed: "
+                                   f"{str(e).splitlines()[0][:80] if str(e) else type(e).__name__}") from e
             unaddable.add(uid)
             log.warning("autofence add failed list=%s uid=%s (%s)",
                         of_list_id, uid, str(e).splitlines()[0][:80])
@@ -536,6 +542,8 @@ AUDIENCE_SENDER_CLASSIFICATION: dict[str, str] = {
     "pacing": "exempt:infrastructure — paces writes, never originates a send",
     "_send_failure": "exempt:the shared send seam itself",
     "_common": "exempt:re-export shim — no send code; the scan matches the re-exported name",
+    "full_ai_look": "exempt:the last look — no send code; it gates full_ai_live / full_ai_ppv's sends "
+                    "(the scan matches its before_write hook's name)",
     # not a fan DM
     "auto_posts": "not_fan_dm",
     "auto_stories": "not_fan_dm",

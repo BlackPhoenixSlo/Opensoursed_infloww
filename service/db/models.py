@@ -1036,8 +1036,9 @@ class VaultFolderPrice(Base):
 
 
 class VaultAccountSetting(Base):
-    """One Creator's vault switches (`vault_settings`): a saved folder price is final, and the
-    standard category folders. No row = both off. Migration 0124_vault_account_settings."""
+    """One Creator's vault switches (`vault_settings`): a saved folder price is final, the standard
+    category folders, and solo-only Sequences. No row = the first two off, `solo_sequences` on (NULL
+    reads as on). Migrations 0124_vault_account_settings, 0131_vault_solo_sequences."""
     __tablename__ = "vault_account_settings"
 
     account_id: Mapped[str] = mapped_column(
@@ -1045,6 +1046,7 @@ class VaultAccountSetting(Base):
     )
     folder_price_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     standard_folders: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    solo_sequences: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     updated_at: Mapped[datetime] = _ts_now()
 
 
@@ -1734,6 +1736,12 @@ class FunnelState(Base):
     # self-heals it via ALTER TABLE, so no migration (mirrors the rest of
     # funnel_state); NULL (a row from before it) keeps the old step c - 1 rule.
     last_sent_step: Mapped[int | None] = mapped_column(Integer)
+    # The mark time of the last step saved by a replay (a landed settle or the
+    # user's "It went through"), not by a live send. Floors the next "replied
+    # since?" cutoff: a confirmed step may have no tagged out row, and a reply
+    # before it is no reply to it. Nullable/additive: init_db self-heals via ALTER
+    # TABLE; NULL = the tagged out rows alone.
+    confirmed_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     # Send-once marker (send_marker_decide): set right before the step's first OF
     # call, cleared by the Sent save; `unconfirmed_at` = it may have sent. Status
     # stays 'pending'. Nullable/additive: init_db self-heals via ALTER TABLE.
@@ -3549,6 +3557,10 @@ class TrackingClick(Base):
         # Covers summary + analytics (no table lookups): 30 d over a 105k-click link
         # 106 -> 26 ms summary, 224 -> 51 ms analytics. Replaces ix_tracking_clicks_link_time.
         Index("ix_tracking_clicks_stats", "tracking_link_id", "clicked_at", "verified", "country", "in_app", "ref"),
+        # The boot classifier's NULL-ref backlog (tracking_stats._classify_chunk): seeks only unclassified rows
+        # instead of walking the whole table on every restart. Migration 0133.
+        Index("ix_tracking_clicks_unclassified", "id",
+              sqlite_where=text("ref IS NULL"), postgresql_where=text("ref IS NULL")),
     )
 
 
@@ -4109,6 +4121,9 @@ class AiDecision(Base):
     outcome: Mapped[str | None] = mapped_column(String)                 # bought | declined
     outcome_at: Mapped[datetime | None] = mapped_column(DateTime)
     join_src: Mapped[str | None] = mapped_column(String)                # test (05 adds the live values)
+    # 0130: when the Offer's carrier POST was claimed (set just before it, once). Only an attempted
+    # row can be linked by a readback / settle_pull, and its media stay reserved until resolved.
+    offer_attempt_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     __table_args__ = (
         # The Turn key: one row per Turn and Mode, enforced by the DB (the

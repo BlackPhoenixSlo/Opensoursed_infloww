@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""test_model_cap — the Relay-wide Model-call cap on off-slot automation `llm_client.chat` calls
-(spec docs/spec/ingest-llm-caps/phase-0B-model-call-cap.md, Testing Decisions).
+"""test_model_cap — the Relay-wide Model-call cap on off-slot automation `llm_client.chat` calls.
 
 Runs are real `run_slot.hold(SlotPool(k))` + `run_slot.freed(llm_client.chat(...))`; the wire is
 `_full_ai_fixtures.FakeWriterHTTP`, its `park` posts waiting until released. Temp DB only; no paid call.

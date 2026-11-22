@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { MassMessageRow } from "@/hooks/useMassMessages";
 
 import {
-  daysToCover, filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, narrowedBy, NO_MASS_FILTERS,
+  daysToCover, filterMassRows, initialMassFilter, massCsvRows, massFilterReducer, mayHideOlder, narrowedBy, NO_MASS_FILTERS,
   type MassFilterAction, type MassFilterState,
 } from "./massFilterBar";
 
@@ -27,8 +27,34 @@ describe("massFilterReducer", () => {
       { draft: NO_MASS_FILTERS, applied: NO_MASS_FILTERS, daysBack: 90 }],
     ["Reset undoes a window a Sending Date widened", [{ type: "draft", patch: { from: "2025-06-01" } }, { type: "apply", now: NOW }, { type: "reset" }],
       { applied: NO_MASS_FILTERS, daysBack: 30, pickedDays: 30 }],
+    ["Hide unsent starts on and switches", [{ type: "hideUnsent", on: false }], { hideUnsent: false }],
+    ["a chip joins the pick, a second tap drops it",
+      [{ type: "toggleModel", id: "a" }, { type: "toggleModel", id: "b" }, { type: "toggleModel", id: "a" }], { models: new Set(["b"]) }],
+    ["All clears the pick", [{ type: "toggleModel", id: "a" }, { type: "allModels" }], { models: new Set() }],
+    ["a Creator gone inactive leaves the pick", [{ type: "toggleModel", id: "a" }, { type: "toggleModel", id: "b" },
+      { type: "liveModels", ids: ["b", "c"] }], { models: new Set(["b"]) }],
+    ["Reset keeps the list's own filters", [{ type: "toggleModel", id: "a" }, { type: "hideUnsent", on: false }, { type: "reset" }],
+      { models: new Set(["a"]), hideUnsent: false }],
   ])("%s", (_name, actions, want) => {
     expect(run(actions)).toMatchObject(want);
+  });
+
+  it("an unchanged model pick keeps the same state object", () => {
+    const s = run([{ type: "toggleModel", id: "a" }]);
+    expect(massFilterReducer(s, { type: "liveModels", ids: ["a"] })).toBe(s);
+    expect(massFilterReducer(initialMassFilter, { type: "allModels" })).toBe(initialMassFilter);
+  });
+});
+
+describe("mayHideOlder", () => {
+  it.each<[string, Partial<typeof NO_MASS_FILTERS>, number[], boolean]>([
+    ["no filter: never", {}, [100, 3], false],
+    ["search, no Creator full", { q: "promo" }, [99, 3], false],
+    ["search, a Creator full", { q: "promo" }, [3, 100], true],
+    ["date only, a Creator full", { from: "2026-03-01" }, [100], true],
+    ["blank search is no filter", { q: "  " }, [100], false],
+  ])("%s", (_name, f, counts, want) => {
+    expect(mayHideOlder({ ...NO_MASS_FILTERS, ...f }, counts, 100)).toBe(want);
   });
 });
 
@@ -88,5 +114,12 @@ describe("narrowedBy", () => {
     [{ q: "promo", from: "2026-03-01" }, " matching your search/date"],
   ])("%o -> %j", (f, want) => {
     expect(narrowedBy({ ...NO_MASS_FILTERS, ...f })).toBe(want);
+  });
+
+  it.each<[Partial<typeof NO_MASS_FILTERS>, string[], string]>([
+    [{}, ["Model A"], " of Model A"],
+    [{ q: "promo" }, ["Model A", "Model B"], " of Model A, Model B matching your search"],
+  ])("%o + models %j -> %j", (f, names, want) => {
+    expect(narrowedBy({ ...NO_MASS_FILTERS, ...f }, names)).toBe(want);
   });
 });

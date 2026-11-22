@@ -8,10 +8,11 @@
  * `useCreatorFreshness` reads one Creator's held snapshot without creating the entry.
  */
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useRef, useSyncExternalStore } from "react";
 import { hashKey, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { usePrincipalId } from "@/hooks/useEmployeeKey";
+import * as ageClock from "@/lib/ageClock";
 import {
   creatorFreshnessReducer, EMPTY_FRESHNESS, of, type Action, type CreatorFreshnessState, type HeldFreshness,
 } from "@/lib/creatorFreshness";
@@ -29,20 +30,33 @@ export function dispatchCreatorFreshness(qc: QueryClient, principalId: string, a
   qc.setQueryData(queryKey, next);
 }
 
-/** The whole store (EMPTY_FRESHNESS while nothing is held), re-rendering when it changes. */
-export function useCreatorFreshnessState(): CreatorFreshnessState {
+/** A value `select`ed from the store (undefined while nothing is held), re-read when the store changes and, with
+ *  `clock`, on every shared tick (lib/ageClock); the snapshot is kept by identity while `same` holds, so a tick or
+ *  another Creator's update that changes nothing shown re-renders nothing. `server`: the server snapshot. */
+export function useFreshnessSelect<T>(
+  select: (state: CreatorFreshnessState | undefined) => T,
+  { same = Object.is, clock = false, server }: { same?: (a: T, b: T) => boolean; clock?: boolean; server: T },
+): T {
   const qc = useQueryClient();
   const queryKey = creatorFreshnessKey(usePrincipalId());
   const hash = hashKey(queryKey);
-  const subscribe = useCallback(
-    (onChange: () => void) => qc.getQueryCache().subscribe((ev) => { if (ev.query.queryHash === hash) onChange(); }),
-    [qc, hash],
-  );
-  return useSyncExternalStore(
-    subscribe,
-    () => qc.getQueryData<CreatorFreshnessState>(queryKey) ?? EMPTY_FRESHNESS,
-    () => EMPTY_FRESHNESS,
-  );
+  const subscribe = useCallback((onChange: () => void) => {
+    const offStore = qc.getQueryCache().subscribe((ev) => { if (ev.query.queryHash === hash) onChange(); });
+    const offClock = clock ? ageClock.subscribe(onChange) : () => {};
+    return () => { offStore(); offClock(); };
+  }, [qc, hash, clock]);
+  const last = useRef<{ v: T } | null>(null);
+  const snapshot = () => {
+    const next = select(qc.getQueryCache().get<CreatorFreshnessState>(hash)?.state.data);
+    if (!last.current || !same(last.current.v, next)) last.current = { v: next };
+    return last.current.v;
+  };
+  return useSyncExternalStore(subscribe, snapshot, () => server);
+}
+
+/** The whole store (EMPTY_FRESHNESS while nothing is held), re-rendering when it changes. */
+export function useCreatorFreshnessState(): CreatorFreshnessState {
+  return useFreshnessSelect((s) => s ?? EMPTY_FRESHNESS, { server: EMPTY_FRESHNESS });
 }
 
 /** The Creator's held snapshot (null: none held, e.g. the Knob is off), re-rendering when the store changes. */

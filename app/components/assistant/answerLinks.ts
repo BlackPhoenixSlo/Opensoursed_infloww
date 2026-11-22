@@ -203,13 +203,18 @@ function leadingLabel(raw: string, labels: Record<string, Place>): { place: Plac
   return best;
 }
 
+/** A hit's page: its href without the tab query or the `#go=` steps. */
+const pageOf = (href: string) => href.replace(/[?#].*$/, "");
+
 /**
  * Find every click path in `text`.
  *
  * Hits never overlap and are returned in source order, so a caller can splice
- * the string in one pass.
+ * the string in one pass. `pages` (prepass.openablePages): only a page the
+ * asker's role may open links — a chatter's answer never links an owner-only
+ * page (rwl W30 F10). Required (S3): no caller gets every page by leaving it out.
  */
-export function findPaths(text: string): PathHit[] {
+export function findPaths(text: string, pages: ReadonlySet<string>): PathHit[] {
   const hits: PathHit[] = [];
   let m: RegExpExecArray | null;
 
@@ -283,5 +288,5 @@ export function findPaths(text: string): PathHit[] {
     HEAD_RE.lastIndex = end; // never emit overlapping hits
   }
 
-  return hits;
+  return hits.filter((h) => pages.has(pageOf(h.href)));
 }

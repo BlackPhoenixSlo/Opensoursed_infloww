@@ -9,7 +9,7 @@ Cases:
   case_every_tool_runs_as_owner    — each v1 read tool answers 200 for A's own Creator, open_url set.
   case_cross_agency_refused        — A's token never reads Creator B: by id per tool (403/400), by name in a
                                      recipe (400), and the list tools leave it out; an unknown id is refused.
-  case_not_nude                    — vault_search not_nude: only a current Jev "free" reading without a toy
+  case_not_nude                    — vault_search not_nude: only a current Jev "free" reading, body answers "n", no toy, no bare region flag
   case_current_sql                 — vault_jev_rules.current_sql agrees with current() row by row
                                      (photo, or a clip with its frames); no / old / failed / review / toy out.
   case_args_refused                — unknown key, missing id, limit over 30: 422 per field, no request.
@@ -189,7 +189,10 @@ def case_cross_agency_refused() -> None:
 
 def _jev(lane5="free", **kw):
     return {"_jev": {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": lane5, "state": {},
-                     "tags": {"toy_any": "n"}, **kw}}
+                     "breasts_bare": "n", "crotch_bare": "n", "penetration": "n", "tags": {"toy_any": "n"}, **kw}}
+
+
+_FLAGS_CLEAN = {"underwear_visible": True, "vulva_vis": "covered", "breasts_vis": "covered", "anus_vis": "not_in_frame"}
 
 
 def case_not_nude() -> None:
@@ -205,6 +208,15 @@ def case_not_nude() -> None:
         8808: ("video", _jev(kind="video", vv="old", frames=[]), False),
         8809: ("photo", {"description": "x"}, False),
         8810: ("photo", None, False),
+        # W30 F1: a body answer not "n", or a region flag bare (an operator lock), is not "not nude".
+        8811: ("photo", _jev(crotch_bare="unsure"), False),
+        8812: ("photo", {**_jev(), "breasts_vis": "bare"}, False),
+        8813: ("photo", {**_jev(), "breasts_vis": "covered", "vulva_vis": "not_in_frame"}, True),
+        # W30 F1 r2: disputed (`vault_ai_brief.is_disputed`) is never "not nude": an unsettled contradiction
+        # (fully_nude yet a garment, nothing bare) and a row carrying the settled marker.
+        8814: ("photo", {**_jev(), **_FLAGS_CLEAN, "clothing_state": "fully_nude"}, False),
+        8815: ("photo", {**_jev(), "_settled": ["dressed_but_bare"]}, False),
+        8816: ("photo", {**_jev(), **_FLAGS_CLEAN, "clothing_state": "lingerie_on"}, True),
     }
 
     async def seed() -> None:
@@ -217,6 +229,9 @@ def case_not_nude() -> None:
     asyncio.run(seed())
     got = {r["id"] for r in _call("vault_search", {"account_id": CA, "query": "nudetest", "not_nude": True})["data_only"]["list"]}
     assert got == {m for m, (_, _, ok) in rows.items() if ok}, got
+    # newest first by media id: SQL page 8816, 8814 (Python-vetoed), 8813 → one shown, hasMore stays true
+    short = _call("vault_search", {"account_id": CA, "query": "nudetest", "not_nude": True, "limit": 2})["data_only"]
+    assert [r["id"] for r in short["list"]] == [8816] and short["hasMore"] is True, short
     every = {r["id"] for r in _call("vault_search", {"account_id": CA, "query": "nudetest"})["data_only"]["list"]}
     assert every == set(rows), every
 
@@ -361,7 +376,9 @@ def case_report_file_scoped() -> None:
     path = out["download_url"].removeprefix("https://app.example.com")
     client = _harness.make_client()
     r = client.get(path, headers={"Authorization": f"Bearer {TOK_A}"})
-    assert r.status_code == 200 and r.text.splitlines() == ["Creator,Gross ($)", "creator_a,10.0"], r.text
+    lines = r.text.splitlines()  # then notes ("# …"): the bench's Creators were added today (W30 C3 history gaps)
+    assert r.status_code == 200 and lines[:2] == ["Creator,Gross ($)", "creator_a,10.0"] \
+        and all(x.startswith("# ") for x in lines[2:]), r.text
     assert 'attachment; filename="sales_' in r.headers["content-disposition"] and r.headers["cache-control"] == "no-store"
     assert A.get(path).status_code == 200  # the same owner by cookie
     assert B.get(path).status_code == 404 and client.get(path, headers={"Authorization": f"Bearer {TOK_B}"}).status_code == 404

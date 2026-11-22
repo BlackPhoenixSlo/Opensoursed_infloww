@@ -43,6 +43,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_ride.py  (exit 0 = pass)
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+from _jev_fixtures import mapped  # noqa: E402
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, CONFIG, NANO, OPENROUTER, OWNER_A, PRICED, TURN, FakePriceJev, _body, _guarded, _picks, _post, _ppvs, _price,
@@ -158,7 +159,7 @@ def _row(mid, lane="$50", kind="photo"):
          "breasts_bare": "n", "crotch_bare": "n", "penetration": "n", "tags": {}}
     if kind == "video":
         j.update(vv=vault_jev_rules.VIDEO_VERSION, frames=[])
-    fields = vault_ai_brief.settled_reading({**DRESSED, vault_jev_rules.JEV_KEY: j})
+    fields = vault_ai_brief.settled_reading(mapped({**DRESSED, vault_jev_rules.JEV_KEY: j}))
     return {"media_id": mid, "kind": kind, "created_at": T0 + timedelta(minutes=mid),
             "duration_seconds": 12 if kind == "video" else None, "fields": fields,
             "describe_status": "described", "score": 0, "refs": set(), "packs": set()}
