@@ -369,7 +369,7 @@ class FakeOF:
         if old is not None:
             rows.remove(old)
         last = {k: msg.get(k) for k in ("id", "text", "fromUser", "isFree", "price", "createdAt")}
-        base = old or {"withUser": {"id": fan, "_view": "s"}, "unreadMessagesCount": 0}
+        base = old or {"withUser": {"id": fan, "_view": "s"}, "unreadMessagesCount": 0, "isMutedNotifications": False}
         rows.insert(0, {**base, "lastMessage": last})
 
     def drop_ws(self, account_ids) -> int:

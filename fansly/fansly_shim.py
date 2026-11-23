@@ -1201,12 +1201,13 @@ class FanslyShimClient(VaultMixin, FanslyClient):
 
     def get_messages(self, chat_id: str | int, *, limit: int = 25,
                      order: str = "desc", before_id: str | int | None = None,
-                     offset: int | None = None) -> dict:
+                     offset: int | None = None, peek: bool = False) -> dict:
         """OF `/chats/{chat_id}/messages` shape.
 
         `chat_id` is the Fansly groupId (what `of_chat_row` put in row `id`). We
         also tolerate being handed a fan accountId — resolve it to a group — so
-        callers that assume OF's `chat_id == fan_id` still work."""
+        callers that assume OF's `chat_id == fan_id` still work. `peek` is
+        ignored (Fansly's read semantics are unmeasured)."""
         group_id = self._as_group_id(chat_id)
         params: dict[str, Any] = {"groupId": str(group_id), "limit": str(limit)}
         if before_id is not None:

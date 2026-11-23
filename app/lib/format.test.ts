@@ -127,12 +127,13 @@ describe("fmtCents stands in for CustomsTab's `money`", () => {
 });
 
 describe("rosterUnreadText", () => {
-  it.each<[number, boolean | undefined, string]>([
-    [3, undefined, "3"],
-    [3, false, "3"],
-    [25, true, "25+"],
-    [24, true, "24+"],
-  ])("%i, capped %s → %s", (n, capped, want) => {
-    expect(rosterUnreadText(n, capped)).toBe(want);
+  it.each<[number, string]>([
+    [3, "3"],
+    [25, "25"],
+    [99, "99"],
+    [100, "99+"],
+    [250, "99+"],
+  ])("%i → %s (exact, never \"N+\"; \"99+\" past 99)", (n, want) => {
+    expect(rosterUnreadText(n)).toBe(want);
   });
 });

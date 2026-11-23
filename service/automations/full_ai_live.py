@@ -462,8 +462,7 @@ async def _after_burst(aid: str, fan: int, at: tuple[datetime, int], client, lan
             return
         if not landed:
             return
-        read_at = read_flip.now_ms()       # before the write: a fan message during it stays unread
-        read = await asyncio.to_thread(client.mark_chat_read, fan)
+        read, read_at = await read_flip.write(aid, fan, lambda: client.mark_chat_read(fan), only_if_unread=True)
     except Exception:  # noqa: BLE001 — the burst stands; the badge is cosmetic
         log.warning("full_ai_live after-burst failed account=%s fan=%s", aid, fan, exc_info=True)
         return

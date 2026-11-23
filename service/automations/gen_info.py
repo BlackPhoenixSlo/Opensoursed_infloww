@@ -509,9 +509,10 @@ async def _enqueue_thin_fan_scrapes(
     enqueued — a thin fan already scraped within the cooldown is left to profile
     normally (OF genuinely has little for them).
 
-    A deferred row (`history_deferred_at`: a sweep kept only page 1) reads as never
-    scraped. Each deferred pick gets its own backfill through webhook_dispatch's shared
-    claim (`enqueue_fan_scrape`); one already claimed by a reply, open or blast
+    A deferred row (`history_deferred_at`: a sweep skipped its oldest end) reads as never
+    scraped. Each deferred pick gets its own one-fan scrape through webhook_dispatch's
+    shared claim (`enqueue_fan_scrape`), which walks the recent end and keeps the deferral
+    (only a Click read buys the asc pass); one already claimed by an open or blast
     inside the window is left out, and still returned as deferred for this pass."""
     thin = [
         c for c in candidates
@@ -550,7 +551,7 @@ async def _enqueue_thin_fan_scrapes(
     for fid in to_scrape:
         if fid in held_back:
             await webhook_dispatch.enqueue_fan_scrape(
-                account_id, fid, webhook_dispatch.DEFERRED_HISTORY_SOURCE)
+                account_id, fid, webhook_dispatch.GEN_INFO_PICK_SOURCE)
     plain = [fid for fid in to_scrape if fid not in held_back]
     if plain:
         await ax.enqueue_job(account_id, "scrape_chats", payload={"fan_ids": plain})

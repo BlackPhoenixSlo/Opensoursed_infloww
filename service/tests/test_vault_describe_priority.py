@@ -868,11 +868,11 @@ def case_describe_all_bad_target_is_400() -> None:
                                            params={"account_id": aid, "target": raw})
             assert r.status_code == 400 and r.json()["detail"]["error"] == "bad_target", (raw, r.text)
         # Unmet target: the sweep starts with it, the response echoes target + target_remaining.
-        r = _post({"account_id": aid, "target": 4})
+        r = _post({"account_id": aid, "target": 8})
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["status"] == "running" and body["target"] == 4 and body["target_remaining"] == 3, body
-        assert started.calls and started.calls[-1][1].get("target") == 4, started.calls
+        assert body["status"] == "running" and body["target"] == 8 and body["target_remaining"] == 3, body
+        assert started.calls and started.calls[-1][1].get("target") == 8, started.calls
         vault_ai_vision._describe_running.discard(aid)
 
 
@@ -885,20 +885,20 @@ def case_target_sweep_walks_the_remaining_slice() -> None:
         assert r.status_code == 200, r.text
         return r.json()
 
-    p = plan(4)
-    assert p["target"] == 4 and p["target_remaining"] == 3, p
-    assert p["coverage"] == {"target": 4, "describable": 12, "described": 1, "terminal": 4,
+    p = plan(8)
+    assert p["target"] == 8 and p["target_remaining"] == 3, p
+    assert p["coverage"] == {"target": 8, "describable": 12, "described": 1, "terminal": 4,
                              "goal": 4, "remaining": 3}, p["coverage"]
     assert p["undescribed"] == 11, p   # the plan's own counts are unchanged
     # Walk = newest first, Terminal failures (11, 9, 7, 6) skipped, `failed` 8 retried, cut to remaining.
-    seen = asyncio.run(_spy_walk(aid, target=4))
+    seen = asyncio.run(_spy_walk(aid, target=8))
     assert seen == [10, 8, 5] and len(seen) == p["target_remaining"], seen
     assert vault_ai_vision._describe_progress[aid]["total"] == 3
     # Goal capped by describable − terminal: 8, so 7 remaining.
     assert plan(1000)["target_remaining"] == 7
     assert asyncio.run(_spy_walk(aid, target=1000)) == [10, 8, 5, 4, 3, 2, 1]
     # `limit` cuts further when both are set.
-    assert asyncio.run(_spy_walk(aid, target=4, limit=2)) == [10, 8]
+    assert asyncio.run(_spy_walk(aid, target=8, limit=2)) == [10, 8]
     assert asyncio.run(_spy_walk(aid, target=1000, limit=5)) == [10, 8, 5, 4, 3]
     # No target: the plan route answers as before (no coverage keys).
     r = client.get(f"/admin/vault-ai/describe-all/plan?account_id={aid}")
@@ -908,7 +908,7 @@ def case_target_sweep_walks_the_remaining_slice() -> None:
 async def case_target_sweep_never_writes_a_terminal_copy() -> None:
     # 2 is new (walked); 1 refused, marked a copy of 2 (Terminal); 3 described, marked a copy of 2,
     # outside the walk — its refresh still happens, as past a `limit`. 4 is new, marked a copy of 2,
-    # and past the cut (target 2, 1 described → remaining 1 → the walk is [2]): not this sweep's, so
+    # and past the cut (target 3, 1 terminal, 1 described → remaining 1 → the walk is [2]): not this sweep's, so
     # refreshed too.
     copy_of_2 = json.dumps({"_jev": video_jev(), "_copied_from": 2, "description": "old"})
     aid = await _world([(1, 1, 9101, 9201), (2, 3, 9102, 9202), (3, 2, 9103, 9203), (4, 0, 9104, 9204)], {
@@ -926,7 +926,7 @@ async def case_target_sweep_never_writes_a_terminal_copy() -> None:
     vault_dupes.reuse_groups = _one_set
     try:
         with _Model("fresh") as m:
-            await vault_ai_vision._run_describe_all(aid, "undescribed", target=2)
+            await vault_ai_vision._run_describe_all(aid, "undescribed", target=3)
     finally:
         vault_dupes.reuse_groups = o
     assert m.n() == 1, m.calls
@@ -951,8 +951,9 @@ async def case_target_sweep_skips_terminal_dupe_members() -> None:
                 if c.name not in ("content_hash", "content_hash_kind")}
     before = {mid: snap(await _row(aid, mid)) for mid in (1, 7)}
     with _Model("first") as m:
-        # Target 1, nothing described: the walk is [6] (7 skipped); 7, its dupe, must not ride as a follower.
-        await vault_ai_vision._run_describe_all(aid, "undescribed", target=1)
+        # Target 3 (2 terminal fill their slots), nothing described: the walk is [6] (7 skipped); 7, its dupe,
+        # must not ride as a follower.
+        await vault_ai_vision._run_describe_all(aid, "undescribed", target=3)
         assert m.n() == 1, m.calls
         assert (await _row(aid, 6)).describe_status == "described"
         # A new re-upload 8 of set B arrives: 6 is now a done source, so 8 is a `copy_now` copy.

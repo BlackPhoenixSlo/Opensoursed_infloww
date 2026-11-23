@@ -42,7 +42,7 @@ const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFin
 /** The Creator's held Unread total, or null (none held, the Knob off, none confirmed yet, malformed). */
 export function heldTotal(state: CreatorFreshnessState, accountId: string): { n: number; at: number } | null {
   const t = state[accountId]?.values.unread_total;
-  return t && isNum(t.n) && isNum(t.at) ? t : null;
+  return t && isNum(t.n) && isNum(t.at) ? { n: t.n, at: t.at } : null;
 }
 
 /** One counted Creator's confirmation time: `at` = the later of its Last refresh and its total's own `at` (epoch ms,

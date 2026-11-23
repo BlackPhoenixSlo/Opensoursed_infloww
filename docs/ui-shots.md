@@ -65,7 +65,9 @@ What one run does:
     router, Chromium runs with `--host-resolver-rules` that resolve no name except
     `localhost`. Of the relay-bound
     paths (`/admin`, `/api`, `/auth`, `/chatter`, `/img`, `/events`, `/ws`, `/health`)
-    only `/auth/*` and `/events` reach the temp relay.
+    only `/auth/*` and `/events` reach the temp relay. The relay pings `/events` every 1 s
+    (not 20 s): the Creator tab draws its Grey circle until the stream's first frame, and the
+    circle shots wait past it.
     Everything else is answered from fixtures, or with `{}` and listed in
     `unmatchedRequests`. `/api/of/*` never reaches the relay.
   - **Next.** `NEXT_TELEMETRY_DISABLED=1`, `HTTP(S)_PROXY` pointing at a closed loopback

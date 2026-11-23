@@ -20,6 +20,8 @@ const R = "// eslint-disable-next-line local/no-fixed-polling";
 describe("local/no-fixed-polling", () => {
   it.each([
     ["ssePoll call", "    refetchInterval: ssePoll(5 * 60_000, 60_000),"],
+    ["ssePoll or off", "    refetchInterval: MS > 0 ? ssePoll(5 * 60_000, 60_000) : false,"],
+    ["off or ssePoll", "    refetchInterval: MS > 0 ? false : ssePoll(5 * 60_000, 60_000),"],
     ["disable with reason", `    ${R} -- stops when the job ends\n    refetchInterval: 60_000,`],
     ["not refetchInterval", "    staleTime: 60_000,"],
   ])("valid: %s", async (_n, body) => {
@@ -30,6 +32,7 @@ describe("local/no-fixed-polling", () => {
     ["number literal", "    refetchInterval: 60_000,", /^fixed polling/],
     ["variable", "    refetchInterval: MS,", /^fixed polling/],
     ["arrow function", "    refetchInterval: (q) => (q.state.data ? 1500 : false),", /^fixed polling/],
+    ["ssePoll or a fixed interval", "    refetchInterval: MS > 0 ? ssePoll(5 * 60_000, 60_000) : 60_000,", /^fixed polling/],
     ["disable without reason", `    ${R}\n    refetchInterval: 60_000,`, /^state why/],
     ["disable with empty reason", `    ${R} --  \n    refetchInterval: 60_000,`, /^state why/],
   ])("invalid: %s", async (_n, body, msg) => {

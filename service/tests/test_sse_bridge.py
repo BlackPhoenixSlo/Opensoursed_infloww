@@ -22,7 +22,7 @@ from attribution import (  # noqa: E402
     write_outbound_attribution,
 )
 from db.engine import get_session  # noqa: E402
-from db.models import Account, Chat, Employee, MassRun  # noqa: E402
+from db.models import Account, Chat, Employee, Fan, MassRun  # noqa: E402
 
 _NOW = datetime(2026, 6, 4, 12, 0, 0)
 
@@ -192,6 +192,20 @@ async def case_human_send_announces_chat_responded():
     assert isinstance(second["at"], int) and second["at"] > 1_700_000_000_000, second
 
 
+async def case_recent_seed_carries_muted_flag():
+    """The inbox seed (/admin/chats/recent) carries OF's `isMutedNotifications` from `Fan.is_muted`, so a Muted
+    unread chat's placeholder row draws no blue dot; a chat with no fans row is not Muted."""
+    import server
+    async with get_session() as s:
+        s.add(Account(id="612"))
+        s.add_all([Fan(account_id="612", fan_id=f, is_muted=m) for f, m in ((903, True), (904, False))])
+        s.add_all([Chat(account_id="612", fan_id=f, unread_count=1, last_message_id=9500 + f,
+                        last_message_at=_NOW) for f in (903, 904, 905)])
+    out = await server.admin_chats_recent(limit=25, account_id="612")
+    got = {r["withUser"]["id"]: r["isMutedNotifications"] for r in out["list"]}
+    assert got == {903: True, 904: False, 905: False}, got
+
+
 _harness.run(
     case_publish_db_message_outbound_shape,
     case_worker_write_emits_live,
@@ -199,4 +213,5 @@ _harness.run(
     case_mass_optimistic_emits_per_recipient,
     case_outbound_send_advances_chat_preview,
     case_human_send_announces_chat_responded,
+    case_recent_seed_carries_muted_flag,
 )

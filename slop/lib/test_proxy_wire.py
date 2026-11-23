@@ -70,3 +70,24 @@ def test_second_request_closes_the_tunnel_only_while_refusing():
     assert up.count(b"GET /") == 1
     up, _ = asyncio.run(_relay([req, req], [b"HTTP/1.1 200 OK\r\n\r\n", b""], False))
     assert up.count(b"GET /") == 2
+
+
+def test_websocket_tunnels_through_the_wire():
+    """service/of_ws.py dials a socks5-bound Creator's socket with websockets' `proxy=`; python-socks 2.5.1 raised
+    there (its asyncio backend needs async-timeout; no `local_addr`, which websockets 16 passes): no pump came up."""
+    import websockets
+    from websockets.asyncio.client import connect
+
+    async def go() -> str:
+        async def echo(ws):
+            await ws.send(await ws.recv())
+
+        async with websockets.serve(echo, "127.0.0.1", 0) as srv:
+            port = srv.sockets[0].getsockname()[1]
+            with pw.ProxyWire() as px:
+                async with connect(f"ws://127.0.0.1:{port}/", proxy=f"socks5://127.0.0.1:{px.port}",
+                                   open_timeout=5) as ws:
+                    await ws.send("hi")
+                    return await asyncio.wait_for(ws.recv(), 5)
+
+    assert asyncio.run(go()) == "hi"

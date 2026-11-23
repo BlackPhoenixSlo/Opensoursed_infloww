@@ -469,11 +469,25 @@ describe("FanRow", () => {
     renderRow({ chat: { ...CHAT, hasUnread: true, unreadMessagesCount: 2, isMutedNotifications: true } });
     const bell = within(row()).getByRole("img", { name: "Muted notifications" });
     expectDomOrder([within(row()).getByText("Hello there"), bell]);
-    expect(within(row()).getByRole("img", { name: "Unread (2)" })).toBeInTheDocument();
 
     cleanup();
     renderRow({ chat: { ...CHAT, isMutedNotifications: true }, oweDot: true });
     expect(within(row()).getByRole("img", { name: "Muted notifications" })).toBeInTheDocument();
+  });
+
+  it("draws no Edge marker on a muted unread row; a muted read owed row keeps the owe dot", () => {
+    const marker = () => within(row()).queryByRole("img", { name: /^Unread|^Read · awaiting/ });
+
+    renderRow({ chat: { ...CHAT, hasUnread: true, unreadMessagesCount: 2, isMutedNotifications: true }, oweDot: true });
+    expect(marker()).toBeNull();
+
+    cleanup();
+    renderRow({ chat: { ...CHAT, isMutedNotifications: true }, oweDot: true });
+    expect(marker()).toHaveAccessibleName("Read · awaiting your reply");
+
+    cleanup();
+    renderRow({ chat: { ...CHAT, hasUnread: true, unreadMessagesCount: 2, isMutedNotifications: false } });
+    expect(marker()).toHaveAccessibleName("Unread (2)");
   });
 
   it("draws the unread and owe dots as Edge markers off the preview line, and unread wins over owe", () => {

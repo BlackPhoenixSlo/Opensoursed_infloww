@@ -30,14 +30,6 @@ import { hashKey, useQueryClient, type QueryClient } from "@tanstack/react-query
 
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { useActiveAccounts } from "@/hooks/useAccounts";
-import {
-  useRosterCountActions,
-  rosterPriorFromRow,
-  rosterDelta,
-  applyRosterDelta,
-  type RosterCount,
-  type RosterDelta,
-} from "@/hooks/useRosterCounts";
 import { ofUserFullKey } from "@/hooks/useOFUser";
 import { patchQueryData } from "@/lib/cacheWrite";
 import { scheduledSendsKey } from "@/hooks/useServerScheduledSends";
@@ -129,31 +121,6 @@ export function findFanChatRow(
   return freshestFanRow(caches, accountId, fanId);
 }
 
-/** Pure: the roster badge delta for a live message, given the fan's PRIOR chat
- *  row and the event direction/time. Returns null to mean "don't patch":
- *   • existing == null → conversation not loaded; caller decides the fallback.
- *   • out-of-order     → the event predates the cached last message (a replay /
- *     reorder). Applying a delta would double-count; the chat-thread insert has
- *     the same guard (insertByCreatedAt), this mirrors it for the badge.
- *  Exported for tests. */
-export function rosterDeltaForEvent(args: {
-  isOutbound: boolean;
-  existing: OFChatItem | null;
-  eventCreatedAt: string;
-}): RosterDelta | null {
-  const { isOutbound, existing, eventCreatedAt } = args;
-  if (!existing) return null;
-  const lastAt = existing.lastMessage?.createdAt;
-  if (lastAt) {
-    const evt = Date.parse(eventCreatedAt);
-    const prev = Date.parse(lastAt);
-    if (Number.isFinite(evt) && Number.isFinite(prev) && evt < prev) return null;
-  }
-  const prior = rosterPriorFromRow(existing);
-  if (!prior) return null;
-  return rosterDelta(isOutbound, prior);
-}
-
 /**
  * Drop every cache that renders money for this fan. Prefix-matched (the OF
  * profile excepted: its full key, exactly), so the trailing key parts (limit /
@@ -185,34 +152,17 @@ function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: FanId) 
 }
 
 /** A person's reply (`chat_responded`) written into every cached chat list holding `accountId` (lib/chatsCache
- *  `applyReply`: preview, read, order; a page read after it untouched), and the roster badge moved from the
- *  fan's prior row as for a live outbound message. No read: a fan in no cached list waits for the list's own
- *  next read. Idempotent with this tab's own send (`useSendMessage` bumped the row and the badge first). */
-export function applyCachedReply(
-  qc: QueryClient, accountId: string, reply: Reply,
-  patchRoster?: (accountId: string, fn: (cur: RosterCount) => RosterCount) => void,
-): void {
-  const prior = findFanChatRow(qc, accountId, reply.fanId);
+ *  `applyReply`: preview, read, order; a page read after it untouched). No read: a fan in no cached list waits
+ *  for the list's own next read. Idempotent with this tab's own send (`useSendMessage` bumped the row first). */
+export function applyCachedReply(qc: QueryClient, accountId: string, reply: Reply): void {
   patchChatCaches(qc, accountId, (data, { key }) => applyReply(key, data, accountId, reply));
-  const delta = patchRoster && rosterDeltaForEvent({ isOutbound: true, existing: prior, eventCreatedAt: reply.createdAt });
-  if (delta && (delta.dUnread !== 0 || delta.dOwe !== 0)) patchRoster!(accountId, (cur) => applyRosterDelta(cur, delta));
 }
 
 // Moved to lib/threadCache; re-exported for the modules and tests that import them here.
 export { insertByCreatedAt, toUtcIso };
 
-export interface InboxRealtimeOptions {
-  /** Whether the page shows the roster badges (default true). A page without
-   *  them still gets live threads, but a message for a fan with no
-   *  loaded chat row costs no live OF roster re-read (`refreshOne`) — there
-   *  that is every message. */
-  roster?: boolean;
-}
-
-export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
+export function useInboxRealtime() {
   const qc = useQueryClient();
-  const rosterRef = useRef(roster);
-  rosterRef.current = roster;
 
   // Accounts the current principal actually owns/has a session for. The
   // SSE `all` scope can carry events for models outside this principal —
@@ -226,17 +176,6 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
   );
   const allowedRef = useRef(allowedAccountIds);
   allowedRef.current = allowedAccountIds;
-
-  // Roster-badge actions, held in refs so the subscription below stays mounted
-  // across principal changes (same pattern as allowedRef). We patch the badge
-  // OPTIMISTICALLY from the message we already have (patchLocal) instead of an
-  // extra OF round-trip; refreshOne is only the fallback for a conversation we
-  // haven't loaded yet (can't dedupe → one authoritative read).
-  const { refreshOne, patchLocal } = useRosterCountActions();
-  const refreshOneRef = useRef(refreshOne);
-  refreshOneRef.current = refreshOne;
-  const patchLocalRef = useRef(patchLocal);
-  patchLocalRef.current = patchLocal;
 
   useEffect(() => {
     const offMsg = eventBus.on("api2_chat_message", (env: EventEnvelope) => {
@@ -252,12 +191,11 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
       const allowed = allowedRef.current;
       if (allowed.size > 0 && !allowed.has(accountId)) return;
 
-      // Prior conversation state, read NOW before any patch below mutates it. It
-      // drives BOTH the optimistic roster delta and the staleness guard: an event
-      // older than the fan's cached last message is a replay/reorder and must not
-      // move the badge OR reorder/bump the chat-list row (that would show a stale
-      // preview, inflate unread, and poison the very row we read as `prior` next
-      // time). Mirrors the message-thread insertByCreatedAt guard.
+      // Prior conversation state, read NOW before any patch below mutates it, for
+      // the staleness guard: an event older than the fan's cached last message is
+      // a replay/reorder and must not reorder/bump the chat-list row (that would
+      // show a stale preview, inflate unread, and poison the very row we read as
+      // `prior` next time). Mirrors the message-thread insertByCreatedAt guard.
       const owned = allowedRef.current.has(accountId);
       const priorRow = owned ? findFanChatRow(qc, accountId, fanId) : null;
       const eventAt = toUtcIso(msg.createdAt);
@@ -267,32 +205,6 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
         : NaN;
       const isStale =
         Number.isFinite(evtMs) && Number.isFinite(priorMs) && evtMs < priorMs;
-
-      // Roster badge counts (per-model unread / owe-reply) move on every inbound
-      // (adds unread) and outbound (clears the owe-reply we answered). We already
-      // have the message AND the fan's PRIOR row, so derive the delta LOCALLY and
-      // patch the badge instantly — no extra OF round-trip.
-      //   • Manual outbound sends already decremented at send-time in
-      //     useSendMessage; by the time their echo lands here the row is flipped,
-      //     so the delta is a no-op. This branch moves AUTOMATION outbound
-      //     (welcome / AI / mass / funnel — they never touched useSendMessage).
-      //   • Cold (fan not in the loaded list) → can't derive a delta, so fall back
-      //     to ONE authoritative re-read (cooldown-guarded) — for outbound too,
-      //     since an off-screen owe-reply fan we just answered still needs clearing.
-      // Gate strictly on the owned set: during cold start `allowedRef` is empty and
-      // the guard above lets events through for LIST patching, but a roster patch
-      // for a foreign/unknown account is wasted and could hit the pre-auth cache.
-      // (rosterDeltaForEvent re-checks staleness itself, so no `isStale` guard here.)
-      if (owned) {
-        if (!priorRow) {
-          if (rosterRef.current) void refreshOneRef.current(accountId);
-        } else {
-          const delta = rosterDeltaForEvent({ isOutbound, existing: priorRow, eventCreatedAt: eventAt });
-          if (delta && (delta.dUnread !== 0 || delta.dOwe !== 0)) {
-            patchLocalRef.current(accountId, (cur) => applyRosterDelta(cur, delta));
-          }
-        }
-      }
 
       // A scheduled send firing arrives as an outbound message. Drop its ghost
       // bubble the instant the real one lands (instead of waiting for the poll).
@@ -413,7 +325,7 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
       if (!accountId || !reply) return;
       const allowed = allowedRef.current;
       if (allowed.size > 0 && !allowed.has(accountId)) return;
-      applyCachedReply(qc, accountId, reply, allowed.has(accountId) ? patchLocalRef.current : undefined);
+      applyCachedReply(qc, accountId, reply);
     });
 
     // A revenue row landed in the local transactions ledger (PPV unlock seen

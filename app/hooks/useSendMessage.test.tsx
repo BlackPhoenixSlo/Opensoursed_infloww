@@ -20,7 +20,8 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { useSendMessage } from "@/hooks/useSendMessage";
-import type { OFChatItem } from "@/lib/relay";
+import { rosterCountsKey, resetRosterCountsModuleState } from "@/hooks/useRosterCounts";
+import { relay, type OFChatItem } from "@/lib/relay";
 
 vi.mock("@/lib/relay", () => ({
   relay: { get: vi.fn(), post: vi.fn(() => Promise.resolve({ id: 999, media: [] })) },
@@ -171,6 +172,31 @@ describe("useSendMessage chat-list cache scoping", () => {
     expect(
       client.getQueryData<Infinite>(KEY_OTHER_ACCT)!.pages[0].rows[0].lastMessage?.text,
     ).toBe("old");
+  });
+});
+
+describe("useSendMessage leaves the cached count to the Relay", () => {
+  const rosterReads = () => vi.mocked(relay.get).mock.calls.map(([p]) => String(p)).filter((p) => p.includes("roster-counts"));
+
+  it("a send, a failed send and its retry: roster-counts untouched, no roster-counts request", async () => {
+    resetRosterCountsModuleState();
+    const counts = { counts: { [ACCT]: { unread: 3, owe_reply: 1 } } };
+    client.setQueryData(KEY_UNFILTERED, infinite([chatRow(FAN)]));
+    client.setQueryData(rosterCountsKey("anon"), counts);
+    const { result } = renderHook(
+      () => useSendMessage({ accountId: ACCT, fanId: FAN, fromUserId: 100, fromUserName: "you", hookHandle: stubHandle() }),
+      { wrapper },
+    );
+
+    await act(async () => { await result.current.send({ text: "hi" }); });
+    vi.mocked(relay.post).mockRejectedValueOnce(new Error("OF said no"));
+    let failed = 0;
+    await act(async () => { failed = (await result.current.send({ text: "again" }))?.tempId ?? 0; });
+    await act(async () => { await result.current.retry(failed); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(client.getQueryData(rosterCountsKey("anon"))).toBe(counts);
+    expect(rosterReads()).toEqual([]);
   });
 });
 

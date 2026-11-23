@@ -207,6 +207,12 @@ secrets_store._CACHE = None
 import _run_ui_safe  # noqa: E402,F401  (sets CHATTERLY_TEST_MODE, neuters loops)
 import uvicorn  # noqa: E402
 
+# The tab counts the stream up only from its first frame (app/lib/eventBusReducer.ts isConnected) and draws the
+# Grey circle until then; with the Shared refresher off that frame is the 20 s ping. A 1 s ping lands it before
+# the shot.
+import events  # noqa: E402
+events._HEARTBEAT_S = 1
+
 uvicorn.run(_run_ui_safe.server.app, host="127.0.0.1", port=int(os.environ["UI_SHOTS_RELAY_PORT"]),
             loop="asyncio", log_level="warning")
 PY
@@ -292,6 +298,8 @@ if sys.argv[1:] == ["preflight"]:
     sys.exit(0)
 
 ROOT = Path(os.environ["UI_SHOTS_ROOT"])
+sys.path.append(str(ROOT / "scripts" / "demo-shots"))
+from circles import roster_count  # noqa: E402
 TMP = Path(os.environ["UI_SHOTS_TMP"])
 APP = os.environ["UI_SHOTS_APP"]
 RELAY = os.environ["UI_SHOTS_RELAY"]
@@ -414,6 +422,7 @@ def accounts_answer(fresh=None, **row):
 
 # Phase 2 ticket 15: OF holds 7 unread chats for Ella (whole inbox) while her page 0 flags one (Chloe).
 UNREAD_TOTAL_N = 7
+UNREAD_NINE_PLUS_N = 12
 UNREAD_FLAGGED = sum(1 for c in CHATS if c["hasUnread"])
 
 
@@ -424,14 +433,10 @@ def fixture(method, path, q):
         return None
     if path == "/admin/accounts":
         return {"accounts": [ACCOUNT], "active_account_id": ACCOUNT_ID}
-    # The Creator tab's unread total (app/hooks/useRosterCounts.ts), by the relay's rule
-    # (service/server.py admin_accounts_roster_counts): unread chats, and read chats the Fan
-    # spoke last in. Answered for the plain poll and a ?bust= refresh alike.
+    # The Creator tab's circles, by the Relay's rules (scripts/demo-shots/circles.py). Answered for the plain read
+    # and a ?bust= refresh alike.
     if path == "/admin/accounts/roster-counts":
-        return {"counts": {ACCOUNT_ID: {
-            "unread": sum(1 for c in CHATS if c["hasUnread"]),
-            "owe_reply": sum(1 for c in CHATS if not c["hasUnread"]
-                             and c["lastMessage"]["fromUser"]["id"] == c["withUser"]["id"])}}}
+        return {"counts": {ACCOUNT_ID: roster_count(CHATS)}}
     if path == "/admin/employees":
         return {"employees": [EMPLOYEE]}
     # The Creator's Split Inbox (service/split_inbox_api.py, ticket 102): the unset default, as the
@@ -1427,6 +1432,19 @@ def wait_tab(page):
     creator_tab(page).wait_for(timeout=60_000)
 
 
+def wait_circle(page):
+    """Ella's tab past the Grey circle (app/components/chat/redCircle.ts): the event stream's first frame landed."""
+    page.get_by_role("tab", name=re.compile(r"^Ella\b(?!.*unread count unknown)")).first.wait_for(timeout=30_000)
+
+
+def check_tab_circle(text):
+    def check(page):
+        title = creator_tab(page).get_attribute("title") or ""
+        return [{"name": f"Creator tab's Red circle reads {text!r}, not Grey", "ok": title.startswith(f"Ella — {text} unread"),
+                 "title": title}]
+    return check
+
+
 def open_creator_picker(page):
     page.get_by_role("button", name="Add a Creator", exact=True).click(timeout=30_000)
     page.get_by_role("region", name="Creator picker").wait_for(timeout=10_000)
@@ -1587,30 +1605,33 @@ SHOTS = [
      "checks": [check_badge_no_number]},
     # Settled: the answer lands; the chip is Σ unread_total.n beside the rows' stale flags.
     {"name": "unread-badge-settled", "url": "/messages-pro", "viewport": [1440, 900],
-     "steps": [pick_employee, wait_unread_total],
+     "steps": [pick_employee, wait_unread_total, wait_circle],
      "fixtures": {"/admin/accounts": accounts_answer(freshness(UNREAD_TOTAL_N))},
-     "checks": [check_badge_total]},
+     "checks": [check_badge_total, check_tab_circle(str(UNREAD_TOTAL_N))]},
     # Phase 3 ticket 17. Trigger: the Relay's Live connection for Ella down 3.5 min: the amber mark.
-    {"name": "live-mark-on", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_tab_down],
+    {"name": "live-mark-on", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_tab_down, wait_circle],
      "fixtures": {"/admin/accounts": accounts_answer(freshness(live="down", live_s_ago=LIVE_DOWN_S))},
      "checks": [check_live_mark_down]},
     # Settled (tickets 17, 18): the socket back up 5 s ago beside a stale `session_dead_at` (re-captured): no mark.
-    {"name": "live-mark-cleared", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_tab],
-     "fixtures": {"/admin/accounts": accounts_answer(freshness(live="up", live_s_ago=5),
+    # 12 unread: the circle's "9+".
+    {"name": "live-mark-cleared", "url": "/messages-pro", "viewport": [1440, 900],
+     "steps": [pick_employee, wait_tab, wait_circle],
+     "fixtures": {"/admin/accounts": accounts_answer(freshness(UNREAD_NINE_PLUS_N, live="up", live_s_ago=5),
                                                      session_dead_at=ago(10))},
-     "checks": [check_live_mark_cleared]},
+     "checks": [check_live_mark_cleared, check_tab_circle("9+")]},
     # Phase 3 ticket 18. Trigger: a Dead session (snapshot `live` "dead", the row not flagged yet): red at once,
     # on the tab and on its "+ Add a Creator" row (the picker open in the shot).
     {"name": "live-mark-dead", "url": "/messages-pro", "viewport": [1440, 900],
-     "steps": [pick_employee, wait_tab_dead, open_creator_picker],
+     "steps": [pick_employee, wait_tab_dead, wait_circle, open_creator_picker],
      "fixtures": {"/admin/accounts": accounts_answer(freshness(live="dead", live_s_ago=1))},
      "checks": [check_live_mark_dead]},
     # Phase 3 ticket 24. Trigger: every Creator's total within its Cycle (30 s old, lease 120 s): today's chip.
-    {"name": "data-age-fresh", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_unread_total],
+    {"name": "data-age-fresh", "url": "/messages-pro", "viewport": [1440, 900],
+     "steps": [pick_employee, wait_unread_total, wait_circle],
      "fixtures": {"/admin/accounts": accounts_answer(freshness(UNREAD_TOTAL_N))},
      "checks": [check_data_age_fresh]},
     # Settled (tickets 24, 25): Ella's total and Last refresh 335 s old on a 120 s Cycle: "as of 5 min", its title.
-    {"name": "data-age-stale", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_chip_stale],
+    {"name": "data-age-stale", "url": "/messages-pro", "viewport": [1440, 900], "steps": [pick_employee, wait_chip_stale, wait_circle],
      "fixtures": {"/admin/accounts": accounts_answer(freshness(UNREAD_TOTAL_N, at_s_ago=DATA_AGE_STALE_S))},
      "checks": [check_data_age_stale]},
 ]

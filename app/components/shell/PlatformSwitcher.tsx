@@ -87,12 +87,8 @@ const COMING_SOON = [
   },
 ] as const;
 
-/** A platform's unread: the sum, and whether any Creator's count in it may be cut off (`unread_capped`). */
-export interface PlatformUnread { count: number; capped: boolean }
-
-/** HBChip's count: "99+" past 99, "N+" when it may be cut off. */
-export const unreadLabel = ({ count, capped }: PlatformUnread) =>
-  count > 99 ? "99+" : rosterUnreadText(count, capped);
+/** A platform's unread: the sum of its Creators' counts. */
+export interface PlatformUnread { count: number }
 
 /** Unread per platform: the roster's unread summed over that platform's accounts with a session. */
 export function usePlatformUnread(): Record<Platform, PlatformUnread> {
@@ -100,14 +96,12 @@ export function usePlatformUnread(): Record<Platform, PlatformUnread> {
   const counts = useRosterCounts();
   return useMemo(() => {
     const out: Record<Platform, PlatformUnread> = {
-      onlyfans: { count: 0, capped: false }, fansly: { count: 0, capped: false },
+      onlyfans: { count: 0 }, fansly: { count: 0 },
     };
     for (const a of accounts ?? []) {
       const c = counts[a.id];
       if (!a.has_session || !c) continue;
-      const p = out[accountPlatform(a)];
-      p.count += c.unread;
-      p.capped ||= c.unread > 0 && c.unread_capped === true;
+      out[accountPlatform(a)].count += c.unread;
     }
     return out;
   }, [accounts, counts]);
@@ -179,10 +173,10 @@ export default function PlatformSwitcher({ collapsed = false }: { collapsed?: bo
               <span className="flex-1 text-left">{PLATFORM_NAME[p]}</span>
               {unread[p].count > 0 && (
                 <span
-                  aria-label={`${rosterUnreadText(unread[p].count, unread[p].capped)} unread`}
+                  aria-label={`${unread[p].count} unread`}
                   className="min-w-5 h-5 px-1.5 rounded-full bg-pink text-white text-[12px] leading-5 text-center"
                 >
-                  {unreadLabel(unread[p])}
+                  {rosterUnreadText(unread[p].count)}
                 </span>
               )}
             </button>

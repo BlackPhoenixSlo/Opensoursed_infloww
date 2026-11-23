@@ -18,7 +18,7 @@ doubling). At its turn a job is dropped unread when its Creator left `tracked`, 
 Last refresh since it was planned (`_wanted`); with no tab open `tracked` is empty, so no job is planned at all.
 A landed read whose write-back was kept writes the Creator's Last refresh (`at` = its ask time); a failed or
 discarded one leaves `at` and holds it `max(FLOOR_S, ladder_s(n))` (decide.after_read); a terminal 429 also holds
-the Creator's whole exit for OF's asked wait, else FLOOR_S (`app_open_warm.hold`: 429s follow the proxy IP).
+the Creator's whole exit for OF's asked wait, else `app_open_warm.HOLD_FLOOR_S` (`app_open_warm.hold`: 429s follow the proxy IP).
 Netting (ADR-0044): one Last refresh per Creator, written by whichever of the refresher or the App-open warm landed:
 the warm's kept `/users/me` calls `note_refresh` (server.app_open_warm_reads, refresher on), and the warm's reuse
 decision reads `last_refresh` and `cycle_for` (app_open_warm._decide).
@@ -94,6 +94,11 @@ def snapshot(account_id: str) -> dict[str, Any]:
             "cycle_s": None if v["cycle_s"] is None else int(v["cycle_s"]), "live": v["live"],
             "live_since": _live_since_ms.get(account_id) if account_id in _state.live_since else None,
             "values": _values_of(account_id)}
+
+
+def live(account_id: str) -> str | None:
+    """The Open-tab Creator's `live` as of the last tick (`decide.live_of`: "up" | "down" | "dead" | None)."""
+    return (_state.shown.get(str(account_id)) or {}).get("live")
 
 
 def register(name: str, contributor: Any) -> None:
@@ -179,7 +184,7 @@ def _window_step(account_id: str, asked: float) -> Callable[[], Awaitable[bool]]
         if prev is not None and asked - prev < cycle:
             return False
         if not decide.window_due(relay_host.chats_window_fetched_at().get(account_id),
-                                 of_ws.connected_since(account_id), _asked(account_id)):
+                                 of_ws.connected_since(account_id), _asked(account_id), prev is None):
             return False
         await window_read(account_id)
         _window_asked[account_id] = asked
@@ -234,20 +239,10 @@ def cycle_for(account_id: str) -> float:
     return decide.cycle_s(view_lease.is_leased(account_id), account_id, KNOBS)
 
 
-def _asked_wait(exc: BaseException) -> float | None:
-    """A terminal 429's wait (the error's cause: `_proxy` raises from the OFAPIError, whose response keeps
-    `Retry-After`): OF's asked wait, else FLOOR_S; None when `exc` is no 429."""
-    status, body, header = of_pacing.upstream(exc.__cause__ or exc)
-    if status != 429:
-        return None
-    wait = of_pacing.asked_wait(header, of_pacing.allow_s(body))
-    return decide.FLOOR_S if wait is None else wait
-
-
 async def _job(account_id: str) -> bool:
     """One Cycle's reads for one Creator (the gate runs it as its own task); True when they landed and their
     write-back was kept. Else `at` stays (the age shows) and the Creator climbs the Backoff ladder; a terminal 429
-    also holds its whole exit for OF's asked wait (`_asked_wait`)."""
+    also holds its whole exit for OF's asked wait (`app_open_warm.hold_on_429`)."""
     global _state
     asked, asked_ms = _clock(), int(time.time() * 1000)
     ok = False
@@ -259,9 +254,7 @@ async def _job(account_id: str) -> bool:
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — held by the ladder; its `at` stays, so the age shows
-        wait = _asked_wait(exc)
-        if wait is not None:
-            app_open_warm.hold(account_id, wait)
+        wait = app_open_warm.hold_on_429(account_id, exc)
         log.info("shared_refresher_read_failed account=%s error=%s hold_s=%s", account_id, type(exc).__name__,
                  "-" if wait is None else f"{wait:.0f}")
     finally:

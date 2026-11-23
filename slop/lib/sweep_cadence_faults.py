@@ -13,9 +13,10 @@ FAILFAST = ("a full sweep that meets a 429 burst after good chats stops at SCRAP
             "its run is not ok and carries no full_sweep")
 DEFER = ("a full sweep's first scrape of a Silent mass-only chat costs one page and no asc page, leaving it "
          "deferred with a NULL cursor; deep chats with a fan message on OF or in the DB get both ends")
-BACKFILL_ON_DEMAND = ("a deferred chat's fan reply frame or head read (user or background priority) buys its "
-                      "both-ends pages once: one deferred_history job however many triggers, today's rows; every "
-                      "head read still reaches OF; no backfill for an untriggered or not-deferred chat")
+BACKFILL_ON_DEMAND = ("a read deferred chat's head read (user or background priority) buys its both-ends pages "
+                      "once: one deferred_history job however many reads, today's rows; a fan reply frame leaves "
+                      "the chat unread and buys none, nor do head reads while it is unread; every head read still "
+                      "reaches OF; no backfill for an untriggered or not-deferred chat")
 DEFER_NET = ("the Silent mass-only chats' history pages, sweep plus triggered backfills, stay below the same "
              "workload under SCRAPE_EAGER_HISTORY=1 (each chat at a fan-message deep chat's sweep cost)")
 
@@ -55,10 +56,10 @@ def _history_eager() -> None:
 
 
 def _no_deferred_trigger() -> None:
-    """The open / reply / gen_info triggers enqueue nothing: service/webhook_dispatch.py's
-    `enqueue_fan_scrape`, which the DM dispatch, the thread_head hook's backfill and gen_info look
-    up in its module at call time, claims nothing for source "deferred_history" and returns False;
-    the blast-reply scrape is untouched."""
+    """The Click read triggers enqueue nothing: service/webhook_dispatch.py's
+    `enqueue_fan_scrape`, which the thread_click_read hook's backfill looks up in its module
+    at call time, claims nothing for source "deferred_history" and returns False (a fan
+    reply or a warm buys none either way); the blast-reply and gen_info scrapes are untouched."""
     import webhook_dispatch
 
     orig = webhook_dispatch.enqueue_fan_scrape

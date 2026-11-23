@@ -21,6 +21,7 @@ import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import importlib  # noqa: E402
 import os  # noqa: E402
+import time  # noqa: E402
 
 import server  # noqa: E402
 import accounts  # noqa: E402
@@ -34,6 +35,8 @@ import view_lease  # noqa: E402
 
 A = "9501"
 TICK = 0.05
+DEADLINE_S = 10.0
+TICKS = [0]
 ME = {"id": 9501, "chatMessagesCount": 3, "notificationsCount": 2}
 
 
@@ -68,6 +71,12 @@ def _refresher(on: bool):
         os.environ.pop("SHARED_REFRESHER", None)
     mod = importlib.reload(shared_refresher)
     mod.TICK_S, mod._clock = TICK, lambda: clock[0]
+    real_tick, TICKS[0] = mod.tick, 0
+
+    async def _counted_tick():
+        await real_tick()
+        TICKS[0] += 1
+    mod.tick = _counted_tick
     for m, k, v in saved:
         setattr(m, k, v)
     relay_cache._cache.clear()
@@ -82,6 +91,19 @@ def _refresher(on: bool):
         else:
             os.environ["SHARED_REFRESHER"] = env
         importlib.reload(shared_refresher)
+
+
+async def _until(cond) -> None:
+    """Real time under load: wait for `cond` or DEADLINE_S; the assertions after it say what was missing."""
+    end = time.monotonic() + DEADLINE_S
+    while not cond() and time.monotonic() < end:
+        await asyncio.sleep(TICK / 5)
+
+
+async def _ticks(n: int) -> None:
+    """`n` more refresher ticks completed: room for anything that must NOT happen to show."""
+    start = TICKS[0]
+    await _until(lambda: TICKS[0] >= start + n)
 
 
 def _drain(q: asyncio.Queue) -> list[dict]:
@@ -101,7 +123,8 @@ async def case_one_read_and_one_event_within_two_ticks():
         try:
             task = mod.start()
             assert task is not None and mod.start() is task, "one loop"
-            await asyncio.sleep(TICK * 1.5)
+            await _until(lambda: not q.empty())
+            await _ticks(1)
             got = _drain(q)
             assert [list(e) for e in got] == [["creator_refreshed", "__account_id"]], got
             snap = got[0]["creator_refreshed"]
@@ -114,7 +137,8 @@ async def case_one_read_and_one_event_within_two_ticks():
             assert 540 <= snap["cycle_s"] <= 600, "the tab cycle, 0.9-1.0 x 600"
             assert client.seen == [], "not due before its first slot (inside FLOOR_S)"
             clock[0] += 61.0                                   # past the first slot
-            await asyncio.sleep(TICK * 2.5)
+            await _until(lambda: mod._at_ms.get(A) is not None)
+            await _ticks(1)
             assert client.seen == [{"caller": "walk:shared_refresher", "priority": "background", "bg_held": 1}], \
                 client.seen
             assert relay_cache.peek_fresh("users_me", A, ("users_me",)) == ME, "the route's entry, re-read"
@@ -135,24 +159,27 @@ async def case_lease_gain_publishes_and_reads_within_lease_cycle():
         q = await events.subscribe("all", accounts=frozenset({A}), tab=True)
         try:
             mod.start()
-            await asyncio.sleep(TICK * 1.5)                    # first seen at 1000
+            await _until(lambda: not q.empty())                # first seen at 1000
             clock[0] += 61.0                                   # past the first slot
-            await asyncio.sleep(TICK * 2.5)
+            await _until(lambda: mod._at_ms.get(A) is not None)
+            await _ticks(1)
             assert len(client.seen) == 1, client.seen
             asked = clock[0]
             assert len(_drain(q)) == 1, "entered `tracked`: one event"
             view_lease.renew(holder, [A], None)                # the Creator comes on screen
-            await asyncio.sleep(TICK * 2.5)
+            await _until(lambda: not q.empty())
+            await _ticks(1)
             got = _drain(q)
             assert len(got) == 1, ("a lease gain publishes once", got)
             snap = got[0]["creator_refreshed"]
             assert 108 <= snap["cycle_s"] <= 120 and snap["seq"] == 2, snap
             assert len(client.seen) == 1, "a lease gain is no burst read"
             clock[0] = asked + 107.0                           # inside 0.9 x 120
-            await asyncio.sleep(TICK * 2.5)
+            await _ticks(2)
             assert len(client.seen) == 1, client.seen
             clock[0] = asked + 120.0                           # the lease cycle
-            await asyncio.sleep(TICK * 2.5)
+            await _until(lambda: len(client.seen) >= 2)
+            await _ticks(1)
             assert len(client.seen) == 2, ("next due within its lease cycle", client.seen)
             assert _drain(q) == [], "the read moved `at` only"
         finally:
@@ -174,15 +201,17 @@ async def case_last_tab_leaves_no_job_after_next_tick():
         q = await events.subscribe("all", accounts=frozenset({A}), tab=True)
         try:
             mod.start()
-            await asyncio.sleep(TICK * 1.5)                    # first seen at 1000
+            await _until(lambda: not q.empty())                # first seen at 1000
             app_open_warm.hold(A, TICK * 8)                    # its exit busy: the job waits in the queue
             clock[0] += 61.0                                   # past the first slot
-            await asyncio.sleep(TICK * 2.5)
+            await _until(lambda: bool(enqueued))
             assert enqueued, "due while the tab is open: queued"
             await events.unsubscribe("all", q)                 # the last tab closes
             n = len(enqueued)
             clock[0] += 3600.0                                 # long past any slot
-            await asyncio.sleep(TICK * 12)                     # the hold ends: the queued job's turn
+            _, ex = app_open_warm._gate(A)
+            await _until(lambda: not ex.jobs and ex.task is None)   # the hold ends: the queued job's turn
+            await _ticks(2)
             assert enqueued[n:] == [], ("no job enqueued after the last tab left", enqueued[n:])
             assert client.seen == [], ("the queued job is dropped unread at its turn", client.seen)
             assert mod._in_flight == set() and mod._at_ms.get(A) is None

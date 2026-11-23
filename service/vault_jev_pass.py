@@ -76,7 +76,7 @@ class Sweep:
     def note(self, res: vault_jev.JevResult) -> None:
         if res.get("status") == "capped":
             self.capped = True
-        elif res.get("call_failed"):
+        elif res.get("call_failed") and res.get("status") != vault_jev_rules.REJECTED:
             self.failed_in_row += 1
             self.last_error = str(res.get("detail") or "")[:200]
         elif res.get("ok"):
@@ -277,6 +277,9 @@ async def _one(account_id: str, media_id: int, *, sweep: Sweep | None = None,
         return None
     prev = fields.get(JEV_KEY) if isinstance(fields.get(JEV_KEY), dict) else {}
     if sweep is not None and not sweep_due(fields, datetime.utcnow()):   # not AI-read: given up, or in its backoff
+        if vault_jev_rules.rejected(fields):
+            return {"media_id": media_id, "ok": False, "status": vault_jev_rules.REJECTED, "cost_millicents": 0,
+                    "detail": "TypeSafe refused this image (invalid dimensions): not retried by sweeps"}
         if vault_jev_rules.retries_spent(fields):   # a sweep never re-fetches it (the operator may)
             return {"media_id": media_id, "ok": False, "status": GAVE_UP, "cost_millicents": 0,
                     "detail": f"clip sources failed {prev.get('retries') or RETRY_MAX} times: Jev gave up, held "

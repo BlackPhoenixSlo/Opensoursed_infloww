@@ -1,0 +1,8 @@
+{
+  "name": "ui-explore",
+  "private": true,
+  "description": "Bombadil UI property-based exploration (see README.md)",
+  "devDependencies": {
+    "@antithesishq/bombadil": "0.8.0"
+  }
+}

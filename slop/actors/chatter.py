@@ -90,7 +90,7 @@ class Chatters:
 TAB_OPEN = ("/auth/me", "/chatter/me", "/chatter/me/accounts", "/admin/settings/applied",
             "/admin/shifts/clock-status", "/admin/shifts/me", "/admin/accounts/roster-counts",
             "/admin/errors?since_hours=24&limit=50")
-POLL_60S = ("/admin/shifts/clock-status", "/admin/shifts/me", "/admin/accounts/roster-counts")
+POLL_60S = ("/admin/shifts/clock-status", "/admin/shifts/me")
 
 
 def chat_open(aid: str, fan: int) -> tuple[str, ...]:

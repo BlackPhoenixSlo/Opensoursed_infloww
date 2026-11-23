@@ -78,6 +78,7 @@ vi.mock("@/contexts/EmployeeContext", async (importOriginal) => {
 
 import type { QueryClient } from "@tanstack/react-query";
 import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
+import { streamUp } from "@/components/chat/composerTestHarness";
 import { ScopeProvider } from "@/contexts/ScopeContext";
 import { EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import { eventBus } from "@/lib/events";
@@ -251,6 +252,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
   vi.stubGlobal("IntersectionObserver", NoopObserver);
   vi.stubGlobal("ResizeObserver", NoopObserver);
+  streamUp(eventBus);
 });
 
 afterEach(() => {

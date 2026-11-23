@@ -12,6 +12,7 @@
 // they hit. Prints {out, hits, files}.
 import { realpathSync } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
 const [app, script, cacheDir] = process.argv.slice(2);
@@ -55,14 +56,26 @@ const server = await createServer({
   appType: "custom",
   optimizeDeps: { noDiscovery: true, include: [] },
 });
+const print = (s) => new Promise((done) => process.stdout.write(s, done));
 try {
-  // stdin read as a stream: a sync read of a large piped input fails with EAGAIN.
-  const chunks = [];
-  for await (const c of process.stdin) chunks.push(c);
-  const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   const { run } = await import(pathToFileURL(path.resolve(script)).href);
-  const out = await run((p) => server.ssrLoadModule(p), input);
-  await new Promise((done) => process.stdout.write(JSON.stringify({ out, hits, files }), done));
+  const load = (p) => server.ssrLoadModule(p);
+  if (process.env.SLOP_TS_LINES === "1") {
+    // A session (lib/app_ts.py `session`): one JSON input per stdin line, one answer line each, in order.
+    for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+      if (!line) continue;
+      try {
+        await print(JSON.stringify({ out: await run(load, JSON.parse(line)), hits, files }) + "\n");
+      } catch (e) {
+        await print(JSON.stringify({ error: String(e?.stack || e) }) + "\n");
+      }
+    }
+  } else {
+    // stdin read as a stream: a sync read of a large piped input fails with EAGAIN.
+    const chunks = [];
+    for await (const c of process.stdin) chunks.push(c);
+    await print(JSON.stringify({ out: await run(load, JSON.parse(Buffer.concat(chunks).toString("utf8"))), hits, files }));
+  }
 } finally {
   await server.close();
 }

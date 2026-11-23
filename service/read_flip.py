@@ -9,9 +9,10 @@ In-process only (relay_cache, events): the automations run on the relay's loop
 already landed, nothing here may fail it."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 import relay_cache
 
@@ -82,6 +83,24 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+async def write(aid: str, fan_id: int | None, call: Callable[[], Any], *,
+                only_if_unread: bool = False) -> tuple[Any, int]:
+    """`(call()'s answer, at)` for a read-state write of ours (read, unread, mark all, mute; fan None: every chat),
+    run in a thread, `at` = `now_ms()` before it. Its Write intent is recorded first (badge_reads: the counter frame
+    it causes, which can beat the response, costs no read), stamped at the response when it `landed`, retired at
+    once when not or when the call raises or is cancelled. `only_if_unread`: none when the held row shows him read."""
+    import badge_reads  # noqa: PLC0415 — deferred: badge_reads imports this module
+    at = now_ms()
+    intent = badge_reads.record_intent(aid, fan_id, at=at, only_if_unread=only_if_unread)
+    try:
+        result = await asyncio.to_thread(call)
+    except BaseException:
+        badge_reads.retire(intent)
+        raise
+    (badge_reads.landed if landed(result) else badge_reads.retire)(intent)
+    return result, at
+
+
 def publish(aid: str, fan_id: int | None, unread: int, at: int | None = None) -> None:
     """`chat_read_changed {fan_id | "all", unread 0/1, at epoch ms}` once a read flip landed on OF (a fan id past 2^53,
     a Fansly snowflake, as a string: a JSON number that big reaches the browser rounded), so every tab that
@@ -104,13 +123,31 @@ def _move_unread_total(aid: str, fan_id: int | None, unread: int, at: int | None
     unread_total.on_read_flip(aid, fan_id, unread, at)
 
 
+def _move_amber(aid: str, fan_id: int | None, unread: int) -> None:
+    """The Amber circle (creator-badges 0F) before the bust drops the window it folds: the fan's held row takes the
+    flip, then `amber_refresh`. Mark all: the next window read moves it. Knob off: nothing. Never raises."""
+    import unread_total  # noqa: PLC0415 — deferred: keeps this module's import light for the automations
+    if not unread_total.ENABLED or fan_id is None:
+        return
+    try:
+        import accounts_admin_api  # noqa: PLC0415 — loaded by the server
+        import badge_reads  # noqa: PLC0415
+        import unread_total_decide as utd  # noqa: PLC0415
+        relay_cache.patch("list_chats", aid, badge_reads._patcher({int(fan_id): unread}))
+        badge_reads.note_arrival(aid, int(fan_id), utd.UNREAD if unread else utd.READ, unread_total._clock())
+        accounts_admin_api.amber_refresh(aid)
+    except Exception:  # noqa: BLE001
+        log.warning("read flip amber move failed account=%s fan=%s", aid, fan_id, exc_info=True)
+
+
 async def after_write(aid: str, fan_id: int | None, unread: int, result: Any, *, at: int | None = None) -> bool:
     """After a read write answered `result` (fan_id None: every chat), never before it: when it landed
     (`landed`), set the local unread to `unread` (a read fenced by `at`: set_local_unread), move the Unread
-    total (unread_total.on_read_flip, from the held row, so before the bust), drop the cached chat list /
+    total (unread_total.on_read_flip, from the held row, so before the bust) and the Amber circle, drop the cached chat list /
     badges / detail, publish `chat_read_changed`
     stamped `at` (`now_ms()` taken before the write); True. A partial mark-all (`acked_fans`) does that for
     each acked fan alone, never `"all"`, and answers False. Not landed: nothing, False."""
+    import badge_reads  # noqa: PLC0415 — deferred: badge_reads imports this module
     if not landed(result):
         log.info("read flip not landed account=%s fan=%s unread=%s result=%r", aid, fan_id, unread, result)
         return False
@@ -118,6 +155,8 @@ async def after_write(aid: str, fan_id: int | None, unread: int, result: Any, *,
     for fid in ([fan_id] if acked is None else acked):
         await set_local_unread(aid, fan_id=fid, value=unread, at=at)
         _move_unread_total(aid, fid, unread, at)
+        badge_reads.on_read_flip(aid, fid, unread, at)
+        _move_amber(aid, fid, unread)
         bust_chat_list_and_badges(aid, fid)
         publish(aid, fid, unread, at)
     if acked is not None:

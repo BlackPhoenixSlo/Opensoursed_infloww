@@ -7,6 +7,7 @@
 #   scripts/demo-shots/run.sh serve            start the stack and wait (prints its URLs;
 #                                              point capture.py at it with DEMO_SHOTS_APP/RELAY)
 #
+# DEMO_SHOTS_DIST_DIR overrides next's build dir (.next/demo-shots), so two stacks can share a checkout.
 # Same safety model as scripts/ui-shots.sh: temp-DB relay with network guards and the
 # secret store redirected, `next dev` with a fetch guard and dead proxies, and a browser
 # that resolves no name but localhost. Nothing leaves the machine. See README.md here.
@@ -91,7 +92,7 @@ PIDS+=($!); disown $!
 
 # NEXT_PUBLIC_* knobs keep dev chrome out of the shots where Next allows it; the
 # capture script also hides the dev indicator with CSS.
-(cd "$ROOT/app" && exec env RELAY_URL="$RELAY" NEXT_DIST_DIR=.next/demo-shots NEXT_TELEMETRY_DISABLED=1 \
+(cd "$ROOT/app" && exec env RELAY_URL="$RELAY" NEXT_DIST_DIR="${DEMO_SHOTS_DIST_DIR:-.next/demo-shots}" NEXT_TELEMETRY_DISABLED=1 \
   HTTP_PROXY="$DEAD_PROXY" HTTPS_PROXY="$DEAD_PROXY" http_proxy="$DEAD_PROXY" https_proxy="$DEAD_PROXY" \
   NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost \
   NODE_OPTIONS="--require $HERE/fetch-guard.cjs" DEMO_SHOTS_TMP="$TMP" \

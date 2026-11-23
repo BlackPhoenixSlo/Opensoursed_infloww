@@ -9,10 +9,11 @@
  * Agency; nothing here filters. `creator_warmed` (the App-open warm read a
  * Creator) reaches every tab that can access the Creator, whatever its scope;
  * it also arms that Creator's money-list and count reads at once
- * (lib/ofReadGate.ts: an unleased Creator reads nothing until then). It
- * carries the warmed roster and notifications counts, written into the cache,
- * not re-read; the rail and bell lists re-read only when what is cached was
- * read before the warm (`warmMark`).
+ * (lib/ofReadGate.ts: an unleased Creator reads nothing until then). Its
+ * notifications count is written into the cache, not re-read; the rail and
+ * bell lists re-read only when what is cached was read before the warm
+ * (`warmMark`).
+ * Its `roster` body is ignored: roster-counts is the Relay's.
  *
  * `chat_read_changed` (a chatter or an automation marked a chat read / unread,
  * or every chat read, through the relay; any-scope) flips the row's unread
@@ -25,7 +26,8 @@
  * `creator_refreshed` (the Shared refresher's snapshot of a Creator changed; any-scope) goes into the tab's
  * Freshness store (hooks/useCreatorFreshness.ts) and nowhere else: it arms no read and re-reads no money list,
  * so the event adds no OF call. A stream ping's `fresh` (`{aid: at}`, the Knob on) dispatches `confirmed` there:
- * a quiet Creator's confirmation, with no event. A reconnect's replayed `creator_refreshed` goes the same way, and
+ * a quiet Creator's confirmation, with no event. A ping whose `badge` (`{aid: v}`) differs from a held Badge version
+ * (`badgeBehind`: a dropped event) refetches the accounts lists, whose answer reseeds the store (0 OF calls). A reconnect's replayed `creator_refreshed` goes the same way, and
  * `resync`'s refetch of everything re-reads the accounts lists, whose answers reseed it (useAccounts).
  *
  * `transaction_recorded` (a sale landed in the ledger, sent after its commit by
@@ -45,8 +47,8 @@ import { eventBus, type EventEnvelope } from "@/lib/events";
 import { APPLIED_SETTINGS_KEY } from "@/lib/appliedSettings";
 import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 import { armRead } from "@/lib/ofReadGate";
-import { writeWarmedRosterCount, type RosterCount } from "@/hooks/useRosterCounts";
-import { dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
+import { creatorFreshnessKey, dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
+import { badgeBehind, type CreatorFreshnessState } from "@/lib/creatorFreshness";
 import { usePrincipalId } from "@/hooks/useEmployeeKey";
 
 type Body = Record<string, unknown>;
@@ -98,9 +100,9 @@ function throttle(fn: () => void, ms: number) {
     cancel: () => { if (timer) clearTimeout(timer); },
   };
 }
-/** `creator_warmed`'s body (service/app_open_warm.py `_publish`): the warmed entries' values, when the relay
- *  still held them, and its epoch ms. */
-interface WarmBody { roster?: RosterCount; notif_count?: number; now?: number }
+/** `creator_warmed`'s body (service/app_open_warm.py `_publish`): the warmed notif count, when the relay still
+ *  held it. */
+interface WarmBody { notif_count?: number }
 
 /** What a warm does to one cached query of its Creator when it comes:
  *  - `write` the value the event carries, no read;
@@ -169,6 +171,8 @@ export function flipCachedReadState(
   }));
 }
 
+const ACCOUNTS_LISTS: QueryKey[] = [["accounts"], ["chatter", "self", "accounts"]];
+
 /** The SSE-relaxed polls (`ssePoll`). When the stream drops, one refetch
  *  re-arms each at its offline rate instead of waiting out the live one. */
 const SSE_POLLED: QueryKey[] = [
@@ -188,6 +192,9 @@ export function useAccountStateEvents(): void {
         const fresh = e.fresh as Record<string, number>;
         const now = typeof e.ts === "number" ? Math.round(e.ts * 1000) : NaN;
         dispatchCreatorFreshness(qc, principalId, { type: "confirmed", fresh, now, receivedAt: Date.now() });
+        if (badgeBehind(qc.getQueryData<CreatorFreshnessState>(creatorFreshnessKey(principalId)), e.badge).length) {
+          for (const queryKey of ACCOUNTS_LISTS) void qc.invalidateQueries({ queryKey });
+        }
       }),
     ];
     return () => offs.forEach((off) => off());
@@ -245,14 +252,7 @@ export function useAccountStateEvents(): void {
       const aid = e.__account_id;
       if (!aid) return;
       const b = (e.creator_warmed ?? {}) as WarmBody;
-      const receivedAt = Date.now();
-      const roster = b.roster && typeof b.roster.as_of === "number" && b.roster.as_of > 0 ? b.roster : null;
       const count = typeof b.notif_count === "number" ? b.notif_count : null;
-      for (const q of cache.findAll({ queryKey: ["roster-counts"] })) {
-        // Written even under a read in flight: that read's merge keeps the newer `as_of` (mergeRosterCounts).
-        if (roster) writeWarmedRosterCount(qc, q.queryKey, aid, roster, b.now, receivedAt);
-        else if (warmMark(q.state, false) !== "skip") markWarm(q, q.state.fetchStatus === "fetching");
-      }
       const own = [...cache.findAll({ queryKey: ["of-notif-count", aid] }), ...cache.findAll({ queryKey: ["notif-list", aid] })];
       for (const q of own) {
         const mark = warmMark(q.state, q.queryKey[0] === "of-notif-count" && count !== null);
@@ -281,9 +281,19 @@ export function useAccountStateEvents(): void {
     offs.push(eventBus.on("transaction_recorded", sale.call), sale.cancel);
 
     let wasConnected = false;
+    let dropped = false;
     offs.push(eventBus.onStateChange((connected) => {
       // Idle mode closed it on purpose: its polls are paused too (useIdleMode).
-      if (wasConnected && !connected && !eventBus.isPaused()) invalidate(SSE_POLLED);
+      if (wasConnected && !connected && !eventBus.isPaused()) {
+        invalidate(SSE_POLLED);
+        dropped = true;
+      }
+      // The Badge-version ping refetches the accounts answer, not roster-counts: a `creator_refreshed` missed
+      // while down is caught here.
+      if (connected && dropped) {
+        invalidate([["roster-counts"]]);
+        dropped = false;
+      }
       wasConnected = connected;
     }));
 

@@ -40,7 +40,10 @@ class Wire:
     def __init__(self, fake) -> None:
         self.fake = fake
         self.reads: list[dict] = []      # every mark, arrival order: {t, account, fan, via, read}
-        fake.extra_routes.append(self.handle)
+
+    def install(self):
+        self.fake.extra_routes.append(self.handle)
+        return self
 
     # ── world ────────────────────────────────────────────────────────────────
     def seed_chats(self, aid: str, fans: list[dict], n_unread: int, *, base_id: int,
@@ -55,7 +58,7 @@ class Wire:
             n = 1 + k % 3 if fan_last else 0
             rows.append({
                 "withUser": {"id": f["id"], "_view": "s", "username": f["username"], "name": f["name"]},
-                "unreadMessagesCount": n, "hasUnread": n > 0,
+                "unreadMessagesCount": n, "hasUnread": n > 0, "isMutedNotifications": False,
                 "lastMessage": {"id": base_id + k, "text": "hey there" if fan_last else "talk soon",
                                 "fromUser": {"id": f["id"] if fan_last else int(aid)}, "isFree": True, "price": 0,
                                 "createdAt": _iso(now - timedelta(minutes=k + 1))}})
@@ -72,7 +75,8 @@ class Wire:
             rows = list(self.fake.chats.get(aid, ()))
             old = next((r for r in rows if r["withUser"]["id"] == fan["id"]), None)
             base = old or {"withUser": {"id": fan["id"], "_view": "s", "username": fan["username"],
-                                        "name": fan["name"]}, "unreadMessagesCount": 0}
+                                        "name": fan["name"]}, "unreadMessagesCount": 0,
+                           "isMutedNotifications": False}
             n = (base.get("unreadMessagesCount") or 0) + 1
             row = {**base, "unreadMessagesCount": n, "hasUnread": True, "lastMessage": last}
             self.fake.chats[aid] = [row] + [r for r in rows if r is not old]
@@ -84,7 +88,7 @@ class Wire:
         with self.fake.lock:
             rows = list(self.fake.chats.get(aid, ()))
             old = next((r for r in rows if r["withUser"]["id"] == fan_id), None)
-            base = old or {"withUser": {"id": fan_id, "_view": "s"}}
+            base = old or {"withUser": {"id": fan_id, "_view": "s"}, "isMutedNotifications": False}
             row = {**base, "unreadMessagesCount": 0, "hasUnread": False, "lastMessage": last}
             self.fake.chats[aid] = [row] + [r for r in rows if r is not old]
             self._recount(aid)
@@ -101,8 +105,15 @@ class Wire:
 
     def _recount(self, aid: str) -> None:
         """Under `fake.lock`: `/users/me` `chatMessagesCount` from the whole list (the overlay dict replaced)."""
-        n = sum(1 for r in self.fake.chats.get(aid, ()) if unread(r))
+        n = len(self._unread_rows(aid))
         self.fake.profiles[aid] = {**self.fake.profiles.get(aid, {}), "chatMessagesCount": n}
+
+    def _unread_rows(self, aid: str) -> list[dict]:
+        """Under `fake.lock`: the rows OF counts and lists under `filter=unread`."""
+        return [r for r in self.fake.chats.get(aid, ()) if unread(r)]
+
+    def _unread_list(self, aid: str) -> list[dict]:
+        return self._unread_rows(aid)
 
     def row(self, aid: str, fan_id: int) -> dict | None:
         with self.fake.lock:
@@ -130,9 +141,8 @@ class Wire:
             off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
             n = max(1, min(lim, PAGE_CAP))
             with self.fake.lock:
-                rows = list(self.fake.chats.get(uid, ()))
-            if (q.get("filter") or [""])[0] == "unread":
-                rows = [r for r in rows if unread(r)]
+                rows = (self._unread_list(uid) if (q.get("filter") or [""])[0] == "unread"
+                        else list(self.fake.chats.get(uid, ())))
             h._record(uid, route, 200, {"list": rows[off:off + n], "hasMore": off + n < len(rows),
                                         "nextOffset": off + n})
             return True
@@ -149,4 +159,4 @@ class Wire:
 
 
 def install(fake) -> Wire:
-    return Wire(fake)
+    return Wire(fake).install()

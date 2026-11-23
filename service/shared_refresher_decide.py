@@ -18,10 +18,12 @@ tests/test_shared_refresher_decide.py.
       ask time) and clears the ladder; a failure (a 429 or any other, or a discarded write-back) keeps it and holds
       the Creator `max(FLOOR_S, purchase_poll_decide.ladder_s(n))` from `asked`, n = failures in a row (60, 60, 120 ..
       900 s), so attempts are never under FLOOR_S apart. A 429's asked wait holds the exit, not here (the shell).
-  window_due(window_at, ws_since, asked) -> bool: the Cycle re-reads the chats window (asked after `/users/me`
+  window_due(window_at, ws_since, asked, first) -> bool: the Cycle re-reads the chats window (asked after `/users/me`
       landed): the Live connection is down now (`ws_since` None), or connected after the window's own last read
       (`window_at`, the same monotonic clock; connected at the read itself is kept, as roster-counts' `ws_kept`), or
-      a contributor asked. No window held (`window_at` None) is never due: an open reads page 0 itself.
+      a contributor asked. No window held (`window_at` None) is due only when a contributor asked and no window read
+      landed for the Creator this boot (`first`): after a restart nothing else folds R (creator-badges 0B live
+      check), so <= 1 read per Creator per restart; otherwise an open reads page 0 itself.
   live_of(aid, ws_since, dead, pumped) -> "up" | "down" | "dead" | None (P1 Contract 2): "dead" while in the
       Dead-session map; None when no OF socket is expected (`pumped` False: deactivated, no session, not OF), never
       "down"; else "up" while the Live connection's stamp is set, "down" when not.
@@ -102,9 +104,9 @@ def live_of(aid: str, ws_since: Mapping[str, float | None], dead: frozenset[str]
     return "up" if ws_since.get(aid) is not None else "down"
 
 
-def window_due(window_at: float | None, ws_since: float | None, asked: bool) -> bool:
+def window_due(window_at: float | None, ws_since: float | None, asked: bool, first: bool) -> bool:
     if window_at is None:
-        return False                    # no window held: an open reads page 0 itself (a cache miss, as today)
+        return asked and first
     return ws_since is None or ws_since > window_at or asked
 
 

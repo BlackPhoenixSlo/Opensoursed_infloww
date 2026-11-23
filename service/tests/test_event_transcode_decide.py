@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import event_transcode_decide as td  # noqa: E402
-from event_transcode_decide import Inbound, Outbound, Skip  # noqa: E402
+from event_transcode_decide import Echo, Inbound, Outbound, Skip  # noqa: E402
 
 try:
     if __name__ == "__main__":
@@ -109,6 +109,8 @@ P = {"id": 1}
     ({"chat_queue_finish": P}, ("queue", "chat_queue_finish", P)),
     ({"chat_queue_update": P}, ("queue", "chat_queue_update", P)),
     ({"typing": P}, ("other", "typing", P)),
+    ({"__account_id": A, "chat_messages": 3, "unread_tips": 0}, ("counter", "chat_messages", 3)),
+    ({"chat_messages": {"count": 3}}, ("counter", "chat_messages", {"count": 3})),
     ({"__account_id": A}, None),
     ({}, None),
     ("not a dict", None),
@@ -116,6 +118,25 @@ P = {"id": 1}
 ])
 def test_route(event, want):
     assert td.route(event) == want
+
+
+@table("event, want", [
+    ({"__account_id": A, "chat_messages": 3, "count_priority_chat": 1, "unread_tips": 2}, 3),
+    ({"chat_messages": 0}, 0),
+    ({"unread_tips": 4, "chat_messages": 11}, 11),
+    ({"chat_messages": True}, None),
+    ({"chat_messages": -1}, None),
+    ({"chat_messages": "3"}, None),
+    ({"chat_messages": {"count": 3}}, None),
+    ({"chat_messages": 3.0}, None),
+    ({"chat_messages": None}, None),
+    ({"unread_tips": 3}, None),
+    ({}, None),
+    ("not a dict", None),
+    (None, None),
+])
+def test_counter_of(event, want):
+    assert td.counter_of(event) == want
 
 
 # ── blast ring ───────────────────────────────────────────────────────
@@ -157,6 +178,30 @@ def test_queue_ring_keeps_newest_32():
     # a re-sent finish of a queue in a full ring keeps 32, the queue moves to newest
     ring = td.queue_fold(ring, "chat_queue_finish", fin(qid=5), 99.0)
     assert len(ring) == 32 and ring[-1] == (5, 99.0) and ring[0] == (1, 1.0)
+
+
+def _fold(*frames, ring: td.Ring = ()) -> td.Ring:
+    for i, (event_type, payload) in enumerate(frames):
+        ring = td.queue_fold(ring, event_type, payload, float(i))
+    return ring
+
+
+FULL = tuple((i, float(i)) for i in range(td.QUEUE_RING_MAX))
+
+
+@table("before, frame, want", [
+    ((), ("chat_queue_finish", fin()), True),                                   # first finish, total 23
+    (_fold(("chat_queue_finish", fin())), ("chat_queue_finish", fin()), False),  # the same queue re-sent
+    ((), ("chat_queue_finish", fin(total=4)), False),                           # a hand-send
+    ((), ("chat_queue_update", fin()), False),
+    (_fold(("chat_queue_finish", fin())), ("chat_queue_finish", fin(isCanceled=True)), False),
+    ((), ("chat_queue_finish", fin(isCanceled=True)), False),
+    (_fold(("chat_queue_finish", fin())), ("chat_queue_finish", fin(qid=7)), True),   # a second distinct queue
+    (FULL, ("chat_queue_finish", fin(qid=99)), True),                           # full ring: oldest out, new in
+])
+def test_queue_reread(before, frame, want):
+    after = td.queue_fold(before, frame[0], frame[1], 100.0)
+    assert td.queue_reread(before, after) is want
 
 
 @table("ring, now, seconds, want", [
@@ -226,6 +271,33 @@ def test_dm_plan_skips_without_a_key(aid, m, want):
 @table("aid, fan", [(A, int(A)), (A, A), (int(A), A)])
 def test_dm_plan_outbound_echo_writes_no_row(aid, fan):
     assert td.dm_plan(aid, msg(fromUser={"id": fan}), NOW) == Outbound(10001)
+
+
+def echo(**kw) -> dict:
+    m = {"id": 10001, "text": "<p>on it</p>", "chatUserId": FAN, "createdAt": "2026-10-30T11:00:00+00:00"}
+    m.update(kw)
+    return m
+
+
+@table("aid, m, want", [
+    (A, echo(), Echo(10001, FAN)),                                               # a Creator send from any client
+    (A, echo(fromUser=None), Echo(10001, FAN)),
+    (A, echo(fromUser="garbage"), Echo(10001, FAN)),                             # not a dict: no sender
+    (A, echo(chatUserId=str(FAN)), Echo(10001, FAN)),                            # the fan id an int
+    (A, echo(chatUserId=None), Skip(10001, None)),                               # no chatUserId: Skip
+    (A, echo(chatUserId=True), Skip(10001, None)),
+    (A, echo(chatUserId="x"), Skip(10001, None)),
+    (A, echo(chatUserId={"id": FAN}), Skip(10001, None)),
+    (A, {"id": 10001}, Skip(10001, None)),
+    (A, echo(id=None), Skip(None, None)),
+    (None, echo(), Skip(10001, None)),
+    (A, echo(fromUser={"id": int(A)}), Outbound(10001)),                         # our send's shape: unchanged
+    (A, echo(fromUser={"id": FAN}), None),                                       # a Fan's DM: Inbound's
+])
+def test_dm_key_creator_echo(aid, m, want):
+    assert td.dm_key(aid, m) == want
+    if want is not None:
+        assert td.dm_plan(aid, m, NOW) == want
 
 
 def plan(**kw) -> Inbound:
@@ -306,6 +378,8 @@ def dm_frame(m, aid=A) -> dict:
     (dm_frame(msg(), aid=int(A)), True),
     (dm_frame(msg(fromUser={"id": int(A)})), False),                              # our own echo
     (dm_frame(msg(fromUser={"id": A}), aid=int(A)), False),
+    (dm_frame(echo()), False),                                                    # a Creator echo
+    (dm_frame(echo(fromUser=None)), False),
     (dm_frame(msg(id=None)), False),                                              # missing id
     (dm_frame(msg(id=0)), False),
     (dm_frame(msg(fromUser=None)), False),                                        # missing fromUser.id

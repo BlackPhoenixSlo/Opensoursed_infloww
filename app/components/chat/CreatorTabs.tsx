@@ -7,10 +7,13 @@
  * each with its avatar, its unread total and its ✕. It replaces the roster
  * rail inside Messages Pro.
  *
- * - The unread total is the number of unread conversations from the roster
- *   counts (`useRosterCounts`), which refresh every Creator every 60s and on
- *   realtime events. After it, in teal, the Creator's OnlyFans notification
- *   count (`useOfNotifCount`, the Notifications button's read).
+ * - The unread total is the Red circle (`redCircle`): the Relay's slot in the
+ *   Freshness store, else the roster counts (`useRosterCounts`); none at 0,
+ *   1–8, "9+", or a Grey circle when unknown. After it the Amber circle
+ *   (`amberCircle`, Owe reply chats the Relay publishes; grey when unknown,
+ *   none when the Red circle is grey); then, in teal, the
+ *   Creator's OnlyFans notification count (`useOfNotifCount`, the
+ *   Notifications button's read).
  * - Clicking a tab, or Enter or Space on it, sets the scope to that Creator,
  *   so the Fan List switches. The active tab is `aria-selected`.
  * - The roster's warm-up is kept (`useCreatorWarmUp`): picking a tab, or
@@ -55,14 +58,15 @@ import { useLiveMark } from "@/hooks/useDataAge";
 import { useOfNotifCount } from "@/hooks/useOfNotifCount";
 import { useReorder } from "@/hooks/useReorder";
 import { useOnScreenLease } from "@/hooks/useViewLease";
-import { rosterUnreadText } from "@/lib/format";
 import { MP } from "@/lib/messagesPro";
 import type { AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import type { LiveMark } from "./dataAge";
 import { MENU, MENU_ITEM } from "./MenuParts";
 import { OpenInNewWindowMenu } from "./OpenInNewWindowMenu";
-import { NotifMiniBadge, UnreadMiniBadge } from "./UnreadMiniBadge";
+import { amberTitle, type AmberCircle } from "./amberCircle";
+import { circleTitle, type RedCircle } from "./redCircle";
+import { GreyMiniBadge, NotifMiniBadge, OweMiniBadge, UnreadMiniBadge } from "./UnreadMiniBadge";
 import { useCreatorTabs, useShownCreatorTabs, type CreatorSort, type CreatorTabsStore } from "./useCreatorTabs";
 import { useFanListMenu } from "./useFanListMenu";
 
@@ -101,7 +105,7 @@ export function CreatorTabs() {
   const store = useCreatorTabs();
   const { ready, close, reopen, reorder, sort, setSort } = store;
   // The strip's order: the store's, in the chosen sort.
-  const { open, counts } = useShownCreatorTabs(store);
+  const { open, circles, ambers } = useShownCreatorTabs(store);
   const track = useOnScreenLease("strip");
   const { scope, setScope } = useScope();
   const { warm, hoverThen, clearHover } = useCreatorWarmUp();
@@ -150,7 +154,6 @@ export function CreatorTabs() {
     <>
       <div role="tablist" aria-label="Creator tabs" className={cn(G.strip, "flex items-end min-w-0 overflow-x-auto no-scrollbar")}>
         {open.map((a, idx) => {
-          const counted = counts[a.id];
           const from = drag.draggingIndex;
           // The marker shows on the tab dragged over, on the side the dragged
           // tab lands: `useReorder` puts it in that tab's place.
@@ -161,8 +164,8 @@ export function CreatorTabs() {
             <CreatorTab
               key={a.id}
               account={a}
-              unread={counted ? counted.unread : 0}
-              unreadCapped={counted?.unread_capped}
+              circle={circles[a.id]}
+              amber={ambers[a.id]}
               active={a.id === activeId}
               dragging={from === idx}
               dropMark={dropMark}
@@ -203,12 +206,11 @@ export function CreatorTabs() {
 }
 
 function CreatorTab({
-  account, unread, unreadCapped, active, dragging, dropMark, dragProps, onMove, tabRef, leaseRef, onPick, onClose, onHover, onHoverEnd,
+  account, circle, amber, active, dragging, dropMark, dragProps, onMove, tabRef, leaseRef, onPick, onClose, onHover, onHoverEnd,
 }: {
   account: AccountMeta;
-  unread: number;
-  /** The count may be cut off at the relay's window: shown as "N+". */
-  unreadCapped?: boolean;
+  circle: RedCircle;
+  amber: AmberCircle;
   active: boolean;
   dragging: boolean;
   /** The drop marker's side, while another tab is dragged over this one. */
@@ -263,8 +265,9 @@ function CreatorTab({
           onFocus={onHover}
           onBlur={onHoverEnd}
           // The Clone's tooltip (messages.js:268-269): the whole name, which the
-          // tab may cut short, and the unread total; then the live mark's.
-          title={`${name} — ${rosterUnreadText(unread, unreadCapped)} unread${mark ? ` — ${mark.title}` : ""}`}
+          // tab may cut short, and the unread total; then the Amber circle's, unless the Grey circle stands for both;
+          // then the live mark's.
+          title={`${name} — ${circleTitle(circle)}${circle.kind === "grey" ? "" : ` — ${amberTitle(amber)}`}${mark ? ` — ${mark.title}` : ""}`}
           className={cn(O.tabPick, "flex min-w-0 h-full items-center")}
         >
           <span aria-hidden className="relative flex flex-none">
@@ -274,7 +277,9 @@ function CreatorTab({
             {mark && <MarkDot mark={mark} />}
           </span>
           <span className={cn(G.name, "min-w-0 truncate")}>{name}</span>
-          {unread > 0 && <UnreadMiniBadge count={rosterUnreadText(unread, unreadCapped)} />}
+          {circle.kind === "count" && <UnreadMiniBadge count={circle.text} />}
+          {circle.kind === "grey" && <GreyMiniBadge />}
+          {amber.kind !== "none" && <OweMiniBadge count={amber.kind === "count" ? amber.text : null} />}
           {notifs > 0 && <NotifMiniBadge count={notifs} />}
           <MarkWords mark={mark} />
         </button>

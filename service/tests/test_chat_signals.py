@@ -122,7 +122,7 @@ async def case_chats_key_and_every_signal_in_one_copy():
         page = {"chats": [{"withUser": {"id": 51}}, {"withUser": {"id": 52}}], "hasMore": True}
         out = await server._annotate_chat_rows(AID, page)
         assert out["chats"][0]["withUser"] == {
-            "id": 51, "isRestricted": True, "needsHuman": True, "autoRenewOff": True}, out
+            "id": 51, "isRestricted": True, "badgeExcluded": True, "needsHuman": True, "autoRenewOff": True}, out
         assert out["chats"][1] is page["chats"][1], "an unstamped row is passed through, not copied"
         assert page["chats"][0]["withUser"] == {"id": 51}, "annotation mutated the cached window"
         assert out["hasMore"] is True

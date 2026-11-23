@@ -466,6 +466,37 @@ describe("useChatMessages headSettled (the cursor is fetch-derived)", () => {
   });
 });
 
+describe("background reads peek (a plain head read marks the chat read on OF)", () => {
+  const head = `/api/of/v2/chats/${FAN}/messages?limit=30&order=desc`;
+  const paths = () => relayGet.mock.calls.map((c) => c[0] as string);
+
+  it("prefetchChatMessages asks peek=1, on the background lane and as a press's user-lane warm-up", async () => {
+    relayGet.mockResolvedValue(resp([msg(1)], false));
+    await prefetchChatMessages(client, ACCT, FAN);
+    await prefetchChatMessages(client, ACCT, 43, { user: true, yieldOnOpen: false });
+    expect(paths()).toEqual([`${head}&peek=1`, `/api/of/v2/chats/43/messages?limit=30&order=desc&peek=1`]);
+    expect(relayGet.mock.calls.map((c) => c[1])).toEqual([
+      { accountId: ACCT, priority: "background" },
+      { accountId: ACCT, priority: undefined },
+    ]);
+  });
+
+  it("useChatMessages reads plain by default; with peek its mount and poll both peek", async () => {
+    relayGet.mockResolvedValue(resp([msg(1)], false));
+    const plain = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
+    await waitFor(() => expect(relayGet).toHaveBeenCalledTimes(1));
+    expect(paths()).toEqual([head]);
+    plain.unmount();
+
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    relayGet.mockClear();
+    renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN, peek: true }), { wrapper });
+    await waitFor(() => expect(relayGet).toHaveBeenCalledTimes(1));
+    await act(async () => { await client.refetchQueries({ queryKey: KEY }); });
+    expect(paths()).toEqual([`${head}&peek=1`, `${head}&peek=1`]);
+  });
+});
+
 describe("prefetchChatMessages", () => {
   it("opening the chat mid-prefetch cancels the background read and refetches on the user lane", async () => {
     const signals: (AbortSignal | undefined)[] = [];
@@ -963,5 +994,39 @@ describe("selectMessages", () => {
   it("returns the SAME reference when nothing changed (structural sharing)", () => {
     const rows = [msg(5), msg(6)];
     expect(selectMessages(rows, NOW)).toBe(rows);
+  });
+});
+
+describe("peek: background reads never mark the chat read on OF", () => {
+  const urls = () => relayGet.mock.calls.map((c) => String(c[0]));
+
+  it("a prefetch asks the relay to peek, on the background and the user lane", async () => {
+    relayGet.mockResolvedValue(resp([msg(2), msg(1)], false));
+    await prefetchChatMessages(client, ACCT, FAN, { staleTime: 0 });
+    await prefetchChatMessages(client, ACCT, FAN, { staleTime: 0, user: true });
+    expect(relayGet.mock.calls.map((c) => c[1])).toEqual([
+      { accountId: ACCT, priority: "background" },
+      { accountId: ACCT },
+    ]);
+    expect(urls().every((u) => u.includes("peek=1"))).toBe(true);
+    expect(urls()).toHaveLength(2);
+  });
+
+  it("the hook reads plain by default", async () => {
+    relayGet.mockResolvedValue(resp([msg(2), msg(1)], false));
+    const { result } = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN }), { wrapper });
+    await waitFor(() => expect(relayGet).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.refetch(); });
+    expect(urls()).toHaveLength(2);
+    expect(urls().some((u) => u.includes("peek"))).toBe(false);
+  });
+
+  it("with `peek` on, the mount and the poll both peek", async () => {
+    relayGet.mockResolvedValue(resp([msg(2), msg(1)], false));
+    const { result } = renderHook(() => useChatMessages({ accountId: ACCT, fanId: FAN, peek: true }), { wrapper });
+    await waitFor(() => expect(relayGet).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.refetch(); });
+    expect(urls()).toHaveLength(2);
+    expect(urls().every((u) => u.includes("peek=1"))).toBe(true);
   });
 });

@@ -11,6 +11,8 @@
  * snapshot keeps `receivedAt` (the tab's clock) beside the Relay's `now` from the same delivery: the skew reference.
  * A ping (`confirmed`) only raises a held Creator's `at` (never a slot's, never `boot` or `seq`), and with it takes
  * the ping's `now` / `receivedAt` pair; a Creator not held, or an `at` not later, is left alone.
+ * The ping's `badge` (`{aid: v}`, creator-badges 0B) changes nothing here: `badgeBehind` compares it with what is
+ * held, and the hook refetches the accounts answer when any Creator differs.
  * Eviction (Contract 6): a seed (a network accounts answer) drops every held Creator whose row has no `freshness` or
  * is absent, so a switch-off (Knob off + restart) empties the store and the tab shows today's screen;
  * `identityChanged` clears all.
@@ -23,8 +25,12 @@ export interface TimedSlot { at: number; [k: string]: unknown }
 export interface FreshnessValues {
   /** Only with `SHARED_REFRESHER_BELL=me`. */
   notif_count?: number;
-  /** Phase 2; key present iff `UNREAD_TOTAL` is on; null: none yet. */
-  unread_total?: { n: number; at: number } | null;
+  /** Key present iff `UNREAD_TOTAL` is on. `n`: the Red circle (null: unknown); `v`: the Badge version; `grey`: the
+   *  Relay's reason to draw grey whatever `n` is; `amber`: the Amber circle (null: unknown or stale), `amber_at` its
+   *  window's read time. null: a non-OF Creator (no OF counter); the tab draws the route count. */
+  unread_total?: {
+    n: number | null; at: number | null; v?: number; grey?: string | null; amber?: number | null; amber_at?: number | null;
+  } | null;
   [slot: string]: unknown;
 }
 
@@ -152,6 +158,16 @@ export function creatorFreshnessReducer(state: CreatorFreshnessState, action: Ac
     case "confirmed":
       return confirm(state, action.fresh, action.now, action.receivedAt);
   }
+}
+
+/** The Creators in a ping's `badge` whose held Badge version (a number) is not the ping's: a missed
+ *  `creator_refreshed`. A Creator not held, or held without a version (a non-OF Creator's null slot), is skipped. */
+export function badgeBehind(state: CreatorFreshnessState | undefined, badge: unknown): string[] {
+  if (!badge || typeof badge !== "object" || Array.isArray(badge)) return [];
+  return Object.entries(badge).filter(([aid, v]) => {
+    const held = state?.[aid]?.values.unread_total?.v;
+    return isNum(held) && isNum(v) && v !== held;
+  }).map(([aid]) => aid);
 }
 
 /** The Creator's held snapshot, or null (none held: the Knob is off, or nothing came yet). */

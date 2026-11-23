@@ -30,7 +30,7 @@ async def sent_ppv(client: Any, fan_id: int, since: datetime, price_cents: int, 
     such message with exactly those media ids and no `queueId` (a mass copy);
     none or several = {}."""
     try:
-        data = await asyncio.to_thread(lambda: client.get_messages(fan_id, limit=10))
+        data = await asyncio.to_thread(lambda: client.get_messages(fan_id, limit=10, peek=True))
     except Exception:
         log.warning("could not read back a failed PPV fan=%s", fan_id,
                     exc_info=True)

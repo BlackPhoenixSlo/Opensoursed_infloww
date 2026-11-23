@@ -26,7 +26,7 @@ interface PinnedResp {
 export function useChatPinned(
   accountId: string | null,
   fanId: FanId | null,
-  enabled = true,
+  { enabled = true }: { enabled?: boolean } = {},
 ) {
   return useQuery<OFMessage[]>({
     queryKey: ["chat-pinned", accountId ?? "", String(fanId ?? "")],

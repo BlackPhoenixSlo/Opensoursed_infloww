@@ -142,6 +142,15 @@ def current_aid() -> str:
     return live_server()._current_aid()
 
 
+def request_account_header() -> str | None:
+    """The request in flight's explicit account id (X-Account-Id, else ?account_id=), None without one. No
+    registry or disk read: for hooks on the loop after the route already resolved it."""
+    request = live_server()._request_ctx.get()
+    if request is None:
+        return None
+    return request.headers.get("x-account-id") or request.query_params.get("account_id")
+
+
 async def annotate_chat_rows(account_id: str, rows):
     return await live_server()._annotate_chat_rows(account_id, rows)
 

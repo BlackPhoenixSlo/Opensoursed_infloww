@@ -13,7 +13,8 @@ rule no longer live ends it. A pass (`run_pass`): OF's top `CHATS` chats, most r
 saved as the inbox saves it (`messages.reconcile_chats_from_of`, insert-only) and, when it was not
 in `messages`, a one-Fan scrape (`webhook_dispatch.enqueue_fan_scrape`) -> the sweep's checks over
 just them (`full_ai_live.catchup_queue`: no row on the Turn key, no pending job, no cooldown, a
-clear pre-look) -> one Turn each. Sends nothing; a scrape GET never marks a chat read.
+clear pre-look) -> one Turn each. Sends nothing. Background reads must peek (a first-page thread
+GET marks the chat read on OF): the one-Fan scrape does.
 
 The OF client comes from `full_ai_live.catchup_client` (the only Full AI module naming the client
 factory, test_full_ai_live.py's AST scan).

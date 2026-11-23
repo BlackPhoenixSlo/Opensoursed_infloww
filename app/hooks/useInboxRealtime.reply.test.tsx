@@ -1,7 +1,8 @@
 /**
  * useInboxRealtime — `chat_responded` (a person's DM through the relay, from another chatter's tab): the fan's
- * row in every cached chat list (All Models included) takes the reply and the roster badge moves, with no
- * relay / OF read. The pure patch is lib/chatsCache `applyReply` (tables in chatsCache.test.ts).
+ * row in every cached chat list (All Models included) takes the reply, with no relay / OF read. The pure patch is
+ * lib/chatsCache `applyReply` (tables in chatsCache.test.ts). Neither it nor a Live connection message touches
+ * the cached roster count or asks for a `?bust=`: the Creator echo and the counter frame move the Red circle.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
@@ -91,7 +92,7 @@ describe("useInboxRealtime — chat_responded", () => {
     expect(top.hasUnread).toBe(false);
     expect(second.withUser.id).toBe(5);
     expect(rows(UNREAD_KEY).map((c) => c.withUser.id)).toEqual([5]);
-    expect(roster(A)).toEqual({ unread: 0, owe_reply: 2 });
+    expect(roster(A)).toEqual({ unread: 0, owe_reply: 3 });
     expect(relay.get).not.toHaveBeenCalled();
   });
 
@@ -103,7 +104,7 @@ describe("useInboxRealtime — chat_responded", () => {
     fire(replied(A));
     fire(replied(A));
 
-    expect(roster(A)).toEqual({ unread: 3, owe_reply: 0 });
+    expect(roster(A)).toEqual({ unread: 4, owe_reply: 0 });
     expect(rows(ALL_KEY)).toHaveLength(1);
   });
 
@@ -120,5 +121,33 @@ describe("useInboxRealtime — chat_responded", () => {
     expect(client.getQueryData(ALL_KEY)).toBe(seeded);
     expect(roster(A)).toEqual({ unread: 0, owe_reply: 1 });
     expect(relay.get).not.toHaveBeenCalled();
+  });
+});
+
+describe("useInboxRealtime — Live connection messages leave the cached count alone", () => {
+  const msg = (accountId: string, fanId: number, id: number, outbound = false) => ({
+    __account_id: accountId,
+    ...(outbound ? { __fan_id: fanId } : {}),
+    api2_chat_message: {
+      id, text: "hey", createdAt: "2026-11-20T10:00:00.000Z",
+      fromUser: outbound ? { id: Number(accountId), name: "us" } : { id: fanId, name: "f" },
+    },
+  });
+
+  it("inbound and outbound, on a loaded and a cold row: roster-counts unchanged, no ?bust=", async () => {
+    client.setQueryData(ALL_KEY, infinite([chatRow(FAN, A, "fan"), chatRow(5, A, "us")]));
+    const counts = { counts: { [A]: { unread: 2, owe_reply: 1 }, [B]: { unread: 0, owe_reply: 0 } } };
+    client.setQueryData(rosterCountsKey("anon"), counts);
+    renderHook(() => useInboxRealtime(), { wrapper });
+    const send = (env: unknown) => act(() => { handlers.get("api2_chat_message")?.forEach((h) => h(env)); });
+
+    send(msg(A, 5, 8001));                 // inbound, loaded row
+    send(msg(A, FAN, 8002, true));         // outbound, loaded row
+    send(msg(B, 777001, 8003));            // inbound, cold row
+    send(msg(B, 777002, 8004, true));      // outbound, cold row
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+
+    expect(client.getQueryData(rosterCountsKey("anon"))).toBe(counts);
+    expect(vi.mocked(relay.get).mock.calls.map(([p]) => String(p)).filter((p) => p.includes("bust="))).toEqual([]);
   });
 });

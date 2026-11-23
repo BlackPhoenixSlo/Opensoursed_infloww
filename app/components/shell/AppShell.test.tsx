@@ -27,8 +27,7 @@ vi.mock("@/lib/appliedSettings", () => ({
 // The platform selector and gate read accounts and roster counts (PlatformSwitcher.test covers them).
 vi.mock("@/components/shell/PlatformSwitcher", () => ({
   default: () => null,
-  usePlatformUnread: () => ({ onlyfans: { count: 0, capped: false }, fansly: { count: 0, capped: false } }),
-  unreadLabel: (u: { count: number }) => String(u.count),
+  usePlatformUnread: () => ({ onlyfans: { count: 0 }, fansly: { count: 0 } }),
 }));
 vi.mock("@/components/shell/PlatformGate", () => ({ default: () => null, PlatformSync: () => null }));
 

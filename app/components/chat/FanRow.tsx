@@ -163,7 +163,7 @@ export const FanRow = memo(function FanRow({
           isSelected && "bg-[var(--inf-row-selected,var(--color-bg-elev-1))]",
         )}
       >
-        <EdgeMarker unread={unread} unreadCount={c.unreadMessagesCount ?? 0} oweDot={oweDot} />
+        <EdgeMarker unread={unread} muted={!!c.isMutedNotifications} unreadCount={c.unreadMessagesCount ?? 0} oweDot={oweDot} />
         {/* All Models, from lg up: the Creator's colour dot, in the left
          *  padding above the Edge marker, so the avatar keeps its place. */}
         {account && (
@@ -322,7 +322,8 @@ export const FanRow = memo(function FanRow({
  *  (Compare FL8):
  *    • Blue dot (count in its name and tooltip) → genuinely unread, OF said so
  *    • Yellow dot → read but the Fan sent the last message ("I owe a reply")
- *    • Nothing    → we sent last; ball's in their court
+ *    • Nothing    → we sent last; ball's in their court, or Muted and unread
+ *      (OF's badge leaves Muted chats out; unread still wins over owe)
  *
  *  `oweDot` is FanList's `lastMessageFromFan`, which owns the compare so this
  *  dot and the Owe reply chip's filter can't drift. FanList passes it only
@@ -330,8 +331,11 @@ export const FanRow = memo(function FanRow({
  *  ADR-0003). It is string-normalized: `fromUser.id` is numeric on OF but a
  *  string snowflake on Fansly, and the old `!== Number(accountId)` was true
  *  for EVERY Fansly row — the dot stuck on threads we had already answered. */
-function EdgeMarker({ unread, unreadCount, oweDot }: { unread: boolean; unreadCount: number; oweDot: boolean }) {
+function EdgeMarker({ unread, muted, unreadCount, oweDot }: {
+  unread: boolean; muted: boolean; unreadCount: number; oweDot: boolean;
+}) {
   if (unread) {
+    if (muted) return null;
     const label = `Unread${unreadCount ? ` (${unreadCount})` : ""}`;
     return <span role="img" aria-label={label} title={label} className={cn(G.edgeMarker, G.unreadDot, "absolute bg-info")} />;
   }

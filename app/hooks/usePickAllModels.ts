@@ -12,9 +12,9 @@
  * so each is busted here. Each per-Creator bust rewarms that Creator's
  * server-side chat window, and the unified list fans out per-Creator page-0
  * reads against those exact keys, so the one invalidation refetches the All
- * tab as warm hits of the same rows the badges counted. Each `refreshOne` is
- * cooldown-guarded per Creator, so repeated picks cannot storm OnlyFans, and
- * the busts run `CREATOR_POOL` at a time (each is an uncached OF chat read;
+ * tab as warm hits of the same rows the badges counted. The Relay's shared
+ * 30 s Hover cooldown per Creator bounds the busts, so repeated picks cannot
+ * storm OnlyFans, and the busts run `CREATOR_POOL` at a time (each is an uncached OF chat read;
  * 5-10 Creators share a proxy). Settled: one bad Creator must not keep the
  * rest of the tab stale.
  */

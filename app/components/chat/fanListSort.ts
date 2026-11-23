@@ -4,7 +4,7 @@
  * lookup it already holds.
  */
 
-import { isUnreadChat } from "@/lib/chatUnread";
+import { countsAsUnread, excludedFromBadges, isUnreadChat } from "@/lib/chatUnread";
 import { readElsewhere, unreadOutsideView, type UnreadView } from "@/lib/chatsCache";
 import type { OFChatItem } from "@/lib/relay";
 import {
@@ -94,27 +94,20 @@ export function sortFanRows(rows: OFChatItem[], mode: ChatSortMode, deps: FanSor
   return arr;
 }
 
-/** Not a Fan we restricted on OF: those are never counted on a chip, still listed. */
-export function notRestricted(c: OFChatItem): boolean {
-  return !c.withUser?.isRestricted;
-}
-
-/** All's count over `rows`: not restricted, and unread or owed. Chip counts
- *  read the raw `hasUnread` flag, not `isUnreadChat` (base behaviour, kept). */
 export function attentionCount(rows: OFChatItem[], isOwed: FanSortDeps["isOwed"]): number {
-  return rows.filter((c) => notRestricted(c) && (c.hasUnread || isOwed(c))).length;
+  return rows.filter((c) => countsAsUnread(c) || (isOwed(c) && !excludedFromBadges(c))).length;
 }
 
-/** The chip counts over `rows`, Fans we restricted never counted: All (needs
- *  attention: unread or owed), Unread, Owe reply. */
+/** The chip counts over `rows`, badge-excluded chats never counted (still
+ *  listed): All (needs attention: unread or owed), Unread, Owe reply. */
 export function chipCounts(
   rows: OFChatItem[],
   { isOwed }: Pick<FanSortDeps, "isOwed">,
 ): { allCount: number; unreadCount: number; oweReplyCount: number } {
-  const counted = rows.filter(notRestricted);
+  const counted = rows.filter((c) => !excludedFromBadges(c));
   return {
     allCount: attentionCount(counted, isOwed),
-    unreadCount: counted.filter((c) => c.hasUnread).length,
+    unreadCount: counted.filter(countsAsUnread).length,
     oweReplyCount: counted.filter((c) => isOwed(c)).length,
   };
 }

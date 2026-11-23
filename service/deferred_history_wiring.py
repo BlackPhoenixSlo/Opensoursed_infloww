@@ -1,15 +1,15 @@
-"""A deferred chat's head read starts its history backfill (phase-03).
+"""A deferred chat's Click read starts its history backfill (phase-03).
 
-The thread_head hook is registered once at import; it is sync and does no
-I/O: it only spawns webhook_dispatch.backfill_if_deferred in the background,
-so the messages route answers as fast as without it. Any priority counts: an
-open reusing a warm page sends no head read of its own.
+The thread_click_read hook (a plain head read, or a landed single-chat
+mark-as-read: an open served from a peeked warm page; a peeked Background read
+never fires it) is registered once at import; it is sync and does no I/O: it
+only spawns webhook_dispatch.backfill_if_deferred in the background, so the
+route answers as fast as without it. The Click read already marked the chat read
+on OF, so the backfill's asc pass costs the chat nothing.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any
-
 from fastapi import FastAPI
 
 import relay_host
@@ -18,7 +18,7 @@ import relay_hooks
 log = logging.getLogger("of-relay.events")
 
 
-def _on_thread_head(account_id: str, chat_id: int, messages: Any) -> None:
+def _on_click_read(account_id: str, chat_id: int) -> None:
     coro = None
     try:
         import webhook_dispatch   # lazy: it pulls in the executor
@@ -31,7 +31,7 @@ def _on_thread_head(account_id: str, chat_id: int, messages: Any) -> None:
                     account_id, chat_id, exc_info=True)
 
 
-relay_hooks.thread_head.append(_on_thread_head)
+relay_hooks.thread_click_read.append(_on_click_read)
 
 
 def wire(app: FastAPI) -> None:

@@ -14,6 +14,7 @@ import re
 from datetime import timedelta
 from typing import Any
 
+from circles import roster_count
 from dataset import MANAGER, SLOTS, Dataset, asset, iso
 
 PURCHASE_KINDS = {"ppv_message": "message", "custom": "message", "ppv_post": "post", "ppv_stream": "stream"}
@@ -187,9 +188,7 @@ class Fixtures:
                 "/api/of/v2/chats/folders", "/api/of/v2/scheduled-sends"):
             return EMPTY
         if path == "/admin/accounts/roster-counts":  # a live OF read on the relay
-            return {"counts": {a: {"unread": sum(r["unreadMessagesCount"] for r in self.chats(a)),
-                                   "owe_reply": sum(1 for r in self.chats(a) if r["hasUnread"])}
-                               for a in self.by_id}}
+            return {"counts": {a: roster_count(self.chats(a), a) for a in self.by_id}}
         if path == "/api/of/v2/users/me":
             return self.profile(c)
         if path == "/api/of/v2/subscriptions/count/all":

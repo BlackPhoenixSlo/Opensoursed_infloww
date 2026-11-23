@@ -34,6 +34,11 @@ HELD = "fetch_failed"
 # `_jev.status` of a clip whose sources kept failing (`vault_jev_pass.RETRY_MAX` holds): no reading (not `current`),
 # never re-read by a sweep, review (never free). The one predicate: `gave_up`.
 GAVE_UP = "jev_gave_up"
+# `_jev.status` of a photo TypeSafe refuses as an image (400 "Invalid image dimensions", e.g. a 630x48 banner):
+# no retry fixes it, so it is a Terminal failure like GAVE_UP. Rows stamped before it carry status `error` and
+# the SDK's 400 text; `rejected` reads both.
+REJECTED = "jev_rejected"
+REJECT_TEXT = ("TypeSafeBadRequestError", "Invalid image")
 # Jev-pass visit statuses about the item, not the sweep (`vault_sweep.NEUTRAL` reads these): a held clip inside its
 # retry backoff (`vault_jev_pass.retry_due`), and an item skipped because TypeSafe's daily cap tripped this sweep.
 RETRY_WAIT = "jev_retry_wait"
@@ -270,7 +275,15 @@ def retries_spent(fields: dict[str, Any] | None) -> bool:
     or a failed re-read (`vault_jev.merge`) has since rewritten (its GAVE_UP_MARK stays). No sweep fetches it; a
     successful read (a new blob) clears it. Unlike `gave_up` it says nothing about pricing (W30 C2)."""
     j = (fields or {}).get(JEV_KEY)
-    return gave_up(fields) or (isinstance(j, dict) and j.get(GAVE_UP_MARK) is True)
+    return gave_up(fields) or rejected(fields) or (isinstance(j, dict) and j.get(GAVE_UP_MARK) is True)
+
+
+def rejected(fields: dict[str, Any] | None) -> bool:
+    j = (fields or {}).get(JEV_KEY)
+    if not isinstance(j, dict):
+        return False
+    err = str(j.get("error") or "")
+    return j.get("status") == REJECTED or (j.get("status") == "error" and all(t in err for t in REJECT_TEXT))
 
 
 def current(fields: dict[str, Any] | None) -> bool:

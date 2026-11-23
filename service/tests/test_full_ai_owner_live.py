@@ -347,7 +347,7 @@ class AppOF(LiveOF):
 
     def __init__(self, broken: bool = False, **kw):
         super().__init__(**kw)
-        self.broken, self.mine = broken, []
+        self.broken, self.mine, self.read_kw = broken, [], []
 
     def send_message(self, chat_id, text, **kw) -> dict:
         res = super().send_message(chat_id, text, **kw)
@@ -356,6 +356,7 @@ class AppOF(LiveOF):
 
     def get_messages(self, chat_id, **kw) -> dict:
         self.reads += 1
+        self.read_kw.append(kw)
         if self.broken:
             raise RuntimeError("OF read failed")
         return {"list": [*self.chat, *self.mine], "hasMore": False}
@@ -400,6 +401,7 @@ async def case_app_before_bubble_1():
         res, w = await _job(aid, fan, mid, rid, of)
     (row,) = await live_rows(aid)
     assert (row.status, of.calls, of.reads) == ("no_send", 0, 2), (row.status, of.calls, of.reads)
+    assert all(kw.get("peek") is True for kw in of.read_kw), of.read_kw
     assert _reply(row)["stood_down"] == {"check": "human_yield", "reason": "human_of_app", "index": 0}
     await _yielded(aid, fan)
 
@@ -437,6 +439,7 @@ async def case_app_reads_clear():
     of = AppOF()
     row, reply = await turn("fa_ol_app2", 944, of, _sent_as())
     assert (len(reply["parts"]), of.reads, row.offer_price_cents) == (3, 3, 1500), (reply["parts"], of.reads)
+    assert [kw.get("peek") for kw in of.read_kw] == [True] * 3, of.read_kw
     assert reply["parts"][-1]["message_id"] and "price" in of.sent[-1], of.sent
     # The card alone: pre-look + the card.
     of = AppOF()

@@ -237,7 +237,7 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const fanId = chat ? fanIdFromParam(chat) : null;
   // The pinned page's thread is the chat's pinned messages (Messages Pro's useChatPinned: OF's messages?filter=pinned).
   const isPinnedPage = page === "messages/chat/pinned";
-  const pinned = useChatPinned(accountId, fanId, isPinnedPage);
+  const pinned = useChatPinned(accountId, fanId, { enabled: isPinnedPage });
   // The open chat's messages: Messages Pro's useChatMessages (the newest 30, older ones by before_id as the thread is
   // scrolled up, its poll). It sends no mark-as-read.
   const thread = useChatMessages({ accountId, fanId, enabled: parts.includes("thread") && !isPinnedPage && !!chat && !!accountId });

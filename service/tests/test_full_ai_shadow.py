@@ -15,7 +15,7 @@ test_full_ai_routes.py.
   case_hook_failure_keeps_w7              `full_ai_hook_failed`, W7's job still queued
   case_dispatch_failure_still_runs_hook   W7's dispatch raises: `w7_dispatch_failed`,
                                           the hook still runs once and queues its job
-  case_dispatch_then_hook_in_order        dispatch, hook, then the deferred backfill
+  case_dispatch_then_hook_in_order        dispatch, then the hook; a DM buys no backfill
   case_pending_job_wake_only              a pending job names the Fan: wake only
   case_late_older_dm_own_job              a DM older than the pending job's anchor,
                                           her outbound between: its own job, two rows
@@ -223,8 +223,8 @@ def _patched(**names):
 
 async def case_dispatch_failure_still_runs_hook():
     """W7's dispatch raising does not mute Full AI: `w7_dispatch_failed`, the
-    real hook still awaited once and its job queued, no history backfill (not
-    deferred), and nothing escapes."""
+    real hook still awaited once and its job queued, no history backfill, and
+    nothing escapes."""
     aid, fan = "fa_dispfail", 19
     await _seed(aid, rule=True, gate=True)
     await _msg(aid, fan, 851, "in", "hello", T0)
@@ -249,7 +249,8 @@ async def case_dispatch_failure_still_runs_hook():
 
 
 async def case_dispatch_then_hook_in_order():
-    """The happy path: W7's dispatch, then the hook, then the deferred backfill."""
+    """The happy path: W7's dispatch, then the hook; no backfill even if the old
+    dispatch contract said deferred (True)."""
     calls: list[str] = []
 
     async def _dispatch(*_a):
@@ -263,7 +264,7 @@ async def case_dispatch_then_hook_in_order():
         calls.append("scrape")
     with _patched(_dispatch_inbound=_dispatch, _full_ai_hook=_hook, enqueue_fan_scrape=_scrape):
         await wd.on_inbound_message("fa_disporder", 20, 861)
-    assert calls == ["dispatch", "hook", "scrape"], calls
+    assert calls == ["dispatch", "hook"], calls
 
 
 async def case_pending_job_wake_only():

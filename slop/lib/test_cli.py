@@ -178,6 +178,16 @@ def test_bad_import_is_one_infra_row_and_the_rest_run(monkeypatch, tmp_path, cap
     assert "slop_scenario_bad" not in sys.modules
 
 
+@pytest.mark.parametrize("token", ["--break --scale=small", "--a b=1", "--=1"])
+def test_glued_flags_are_refused_not_read_as_a_knob(monkeypatch, capsys, token):
+    """A quoted `"--break --scale=small"` became knob `break __scale`: the run went green with no fault phase."""
+    monkeypatch.setattr(sys, "argv", ["slop/run", "s", token])
+    monkeypatch.setattr(cli, "scenarios", lambda: pytest.fail("parsed past the knobs: a run would start"))
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert e.value.code == 2 and "unrecognized argument" in capsys.readouterr().err
+
+
 def test_socket_limit_per_scale():
     mod = SimpleNamespace(MAX_SOCKETS_RUN={"medium": 26000})
     assert cli.socket_limit(mod, "medium") == 26000

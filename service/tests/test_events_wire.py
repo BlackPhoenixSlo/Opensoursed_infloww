@@ -115,6 +115,11 @@ def test_a_plain_dict_is_not_cached():
     (ew.CONNECTED, b": connected\n\n"),
     (ew.head("e1.42"), b"id: e1.42\n\n"),
     (ew.ping(1700000000.5), b': ping\n\nevent: ping\ndata: {"ts": 1700000000.5}\n\n'),
+    (ew.ping(1700000000.5, {"8131": 5}), b': ping\n\nevent: ping\ndata: {"ts": 1700000000.5, "fresh": {"8131": 5}}\n\n'),
+    (ew.ping(1700000000.5, badge={"8131": 2}),
+     b': ping\n\nevent: ping\ndata: {"ts": 1700000000.5, "badge": {"8131": 2}}\n\n'),
+    (ew.ping(1700000000.5, {"8131": 5}, {"8131": 2}),
+     b': ping\n\nevent: ping\ndata: {"ts": 1700000000.5, "fresh": {"8131": 5}, "badge": {"8131": 2}}\n\n'),
 ])
 def test_fixed_frames(got, wire):
     assert got == wire

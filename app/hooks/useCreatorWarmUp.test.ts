@@ -1,16 +1,70 @@
 /**
+ * The Creator warm-up (hover) and the All Models pick: one plain `?bust=`
+ * rewarm per Creator (`refreshOne` with no `force`: the Relay's shared Hover
+ * cooldown is the one budget), then the chat lists refetch. And
  * warmUpMayRefetch — the warm-up's post-bust invalidation, run against a real
  * QueryClient: a chat list loading its next page keeps that page, and any
  * settled list (its next page landed, failed, or restored from the snapshot)
  * is refetched, so the badge and the list read the same window.
  */
+import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { dehydrate, hydrate, InfiniteQueryObserver, QueryClient } from "@tanstack/react-query";
+import { act, renderHook } from "@testing-library/react";
+import { dehydrate, hydrate, InfiniteQueryObserver, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+const { refreshOne, accounts } = vi.hoisted(() => ({
+  refreshOne: vi.fn<(id: string, opts?: unknown) => Promise<void>>(),
+  accounts: [{ id: "acct-a" }, { id: "acct-b" }, { id: "acct-c" }],
+}));
 vi.mock("@/hooks/useChatList", () => ({ prefetchModelChatList: vi.fn() }));
-vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCountActions: () => ({ refreshOne: vi.fn() }) }));
+vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCountActions: () => ({ refreshOne }) }));
+vi.mock("@/hooks/useAccounts", () => ({ usePlatformAccounts: () => accounts }));
+vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ setScope: vi.fn() }) }));
 
-import { warmUpMayRefetch } from "./useCreatorWarmUp";
+import { useCreatorWarmUp, warmUpMayRefetch } from "./useCreatorWarmUp";
+import { usePickAllModels } from "./usePickAllModels";
+
+function held() {
+  const lands: Array<() => void> = [];
+  refreshOne.mockReset();
+  refreshOne.mockImplementation(() => new Promise<void>((r) => lands.push(r)));
+  return lands;
+}
+
+function withClient<T>(hook: () => T) {
+  const qc = new QueryClient();
+  const invalidated = vi.spyOn(qc, "invalidateQueries");
+  const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: qc }, children);
+  return { ...renderHook(hook, { wrapper }), invalidated };
+}
+
+describe("hover and All Models rewarm through the shared Hover cooldown", () => {
+  it("hover: one plain ?bust= for the Creator, then its chat lists refetch", async () => {
+    const lands = held();
+    const { result, invalidated } = withClient(() => useCreatorWarmUp());
+    act(() => result.current.warm("acct-a"));
+    expect(refreshOne.mock.calls).toEqual([["acct-a"]]);
+    await act(async () => {});
+    expect(invalidated).not.toHaveBeenCalled();
+    await act(async () => lands.forEach((land) => land()));
+    expect(invalidated.mock.calls.map(([f]) => f?.queryKey)).toEqual([["chats", "model", "acct-a"]]);
+  });
+
+  it("All Models: one plain ?bust= per Creator, then the All Models list refetches", async () => {
+    const lands = held();
+    const { result, invalidated } = withClient(() => usePickAllModels());
+    act(() => result.current.pickAll());
+    await vi.waitFor(() => expect(lands).toHaveLength(2));
+    lands.splice(0).forEach((land) => land());
+    await vi.waitFor(() => expect(lands).toHaveLength(1));
+    await act(async () => {});
+    expect(invalidated).not.toHaveBeenCalled();
+    await act(async () => lands.forEach((land) => land()));
+    await vi.waitFor(() => expect(invalidated).toHaveBeenCalled());
+    expect(refreshOne.mock.calls).toEqual([["acct-a"], ["acct-b"], ["acct-c"]]);
+    expect(invalidated.mock.calls.map(([f]) => f?.queryKey)).toEqual([["chats", "all"]]);
+  });
+});
 
 type Page = { offset: number; read: number; hasMore: boolean };
 type Before = "next page in flight" | "next page landed" | "next page failed" | "restored from snapshot" | "plain refetch in flight";

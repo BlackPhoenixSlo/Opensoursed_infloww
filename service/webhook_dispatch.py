@@ -75,11 +75,11 @@ def _fan_serial(account_id: str, fan_id: int) -> asyncio.Lock:
 # inbound after a blast lands the real copy (with its media and OF's `queueId`)
 # inside the 4h window we ourselves leave open before the mass unsend erases it.
 # ~34 calls/day fleet-wide, measured against 238 blind inbounds a week.
-# Only on accounts a registered scrape gate allows (`_scrape_after_blast`). The GET
-# does NOT mark the chat read on OF (owner confirmed 2026-11-07).
+# Only on accounts a registered scrape gate allows (`_scrape_after_blast`).
+# Background reads must peek (a first-page thread GET marks the chat read on OF).
 _BLAST_SCRAPE_WINDOW = timedelta(minutes=60)
-# One claim per fan for every one-fan scrape trigger (`enqueue_fan_scrape`): the
-# after-blast scrape and a deferred chat's reply, open and gen_info pick.
+# One claim per fan for the one-fan scrape triggers (`enqueue_fan_scrape`): the
+# after-blast scrape and a gen_info pick; a deferred chat's Click read has its own.
 _FAN_SCRAPE_DEDUP_S = 600
 # The dedup is an IN-PROCESS CLAIM, not a pending-job scan, and the difference is
 # the whole point: `_has_imminent_pending_job` sees `status='pending'` only, so a
@@ -368,8 +368,8 @@ async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | N
     care whether it worked.
 
     Gated per Creator by `_scrape_allowed` (the plugin gates), and NOT on
-    `_load_config` (W7's own switch). The scrape's `GET /chats/{fan}/messages`
-    does NOT mark the chat read on OF (owner confirmed 2026-11-07). A gate
+    `_load_config` (W7's own switch). Background reads must peek (a first-page
+    thread GET marks the chat read on OF): the scrape's page 1 does. A gate
     answers per account, not per blast or fan.
 
     What the scrape brings back is the newest rows since his last scrape — his
@@ -393,16 +393,24 @@ async def enqueue_fan_scrape(account_id: str, fan_id: int, source: str) -> bool:
     """One bounded one-fan `scrape_fan` job `{"fan_ids": [fan], "source": source}`
     (scrape_chats' handler on the sender lane, its own run key: never queued behind
     the account's sweep, automations/scrape_chats.py), due now, supervisor woken, unless the fan's scrape is claimed inside
-    `_FAN_SCRAPE_DEDUP_S`: every trigger (a blast reply, a deferred chat's reply, open
-    or gen_info pick) shares the claim, so they make one job per fan per window.
+    `_FAN_SCRAPE_DEDUP_S`: the other triggers (a blast reply, a gen_info pick) share one
+    claim, so they make one job per fan per window. A Click read's backfill
+    (DEFERRED_HISTORY_SOURCE) has its own claim, which also covers the others: theirs
+    keep a deferred row's asc pass deferred, so it must never be swallowed by one of them.
     True = this call enqueued it. Never raises.
     ⚠️ NO AWAIT BETWEEN THE CHECK AND THE SET (`decide.blast_claim` is sync): that is
     what makes two concurrent triggers produce one job instead of two."""
     try:
         global _fan_scrape_claims
+        key, now = (str(account_id), int(fan_id)), time.monotonic()
+        if source == DEFERRED_HISTORY_SOURCE:
+            key = (*key, DEFERRED_HISTORY_SOURCE)
+        else:
+            clicked_at = _fan_scrape_claims.get((*key, DEFERRED_HISTORY_SOURCE))
+            if clicked_at is not None and now - clicked_at < _FAN_SCRAPE_DEDUP_S:
+                return False
         claimed, _fan_scrape_claims = decide.blast_claim(
-            _fan_scrape_claims, (str(account_id), int(fan_id)), time.monotonic(),
-            _FAN_SCRAPE_DEDUP_S, _FAN_SCRAPE_CLAIM_MAX)
+            _fan_scrape_claims, key, now, _FAN_SCRAPE_DEDUP_S, _FAN_SCRAPE_CLAIM_MAX)
         if not claimed:
             return False
         await ax.enqueue_job(
@@ -419,12 +427,14 @@ async def enqueue_fan_scrape(account_id: str, fan_id: int, source: str) -> bool:
 
 
 # ── A deferred chat's backfill (fetch-diet phase-03) ───────────────────
-# A `{}` sweep keeps page 1 of a Silent mass-only chat and defers its deep history
-# (`scrape_history.history_deferred_at`, automations/scrape_chats.py). The first of
-# its fan's DM (here), a head read of the chat (deferred_history_wiring.py, on
-# relay_hooks.thread_head) or a gen_info thin-history pick buys today's first-scrape
-# backfill through `enqueue_fan_scrape`.
+# A `{}` sweep keeps page 1 of a Silent mass-only chat, or the recent end of an unread one, and
+# defers its deep history (`scrape_history.history_deferred_at`, automations/scrape_chats.py). Only a Click read
+# (a plain head read or a landed mark-as-read, deferred_history_wiring.py) buys the backfill's asc pass, source
+# DEFERRED_HISTORY_SOURCE: the read already marked the chat read on OF. A gen_info
+# thin-history pick (GEN_INFO_PICK_SOURCE) or any other one-fan scrape walks the recent end
+# only and keeps the deferral. His DM buys nothing: it would only hold the fan's claim.
 DEFERRED_HISTORY_SOURCE = "deferred_history"
+GEN_INFO_PICK_SOURCE = "gen_info_pick"
 
 
 async def history_deferred(account_id: str, fan_id: int, *, s=None) -> bool:
@@ -439,7 +449,7 @@ async def history_deferred(account_id: str, fan_id: int, *, s=None) -> bool:
 
 
 async def backfill_if_deferred(account_id: str, fan_id: int) -> None:
-    """The open trigger (every head read of the chat): a deferred chat gets its
+    """The Click read trigger (a plain head read or a landed mark-as-read of the chat): a deferred chat gets its
     backfill. Never raises."""
     try:
         if await history_deferred(account_id, fan_id):
@@ -449,10 +459,8 @@ async def backfill_if_deferred(account_id: str, fan_id: int) -> None:
                     DEFERRED_HISTORY_SOURCE, account_id, fan_id, exc_info=True)
 
 
-async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> bool:
-    """on_inbound_message's body, under its per-fan serial: load -> plan -> apply.
-    Returns whether the fan's chat history is deferred (the caller's backfill, after
-    the reply plan)."""
+async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> None:
+    """on_inbound_message's body, under its per-fan serial: load -> plan -> apply."""
     # Every read below goes through ONE session (one pool checkout per DM,
     # not one per question); the writes (enqueue_job) keep their own.
     async with get_session() as s:
@@ -471,12 +479,6 @@ async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> bo
             except Exception:
                 log.warning("blast_reply_scrape_failed account=%s fan=%s",
                             account_id, fan_id, exc_info=True)
-        try:   # an inbox repair too: must not cost the dispatch
-            deferred = await history_deferred(account_id, fan_id, s=s)
-        except Exception:
-            log.warning("deferred_history_scrape_failed account=%s fan=%s",
-                        account_id, fan_id, exc_info=True)
-            deferred = False
         cfg = await _load_config(account_id, s=s)
         if cfg is not None:
             kind, rule_id = await _classify(account_id, fan_id, s=s)
@@ -495,7 +497,7 @@ async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> bo
     # switch or his stage (see `_scrape_after_blast`). Own try/except inside.
     await _scrape_after_blast(account_id, fan_id, blasted=blasted, scrape_allowed=scrape_allowed)
     if cfg is None:
-        return deferred
+        return
 
     # A fan a human is handling, or one the bot just replied to, is on a
     # per-fan cooldown (W3's shared cross-tick guard, 45-90s for chat). Rather
@@ -511,11 +513,11 @@ async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> bo
         # fan, don't wake a sweep for nothing. cooldown_far: the sweep catches it.
         log.debug("w7_skip_%s account=%s fan=%s until=%s",
                   act.reason, account_id, fan_id, paused_until)
-        return deferred
+        return
     if isinstance(act, decide.WakeOnly):
         log.debug("w7_skip_dedup account=%s kind=%s fan=%s", account_id, kind, fan_id)
         ax.wake_supervisor()  # still wake so the already-pending job drains
-        return deferred
+        return
 
     await ax.enqueue_job(account_id, kind, payload=act.payload, run_at=act.run_at)
     # Wake now if due immediately; otherwise wake once the (possibly deferred)
@@ -529,7 +531,6 @@ async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> bo
         account_id, fan_id, kind, message_id, act.wait_s,
         " (deferred to cooldown end)" if act.deferred else "",
     )
-    return deferred
 
 
 # The window for a pending full_ai_chat job, whenever it is due: Shadow's are due
@@ -584,17 +585,12 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
         # Taken before the read session so a waiter holds no pool connection.
         async with _fan_serial(account_id, fan_id):
             try:
-                deferred = await _dispatch_inbound(account_id, fan_id, message_id)
+                await _dispatch_inbound(account_id, fan_id, message_id)
             except Exception:   # a W7 failure must not mute Full AI's hook below
                 log.warning(
                     "w7_dispatch_failed account=%s fan=%s", account_id, fan_id, exc_info=True
                 )
-                deferred = False
             await _full_ai_hook(account_id, fan_id, message_id)   # own try inside
-            # His reply to a deferred chat: its backfill, AFTER the reply plan's write
-            # (never ahead of the reply), under the shared claim. Never raises.
-            if deferred:
-                await enqueue_fan_scrape(account_id, fan_id, DEFERRED_HISTORY_SOURCE)
     except Exception:
         log.warning(
             "w7_dispatch_failed account=%s fan=%s", account_id, fan_id, exc_info=True

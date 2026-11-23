@@ -17,7 +17,7 @@ Dead session's 401) observes nothing: the total stays frozen at its last `at`. A
 drops the held total (null): it moved Last refresh but confirmed nothing. 0 OF calls of its own.
 
 Publish: registered with the Shared refresher as contributor `unread_total` (P1 C8): `snapshot(aid)` rides
-`freshness.values.unread_total = {n, at} | null` on both accounts answers and `creator_refreshed`; a changed `n`
+`freshness.values.unread_total = {n, at, v, grey}` on both accounts answers and `creator_refreshed`; a changed slot
 calls `shared_refresher.note_values(aid)` (thread-safe), an unchanged one nothing.
 A confirmation whose number differs from the held value at its ask time logs `unread_total_drift account=<id>
 dir=down|up expected=<n> observed=<n>`.
@@ -31,6 +31,19 @@ App-open warm's step 2 both read through it): the held page-0 rows peeked, the a
 `decide.flips` each published as `chat_read_changed` (`read_flip.publish`) stamped at the ask time; only after a flip
 or on a drift read, the Creator's other `list_chats` entries (deeper pages, `filter=unread`) are dropped, so the All
 and Unread lists agree again. Rows below page 0 stay until a tab re-reads them (spec needs-human; the badge drops).
+
+Unread counter frames (creator-badges 0B, ADR-0049): `events.handle_event` calls `observe_counter` with each frame's
+`chat_messages` at receipt, before the persist queue; a frame confirms the total like `/users/me` (one watermark) but
+never logs drift or asks a window read. The published slot is the Red circle: OF's number minus Restricted unread
+(`set_restricted_unread`, from every roster-counts fold until Phase C; newest `at` wins), floored at 0, `n` null while
+R is unknown since start (OF's raw number is never published), `v` the Badge version (+1 on any slot key change, never
+on `at` alone); a changed slot calls `note_values`. `grey` is `decide.grey_reason` with the Live connection's up time
+(`of_ws.connected_since`), re-read on every snapshot, so a `live` flip moves `v` on the refresher's next re-read.
+The Amber circle (creator-badges 0F) rides the same slot as `amber` / `amber_at` (`set_amber`, from
+`accounts_admin_api.amber_refresh`; `decide.amber_slot`).
+Phase C (creator-badges 0C): `observe_poll` confirms from a Complete socket-down poll, `set_grey_cause` holds `dead`,
+`proxy_down` or `capped`, and `stale` is decided against `_clock()` at each snapshot, so the refresher's 5 s re-read
+is the grey check that moves it without a frame.
 
 Between Cycles (0 OF calls): `on_dm_in` (event_transcoder, an inbound DM, before its window patch), `on_read_flip`
 (read_flip.after_write, a landed mark read / unread / all, before its bust) and `on_reply` (server._record_fan_send,
@@ -50,6 +63,8 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
+import accounts as account_registry
+import of_ws
 import relay_cache
 import shared_refresher
 import unread_total_decide as decide
@@ -62,6 +77,45 @@ ENABLED = shared_refresher.ENABLED and env_float("UNREAD_TOTAL", 0.0, 0.0) == 1.
 _ME = re.compile(r"/api2/v2/users/me/?")
 _lock = threading.Lock()
 _held: dict[str, decide.State] = {}     # Creator -> its held total
+_r: dict[str, tuple[int, int]] = {}     # Creator -> (Restricted unread, as of epoch ms)
+_v: dict[str, int] = {}                 # Creator -> Badge version
+_shown: dict[str, dict] = {}            # Creator -> its slot as last versioned
+_cause: dict[str, str] = {}             # Creator -> Phase C's held Grey cause (dead, proxy_down, capped)
+_amber: dict[str, tuple[int, int | None]] = {}  # Creator -> (Amber circle, its window's fetched-at epoch ms)
+_UNSEEDED = {**decide.slot(decide.State(), None, None, 0), **decide.amber_slot(None)}   # version 0
+
+
+def _clock() -> int:
+    return int(time.time() * 1000)
+
+
+def _up_since(aid: str) -> int | None:
+    """Epoch ms the Creator's Live connection came up (None: down)."""
+    t = of_ws.connected_since(aid)
+    return None if t is None else int(time.time() * 1000 - (time.monotonic() - t) * 1000)
+
+
+def _slot(aid: str) -> dict:
+    r, now = _r.get(aid), _clock()
+    return {**decide.slot(_held.get(aid, decide.State()), None if r is None else r[0], _up_since(aid), now,
+                          _cause.get(aid)),
+            **decide.amber_slot(_amber.get(aid))}
+
+
+def _moved(aid: str) -> bool:
+    """Under `_lock`, after any change: bumps the Badge version when the slot's keys moved; True then."""
+    nxt = _slot(aid)
+    was = _shown[aid]["grey"] if aid in _shown else None
+    if nxt["grey"] != was:
+        log.info("badge_grey account=%s state=%s reason=%s", aid, "off" if nxt["grey"] is None else "on",
+                 nxt["grey"] or was)
+    v = _v.get(aid, 0)
+    w = decide.badge_version(_shown.get(aid, _UNSEEDED), nxt, v)
+    _shown[aid] = nxt
+    if w == v:
+        return False
+    _v[aid] = w
+    return True
 
 
 def observe_response(account_id: str, method: str, url: str, r: Any, asked_at: int) -> None:
@@ -76,7 +130,7 @@ def observe_response(account_id: str, method: str, url: str, r: Any, asked_at: i
 
 def observe(account_id: str, me_body: Any, asked_at: int) -> None:
     """One `/users/me` body OF returned for the Creator, asked at `asked_at`: a body carrying an int
-    `chatMessagesCount` confirms the total (`decide.reconcile`); a changed `n` is published via `note_values`.
+    `chatMessagesCount` confirms the total (`decide.reconcile`); a changed slot is published via `note_values`.
     A body without one moves the Creator's Last refresh (the read landed) but confirms nothing: a held total is
     dropped (published as null), so the tab's age, `max(Last refresh, total at)`, is always the total's own
     confirmation time and an unconfirmable total never looks fresh (W30-mu #19). Only the total goes (`n`, `at`,
@@ -92,8 +146,10 @@ def observe(account_id: str, me_body: Any, asked_at: int) -> None:
             st = decide.unconfirmed(held, asked_at)
             dropped = held.n is not None and st.n is None
             _held[account_id] = st
+            moved = _moved(account_id)
         if dropped:
             log.warning("unread_total_unconfirmed account=%s: a /users/me answer without chatMessagesCount", account_id)
+        if moved:
             shared_refresher.note_values(account_id)
         return
     with _lock:
@@ -101,11 +157,87 @@ def observe(account_id: str, me_body: Any, asked_at: int) -> None:
         want = decide.expected(held, asked_at)
         st, actions = decide.reconcile(held, n, asked_at, int(time.time() * 1000))
         _held[account_id] = st
+        moved = _moved(account_id)
     if decide.LOG_DRIFT in actions:
         log.info("unread_total_drift account=%s dir=%s expected=%s observed=%s",
                  account_id, "down" if n < (want or 0) else "up", want, n)
-    if decide.PUBLISH in actions:
+    if moved:
         shared_refresher.note_values(account_id)
+
+
+def observe_counter(account_id: str, n: int, at_ms: int) -> None:
+    """One Unread counter frame for the Creator, OF's number `n`, received at `at_ms` (epoch ms, on the WS pump):
+    a confirmation (`decide.reconcile(..., via="ws")`). Never raises, never waits on I/O."""
+    if not ENABLED:
+        return
+    try:
+        aid = str(account_id)
+        with _lock:
+            st, _ = decide.reconcile(_held.get(aid, decide.State()), int(n), int(at_ms), int(at_ms), via="ws")
+            _held[aid] = st
+            moved = _moved(aid)
+        if moved:
+            shared_refresher.note_values(aid)
+    except Exception:  # noqa: BLE001 — the pump must not stop on a frame; the next one confirms again
+        log.warning("unread_total_counter_failed account=%s", account_id, exc_info=True)
+
+
+def set_restricted_unread(account_id: str, r: int, at_ms: int) -> None:
+    """The Creator's Restricted unread `r` as of `at_ms` (the window's or list's fetch time); an older one changes
+    nothing."""
+    if not ENABLED:
+        return
+    aid = str(account_id)
+    with _lock:
+        held = _r.get(aid)
+        if held is not None and at_ms < held[1]:
+            return
+        _r[aid] = (int(r), int(at_ms))
+        moved = _moved(aid)
+    if moved:
+        shared_refresher.note_values(aid)
+
+
+def set_amber(account_id: str, n: int, at_ms: int | None) -> None:
+    """The Creator's Amber circle `n`, folded from its held page-0 window fetched at `at_ms` (creator-badges 0F)."""
+    if not ENABLED:
+        return
+    aid = str(account_id)
+    with _lock:
+        _amber[aid] = (int(n), at_ms)
+        moved = _moved(aid)
+    if moved:
+        shared_refresher.note_values(aid)
+
+
+def observe_poll(account_id: str, n: int, asked_at: int) -> None:
+    """A Complete socket-down Unread list poll (creator-badges 0C) asked at `asked_at`: `n` rows OF counts, a
+    confirmation through the one watermark (`decide.reconcile(..., via="poll")`)."""
+    if not ENABLED:
+        return
+    aid = str(account_id)
+    with _lock:
+        _held[aid], _ = decide.reconcile(_held.get(aid, decide.State()), int(n), int(asked_at), _clock(), via="poll")
+        moved = _moved(aid)
+    if moved:
+        shared_refresher.note_values(aid)
+
+
+def set_grey_cause(account_id: str, cause: str | None) -> None:
+    """Phase C's Grey cause for the Creator (`decide.DEAD`, `PROXY_DOWN`, `CAPPED`; None: none)."""
+    if not ENABLED:
+        return
+    aid = str(account_id)
+    with _lock:
+        if _cause.get(aid) == cause:
+            return
+        if cause is None:
+            del _cause[aid]
+        else:
+            _cause[aid] = cause
+        moved = _moved(aid)
+    if moved:
+        shared_refresher.note_values(aid)
 
 
 def _window_rows(account_id: str) -> list | None:
@@ -130,9 +262,9 @@ def _adjust(account_id: str, fan_id: int | None, event_of) -> None:
         row = None if fan is None else _window_row(aid, fan)
         with _lock:
             st = _held.get(aid, decide.State())
-            nxt = decide.adjust(st, event_of(fan, decide.prior_of(st, fan, row)), int(time.time() * 1000))
-            _held[aid] = nxt
-        if nxt.n != st.n:
+            _held[aid] = decide.adjust(st, event_of(fan, decide.prior_of(st, fan, row)), int(time.time() * 1000))
+            moved = _moved(aid)
+        if moved:
             shared_refresher.note_values(aid)
     except Exception:  # noqa: BLE001 — the event already happened; a missed move waits for the next confirmation
         log.warning("unread_total_adjust_failed account=%s fan=%s", account_id, fan_id, exc_info=True)
@@ -156,16 +288,32 @@ def on_reply(account_id: str, fan_id: int) -> None:
     _adjust(account_id, fan_id, decide.Reply)
 
 
-def snapshot(account_id: str) -> dict[str, int] | None:
-    """P1 C8: `values.unread_total`, `{n, at}`, None before the Creator's first confirmation."""
+def snapshot(account_id: str) -> dict[str, Any] | None:
+    """P1 C8: `values.unread_total`, `{n, at, v, grey}`; None with the Knob off or for a non-OF Creator (no OF
+    counter: the tab keeps the route's count). The refresher re-reads it every tick, so a `live` flip that changes
+    `grey` moves `v` there; a read of an unchanged slot moves nothing."""
+    aid = str(account_id)
+    if not ENABLED or account_registry.get_platform(aid) == "fansly":
+        return None
     with _lock:
-        return decide.slot(_held.get(account_id, decide.State()))
+        _moved(aid)
+        return {**_shown[aid], "v": _v.get(aid, 0)}
+
+
+def badge_versions(account_ids: frozenset[str]) -> dict[str, int]:
+    """The ping's `badge`: `{aid: v}` for each of `account_ids` whose slot has been versioned (empty, Knob off)."""
+    if not ENABLED:
+        return {}
+    with _lock:
+        return {a: _v.get(a, 0) for a in account_ids if a in _shown}
 
 
 def window_due(account_id: str) -> bool:
-    """P1 C8: a downward drift no window read has served yet (the refresher bounds it to one read per Cycle)."""
+    """P1 C8: a downward drift no window read has served yet, or no R since start (the window's fold sets it; with no
+    window held the refresher reads one at most once per boot). The refresher bounds it to one read per Cycle."""
+    aid = str(account_id)
     with _lock:
-        return _held.get(str(account_id), decide.State()).due is not None
+        return _held.get(aid, decide.State()).due is not None or aid not in _r
 
 
 async def window_read(account_id: str) -> Any:

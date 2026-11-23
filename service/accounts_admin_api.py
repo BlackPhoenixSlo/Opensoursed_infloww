@@ -42,6 +42,7 @@ import proxy_health
 import relay_cache
 import shared_refresher
 import sign_rules
+import unread_total_decide
 import vault_cache
 from audit_log import credential_write
 from auth import assert_account_owned, require_actor_account_ids
@@ -326,7 +327,7 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
 # useChatList.ts) — both are served from the SAME "list_chats" cache entry
 # keyed (25, 0, "recent", None, None, None), which is what guarantees the
 # badge and the visible list can never disagree.
-_ROSTER_SCAN_MAX = 25
+_ROSTER_SCAN_MAX = unread_total_decide.WINDOW
 _ROSTER_WINDOW_KEY = (_ROSTER_SCAN_MAX, 0, "recent", None, None, None)
 ROSTER_COUNT_TTL_S = 300.0   # the `roster_count` entry's TTL (app_open_warm.FRESH_MAX_S is held to it)
 # Per Creator, its last computed count (with `as_of`): what roster-counts serves an unleased Creator
@@ -343,53 +344,55 @@ def _window_as_of(account_id: str) -> int | None:
 
 
 def _roster_counts_from_rows(
-    rows: list[dict[str, Any]], me: str,
-    exclude: frozenset[int] | set[int] = frozenset(),
+    rows: list[dict[str, Any]], exclude: frozenset[int] | set[int] = frozenset(),
 ) -> dict[str, int]:
-    """Pure fold of a /chats window into the two badge colors, exactly as the
-    chat-list rows render them:
-
-      • unread (blue)    — `unreadMessagesCount > 0` (OF's per-chat read state =
-                           the inbox's blue unread badge).
-      • owe_reply (orange) — READ (`unreadMessagesCount == 0`) AND the fan spoke
-                           last (`lastMessage.fromUser.id != my id`, the chat-list
-                           header's `isUnresponded` rule). Disjoint from blue so
-                           the two pills don't double-count.
+    """Pure fold of a /chats window into the blue unread count, exactly as the chat-list rows render it:
+    `unreadMessagesCount > 0` (OF's per-chat read state = the inbox's blue unread badge). Amber (`owe_reply`) is
+    `amber_refresh`'s, added by `_fold_window`.
 
     Deduped by fan id and capped at the badge window. `exclude` is the account's
-    OF-restricted set (skip_list reason='of_restricted'): restricted creators
-    never count as unread/owe-reply — we deliberately cut them off, so their
-    threads are not backlog. They still occupy a window slot (the list shows
-    their row), which is what keeps the badge≡first-page parity intact — the
-    frontend chips apply the SAME exclusion off the rows' `withUser.isRestricted`
-    stamp (see the /chats serve-time annotation).
+    OF-restricted set (skip_list reason='of_restricted'); a chat
+    `unread_total_decide.excluded_from_badges` excludes never counts as
+    unread. It still occupies a window slot (the list shows its row),
+    which keeps the badge≡first-page parity intact — the frontend chips read the
+    same predicate off the rows' `withUser.badgeExcluded` stamp (see the /chats
+    serve-time annotation).
 
     `unread_capped` (set only when true): the window is full and every chat in it that counts is unread, so more
     unread chats may sit past it; the tab shows "N+". `unread` itself stays the window's count (it sorts the tabs)."""
-    blue = owe = counted = 0
+    blue = counted = 0
+    window = _window_chats(rows)
+    for fid, ch in window:
+        if unread_total_decide.excluded_from_badges(fid, ch, exclude):
+            continue
+        counted += 1
+        if int(ch.get("unreadMessagesCount") or 0) > 0:
+            blue += 1
+    out = {"unread": blue}
+    if len(window) >= _ROSTER_SCAN_MAX and blue > 0 and blue == counted:
+        out["unread_capped"] = True
+    return out
+
+
+def _window_chats(rows: list[dict[str, Any]]) -> list[tuple[Any, dict[str, Any]]]:
+    """The badge window: `(fan id, row)` deduped by fan, capped at `_ROSTER_SCAN_MAX`."""
+    out: list[tuple[Any, dict[str, Any]]] = []
     seen: set[Any] = set()
     for ch in rows:
-        wu = ch.get("withUser") or {}
-        fid = wu.get("id")
+        fid = (ch.get("withUser") or {}).get("id")
         if fid is None or fid in seen:
             continue
         if len(seen) >= _ROSTER_SCAN_MAX:
             break
         seen.add(fid)
-        if fid in exclude or wu.get("isRestricted"):
-            continue
-        counted += 1
-        if int(ch.get("unreadMessagesCount") or 0) > 0:
-            blue += 1
-            continue
-        lm = ch.get("lastMessage") or {}
-        from_id = (lm.get("fromUser") or {}).get("id")
-        if from_id is not None and str(from_id) != me:
-            owe += 1
-    out = {"unread": blue, "owe_reply": owe}
-    if len(seen) >= _ROSTER_SCAN_MAX and blue > 0 and blue == counted:
-        out["unread_capped"] = True
+        out.append((fid, ch))
     return out
+
+
+def _restricted_unread(rows: list[dict[str, Any]], exclude: frozenset[int] | set[int]) -> int:
+    """Restricted unread: window chats OF's counter counts that the one predicate excludes."""
+    return sum(1 for fid, ch in _window_chats(rows)
+               if unread_total_decide.of_counts(ch) and unread_total_decide.excluded_from_badges(fid, ch, exclude))
 
 
 async def _compute_roster_count_of(account_id: str, *, bypass: bool = False) -> dict[str, int]:
@@ -403,10 +406,6 @@ async def _compute_roster_count_of(account_id: str, *, bypass: bool = False) -> 
 
     `bypass=True` is the ?bust= path: badge authoritative NOW **and** the list
     the user is about to open comes from that same read — they cannot disagree.
-    The WS pump patches an inbound DM into the window in place and busts it on
-    an outbound echo, and busts the roster count on both (event_transcoder), so
-    a new inbound DM bumps blue — and our reply drops orange — on the next
-    poll.
 
     Mirror-first: that WS-kept window IS the badge's mirror. Local
     `chats.unread_count` is not (see the block comment above), so the badge
@@ -420,13 +419,7 @@ async def _compute_roster_count_of(account_id: str, *, bypass: bool = False) -> 
         # also rewarms the window, so the list gets fresher along with us.
         # Except while the account's WS has stayed connected since the window
         # was read: then the window is folded for its whole list TTL (600 s)
-        # rather than 300 s. What keeps it current in that time: an inbound DM
-        # is patched in (+1 unread, never re-ordered); an outbound echo (a reply
-        # from OF web, another device) busts it, at most once per 20 s per
-        # account, so a second reply inside that gap is not seen; our own sends
-        # and our mark-read/unread routes bust it. OF pushes no read frame the
-        # transcoder applies, so a chat read outside Inflowwww stays unread on
-        # the badge until the window expires (≤600 s, was ≤300 s).
+        # rather than 300 s.
         fetched_at = _chats_window_fetched_at().get(account_id)
         from of_ws import connected_since
         live_since = connected_since(account_id)
@@ -453,13 +446,80 @@ async def _compute_roster_count_of(account_id: str, *, bypass: bool = False) -> 
 
 
 async def _fold_window(account_id: str, client, resp: dict[str, Any]) -> dict[str, int]:
-    """The window's counts with `as_of` (the window's last live read; 0 if unknown), kept as the last-known."""
+    """The window's counts with `as_of` (the window's last live read; 0 if unknown), kept as the last-known; its
+    Restricted unread goes to the Unread total as of that read; with an Unread set held, R comes from that set."""
     rows = resp.get("list") or resp.get("chats") or []
     from automations._common import load_of_restricted_ids
+    import unread_total
+    as_of = _window_as_of(account_id) or 0
     exclude = await load_of_restricted_ids(account_id)
-    out = {**_roster_counts_from_rows(rows, str(client.user_id), exclude), "as_of": _window_as_of(account_id) or 0}
+    import badge_reads
+    if not badge_reads.rescore(account_id, rows, frozenset(exclude), as_of):
+        unread_total.set_restricted_unread(account_id, _restricted_unread(rows, exclude), as_of)
+    _amber_ctx[account_id] = (str(client.user_id), frozenset(exclude))
+    out = {**_roster_counts_from_rows(rows, exclude), "owe_reply": _amber_set(account_id, resp), "as_of": as_of}
     _roster_last[account_id] = out
     return out
+
+
+def _amber_set(aid: str, resp: dict[str, Any]) -> int:
+    """The Amber fold of window `resp` with the arrivals after its ask (`asked_at`) overlaid, so a window asked
+    before them and landing after can't undo them; published when the Knob is on and the window's read time is
+    known."""
+    import badge_reads
+    import unread_total
+    me, exclude = _amber_ctx[aid]
+    view = badge_reads.unread_set(aid)
+    rows = unread_total_decide.overlay(resp.get("list") or resp.get("chats") or [], badge_reads.arrivals(aid),
+                                       resp.get("asked_at"), me)
+    n = unread_total_decide.amber_count(rows, me, exclude, None if view is None else view.fans)
+    at = _window_as_of(aid)
+    if unread_total.ENABLED and at is not None:
+        unread_total.set_amber(aid, n, at)
+    return n
+
+
+_amber_ctx: dict[str, tuple[str, frozenset[int]]] = {}   # Creator -> (me, restricted ids) of its last window fold
+
+
+def amber_refresh(account_id: str) -> int | None:
+    """The Amber circle (creator-badges 0F) re-folded from the held page-0 window (`relay_cache.peek`, no OF call)
+    with the last fold's `me` and restricted ids and Phase C's latest Unread set; a cached `roster_count` answer and
+    the last-known count take it too, so a warm roster-counts read agrees. No window held, or none folded since
+    restart: None, the last amber stays. Never raises."""
+    try:
+        import unread_total
+        aid = str(account_id)
+        resp = relay_cache.peek("list_chats", aid, _ROSTER_WINDOW_KEY)
+        if not unread_total.ENABLED or aid not in _amber_ctx or not isinstance(resp, dict):
+            return None
+        n = _amber_set(aid, resp)
+        held = relay_cache.peek("roster_count", aid, ())
+        if isinstance(held, dict) and held.get("owe_reply") != n:
+            relay_cache.patch("roster_count", aid, lambda _ex, v: {**v, "owe_reply": n} if isinstance(v, dict) else v)
+        if aid in _roster_last:
+            _roster_last[aid] = {**_roster_last[aid], "owe_reply": n}
+        return n
+    except Exception:  # noqa: BLE001 — the change already happened; the next trigger re-folds
+        log.warning("amber_refresh_failed account=%s", account_id, exc_info=True)
+        return None
+
+
+def amber_mute(account_id: str, fan_id: int, muted: bool) -> None:
+    """A landed mute / unmute route: the fan's held window row takes `isMutedNotifications` (no frame carries it),
+    then `amber_refresh`, before the route's bust. Never raises."""
+    def _fn(extras: tuple, value: Any) -> Any:
+        if extras != _ROSTER_WINDOW_KEY or not isinstance(value, dict):
+            return value
+        key = "list" if "list" in value else "chats"
+        return {**value, key: [{**r, "isMutedNotifications": muted}
+                               if (r.get("withUser") or {}).get("id") == fan_id else r
+                               for r in value.get(key) or []]}
+    try:
+        relay_cache.patch("list_chats", str(account_id), _fn)
+    except Exception:  # noqa: BLE001
+        log.warning("amber_mute_patch_failed account=%s fan=%s", account_id, fan_id, exc_info=True)
+    amber_refresh(account_id)
 
 
 async def _held_roster_count(account_id: str) -> dict[str, int] | None:
@@ -488,9 +548,18 @@ def _principal() -> tuple[str, Any, list[str]] | None:
 
 
 def _roster_answer(counts: dict[str, Any]) -> dict[str, Any]:
-    """A roster-counts answer: the counts and `now`, this Relay's epoch ms, so the tab compares each count's `as_of`
-    with its own patch stamps in one clock (app hooks/useRosterCounts.ts measures the skew off it)."""
-    return {"counts": counts, "now": int(_time_mod.time() * 1000)}
+    """A roster-counts answer: the counts and `now`, this Relay's epoch ms. The app reads only `counts`, as is;
+    `now` and each count's `as_of` stay on the wire."""
+    return {"counts": {aid: _red(aid, c) for aid, c in counts.items()}, "now": int(_time_mod.time() * 1000)}
+
+
+def _red(account_id: str, count: dict[str, Any]) -> dict[str, Any]:
+    """With a Red circle held (creator-badges 0B), `unread` is it and `as_of` its confirmation; else the fold."""
+    import unread_total
+    slot = unread_total.snapshot(account_id)
+    if slot is None or slot.get("n") is None:
+        return count
+    return {**{k: v for k, v in count.items() if k != "unread_capped"}, "unread": slot["n"], "as_of": slot["at"]}
 
 
 @router.get("/admin/accounts/roster-counts")
@@ -559,7 +628,7 @@ async def admin_accounts_roster_counts(
     # App-open warm (`rewarm_roster_count`). Any other Creator, and a Dead-session one always, is served with no
     # OF read (`_held_roster_count`): its held chats window folded at any age, else its last-known count, else it
     # is left out of `counts`. Every count carries `as_of`, epoch ms of the window it was folded from (0: a
-    # failed read's zeros), so the tab keeps its own newer SSE patch (app hooks/useRosterCounts.ts).
+    # failed read's zeros); the app caches the counts as answered and does not read it.
     # (A comment, not the docstring: the docstring is the OpenAPI description, pinned by test_route_order.)
     import view_lease
     leased = view_lease.leased_ids()
@@ -585,9 +654,13 @@ async def admin_accounts_roster_counts(
         if bust in dead:
             held = await _held_roster_count(bust)
             return _roster_answer({bust: held} if held is not None else {})
-        relay_cache.invalidate("roster_count", bust)
-        _, value = await _one(bust, bypass=True)
-        return _roster_answer({bust: value})
+        async def _rewarm() -> dict[str, int]:
+            relay_cache.invalidate("roster_count", bust)
+            return (await _one(bust, bypass=True))[1]
+
+        import badge_reads
+        value = await badge_reads.hover(bust, _rewarm, lambda: _held_roster_count(bust))
+        return _roster_answer({bust: value} if value is not None else {})
 
     pairs = await asyncio.gather(*[_served(a) for a in ids])
     return _roster_answer({aid: c for aid, c in pairs if c is not None})
@@ -776,7 +849,9 @@ async def admin_accounts_set_active(
     the ledger polls, the chat-link seed and the automation executor on their
     next pass (each subtracts `account_health.deactivated_ids()`); OF-proxy
     writes to it answer 409 (`_deactivated_write_guard`). Every listing keeps
-    it, stamped `is_active: false`. Billing and seat counts do not change —
+    it, stamped `is_active: false`. Its Inflowwww pool proxy is released (a
+    custom one stays) and, unbound, it never goes direct (`proxies.egress`);
+    Activate binds a pool proxy again first. Billing and seat counts do not change —
     Infloww's own warning: fees still apply.
 
     Activate clears it; the pump supervisor restarts the pump within 15s.
@@ -793,6 +868,7 @@ async def admin_accounts_set_active(
     assert_account_owned(account_id)
     if not body.active:
         await account_health.deactivate(account_id)
+        proxy_registry.unbind_pool(account_id)
         _stop_account_pump(account_id)
         _invalidate_client(account_id)
         return {"ok": True, "account_id": account_id, "is_active": False}
@@ -802,6 +878,11 @@ async def admin_accounts_set_active(
     if off_since is not None:
         from automation_executor import cancel_jobs_missed_while_off
         await cancel_jobs_missed_while_off(account_id, off_since)
+        if proxy_registry.get_for_account(account_id) is None:
+            try:
+                await asyncio.to_thread(proxy_health.assign_pool, account_id)
+            except LookupError:
+                pass
     since = await account_health.activate(account_id)
     if since is not None:
         from transaction_ingest import backfill_after_reactivation

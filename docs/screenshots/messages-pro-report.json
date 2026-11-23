@@ -1,6 +1,6 @@
 {
   "ok": false,
-  "startedAt": 1795203692,
+  "startedAt": 1795401334,
   "shots": [
     {
       "name": "messages-pro-desktop",
@@ -27,8 +27,6 @@
         "POST /admin/messages/424242/1002/mark-read",
         "POST /api/of/v2/chats/1002/mark-as-read",
         "GET /api/of/v2/chats/1002/pinned",
-        "POST /admin/messages/424242/1002/mark-read",
-        "POST /api/of/v2/chats/1002/mark-as-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1002",
         "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
@@ -39,8 +37,8 @@
         "GET /admin/screens/chat?account=424242&fan=1001&focus=424242",
         "GET /admin/fans/424242/1001/insights",
         "POST /admin/messages/424242/1001/mark-read",
+        "POST /api/of/v2/chats/1001/mark-as-read",
         "GET /api/of/v2/chats/1001/pinned",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
         "GET /admin/messages/424242/1001?limit=30",
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
@@ -49,7 +47,6 @@
         "GET /admin/messages/424242/1001/attribution?since_id=50001",
         "POST /admin/view-lease",
         "POST /admin/perflog/ingest",
-        "GET /api/of/v2/scheduled-sends?fan_id=1001",
         "POST /admin/view-lease",
         "POST /admin/view-lease",
         "POST /admin/view-lease",
@@ -492,8 +489,8 @@
         "GET /admin/screens/chat?account=424242&fan=1001&lacks=savedReplies%2CsensitiveWords&focus=424242",
         "GET /admin/fans/424242/1001/insights",
         "POST /admin/messages/424242/1001/mark-read",
+        "POST /api/of/v2/chats/1001/mark-as-read",
         "GET /api/of/v2/chats/1001/pinned",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
         "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
@@ -501,7 +498,8 @@
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
         "GET /admin/messages/424242/1001/attribution",
         "GET /admin/messages/424242/1001/attribution?since_id=50001",
-        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm"
+        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -604,8 +602,8 @@
         "GET /admin/screens/chat?account=424242&fan=1001&lacks=savedReplies%2CsensitiveWords&focus=424242",
         "GET /admin/fans/424242/1001/insights",
         "POST /admin/messages/424242/1001/mark-read",
+        "POST /api/of/v2/chats/1001/mark-as-read",
         "GET /api/of/v2/chats/1001/pinned",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
         "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
@@ -613,7 +611,8 @@
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
         "GET /admin/messages/424242/1001/attribution",
         "GET /admin/messages/424242/1001/attribution?since_id=50001",
-        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm"
+        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -642,7 +641,8 @@
       "stubbedRequests": [],
       "unmatchedRequests": [
         "GET /admin/shifts/clock-status",
-        "GET /admin/settings/applied"
+        "GET /admin/settings/applied",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -704,8 +704,8 @@
         "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
         "GET /admin/screens/chat?account=424242&fan=1001&lacks=savedReplies%2CsensitiveWords&focus=424242",
         "POST /admin/messages/424242/1001/mark-read",
+        "POST /api/of/v2/chats/1001/mark-as-read",
         "GET /api/of/v2/chats/1001/pinned",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
         "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
@@ -713,7 +713,8 @@
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
         "GET /admin/messages/424242/1001/attribution",
         "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
-        "GET /admin/messages/424242/1001/attribution?since_id=50001"
+        "GET /admin/messages/424242/1001/attribution?since_id=50001",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -819,8 +820,8 @@
         "GET /admin/screens/chat?account=424242&fan=1001&lacks=savedReplies%2CsensitiveWords&focus=424242",
         "GET /admin/fans/424242/1001/insights",
         "POST /admin/messages/424242/1001/mark-read",
+        "POST /api/of/v2/chats/1001/mark-as-read",
         "GET /api/of/v2/chats/1001/pinned",
-        "POST /admin/messages/424242/1001/mark-read",
         "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
         "GET /admin/saved-replies?account_id=424242",
         "GET /admin/sensitive-words?account_id=424242",
@@ -828,7 +829,8 @@
         "GET /api/of/v2/scheduled-sends?fan_id=1001",
         "GET /admin/messages/424242/1001/attribution",
         "GET /admin/messages/424242/1001/attribution?since_id=50001",
-        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm"
+        "GET /admin/do-not-mass?account_id=424242&fan_id=1001&kind=dm",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -884,7 +886,8 @@
       "stubbedRequests": [],
       "unmatchedRequests": [
         "GET /admin/shifts/clock-status",
-        "GET /admin/settings/applied"
+        "GET /admin/settings/applied",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [
         "/admin/accounts"
@@ -911,21 +914,21 @@
               "color": "#e8618c",
               "has_session": true,
               "session_dead_at": null,
-              "created_at": "2026-10-21T19:41:38Z",
-              "last_used_at": "2026-11-20T19:36:38Z",
+              "created_at": "2026-10-24T02:35:39Z",
+              "last_used_at": "2026-11-23T02:30:39Z",
               "freshness": {
                 "account_id": "424242",
-                "boot": 1795200098496,
+                "boot": 1795397739614,
                 "seq": 1,
-                "now": 1795203698496,
-                "at": 1795203668496,
+                "now": 1795401339614,
+                "at": 1795401309614,
                 "cycle_s": 120,
                 "live": "up",
-                "live_since": 1795203098496,
+                "live_since": 1795400739614,
                 "values": {
                   "unread_total": {
                     "n": 7,
-                    "at": 1795203668496
+                    "at": 1795401309614
                   }
                 }
               }
@@ -952,7 +955,8 @@
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
         "GET /api/of/v2/users/notifications/count",
-        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -966,6 +970,11 @@
           "chipText": "Unread 7",
           "unreadTotalSum": 7,
           "rowsFlaggedUnread": 1
+        },
+        {
+          "name": "Creator tab's Red circle reads '7', not Grey",
+          "ok": true,
+          "title": "Ella \u2014 7 unread"
         }
       ],
       "fixtures": {
@@ -979,21 +988,21 @@
               "color": "#e8618c",
               "has_session": true,
               "session_dead_at": null,
-              "created_at": "2026-10-21T19:41:38Z",
-              "last_used_at": "2026-11-20T19:36:38Z",
+              "created_at": "2026-10-24T02:35:39Z",
+              "last_used_at": "2026-11-23T02:30:39Z",
               "freshness": {
                 "account_id": "424242",
-                "boot": 1795200098496,
+                "boot": 1795397739614,
                 "seq": 1,
-                "now": 1795203698496,
-                "at": 1795203668496,
+                "now": 1795401339614,
+                "at": 1795401309614,
                 "cycle_s": 120,
                 "live": "up",
-                "live_since": 1795203098496,
+                "live_since": 1795400739614,
                 "values": {
                   "unread_total": {
                     "n": 7,
-                    "at": 1795203668496
+                    "at": 1795401309614
                   }
                 }
               }
@@ -1020,7 +1029,8 @@
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
         "GET /api/of/v2/users/notifications/count",
-        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -1048,17 +1058,17 @@
               "color": "#e8618c",
               "has_session": true,
               "session_dead_at": null,
-              "created_at": "2026-10-21T19:41:38Z",
-              "last_used_at": "2026-11-20T19:36:38Z",
+              "created_at": "2026-10-24T02:35:39Z",
+              "last_used_at": "2026-11-23T02:30:39Z",
               "freshness": {
                 "account_id": "424242",
-                "boot": 1795200098496,
+                "boot": 1795397739614,
                 "seq": 1,
-                "now": 1795203698496,
-                "at": 1795203668496,
+                "now": 1795401339614,
+                "at": 1795401309614,
                 "cycle_s": 120,
                 "live": "down",
-                "live_since": 1795203488496,
+                "live_since": 1795401129614,
                 "values": {}
               }
             }
@@ -1082,7 +1092,8 @@
       "stubbedRequests": [],
       "unmatchedRequests": [
         "GET /admin/shifts/clock-status",
-        "GET /admin/settings/applied"
+        "GET /admin/settings/applied",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -1095,8 +1106,13 @@
           "ok": true,
           "dot": null,
           "dotColour": null,
-          "title": "Ella \u2014 1 unread",
-          "accessibleName": "Ella 1 unread"
+          "title": "Ella \u2014 9+ unread",
+          "accessibleName": "Ella 9+ unread"
+        },
+        {
+          "name": "Creator tab's Red circle reads '9+', not Grey",
+          "ok": true,
+          "title": "Ella \u2014 9+ unread"
         }
       ],
       "fixtures": {
@@ -1109,19 +1125,24 @@
               "platform": "onlyfans",
               "color": "#e8618c",
               "has_session": true,
-              "session_dead_at": "2026-11-20T19:31:38Z",
-              "created_at": "2026-10-21T19:41:38Z",
-              "last_used_at": "2026-11-20T19:36:38Z",
+              "session_dead_at": "2026-11-23T02:25:39Z",
+              "created_at": "2026-10-24T02:35:39Z",
+              "last_used_at": "2026-11-23T02:30:39Z",
               "freshness": {
                 "account_id": "424242",
-                "boot": 1795200098496,
+                "boot": 1795397739614,
                 "seq": 1,
-                "now": 1795203698496,
-                "at": 1795203668496,
+                "now": 1795401339614,
+                "at": 1795401309614,
                 "cycle_s": 120,
                 "live": "up",
-                "live_since": 1795203693496,
-                "values": {}
+                "live_since": 1795401334614,
+                "values": {
+                  "unread_total": {
+                    "n": 12,
+                    "at": 1795401309614
+                  }
+                }
               }
             }
           ],
@@ -1146,7 +1167,8 @@
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
         "GET /api/of/v2/users/notifications/count",
-        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -1182,17 +1204,17 @@
               "color": "#e8618c",
               "has_session": true,
               "session_dead_at": null,
-              "created_at": "2026-10-21T19:41:38Z",
-              "last_used_at": "2026-11-20T19:36:38Z",
+              "created_at": "2026-10-24T02:35:39Z",
+              "last_used_at": "2026-11-23T02:30:39Z",
               "freshness": {
                 "account_id": "424242",
-                "boot": 1795200098496,
+                "boot": 1795397739614,
                 "seq": 1,
-                "now": 1795203698496,
-                "at": 1795203668496,
+                "now": 1795401339614,
+                "at": 1795401309614,
                 "cycle_s": 120,
                 "live": "dead",
-                "live_since": 1795203697496,
+                "live_since": 1795401338614,
                 "values": {}
               }
             }
@@ -1218,7 +1240,8 @@
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
         "GET /api/of/v2/users/notifications/count",
-        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -1247,21 +1270,21 @@
               "color": "#e8618c",
               "has_session": true,
               "session_dead_at": null,
-              "created_at": "2026-10-21T19:41:38Z",
-              "last_used_at": "2026-11-20T19:36:38Z",
+              "created_at": "2026-10-24T02:35:39Z",
+              "last_used_at": "2026-11-23T02:30:39Z",
               "freshness": {
                 "account_id": "424242",
-                "boot": 1795200098496,
+                "boot": 1795397739614,
                 "seq": 1,
-                "now": 1795203698496,
-                "at": 1795203668496,
+                "now": 1795401339614,
+                "at": 1795401309614,
                 "cycle_s": 120,
                 "live": "up",
-                "live_since": 1795203098496,
+                "live_since": 1795400739614,
                 "values": {
                   "unread_total": {
                     "n": 7,
-                    "at": 1795203668496
+                    "at": 1795401309614
                   }
                 }
               }
@@ -1288,7 +1311,8 @@
         "GET /admin/shifts/clock-status",
         "GET /admin/settings/applied",
         "GET /api/of/v2/users/notifications/count",
-        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0"
+        "GET /api/of/v2/users/notifications/money?types=purchases%2Ctip&limit=20&offset=0",
+        "POST /admin/view-lease"
       ],
       "heldRequests": [],
       "checks": [
@@ -1326,21 +1350,21 @@
               "color": "#e8618c",
               "has_session": true,
               "session_dead_at": null,
-              "created_at": "2026-10-21T19:41:38Z",
-              "last_used_at": "2026-11-20T19:36:38Z",
+              "created_at": "2026-10-24T02:35:39Z",
+              "last_used_at": "2026-11-23T02:30:39Z",
               "freshness": {
                 "account_id": "424242",
-                "boot": 1795200098496,
+                "boot": 1795397739614,
                 "seq": 1,
-                "now": 1795203698496,
-                "at": 1795203363496,
+                "now": 1795401339614,
+                "at": 1795401004614,
                 "cycle_s": 120,
                 "live": "up",
-                "live_since": 1795203098496,
+                "live_since": 1795400739614,
                 "values": {
                   "unread_total": {
                     "n": 7,
-                    "at": 1795203363496
+                    "at": 1795401004614
                   }
                 }
               }
@@ -1523,8 +1547,8 @@
           "name": "slide-over in viewport",
           "ok": false,
           "got": [
-            344.1,
-            678.1
+            287.2,
+            621.2
           ]
         },
         {

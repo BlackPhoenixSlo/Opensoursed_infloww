@@ -84,6 +84,14 @@ describe("OfManagerChrome", () => {
     await waitFor(() => expect(screen.getAllByText("99+")).toHaveLength(2));
   });
 
+  it("the unread chip reads the exact count, \"99+\" past 99, never \"N+\"", async () => {
+    accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }];
+    rosterCounts = { "1": { unread: 25, owe_reply: 0 }, "2": { unread: 150, owe_reply: 0 } };
+    ui();
+    expect(screen.getByLabelText("25 unread chats")).toHaveTextContent(/^25$/);
+    expect(screen.getByLabelText("150 unread chats")).toHaveTextContent(/^99\+$/);
+  });
+
   it("picks a creator as the scope and filters by search once typing stops", async () => {
     accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }];
     ui();

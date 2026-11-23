@@ -47,7 +47,7 @@ import { relayNow } from "@/lib/ageClock";
 import { describeLoadError, relay, setRelayFocus, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, lastMessageFromFan } from "@/lib/fanId";
-import { isUnreadChat } from "@/lib/chatUnread";
+import { excludedFromBadges, isUnreadChat } from "@/lib/chatUnread";
 import { sessionConnectivity } from "@/lib/sessionConnectivity";
 import { FanListBulkBar } from "./FanListBulkBar";
 import { FanListFilters, type ActiveChip } from "./FanListFilters";
@@ -57,7 +57,7 @@ import { FanRow, fanNameOf } from "./FanRow";
 import {
   canAutofill, initialPaging, isCapped, pagingReducer, pagingView,
 } from "./fanListPaging";
-import { attentionCount, chipCountsWithUnreadView, notRestricted, sortFanRows } from "./fanListSort";
+import { attentionCount, chipCountsWithUnreadView, sortFanRows } from "./fanListSort";
 import { FolderPicker } from "./FolderPicker";
 import { SplitInbox } from "./SplitInbox";
 import { isFanOnline } from "./isFanOnline";
@@ -347,14 +347,11 @@ export function FanList({
     const accountId = c.__accountId ?? (scope.kind === "model" ? scope.accountId : "");
     return lastMessageFromFan(c, accountId);
   }, [scope]);
-  // Creators WE restricted on OF (relay stamps withUser.isRestricted off its
-  // durable of_restricted registry) never count as unread/owe-reply — we cut
-  // them off on purpose, their threads aren't backlog. Mirrors the server-side
-  // roster-badge fold exactly, so chips and badges can't disagree over them
-  // (`notRestricted`, fanListSort.ts).
+  // Badge-excluded chats (relay stamp withUser.badgeExcluded) never count as
+  // owe-reply: the same predicate as the server-side roster-badge fold.
   const chipRows = useMemo(() => {
     if (!oweReplyActive) return allRows;
-    return allRows.filter((c) => isUnresponded(c) && notRestricted(c));
+    return allRows.filter((c) => isUnresponded(c) && !excludedFromBadges(c));
   }, [allRows, oweReplyActive, isUnresponded]);
   // The Split Inbox group ANDs with the chip or folder and the search; chip
   // counts are not narrowed by it (spec, Split Inbox).

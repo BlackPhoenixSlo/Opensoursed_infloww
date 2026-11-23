@@ -195,7 +195,8 @@ def is_terminal(describe_status: str | None, fields: Mapping[str, Any] | None) -
 
 def coverage(rows: Iterable[tuple[str | None, Mapping[str, Any] | None]], target: int) -> dict[str, int]:
     """How far a Creator is from `target`, over (describe_status, ai_fields) of every Describable item
-    (`live_describable`): goal = min(target, describable − terminal), remaining = max(0, goal − described).
+    (`live_describable`): goal = min(target, describable) − terminal (a skipped item fills its slot, owner
+    2026-11-23), remaining = max(0, goal − described).
     The ONE predicate describe-all, its plan route and the Fill plan read."""
     describable = described = terminal = 0
     for status, fields in rows:
@@ -204,7 +205,7 @@ def coverage(rows: Iterable[tuple[str | None, Mapping[str, Any] | None]], target
             described += 1
         elif is_terminal(status, fields):
             terminal += 1
-    goal = min(int(target), describable - terminal)
+    goal = max(0, min(int(target), describable) - terminal)
     return {"target": int(target), "describable": describable, "described": described,
             "terminal": terminal, "goal": goal, "remaining": max(0, goal - described)}
 

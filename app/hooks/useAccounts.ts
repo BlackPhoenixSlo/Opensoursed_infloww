@@ -30,10 +30,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { relay, type AccountMeta, type WatcherAccount } from "@/lib/relay";
+import type { AccountMeta, WatcherAccount } from "@/lib/relay";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
-import { chatterAccountsQuery } from "@/lib/chatterAccounts";
+import { chatterAccountsQuery, chatterSeedRows } from "@/lib/chatterAccounts";
+import { ownerAccountsQuery, type AccountsResp } from "@/lib/ownerAccounts";
 import { accountPlatform, usePlatform } from "@/lib/platform";
 import type { SeedRow } from "@/lib/creatorFreshness";
 import { dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
@@ -45,47 +46,7 @@ const PAGE_LOADED_AT = Date.now();
 /** An accounts answer updated at `dataUpdatedAt` came from the network in this page's life (not the persisted copy). */
 export const fromThisPage = (dataUpdatedAt: number): boolean => dataUpdatedAt >= PAGE_LOADED_AT;
 
-export interface AccountsResp {
-  accounts: AccountMeta[];
-  active_account_id: string | null;
-  /** The caller's watcher accounts (`role` "watcher": fan accounts that read what the Creators send), never in
-   *  `accounts`: Manage creators and OF Manager (useOfManagerAccounts) list them, nothing else picks them. Always set
-   *  after fetchAccounts. */
-  watchers?: WatcherAccount[];
-}
-
-/** GET /admin/accounts, with `is_active` made total: a relay from before Creator deactivation (and a test fixture)
- *  omits it, and an omitted flag is an active Creator. The one place that default lives, so every reader can treat
- *  `is_active` as the plain boolean its type says. `watchers` likewise: an older relay omits it, read as none. */
-export async function fetchAccounts(): Promise<AccountsResp> {
-  const r = await relay.get<AccountsResp>("/admin/accounts");
-  return {
-    ...r,
-    accounts: (r.accounts ?? []).map((a) => ({ ...a, is_active: a.is_active ?? true })),
-    watchers: (r.watchers ?? []).map((w) => ({ ...w, is_active: w.is_active ?? true, proxy_down: !!w.proxy_down, role: "watcher" })),
-  };
-}
-
-/** The owner's account list query (key + fetcher + freshness): `useAccounts` reads it, `useOfRichAllowed` peeks at
- *  its cache under the same entry. */
-export const ownerAccountsQuery = (userId: string | undefined) => ({
-  // Scope the cache entry to the signed-in principal. /admin/accounts
-  // returns the FULL multi-tenant registry when called UNauthenticated
-  // (the dev-curl fallback). Under a principal-agnostic key, a list
-  // fetched in an unauthed window (app boot before /auth/me resolves, a
-  // brief session expiry) would persist for `staleTime` and bleed into
-  // the next owner's session — surfacing another owner's models in this
-  // owner's picker, then 403'ing on any write ("account X is not one of
-  // yours"). Keying by user_id isolates it per principal.
-  queryKey: ["accounts", userId ?? "anon"],
-  queryFn: fetchAccounts,
-  // Short staleTime on purpose: /admin/accounts is a relay-local
-  // registry read (no OF call), and a long window meant a model
-  // captured in another session stayed invisible until re-login —
-  // the persisted cache survives page reloads, so staleTime was the
-  // only expiry. 60s caps refetches at ~1/min per tab.
-  staleTime: 60_000,
-});
+export { fetchAccounts, ownerAccountsQuery, type AccountsResp } from "@/lib/ownerAccounts";
 
 export function useAccounts() {
   const { user } = useUser();
@@ -140,7 +101,7 @@ export function useAccounts() {
   const userId = user?.user_id;
   const principalId = userId ?? chatter?.chatter_id ?? "anon";
   const seedRows: SeedRow[] | null = useMemo(() => {
-    if (isChatterOnly) return chatterQ.data?.map((r) => ({ id: r.account_id, freshness: r.freshness })) ?? null;
+    if (isChatterOnly) return chatterQ.data ? chatterSeedRows(chatterQ.data) : null;
     return ownerQ.data?.accounts ?? null;
   }, [isChatterOnly, chatterQ.data, ownerQ.data]);
   useEffect(() => {

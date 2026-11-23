@@ -221,7 +221,7 @@ throughput. Two watch checks keep looking after the run.
   `json_extract(ai_fields_json,'$._jev.status') = 'ok' AND json_extract(ai_fields_json,'$._jev.review') =
   'fetch_failed'`, the terminal held blob, `service/vault_jev_pass.py:109`, matching Phase 1's `is_terminal`), and the
   latest `describe_generated_at` among described rows only (a failed attempt also stamps it,
-  `service/vault_ai_vision.py:775`). Goal = min(1000, describable − terminal). ok: none short; watch: short Creators
+  `service/vault_ai_vision.py:775`). Goal = min(1000, describable) − terminal (owner 2026-11-23: a skipped item fills its slot). ok: none short; watch: short Creators
   all described something in 26 h; alert: one short with nothing new in 26 h. Detail `id8 described/goal`.
 - **Watch `script_fill_readback`** (3b). SQL over `saved_replies` with media, `updated_at >= :cut` (merge time of the
   3b PR, the `free_gaps` precedent), `script_id` not reserved (`GLOB 'FM[0-9]*'` and not `'FM*[^0-9]*'`): media ids

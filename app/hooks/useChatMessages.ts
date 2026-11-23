@@ -86,6 +86,9 @@ export interface UseChatMessagesOpts {
    *  opened, AND the load-older cursor — such a mount rides the prefetch's
    *  head page, so it cursors from that page (`headOldest`). */
   prefetchWindowMs?: number;
+  /** Head reads (mount and poll) ask the relay to `peek`: OF leaves the chat
+   *  unread. For views that are not a click on the chat (Focus). */
+  peek?: boolean;
 }
 
 /** Paint-attribution key for a thread. Exported so the rendering side and
@@ -122,14 +125,15 @@ const headOldest = new Map<string, number>();
 const headMore = new Map<string, boolean>();
 
 /** A thread's newest page, oldest-first: OF returns newest-first, and the UI
- *  scrolls oldest→newest top-to-bottom (the way humans read a thread). */
+ *  scrolls oldest→newest top-to-bottom (the way humans read a thread).
+ *  `peek`: background reads must peek, OF marks a chat read on a plain head read. */
 async function fetchHeadPage(
   accountId: string,
   fanId: FanId,
-  { priority, signal }: { priority?: "background"; signal?: AbortSignal } = {},
+  { priority, signal, peek = false }: { priority?: "background"; signal?: AbortSignal; peek?: boolean } = {},
 ): Promise<{ list: OFMessage[]; hasMore: boolean }> {
   const resp = await relay.get<OFMessagesResp>(
-    `/api/of/v2/chats/${fanId}/messages?limit=${PAGE_SIZE}&order=desc`,
+    `/api/of/v2/chats/${fanId}/messages?limit=${PAGE_SIZE}&order=desc${peek ? "&peek=1" : ""}`,
     { accountId, priority },
     signal,
   );
@@ -145,7 +149,7 @@ async function fetchHeadPage(
  *  the background lane. */
 const backgroundFetches = new Set<string>();
 
-/** Warm one thread's head page on the relay's BACKGROUND lane, under the same
+/** Warm one thread's head page (always a peek: a warm-up is no click) on the relay's BACKGROUND lane, under the same
  *  key + result shape as useChatMessages' queryFn (merged over whatever is
  *  cached so load-older pages survive). A no-op while the cached thread is
  *  still fresh; never throws. If the chat opens while this is in flight,
@@ -166,7 +170,9 @@ export function prefetchChatMessages(
     queryFn: async ({ signal }) => {
       if (yieldOnOpen) backgroundFetches.add(hash);
       try {
-        const { list } = await fetchHeadPage(accountId, fanId, { priority: user ? undefined : "background", signal });
+        const { list } = await fetchHeadPage(accountId, fanId, {
+          priority: user ? undefined : "background", signal, peek: true,
+        });
         return mergeTopPage(qc.getQueryData<OFMessage[]>(queryKey) || [], list);
       } finally {
         if (yieldOnOpen) backgroundFetches.delete(hash);
@@ -177,7 +183,7 @@ export function prefetchChatMessages(
 }
 
 export function useChatMessages({
-  accountId, fanId, enabled = true, prefetchWindowMs,
+  accountId, fanId, enabled = true, prefetchWindowMs, peek = false,
 }: UseChatMessagesOpts) {
   const qc = useQueryClient();
   const ridesPrefetch = prefetchWindowMs !== undefined;
@@ -279,7 +285,7 @@ export function useChatMessages({
         // Forward the abort signal so switching chats fast cancels the
         // previous fetch in flight (frees the relay slot, drops the
         // payload before it returns).
-        const { list, hasMore: more } = await fetchHeadPage(accountId, fanId, { signal });
+        const { list, hasMore: more } = await fetchHeadPage(accountId, fanId, { signal, peek });
         if (chatRef.current === `${accountId}:${fanId}`) {
           lowerCursor(list);
           // A head poll can only say "nothing older"; it never reopens a

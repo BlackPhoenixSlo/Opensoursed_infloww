@@ -118,6 +118,8 @@ describe("useUnreadMessagesPrefetch: the first tier", () => {
     // Fan 2 is read, fan 5 is fourth (an idle tier's): neither is warmed yet.
     expect(messageCalls()).toEqual([1, 3, 4].map((fanId) => ({ aid: "acct-a", fanId, priority: "background" })));
     expect(client.getQueryData(["messages", "acct-a", 1])).toEqual([]);
+    // A plain head read marks the chat read on OF; a warm must leave it unread.
+    expect(relayGet.mock.calls.every(([path]) => String(path).endsWith("&peek=1"))).toBe(true);
   });
 
   it("warms nothing until ready", async () => {
@@ -130,11 +132,19 @@ describe("useUnreadMessagesPrefetch: the first tier", () => {
   });
 
   it("follows the order given and skips a Fan we restricted", async () => {
-    const restricted = { ...unread(4), withUser: { id: 4, isRestricted: true } } as OFChatItem;
+    const restricted = { ...unread(4), withUser: { id: 4, isRestricted: true, badgeExcluded: true } } as OFChatItem;
     renderWarm([unread(5), restricted, unread(3), unread(2), unread(1)]);
     await until("tier 1", () => messageCalls().length === 3);
     await settle();
     expect(warmedFans()).toEqual([5, 3, 2]);
+  });
+
+  it("warms a muted unread chat", async () => {
+    const muted = { ...unread(4), isMutedNotifications: true } as OFChatItem;
+    renderWarm([unread(5), muted, unread(3), unread(2)]);
+    await until("tier 1", () => messageCalls().length === 3);
+    await settle();
+    expect(warmedFans()).toEqual([5, 4, 3]);
   });
 
   it("warms each chat on its own account across creators", async () => {
@@ -204,7 +214,7 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     return { h, signal: relayGet.mock.calls[3][2] as AbortSignal };
   }
 
-  it("warms the next 2 and the 2 after each only after a quiet window, and nothing past them", async () => {
+  it("warms the next 2 and the 2 after each only after a quiet window, and nothing past them, every warm a peek", async () => {
     renderWarm(unreads(1, 2, 3, 4, 5, 6, 7, 8));
     await until("tier 1", () => messageCalls().length === 3);
 
@@ -223,6 +233,7 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     await settle(10 * PREFETCH_QUIET_MS);
     expect(warmedFans()).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(messageCalls().every((c) => c.priority === "background")).toBe(true);
+    expect(relayGet.mock.calls.every(([path]) => String(path).endsWith("&peek=1"))).toBe(true);
   });
 
   it("one tier keeps the warm to the first: no quiet window, no listener", async () => {

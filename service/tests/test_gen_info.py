@@ -20,8 +20,9 @@ populated AND a `grok_calls` row recorded.
       clears the spend gate ($1) is.
   case_deferred_row_is_never_scraped_and_shares_the_claim:
       a deferred scrape_history row stamped now (a sweep kept page 1) is still
-      enqueued, as its own `deferred_history` backfill; a fan claimed by a reply is
-      left out of the job yet still deferred; a gen_info pick then a reply make one job.
+      enqueued, as a `gen_info_pick` (recent end only, the scrape keeps the deferral); a fan
+      claimed by a Click read's backfill is left out of the job yet still deferred; a
+      Click read after a gen_info pick still buys its own backfill job, once.
   case_rerun_gate:
       a second run on an unchanged fan is skipped (count didn't grow 22%); a
       forced id is regenerated regardless.
@@ -348,8 +349,8 @@ async def case_deferred_row_is_never_scraped_and_shares_the_claim():
                                 history_deferred_at=now))
         s.add(ScrapeHistory(account_id=aid, fan_id=fresh, last_message_id=9, last_scrape_at=now))
     wd._fan_scrape_claims.clear()
-    # A reply on `claimed` first: it holds the claim (and its own job).
-    await wd.on_inbound_message(aid, claimed, 1)
+    # A Click read's backfill on `claimed` first: it holds the claim (and its own job).
+    await wd.enqueue_fan_scrape(aid, claimed, wd.DEFERRED_HISTORY_SOURCE)
     assert await _scrape_jobs(aid) == [{"fan_ids": [claimed], "source": "deferred_history"}]
 
     out = await gen_info._enqueue_thin_fan_scrapes(
@@ -357,12 +358,15 @@ async def case_deferred_row_is_never_scraped_and_shares_the_claim():
     assert out == {deferred, claimed, plain}, out
     assert await _scrape_jobs(aid) == [
         {"fan_ids": [claimed], "source": "deferred_history"},
-        {"fan_ids": [deferred], "source": "deferred_history"},
+        {"fan_ids": [deferred], "source": "gen_info_pick"},
         {"fan_ids": [plain]},
     ], await _scrape_jobs(aid)
-    # gen_info's pick, then his reply inside the window: still one job for him.
-    await wd.on_inbound_message(aid, deferred, 2)
-    assert sum(j["fan_ids"] == [deferred] for j in await _scrape_jobs(aid)) == 1, await _scrape_jobs(aid)
+    # gen_info's pick keeps the row at page 1, so a Click read inside the window still buys
+    # its backfill; a second Click read none.
+    for _ in range(2):
+        await wd.enqueue_fan_scrape(aid, deferred, wd.DEFERRED_HISTORY_SOURCE)
+    assert [j.get("source") for j in await _scrape_jobs(aid) if j["fan_ids"] == [deferred]] == [
+        "gen_info_pick", "deferred_history"], await _scrape_jobs(aid)
     wd._fan_scrape_claims.clear()
 
 

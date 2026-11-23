@@ -86,6 +86,7 @@ BREAK_AFTER = 25
 # Jev already read still describe — `vault_jev_pass` module doc) is no failure streak either: counted, it tripped
 # the breaker with a false "items in a row failed… fix it" (F6).
 NEUTRAL = frozenset({"blocked_drm", "gone", "not_in_mirror", "not_flaggable", vault_jev_rules.GAVE_UP,
+                     vault_jev_rules.REJECTED,
                      vault_jev_rules.RETRY_WAIT, vault_jev_rules.JEV_CAPPED})
 
 

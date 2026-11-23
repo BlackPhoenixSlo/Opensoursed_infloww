@@ -70,6 +70,7 @@ class PpvFailOF(VaultOF):
         self.error, self.taken = error, taken
         self.listed: list[dict] = []
         self.attempts: list[str] = []
+        self.read_kw: list[dict] = []
 
     def send_message(self, chat_id, text, **kw) -> dict:
         if "price" not in kw:
@@ -80,6 +81,7 @@ class PpvFailOF(VaultOF):
         raise self.error
 
     def get_messages(self, chat_id, **kw) -> dict:
+        self.read_kw.append(kw)
         return {"list": list(self.listed), "hasMore": False}
 
 

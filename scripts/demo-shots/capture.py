@@ -167,6 +167,13 @@ def settle(page, screen: dict, kind: str) -> list[str]:
             loc.wait_for(state="visible", timeout=45_000)
         except Exception:  # noqa: BLE001
             problems.append(f"missing text in frame {text!r}")
+    grey = '[data-red-circle="grey"]'
+    for _ in range(120):
+        if not page.locator(grey).count():
+            break
+        page.wait_for_timeout(500)
+    if page.locator(grey).count():
+        problems.append("a Creator tab still draws the Grey circle")
     page.wait_for_timeout(screen.get("pause", 1200))
     vp = page.viewport_size
     skeletons = page.evaluate("""(vp) => [...document.querySelectorAll('.animate-pulse, [aria-busy="true"]')]

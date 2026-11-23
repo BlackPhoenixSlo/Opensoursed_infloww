@@ -823,9 +823,9 @@ def _main() -> int:
     args.env_id, args.env_names = identity.env_id(os.environ)  # the caller's, before this process sets any
     # Any other `--some-knob=value` is a scenario param, same as `--set some_knob=value`.
     for e in extra:
-        if not (e.startswith("--") and "=" in e):
-            ap.error(f"unrecognized argument: {e} (scenario knobs take --name=value)")
-        k, v = e[2:].split("=", 1)
+        k, _, v = e[2:].partition("=")
+        if not (e.startswith("--") and "=" in e and k.replace("-", "_").isidentifier()):
+            ap.error(f"unrecognized argument: {e!r} (scenario knobs take --name=value, one per argument)")
         args.set.append(f"{k.replace('-', '_')}={v}")
     params = dict(kv.split("=", 1) for kv in args.set)
     all_s = scenarios()

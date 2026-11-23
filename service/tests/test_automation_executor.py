@@ -39,9 +39,29 @@ Plus the harness primitives every P4 automation depends on:
       a `{}` sweep's first scrape of a Silent mass-only chat reads page 1 only, keeps
       rows / identity / mute / preview, adopts placeholders, leaves history_deferred_at
       with a NULL cursor; a fan reply on OF or in the DB, a ledger purchase, own non-queue rows or a short
-      convo get today's calls; an explicit or post-reply scrape pulls both ends and
+      convo get today's calls; the Click backfill or a post-reply sweep pulls both ends and
       clears the mark; SCRAPE_EAGER_HISTORY=1 restores today; init_db self-heals the column;
       a `deferred_history` backfill's OF calls count as `auto:scrape_chats:deferred_history`.
+  case_scrape_page_one_peeks / case_scrape_unread_long_first_scrape_defers_backfill /
+  case_scrape_read_long_first_scrape_runs_both_ends /
+  case_scrape_explicit_unread_by_local_marker_defers / case_scrape_explicit_missing_chat_row_defers /
+  case_scrape_deferred_row_backfills_only_on_the_click /
+  case_scrape_sweep_backfills_a_deferred_row_read_on_both_sides /
+  case_scrape_eager_history_does_not_backfill_unread /
+  case_scrape_unread_silent_mass_chat_still_costs_one_page / case_scrape_unread_flip_before_asc_defers /
+  case_scrape_dm_after_the_sweep_list_defers / case_scrape_click_mid_scrape_stays_read /
+  case_scrape_fansly_keeps_both_ends /
+  case_scrape_short_unread_chat_is_read_whole_and_not_deferred:
+      background reads must peek: page 1 peeks, the asc backfill does not (it cannot); a first
+      scrape of an unread long chat (OF's sweep row or the local marker above 0; with no OF word
+      a missing row = unread; re-checked before the asc request, so a DM after the sweep's list
+      call counts) walks the recent end (cursored desc pages never mark), skips the asc pass and
+      defers, whatever SCRAPE_EAGER_HISTORY says; an unread Silent mass-only chat still costs page
+      1 only. A deferred row gets both ends only from the Click read's backfill
+      (`deferred_history`) or a sweep whose OF row and marker both say read; a plain explicit,
+      gen_info or blast scrape walks the recent end only.
+      A deferral writes the marker only on a row it inserts (a mid-scrape Click read stays
+      read). Fansly keeps today's both ends.
   case_fan_lease_acquire_block_steal:
       a live lease blocks a second automation; an expired one can be stolen;
       release frees it. The per-(account, fan) send guard (one send per cycle).
@@ -243,6 +263,16 @@ async def _seed_account(aid: str) -> None:
             s.add(Account(id=aid))
 
 
+async def _read_chat(aid: str, fan: int, unread: int = 0) -> None:
+    """The local chats row with its unread marker (0 = read: a first scrape may backfill)."""
+    async with get_session() as s:
+        row = await s.get(Chat, (aid, fan))
+        if row is None:
+            s.add(Chat(account_id=aid, fan_id=fan, unread_count=unread))
+        else:
+            row.unread_count = unread
+
+
 def _use_fake(chats: dict[int, list[dict]]) -> None:
     """Override the OFClient construction seam for the current case."""
     fake = FakeClient(chats)
@@ -431,6 +461,7 @@ async def case_scrape_long_convo_both_ends():
     ]
     fake = PagedFakeClient(fan, msgs)
     ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    await _read_chat(aid, fan)
 
     await enqueue_job(aid, "scrape_chats",
                       payload={"chat_ids": [fan], "recent_cap": 50, "oldest_cap": 50})
@@ -820,6 +851,8 @@ async def case_scrape_not_silent_chats_are_backfilled_as_today():
     for k, (name, build, db_seed, newest) in enumerate(variants):
         fan, aid = 5400 + k, "acc_defer"
         today = DeepSweepClient(fan + 50, build(fan + 50))
+        await _seed_account(aid)
+        await _read_chat(aid, fan + 50)
         await _scrape(aid, today, {"fan_ids": [fan + 50]})
         fake = DeepSweepClient(fan, build(fan))
         if db_seed == "in":   # the transcoder kept a fan DM OF no longer lists on page 1
@@ -843,8 +876,8 @@ async def case_scrape_not_silent_chats_are_backfilled_as_today():
 
 
 async def case_scrape_cursor_write_clears_the_deferred_mark():
-    """A deferred chat: an explicit `fan_ids` scrape pulls both ends and clears the mark;
-    a later `{}` sweep after the fan replied on OF does the same."""
+    """A deferred chat: the Click read's backfill (`deferred_history`) pulls both ends and
+    clears the mark; a later `{}` sweep after the fan replied on OF does the same."""
     for aid, fan, how in (("acc_defer", 5500, "explicit"), ("acc_defer", 5501, "reply")):
         msgs = [_mass_msg(i, fan_id=fan) for i in range(1, 151)]
         fake = DeepSweepClient(fan, msgs)
@@ -854,7 +887,7 @@ async def case_scrape_cursor_write_clears_the_deferred_mark():
         fake.calls.clear()
         if how == "reply":
             fake._asc.append(_of_msg(151, True, "finally", "2026-06-06T03:00:00+00:00", fan_id=fan))
-        await _scrape(aid, fake, {"fan_ids": [fan]} if how == "explicit" else {})
+        await _scrape(aid, fake, {"fan_ids": [fan], "source": "deferred_history"} if how == "explicit" else {})
         assert {o for o, _b, _off in fake.calls} == {"desc", "asc"}, (how, fake.calls)
         assert ("asc", None, 0) in fake.calls, (how, fake.calls)
         ids, hist, _, _ = await _thread(aid, fan)
@@ -905,6 +938,8 @@ async def case_scrape_eager_history_knob_restores_todays_calls():
     import os
     fan = 5600
     today = DeepSweepClient(fan, [_mass_msg(i, fan_id=fan) for i in range(1, 151)])
+    await _seed_account("acc_defer")
+    await _read_chat("acc_defer", fan)
     await _scrape("acc_defer", today, {"fan_ids": [fan]})
     fan += 1
     fake = DeepSweepClient(fan, [_mass_msg(i, fan_id=fan) for i in range(1, 151)])
@@ -921,8 +956,8 @@ async def case_scrape_eager_history_knob_restores_todays_calls():
 async def case_scrape_deferred_backfill_counts_under_its_own_caller_kind():
     """Through the executor (which labels a run `auto:scrape_chats`): an explicit scrape of a
     chat deferred at job start counts its OF reads under `auto:scrape_chats:deferred_history`,
-    whichever trigger won the claim (a blast reply too); one of a chat not deferred stays
-    `auto:scrape_chats`."""
+    whichever trigger won the claim (a blast reply too, which walks the recent end only: no Click read);
+    one of a chat not deferred stays `auto:scrape_chats`."""
     import of_call_counter
 
     class Labelled(DeepSweepClient):
@@ -936,6 +971,7 @@ async def case_scrape_deferred_backfill_counts_under_its_own_caller_kind():
         fake = Labelled(fan, [_mass_msg(i, fan_id=fan) for i in range(1, 151)])
         fake.kinds = []
         await _seed_account("acc_defer")
+        await _read_chat("acc_defer", fan)
         if deferred:
             async with get_session() as s:
                 s.add(ScrapeHistory(account_id="acc_defer", fan_id=fan, last_message_id=None,
@@ -945,10 +981,316 @@ async def case_scrape_deferred_backfill_counts_under_its_own_caller_kind():
         res = await ax.run_once("acc_defer", "scrape_chats", payload={"fan_ids": [fan], "source": source})
         assert res["status"] == "ok", res
         got[fan] = set(fake.kinds)
-        assert len(fake.kinds) > 1, fake.kinds
+        assert (("asc", None, 0) in fake.calls) is (fan != 5701), (fan, fake.calls)
     assert got == {5700: {"auto:scrape_chats:deferred_history"},
                    5701: {"auto:scrape_chats:deferred_history"},
                    5702: {"auto:scrape_chats"}}, got
+
+
+# ── Background reads must peek: page 1 peeks, an unread long chat defers its asc backfill ──
+
+class PeekRecordingClient(DeepSweepClient):
+    """DeepSweepClient that records each get_messages call's kwargs, `unread` on its chat row."""
+
+    def __init__(self, *a, unread: int = 0, on_page1=None, on_list=None, **kw):
+        super().__init__(*a, **kw)
+        self.kw_calls: list[dict] = []
+        self.unread = unread
+        self.on_page1 = on_page1
+        self.on_list = on_list
+
+    def list_chats(self, **kw) -> dict:
+        page = super().list_chats(**kw)
+        for row in page["list"]:
+            row["unreadMessagesCount"] = self.unread
+        if self.on_list:
+            self.on_list()
+        return page
+
+    def get_messages(self, chat_id, **kw):
+        self.kw_calls.append(dict(kw))
+        if len(self.kw_calls) == 1 and self.on_page1:
+            self.on_page1()
+        return super().get_messages(chat_id, **kw)
+
+
+def _fan_msgs(fan: int, n: int = 150) -> list[dict]:
+    return [_of_msg(i, i % 2 == 0, f"m{i}", f"2026-06-07T{i // 60 % 24:02d}:{i % 60:02d}:00+00:00",
+                    fan_id=fan) for i in range(1, n + 1)]
+
+
+def _page_one_only(calls) -> bool:
+    """A scrape of an already-deferred row the asc pass may not touch: the peeked page 1 alone."""
+    return calls == [("desc", None, None)]
+
+
+def _recent_end_only(calls) -> bool:
+    """A deferred unread scrape of `_fan_msgs` (13 rows a page): the peeked page 1, then the
+    older-than cursored desc pages up to the recent cap, and no asc call (the one read that
+    marks the chat read on OF)."""
+    return (len(calls) > 1 and calls[0] == ("desc", None, None) and calls[1] == ("desc", 138, None)
+            and all(o == "desc" and b is not None for o, b, _off in calls[1:]))
+
+
+async def case_scrape_page_one_peeks():
+    """Sweep and explicit scrape: page 1 asks with peek=True and no cursor (OFClient turns it
+    into the Peek cursor); page 2 carries the older-than cursor; the asc page has no peek."""
+    aid = "acc_peek"
+    await _seed_account(aid)
+    for fan, payload in ((5800, {}), (5801, {"fan_ids": [5801]})):
+        await _read_chat(aid, fan)
+        fake = PeekRecordingClient(fan, _fan_msgs(fan))
+        await _scrape(aid, fake, payload)
+        first, second = fake.kw_calls[0], fake.kw_calls[1]
+        assert first.get("peek") is True and first.get("before_id") is None \
+            and first.get("order") == "desc", (payload, first)
+        assert second.get("before_id") == 138 and second.get("order") == "desc", (payload, second)
+        assert all(("peek" in c) is (c.get("order") == "desc") for c in fake.kw_calls), (payload, fake.kw_calls)
+        assert any(c.get("order") == "asc" for c in fake.kw_calls), (payload, fake.kw_calls)
+
+
+async def case_scrape_unread_long_first_scrape_defers_backfill():
+    """Sweep row unreadMessagesCount=2, page 1 hasMore: the recent end walked (older pages by
+    cursor, which never mark), no asc call, its rows kept, history_deferred_at set, cursor NULL.
+    A chats row it inserts starts unread; an existing row's marker is not written from the list
+    snapshot."""
+    aid = "acc_peek"
+    await _seed_account(aid)
+    for fan, row, want_marker in ((5810, True, 0), (5812, False, 1)):
+        if row:
+            await _read_chat(aid, fan)
+        fake = PeekRecordingClient(fan, _fan_msgs(fan), unread=2)
+        res = await _scrape(aid, fake, {})
+        assert res["chats_scanned"] == 1, res
+        assert _recent_end_only(fake.calls), fake.calls
+        ids, hist, chat, _ = await _thread(aid, fan)
+        assert ids == list(range(51, 151)), ids
+        assert hist.last_message_id is None and hist.history_deferred_at is not None
+        assert chat.unread_count == want_marker, (fan, chat.unread_count)
+
+
+async def case_scrape_read_long_first_scrape_runs_both_ends():
+    """Same chat read on OF (unreadMessagesCount=0): today's both-ends pull and cursor."""
+    aid, fan = "acc_peek", 5811
+    fake = PeekRecordingClient(fan, _fan_msgs(fan), unread=0)
+    res = await _scrape(aid, fake, {})
+    assert res["chats_scanned"] == 1, res
+    assert ("asc", None, 0) in fake.calls, fake.calls
+    ids, hist, _, _ = await _thread(aid, fan)
+    assert ids[0] == 1 and ids[-1] == 150 and hist.last_message_id == 150, (ids[:3], hist.last_message_id)
+    assert hist.history_deferred_at is None
+
+
+async def case_scrape_explicit_unread_by_local_marker_defers():
+    """Explicit fan_ids scrape: chats.unread_count=1 → no asc call; unread_count=0 → asc call."""
+    aid = "acc_peek"
+    await _seed_account(aid)
+    for fan, unread, want_asc in ((5820, 1, False), (5821, 0, True)):
+        await _read_chat(aid, fan, unread)
+        fake = PeekRecordingClient(fan, _fan_msgs(fan))
+        await _scrape(aid, fake, {"fan_ids": [fan]})
+        assert (("asc", None, 0) in fake.calls) is want_asc, (unread, fake.calls)
+        assert want_asc or _recent_end_only(fake.calls), fake.calls
+        _, hist, _, _ = await _thread(aid, fan)
+        assert (hist.history_deferred_at is None) is want_asc, (unread, hist.history_deferred_at)
+
+
+async def case_scrape_explicit_missing_chat_row_defers():
+    """No chats row (unknown) counts as unread: page 1 hasMore → recent end only, deferred."""
+    aid, fan = "acc_peek", 5830
+    fake = PeekRecordingClient(fan, _fan_msgs(fan))
+    await _scrape(aid, fake, {"fan_ids": [fan]})
+    assert _recent_end_only(fake.calls), fake.calls
+    _, hist, chat, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None and hist.last_message_id is None
+    assert chat.unread_count == 1, chat.unread_count
+
+
+async def case_scrape_deferred_row_backfills_only_on_the_click():
+    """A deferred unread chat, read later (marker 0): a plain explicit scrape, a gen_info pick
+    and a blast reply re-read page 1 only and keep the deferral (no asc call: nothing says
+    OF has it read); the Click read's backfill (source deferred_history) pulls both ends and
+    clears it."""
+    import webhook_dispatch as wd
+    aid, fan = "acc_peek", 5840
+    await _seed_account(aid)
+    await _read_chat(aid, fan, 1)
+    fake = PeekRecordingClient(fan, _fan_msgs(fan))
+    await _scrape(aid, fake, {"fan_ids": [fan]})
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None
+    await _read_chat(aid, fan, 0)
+    for payload in ({"fan_ids": [fan]}, {"fan_ids": [fan], "source": wd.GEN_INFO_PICK_SOURCE},
+                    {"fan_ids": [fan], "source": "blast_reply"}):
+        fake.calls.clear()
+        await _scrape(aid, fake, payload)
+        assert _page_one_only(fake.calls), (payload, fake.calls)
+        _, hist, _, _ = await _thread(aid, fan)
+        assert hist.history_deferred_at is not None and hist.last_message_id is None, payload
+    fake.calls.clear()
+    await _scrape(aid, fake, {"fan_ids": [fan], "source": wd.DEFERRED_HISTORY_SOURCE})
+    assert ("asc", None, 0) in fake.calls, fake.calls
+    ids, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is None and hist.last_message_id == 150
+    assert ids[0] == 1, ids[:3]
+
+
+async def case_scrape_click_backfill_before_local_zeroing_pulls_both_ends():
+    """The Click read's backfill can run before the app's mark-read zeroes the local marker
+    (plain head read first): the click already marked the chat read on OF, so the asc pass
+    runs."""
+    import webhook_dispatch as wd
+    aid, fan = "acc_peek", 5841
+    await _seed_account(aid)
+    await _read_chat(aid, fan, 1)
+    fake = PeekRecordingClient(fan, _fan_msgs(fan))
+    await _scrape(aid, fake, {"fan_ids": [fan]})
+    fake.calls.clear()
+    await _scrape(aid, fake, {"fan_ids": [fan], "source": wd.DEFERRED_HISTORY_SOURCE})
+    assert ("asc", None, 0) in fake.calls, fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is None
+
+
+async def case_scrape_resweep_of_a_deferred_unread_chat_reads_page_one():
+    """The first sweep of an unread long chat walks the recent end and defers; its cursor stays
+    NULL, so the next sweep while still unread re-reads page 1 only, not the whole recent end."""
+    aid, fan = "acc_peek", 5901
+    await _seed_account(aid)
+    await _read_chat(aid, fan, 1)
+    fake = PeekRecordingClient(fan, _fan_msgs(fan), unread=1)
+    await _scrape(aid, fake, {})
+    assert _recent_end_only(fake.calls), fake.calls
+    fake.calls.clear()
+    await _scrape(aid, fake, {})
+    assert _page_one_only(fake.calls), fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None and hist.last_message_id is None
+
+
+async def case_scrape_sweep_backfills_a_deferred_row_read_on_both_sides():
+    """A sweep defers a chat OF lists unread while its local marker is 0 (no marker write). An
+    explicit scrape then re-reads page 1 only and keeps it deferred (no asc call); a later sweep
+    whose OF row says read,
+    marker still 0, pulls both ends and clears the deferral."""
+    aid, fan = "acc_peek", 5900
+    await _seed_account(aid)
+    await _read_chat(aid, fan, 0)
+    await _scrape(aid, PeekRecordingClient(fan, _fan_msgs(fan), unread=2), {})
+    _, hist, chat, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None and chat.unread_count == 0, chat.unread_count
+    fake = PeekRecordingClient(fan, _fan_msgs(fan), unread=0)
+    await _scrape(aid, fake, {"fan_ids": [fan]})
+    assert _page_one_only(fake.calls), fake.calls
+    fake.calls.clear()
+    await _scrape(aid, fake, {})
+    assert ("asc", None, 0) in fake.calls, fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is None and hist.last_message_id == 150
+
+
+async def case_scrape_eager_history_does_not_backfill_unread():
+    """SCRAPE_EAGER_HISTORY=1 never overrides the unread deferral."""
+    import os
+    aid, fan = "acc_peek", 5850
+    fake = PeekRecordingClient(fan, _fan_msgs(fan), unread=3)
+    os.environ["SCRAPE_EAGER_HISTORY"] = "1"
+    try:
+        await _scrape(aid, fake, {})
+    finally:
+        del os.environ["SCRAPE_EAGER_HISTORY"]
+    assert _recent_end_only(fake.calls), fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None
+
+
+async def case_scrape_unread_silent_mass_chat_still_costs_one_page():
+    """The Silent mass-only deferral is about cost, not marking: an unread Silent chat on a
+    `{}` sweep still reads page 1 only and defers."""
+    aid, fan = "acc_peek", 5855
+    await _seed_account(aid)
+    fake = PeekRecordingClient(fan, [_mass_msg(i, fan_id=fan) for i in range(1, 151)], unread=2)
+    await _scrape(aid, fake, {})
+    assert fake.calls == [("desc", None, None)], fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None and hist.last_message_id is None
+
+
+async def case_scrape_unread_flip_before_asc_defers():
+    """Marker read at start; a DM lands (WS bump) while page 1 is in flight: the re-check
+    before the asc request defers instead of clearing the new DM on OF."""
+    aid, fan = "acc_peek", 5860
+    await _seed_account(aid)
+    await _read_chat(aid, fan, 0)
+
+    fake = PeekRecordingClient(fan, _fan_msgs(fan), on_page1=_bump_marker(aid, fan, 1))
+    await _scrape(aid, fake, {"fan_ids": [fan]})
+    assert all(o == "desc" for o, _b, _off in fake.calls), fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None and hist.last_message_id is None
+
+
+def _bump_marker(aid: str, fan: int, unread: int):
+    def go():
+        async def _go():
+            await _read_chat(aid, fan, unread)
+        asyncio.run(_go())   # the fake runs off-thread (asyncio.to_thread): its own loop
+    return go
+
+
+async def case_scrape_dm_after_the_sweep_list_defers():
+    """The sweep's list row says read; a DM lands (WS bump) after the list call, before the
+    chat's turn: no asc call, deferred."""
+    aid, fan = "acc_peek", 5870
+    await _seed_account(aid)
+    await _read_chat(aid, fan, 0)
+    fake = PeekRecordingClient(fan, _fan_msgs(fan), unread=0, on_list=_bump_marker(aid, fan, 1))
+    await _scrape(aid, fake, {})
+    assert all(o == "desc" for o, _b, _off in fake.calls), fake.calls
+    _, hist, chat, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None and hist.last_message_id is None
+    assert chat.unread_count == 1, chat.unread_count
+
+
+async def case_scrape_click_mid_scrape_stays_read():
+    """An unread chat (marker 1) defers; a Click read zeroes the marker while page 1 is in
+    flight: the deferral leaves it at 0, so the Click's backfill runs."""
+    aid, fan = "acc_peek", 5880
+    await _seed_account(aid)
+    await _read_chat(aid, fan, 1)
+    fake = PeekRecordingClient(fan, _fan_msgs(fan), on_page1=_bump_marker(aid, fan, 0))
+    await _scrape(aid, fake, {"fan_ids": [fan]})
+    assert all(o == "desc" for o, _b, _off in fake.calls), fake.calls
+    _, hist, chat, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None
+    assert chat.unread_count == 0, chat.unread_count
+
+
+async def case_scrape_fansly_keeps_both_ends():
+    """A Fansly account (read semantics unmeasured): an unread long first scrape keeps
+    today's both-ends pull."""
+    from automations import scrape_chats as sc
+    aid, fan = "acc_peek", 5890
+    real = sc.fansly_backend.is_fansly
+    sc.fansly_backend.is_fansly = lambda account_id: account_id == aid
+    try:
+        fake = PeekRecordingClient(fan, _fan_msgs(fan), unread=2)
+        await _scrape(aid, fake, {})
+    finally:
+        sc.fansly_backend.is_fansly = real
+    assert ("asc", None, 0) in fake.calls, fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is None and hist.last_message_id == 150
+
+
+async def case_scrape_short_unread_chat_is_read_whole_and_not_deferred():
+    aid, fan = "acc_peek", 5895
+    fake = PeekRecordingClient(fan, _fan_msgs(fan, 10), unread=2)
+    await _scrape(aid, fake, {})
+    assert fake.calls == [("desc", None, None)], fake.calls
+    ids, hist, _, _ = await _thread(aid, fan)
+    assert ids == list(range(1, 11)), ids
+    assert hist.last_message_id == 10 and hist.history_deferred_at is None
 
 
 async def case_history_deferred_at_self_heals_on_init_db():
@@ -2259,6 +2601,22 @@ _harness.run(
     case_scrape_non_positive_limits_still_read_before_clearing_the_mark,
     case_scrape_eager_history_knob_restores_todays_calls,
     case_scrape_deferred_backfill_counts_under_its_own_caller_kind,
+    case_scrape_page_one_peeks,
+    case_scrape_unread_long_first_scrape_defers_backfill,
+    case_scrape_read_long_first_scrape_runs_both_ends,
+    case_scrape_explicit_unread_by_local_marker_defers,
+    case_scrape_explicit_missing_chat_row_defers,
+    case_scrape_deferred_row_backfills_only_on_the_click,
+    case_scrape_sweep_backfills_a_deferred_row_read_on_both_sides,
+    case_scrape_eager_history_does_not_backfill_unread,
+    case_scrape_unread_silent_mass_chat_still_costs_one_page,
+    case_scrape_unread_flip_before_asc_defers,
+    case_scrape_click_backfill_before_local_zeroing_pulls_both_ends,
+    case_scrape_resweep_of_a_deferred_unread_chat_reads_page_one,
+    case_scrape_dm_after_the_sweep_list_defers,
+    case_scrape_click_mid_scrape_stays_read,
+    case_scrape_fansly_keeps_both_ends,
+    case_scrape_short_unread_chat_is_read_whole_and_not_deferred,
     case_history_deferred_at_self_heals_on_init_db,
     case_fan_lease_acquire_block_steal,
     case_fan_cooldown_set_check_expire,

@@ -119,7 +119,7 @@ async def run(ctx, creators: list[str], ttl_s: float, through=()) -> None:
             rows = fake.chats.setdefault(aid, [])
             if not any(c["withUser"]["id"] == f["id"] for c in rows):
                 rows.append({"withUser": {"id": f["id"], "name": f["name"], "username": f["username"], "_view": "s"},
-                             "unreadMessagesCount": 0,
+                             "unreadMessagesCount": 0, "isMutedNotifications": False,
                              "lastMessage": {"id": 7_100_000 + i, "text": "hey", "fromUser": {"id": f["id"]},
                                              "isFree": True, "price": 0,
                                              "createdAt": f"2026-11-09T{10 + i % 10}:{i // 10:02d}:00+00:00"}})

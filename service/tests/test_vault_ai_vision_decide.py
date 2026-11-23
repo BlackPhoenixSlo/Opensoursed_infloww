@@ -17,7 +17,7 @@ and test_vault_flags_sweep walk that on a DB).
   case_describe_tier_follows_locked_explicitness: tier column = Jev's column_tier.
   case_is_terminal_table:             Terminal failure statuses + the terminal
                                       held Jev blob; failed / fetch_failed retry.
-  case_coverage_table:                goal = min(target, describable − terminal),
+  case_coverage_table:                goal = min(target, describable) − terminal,
                                       remaining = max(0, goal − described).
 
 No DB of the app's, no OF, no LLM. Run: venv/bin/python service/tests/test_vault_ai_vision_decide.py
@@ -233,11 +233,15 @@ def case_is_terminal_table():
         ("a good Jev reading", (None, {"_jev": ok_jev}), False),
         ("described is never terminal", ("described", {"_jev": _held(True)}), False),
         ("junk _jev", (None, {"_jev": "x"}), False),
+        ("TypeSafe rejected the image", (None, {"_jev": {"status": "jev_rejected"}}), True),
+        ("pre-REJECTED 400 stamp", (None, {"_jev": {"status": "error", "error":
+            "TypeSafeBadRequestError: POST https://api.typesafe.ai/v1/systemone: 400 Invalid image dimensions."}}), True),
+        ("other Jev error: retried", (None, {"_jev": {"status": "error", "error": "TimeoutError: x"}}), False),
     ], d.is_terminal)
 
 
 def case_coverage_table():
-    """goal = min(target, describable − terminal); remaining = max(0, goal − described)."""
+    """goal = min(target, describable) − terminal; remaining = max(0, goal − described)."""
     vault = ([("described", {})] * 4 + [("refused", {}), ("blocked_drm", None), (None, {"_jev": _held(True)})]
              + [("failed", {}), (None, None), ("fetch_failed", {})])
 
@@ -246,12 +250,18 @@ def case_coverage_table():
     _table([
         ("target above vault: goal = describable − terminal", (vault, 1000),
          {"target": 1000, "describable": 10, "described": 4, "terminal": 3, "goal": 7, "remaining": 3}),
-        ("target below it", (vault, 5),
-         {"target": 5, "describable": 10, "described": 4, "terminal": 3, "goal": 5, "remaining": 1}),
-        ("met target", (vault, 4),
-         {"target": 4, "describable": 10, "described": 4, "terminal": 3, "goal": 4, "remaining": 0}),
-        ("described past the target", (vault, 2),
-         {"target": 2, "describable": 10, "described": 4, "terminal": 3, "goal": 2, "remaining": 0}),
+        ("target below it: terminal fills slots", (vault, 8),
+         {"target": 8, "describable": 10, "described": 4, "terminal": 3, "goal": 5, "remaining": 1}),
+        ("met target", (vault, 7),
+         {"target": 7, "describable": 10, "described": 4, "terminal": 3, "goal": 4, "remaining": 0}),
+        ("described past the target", (vault, 5),
+         {"target": 5, "describable": 10, "described": 4, "terminal": 3, "goal": 2, "remaining": 0}),
+        ("terminal above the target", (vault, 2),
+         {"target": 2, "describable": 10, "described": 4, "terminal": 3, "goal": 0, "remaining": 0}),
+        ("999 described + 1 Jev reject meets 1000", ([("described", {})] * 999
+                                                     + [(None, {"_jev": {"status": "jev_rejected"}})]
+                                                     + [(None, None)] * 50, 1000),
+         {"target": 1000, "describable": 1050, "described": 999, "terminal": 1, "goal": 999, "remaining": 0}),
         ("empty vault", ([], 1000),
          {"target": 1000, "describable": 0, "described": 0, "terminal": 0, "goal": 0, "remaining": 0}),
         ("all terminal", ([("refused", {})] * 3, 1000),

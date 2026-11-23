@@ -26,7 +26,8 @@
   case_changed:              `at` alone, a slot's `at` alone -> no change; values, `live`, `cycle_s`, first track ->
                              change; the plan publishes a moved value with no Read.
   case_window_due:           socket down now; reconnected after the window's last read; a contributor asked -> due;
-                             no window held, or none of these (WS-kept since the read) -> not due.
+                             no window held -> due only when asked and no window read landed this boot (R after a
+                             restart); none of these (WS-kept since the read) -> not due.
 
 Run: ./venv/bin/python service/tests/test_shared_refresher_decide.py   (exit 0 = pass)
 """
@@ -352,18 +353,20 @@ def case_changed():
 
 
 def case_window_due():
-    """P1 `window_due(window_at, ws_since, asked)`: one clock (monotonic) for the window's read and the socket stamp."""
-    rows = [  # (window_at, ws_since, asked, due, why)
-        (100.0, None, False, True, "socket down now"),
-        (100.0, 150.0, False, True, "reconnected after the window's last read"),
-        (100.0, 50.0, True, True, "a contributor asked"),
-        (100.0, 50.0, False, False, "WS-kept since the read: none of these"),
-        (100.0, 100.0, False, False, "connected at the read itself: kept (roster-counts' `fetched_at >= live_since`)"),
-        (None, None, False, False, "no window held, socket down"),
-        (None, 50.0, True, False, "no window held, asked"),
+    """P1 `window_due(window_at, ws_since, asked, first)`: one clock (monotonic) for the window's read and the socket
+    stamp."""
+    rows = [  # (window_at, ws_since, asked, first, due, why)
+        (100.0, None, False, False, True, "socket down now"),
+        (100.0, 150.0, False, False, True, "reconnected after the window's last read"),
+        (100.0, 50.0, True, False, True, "a contributor asked"),
+        (100.0, 50.0, False, True, False, "WS-kept since the read: none of these"),
+        (100.0, 100.0, False, False, False, "connected at the read itself: kept (roster-counts' `ws_kept`)"),
+        (None, None, False, True, False, "no window held, socket down, nobody asked"),
+        (None, 50.0, True, False, False, "no window held, asked, a window read already landed this boot"),
+        (None, 50.0, True, True, True, "no window held, asked, none landed this boot: R after a restart"),
     ]
-    for window_at, ws_since, asked, due, why in rows:
-        assert d.window_due(window_at, ws_since, asked) is due, why
+    for window_at, ws_since, asked, first, due, why in rows:
+        assert d.window_due(window_at, ws_since, asked, first) is due, why
 
 
 def case_after_read_never_moves_last_back():

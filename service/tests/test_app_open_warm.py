@@ -692,7 +692,7 @@ async def case_read_set_on_the_real_routes():
                 accounts_admin_api._get_request_user, accounts_admin_api._get_request_chatter = real_user, real_chatter
             got = counts["counts"][P1A]
             assert {k: got[k] for k in ("unread", "owe_reply")} == {"unread": 1, "owe_reply": 0}, counts
-            assert got["as_of"] > 0, counts   # the warm's window time (useRosterCounts keeps a newer patch)
+            assert got["as_of"] > 0, counts   # the warm's window time
             page0 = relay_cache._cache.get(("list_chats", P1A, (server._ROSTER_SCAN_MAX, 0, "recent", None, None, None)))
             assert page0 is not None, "the Fan List's page-0 window is warm"
             assert len(of.calls) == n, f"a pass-through read 25 s after the warm makes no OF call: {of.calls[n:]}"

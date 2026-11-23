@@ -7,7 +7,7 @@
  *
  * Every warm is a real, paid OF call, so the policy is bounded:
  *   • Order: `rows` as the user sees them (the Fan List's sort and narrowing);
- *     a chat counts if `countsAsUnread` (a Fan we restricted never does).
+ *     a chat counts if unread and not badge-excluded (Muted unread does).
  *   • Tiers: the first as soon as `ready`; each later one only after a quiet
  *     window of its own (the tab visible, no input for PREFETCH_QUIET_MS, then
  *     the browser idle). Nothing past the last tier.
@@ -30,7 +30,7 @@
 import { useEffect, useRef } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
-import { countsAsUnread } from "@/lib/chatUnread";
+import { excludedFromBadges, isUnreadChat } from "@/lib/chatUnread";
 import type { FanId } from "@/lib/fanId";
 import { onIdle, onUserInput, USER_INPUT_EVENTS } from "@/lib/idle";
 import type { OFChatItem, OFMessage } from "@/lib/relay";
@@ -116,7 +116,7 @@ export function useUnreadMessagesPrefetch(
   for (const c of rows) {
     if (top.length >= total) break;
     const aid = c.__accountId;
-    if (!countsAsUnread(c) || !aid || c.withUser?.id == null) continue;
+    if (!isUnreadChat(c) || excludedFromBadges(c) || !aid || c.withUser?.id == null) continue;
     const lastId = c.lastMessage?.id;
     top.push({ aid, fid: c.withUser.id, lastId, key: `${aid}:${c.withUser.id}:${lastId ?? ""}` });
   }

@@ -5,6 +5,7 @@
  */
 
 import type { ChatterFlatAccountDTO } from "@/contexts/ChatterContext";
+import type { SeedRow } from "@/lib/creatorFreshness";
 
 export const chatterAccountsQuery = {
   queryKey: ["chatter", "self", "accounts"] as const,
@@ -19,3 +20,8 @@ export const chatterAccountsQuery = {
     return (await r.json()) as ChatterFlatAccountDTO[];
   },
 };
+
+/** The chatter's Creator rows as Freshness seed rows: watchers are not Creators and never carry `freshness`. */
+export function chatterSeedRows(rows: readonly ChatterFlatAccountDTO[]): SeedRow[] {
+  return rows.filter((r) => r.role !== "watcher").map((r) => ({ id: r.account_id, freshness: r.freshness }));
+}

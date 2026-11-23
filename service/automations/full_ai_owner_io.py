@@ -234,7 +234,7 @@ async def _human(account_id: str, fan_id: int, anchor_at: datetime, client,
     if not live_read or client is None:
         return None, None, None
     try:
-        data = await asyncio.to_thread(lambda: client.get_messages(fan_id, limit=10))
+        data = await asyncio.to_thread(lambda: client.get_messages(fan_id, limit=10, peek=True))
         items = data.get("list") if isinstance(data, dict) else data
         items = [m for m in items or [] if isinstance(m, dict)]
         ids = {int(m["id"]) for m in items if isinstance(m.get("id"), (int, str)) and str(m["id"]).isdigit()}

@@ -274,6 +274,8 @@ an omitted Re-create limit keeps a Kept campaign's; no route row changes; diff =
 vs main's promotions_api is exactly that description).
 Golden refresh (2026-11-22, rwl W30 settings-theme F2): GET + DELETE /admin/errors docstrings name
 `_errors_where` (was `_errors_scope`); no route row changes; diff = the sha (re-pinned after rebase on #958).
+Golden refresh (2026-11-22, background reads peek): GET /api/of/v2/chats/{chat_id}/messages gains query `peek`;
+no route row changes; diff = the sha.
 """
 from __future__ import annotations
 

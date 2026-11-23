@@ -1,7 +1,7 @@
 /**
  * local/no-fixed-polling — a react-query `refetchInterval` must be
  * `ssePoll(slowMs, fastMs)` (app/lib/events.ts: slow while SSE is live, fast
- * when it drops). Anything else needs a disable comment that says why:
+ * when it drops), or `cond ? ssePoll(…) : false`. Anything else needs a disable comment that says why:
  *   // eslint-disable-next-line local/no-fixed-polling -- <why>
  * A disable for this rule without `-- <why>` is itself reported.
  */
@@ -11,13 +11,21 @@ const DIRECTIVE = /^\s*eslint-disable(?:-next-line|-line)?\s+(.*)$/s;
 const isSsePoll = (v) =>
   v?.type === "CallExpression" && v.callee.type === "Identifier" && v.callee.name === "ssePoll";
 
+const isFalse = (v) => v?.type === "Literal" && v.value === false;
+
+/** `ssePoll(…)`, or `cond ? ssePoll(…) : false` (either way round): polls on ssePoll or not at all. */
+const isAllowed = (v) =>
+  isSsePoll(v) ||
+  (v?.type === "ConditionalExpression" &&
+    ((isSsePoll(v.consequent) && isFalse(v.alternate)) || (isFalse(v.consequent) && isSsePoll(v.alternate))));
+
 const keyName = (p) =>
   !p.computed && (p.key.type === "Identifier" ? p.key.name : p.key.type === "Literal" ? p.key.value : null);
 
 const rule = {
   meta: {
     type: "problem",
-    docs: { description: "refetchInterval must be ssePoll(...) or carry a stated reason" },
+    docs: { description: "refetchInterval must be ssePoll(...) (or cond ? ssePoll(...) : false) or carry a stated reason" },
     schema: [],
     messages: {
       fixed:
@@ -39,7 +47,7 @@ const rule = {
       },
       Property(node) {
         if (node.parent.type !== "ObjectExpression" || keyName(node) !== "refetchInterval") return;
-        if (!isSsePoll(node.value)) context.report({ node, messageId: "fixed" });
+        if (!isAllowed(node.value)) context.report({ node, messageId: "fixed" });
       },
     };
   },

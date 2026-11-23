@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import badge_watch
+
+# OF marks a chat read on any first-page GET without an `id` cursor; Int64 max
+# returns the newest page and leaves it unread (a 13-digit id returns older rows).
+PEEK_CURSOR = 9223372036854775807
+
 
 class ReadsMixin:
     """Needs `_Transport.get`/`get_json`; calls no sibling mixin."""
@@ -65,7 +71,7 @@ class ReadsMixin:
 
     def get_messages(self, chat_id: str | int, *, limit: int = 10,
                      order: str = "desc", before_id: str | int | None = None,
-                     offset: int | None = None) -> dict:
+                     offset: int | None = None, peek: bool = False) -> dict:
         """GET /api2/v2/chats/{chat_id}/messages — single page of history.
 
         Probed live (read-only): OF IGNORES `limit` and returns FEWER than asked
@@ -78,13 +84,21 @@ class ReadsMixin:
 
         `offset` pages from a fixed position; pair it with `order=asc` to walk
         FORWARD from the convo START (`offset=0` returns the true first
-        messages, bump it for more)."""
+        messages, bump it for more).
+
+        `peek` sends a desc first page with `PEEK_CURSOR` so it never marks the
+        chat read; every other page is unchanged."""
         params: dict[str, Any] = {"limit": limit, "order": order, "skip_users": "all"}
         if before_id is not None:
             params["id"] = before_id
+        elif peek and offset is None and order == "desc":
+            params["id"] = PEEK_CURSOR
         if offset is not None:
             params["offset"] = offset
-        return self.get_json(f"{API_BASE}/chats/{chat_id}/messages", params=params)
+        out = self.get_json(f"{API_BASE}/chats/{chat_id}/messages", params=params)
+        if "id" not in params and offset is None:
+            badge_watch.note_unpeeked(getattr(self, "account_id", None), chat_id)
+        return out
 
     # ── Users ───────────────────────────────────────────────────
 
@@ -744,11 +758,14 @@ class ReadsMixin:
         on a two-row response, and `offset=2` then returned nothing. Handing back
         the rows makes the field that cannot be trusted unreachable. A pinned
         list is a handful of messages by construction, so one page is all of it —
-        do not add pagination here."""
+        do not add pagination here.
+
+        Always sends `PEEK_CURSOR`: without an `id` this read marks the chat read on
+        OF like a plain first page (measured 3/3); with it, the same pinned list."""
         payload = self.get_json(
             f"{API_BASE}/chats/{chat_id}/messages",
             params={"limit": limit, "order": "desc", "skip_users": "all",
-                    "filter": "pinned"},
+                    "filter": "pinned", "id": PEEK_CURSOR},
         )
         return (payload or {}).get("list") or []
 

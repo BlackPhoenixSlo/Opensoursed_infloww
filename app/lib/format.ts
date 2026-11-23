@@ -166,8 +166,7 @@ export function clockTime(d: Date): string {
 // under a DM flood (measured). Same output.
 const CLOCK = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
 
-/** A roster badge's unread text: "N+" when the count may be cut off at the relay's chats window
- *  (hooks/useRosterCounts `unread_capped`). */
-export function rosterUnreadText(unread: number, capped?: boolean): string {
-  return capped ? `${unread}+` : String(unread);
+/** The OF Manager creator column's and the platform switcher's unread text: the exact count, "99+" past 99. */
+export function rosterUnreadText(unread: number): string {
+  return unread > 99 ? "99+" : String(unread);
 }

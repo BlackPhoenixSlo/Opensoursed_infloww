@@ -8,6 +8,7 @@ model. These cases pin:
   • `_compute_roster_count_of` — blue = OF's native `filter=unread`; orange =
     READ conversations where the fan spoke last (`lastMessage.fromUser != me`),
     deduped across pages, disjoint from blue.
+  • `_fold_window` reports Restricted unread to the Unread total (creator-badges 0B).
   • `reconcile_chats_from_of` — still pulls OF read-state + last-message direction
     into the local mirror on every inbox /chats load (used elsewhere; the badge no
     longer depends on it, but the inbox does).
@@ -29,6 +30,7 @@ import server  # noqa: E402
 import accounts_admin_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Chat, Message  # noqa: E402
+import unread_total_decide  # noqa: E402
 import view_lease  # noqa: E402
 
 
@@ -61,10 +63,11 @@ class _FakeClient:
 
 
 def _chat(fan_id: int, *, unread: int = 0, last_from: int | None = None) -> dict:
-    """An OF /chats item. `last_from` defaults to the fan (fan spoke last)."""
+    """An OF /chats item (OF always sends `isMutedNotifications`). `last_from` defaults to the fan (fan spoke last)."""
     return {
         "withUser": {"id": fan_id},
         "unreadMessagesCount": unread,
+        "isMutedNotifications": False,
         "lastMessage": {"fromUser": {"id": fan_id if last_from is None else last_from}},
     }
 
@@ -123,13 +126,13 @@ def case_unread_capped_when_full_window_all_unread():
     cap = server._ROSTER_SCAN_MAX
     fold = accounts_admin_api._roster_counts_from_rows
     all_unread = [_chat(2000 + i, unread=1) for i in range(cap + 5)]
-    assert fold(all_unread, me) == {"unread": cap, "owe_reply": 0, "unread_capped": True}, fold(all_unread, me)
+    assert fold(all_unread) == {"unread": cap, "unread_capped": True}, fold(all_unread)
     # A restricted fan keeps its window slot but never counts: the rest all unread still flags.
-    assert fold(all_unread, me, {2000}) == {"unread": cap - 1, "owe_reply": 0, "unread_capped": True}
+    assert fold(all_unread, {2000}) == {"unread": cap - 1, "unread_capped": True}
     one_read = [_chat(3000, unread=0, last_from=int(me))] + all_unread[: cap - 1]
-    assert fold(one_read, me) == {"unread": cap - 1, "owe_reply": 0}, fold(one_read, me)
+    assert fold(one_read) == {"unread": cap - 1}, fold(one_read)
     short = all_unread[: cap - 1]
-    assert fold(short, me) == {"unread": cap - 1, "owe_reply": 0}, fold(short, me)
+    assert fold(short) == {"unread": cap - 1}, fold(short)
 
 
 async def case_reconcile_pulls_of_read_state_into_local():
@@ -367,12 +370,12 @@ async def case_assemble_empty_page_ends_pagination():
     hammers OF at a new offset per round-trip."""
     fake = _FakeClient(1, [])  # empty inbox
     page = server._assemble_chats_page(fake, limit=25, offset=0, order="recent")
-    assert page == {"list": [], "hasMore": False}, page
+    assert (page["list"], page["hasMore"]) == ([], False), page
 
     # Offset past the end of a non-empty inbox: same contract.
     fake2 = _FakeClient(1, [_chat(1)])
     page2 = server._assemble_chats_page(fake2, limit=25, offset=25, order="recent")
-    assert page2 == {"list": [], "hasMore": False}, page2
+    assert (page2["list"], page2["hasMore"]) == ([], False), page2
 
 
 async def case_assemble_dup_only_page_breaks():
@@ -677,8 +680,7 @@ async def case_roster_counts_dead_session_flags_only_the_client_the_read_started
 
 
 async def case_every_answer_carries_server_now():
-    """Every roster-counts answer carries `now` (server epoch ms): the tab measures its clock skew off it, so a
-    count's `as_of` and its own patch stamps compare in one clock (app hooks/useRosterCounts.ts)."""
+    """Every roster-counts answer carries `now` (server epoch ms); the app does not read it."""
     import time
     D, X = "acct-now-dead", "acct-now-x"
     owned: list[str] = []
@@ -718,11 +720,152 @@ async def case_every_answer_carries_server_now():
         server.relay_cache.invalidate("roster_count", X)
 
 
+def case_fold_exclusion_is_the_one_predicate():
+    """The fold leaves out exactly what `excluded_from_badges` excludes: our registry member and a not-sendable
+    row (`only_friends` too); OF's own `isRestricted` alone still counts. Patched to False for the registry fan, the
+    fold counts it (one predicate drives the exclusion)."""
+    fold = accounts_admin_api._roster_counts_from_rows
+    reg, of_flag, friends, plain = 4001, 4002, 4003, 4004
+    rows = [
+        _chat(reg, unread=1),
+        {**_chat(of_flag, unread=1), "withUser": {"id": of_flag, "isRestricted": True}},
+        {**_chat(friends, unread=1), "canSendMessage": False, "canNotSendReason": "only_friends"},
+        _chat(plain, unread=1),
+    ]
+    assert fold(rows, {reg}) == {"unread": 2}, fold(rows, {reg})
+    assert fold(rows[1:2], {reg})["unread"] == 1, "OF isRestricted alone counts"
+    assert fold(rows[2:3], {reg})["unread"] == 0, "only_friends excluded"
+    real = unread_total_decide.excluded_from_badges
+    unread_total_decide.excluded_from_badges = lambda fan, row, ids: fan != reg and real(fan, row, ids)
+    try:
+        assert fold(rows, {reg}) == {"unread": 3}, fold(rows, {reg})
+    finally:
+        unread_total_decide.excluded_from_badges = real
+
+
+async def case_fold_reports_restricted_unread():
+    """Every fold reports Restricted unread (`of_counts` ∧ `excluded_from_badges`) as of the window's read time; the
+    fold's exclusion and R move together when the one predicate is patched (story 27)."""
+    import unread_total
+    from automations._common import set_of_restricted_skip
+    aid, me = "acct-r", 5
+    reg, friends, gone, muted_reg, plain = 4101, 4102, 4103, 4104, 4105
+    rows = [
+        _chat(reg, unread=1),
+        {**_chat(friends, unread=1), "canSendMessage": False, "canNotSendReason": "only_friends"},
+        {**_chat(gone, unread=1), "canSendMessage": False, "canNotSendReason": "chat_unavailable"},
+        {**_chat(muted_reg, unread=1), "isMutedNotifications": True},
+        _chat(plain, unread=1),
+        _chat(reg, unread=1),
+    ]
+    got: list = []
+    orig_set, orig_load = unread_total.set_restricted_unread, server._load_client
+    unread_total.set_restricted_unread = lambda a, r, at: got.append((a, r, at))
+    server._load_client = lambda _aid: _FakeClient(me, rows)
+    real = unread_total_decide.excluded_from_badges
+    server.relay_cache.invalidate("list_chats", aid)
+    for f in (reg, muted_reg):
+        await set_of_restricted_skip(aid, f, True)
+    try:
+        out = await accounts_admin_api._compute_roster_count_of(aid, bypass=True)
+        assert got == [(aid, 2, out["as_of"])] and out["as_of"] > 0, (got, out)
+        assert out["unread"] == 1, out
+        unread_total_decide.excluded_from_badges = lambda fan, row, ids: fan != reg and real(fan, row, ids)
+        out = await accounts_admin_api._compute_roster_count_of(aid)
+        assert got[-1] == (aid, 1, out["as_of"]) and out["unread"] == 2, (got, out)
+    finally:
+        unread_total_decide.excluded_from_badges = real
+        unread_total.set_restricted_unread, server._load_client = orig_set, orig_load
+        for f in (reg, muted_reg):
+            await set_of_restricted_skip(aid, f, False)
+        server.relay_cache.invalidate("list_chats", aid)
+        server._chats_window_fetched_at.pop(aid, None)
+        accounts_admin_api._roster_last.pop(aid, None)
+
+
+_GUARD_ME, _MUTED, _UNKNOWN, _REG, _OWED, _OWED2, _BLUE = 7, 4201, 4202, 4203, 4204, 4205, 4206
+
+
+def _guard_rows() -> list[dict]:
+    return [
+        {**_chat(_MUTED), "isMutedNotifications": True},
+        {k: v for k, v in _chat(_UNKNOWN).items() if k != "isMutedNotifications"},
+        _chat(_REG),
+        _chat(_OWED),
+        _chat(_OWED2),
+        _chat(_BLUE, unread=1),
+    ]
+
+
+async def _held_route_counts(aid: str, rows: list[dict]) -> tuple[dict, int]:
+    """`roster-counts` for an unleased Creator whose page-0 window is held (one warm read): its count, OF calls."""
+    from automations._common import set_of_restricted_skip
+
+    class _User:
+        account_ids = [aid]
+
+    fake = _CountingClient(_GUARD_ME, rows)
+    orig_user, orig_load = server._get_request_user, server._load_client
+    server._get_request_user = lambda: _User()
+    server._load_client = lambda _aid: fake
+    await set_of_restricted_skip(aid, _REG, True)
+    try:
+        await accounts_admin_api._compute_roster_count_of(aid, bypass=True)
+        server._chats_window_fetched_at[aid] = server._time_mod.monotonic() - 3600
+        r = (await accounts_admin_api.admin_accounts_roster_counts(_Resp()))["counts"]
+        return r[aid], fake.calls
+    finally:
+        server._get_request_user, server._load_client = orig_user, orig_load
+        await set_of_restricted_skip(aid, _REG, False)
+
+
+def _forget(aid: str) -> None:
+    server.relay_cache.invalidate("list_chats", aid)
+    server.relay_cache.invalidate("roster_count", aid)
+    server._chats_window_fetched_at.pop(aid, None)
+    accounts_admin_api._roster_last.pop(aid, None)
+
+
+async def case_owe_reply_uses_amber_guards():
+    """Route `owe_reply` over a held window: muted, mute-unknown and registry-restricted rows never owe; two read
+    Fan-last rows do. `unread` is Phase B's fold, unchanged."""
+    aid = "acct-amber-guards"
+    _forget(aid)
+    try:
+        out, calls = await _held_route_counts(aid, _guard_rows())
+        assert _bare(out) == {"unread": 1, "owe_reply": 2} and calls == 1, (out, calls)
+    finally:
+        _forget(aid)
+
+
+async def case_owe_reply_excludes_latest_unread_set():
+    """A Fan in Phase C's latest Unread set never owes, whatever his held row says; no set held -> his row decides."""
+    import badge_reads
+    aid = "acct-amber-set"
+    real = badge_reads.unread_set
+    badge_reads.unread_set = lambda a: badge_reads.UnreadView(frozenset({_OWED}), 1) if a == aid else real(a)
+    _forget(aid)
+    try:
+        out, _ = await _held_route_counts(aid, _guard_rows())
+        assert _bare(out) == {"unread": 1, "owe_reply": 1}, out
+        badge_reads.unread_set = real
+        _forget(aid)
+        out, _ = await _held_route_counts(aid, _guard_rows())
+        assert _bare(out) == {"unread": 1, "owe_reply": 2}, out
+    finally:
+        badge_reads.unread_set = real
+        _forget(aid)
+
+
 _harness.run(
+    case_fold_reports_restricted_unread,
+    case_owe_reply_uses_amber_guards,
+    case_owe_reply_excludes_latest_unread_set,
     case_ws_kept_window_is_folded_past_300s_within_its_list_ttl,
     case_compute_roster_count_from_of,
     case_roster_count_caps_at_window,
     case_unread_capped_when_full_window_all_unread,
+    case_fold_exclusion_is_the_one_predicate,
     case_reconcile_pulls_of_read_state_into_local,
     case_reconcile_runs_in_the_of_writer_never_backwards,
     case_roster_bust_recomputes_only_target,

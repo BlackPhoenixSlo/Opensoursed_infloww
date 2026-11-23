@@ -40,13 +40,6 @@ import { relayNow } from "@/lib/ageClock";
 import { bumpAfterSend, patchChatCaches, type SentMessage } from "@/lib/chatsCache";
 import { parseSendFailure, type SendFailure } from "@/lib/sendFailure";
 import { useEmployee } from "@/contexts/EmployeeContext";
-import {
-  useRosterCountActions,
-  rosterDelta,
-  applyRosterDelta,
-  rosterPriorFromRow,
-} from "@/hooks/useRosterCounts";
-import { findFanChatRow } from "@/hooks/useInboxRealtime";
 import { uploadErrorText, uploadToVault, type PendingUpload } from "@/hooks/useComposerUploads";
 import { sendStash, type SendInput, type StashEntry } from "@/lib/sendStash";
 
@@ -163,7 +156,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
   const qc = useQueryClient();
   const { current: currentEmployee } = useEmployee();
   const employeeId = currentEmployee?.id ?? null;
-  const { patchLocal: patchRosterLocal, refreshOne: refreshRoster } = useRosterCountActions();
 
   const [inflight, setInflight] = useState(0);
 
@@ -217,16 +209,12 @@ export function useSendMessage(opts: UseSendMessageOpts) {
           failure = { reason: (err as Error)?.message };
         }
         failLocal(tempId, failure);
-        // The optimistic roster decrement in the send path assumed this would
-        // land; it didn't → reconcile the badge to OF truth (force past the 8s
-        // cooldown — this only fires on the rare failure path).
-        void refreshRoster(capturedAccountId, { force: true });
         return failure;
       } finally {
         setInflight((n) => n - 1);
       }
     },
-    [failLocal, reconcileLocal, qc, employeeId, refreshRoster],
+    [failLocal, reconcileLocal, qc, employeeId],
   );
 
   const optimisticMessage = useCallback(
@@ -269,7 +257,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         const raw = lost.reason instanceof Error ? lost.reason.message : "";
         const failure: SendFailure = { reason: uploadErrorText(raw) };
         failLocal(tempId, failure);
-        void refreshRoster(capturedAccountId, { force: true });
         return { sent: false, failure };
       }
       const attached = [...(entry.input.attached ?? []), ...entry.files.flatMap((f) => f.media ?? [])];
@@ -282,7 +269,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
       const failure = await doSend(tempId, buildBody(entry.input, attached), capturedAccountId, capturedFanId);
       return failure ? { sent: false, failure } : { sent: true };
     },
-    [appendLocal, dropLocal, failLocal, doSend, optimisticMessage, refreshRoster],
+    [appendLocal, dropLocal, failLocal, doSend, optimisticMessage],
   );
 
   // Immediate-send path, extracted so the no-schedule case can call it
@@ -305,10 +292,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
       // Optimistically flip the chat-list row's `lastMessage.fromUser` to
       // us so the yellow "read but unanswered" dot disappears immediately.
       // Without this the dot lingers for up to 60s (the chat-list poll).
-      // Read the fan's PRE-flip roster state from the FRESHEST cached row
-      // (findFanChatRow picks newest lastMessage, not a stale first-match) BEFORE
-      // patchChatListAfterSend flips the row to us.
-      const prior = rosterPriorFromRow(findFanChatRow(qc, capturedAccountId, capturedFanId));
       patchChatListAfterSend(qc, capturedAccountId, capturedFanId, {
         // The raw account id, NOT Number(accountId): a Fansly snowflake is past
         // 2^53, so parsing it yields a DIFFERENT id — the row would read as "the
@@ -320,17 +303,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         mediaCount: optimisticMedia.length,
         price: input.price ?? 0,
       });
-      // Clear this conversation's roster badge (orange owe-reply, or blue if it
-      // was still unread) the SAME tick we send. The outbound SSE echo can't do
-      // this — by the time it lands, the row above is already flipped to us, so
-      // the realtime handler would compute a no-op. Must happen here, from the
-      // prior state, or the manual-send badge waits out the 60s poll.
-      if (prior) {
-        const d = rosterDelta(true, prior);
-        if (d.dUnread !== 0 || d.dOwe !== 0) {
-          patchRosterLocal(capturedAccountId, (cur) => applyRosterDelta(cur, d));
-        }
-      }
       const sending = sendAfterUploads(tempId, entry, uploads.map((u) => u.done), capturedAccountId, capturedFanId);
       // Waiting on files: Send is done once the bubble shows, so the Composer
       // is free for the next message.
@@ -338,7 +310,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
       const ended = await sending;
       return { tempId, failure: ended.sent ? null : ended.failure ?? null, settled: sending };
     },
-    [fromUserId, fromUserName, appendLocal, sendAfterUploads, optimisticMessage, qc, patchRosterLocal],
+    [fromUserId, fromUserName, appendLocal, sendAfterUploads, optimisticMessage, qc],
   );
 
   // Scheduled path; resolves once enqueued, throws when refused. Two
@@ -476,17 +448,11 @@ export function useSendMessage(opts: UseSendMessageOpts) {
       // bubble back to pending we drop and re-append it.
       dropLocal(tempId);
       appendLocal(optimisticMessage(tempId, entry.input, media, entry.files.some((f) => !f.media)));
-      // A successful RETRY (the first attempt failed → D4's catch restored the
-      // badge) lands the send but took no send-time decrement — reconcile the
-      // badge to OF truth so the answered fan's orange/blue clears without waiting
-      // out the 60s poll.
       const sending = sendAfterUploads(tempId, entry, done, accountId, fanId);
       report(sending);
-      const ended = await sending;
-      if (ended.sent) void refreshRoster(accountId, { force: true });
-      return ended;
+      return await sending;
     },
-    [accountId, fanId, appendLocal, dropLocal, refreshRoster, optimisticMessage, sendAfterUploads, onStart, onSettled, report],
+    [accountId, fanId, appendLocal, dropLocal, optimisticMessage, sendAfterUploads, onStart, onSettled, report],
   );
 
   const cancelOptimistic = useCallback(

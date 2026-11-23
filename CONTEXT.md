@@ -1019,3 +1019,85 @@ _Avoid_: run slot, per-Creator cap (`AUTOMATION_FULL_AI_PER_CREATOR`, Full AI Tu
 A model call made because an Employee asked for it now (help assistant drafts, manual tools), never one an automation makes; it never queues behind automation on the Model-call cap.
 _Avoid_: operator call (**Employee** is the person; operator kinds are a Run slot rule), manual call, user call
 ASSUMPTION: "Employee" over the plan's "operator-initiated", by the glossary's existing Employee entry (rung 3); overturned if code naming (`operator=True`) must be mirrored in the spec.
+
+### Creator badges
+
+**Red circle**:
+A Creator tab's count of chats OnlyFans holds unread for that Creator: the Unread counter frame's value minus R, floored at 0 (ADR-0049). It replaces the Roster count's unread on the Creator tab.
+_Avoid_: blue count, Roster count (the 25-chat fold it replaces), Unread badge (the Fan List chip's), notification dot
+
+**Amber circle**:
+A Creator tab's count of Owe reply chats: read, the Fan spoke last, known not muted, not restricted, and absent from the latest Unread list.
+_Avoid_: orange count, awaiting badge, owe badge, OweMiniBadge (the component that draws it)
+
+**Grey circle**:
+A circle's state when the Relay has no trusted value for that Creator; it never reads as 0. The Relay names the first cause in this order: `unseeded`, `socket_down`, `r_unknown`, `dead`, `proxy_down`, `capped`, `stale`; the app adds only Relay unreachable.
+_Avoid_: zero, empty badge, "as of" (Data age's label), No-live-connection mark (a cause, not the state)
+ASSUMPTION: Grey circle supersedes Data age's "as of" label on Creator tabs (rung 2: plan "grey dot when unknown/stale"); overturned if the owner keeps "as of" beside grey.
+
+**Muted chat**:
+A chat the Creator muted on OnlyFans. OnlyFans leaves it out of the Unread counter frame and the Unread list; it counts in neither circle and shows no unread Edge marker.
+_Avoid_: silenced chat, hidden chat
+
+**Restricted chat**:
+A chat whose Fan the Creator restricted on OnlyFans (`isRestricted`, skip_list `of_restricted`). House rule leaves it out of every count, though the Unread counter frame includes it. One predicate, `excluded_from_badges`, also drops any chat whose row says `canSendMessage` false (`only_friends` included).
+_Avoid_: blocked chat, muted chat
+
+**Restricted unread** (R):
+How many chats in the latest Unread list OF's counter counts (unread, not muted, sendable or `only_friends`) and `excluded_from_badges` removes (registry-restricted or `canSendMessage` false); the Red circle subtracts it from the counter. Example: counter 11, 4 `only_friends` → red 7.
+_Avoid_: blocked count
+
+**Unread counter frame**:
+A Live connection frame carrying `chat_messages`: the Creator's unread chat count as OnlyFans holds it, sent once per read-state change from any source, even when the value is unchanged.
+_Avoid_: counter event, badge frame, unread event, Inbound DM frame (a message, not a count)
+
+**Creator echo**:
+A Live connection frame for a message the Creator sent from any client (Inflowwww, onlyfans.com, Infloww): no `fromUser`, carries `chatUserId`. That chat is read with the Creator last.
+_Avoid_: outbound echo (the persist queue's loose phrase), recipient echo, self message
+
+**Unread list**:
+OnlyFans's answer to `GET /chats?filter=unread`: exactly the chats the Unread counter frame counts. Reading it never marks a chat read.
+_Avoid_: unread page, unread scrape, unread filter (the Fan List's chip)
+
+**Complete Unread list**:
+An Unread list whose row count equals the counter or that has no further page. Only a complete one may flip a Fan to read.
+_Avoid_: full list, final list
+
+**Attribution read**:
+One Unread list read, diffed against the held chats window, that finds which Fans changed read state after an Unexplained frame (ADR-0051).
+_Avoid_: reconcile (the Shared refresher's word), refresh, scrape, rescan
+
+**Explained frame**:
+An Unread counter frame the Relay can already account for, so it costs no OF call: an Inbound DM frame within 0.5 s, any Creator echo within 1.5 s, or a Write intent of ours. Any other frame is an **Unexplained frame**.
+_Avoid_: expected frame, known frame, own frame
+
+**Write intent**:
+The Relay's record, made before it sends a read-state write to OnlyFans, that the next counter change for that chat is ours.
+_Avoid_: pending write, optimistic mark, Pending offer (Full AI's)
+
+**Peek cursor**:
+The thread read cursor `id=9223372036854775807`: OnlyFans returns the newest page and leaves the chat unread (ADR-0050).
+_Avoid_: max id, silent fetch, no-read fetch
+
+**Background read**:
+Any OF thread read not made because an Employee opened that chat in Messages Pro: scrape sweep, after-blast scrape, convo review, the app's unread, hover and Focus prefetch. Every one uses the Peek cursor.
+_Avoid_: scrape (one kind of it), silent read, prefetch on its own
+
+**Click read**:
+An Employee opening a chat in Messages Pro, any Creator; it marks the chat read on OnlyFans through the Relay, which records a Write intent first. Focus mode marks read only after the first send.
+_Avoid_: open, mark seen, Background read
+
+**Badge version**:
+A per-Creator number the Event stream's ping carries; a tab whose circles are behind it refetches that Creator's counts.
+_Avoid_: seq (the Shared refresher snapshot's), etag, revision
+
+**Hover cooldown**:
+One server-side 30 s window per Creator, shared by every Employee and tab, inside which hover and pick reads collapse into one OF read; `?bust=` is that shared rewarm.
+_Avoid_: Cooldown on its own (Keep running's), per-chatter cooldown, debounce
+
+**Badge reads knob**:
+The one per-stack knob `BADGE_READS=full|lean|off` (Attribution gap 5 s / 15 s / no reads), default `full`. At `off`, the Red circle still follows the counter and the Amber circle moves only on events; no Attribution or hover read is made.
+_Avoid_: Badge reads switch, per-user flag, header flag, kill switch on its own
+
+- **badge_drift** (the Watch check for counter vs Unread list mismatch over 30 s, reads per Creator-hour vs cap, Grey circles over 10 min, counter drops after an un-peeked first-page GET): `scripts/proxy-health/watch.py`
+- **Attribution cap** (single-flight per Creator, 5 s gap, 120 reads per Creator-hour, honours the 429 exit hold): ADR-0051

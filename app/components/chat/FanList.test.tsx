@@ -268,10 +268,11 @@ const PRE_RESTYLE_URLS = [
   "/api/of/v2/users/list?ids=200000001&ids=200000002&ids=200000003&view=m",
   "/api/of/v2/users/me",
 ];
-/** The thread warm the Fan List gives the top unread chats (Fans One and Two). */
+/** The thread warm the Fan List gives the top unread chats (Fans One and Two): a peek, so
+ *  they stay unread on OF. */
 const UNREAD_WARM_URLS = [
-  "/api/of/v2/chats/200000001/messages?limit=30&order=desc",
-  "/api/of/v2/chats/200000002/messages?limit=30&order=desc",
+  "/api/of/v2/chats/200000001/messages?limit=30&order=desc&peek=1",
+  "/api/of/v2/chats/200000002/messages?limit=30&order=desc&peek=1",
 ];
 const LOAD_URLS = [...PRE_RESTYLE_URLS, ...UNREAD_WARM_URLS].sort();
 /** The chat-list requests the mocked relay saw, as [path, refresh option]. */
@@ -341,7 +342,7 @@ describe("FanList", () => {
     // Fan Two wrote last but was read: owed a reply, not unread. Fan Four
     // is unread but restricted by us, so no count includes it.
     const restricted = {
-      withUser: { id: 200000004, name: "Fixture Fan Four", username: "fixturefanfour", avatar: null, isRestricted: true },
+      withUser: { id: 200000004, name: "Fixture Fan Four", username: "fixturefanfour", avatar: null, isRestricted: true, badgeExcluded: true },
       lastMessage: { id: 800000003, text: "Hello from Fixture Fan Four", fromUser: { id: 200000004 }, createdAt: ago(63) },
       hasUnread: true,
       unreadMessagesCount: 1,
@@ -783,8 +784,16 @@ describe("FanList", () => {
   });
 
   it("Owe reply is the chip after All, its count shown before and while it is on, and there is no \"+\"", async () => {
+    // The owe chip reads the badgeExcluded stamp alone: Fan Two's isRestricted
+    // alone still counts; Fan Four (fan wrote last, read) carries only the stamp.
+    const excluded = {
+      withUser: { ...FAN_FOUR, avatar: null, badgeExcluded: true },
+      lastMessage: { id: 800000004, text: "Hello from Fixture Fan Four", fromUser: FAN_FOUR, createdAt: ago(63) },
+      hasUnread: false,
+      unreadMessagesCount: 0,
+    } as OFChatItem;
     const user = userEvent.setup();
-    serveChats(CHATS);
+    serveChats([CHATS[0], { ...CHATS[1], withUser: { ...CHATS[1].withUser, isRestricted: true } }, CHATS[2], excluded]);
     renderFanList();
     await rowOf("Fixture Fan Three");
     const chips = within(screen.getByRole("group", { name: "Fan List filters" })).getAllByRole("button");
@@ -796,8 +805,9 @@ describe("FanList", () => {
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
     expect(await rowOf("Fixture Fan One")).toBeInTheDocument();
     expect(await rowOf("Fixture Fan Two")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Fixture Fan Four/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Owe reply 2" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText("2 owed · scanned all 3")).toBeInTheDocument();
+    expect(screen.getByText("2 owed · scanned all 4")).toBeInTheDocument();
   });
 
   it("shows the owe dot only while Owe reply is the active filter", async () => {
@@ -1350,7 +1360,7 @@ describe("FanList", () => {
       id: firstId + i, name: `${name} ${i + 1}`, username: `${name.replace(/ /g, "").toLowerCase()}${i + 1}`,
     }));
     serveChats(fans.map((f, i) => ({
-      withUser: { ...f, avatar: null, isRestricted: restrictFirst && i === 0 },
+      withUser: { ...f, avatar: null, isRestricted: restrictFirst && i === 0, badgeExcluded: restrictFirst && i === 0 },
       lastMessage: { id: 600_000_000 + f.id, text: `Hello from ${f.name}`, fromUser: f, createdAt: ago(10 + i) },
       hasUnread: true,
       unreadMessagesCount: 1,
@@ -1441,7 +1451,7 @@ describe("FanList", () => {
     expect(warm.aborted).toBe(false);
   });
 
-  it("pressing a row warms its thread over what is cached, on the user lane (the click's start): a paged history stays", async () => {
+  it("pressing a row warms its thread over what is cached, on the user lane (the click's start), as a peek: a paged history stays", async () => {
     serveChats(CHATS);
     const fan = FANS[2];
     routeRelay(`/api/of/v2/chats/${fan.id}/messages`, () => ({
@@ -1456,11 +1466,12 @@ describe("FanList", () => {
 
     fireEvent.pointerDown(await rowOf("Fixture Fan Three"));
     await vi.waitFor(() => expect(client.getQueryData<{ id: number }[]>(key)?.map((m) => m.id)).toEqual([10, 900]));
-    expect(relayGet.mock.calls.find(([path]) => path.includes(`/chats/${fan.id}/messages`))?.[1])
-      .toMatchObject({ priority: undefined });
+    const press = relayGet.mock.calls.find(([path]) => path.includes(`/chats/${fan.id}/messages`));
+    expect(press?.[1]).toMatchObject({ priority: undefined });
+    expect(press?.[0]).toContain("peek=1");
   });
 
-  it("resting the pointer on a row warms its thread on the background lane (a hover is not a click)", async () => {
+  it("resting the pointer on a row warms its thread on the background lane, as a peek (a hover is not a click)", async () => {
     serveChats(CHATS);
     const fan = FANS[2];
     routeRelay(`/api/of/v2/chats/${fan.id}/messages`, () => ({ list: [], hasMore: false }));
@@ -1469,6 +1480,8 @@ describe("FanList", () => {
     fireEvent.mouseEnter(await rowOf("Fixture Fan Three"));
     await vi.waitFor(() => expect(relayGet.mock.calls.find(([path]) => path.includes(`/chats/${fan.id}/messages`))?.[1])
       .toMatchObject({ priority: "background" }));
+    expect(relayGet.mock.calls.filter(([path]) => path.includes(`/chats/${fan.id}/messages`)).map(([path]) => path))
+      .toEqual([`/api/of/v2/chats/${fan.id}/messages?limit=30&order=desc&peek=1`]);
   });
 
   it("pressing a row and then clicking it reads its thread once: the opened chat joins the press's warm-up", async () => {

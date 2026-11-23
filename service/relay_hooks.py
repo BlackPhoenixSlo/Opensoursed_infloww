@@ -52,6 +52,8 @@ if TYPE_CHECKING:
 outbound_sent: list[Callable[[str, int, int, datetime], None]] = []
 inbound_message: list[Callable[[str | None, str | None, dict], None]] = []
 thread_head: list[Callable[[str, int, Any], None]] = []
+# A Click read: a plain (not peeked) head read or a landed single-chat mark-as-read.
+thread_click_read: list[Callable[[str, int], None]] = []
 send_failed: list[Callable[[str, int, HTTPException], None]] = []
 mute: list[Callable[[int, bool], None]] = []
 socket_reconnected: list[Callable[[str], None]] = []
@@ -80,6 +82,11 @@ def fire_inbound_message(account_id: str | None, event_type: str | None, event: 
 def fire_thread_head(account_id: str, chat_id: int, messages: Any) -> None:
     for hook in thread_head:
         hook(account_id, chat_id, messages)
+
+
+def fire_thread_click_read(account_id: str, chat_id: int) -> None:
+    for hook in thread_click_read:
+        hook(account_id, chat_id)
 
 
 def fire_send_failed(account_id: str, chat_id: int, exc: HTTPException) -> None:

@@ -228,9 +228,12 @@ export interface OFUserMini {
   notice?: string | null;
   /** Stamped by the relay on /chats rows when WE restricted this user on
    *  OnlyFans (durable `of_restricted` registry) — the thin skip_users=all
-   *  rows never carry OF's own flag. Restricted creators are excluded from
-   *  every unread / owe-reply count (server badge fold + inbox chips). */
+   *  rows never carry OF's own flag. Read by the Restricted label and the
+   *  Restrict toggle; counts read `badgeExcluded`. */
   isRestricted?: boolean;
+  /** Stamped by the relay on /chats rows (`excluded_from_badges`): never in an
+   *  unread / owe-reply count (server badge fold + inbox chips). */
+  badgeExcluded?: boolean;
   /** OF's own block flag (`withUser.isBlocked` on /chats rows and /users/{id}). */
   isBlocked?: boolean;
   /** Stamped by the relay on /chats rows (`_annotate_chat_rows`): a custom

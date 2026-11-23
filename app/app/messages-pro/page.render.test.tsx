@@ -83,9 +83,10 @@ import { readBlurMode } from "@/hooks/useBlurMode";
 import { UNREAD_WARM_REUSE_MS } from "@/hooks/useUnreadMessagesPrefetch";
 import { resetRosterCountsModuleState } from "@/hooks/useRosterCounts";
 import {
-  expectDomOrder, observerStub, relayGet, relayPost, resetComposerHarness, routeRelay, tooltipOf,
+  expectDomOrder, observerStub, relayGet, relayPost, resetComposerHarness, routeRelay, streamUp, tooltipOf,
 } from "@/components/chat/composerTestHarness";
 import { SETTINGS_KEY as RAIL_SETTINGS_KEY } from "@/lib/moneyRailStorage";
+import { eventBus } from "@/lib/events";
 import { resetReadGate } from "@/lib/ofReadGate";
 import { holdLease } from "@/lib/viewLease";
 import { openNotification } from "@/lib/notificationLink";
@@ -106,7 +107,7 @@ const ACCOUNTS = [account(ACCOUNT_ID, "Test Creator"), account(OTHER_ACCOUNT_ID,
 /** Unread conversations per Creator, as the roster counts report them. */
 const COUNTS = {
   [ACCOUNT_ID]: { unread: 2, owe_reply: 0 },
-  [OTHER_ACCOUNT_ID]: { unread: 5, owe_reply: 1 },
+  [OTHER_ACCOUNT_ID]: { unread: 5, owe_reply: 0 },
 };
 const FANS = [
   { id: 200000001, name: "Fixture Fan One", username: "fixturefanone" },
@@ -197,8 +198,7 @@ beforeEach(() => {
   resetReadGate();
   releaseLease = holdLease("test", [ACCOUNT_ID, OTHER_ACCOUNT_ID]);
   resetComposerHarness();
-  // The roster counts' 8s refresh cooldown is module state: no case inherits
-  // another's.
+  // In-flight roster busts are module state: no case inherits another's.
   resetRosterCountsModuleState();
   PRESENCE.online.clear();
   PRESENCE.lastSeen.clear();
@@ -210,6 +210,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
   vi.stubGlobal("IntersectionObserver", observerStub);
   vi.stubGlobal("ResizeObserver", observerStub);
+  streamUp(eventBus);
 });
 
 afterEach(() => {

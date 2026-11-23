@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The `fresh` ping (phase-01 Contract 7, ticket 09): with the Knob on every stream `ping` carries
 `fresh: {aid: at}` (the Last refresh, epoch ms) for the tracked (Open-tab) Creators in that subscriber's clamp that
-have one, on its own heartbeat timer, frames or not; with it off the ping is today's, byte for byte, and fires only
+have one, on its own heartbeat timer, frames or not, and once right after `: connected` (the browser counts a
+reopened stream disconnected until its first frame); with it off the ping is today's, byte for byte, and fires only
 after a heartbeat with no frame. No ring entry either way.
 
 Time is scaled 1:50 (heartbeat 20 s -> 0.4 s, a frame every 5 s -> 0.1 s, 60 s -> 1.2 s) through the module's own
@@ -74,6 +75,8 @@ async def _drive(on: bool, *, tab: bool = True, clamp=frozenset({A, B}), frames:
     other = await events.subscribe("all", accounts=other_tab, tab=True)
     gen = events.sse_stream(_Req(), "all", accounts=clamp, agencies=frozenset({OWNER}), tab=tab)
     assert await gen.__anext__() == ew.CONNECTED
+    if on:
+        assert _pings([await gen.__anext__()]), "Knob on: a ping right after connect"
     assert (await gen.__anext__()).startswith(b"id: ")
     t0 = time.monotonic()
     got: list[tuple[float, bytes]] = []
@@ -110,6 +113,35 @@ async def case_on_busy_stream_still_pings_with_fresh():
         # In the clamp and tracked: A (B is tracked but has no Last refresh yet); C is outside the clamp, D untracked.
         assert all(p["fresh"] == {A: 111} for p in pings), pings
         assert all(set(p) == {"ts", "fresh"} for p in pings), pings
+
+
+async def case_on_first_frame_is_a_ping_with_fresh_and_badge():
+    import unread_total
+    old = (unread_total.ENABLED, dict(unread_total._v), dict(unread_total._shown))
+    unread_total.ENABLED = True
+    unread_total._v.update({A: 3, C: 9})
+    unread_total._shown.update({A: {}, C: {}})
+    try:
+        with _setup(True, {A: 111, C: 333}):
+            other = await events.subscribe("all", accounts=frozenset({C}), tab=True)
+            gen = events.sse_stream(_Req(), "all", accounts=frozenset({A, B}), agencies=frozenset({OWNER}), tab=True)
+            t0 = time.monotonic()
+            assert await gen.__anext__() == ew.CONNECTED
+            first = await gen.__anext__()
+            assert time.monotonic() - t0 < HB / 4, "at connect, not after a heartbeat"
+            ping = _pings([first])
+            assert ping and set(ping[0]) == {"ts", "fresh", "badge"}, first
+            assert ping[0]["fresh"] == {A: 111} and ping[0]["badge"] == {A: 3}, ping
+            assert first == ew.ping(ping[0]["ts"], {A: 111}, {A: 3}), "the heartbeat ping's own bytes"
+            assert (await gen.__anext__()).startswith(b"id: ")
+            await gen.aclose()
+            await events.unsubscribe("all", other)
+    finally:
+        unread_total.ENABLED = old[0]
+        unread_total._v.clear()
+        unread_total._v.update(old[1])
+        unread_total._shown.clear()
+        unread_total._shown.update(old[2])
 
 
 async def case_off_busy_stream_pings_as_today():

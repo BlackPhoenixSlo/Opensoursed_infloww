@@ -21,7 +21,7 @@
  * relay mock, `routeRelay` and `observerStub`; `FanList.test.tsx` also takes
  * the events mock, so the real `useInboxRealtime` hears what a case emits.
  */
-import { expect, vi } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import { screen, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
@@ -126,6 +126,11 @@ export function mockEventsModule() {
       onStateChange: () => () => {},
     },
   };
+}
+
+export function streamUp(bus: { onStateChange(fn: (up: boolean) => void): () => void }): void {
+  const spy = vi.spyOn(bus, "onStateChange").mockImplementation((fn) => { fn(true); return () => {}; });
+  onTestFinished(() => spy.mockRestore());
 }
 
 /** Deliver one event envelope to its type's subscribers, as the SSE bus

@@ -9,15 +9,19 @@
  *
  * Fixture identifiers are invented (this repo mirrors to a public one).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
+const bus = vi.hoisted(() => ({ connected: true }));
 vi.mock("@/lib/events", async (orig) => ({
   ...(await orig<typeof import("@/lib/events")>()),
-  eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} },
+  eventBus: {
+    setScope: vi.fn(), on: () => () => {},
+    onStateChange: (fn: (up: boolean) => void) => { fn(bus.connected); return () => {}; },
+  },
 }));
 // The signed-in principal: an owner, unless a case signs in a chatter only;
 // and the Employee at the keyboard, which a case may switch or leave pending
@@ -80,11 +84,12 @@ const ACCOUNTS = [
   account(NIA, "Nia Creator", 2, false),
   account(MAX, "Max Creator", 30),
 ];
-// Unread conversations per Creator: distinct, and Max has none (no badge).
+// Unread conversations per Creator: distinct, and Max has none (no badge). No Owe reply (no Amber circle) unless a
+// case sets one.
 const COUNTS: Record<string, RosterCount> = {
-  [ZED]: { unread: 3, owe_reply: 1 },
+  [ZED]: { unread: 3, owe_reply: 0 },
   [AMY]: { unread: 12, owe_reply: 0 },
-  [MAX]: { unread: 0, owe_reply: 4 },
+  [MAX]: { unread: 0, owe_reply: 0 },
 };
 
 /** The roster counts' read waits on this when a case sets it. */
@@ -109,9 +114,9 @@ beforeEach(() => {
   session.chatter.chatter = null;
   session.chatter.loading = false;
   atKeyboard(EMP_A);
+  bus.connected = true;
   resetComposerHarness();
-  // The roster counts' 8s refresh cooldown is module state: no case inherits
-  // another's.
+  // In-flight roster busts are module state: no case inherits another's.
   resetRosterCountsModuleState();
   countsGate = null;
   routeRelay("/admin/accounts/roster-counts", () => (countsGate ?? Promise.resolve()).then(() => ({ counts: COUNTS })));
@@ -153,7 +158,7 @@ describe("CreatorTabs", () => {
     renderStrip();
     // The badge reads once the roster counts land.
     const zed = await screen.findByRole("tab", { name: "Zed Creator 3 unread" });
-    const amy = strip().getByRole("tab", { name: "Amy Creator 12 unread" });
+    const amy = strip().getByRole("tab", { name: "Amy Creator 9+ unread" });
     // No unread conversations, no badge.
     const max = strip().getByRole("tab", { name: "Max Creator" });
 
@@ -165,14 +170,14 @@ describe("CreatorTabs", () => {
     expect(within(zed).getByText("3")).toBeInTheDocument();
   });
 
-  it("a count the relay cut off at its window (unread_capped) reads \"25+\"", async () => {
+  it("with the Knob off the route's exact count takes the Red circle rule: 25 reads \"9+\"", async () => {
     const amyCount = COUNTS[AMY];
-    COUNTS[AMY] = { unread: 25, owe_reply: 0, unread_capped: true };
+    COUNTS[AMY] = { unread: 25, owe_reply: 0 };
     try {
       renderStrip();
-      const amy = await screen.findByRole("tab", { name: "Amy Creator 25+ unread" });
-      expect(within(amy).getByText("25+")).toBeInTheDocument();
-      expect(amy).toHaveAttribute("title", "Amy Creator — 25+ unread");
+      const amy = await screen.findByRole("tab", { name: "Amy Creator 9+ unread" });
+      expect(within(amy).getByText("9+")).toBeInTheDocument();
+      expect(amy).toHaveAttribute("title", "Amy Creator — 9+ unread — 0 awaiting reply");
       expect(strip().getByRole("tab", { name: "Zed Creator 3 unread" })).toBeInTheDocument();
     } finally {
       COUNTS[AMY] = amyCount;
@@ -182,7 +187,7 @@ describe("CreatorTabs", () => {
   it("clicking a tab sets the active Creator and marks it selected; Enter and Space do too", async () => {
     renderStrip();
     const zed = await screen.findByRole("tab", { name: "Zed Creator 3 unread" });
-    const amy = strip().getByRole("tab", { name: "Amy Creator 12 unread" });
+    const amy = strip().getByRole("tab", { name: "Amy Creator 9+ unread" });
     const max = strip().getByRole("tab", { name: "Max Creator" });
     // No saved scope: All Models, so no tab is selected.
     expect(scopeText()).toBe("all");
@@ -209,7 +214,7 @@ describe("CreatorTabs", () => {
 
   it("picking a tab prefetches that Creator's Fan List and refreshes its unread count", async () => {
     renderStrip();
-    const amy = await screen.findByRole("tab", { name: "Amy Creator 12 unread" });
+    const amy = await screen.findByRole("tab", { name: "Amy Creator 9+ unread" });
     expect(fanListReads(AMY)).toHaveLength(0);
 
     await userEvent.click(amy);
@@ -251,7 +256,7 @@ describe("CreatorTabs", () => {
 
   it("✕ on the active tab closes it, activates the first remaining tab and moves focus there", async () => {
     renderStrip();
-    const amy = await screen.findByRole("tab", { name: "Amy Creator 12 unread" });
+    const amy = await screen.findByRole("tab", { name: "Amy Creator 9+ unread" });
     await userEvent.click(amy);
     expect(scopeText()).toBe(`model:${AMY}`);
 
@@ -269,7 +274,7 @@ describe("CreatorTabs", () => {
 
   it("closing every tab shows the all-closed text, focuses \"+ Add a Creator\" and leaves the scope alone", async () => {
     renderStrip();
-    const amy = await screen.findByRole("tab", { name: "Amy Creator 12 unread" });
+    const amy = await screen.findByRole("tab", { name: "Amy Creator 9+ unread" });
     await userEvent.click(amy);
 
     // An inactive tab: the active one (not the first remaining, Zed) stays
@@ -375,9 +380,9 @@ describe("CreatorTabs", () => {
     // Back in the relay's position, between Zed and Max, and active.
     const tabs = strip().getAllByRole("tab");
     expect(tabs.map((t) => t.getAttribute("title"))).toEqual([
-      "Zed Creator — 3 unread",
-      "Amy Creator — 12 unread",
-      "Max Creator — 0 unread",
+      "Zed Creator — 3 unread — 0 awaiting reply",
+      "Amy Creator — 9+ unread — 0 awaiting reply",
+      "Max Creator — 0 unread — 0 awaiting reply",
     ]);
     expect(tabs[1]).toHaveAttribute("aria-selected", "true");
     expect(tabs[0]).toHaveAttribute("aria-selected", "false");
@@ -578,7 +583,7 @@ describe("CreatorTabs", () => {
     await screen.findByRole("tab", { name: /^Zed Creator/ });
     expect(screen.getByRole("status", { name: "Shown order" })).toHaveTextContent("unknown");
     await act(async () => { land(); });
-    await screen.findByRole("tab", { name: "Amy Creator 12 unread" });
+    await screen.findByRole("tab", { name: "Amy Creator 9+ unread" });
     expect(screen.getByRole("status", { name: "Shown order" })).toHaveTextContent("Amy Creator,Zed Creator,Max Creator");
     expect(tabNames()).toEqual(["Amy Creator", "Zed Creator", "Max Creator"]);
   });
@@ -657,7 +662,7 @@ describe("CreatorTabs", () => {
   it("right-click offers \"Open in a new window\", which opens the Creator window URL for that Creator as a separate window", async () => {
     const windowOpen = vi.spyOn(window, "open").mockImplementation(() => null);
     renderStrip();
-    const amy = await screen.findByRole("tab", { name: "Amy Creator 12 unread" });
+    const amy = await screen.findByRole("tab", { name: "Amy Creator 9+ unread" });
     const openItem = () => screen.queryByRole("button", { name: "Open in a new window" });
     expect(openItem()).toBeNull();
 
@@ -711,12 +716,12 @@ describe("CreatorTabs: the live mark", () => {
     const z = await screen.findByRole("tab", { name: "Zed Creator 3 unread no live connection" });
     expect(mark(z)).toBe("down");
     expect(z.querySelector("[data-live-mark]")).toHaveClass("bg-warn");
-    expect(z).toHaveAttribute("title", `Zed Creator — 3 unread — ${DOWN_3}`);
+    expect(z).toHaveAttribute("title", `Zed Creator — 3 unread — 0 awaiting reply — ${DOWN_3}`);
     // The tab's unread number is today's DOM.
     expect(within(z).getByText("3")).toBeInTheDocument();
-    const a = strip().getByRole("tab", { name: "Amy Creator 12 unread" });
+    const a = strip().getByRole("tab", { name: "Amy Creator 9+ unread" });
     expect(mark(a)).toBeNull();
-    expect(a).toHaveAttribute("title", "Amy Creator — 12 unread");
+    expect(a).toHaveAttribute("title", "Amy Creator — 9+ unread — 0 awaiting reply");
     // A routine reconnect (down 30 s): no dot.
     expect(mark(strip().getByRole("tab", { name: "Max Creator" }))).toBeNull();
     // No live region anywhere in the strip.
@@ -731,8 +736,8 @@ describe("CreatorTabs: the live mark", () => {
     };
     relayAccounts = [row(zed, skewed(ZED, 30_000)), row(amy, skewed(AMY, 210_000)), nia, max];
     renderStrip();
-    const a = await screen.findByRole("tab", { name: "Amy Creator 12 unread no live connection" });
-    expect(a).toHaveAttribute("title", `Amy Creator — 12 unread — ${DOWN_3}`);
+    const a = await screen.findByRole("tab", { name: "Amy Creator 9+ unread no live connection" });
+    expect(a).toHaveAttribute("title", `Amy Creator — 9+ unread — 0 awaiting reply — ${DOWN_3}`);
     expect(mark(strip().getByRole("tab", { name: "Zed Creator 3 unread" }))).toBeNull();
   });
 
@@ -747,10 +752,10 @@ describe("CreatorTabs: the live mark", () => {
       row(max, null, ago(5)),
     ];
     renderStrip();
-    const a = await screen.findByRole("tab", { name: "Amy Creator 12 unread disconnected" });
+    const a = await screen.findByRole("tab", { name: "Amy Creator 9+ unread disconnected" });
     expect(mark(a)).toBe("dead");
     expect(a.querySelector("[data-live-mark]")).toHaveClass("bg-err");
-    expect(a).toHaveAttribute("title", "Amy Creator — 12 unread — Disconnected");
+    expect(a).toHaveAttribute("title", "Amy Creator — 9+ unread — 0 awaiting reply — Disconnected");
     const m = strip().getByRole("tab", { name: "Max Creator disconnected" });
     expect(mark(m)).toBe("dead");
     expect(mark(strip().getByRole("tab", { name: "Zed Creator 3 unread" }))).toBeNull();
@@ -773,5 +778,116 @@ describe("CreatorTabs: the live mark", () => {
     const m = picker.getByRole("button", { name: "Max Creator open" });
     expect(mark(m)).toBeNull();
     expect(m).not.toHaveAttribute("title");
+  });
+});
+
+/* ── The Red circle from the Freshness store (creator-badges 0B, ticket 10) ── */
+
+describe("CreatorTabs: the Red circle", () => {
+  /** An accounts row whose `freshness` carries `values.unread_total` = `total`. */
+  const withTotal = (a: ReturnType<typeof account>, total: object | null) => {
+    const now = Date.now();
+    return { ...a, freshness: { account_id: a.id, boot: now - 3_600_000, seq: 1, now, at: now - 30_000, cycle_s: 120,
+                                live: "up", live_since: now - 600_000, values: { unread_total: total } } };
+  };
+  const total = (n: number | null, grey: string | null = null) => ({ n, at: Date.now() - 1_000, v: 1, grey });
+  const [zed, amy, nia, max] = ACCOUNTS;
+  const sortBy = async (label: string) => {
+    await userEvent.click(screen.getByRole("button", { name: "Sort creator tabs" }));
+    await userEvent.click(within(screen.getByRole("region", { name: "Sort creator tabs" })).getByRole("button", { name: label }));
+  };
+  const names = () => strip().getAllByRole("tab").map((t) => within(t).getByText(/ Creator$/).textContent);
+
+  it("draws \"9+\", the digit or a Grey circle from the slot, never the route's count; the title says the same", async () => {
+    relayAccounts = [withTotal(zed, total(35)), withTotal(amy, total(3)), nia, withTotal(max, total(4, "socket_down"))];
+    renderStrip();
+    const z = await screen.findByRole("tab", { name: "Zed Creator 9+ unread" });
+    expect(z).toHaveAttribute("title", "Zed Creator — 9+ unread — 0 awaiting reply");
+    const a = strip().getByRole("tab", { name: "Amy Creator 3 unread" });
+    expect(a).toHaveAttribute("title", "Amy Creator — 3 unread — 0 awaiting reply");
+    const m = strip().getByRole("tab", { name: "Max Creator unread count unknown" });
+    expect(m).toHaveAttribute("title", "Max Creator — unread count unknown");
+    expect(m.querySelector("[data-red-circle='grey']")).toBeInTheDocument();
+    expect(m.textContent).not.toMatch(/\d/);
+  });
+
+  it("story 26: a slot {n: 3} renders \"3\" and the tab's text and title hold no other number", async () => {
+    relayAccounts = [zed, withTotal(amy, { n: 3 }), nia, max];
+    renderStrip();
+    const a = await screen.findByRole("tab", { name: "Amy Creator 3 unread" });
+    expect(a.textContent!.match(/\d+/g)).toEqual(["3"]);
+    expect(a.getAttribute("title")!.match(/\d+/g)).toEqual(["3", "0"]);
+  });
+
+  it("0 draws no circle; \"Most unread first\" sorts by the shown number, grey as 0 whatever its `n`", async () => {
+    // Custom order Zed, Amy, Max: grey with n 5, then 2, then 0. Raw `n` would put Zed first; grey-last would put it
+    // after Max. Grey as 0 ties with Max and keeps its place before it.
+    relayAccounts = [withTotal(zed, total(5, "socket_down")), withTotal(amy, total(2)), nia, withTotal(max, total(0))];
+    renderStrip();
+    const m = await screen.findByRole("tab", { name: "Max Creator" });
+    expect(m).toHaveAttribute("title", "Max Creator — 0 unread — 0 awaiting reply");
+    expect(strip().getByRole("tab", { name: "Zed Creator unread count unknown" })).toBeInTheDocument();
+    await sortBy("Most unread first");
+    expect(names()).toEqual(["Amy Creator", "Zed Creator", "Max Creator"]);
+  });
+
+  it("a non-OF Creator's null slot draws the route's count by the new rule", async () => {
+    relayAccounts = [withTotal(zed, total(1)), withTotal(amy, null), nia, max];
+    renderStrip();
+    const a = await screen.findByRole("tab", { name: "Amy Creator 9+ unread" });
+    expect(a).toHaveAttribute("title", "Amy Creator — 9+ unread — 0 awaiting reply");
+  });
+
+  it("the Relay's stream unreachable: every tab grey, route counts or not", async () => {
+    bus.connected = false;
+    relayAccounts = [withTotal(zed, total(3)), amy, nia, max];
+    renderStrip();
+    await screen.findByRole("tab", { name: "Zed Creator unread count unknown" });
+    expect(strip().getByRole("tab", { name: "Amy Creator unread count unknown" })).toBeInTheDocument();
+    expect(strip().getByRole("tab", { name: "Max Creator unread count unknown" })).toBeInTheDocument();
+  });
+});
+
+describe("CreatorTabs: the Amber circle", () => {
+  const withTotal = (a: ReturnType<typeof account>, total: object) => {
+    const now = Date.now();
+    return { ...a, freshness: { account_id: a.id, boot: now - 3_600_000, seq: 1, now, at: now - 30_000, cycle_s: 120,
+                                live: "up", live_since: now - 600_000, values: { unread_total: total } } };
+  };
+  const total = (n: number, amber: number | null, grey: string | null = null) =>
+    ({ n, at: Date.now() - 1_000, v: 1, grey, amber, amber_at: Date.now() - 2_000 });
+  const [zed, amy, nia, max] = ACCOUNTS;
+  const owe = (tab: HTMLElement) => tab.querySelector<HTMLElement>("[data-badge='owe']");
+
+  it("draws \"3\", \"9+\" or a grey amber dot after the red one; the title and accessible name say \"awaiting reply\"", async () => {
+    relayAccounts = [withTotal(zed, total(2, 3)), withTotal(amy, total(1, 40)), nia, withTotal(max, total(4, null))];
+    renderStrip();
+    const z = await screen.findByRole("tab", { name: "Zed Creator 2 unread 3 awaiting reply" });
+    expect(z).toHaveAttribute("title", "Zed Creator — 2 unread — 3 awaiting reply");
+    expect(owe(z)).toHaveTextContent("3");
+    expectDomOrder([within(z).getByText("2"), owe(z)!]);
+    const a = strip().getByRole("tab", { name: "Amy Creator 1 unread 9+ awaiting reply" });
+    expect(a).toHaveAttribute("title", "Amy Creator — 1 unread — 9+ awaiting reply");
+    expect(owe(a)).toHaveTextContent("9+");
+    const m = strip().getByRole("tab", { name: "Max Creator 4 unread awaiting reply unknown" });
+    expect(m).toHaveAttribute("title", "Max Creator — 4 unread — awaiting reply unknown");
+    expect(owe(m)).toHaveAttribute("data-amber-circle", "grey");
+    expect(owe(m)!.textContent).not.toMatch(/\d/);
+  });
+
+  it("0 draws none; a whole-Creator grey draws exactly one grey circle; a slot with no `amber` key draws the route's owe_reply", async () => {
+    relayAccounts = [withTotal(zed, total(2, 0)), withTotal(amy, total(5, 2, "socket_down")), nia,
+                     withTotal(max, { n: 0, at: Date.now() - 1_000, v: 1, grey: null })];
+    COUNTS[MAX] = { unread: 0, owe_reply: 4 };
+    onTestFinished(() => { COUNTS[MAX] = { unread: 0, owe_reply: 0 }; });
+    renderStrip();
+    const z = await screen.findByRole("tab", { name: "Zed Creator 2 unread" });
+    expect(owe(z)).toBeNull();
+    expect(z).toHaveAttribute("title", "Zed Creator — 2 unread — 0 awaiting reply");
+    const a = strip().getByRole("tab", { name: "Amy Creator unread count unknown" });
+    expect(a.querySelectorAll("[data-red-circle='grey'], [data-badge='owe']")).toHaveLength(1);
+    expect(a).toHaveAttribute("title", "Amy Creator — unread count unknown");
+    const m = strip().getByRole("tab", { name: "Max Creator 4 awaiting reply" });
+    expect(owe(m)).toHaveTextContent("4");
   });
 });

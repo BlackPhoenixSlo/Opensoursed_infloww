@@ -10,10 +10,10 @@ const NOW = Date.parse("2026-11-02T12:00:00Z");
 
 type State = "unread" | "owed" | "idle";
 /** A chat: `state` sets who wrote last and the unread flag; `ago` is hours since its last message. */
-function chat(name: string, cents: number, state: State, ago = 0, restricted = false) {
+function chat(name: string, cents: number, state: State, ago = 0, excluded = false) {
   return {
     __accountId: CREATOR,
-    withUser: { id: name, name, isRestricted: restricted },
+    withUser: { id: name, name, badgeExcluded: excluded },
     lastMessage: {
       fromUser: { id: state === "idle" ? CREATOR : name },
       createdAt: new Date(NOW - ago * 3_600_000).toISOString(),
@@ -148,15 +148,34 @@ describe("chipCounts", () => {
       want: { allCount: 2, unreadCount: 1, oweReplyCount: 2 },
     },
     {
+      case: "isRestricted alone (no badgeExcluded stamp) counts",
+      rows: [{ ...chat("R", 0, "unread"), withUser: { id: "R", name: "R", isRestricted: true } } as OFChatItem],
+      want: { allCount: 1, unreadCount: 1, oweReplyCount: 1 },
+    },
+    {
+      // Fan-last, so still owed: only the unread half leaves it out.
+      case: "a muted unread row is not in the Unread count",
+      rows: [{ ...chat("M", 0, "unread"), isMutedNotifications: true } as OFChatItem, chat("U", 0, "unread")],
+      want: { allCount: 2, unreadCount: 1, oweReplyCount: 2 },
+    },
+    {
+      case: "muted unread, not owed → allCount 0",
+      rows: [{ ...chat("M", 0, "unread"), isMutedNotifications: true } as OFChatItem],
+      owed: () => false,
+      want: { allCount: 0, unreadCount: 0, oweReplyCount: 0 },
+    },
+    {
       case: "an owed fan counts on All and Owe reply, not Unread",
       rows: [chat("O", 0, "owed"), chat("I", 0, "idle")],
       want: { allCount: 1, unreadCount: 0, oweReplyCount: 1 },
     },
-  ])("$case", ({ rows, want }) => {
-    expect(chipCounts(rows, { isOwed })).toEqual(want);
-    // The active chip's count is All's rule alone.
-    expect(attentionCount(rows, isOwed)).toBe(want.allCount);
-  });
+  ] as Array<{ case: string; rows: OFChatItem[]; owed?: (c: OFChatItem) => boolean; want: ReturnType<typeof chipCounts> }>)(
+    "$case", ({ rows, owed = isOwed, want }) => {
+      expect(chipCounts(rows, { isOwed: owed })).toEqual(want);
+      // The active chip's count is All's rule alone.
+      expect(attentionCount(rows, owed)).toBe(want.allCount);
+    },
+  );
 });
 
 describe("chipCountsWithUnreadView", () => {

@@ -29,9 +29,10 @@ aiosqlite==0.20.0
 python-dotenv==1.0.1
 # Backend the websockets lib uses for HTTP-CONNECT + SOCKS5 proxy tunneling.
 # We route the OF realtime WS through the same per-account proxy as REST,
-# so the egress IP matches; without python-socks, websockets would fall back
-# to a direct TCP connect even when proxy=... is passed (silent leak).
-python-socks==2.5.1
+# so the egress IP matches. websockets 16 needs >= 2.7 for socks5: 2.5.1's
+# asyncio backend imports async-timeout and lacks `local_addr`, so the WS
+# never connected.
+python-socks==2.7.3
 # Perceptual hashing for vault duplicate detection (service/vault_dupes.py) and
 # frame downscaling before a vision call (vault_ai_api). Previously host-only —
 # it now runs IN the relay, so the image needs it. vault_dupes still imports it

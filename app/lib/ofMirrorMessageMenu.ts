@@ -480,7 +480,7 @@ export function useOfMessageMenu(frameRef: RefObject<HTMLIFrameElement | null>, 
   const fan = chat ? (users.data as Record<string, FanState> | undefined)?.[chat] : undefined;
   const limited = !!(fan?.isRestricted || fan?.isBlocked);
   // The pins (the pinned page's thread): their count turns Unpin all on or off.
-  const pinned = useChatPinned(accountId, fanId, isPinned);
+  const pinned = useChatPinned(accountId, fanId, { enabled: isPinned });
   const pins = isPinned ? pinned.data?.length : undefined;
   const newWrites = useOfmNewWrites(!!page, accountId);
 

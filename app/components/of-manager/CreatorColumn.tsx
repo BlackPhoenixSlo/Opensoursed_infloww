@@ -320,7 +320,6 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
               account={a}
               active={value === a.id}
               unread={rosterCounts[a.id]?.unread ?? 0}
-              unreadCapped={rosterCounts[a.id]?.unread_capped}
               onPick={() => onChange(a.id)}
               collapsed={collapsed}
               prefetch={ofManager}
@@ -363,13 +362,11 @@ function AllCreatorsTile({ small = false }: { small?: boolean }) {
   );
 }
 
-function CreatorRow({ account, active, unread, unreadCapped, onPick, collapsed = false, prefetch = false, leaseRef }: {
+function CreatorRow({ account, active, unread, onPick, collapsed = false, prefetch = false, leaseRef }: {
   account: AccountMeta;
   active: boolean;
   /** Chats with unread messages (the roster counts). */
   unread: number;
-  /** The count may be cut off at the relay's chats window: shown as "N+". */
-  unreadCapped?: boolean;
   onPick: () => void;
   /** The 70px strip: the avatar and its dot only. */
   collapsed?: boolean;
@@ -439,7 +436,7 @@ function CreatorRow({ account, active, unread, unreadCapped, onPick, collapsed =
                 aria-label={`${unread} unread chats`}
                 className="px-1 py-px rounded-[22px] bg-[#FF7C71] text-white text-[10px] font-medium leading-none tabular-nums"
               >
-                {unread > 99 ? "99+" : rosterUnreadText(unread, unreadCapped)}
+                {rosterUnreadText(unread)}
               </span>
             )}
           </span>

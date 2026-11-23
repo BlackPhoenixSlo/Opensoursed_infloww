@@ -14,7 +14,8 @@ add_tail_signals flags 3+ trailing inbound and an unopened trailing PPV. MASS_PL
 mirrors attribution._MASS_PLACEHOLDER_BASE (read via ast: importing attribution opens the DB).
 
 run(parse_args([...])) end to end against a temp sqlite FILE with --no-media: exit 0, the payload
-shape, the picked ids in union order.
+shape, the picked ids in union order. fetch_thread_media pages with peek=True (a first-page GET
+marks the chat read on OF).
 
 Run as a script (the repo's convention, no pytest):
     ./venv/bin/python service/tests/test_convo_review_fetch.py
@@ -46,6 +47,8 @@ def _no_network(*_a, **_k):
 
 
 # Nothing reachable from these tests fetches media; if that ever changes, fail loudly, never fetch.
+# The real pager is kept for the one test that hands it a fake client.
+_fetch_thread_media = crf.fetch_thread_media
 crf.fetch_thread_media = crf.fetch_still = crf.fetch_giphy = _no_network
 
 
@@ -341,6 +344,22 @@ def test_run_end_to_end_no_media():
         assert [(t["shown"], t["truncated"]) for t in ts] == [(8, False), (9, False)]
         assert [m["body"] for m in ts[0]["messages"]] == [f"m{i}" for i in range(8)]
         assert [m["hit"] for m in ts[1]["messages"]].count(True) == 1
+
+
+def test_fetch_thread_media_peeks():
+    calls = []
+
+    class _Client:
+        def get_messages(self, fan_id, **kw):
+            calls.append(kw)
+            if kw.get("before_id") is None:
+                return {"list": [{"id": 9, "media": [{"id": 1}]}, {"id": 8}], "hasMore": True}
+            return {"list": [{"id": 7, "media": [{"id": 2}]}], "hasMore": False}
+
+    got = _fetch_thread_media(_Client(), 5, {9, 7}, max_pages=5, page_size=10, delay_s=0)
+    assert got == {9: [{"id": 1}], 7: [{"id": 2}]}, got
+    assert [c.get("before_id") for c in calls] == [None, 8], calls
+    assert all(c.get("peek") is True for c in calls), calls
 
 
 if __name__ == "__main__":

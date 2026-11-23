@@ -774,6 +774,10 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
             why = jev_res.get("status")
         else:
             why = j.get("status") if j.get("status") not in (None, "ok") else "jev_missing"
+        if vault_jev_rules.rejected(prev_ai):
+            return {"media_id": media_id, "ok": False, "status": vault_jev_rules.REJECTED,
+                    "detail": f"no Jev reading for this {item.kind}: TypeSafe refused the image (invalid dimensions) "
+                              "— not retried by sweeps"}
         if vault_jev_rules.retries_spent(prev_ai):   # terminal: no sweep retries it (honest skip, `vault_sweep.NEUTRAL`)
             return {"media_id": media_id, "ok": False, "status": vault_jev_rules.GAVE_UP,
                     "detail": f"no Jev reading for this {item.kind}: its sources kept failing, Jev gave up — "

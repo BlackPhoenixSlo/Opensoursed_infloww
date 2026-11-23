@@ -19,7 +19,8 @@
  * - `sort` / `setSort(sort)`: how the strip orders the open tabs (MP2's chat
  *   sorting, 04-messages-pro P9): "custom" (the saved order, the default),
  *   "unread" (most unread first), "az" or "za" (by name). The strip applies
- *   it (`sortTabs`), since "unread" reads the roster counts;
+ *   it (`sortTabs`), since "unread" reads the tabs' Red circles (`redCircle`:
+ *   the Freshness store's slot, else the roster counts; grey as 0);
  *   `useShownCreatorTabs` is that order, for the strip and anyone who must
  *   follow it.
  *
@@ -38,13 +39,17 @@
  * result down, so the strip and the picker share it.
  */
 
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { useAccounts, usePlatformAccounts } from "@/hooks/useAccounts";
+import { useCreatorFreshnessState } from "@/hooks/useCreatorFreshness";
 import { useEmployeeKey } from "@/hooks/useEmployeeKey";
-import { useRosterCountsRead, type RosterCount } from "@/hooks/useRosterCounts";
+import { useRosterCountsRead } from "@/hooks/useRosterCounts";
+import { eventBus } from "@/lib/events";
 import type { AccountMeta } from "@/lib/relay";
 import { readStorage, subscribeToStorage } from "@/lib/storageSync";
+import { amberCircle, type AmberCircle } from "./amberCircle";
+import { redCircle, shownUnread, type RedCircle } from "./redCircle";
 
 export type CreatorTabsStore = {
   open: AccountMeta[];
@@ -71,17 +76,32 @@ export function sortTabs(open: AccountMeta[], sort: CreatorSort, unreadOf: (id: 
   return out;
 }
 
+/** The Relay's event stream is up (`eventBus.onStateChange`). */
+function useRelayReachable(): boolean {
+  const [up, setUp] = useState(true);
+  useEffect(() => eventBus.onStateChange(setUp), []);
+  return up;
+}
+
 /** The open tabs as the strip shows them: `store.open` in `store.sort`
- *  ("unread" by the roster counts, also handed back for the tabs' badges).
- *  `known`: that order is settled — the store is ready and, sorted by unread,
- *  the counts' first read is over. */
+ *  ("unread" by each tab's Red circle, also handed back for the tabs, with
+ *  each tab's Amber circle). `known`: that order is settled — the store is
+ *  ready and, sorted by unread, the counts' first read is over. */
 export function useShownCreatorTabs(store: CreatorTabsStore): {
-  open: AccountMeta[]; counts: Record<string, RosterCount>; known: boolean;
+  open: AccountMeta[]; circles: Record<string, RedCircle>; ambers: Record<string, AmberCircle>; known: boolean;
 } {
   const { counts, settled } = useRosterCountsRead();
+  const freshness = useCreatorFreshnessState();
+  const reachable = useRelayReachable();
   const { open, sort, ready } = store;
-  const shown = useMemo(() => sortTabs(open, sort, (id) => counts[id]?.unread ?? 0), [open, sort, counts]);
-  return { open: shown, counts, known: ready && (sort !== "unread" || settled) };
+  const circles = useMemo(() => Object.fromEntries(open.map((a) => [
+    a.id, redCircle(freshness[a.id]?.values.unread_total, reachable, counts[a.id]?.unread, settled),
+  ])), [open, freshness, reachable, counts, settled]);
+  const ambers = useMemo(() => Object.fromEntries(open.map((a) => [
+    a.id, amberCircle(freshness[a.id]?.values.unread_total, circles[a.id].kind, counts[a.id]?.owe_reply),
+  ])), [open, freshness, circles, counts]);
+  const shown = useMemo(() => sortTabs(open, sort, (id) => shownUnread(circles[id])), [open, sort, circles]);
+  return { open: shown, circles, ambers, known: ready && (sort !== "unread" || settled) };
 }
 
 /** The stored value (Contracts). An empty `order` means the relay's order;

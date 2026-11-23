@@ -209,10 +209,11 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    page and only B's Fans; no 5xx in the browser session. `fanlist-scope-switch.json`. Then B's "Load more
    conversations" -> B's offset-25 read and its Fans on the list; then back on A's tab, A's page that was held
    across the switch is on A's list. While the owner is on B, one chat on A's head page turns unread on OF (or
-   read, if all are unread); back on A (past the badge bust's 8 s cooldown), the tab's badge and the list agree:
-   A's tab says the head page's unread count and A's list shows exactly that many unread rows among the head
-   page's Fans (the badge folds OF's first 25 chats, `_ROSTER_SCAN_MAX`). Screenshots
-   fanlist-a-next-page-in-flight (trigger), fanlist-b-settled, fanlist-b-page2-settled, fanlist-a-back-settled.
+   read, if all are unread); back on A (past the Relay's 30 s shared Hover cooldown since A's warm bust, so the
+   return's bust re-reads OF), the tab's badge and the list agree: A's tab says the head page's unread count and
+   A's list shows exactly that many unread rows among the head page's Fans (the badge folds OF's first 25
+   chats, `_ROSTER_SCAN_MAX`). Screenshots fanlist-a-next-page-in-flight (trigger), fanlist-b-settled,
+   fanlist-b-page2-settled, fanlist-a-back-settled.
 18b. Refused schedule after a chat switch (app/components/chat/refusedOffers.ts, Composer): Messages Pro on
    Creator 2, Fan A's chat: PPV $5, lock text, a tagged Creator, text, Timed message +5m, Enter -> the
    scheduled-sends POST is held at the wire while the owner opens Fan B's chat, then refused 400 (the
@@ -2695,7 +2696,9 @@ async def _smartlist_steps(ctx, page, chk, posts: list[dict]) -> None:
 
 
 PAGE = 25  # useChatList's PAGE_SIZE (and the relay's badge window, server._ROSTER_SCAN_MAX)
-BUST_COOLDOWN_S = 8.5  # app/hooks/useRosterCounts.ts REFRESH_COOLDOWN_MS (8 s) + margin: a bust sooner is skipped
+# service/badge_reads_decide.py HOVER_COOLDOWN_MS (30 s, shared per Creator) + margin: a bust sooner answers the
+# held count with no OF read.
+HOVER_COOLDOWN_S = 31.0
 B_LATENCY_S = 2.5  # Creator B's /chats answer time: a slow proxy (a guess; AE's slow reads measured 6-8 s)
 ROW_HANDLE = """(r) => { const h = [...r.querySelectorAll('span')].find(s => /^@\\S+$/.test(s.textContent || ''));
   return h ? h.textContent.slice(1) : null; }"""  # a chat row's Fan handle, without the @
@@ -2927,7 +2930,7 @@ async def _fanlist(ctx, page, chk) -> None:
         head = view[a["id"]][:PAGE]
         head_handles = [r["withUser"]["username"] for r in head]
         want_unread = sum(_unread(r) for r in head)
-        await asyncio.sleep(max(0.0, BUST_COOLDOWN_S - (time.monotonic() - t_bust)))  # the return's bust is not skipped
+        await asyncio.sleep(max(0.0, HOVER_COOLDOWN_S - (time.monotonic() - t_bust)))  # the return's bust re-reads OF
         bust_back = asyncio.ensure_future(page.wait_for_event("response", lambda r: bust in r.url, timeout=15_000))
         rereads = [asyncio.ensure_future(page.wait_for_event("response", a_read(off), timeout=15_000)) for off in (0, PAGE)]
         await _creator_tab(page, a)

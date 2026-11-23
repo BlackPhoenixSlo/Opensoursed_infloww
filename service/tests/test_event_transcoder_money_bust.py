@@ -14,6 +14,9 @@ money does:
 
 Unchanged by it: every inbound DM still drops `roster_count` (the unread badge).
 
+A Creator echo (no `fromUser`, `chatUserId` = the Fan) writes no `messages` row, drops only that Fan's
+`get_chat` and leaves the outbound debounce alone.
+
 Run: ./venv/bin/python service/tests/test_event_transcoder_money_bust.py   (exit 0 = pass)
 """
 from __future__ import annotations
@@ -29,7 +32,8 @@ import event_transcoder as et  # noqa: E402
 import relay_cache  # noqa: E402
 import webhook_dispatch  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account  # noqa: E402
+from db.models import Account, Message  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 
 _AID = "8826001"
 _FAN = 777260
@@ -130,6 +134,32 @@ async def case_plain_dm_still_drops_the_unread_badge():
     await et.transcode(_dm())
     await _drain()
     assert not await _kept("roster_count", ()), "a plain DM must still drop roster_count"
+
+
+
+async def _messages() -> int:
+    async with get_session() as s:
+        return await s.scalar(select(func.count()).select_from(Message).where(Message.account_id == _AID))
+
+
+async def case_echo_drops_only_its_get_chat():
+    await _seed_account()
+    before = await _messages()
+    other = _FAN + 1
+    relay_cache.invalidate("get_chat", _AID)
+    for fan in (_FAN, other):
+        await relay_cache.get_or_fetch("get_chat", _AID, (fan,), 300.0, lambda: {"warm": True})
+    for ns in ("list_chats", "roster_count"):
+        await _warm(ns, ())
+    et._last_out_bust.pop(_AID, None)
+    await et.transcode({"api2_chat_message": {"id": next(_ids), "text": "<p>on it</p>", "chatUserId": _FAN,
+                                              "createdAt": "2026-11-09T10:00:00+00:00"}, "__account_id": _AID})
+    await _drain()
+    assert await _messages() == before, "no messages row"
+    assert relay_cache.peek("get_chat", _AID, (_FAN,)) is None, "that Fan's chat detail dropped"
+    assert relay_cache.peek("get_chat", _AID, (other,)) is not None, "another Fan's kept"
+    assert await _kept("list_chats", ()) and await _kept("roster_count", ()), "no outbound bust"
+    assert _AID not in et._last_out_bust, "the outbound debounce untouched"
 
 
 _harness.run()

@@ -58,11 +58,15 @@ class SseListener:
     `states=("agency_notifications", ...)`: every event of those types (alone or in a
     batch) is kept in `state_events` as (type, its fields, its `__account_id`), in order.
 
-    `last_id`: the first connect already sends `Last-Event-ID` (a dropped stream's reconnect)."""
+    `last_id`: the first connect already sends `Last-Event-ID` (a dropped stream's reconnect).
+
+    `lease=True` opens the stream as the app does (`?lease=1`: an app tab, its clamp Open-tab Creators); every
+    ping's data goes to `_ping` (a no-op here)."""
 
     def __init__(self, http, scope: str = "all", *, resume: bool = False, retry_s: float = 3.0,
-                 states: tuple[str, ...] = (), last_id: str | None = None):
+                 states: tuple[str, ...] = (), last_id: str | None = None, lease: bool = False):
         self.http, self.scope, self.resume, self.retry_s = http, scope, resume, retry_s
+        self.lease = lease
         self._resume_from = last_id  # the first connect sends Last-Event-ID: a browser tab's reconnect
         self.states = tuple(states)
         self.state_events: list[tuple[str, dict, str | None]] = []
@@ -99,7 +103,8 @@ class SseListener:
 
     async def _stream(self) -> None:
         hdr = {"Last-Event-ID": self.last_id} if (self.reconnects or self._resume_from) and self.last_id else {}
-        async with self.http.c.stream("GET", f"/events?scope={self.scope}", headers=hdr, timeout=None) as r:
+        url = f"/events?scope={self.scope}" + ("&lease=1" if self.lease else "")
+        async with self.http.c.stream("GET", url, headers=hdr, timeout=None) as r:
             self.http.rec.add("GET /events (status)", r.status_code, 0.0)
             self.status = r.status_code
             if r.status_code != 200:
@@ -118,6 +123,8 @@ class SseListener:
                 elif line.startswith("event:"):
                     event = line[6:].strip()
                     self.events[event] += 1
+                elif line.startswith("data:") and event == "ping":
+                    self._ping(line[5:])
                 elif line.startswith("data:") and event not in (None, "ping"):
                     now = time.time() * 1000
                     try:
@@ -148,6 +155,9 @@ class SseListener:
                         self.message_ids.append(mid)
                         self.received_at.setdefault(mid, now)
 
+    def _ping(self, data: str) -> None:
+        pass
+
     def _keep_states(self, obj) -> None:
         if isinstance(obj, dict):
             hit = next((t for t in self.states if isinstance(obj.get(t), dict)), None)
@@ -176,15 +186,15 @@ class OwnerTab:
     """The Agency owner's dashboard tab in its default All scope (no account filter):
     the tab-open reads (UserContext /auth/me, useAccounts /admin/accounts, appliedSettings,
     useRosterCounts, ErrorBadge), ONE `/events?scope=all` stream, the All-scope inbox head
-    (`/admin/chats/recent?limit=25`, useRecentChatsLocal.ts) and the 60 s polls
-    (roster-counts; /admin/accounts has a 60 s staleTime). The real tab reads the inbox head
+    (`/admin/chats/recent?limit=25`, useRecentChatsLocal.ts) and the 60 s poll
+    (/admin/accounts has a 60 s staleTime; roster-counts is read at open only). The real tab reads the inbox head
     at open and on every scope switch (5 min stale cache, no interval); this one re-reads it
     every `inbox_s` (the owner flicking back to All), so each stage has samples.
     `inbox`: (end epoch s, ms, status) per head read; `rows_seen`: every row's account."""
 
     TAB_OPEN = ("/auth/me", "/admin/accounts", "/admin/settings/applied", "/admin/accounts/roster-counts",
                 "/admin/errors?since_hours=24&limit=50")
-    POLL_60S = ("/admin/accounts/roster-counts", "/admin/accounts")
+    POLL_60S = ("/admin/accounts",)
 
     def __init__(self, http, rng, *, inbox_s: float = 10.0, poll_s: float = 60.0, head: int = 25):
         self.http, self.rng, self.inbox_s, self.poll_s, self.head = http, rng, inbox_s, poll_s, head

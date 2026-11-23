@@ -88,6 +88,8 @@ OF_AUTOMATIONV1/
 .claude/skills/*
 !.claude/skills/review-loop/
 !.claude/skills/thermo-nuclear-code-quality-review/
+!.claude/skills/ui-explore/
+!.claude/skills/verify-app/
 
 # graphify output — regenerable, and it distills private design docs + carries
 # absolute laptop paths, so it must never be committed (it reached the PUBLIC
@@ -215,3 +217,15 @@ infloww.com/
 # parody blog posts may contain "chat" in the slug; the *CHAT*.md rule above is case-insensitive on macOS
 !web/src/blog/*.md
 soak-runs/
+
+# proxy-health collector output (scripts/proxy-health/collect.sh, every 4 h): runs/, IDEAS.md, INCIDENTS.md stay local
+docs/proxy-health/*
+!docs/proxy-health/README.md
+
+# Do-mode draft eval: per-run results, spend ledger, throwaway eval DB
+scripts/assistant_draft_eval/results/
+
+# UI exploration runs (scripts/ui-explore): traces, screenshots, stack logs
+.scratch/ui-explore/
+# scripts/verify-app/drive.py runs: evidence + logs, never commit
+.scratch/verify-app/

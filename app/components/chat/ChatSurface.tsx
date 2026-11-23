@@ -114,8 +114,9 @@ export function ChatSurface({
    *  again on small screens; popout / group don't pass it. */
   onBack?: () => void;
   /** When the chat is marked read (our marker, and OF's "seen"). A queue
-   *  passes "afterFirstSend": opening (or skipping) a chat marks nothing; the
-   *  first send that reaches OF (not a scheduled one, nor a failed one) does. */
+   *  passes "afterFirstSend": opening (or skipping) a chat marks nothing (its
+   *  head reads peek, so OF leaves it unread too); the first send that reaches
+   *  OF (not a scheduled one, nor a failed one) does. */
   markRead?: "onOpen" | "afterFirstSend";
   /** A caller that prefetches threads: their fresh window (see useChatMessages). */
   prefetchWindowMs?: number;
@@ -193,7 +194,9 @@ export function ChatSurface({
   }, [accountId, meQ.data?.id]);
   const ownerUserId = meQ.data?.id ?? cachedOwnerId;
 
-  const handle = useChatMessages({ accountId, fanId, enabled: true, prefetchWindowMs });
+  const handle = useChatMessages({
+    accountId, fanId, enabled: true, prefetchWindowMs, peek: markRead === "afterFirstSend",
+  });
 
   // Cold-start seed: local SQLite via /admin/messages/{aid}/{fid}, mapped
   // to OFMessage shape. Lives in a SEPARATE cache key
@@ -342,9 +345,9 @@ export function ChatSurface({
           exact: false,
         }),
         qc.invalidateQueries({ queryKey: ["last-purchases", accountId] }),
-        // Force this model's badge authoritative (busts its server cache + re-reads
-        // only it); a plain invalidate would just refetch the stale cached count.
-        refreshRosterOne(accountId, { force: true }),
+        // The ?bust= rewarm: the Relay's shared 30 s Hover cooldown is its one budget, so a
+        // press inside it gets the held count with no OF read.
+        refreshRosterOne(accountId),
         // #11: also refresh the account's list/folder membership view so Refresh
         // updates which lists the fan is in / can be added to — the folder chips
         // and counts — not just this fan's messages/profile. (of-user above
@@ -369,7 +372,7 @@ export function ChatSurface({
     }
   }, [qc, accountId, fanId, refreshRosterOne]);
 
-  const noteSettled = useMarkChatRead({ accountId, fanId, hasUnread: !!chat.hasUnread, markRead });
+  const noteSettled = useMarkChatRead({ accountId, fanId, markRead });
   const settleSend = useCallback((status: SendStatus) => {
     onSendSettled?.(status);
     noteSettled(status);

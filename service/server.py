@@ -1610,6 +1610,12 @@ async def _start_event_pumps() -> None:
         await account_health.load_write_gate()
     except Exception:
         log.exception("deactivated Creators not loaded: their OF writes are NOT refused until a restart")
+    try:
+        freed = [aid for aid in await account_health.deactivated_ids() if proxy_registry.unbind_pool(aid)]
+        if freed:
+            log.info("deactivated Creators released their pool proxies: %s", freed)
+    except Exception:
+        log.exception("deactivated Creators' pool proxies not released")
 
     # Pre-add the default "strokes" funnel (once per box, insert-if-missing by
     # name — never overwrites an edited one, never resurrects a deleted one).
@@ -3279,6 +3285,7 @@ async def admin_chats_recent(
                 } if chat.last_message_id else None,
                 "hasUnread": (chat.unread_count or 0) > 0,
                 "unreadMessagesCount": chat.unread_count or 0,
+                "isMutedNotifications": bool(fan.is_muted) if fan else False,
             })
         return {"list": out, "source": "local-db"}
 
@@ -3428,7 +3435,9 @@ def _assemble_chats_page(
     chats_page.assemble_chats_page. A page OF's 429 cut short raises that 429
     (a short page cached as the whole window would hide the rest for the TTL);
     a dup-only read keeps OF's hasMore. Inside `_background_reads` with no request (the
-    window rewarm, which has no `_proxy` lane) it holds that Creator's background lane."""
+    window rewarm, which has no `_proxy` lane) it holds that Creator's background lane. `asked_at`: when it was asked
+    (epoch ms, the Relay clock); the Amber fold overlays what arrived after it."""
+    asked_at = unread_total._clock()
     bg_aid = _bg_reads_aid.get() if _request_ctx.get() is None else None
     with _priority_lane(bg_aid, priority="background"):
         page = chats_page.assemble_chats_page(
@@ -3436,7 +3445,7 @@ def _assemble_chats_page(
         )
     if page.throttled is not None:
         raise page.throttled
-    return {"list": page.rows, "hasMore": page.has_more}
+    return {"list": page.rows, "hasMore": page.has_more, "asked_at": asked_at}
 
 
 _CHATS_429_HOLD = chats_page.ThrottleHold()
@@ -3543,9 +3552,11 @@ async def _annotate_chat_rows(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
       withUser.isRestricted  restricted on OF via our UI (the durable skip_list
                              registry). The inbox list runs skip_users=all, whose
                              thin withUser is just {id, _view}, so OF never sends
-                             the flag here; the frontend chips need the stamp to
-                             apply the SAME unread-count exclusion the badge fold
-                             applies server-side.
+                             the flag here; the Restricted label and the Restrict
+                             toggle read the stamp.
+      withUser.badgeExcluded `unread_total_decide.excluded_from_badges`: the one
+                             rule the badge fold applies server-side; the app's
+                             unread counts and chips read this stamp only.
       withUser.needsHuman    a custom is owed (`fans.customs_owed_at`): the bot
                              stopped selling and a human has to record and send it
       withUser.autoRenewOff  listed active at the last roster crawl
@@ -3567,17 +3578,19 @@ async def _annotate_chat_rows(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
             ids.add(int((ch.get("withUser") or {}).get("id")))
         except (TypeError, ValueError):
             continue  # a Fansly snowflake or a malformed row: nothing stored for it
-    if not ids:
-        return resp
-    from automations._common import load_of_restricted_ids
-    from automations._customs import owed_fan_ids
-    from automations.lifecycle_messages import renew_off_fan_ids
-    restricted = await load_of_restricted_ids(aid) & ids
-    owed = await owed_fan_ids(aid) & ids
-    renew_off = await renew_off_fan_ids(aid, ids, datetime.utcnow())
-    if not (restricted or owed or renew_off):
-        return resp
+    import unread_total_decide
+    registry: set[int] = set()
+    owed: set[int] = set()
+    renew_off: set[int] = set()
+    if ids:
+        from automations._common import load_of_restricted_ids
+        from automations._customs import owed_fan_ids
+        from automations.lifecycle_messages import renew_off_fan_ids
+        registry = await load_of_restricted_ids(aid)
+        owed = await owed_fan_ids(aid) & ids
+        renew_off = await renew_off_fan_ids(aid, ids, datetime.utcnow())
     out_rows = []
+    stamped = False
     for ch in resp.get(rows_key) or []:
         wu = ch.get("withUser") or {}
         try:
@@ -3585,13 +3598,18 @@ async def _annotate_chat_rows(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             fid = None
         stamp = {}
-        if fid in restricted:
+        if fid in registry:
             stamp["isRestricted"] = True
+        if unread_total_decide.excluded_from_badges(wu.get("id"), ch, registry):
+            stamp["badgeExcluded"] = True
         if fid in owed:
             stamp["needsHuman"] = True
         if fid in renew_off:
             stamp["autoRenewOff"] = True
+        stamped = stamped or bool(stamp)
         out_rows.append({**ch, "withUser": {**wu, **stamp}} if stamp else ch)
+    if not stamped:
+        return resp
     return {**resp, rows_key: out_rows}
 
 
@@ -3676,18 +3694,20 @@ async def get_messages(
     order: str = Query("desc"),
     before_id: int | None = Query(None, description="Paginate older: pass last message id"),
     refresh: bool = Query(False, alias="refresh"),
+    peek: bool = False,
 ) -> dict[str, Any]:
     # BC2: cache ONLY paginated history (before_id non-None). Head page
     # (before_id=None) is where new messages land — we have no
     # per-message WS invalidator, so head MUST go through to OF every
     # time. Coalescing still applies on both paths.
+    # `peek=1`: the app's Background reads (prefetch, Focus); a plain head read is a click.
     aid = _current_aid()
     with _of_read_timing("messages", aid, chat_id):
-        coalesce_key = ("get_messages", aid, chat_id, before_id, limit, order)
+        coalesce_key = ("get_messages", aid, chat_id, before_id, limit, order, peek)
         async def _fetch():
             return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
                 _proxy, lambda: _get_client().get_messages(
-                    chat_id, limit=limit, order=order, before_id=before_id,
+                    chat_id, limit=limit, order=order, before_id=before_id, peek=peek,
                 ),
             ))
         if before_id is None:
@@ -3698,6 +3718,8 @@ async def get_messages(
             if isinstance(payload, dict) and aid:
                 # A reply sent from OF web / app has no event of its own.
                 relay_hooks.fire_thread_head(aid, chat_id, payload.get("list"))
+                if not peek:
+                    relay_hooks.fire_thread_click_read(aid, chat_id)
         else:
             # Paginated tail: mostly immutable, but PPV lock/unlock state can flip
             # on an old message when a fan pays — so cap the cache at 5min (not
@@ -5485,8 +5507,7 @@ async def of_mark_all_chats_read():
     """Mark EVERY chat as read (bulk no-arg endpoint). The local unread clears only for what the platform took
     (read_flip.after_write); anything less answers 502 (`_read_not_landed`)."""
     aid = _current_aid()
-    at = read_flip.now_ms()
-    result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_all_chats_read())
+    result, at = await read_flip.write(aid, None, lambda: _proxy(lambda: _get_client().mark_all_chats_read()))
     if not await read_flip.after_write(aid, None, 0, result, at=at):
         raise _read_not_landed(result)
     return result
@@ -5510,10 +5531,12 @@ async def of_mark_chat_read(chat_id: int):
     would reserve an 11 s write slot per chat ahead of the automations' fan
     sends."""
     aid = _current_aid()
-    at = read_flip.now_ms()
-    result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_read(chat_id))
+    result, at = await read_flip.write(aid, chat_id, lambda: _proxy(lambda: _get_client().mark_chat_read(chat_id)))
     if not await read_flip.after_write(aid, chat_id, 0, result, at=at):
         raise _read_not_landed(result)
+    # An open served from a peeked warm page sends no plain head read: this is its Click read.
+    # After after_write, so the backfill's scrape finds the local marker already zeroed.
+    relay_hooks.fire_thread_click_read(aid, chat_id)
     return result
 
 @app.delete("/api/of/v2/chats/{chat_id}/mark-as-read")
@@ -5522,8 +5545,8 @@ async def of_mark_chat_unread(chat_id: int):
     unread flip follows the platform's write: none on a 501 (Fansly has no
     server-side unread) or an upstream error."""
     aid = _current_aid()
-    at = read_flip.now_ms()
-    result = await asyncio.to_thread(_proxy, lambda: _platform_write("mark_chat_unread", "mark as unread")(chat_id))
+    result, at = await read_flip.write(
+        aid, chat_id, lambda: _proxy(lambda: _platform_write("mark_chat_unread", "mark as unread")(chat_id)))
     if not await read_flip.after_write(aid, chat_id, 1, result, at=at):
         raise _read_not_landed(result)
     return result
@@ -5531,16 +5554,22 @@ async def of_mark_chat_unread(chat_id: int):
 @app.post("/api/of/v2/chats/{chat_id}/mute")
 async def of_mute_chat(chat_id: int):
     """Mute notifications for a chat."""
-    r = await asyncio.to_thread(_proxy, lambda: _get_client().mute_chat(chat_id))
+    aid = _current_aid()
+    r, _at = await read_flip.write(aid, chat_id, lambda: _proxy(lambda: _get_client().mute_chat(chat_id)))
     relay_hooks.fire_mute(chat_id, True)
+    if read_flip.landed(r):
+        accounts_admin_api.amber_mute(aid, chat_id, True)
     _bust_chat_detail(None, chat_id)  # isMutedNotifications rides the detail
     _bust_chat_list()                 # ...and the cached /chats row the head poll reads
     return r
 
 @app.delete("/api/of/v2/chats/{chat_id}/mute")
 async def of_unmute_chat(chat_id: int):
-    r = await asyncio.to_thread(_proxy, lambda: _get_client().unmute_chat(chat_id))
+    aid = _current_aid()
+    r, _at = await read_flip.write(aid, chat_id, lambda: _proxy(lambda: _get_client().unmute_chat(chat_id)))
     relay_hooks.fire_mute(chat_id, False)
+    if read_flip.landed(r):
+        accounts_admin_api.amber_mute(aid, chat_id, False)
     _bust_chat_detail(None, chat_id)  # isMutedNotifications rides the detail
     _bust_chat_list()                 # ...and the cached /chats row the head poll reads
     return r

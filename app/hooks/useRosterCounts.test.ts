@@ -1,204 +1,173 @@
-/**
- * Roster badge math — the pure core of the optimistic-badge path.
- *
- * The realtime handler (and useSendMessage) derive a per-model badge delta from
- * the fan conversation's PRIOR state + message direction, instead of firing an
- * extra OF `?bust` re-read. These are the CONVERSATION-count semantics (a chat
- * contributes at most 1 to unread OR owe_reply) plus the poll-merge guard that
- * stops the 60s poll from clobbering an optimistic patch.
- */
-import { beforeEach, describe, it, expect } from "vitest";
-import { QueryClient } from "@tanstack/react-query";
+/** useRosterCounts: the Relay's answer cached as is, the `?bust=` rewarm, and the Knob-off fallback poll. */
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { createElement, type ReactNode } from "react";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+const principal = vi.hoisted(() => ({ chatter: false }));
+vi.mock("@/contexts/UserContext", async (orig) => ({
+  ...(await orig<object>()),
+  useOptionalUser: () => (principal.chatter ? null : { user: { user_id: "u1" }, loading: false }),
+}));
+vi.mock("@/contexts/ChatterContext", async (orig) => ({
+  ...(await orig<object>()),
+  useOptionalChatter: () => (principal.chatter ? { chatter: { chatter_id: "c1" } } : null),
+}));
+
+import { eventBus } from "@/lib/events";
+import { relay } from "@/lib/relay";
+import { ownerAccountsQuery } from "@/lib/ownerAccounts";
+import { chatterAccountsQuery } from "@/lib/chatterAccounts";
 import {
-  rosterDelta,
-  applyRosterDelta,
-  rosterPriorFromRow,
-  mergeRosterCounts,
+  useRosterCountActions,
+  useRosterCountsRead,
   resetRosterCountsModuleState,
-  takeWarmSeed,
-  writeWarmedRosterCount,
   type RosterCountsResp,
 } from "./useRosterCounts";
-import type { OFChatItem } from "@/lib/relay";
 
-describe("rosterDelta", () => {
-  // INBOUND — the fan spoke.
-  it("inbound to a caught-up chat → +1 blue", () => {
-    expect(rosterDelta(false, { wasUnread: false, fanSpokeLast: false })).toEqual({ dUnread: 1, dOwe: 0 });
-  });
-  it("inbound to an owe-reply (orange) chat → +1 blue, -1 orange", () => {
-    expect(rosterDelta(false, { wasUnread: false, fanSpokeLast: true })).toEqual({ dUnread: 1, dOwe: -1 });
-  });
-  it("inbound to an ALREADY-unread chat → no change (dedupe: no triple-count)", () => {
-    expect(rosterDelta(false, { wasUnread: true, fanSpokeLast: false })).toEqual({ dUnread: 0, dOwe: 0 });
-  });
-
-  // OUTBOUND — we replied.
-  it("outbound to an owe-reply chat → -1 orange", () => {
-    expect(rosterDelta(true, { wasUnread: false, fanSpokeLast: true })).toEqual({ dUnread: 0, dOwe: -1 });
-  });
-  it("outbound to a caught-up chat → no change", () => {
-    expect(rosterDelta(true, { wasUnread: false, fanSpokeLast: false })).toEqual({ dUnread: 0, dOwe: 0 });
-  });
-  it("outbound to a still-unread chat → -1 blue (kill stale blue)", () => {
-    expect(rosterDelta(true, { wasUnread: true, fanSpokeLast: false })).toEqual({ dUnread: -1, dOwe: 0 });
-  });
-});
-
-describe("applyRosterDelta", () => {
-  it("adds and subtracts", () => {
-    expect(applyRosterDelta({ unread: 2, owe_reply: 3 }, { dUnread: 1, dOwe: -1 })).toEqual({ unread: 3, owe_reply: 2 });
-  });
-  it("clamps at zero — a stale/duplicate event can never drive a badge negative", () => {
-    expect(applyRosterDelta({ unread: 0, owe_reply: 0 }, { dUnread: -1, dOwe: -1 })).toEqual({ unread: 0, owe_reply: 0 });
-  });
-  it("keeps unread_capped: a local patch never learns what sits past the relay's window", () => {
-    expect(applyRosterDelta({ unread: 25, owe_reply: 0, unread_capped: true }, { dUnread: -1, dOwe: 0 }))
-      .toEqual({ unread: 24, owe_reply: 0, unread_capped: true });
-  });
-});
-
-describe("rosterPriorFromRow", () => {
-  const row = (o: Partial<OFChatItem>): OFChatItem =>
-    ({ withUser: { id: 5, name: "f" }, ...o }) as OFChatItem;
-
-  it("null row → null (caller falls back to an authoritative re-read)", () => {
-    expect(rosterPriorFromRow(null)).toBeNull();
-  });
-  it("unreadMessagesCount>0 → wasUnread", () => {
-    expect(rosterPriorFromRow(row({ unreadMessagesCount: 2 }))).toMatchObject({ wasUnread: true });
-  });
-  it("hasUnread flag → wasUnread", () => {
-    expect(rosterPriorFromRow(row({ hasUnread: true }))).toMatchObject({ wasUnread: true });
-  });
-  it("fan spoke last (lastMessage.fromUser.id === fan) → fanSpokeLast", () => {
-    expect(
-      rosterPriorFromRow(row({ withUser: { id: 5, name: "f" }, lastMessage: { id: 1, fromUser: { id: 5 } } })),
-    ).toEqual({ wasUnread: false, fanSpokeLast: true });
-  });
-  it("we spoke last (lastMessage.fromUser.id !== fan) → !fanSpokeLast", () => {
-    expect(
-      rosterPriorFromRow(row({ withUser: { id: 5, name: "f" }, lastMessage: { id: 1, fromUser: { id: 999 } } })),
-    ).toEqual({ wasUnread: false, fanSpokeLast: false });
-  });
-});
-
-describe("mergeRosterCounts (60s-poll vs optimistic-patch race — codex FM2)", () => {
-  const resp = (c: Record<string, { unread: number; owe_reply: number }>): RosterCountsResp => ({ counts: c });
-
-  it("no prev cache → server response as-is", () => {
-    expect(mergeRosterCounts(resp({ a: { unread: 1, owe_reply: 0 } }), undefined, 100, () => 0)).toEqual({
-      counts: { a: { unread: 1, owe_reply: 0 } },
-    });
-  });
-  it("KEEPS the local value for an account patched WHILE the poll was in flight", () => {
-    const server = resp({ a: { unread: 0, owe_reply: 0 } }); // stale server snapshot
-    const prev = resp({ a: { unread: 1, owe_reply: 0 } }); // optimistic value
-    // patchedAt(a)=150 > fetchStartedAt=100 → the server predates the patch → keep local
-    expect(mergeRosterCounts(server, prev, 100, () => 150)).toEqual({ counts: { a: { unread: 1, owe_reply: 0 } } });
-  });
-  it("takes the SERVER value when the last patch predates the poll", () => {
-    const server = resp({ a: { unread: 5, owe_reply: 0 } });
-    const prev = resp({ a: { unread: 1, owe_reply: 0 } });
-    expect(mergeRosterCounts(server, prev, 100, () => 50)).toEqual({ counts: { a: { unread: 5, owe_reply: 0 } } });
-  });
-  it.each([
-    ["patched", 150],
-    ["never patched", 0],
-  ])("an account missing from the server response keeps its cached value (%s)", (_n, at) => {
-    const server = resp({}); // an Idle Creator the server holds nothing for (e.g. after a Relay restart)
-    const prev = resp({ a: { unread: 1, owe_reply: 0 } });
-    expect(mergeRosterCounts(server, prev, 100, () => at)).toEqual({ counts: { a: { unread: 1, owe_reply: 0 } } });
-  });
-});
-
-describe("mergeRosterCounts as_of (an Idle Creator's held count never jumps back, ADR-0031)", () => {
-  const resp = (c: RosterCountsResp["counts"]): RosterCountsResp => ({ counts: c });
-  const local = { unread: 2, owe_reply: 1 };
-  const held = (as_of?: number) => ({ unread: 0, owe_reply: 0, ...(as_of === undefined ? {} : { as_of }) });
-  it.each([
-    // [case, server as_of, patchedAt, fetchStartedAt, want]
-    ["a patch newer than as_of wins, though the poll started after it", 50, 60, 100, "local"],
-    ["a patch older than as_of loses", 50, 40, 100, "server"],
-    ["a patch at as_of loses", 50, 50, 100, "server"],
-    ["as_of 0 (unknown): the poll start decides, newer patch wins", 0, 150, 100, "local"],
-    ["as_of 0 (unknown): the poll start decides, older patch loses", 0, 60, 100, "server"],
-    ["no as_of: the poll start decides", undefined, 60, 100, "server"],
-  ] as const)("%s", (_n, asOf, patched, started, want) => {
-    const out = mergeRosterCounts(resp({ a: held(asOf) }), resp({ a: local }), started, () => patched);
-    expect(out.counts.a).toEqual(want === "local" ? local : held(asOf));
-  });
-});
-
-describe("mergeRosterCounts clock skew (as_of is server clock, patches are this tab's clock)", () => {
-  const local = { unread: 2, owe_reply: 1 };
-  const held = { unread: 0, owe_reply: 0, as_of: 1_000_000 };
-  const resp = (now?: number): RosterCountsResp => ({ counts: { a: held }, ...(now === undefined ? {} : { now }) });
-  const prev: RosterCountsResp = { counts: { a: local } };
-  // The server read the window at server 1_000_000 and answered at server `now`; the tab began the read at
-  // fetchStartedAt (tab clock). Skew is measured against fetchStartedAt (`now` is stamped at or after it),
-  // so response transit can only keep a patch, never drop it.
-  it.each([
-    // [case, server now, fetchStartedAt, patchedAt (tab clock), want]
-    ["tab 60 s behind: a patch 5 s after the read wins", 1_010_000, 950_000, 945_000, "local"],
-    ["tab 60 s behind: a patch 5 s before the read loses", 1_010_000, 950_000, 935_000, "server"],
-    ["tab 60 s ahead: a patch 5 s before the read loses", 1_010_000, 1_070_000, 1_055_000, "server"],
-    ["tab 60 s ahead: a patch 5 s after the read wins", 1_010_000, 1_070_000, 1_065_000, "local"],
-    ["no skew: plain compare", 1_010_000, 1_010_000, 1_005_000, "local"],
-    ["no `now` (old server): no skew assumed", undefined, 1_070_000, 1_005_000, "local"],
-    // Answer received at 1_000_600: the patch at 1_000_300 landed while the response was in transit.
-    ["equal clocks, slow response: a patch after the snapshot, before the answer lands, wins",
-      1_000_100, 1_000_050, 1_000_300, "local"],
-  ] as const)("%s", (_n, now, started, patched, want) => {
-    const out = mergeRosterCounts(resp(now), prev, started, () => patched);
-    expect(out.counts.a).toEqual(want === "local" ? local : held);
-  });
-});
-
-describe("mergeRosterCounts: a cached count with a newer as_of is kept (a warm's, while a poll was in flight)", () => {
-  const c = (unread: number, as_of?: number) => ({ unread, owe_reply: 0, ...(as_of === undefined ? {} : { as_of }) });
-  it.each([
-    // [case, cached, server, want]
-    ["cached newer: kept", c(5, 200), c(1, 100), "cached"],
-    ["equal as_of: the server's", c(5, 200), c(1, 200), "server"],
-    ["server newer: the server's", c(5, 100), c(1, 200), "server"],
-    ["server as_of 0 (a failed read): unchanged rule, the server's", c(5, 200), c(0, 0), "server"],
-    ["cached without as_of (a local patch): the patch stamp decides", c(5), c(1, 100), "server"],
-  ] as const)("%s", (_n, cached, server, want) => {
-    const out = mergeRosterCounts({ counts: { a: server } }, { counts: { a: cached } }, 1_000, () => 0);
-    expect(out.counts.a).toEqual(want === "cached" ? cached : server);
-  });
-});
-
-describe("writeWarmedRosterCount (creator_warmed carries the count: written, not re-read)", () => {
-  const key = ["roster-counts", "u1"] as const;
+describe("the roster-counts cache holds the Relay's answer, nothing of the tab's own", () => {
+  const KEY = ["roster-counts", "u1"] as const;
+  const FULL = "/admin/accounts/roster-counts";
+  const BUST = (aid: string) => `${FULL}?bust=${aid}`;
+  type Answer = { resolve: (r: RosterCountsResp) => void; reject: (e: unknown) => void };
+  let answers: Map<string, Answer[]>;
+  let get: ReturnType<typeof vi.spyOn>;
   const qcOf = () => new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } });
-  beforeEach(() => resetRosterCountsModuleState());
+  const wrap = (qc: QueryClient) => function Wrap({ children }: { children: ReactNode }) {
+    return createElement(QueryClientProvider, { client: qc }, children);
+  };
+  const calls = (path: string) => get.mock.calls.filter(([p]: unknown[]) => p === path).length;
+  const answer = async (path: string, r: RosterCountsResp | Error) => {
+    await waitFor(() => expect(answers.get(path)?.length).toBeTruthy());
+    const a = answers.get(path)!.shift()!;
+    await act(async () => { if (r instanceof Error) a.reject(r); else a.resolve(r); await Promise.resolve(); });
+  };
+  const actions = (qc: QueryClient) => renderHook(() => useRosterCountActions(), { wrapper: wrap(qc) }).result;
 
-  it.each([
-    // [case, cached a, warm a, want a]
-    ["older cached: the warm's", { unread: 0, owe_reply: 0, as_of: 100 }, { unread: 2, owe_reply: 1, as_of: 200 }, "warm"],
-    ["as new cached: kept", { unread: 0, owe_reply: 0, as_of: 200 }, { unread: 2, owe_reply: 1, as_of: 200 }, "cached"],
-    ["newer cached: kept", { unread: 0, owe_reply: 0, as_of: 300 }, { unread: 2, owe_reply: 1, as_of: 200 }, "cached"],
-  ] as const)("%s; the other Creators untouched", (_n, cached, warm, want) => {
+  beforeEach(() => {
+    resetRosterCountsModuleState();
+    principal.chatter = false;
+    answers = new Map();
+    get = vi.spyOn(relay, "get").mockImplementation((path: string) => new Promise((resolve, reject) => {
+      answers.set(path, [...(answers.get(path) ?? []), { resolve, reject } as Answer]);
+    }) as never);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("a full answer replaces the cached one as is: no merge with a prior entry", async () => {
     const qc = qcOf();
-    const other = { unread: 7, owe_reply: 0, as_of: 50 };
-    qc.setQueryData<RosterCountsResp>(key, { counts: { a: cached, b: other } });
-    writeWarmedRosterCount(qc, key, "a", warm, undefined, Date.now());
-    expect(qc.getQueryData<RosterCountsResp>(key)?.counts).toEqual({ a: want === "warm" ? warm : cached, b: other });
+    qc.setQueryData<RosterCountsResp>(KEY, { counts: { a: { unread: 4, owe_reply: 1 }, b: { unread: 2, owe_reply: 0 } } });
+    const read = renderHook(() => useRosterCountsRead(), { wrapper: wrap(qc) });
+    void act(() => { void qc.refetchQueries({ queryKey: KEY }); });
+    const server = { counts: { a: { unread: 0, owe_reply: 0 } } };
+    await answer(FULL, server);
+    await waitFor(() => expect(read.result.current.counts).toEqual(server.counts));
+    expect(qc.getQueryData(KEY)).toEqual(server);
   });
 
-  it("no answer cached yet: the first read merges over it, keeping the warm's newer count", () => {
+  it("two concurrent refreshOne for one Creator: one ?bust=, only that Creator written as answered", async () => {
     const qc = qcOf();
-    const warm = { unread: 2, owe_reply: 1, as_of: 200 };
-    writeWarmedRosterCount(qc, key, "a", warm, undefined, Date.now());
-    expect(qc.getQueryData(key)).toBeUndefined();
-    // The read's own merge, as useRosterCountsRead's queryFn does it (prev: the cache, else the seed).
-    const prev = qc.getQueryData<RosterCountsResp>(key) ?? takeWarmSeed(JSON.stringify(key));
-    const out = mergeRosterCounts({ counts: { a: { unread: 0, owe_reply: 0, as_of: 100 }, b: { unread: 1, owe_reply: 0, as_of: 100 } } },
-      prev, Date.now(), () => 0);
-    expect(out.counts).toEqual({ a: warm, b: { unread: 1, owe_reply: 0, as_of: 100 } });
-    expect(takeWarmSeed(JSON.stringify(key))).toBeUndefined();
+    const other = { unread: 7, owe_reply: 0 };
+    qc.setQueryData<RosterCountsResp>(KEY, { counts: { a: { unread: 4, owe_reply: 1 }, b: other } });
+    const r = actions(qc);
+    let both!: Promise<unknown>;
+    act(() => { both = Promise.all([r.current.refreshOne("a"), r.current.refreshOne("a")]); });
+    await answer(BUST("a"), { counts: { a: { unread: 1, owe_reply: 2 }, b: { unread: 0, owe_reply: 0 } } });
+    await act(async () => { await both; });
+    expect(calls(BUST("a"))).toBe(1);
+    expect(qc.getQueryData<RosterCountsResp>(KEY)?.counts).toEqual({ a: { unread: 1, owe_reply: 2 }, b: other });
+  });
+
+  it("no client cooldown: a refreshOne right after one landed busts again (the Relay's Hover cooldown is the budget)", async () => {
+    const qc = qcOf();
+    const r = actions(qc);
+    for (const unread of [1, 2]) {
+      let p!: Promise<void>;
+      act(() => { p = r.current.refreshOne("a"); });
+      await answer(BUST("a"), { counts: { a: { unread, owe_reply: 0 } } });
+      await act(async () => { await p; });
+    }
+    expect(calls(BUST("a"))).toBe(2);
+    expect(qc.getQueryData<RosterCountsResp>(KEY)?.counts.a).toEqual({ unread: 2, owe_reply: 0 });
+  });
+
+  it("a failed bust resolves and leaves the cache untouched", async () => {
+    const qc = qcOf();
+    const held: RosterCountsResp = { counts: { a: { unread: 4, owe_reply: 1 } } };
+    qc.setQueryData(KEY, held);
+    const r = actions(qc);
+    let p!: Promise<void>;
+    act(() => { p = r.current.refreshOne("a"); });
+    await answer(BUST("a"), new Error("relay 502"));
+    await act(async () => { await expect(p).resolves.toBeUndefined(); });
+    expect(qc.getQueryData(KEY)).toBe(held);
+  });
+
+  it("a full read started before a bust and answering after it does not overwrite the bust's entry", async () => {
+    const qc = qcOf();
+    renderHook(() => useRosterCountsRead(), { wrapper: wrap(qc) });
+    await waitFor(() => expect(calls(FULL)).toBe(1));
+    const r = actions(qc);
+    let p!: Promise<void>;
+    act(() => { p = r.current.refreshOne("a"); });
+    await answer(BUST("a"), { counts: { a: { unread: 3, owe_reply: 0 } } });
+    await act(async () => { await p; });
+    await answer(FULL, { counts: { a: { unread: 0, owe_reply: 0 }, b: { unread: 1, owe_reply: 0 } } });
+    await act(async () => { await new Promise((res) => setTimeout(res, 10)); });
+    expect(qc.getQueryData<RosterCountsResp>(KEY)?.counts.a).toEqual({ unread: 3, owe_reply: 0 });
+  });
+});
+
+describe("useRosterCountsRead polls only while some Creator's accounts row has no unread_total slot", () => {
+  const on = { n: 2, at: 1, v: 3, grey: null };
+  const slot = (unread_total: unknown) => ({ freshness: { values: { unread_total } } });
+  function mount(answer?: { readonly owner: readonly object[] } | { readonly chatter: readonly object[] }) {
+    const qc = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } });
+    principal.chatter = !!answer && "chatter" in answer;
+    if (answer && "owner" in answer) {
+      qc.setQueryData(ownerAccountsQuery("u1").queryKey, { accounts: answer.owner, active_account_id: null });
+    } else if (answer) qc.setQueryData(chatterAccountsQuery.queryKey, answer.chatter);
+    const get = vi.spyOn(relay, "get").mockResolvedValue({ counts: {} });
+    renderHook(() => useRosterCountsRead(), {
+      wrapper: ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: qc }, children),
+    });
+    return () => get.mock.calls.filter(([path]) => path === "/admin/accounts/roster-counts").length;
+  }
+  beforeEach(() => { vi.useFakeTimers(); resetRosterCountsModuleState(); principal.chatter = false; });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it.each([
+    ["stream up", true],
+    ["stream down", false],
+  ])("every row has the slot (a non-OF Creator's null included): the mount read only over 10 min, %s", async (_n, up) => {
+    vi.spyOn(eventBus, "isConnected").mockReturnValue(up);
+    const reads = mount({ owner: [{ id: "a1", ...slot(on) }, { id: "a2", ...slot(null) }] });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(reads()).toBe(1);
+  });
+
+  it.each([
+    ["owner: Shared refresher on, Unread total off", { owner: [{ id: "a1", ...slot(on) }, { id: "a2", freshness: { values: {} } }] }, true, 3],
+    ["owner: Shared refresher off (no freshness)", { owner: [{ id: "a1", ...slot(on) }, { id: "a2" }] }, true, 3],
+    ["owner: Shared refresher off, stream down", { owner: [{ id: "a1", ...slot(on) }, { id: "a2" }] }, false, 11],
+    ["chatter: a Creator row without the slot", { chatter: [{ account_id: "a1", ...slot(on) }, { account_id: "a2" }] }, true, 3],
+    ["no accounts answer cached yet", undefined, true, 3],
+  ] as const)("%s: today's 5-min poll, 60 s while the stream is down", async (_n, answer, up, want) => {
+    vi.spyOn(eventBus, "isConnected").mockReturnValue(up);
+    const reads = mount(answer);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(reads()).toBe(want);
+  });
+
+  it.each([
+    ["owner: dead-session and deactivated Creators carry the slot too",
+      { owner: [{ id: "a1", ...slot(on) }, { id: "a2", session_dead_at: 1, is_active: false, ...slot(on) }] }],
+    ["chatter: a watcher row (no freshness) is not a Creator",
+      { chatter: [{ account_id: "a1", ...slot(on) }, { account_id: "w1", role: "watcher" }] }],
+  ] as const)("%s: no poll", async (_n, answer) => {
+    vi.spyOn(eventBus, "isConnected").mockReturnValue(true);
+    const reads = mount(answer);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(reads()).toBe(1);
   });
 });

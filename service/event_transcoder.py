@@ -118,6 +118,8 @@ async def transcode(event: dict) -> None:
                 # user blob for `_touch_fan_from_event` and the shape is known, so the
                 # discovery log has nothing left to learn from it.
                 _record_queue_frame(account_id, event_type, payload)
+            case "counter":
+                pass    # read at receipt (events.handle_event), never here: the persist queue may lag or drop it
             case "other":
                 # Online/typing/stories/etc. don't get full transcodes yet,
                 # but they often carry up-to-date avatar + display name. Touch
@@ -131,13 +133,16 @@ async def transcode(event: dict) -> None:
 
 
 def _record_queue_frame(account_id: Any, event_type: str, payload: Any) -> None:
-    """Fold one `chat_queue_*` frame into the account's ring (`td.queue_fold`).
-    Never raises."""
+    """Fold one `chat_queue_*` frame into the account's ring (`td.queue_fold`); a finished blast new to it asks one
+    gated window re-read (`badge_reads.request_window_read`, no I/O here). Never raises."""
     if account_id is None:
         return
     aid = str(account_id)
-    _queue_finishes[aid] = td.queue_fold(_queue_finishes.get(aid, ()), event_type, payload,
-                                         time.monotonic())
+    before = _queue_finishes.get(aid, ())
+    after = _queue_finishes[aid] = td.queue_fold(before, event_type, payload, time.monotonic())
+    if td.queue_reread(before, after):
+        import badge_reads  # noqa: PLC0415 — lazy: it loads the live Relay (events, of_ws, the refresher)
+        badge_reads.request_window_read(aid)
 
 
 def blasted_within(account_id: Any, *, seconds: float) -> bool:
@@ -275,6 +280,9 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     `price` or `isTip` cannot tell and still busts it (fail-safe, `td.money_bust`).
     """
     plan = td.dm_plan(account_id, m, datetime.utcnow())
+    if isinstance(plan, td.Echo):
+        relay_cache.invalidate("get_chat", str(account_id), match=lambda ex, c=plan.fan_id: ex == (c,))
+        return
     if isinstance(plan, td.Skip):
         # Without all three we can't form a primary key — log + bail.
         log.debug("chat_message missing message_id/fan_id/account_id: %s",

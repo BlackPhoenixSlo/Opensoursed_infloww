@@ -77,6 +77,10 @@ def head(eid: str) -> bytes:
     return f"{_id_line(eid)}\n".encode("utf-8")
 
 
-def ping(ts: float, fresh: dict[str, int] | None = None) -> bytes:
-    data = {"ts": ts} if fresh is None else {"ts": ts, "fresh": fresh}
+def ping(ts: float, fresh: dict[str, int] | None = None, badge: dict[str, int] | None = None) -> bytes:
+    data: dict = {"ts": ts}
+    if fresh is not None:
+        data["fresh"] = fresh
+    if badge is not None:
+        data["badge"] = badge
     return b": ping\n\n" + f"event: ping\ndata: {json.dumps(data)}\n\n".encode("utf-8")

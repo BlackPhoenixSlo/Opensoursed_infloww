@@ -26,6 +26,7 @@ _harness.bootstrap()
 
 import server  # noqa: E402
 import accounts_admin_api  # noqa: E402
+import unread_total_decide  # noqa: E402
 from automations._common import (  # noqa: E402
     HARD_SKIP_REASONS,
     OF_RESTRICTED_REASON,
@@ -211,32 +212,32 @@ async def case_unrestrict_clears_only_own_row():
 async def case_roster_fold_excludes_restricted():
     """Restricted creators count as NEITHER blue nor orange — but still occupy
     a window slot (their row is visible in the list), preserving badge≡page
-    parity. Exclusion works off the registry set AND off an OF-truth
-    `withUser.isRestricted` when a payload carries it."""
+    parity. Exclusion is `excluded_from_badges`: the registry set, not OF's own
+    `withUser.isRestricted` (owner amendment #3)."""
     me = "999"
     rows = [
         # registry-excluded: unread → would have been blue
         {"withUser": {"id": 1}, "unreadMessagesCount": 3,
          "lastMessage": {"fromUser": {"id": 1}}},
         # registry-excluded: read + fan-last → would have been orange
-        {"withUser": {"id": 2}, "unreadMessagesCount": 0,
+        {"withUser": {"id": 2}, "unreadMessagesCount": 0, "isMutedNotifications": False,
          "lastMessage": {"fromUser": {"id": 2}}},
-        # OF-stamped restricted → excluded even when not in the registry
+        # OF's own isRestricted, not in the registry → still counts (blue)
         {"withUser": {"id": 3, "isRestricted": True}, "unreadMessagesCount": 1,
          "lastMessage": {"fromUser": {"id": 3}}},
         # normal unread → blue
         {"withUser": {"id": 4}, "unreadMessagesCount": 1,
          "lastMessage": {"fromUser": {"id": 4}}},
         # normal owe-reply → orange
-        {"withUser": {"id": 5}, "unreadMessagesCount": 0,
+        {"withUser": {"id": 5}, "unreadMessagesCount": 0, "isMutedNotifications": False,
          "lastMessage": {"fromUser": {"id": 5}}},
     ]
-    out = accounts_admin_api._roster_counts_from_rows(rows, me, exclude={1, 2})
-    assert out == {"unread": 1, "owe_reply": 1}, out
-    # Sanity: without the registry set, fans 1+2 count again — but the
-    # OF-stamped row (fan 3) stays excluded unconditionally.
-    base = accounts_admin_api._roster_counts_from_rows(rows, me)
-    assert base == {"unread": 2, "owe_reply": 2}, base
+    out = accounts_admin_api._roster_counts_from_rows(rows, exclude={1, 2})
+    assert out == {"unread": 2}, out
+    assert unread_total_decide.amber_count(rows, me, {1, 2}, None) == 1
+    base = accounts_admin_api._roster_counts_from_rows(rows)
+    assert base == {"unread": 3}, base
+    assert unread_total_decide.amber_count(rows, me, set(), None) == 2
 
 
 async def case_chats_rows_annotated_from_registry():

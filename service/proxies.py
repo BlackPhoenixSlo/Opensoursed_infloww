@@ -164,7 +164,12 @@ def egress(reg: Registry, account_id: str, session_filename: str | None = None) 
     if data is None:
         return Refuse("proxies.json is unreadable and was never read whole: egress unknown")
     p = _account_entry(data, account_id) or _session_entry(data, session_filename)
-    return Proxy(p) if p is not None else Direct()
+    if p is not None:
+        return Proxy(p)
+    import account_health
+    if account_health.refuses_writes(account_id):
+        return Refuse("deactivated Creator with no proxy: never sent from the host IP")
+    return Direct()
 
 
 def save(data: dict[str, Any]) -> None:

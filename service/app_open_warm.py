@@ -27,6 +27,10 @@ cache, only the rail and bell entries it read before the warm.
       (`shared_refresher_job_timeout`), the walk never cancelled, its result still landing.
   hold(account_id, wait_s): a refresher read's terminal 429: the Creator's whole exit reads nothing, for any caller,
       before now + wait_s (a GAP_S after a read never shortens it).
+  hold_on_429(account_id, exc) -> wait | None: `hold` for `exc`'s terminal 429 (OF's asked wait, else
+      `HOLD_FLOOR_S`); None, and no hold, for any other error.
+  exit_held_s(account_id) -> float: the seconds left on that hold (0: none; a GAP_S after a read is no hold). Read
+      only: no exit is created.
   pending(account_id) -> bool: queued or reading in a warm now.
   start(principal, account_ids, leased_first, *, refreshed=()) -> {Creator: "started" | "reused"}
       Schedules the warm and returns at once. `account_ids` are the principal's (the route drops
@@ -121,12 +125,13 @@ class _Job:
 
 class _Exit:
     """One proxy exit's gate: its queue (Creator -> job, in order) and when its next read may start."""
-    __slots__ = ("label", "jobs", "free_at", "task")
+    __slots__ = ("label", "jobs", "free_at", "held_until", "task")
 
     def __init__(self, label: str) -> None:
         self.label = label
         self.jobs: dict[str, _Job] = {}
         self.free_at = 0.0                  # time.monotonic(): the last read's end (or a note_read) + GAP_S
+        self.held_until = 0.0               # time.monotonic(): the end of a 429 hold
         self.task: asyncio.Task | None = None
 
 
@@ -353,6 +358,7 @@ def note_read(account_id: str) -> None:
 
 
 HOLD_MAX_S = 900.0   # the longest one 429 holds an exit (OF may ask any number, `inf` included)
+HOLD_FLOOR_S = 60.0  # a 429 naming no wait holds the exit this long
 
 
 def hold(account_id: str, wait_s: float) -> None:
@@ -360,7 +366,23 @@ def hold(account_id: str, wait_s: float) -> None:
     by any caller, before `wait_s` from now (OF's asked wait)."""
     _, ex = _gate(account_id)
     wait_s = wait_s if 0.0 <= wait_s <= HOLD_MAX_S else HOLD_MAX_S   # also inf / nan: never an endless hold
-    ex.free_at = max(ex.free_at, time.monotonic() + wait_s)
+    ex.held_until = max(ex.held_until, time.monotonic() + wait_s)
+    ex.free_at = max(ex.free_at, ex.held_until)
+
+
+def hold_on_429(account_id: str, exc: BaseException) -> float | None:
+    status, body, header = of_pacing.upstream(exc.__cause__ or exc)   # _proxy raises from the OFAPIError
+    if status != 429:
+        return None
+    wait = of_pacing.asked_wait(header, of_pacing.allow_s(body))
+    wait = HOLD_FLOOR_S if wait is None else wait
+    hold(account_id, wait)
+    return wait
+
+
+def exit_held_s(account_id: str) -> float:
+    ex = _exits.get(_egress(account_id)[0])
+    return 0.0 if ex is None else max(0.0, ex.held_until - time.monotonic())
 
 
 async def start(principal: tuple[str, str], account_ids: Iterable[str], leased_first: Iterable[str] = (), *,

@@ -1309,8 +1309,9 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   its oldest, a new one only >= 4 h after the last, none for a deactivated / session-dead Creator; a sweep
   meeting a 429 burst after 3 good chats stops at 5 failed reads, not ok, no `full_sweep` (FAILFAST); a Silent
   mass-only chat costs the sweep one page and no asc page and is left deferred, deep chats with a fan message get
-  both ends (DEFER); a deferred chat's fan reply frame or head read (user / background priority) buys its
-  both-ends pages once, every head read still reaches OF (BACKFILL_ON_DEMAND); the Silent chats' history pages,
+  both ends (DEFER); a deferred chat's first Click read (plain head read or mark-as-read) buys its both-ends
+  pages once, a warm (the app's `peek=1` prefetch) buys none, a fan reply frame leaves it unread and buys none
+  (nor do warms while unread), every head read still reaches OF (BACKFILL_ON_DEMAND); the Silent chats' history pages,
   sweep plus backfills, stay below the eager cost (DEFER_NET).
   `lib/sweep_cadence_relay.py` (`POST /__slop/sweep-cadence-tick`: one cadence pass in place of its 300 s
   timer). Faults `sweep-enqueued-every-pass`, `failfast-only-before-first-scan`, `history-eager`,
@@ -1498,6 +1499,66 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
   `REFRESHER_FLAT_IN_N` alone). Metric
   `bg_lane_wedge` (lane waiters from `/admin/priority-lanes/stats` + tab reads stuck > 30 s). Budgets and their
   product sources: the scenario's docstring.
+- Creator badges, the `badge` group (docs/spec/creator-badges/phase-0E-slop-and-fake-of-realism.md; `slop/run badge`
+  runs every `*-badge-*` file; owner opt-in for that effort only). All on `lib/badge_wire.py` (opt-in: no other
+  scenario installs it): OF's Unread counter frames, DM frames and Creator echoes at the sandbox delays, a first-page
+  thread GET without the Peek cursor marks read, `filter=unread` without Muted chats, mute / restrict, and the truth
+  (`truth_red`, `truth_unread`, `truth_amber`, through the product's own predicate). Pure metrics in
+  `lib/badge_metrics.py`; the headless tab `actors/badge_tab.py` (`/events?lease=1`, refetch on a behind ping; the
+  app's `creatorFreshnessReducer`, `badgeBehind` and `redCircle` in node: `lib/badge_tab_ts.mjs` through a
+  `lib/app_ts.py` session). Small is the default; the tier knob `--set tier=full` gives the
+  plan's sizes. Always `--timeout=900`; none is `volume`-tagged.
+  - `2026-11-22-badge-storm` (`OF_WIRE`, UI, Phase B): 5 Creators x 3 tabs each (15 streams), 20 DM/Creator-min,
+    60 s baseline (counter frames off) + 120 s storm (full: 50 x 30, 120 + 300 s, run alone). Each Creator carries
+    `only_friends` and registry-restricted unread chats (raw = red + 12, above Red's whole range) and a Muted one. Checks `RED_P95_UNDER_2S`, `RED_MAX_UNDER_5S`,
+    `FINAL_EQUALS_TRUTH`, `OPERATOR_P95_WITHIN_10PCT` (INFRA under 200 samples a phase or a DM driver below 90 % of
+    its rate), `RAW_COUNTER_NEVER_RENDERED`; metric Attribution reads; screenshots `badge-storm-trigger` /
+    `badge-storm-settled`. Evidence `badge-storm.json`.
+  - `2026-11-22-badge-load-sweep-safety` (`OF_WIRE`, Phase A): 5 Creators x 30 unread chats (`only_friends`,
+    restricted, Muted, deep threads), one `{}` scrape sweep each through `/__slop/automation-tick` (full: 50
+    Creators). Checks `ZERO_RELAY_MARKS`, `COUNTER_UNCHANGED_BY_SWEEP`. Evidence `sweep-safety.json`.
+  - `2026-11-22-badge-edge-shared-hover` (`OF_WIRE`, Phase C, the `badge-edge` group): 10 Creators, 30 Employees
+    (own logins, no `/events`, so no Open tab and every page-0 window call is a bust's) each `?bust=` a random Creator
+    every 2-5 s for 120 s; window pages 0.5 s late so busts land inside a read (full: same size). Checks
+    `HOVER_ONE_READ_PER_30S` (page-0 window calls per Creator >= 29 s apart: 30 s cooldown, 1 s lane jitter),
+    `HOVER_ANSWERS_FRESH` (no answer's `as_of` older than the newest read started before its bust); INFRA under 300
+    busts, a failed login, > 5 % failed busts or no bust inside a read. Evidence `shared-hover.json`.
+  - `2026-11-22-badge-edge-deep-inbox` (`OF_WIRE`, UI, Phases B + C, the `badge-edge` group): Creator X with 35
+    unmuted unread (3 registry-restricted: counter 35, red 32) + 15 Muted unread, its Unread list 4 pages, the Relay
+    reads 2; Creator Y with 12 unread (complete in 2 pages) + 10 awaiting reply + 8 read (full: 3 X + 4 Y). One headless tab per Creator, one
+    owner stream for `chat_read_changed` + DMs, one Chromium tab on X. Legs at once: X `read_elsewhere`; Y a read
+    elsewhere + a DM in one instant (a same-value swap). Checks `NINE_PLUS`, `MUTED_NO_DOT`,
+    `RAW_COUNTER_NEVER_RENDERED`, `INCOMPLETE_NO_FLIP` (no read flip on X, red follows the counter), `SWAP_SETTLES`
+    (Y's per-Fan dots = truth, `badge_metrics.dots`), `NO_PHANTOM_AMBER` (E2's 5-amber leg: every Amber circle held or
+    titled at most the last 2 s of amber truth, settled = truth on Y, at most truth on X); screenshots
+    `badge-edge-deep-inbox-trigger` / `-settled` (metric `screenshots.amber`: each Creator's amber at the shot).
+    Evidence `deep-inbox.json`.
+  - `2026-11-23-badge-edge-degraded` (`OF_WIRE`, Phase C, the `badge-edge` group): 6 Creators, one tab each, DMs and
+    OF-web reads throughout: 1 on a live custom proxy answering 429 (Retry-After 20 s) 6 s of every 30 s, 2 dead
+    (`otp`), 1 on a killed custom proxy (proxy-down; `PROXY_RECHECK_S=2`), 1 socket dropped every 1 s for 45 s (its `/users/me` 500 meanwhile), 5
+    flaps (`drop_ws`), one Employee walking Focus; 240 s, then a Relay restart (`stop_relay` / `start_relay`) and 60 s
+    with one quiet Creator (full: 50 Creators, 10 at 429, 2 proxy-down, 300 s). Checks `GREY_NOT_ZERO`,
+    `NO_READS_DEAD`, `NO_READS_PROXY_DOWN` (OF's `filter=unread` calls and relay.log's `badge_read` lines),
+    `READS_HOLD_ON_429`, `SOCKET_DOWN_POLL_15S`, `RECOVERY_UNDER_30S`, `FOCUS_WALK_COMPLETES`, `GREY_AFTER_RESTART`;
+    INFRA on a failed proxy setup or login, pumps not up, nothing to drop or no 429 met. Evidence `degraded.json`.
+  - `2026-11-23-badge-load-elsewhere` (`OF_WIRE`, Phase C, 2a; `FAULT` `badge-ordering-fence-off`, round 2's
+    `--break` target): 3 Creators x 1 tab, 24 chats each (`only_friends`, registry-restricted, Muted, plain); per
+    Creator-min 10 silent reads, 10 replies elsewhere (`echo=False`), 5 mark-unreads, 15 refill DMs. Legs full 180 s,
+    race ~30 s (Unread list snapshot held, chats GETs 4 s slow, a DM inside the read), then a Relay restart per leg
+    with `BADGE_READS` in the stack's relay env: lean 180 s, off 60 s (~11 min; full: 10 Creators, 300/30/300/60 s,
+    ~14 min, run alone). Checks `DOT_FLIP_P95_UNDER_8S`, `DOT_FLIP_MAX_UNDER_30S`, `FINAL_EQUALS_TRUTH`,
+    `READS_GAP_5S`, `READS_SINGLE_FLIGHT`, `READS_CAP_120`, `READS_MAX_2_PAGES`, `STALE_READ_NEVER_CLEARS`,
+    `LEAN_GAP_15S`, `LEAN_READS_HALVE`, `OFF_ZERO_READS` (pure `judge`, `lib/test_badge_load_elsewhere.py`); metric
+    Attribution reads per leg. Evidence `badge-load-elsewhere.json`.
+  - `2026-11-23-badge-load-amber` (`OF_WIRE`, Phase F, 2b): 2a's world and Driver with 6 awaiting chats per Creator,
+    replies elsewhere with echoes, a chatter reply through the Relay every 12 s and a mass elsewhere to 5 read Fans
+    every 60 s (`BadgeWire.queue_elsewhere`: no per-Fan echo, then `chat_queue_finish`); 3 Creators x 1 tab, 180 s
+    (~5 min; full: 10 Creators, 300 s, ~8 min). Checks `AMBER_P95_UNDER_8S`, `AMBER_MAX_UNDER_30S`, `NO_FAN_IN_BOTH`,
+    `FINAL_EQUALS_TRUTH` (amber), `READS_CAP_120` (Attribution starts + relay.log `badge_read kind=queue`); pure
+    `judge`, `lib/test_badge_load_amber.py`. Evidence `badge-load-amber.json`.
+  - Each check `ctx.skip`s while its Phase is absent (B's slot, A's Peek cursor, C's Hover cooldown, grey causes and completeness). Phase C's 6 joins
+    this group in its own delivery. Phase F checks go through `badge_metrics.amber_gate`: SKIP
+    while F's `amber` is absent from the accounts answer, FAIL (absent or unjudged) under `--set require_amber=1`.
 
 ## Fake servers: thread budget
 

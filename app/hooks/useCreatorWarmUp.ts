@@ -30,10 +30,10 @@ export function useCreatorWarmUp() {
   const { refreshOne } = useRosterCountActions();
   const qc = useQueryClient();
 
-  // Prewarm a model the instant it's touched: force its unread badge fresh from
-  // OF (bust the 5-min server cache) AND prefetch its chat list, so a swap paints
-  // authoritative + spinner-free instead of waiting on the 60s poll. `refreshOne`
-  // is per-account cooldown-guarded, so hover→click doesn't double-read OF.
+  // Prewarm a model the instant it's touched: rewarm its count through `?bust=`
+  // AND prefetch its chat list, so a swap paints current rows spinner-free. The
+  // Relay's shared 30 s Hover cooldown is the one budget, so hover→click and
+  // other Employees' hovers don't re-read OF.
   //
   // The ?bust= behind refreshOne re-reads OF's chat window AND rewarms the
   // server-side "list_chats" page-0 entry the list is served from — the badge
@@ -43,7 +43,7 @@ export function useCreatorWarmUp() {
   // the prefetch's stale snapshot stays "fresh" for 30s and the list shows 2
   // while the badge says 3. Every refreshOne path is safe to chain on: a real
   // bust resolves after the rewarm; riding an in-flight bust resolves with it;
-  // a cooldown no-op means a bust ran <8s ago. If that bust FAILED (OF error —
+  // inside the Hover cooldown the Relay answers its held count. If that bust FAILED (OF error —
   // refreshOne swallows it), the refetch just re-reads whatever the relay has;
   // badge and list still agree because both come from that same window.
   // A list loading its next page is left alone (warmUpMayRefetch).

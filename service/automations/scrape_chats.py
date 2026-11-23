@@ -15,7 +15,9 @@ Env knobs (read at call time):
                              our queued mass rows, OF reports more, no fan message and no ledger
                              spend in the DB) keeps page 1 and defers the deep history
                              (`history_deferred_at`, cursor NULL); 1 = today's both-ends backfill
-                             on every first scrape
+                             on every first scrape of a read chat (an unread chat always walks
+                             the recent end and defers only the asc oldest end: its cursorless
+                             first page would mark the chat read on OF; desc pages never do)
   SCRAPE_SWEEP_BUDGET_S=900  a sweep (no chat/fan ids) starts no new chat after this many
                              seconds: it ends ok (a `{}` run still marks full_sweep, so the
                              4h cadence holds) with `budget_stopped`; a budgeted sweep scrapes
@@ -39,6 +41,7 @@ from sqlalchemy import case, delete, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client seam (tests patch ax._make_client)
+import fansly_backend
 from automation_executor import _media_ids, _parse_iso, _strip_html, _to_cents
 from automation_registry import register
 from db.engine import get_session
@@ -96,6 +99,30 @@ def _silent_mass_page(rows: list[dict], own_user_id: str) -> bool:
     return bool(rows) and all(
         str((m.get("fromUser") or {}).get("id")) == str(own_user_id) and bool(m.get("isFromQueue"))
         for m in rows)
+
+
+async def local_unread_count(account_id: str, fan_id: int) -> int | None:
+    """The local `chats.unread_count` marker, None when the chat has no row."""
+    async with get_session() as s:
+        return (await s.execute(select(Chat.unread_count).where(
+            Chat.account_id == str(account_id), Chat.fan_id == int(fan_id))
+        )).scalar_one_or_none()
+
+
+def is_unread(n: int | None, of_unread: bool | None = None) -> bool:
+    """The unread test before an asc backfill, whose cursorless first page marks the chat
+    read on OF: the local marker `n` (None: no chats row) above 0, or OF's word from a
+    sweep's chat row; with no OF word a missing row counts as unread."""
+    if (n or 0) > 0:
+        return True
+    return of_unread if of_unread is not None else n is None
+
+
+def _unread_now(n_now: int | None, n_start: int | None, of_unread: bool | None,
+                click_backfill: bool) -> bool:
+    if click_backfill:
+        return (n_now or 0) > (n_start or 0)
+    return is_unread(n_now, of_unread)
 
 
 def _systemic_failure(e: BaseException) -> bool:
@@ -315,13 +342,16 @@ async def _upsert_chat_and_history(
     newest_text: str | None,
     newest_at: datetime | None,
     deferred: bool = False,
+    new_unread: bool = False,
 ) -> None:
     """Advance the inbox chat preview + the scrape_history fast-skip cursor —
     both MONOTONICALLY, so backfilling old history can't clobber a newer preview
     a WS event already wrote (guarded by a WHERE on the conflict update).
 
     Writing the cursor clears `history_deferred_at`. `deferred` (a Silent mass-only
-    chat's page 1) writes no cursor and stamps the mark instead, never over a cursor."""
+    chat's page 1) writes no cursor and stamps the mark instead, never over a cursor.
+    `new_unread` (a deferral for an unread chat): a chats row this inserts starts
+    unread; an existing row's marker is left alone (a Click read may have zeroed it)."""
     if newest_id:
         chat_stmt = (
             sqlite_insert(Chat)
@@ -331,6 +361,7 @@ async def _upsert_chat_and_history(
                 last_message_id=newest_id,
                 last_message_at=newest_at,
                 last_message_preview=newest_text,
+                **({"unread_count": 1} if new_unread else {}),
             )
             .on_conflict_do_update(
                 index_elements=["account_id", "fan_id"],
@@ -408,7 +439,7 @@ async def _fetch_recent_end(
         # (same idiom as transaction_ingest's `await asyncio.to_thread`).
         resp = await asyncio.to_thread(
             client.get_messages, chat_id,
-            limit=page_size, order="desc", before_id=cursor,
+            limit=page_size, order="desc", before_id=cursor, peek=True,
         )
         rows = resp.get("list") or []
         if not rows:
@@ -511,6 +542,9 @@ async def _scrape_one_chat(
     oldest_cap: int = _SCRAPE_OLDEST_CAP,
     is_muted: bool | None = None,
     may_defer: bool = False,
+    of_unread: bool | None = None,
+    unread_gate: bool = True,
+    click_backfill: bool = False,
 ) -> tuple[int, int]:
     """Page one chat and write everything in ONE fresh AsyncSession.
 
@@ -525,15 +559,39 @@ async def _scrape_one_chat(
     `may_defer` (a `{}` sweep, SCRAPE_EAGER_HISTORY off): on a first scrape of a fan
     with no inbound message and no ledger spend in the DB, a Silent mass-only chat
     (page 1 all our queued mass rows, OF reports more) keeps page 1 and defers the
-    rest (`history_deferred_at`, cursor NULL). Any other chat carries on as above."""
+    rest (`history_deferred_at`, cursor NULL). Any other chat carries on as above.
+
+    Background reads must peek: the asc backfill's cursorless first page marks the
+    chat read on OF (the peeked page 1 and the desc pages behind it never do), so a
+    first scrape of an unread long chat (`is_unread`) walks the recent end as usual,
+    then skips the asc oldest end and defers it (`history_deferred_at`, cursor NULL;
+    any scrape kind, SCRAPE_EAGER_HISTORY or not). `of_unread`: OF's state from the
+    sweep's chat row (None: explicit ids, the local marker alone). The test runs at
+    the start and again just before the asc request, so a DM landing after the
+    sweep's list call defers too. A deferred row (`history_deferred_at`) gets the asc
+    pass only from a Click read's backfill (`click_backfill`) or a sweep whose OF row
+    and local marker both say read; any other scrape of it re-reads page 1 only (its
+    recent end was walked when it was deferred) and keeps the deferral. `unread_gate` False (Fansly: its read semantics are unmeasured)
+    keeps the old both-ends pull."""
     fan_id = int(chat_id)
 
     async with get_session() as s:
         hist = await s.get(ScrapeHistory, (account_id, fan_id))
         last_seen_id = hist.last_message_id if hist else None
+        was_deferred = hist is not None and hist.history_deferred_at is not None
 
     first_scrape = last_seen_id is None
     defer_if: Callable[[list[dict]], bool] | None = None
+    unread = skip_oldest = False
+    n_start: int | None = 0
+    if first_scrape and unread_gate:
+        n_start = await local_unread_count(account_id, fan_id)
+        # A Click read already marked the chat read on OF; the app's local zeroing may
+        # not have landed yet, so only a DM after the scrape starts holds the asc pass.
+        unread = not click_backfill and is_unread(n_start, of_unread)
+        # of_unread None: not a sweep row, so nothing says OF has this chat read.
+        held = was_deferred and not click_backfill and of_unread is None
+        skip_oldest = unread or held
     if may_defer and first_scrape:
         # Silent in the DB: no fan message and no ledger spend ("what sells stays
         # fresh": a PPV buyer or an out-of-chat tipper is never deferred).
@@ -550,6 +608,10 @@ async def _scrape_one_chat(
             )).first() is not None
         if not engaged:
             defer_if = lambda rows: _silent_mass_page(rows, own_user_id)  # noqa: E731
+    if was_deferred and skip_oldest:
+        # Already walked once and the cursor stays NULL: page 1 only, or every scrape
+        # until the click would re-walk the whole recent end.
+        defer_if = lambda rows: True  # noqa: E731
     collected, long_convo, deferred = await _fetch_recent_end(
         client, chat_id,
         last_seen_id=last_seen_id, page_size=page_size,
@@ -558,7 +620,13 @@ async def _scrape_one_chat(
 
     # Both-ends pull, ONCE: only on the first scrape of a long convo. Later
     # cycles fast-skip the recent end and leave the already-captured start alone.
-    if first_scrape and long_convo and not deferred:
+    if first_scrape and long_convo and not deferred and skip_oldest:
+        deferred = True
+    elif (first_scrape and long_convo and not deferred and unread_gate
+            and _unread_now(await local_unread_count(account_id, fan_id),
+                            n_start, of_unread, click_backfill)):
+        deferred = unread = True
+    elif first_scrape and long_convo and not deferred:
         await asyncio.sleep(_PAGE_SLEEP_S)
         oldest = await _fetch_oldest_end(
             client, chat_id,
@@ -645,14 +713,14 @@ async def _scrape_one_chat(
         await _upsert_chat_and_history(
             s, account_id, fan_id,
             newest_id=newest_id, newest_text=newest_text, newest_at=newest_at,
-            deferred=deferred,
+            deferred=deferred, new_unread=deferred and unread,
         )
 
     return (inserted, len(collected))
 
 
 # An explicit scrape of a chat whose history was deferred at job start (webhook_dispatch's
-# open / reply / gen_info trigger, or a blast reply that won the shared claim) counts that
+# Click read / gen_info trigger, or a blast reply that won the shared claim) counts that
 # chat's OF calls under its own Caller kind, not `auto:scrape_chats` (nor `auto:scrape_fan`,
 # the one-fan kind those triggers enqueue since 2026-11), so the sweep's cut
 # and the on-demand backfill it buys show apart (scripts/proxy-health/flag_report.py
@@ -682,12 +750,13 @@ async def _automation_scrape_chats(
     oldest_cap = _limit("oldest_cap", _SCRAPE_OLDEST_CAP)
 
     explicit = payload.get("chat_ids") or payload.get("fan_ids")
-    # (chat_id, withUser, is_muted) — is_muted is the chat-level
-    # `isMutedNotifications` (creator-side mute). None when unknown (explicit-id
-    # scrapes don't list the chat object) → identity upsert leaves is_muted alone.
-    targets: list[tuple[int, dict | None, bool | None]] = []
+    # (chat_id, withUser, is_muted, of_unread) — is_muted is the chat-level
+    # `isMutedNotifications` (creator-side mute), of_unread OF's `hasUnread` / `unreadMessagesCount`.
+    # None when unknown (explicit-id scrapes don't list the chat object) → identity
+    # upsert leaves is_muted alone, the scrape reads the local unread marker.
+    targets: list[tuple[int, dict | None, bool | None, bool | None]] = []
     if explicit:
-        targets = [(int(c), None, None) for c in explicit]
+        targets = [(int(c), None, None, None) for c in explicit]
     else:
         # OF's /chats returns ~10 per page regardless of `limit`, so PAGINATE by
         # offset until we've collected `limit` chats or OF runs dry — a single call
@@ -718,7 +787,9 @@ async def _automation_scrape_chats(
                 seen_chat_ids.add(int(cid))
                 # `isMutedNotifications` lives on the top-level chat object (NOT
                 # on withUser — confirmed live); coerce to a definite bool.
-                targets.append((int(cid), wu, bool(ch.get("isMutedNotifications"))))
+                targets.append((int(cid), wu, bool(ch.get("isMutedNotifications")),
+                                bool(ch.get("hasUnread"))
+                                or int(ch.get("unreadMessagesCount") or 0) > 0))
             offset += len(rows)
             if page.get("hasMore") is False:
                 break
@@ -730,7 +801,10 @@ async def _automation_scrape_chats(
     broken_err: Exception | None = None   # the last of them
     systemic_run = 0   # systemic failures in a row (a scraped chat or another failure resets; 404 leaves it)
     fail_fast = _sweep_fail_fast()
-    may_defer = not payload and not _eager_history()   # explicit scrapes never defer
+    may_defer = not payload and not _eager_history()   # explicit scrapes never start a Silent deferral
+    unread_gate = not fansly_backend.is_fansly(account_id)
+    import webhook_dispatch   # lazy: it imports the executor graph
+    click_backfill = payload.get("source") == webhook_dispatch.DEFERRED_HISTORY_SOURCE
     messages_inserted = 0
     messages_seen = 0
     deferred_ids: set[int] = set()
@@ -745,9 +819,9 @@ async def _automation_scrape_chats(
         async with get_session() as s:
             last = dict((await s.execute(select(ScrapeHistory.fan_id, ScrapeHistory.last_scrape_at).where(
                 ScrapeHistory.account_id == account_id,
-                ScrapeHistory.fan_id.in_([c for c, _w, _m in targets]),
+                ScrapeHistory.fan_id.in_([c for c, *_ in targets]),
             ))).all())
-        for c, _w, _m in targets:
+        for c, *_ in targets:
             tried = _attempted_at.get((account_id, c))
             if tried is not None and (last.get(c) is None or tried > last[c]):
                 last[c] = tried
@@ -756,10 +830,10 @@ async def _automation_scrape_chats(
         async with get_session() as s:
             deferred_ids = set((await s.execute(select(ScrapeHistory.fan_id).where(
                 ScrapeHistory.account_id == account_id,
-                ScrapeHistory.fan_id.in_([c for c, _w, _m in targets]),
+                ScrapeHistory.fan_id.in_([c for c, *_ in targets]),
                 ScrapeHistory.history_deferred_at.is_not(None),
             ))).scalars().all())
-    for n, (chat_id, with_user, is_muted) in enumerate(targets):
+    for n, (chat_id, with_user, is_muted, of_unread) in enumerate(targets):
         if budget_s > 0 and n and _clock() - started >= budget_s:
             chats_left = len(targets) - n
             log.info("scrape_sweep_budget account=%s stopped after %ds: %d of %d chats left",
@@ -772,7 +846,8 @@ async def _automation_scrape_chats(
                     account_id, own_user_id, client, chat_id, with_user,
                     page_size=page_size, max_pages=max_pages,
                     recent_cap=recent_cap, oldest_cap=oldest_cap,
-                    is_muted=is_muted, may_defer=may_defer,
+                    is_muted=is_muted, may_defer=may_defer, of_unread=of_unread,
+                    unread_gate=unread_gate, click_backfill=click_backfill,
                 )
             messages_inserted += ins
             messages_seen += seen

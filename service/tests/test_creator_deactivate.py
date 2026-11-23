@@ -61,6 +61,10 @@ must stop for a deactivated Creator (service/account_health.py "Deactivation").
       activating cancels the pending jobs that fell due while the Creator was
       off; one due before the deactivation, one due later, and a cleanup
       (unsend_messages) job that fell due while off stay pending.
+  case_deactivate_releases_pool_proxy:
+      deactivate drops the Creator's Inflowwww pool proxy and its egress is
+      refused (never the host IP) while an unbound active Creator stays direct;
+      activate binds a pool proxy again; a custom proxy is kept through both.
   case_trigger_backfill_reopens_the_window:
       on an account already fully backfilled, trigger_backfill's next backfill
       window runs from now down to `since` (it used to sit wholly below it).
@@ -661,6 +665,36 @@ async def case_trigger_backfill_reopens_the_window() -> None:
     assert row.fully_backfilled is False and row.current_status == "idle", row.current_status
     start, end = ti._window_for("backfill", row)
     assert start == since and datetime.utcnow() - end < timedelta(minutes=1), (start, end)
+
+
+async def case_deactivate_releases_pool_proxy() -> None:
+    import proxies as proxy_registry
+    import proxy_health
+    orig_path, orig_verify = proxy_registry.REGISTRY_PATH, proxy_health.verify_pick
+    proxy_registry.REGISTRY_PATH = Path(tempfile.mkdtemp(prefix="deact_proxy_")) / "proxies.json"
+    proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": []}))
+    proxy_health.verify_pick = lambda p, **_: True
+    owner = _login("/auth/login", "boss")
+    try:
+        proxy_registry.sync_pool("pool-1.invalid:8001:u:pw")
+        pool = proxy_registry.pool_entries()[0]["label"]
+        proxy_registry.assign_account(pool, OFF)
+        assert owner.post(f"/admin/accounts/{OFF}/active", json={"active": False}).status_code == 200
+        assert proxy_registry.get_for_account(OFF) is None, "pool proxy kept by a deactivated Creator"
+        reg = proxy_registry.registry()
+        assert isinstance(proxy_registry.egress(reg, OFF), proxy_registry.Refuse)
+        assert isinstance(proxy_registry.egress(reg, ON), proxy_registry.Direct)
+        assert owner.post(f"/admin/accounts/{OFF}/active", json={"active": True}).status_code == 200
+        assert proxy_registry.get_for_account(OFF)["label"] == pool, "no pool proxy after activate"
+
+        proxy_registry.upsert({"label": "mine", "host": "custom.invalid", "port": 9000})
+        proxy_registry.assign_account("mine", OFF)
+        owner.post(f"/admin/accounts/{OFF}/active", json={"active": False})
+        assert proxy_registry.get_for_account(OFF)["label"] == "mine", "custom proxy dropped on deactivate"
+        owner.post(f"/admin/accounts/{OFF}/active", json={"active": True})
+        assert proxy_registry.get_for_account(OFF)["label"] == "mine", "custom proxy replaced on activate"
+    finally:
+        proxy_registry.REGISTRY_PATH, proxy_health.verify_pick = orig_path, orig_verify
 
 
 _harness.run()

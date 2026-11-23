@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  creatorFreshnessReducer, EMPTY_FRESHNESS, of, type Action, type CreatorFreshnessState, type Freshness,
+  badgeBehind, creatorFreshnessReducer, EMPTY_FRESHNESS, of, type Action, type CreatorFreshnessState, type Freshness,
 } from "./creatorFreshness";
 
 const snap = (over: Partial<Freshness> = {}): Freshness => ({
@@ -162,5 +162,38 @@ describe("creatorFreshnessReducer: `confirmed` (the ping's `fresh`) moves `at` f
   ])("keeps the state object: %s", (_name, action) => {
     const s = run([seed(snap({ at: 4_000 }))]);
     expect(creatorFreshnessReducer(s, action)).toBe(s);
+  });
+});
+
+describe("badgeBehind: the ping's Badge versions against what is held", () => {
+  const ut = (v: number) => ({ unread_total: { n: 2, at: 4_000, v, grey: null } });
+  const at = (v: number, over: Partial<Freshness> = {}) => snap({ values: ut(v), ...over });
+
+  it.each<[string, Action[], unknown, string[]]>([
+    ["equal: none", [seed(at(3))], { a1: 3 }, []],
+    ["behind: due", [seed(at(3))], { a1: 4 }, ["a1"]],
+    ["ahead (compared with !==): due", [seed(at(3))], { a1: 2 }, ["a1"]],
+    ["caught up by a refreshed: none", [seed(at(3)), refreshed(at(4, { seq: 2 }))], { a1: 4 }, []],
+    ["a refreshed still behind: due", [seed(at(3)), refreshed(at(4, { seq: 2 }))], { a1: 5 }, ["a1"]],
+    ["caught up by the refetch's seed: none", [seed(at(3)), seed(at(4, { seq: 2 }), 90)], { a1: 4 }, []],
+    ["an older delivery changes nothing: due", [seed(at(3, { seq: 2 })), refreshed(at(4, { seq: 1 }))], { a1: 4 },
+      ["a1"]],
+    ["boot change: a ping after a restart (versions restart at 0) is due", [seed(at(5, { boot: 1000, seq: 9 }))],
+      { a1: 0 }, ["a1"]],
+    ["boot change: the new boot's delivery caught up: none",
+      [seed(at(5, { boot: 1000, seq: 9 })), refreshed(at(0, { boot: 2000, seq: 0 }))], { a1: 0 }, []],
+    ["only the behind Creator",
+      [seeded([{ id: "a1", freshness: at(3) }, { id: "a2", freshness: at(7, { account_id: "a2" }) }])],
+      { a1: 3, a2: 8 }, ["a2"]],
+    ["a Creator the ping leaves out is not due", [seed(at(3))], {}, []],
+    ["an unheld Creator", [seed(at(3))], { a9: 4 }, []],
+    ["a held slot without a version (a non-OF Creator's null)", [seed(snap({ values: { unread_total: null } }))],
+      { a1: 4 }, []],
+    ["no `badge` (Knob off)", [seed(at(3))], undefined, []],
+    ["a non-number version", [seed(at(3))], { a1: "4" }, []],
+    ["a malformed `badge`", [seed(at(3))], [4], []],
+    ["nothing held", [], { a1: 4 }, []],
+  ])("%s", (_name, actions, badge, want) => {
+    expect(badgeBehind(actions.length ? run(actions) : undefined, badge)).toEqual(want);
   });
 });

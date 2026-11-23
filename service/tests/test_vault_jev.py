@@ -130,6 +130,15 @@ def case_failed_without_sdk():
             sys.modules["typesafe_sdk"] = saved
 
 
+def case_failed_invalid_image_is_rejected():
+    from typesafe_sdk import TypeSafeAPIError
+    bad = TypeSafeAPIError(400, {"detail": "Invalid image dimensions."}, {})
+    assert "Invalid image" in str(bad), str(bad)
+    assert vault_jev._failed(bad) == rules.REJECTED
+    assert vault_jev._failed(TypeSafeAPIError(400, {"detail": "bad field"}, {})) == "error"
+    assert vault_jev._failed(TypeSafeAPIError(402, {"detail": "x"}, {})) == "key_no_credit"
+
+
 def case_geometry():
     for g in json.load(open(FIX / "geom.json")):
         data = _jpeg(*g["px"])

@@ -28,6 +28,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 from fastapi import Request
 
 import chatter_identity_cache
+import event_transcode_decide as td
 import events_decide as ed
 import events_persist
 import events_wire as ew
@@ -244,12 +245,15 @@ def _tab_clamps() -> set[str]:
     return {a for s in list(_subs.values()) if s.tab and s.accounts is not None for a in s.accounts}
 
 
-def _fresh(sub: _Sub, shared_refresher) -> dict[str, int]:
-    """The ping's `fresh` for one subscriber (P1 Contract 7): the Last refresh of each Open-tab Creator in its clamp
-    that has one. Watchers are not filtered here (no file read per ping): the refresher never reads one, so none
-    has a Last refresh."""
+def _ping(sub: _Sub, shared_refresher) -> bytes:
+    """A Knob-on ping for one subscriber, over the Open-tab Creators in its clamp: `fresh` (P1 Contract 7), the Last
+    refresh of each that has one, and `badge` (0B), the Badge version of each that has one (none with
+    `UNREAD_TOTAL` off). Watchers are not filtered here (no file read per ping): the refresher never reads one, so
+    none has a Last refresh."""
+    import unread_total  # noqa: PLC0415 — lazy: unread_total → shared_refresher → events
     ids = _tab_clamps()
-    return shared_refresher.fresh_at(frozenset(ids if sub.accounts is None else ids & sub.accounts))
+    ids = frozenset(ids if sub.accounts is None else ids & sub.accounts)
+    return ew.ping(time.time(), shared_refresher.fresh_at(ids), unread_total.badge_versions(ids) or None)
 
 
 async def unsubscribe(scope: str, q: asyncio.Queue) -> None:
@@ -308,6 +312,10 @@ async def handle_event(event: dict) -> None:
 
     if ed.is_feed_noise(event, account_id):
         return
+    counter = td.counter_of(event)
+    if counter is not None and account_id is not None:
+        import unread_total  # noqa: PLC0415 — lazy: unread_total → shared_refresher → events
+        unread_total.observe_counter(account_id, counter, int(time.time() * 1000))
     if event_type == "typing":
         # Forwarded as `chat_typing`, then down the normal path minus the
         # event_inbox row (events_decide.UNPERSISTED_TYPES): the persist worker's transcode
@@ -674,7 +682,9 @@ async def sse_stream(
         at connect, so a drop before the next event resumes from there.
       • Heartbeat comments every _HEARTBEAT_S seconds: after that long with
         no frame; with the Shared refresher's Knob on, on their own timer
-        whatever flows, each carrying `fresh` (`_fresh`, P1 Contract 7).
+        whatever flows, each carrying `fresh` and `badge` (`_ping`); Knob on,
+        one also right after `: connected`: the browser counts a reopened
+        stream disconnected (Creator tabs grey) until its first frame.
       • JSON-encoded events with `event:` line set to the OF event type, or
         grouped into `event: batch` frames while the stream runs hot (see
         "Load-adaptive batching").
@@ -707,6 +717,8 @@ async def sse_stream(
         if granted_at is not None and ed.ended_since(_ring, granted_at, lambda f: _wants(sub, f)):
             return
         yield ew.CONNECTED
+        if fresh_on:
+            yield _ping(sub, shared_refresher)
         for e in replay:
             if isinstance(e, ed.Resync):
                 yield ew.RESYNC
@@ -722,7 +734,7 @@ async def sse_stream(
                 sub.lost = False
                 yield ew.RESYNC
             if fresh_on and time.monotonic() - last_beat >= _HEARTBEAT_S:
-                yield ew.ping(time.time(), _fresh(sub, shared_refresher))
+                yield _ping(sub, shared_refresher)
                 last_beat = time.monotonic()
             try:
                 event = await asyncio.wait_for(q.get(), timeout=1.0)

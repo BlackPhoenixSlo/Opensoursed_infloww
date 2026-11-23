@@ -33,6 +33,13 @@ row "x") and Mark all as read.
   case_pins_ttl_zero_reads_of_every_time
   case_head_read_on_a_deferred_chat_enqueues_its_backfill_once
   case_head_read_never_waits_on_the_backfill
+  case_peek_head_read_fires_the_thread_head_hook
+  case_peek_head_read_peeks_uncached_and_buys_no_backfill
+  case_peek_and_plain_reads_never_share_one_of_request
+  case_click_read_buys_the_backfill_whatever_the_marker
+  case_mark_read_is_the_click_read_of_a_warm_open
+  case_failed_mark_read_buys_no_backfill
+  case_head_read_and_mark_read_make_one_backfill
 
 Run: ./venv/bin/python service/tests/test_of_mirror_messages.py
 """
@@ -211,15 +218,16 @@ def case_mute_unmute_hide_paths():
 
 async def case_mute_and_hide_routes_call_the_client():
     c = _client()
-    orig = server._get_client, server._bust_chat_list_cache
+    orig = server._get_client, server._bust_chat_list_cache, server._current_aid
     server._get_client = lambda: c
     server._bust_chat_list_cache = lambda *a, **k: None
+    server._current_aid = lambda: "8231"
     try:
         await server.of_mute_chat(FAN)
         await server.of_unmute_chat(FAN)
         server.of_hide_chat(FAN)
     finally:
-        server._get_client, server._bust_chat_list_cache = orig
+        server._get_client, server._bust_chat_list_cache, server._current_aid = orig
     assert [(m, p) for m, p, _ in c.sent] == [
         ("POST", f"{API}/chats/{FAN}/mute"),
         ("DELETE", f"{API}/chats/{FAN}/mute"),
@@ -650,11 +658,22 @@ def case_pins_ttl_zero_reads_of_every_time():
 class _HeadClient:
     """A fake OF client for the messages route: counts OF reads per (chat, before_id)."""
 
-    def __init__(self):
+    def __init__(self, delay_s=0.0):
         self.reads = []
+        self.peeks = []
+        self.delay_s = delay_s
+        self.mark_result = {"success": True}
 
-    def get_messages(self, chat_id, limit=10, order="desc", before_id=None):
+    def mark_chat_read(self, chat_id):
+        if isinstance(self.mark_result, Exception):
+            raise self.mark_result
+        return self.mark_result
+
+    def get_messages(self, chat_id, limit=10, order="desc", before_id=None, peek=False):
+        import time
         self.reads.append((chat_id, before_id))
+        self.peeks.append(peek)
+        time.sleep(self.delay_s)
         return {"list": [{"id": 500 + len(self.reads), "text": "hi", "fromUser": {"id": chat_id}}],
                 "hasMore": False}
 
@@ -666,20 +685,23 @@ class _Req:
         self.headers = {"x-priority": priority} if priority else {}
 
 
-def _with_head(run):
+def _with_head(run, delay_s=0.0):
     """Run `async run(c, read)` on account `acct-open` with a fake OF client; `read(chat, priority=None,
-    before_id=None)` calls the route as that request would and lets its fired tasks finish."""
+    before_id=None, peek=None)` calls the route as that request would and lets its fired tasks finish
+    (peek None: the call names no peek, as a direct Python caller)."""
     import webhook_dispatch as wd
-    c = _HeadClient()
+    c = _HeadClient(delay_s)
     orig = (server._get_client, server._resolve_account_id)
     server._get_client = lambda *a, **k: c
     server._resolve_account_id = lambda *a, **k: "acct-open"
     wd._fan_scrape_claims.clear()
 
-    async def read(chat, priority=None, before_id=None):
+    async def read(chat, priority=None, before_id=None, peek=None):
         token = server._request_ctx.set(_Req(priority))
         try:
-            out = await server.get_messages(chat, limit=10, order="desc", before_id=before_id, refresh=True)
+            kw = {} if peek is None else {"peek": peek}
+            out = await server.get_messages(chat, limit=10, order="desc", before_id=before_id, refresh=True,
+                                            **kw)
         finally:
             server._request_ctx.reset(token)
         await asyncio.gather(*(t for t in asyncio.all_tasks() if t.get_name().startswith("deferred-history")))
@@ -693,14 +715,31 @@ def _with_head(run):
     return c
 
 
-async def _seed_history(aid, fan, *, deferred):
+async def _mark_read(chat):
+    """POST the chat's mark-as-read as a request would; let its fired tasks finish. The route's
+    HTTPException, if any, is returned, not raised."""
+    from fastapi import HTTPException
+    token = server._request_ctx.set(_Req(None))
+    try:
+        out = await server.of_mark_chat_read(chat)
+    except HTTPException as e:
+        out = e
+    finally:
+        server._request_ctx.reset(token)
+    await asyncio.gather(*(t for t in asyncio.all_tasks() if t.get_name().startswith("deferred-history")))
+    return out
+
+
+async def _seed_history(aid, fan, *, deferred, unread=0):
+    """A scrape_history row and the chat's local unread marker (0 = read)."""
     from datetime import datetime
     from db.engine import get_session
-    from db.models import Account, ScrapeHistory
+    from db.models import Account, Chat, ScrapeHistory
     now = datetime.utcnow()
     async with get_session() as s:
         if await s.get(Account, aid) is None:
             s.add(Account(id=aid))
+        s.add(Chat(account_id=aid, fan_id=fan, unread_count=unread))
         s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=None if deferred else 77,
                             last_scrape_at=now, history_deferred_at=now if deferred else None))
 
@@ -769,6 +808,154 @@ def case_head_read_never_waits_on_the_backfill():
             wd.backfill_if_deferred = orig
             gate["ev"].set()
         assert out["list"] and c.reads == [(fan, None)], (out, c.reads)
+    _with_head(run)
+
+
+def case_peek_head_read_fires_the_thread_head_hook():
+    """Peek and plain head reads both fire the thread-head hook (a reply sent from OF web has no
+    event of its own)."""
+    import relay_hooks
+    fan = 9110
+    heads = []
+
+    def hook(aid, chat, msgs):
+        heads.append((aid, chat, len(msgs or [])))
+
+    async def run(c, read):
+        await read(fan, peek=True)
+        await read(fan, peek=True)
+        await read(fan)
+        assert c.reads == [(fan, None)] * 3, c.reads
+        assert c.peeks == [True, True, False], c.peeks
+        assert [h for h in heads if h[1] == fan] == [("acct-open", fan, 1)] * 3, heads
+
+    relay_hooks.thread_head.append(hook)
+    try:
+        _with_head(run)
+    finally:
+        relay_hooks.thread_head.remove(hook)
+
+
+def case_peek_head_read_peeks_uncached_and_buys_no_backfill():
+    """`peek=1`: the client gets peek=True, the head is never cached (two reads, two OF calls),
+    and a deferred chat gets no backfill (a Background read leaves it unread on OF, so the asc
+    pass would mark it read); a plain read of it then buys one. A call that names no peek
+    stays a plain read."""
+    aid, fan, plain = "acct-open", 9201, 9202
+
+    async def run(c, read):
+        await _seed_history(aid, fan, deferred=True)
+        await read(fan, peek=True)
+        await read(fan, peek=True, priority="background")
+        assert c.reads == [(fan, None)] * 2 and c.peeks == [True, True], (c.reads, c.peeks)
+        assert fan not in await _backfills(aid), await _backfills(aid)
+        await read(fan, peek=False)
+        assert (await _backfills(aid))[fan] == 1, await _backfills(aid)
+        await read(plain)
+        assert c.peeks[-1] is False, c.peeks
+    _with_head(run)
+
+
+def case_peek_and_plain_reads_never_share_one_of_request():
+    """In flight together, a peek and a plain head read make two OF calls (two plain ones, one)."""
+    fan = 9211
+
+    async def run(c, read):
+        await asyncio.gather(read(fan), read(fan))
+        assert len(c.reads) == 1, c.reads
+        await asyncio.gather(read(fan, peek=True), read(fan))
+        assert len(c.reads) == 3 and sorted(c.peeks[1:]) == [False, True], (c.reads, c.peeks)
+    _with_head(run, delay_s=0.2)
+
+
+def case_click_read_buys_the_backfill_whatever_the_marker():
+    """A plain head read of a deferred chat enqueues its backfill whether the local marker says
+    unread, read or has no chats row: the read marked it read on OF, and the scrape re-checks
+    the marker before any asc pass. Peeked reads of the same chats buy none."""
+    from datetime import datetime
+    from db.engine import get_session
+    from db.models import ScrapeHistory
+    aid, unread_fan, rowless_fan, read_fan = "acct-open", 9221, 9222, 9223
+
+    async def run(c, read):
+        await _seed_history(aid, unread_fan, deferred=True, unread=2)
+        await _seed_history(aid, read_fan, deferred=True)
+        async with get_session() as s:
+            s.add(ScrapeHistory(account_id=aid, fan_id=rowless_fan, last_message_id=None,
+                                last_scrape_at=datetime.utcnow(), history_deferred_at=datetime.utcnow()))
+        fans = (unread_fan, rowless_fan, read_fan)
+        for f in fans:
+            await read(f, peek=True)
+        assert not set(fans) & set(await _backfills(aid)), await _backfills(aid)
+        for f in fans:
+            await read(f)
+        assert {f: (await _backfills(aid)).get(f) for f in fans} == dict.fromkeys(fans, 1), await _backfills(aid)
+    _with_head(run)
+
+
+def case_mark_read_is_the_click_read_of_a_warm_open():
+    """An open served from a peeked warm page sends no plain head read; its landed mark-as-read
+    enqueues the deferred chat's backfill once (a second POST none), after the local marker is
+    zeroed, so the scrape sees the chat read. A not-deferred chat gets none."""
+    import webhook_dispatch as wd
+    from automations.scrape_chats import local_unread_count
+    aid, fan, plain_fan = "acct-open", 9241, 9242
+    seen = []
+    orig = wd.backfill_if_deferred
+
+    async def spy(account_id, fan_id):
+        seen.append(await local_unread_count(account_id, fan_id))
+        await orig(account_id, fan_id)
+
+    async def run(c, read):
+        await _seed_history(aid, fan, deferred=True, unread=2)
+        await _seed_history(aid, plain_fan, deferred=False, unread=1)
+        await read(fan, peek=True)
+        assert fan not in await _backfills(aid), await _backfills(aid)
+        wd.backfill_if_deferred = spy
+        try:
+            for _ in range(2):
+                assert await _mark_read(fan) == {"success": True}
+            await _mark_read(plain_fan)
+        finally:
+            wd.backfill_if_deferred = orig
+        assert seen == [0, 0, 0], seen
+        b = await _backfills(aid)
+        assert b.get(fan) == 1 and plain_fan not in b, b
+    _with_head(run)
+
+
+def case_failed_mark_read_buys_no_backfill():
+    """A mark-as-read the platform refused (200-style `success: False`, 502) or that raised fires
+    no Click read: the chat may still be unread on OF."""
+    from fastapi import HTTPException
+    aid, refused_fan, raised_fan = "acct-open", 9251, 9252
+
+    async def run(c, read):
+        await _seed_history(aid, refused_fan, deferred=True, unread=2)
+        await _seed_history(aid, raised_fan, deferred=True, unread=2)
+        c.mark_result = {"success": False, "reason": "ack_rejected"}
+        out = await _mark_read(refused_fan)
+        assert isinstance(out, HTTPException) and out.status_code == 502, out
+        from types import SimpleNamespace
+        from of_client import OFAPIError
+        c.mark_result = OFAPIError("500 for https://onlyfans.com/api2/v2/chats/x/mark-as-read\ndown",
+                                   response=SimpleNamespace(status_code=500, text="down", headers={}))
+        assert isinstance(await _mark_read(raised_fan), HTTPException)
+        b = await _backfills(aid)
+        assert refused_fan not in b and raised_fan not in b, b
+    _with_head(run)
+
+
+def case_head_read_and_mark_read_make_one_backfill():
+    """An open's plain head read then its mark-as-read inside the claim window: one job."""
+    aid, fan = "acct-open", 9261
+
+    async def run(c, read):
+        await _seed_history(aid, fan, deferred=True, unread=2)
+        await read(fan)
+        await _mark_read(fan)
+        assert (await _backfills(aid)).get(fan) == 1, await _backfills(aid)
     _with_head(run)
 
 

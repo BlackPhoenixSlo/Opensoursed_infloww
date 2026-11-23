@@ -298,6 +298,7 @@ async def case_timeout_read_back():
     out = await _send(fake, rid, fan, ppv)
     listed = fake.listed[0]["id"]
     assert out == (SENT, listed, None) and len(fake.attempts) == 1, out
+    assert [kw.get("peek") for kw in fake.read_kw] == [True], fake.read_kw
     assert (await _row(rid)).offer_message_id == listed
     assert [(m.message_id, m.price_cents) for m in await _msgs(fan)] == [(listed, 1500)]
     assert [v.media_id for v in await _vault(fan)] == list(LOCKED)

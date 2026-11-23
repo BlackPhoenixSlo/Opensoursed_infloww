@@ -156,9 +156,10 @@ describe("useAccountStateEvents", () => {
       expect(warmMark(s, hasValue)).toBe(want);
     });
 
-    it("writes the counts it carries; re-reads only lists read before it, gathered per window; arms at once", () => {
+    it("writes the notif count it carries, not its roster; re-reads only lists read before it, gathered per window; arms at once", () => {
       const qc = qcKeep();
-      qc.setQueryData(ROSTER, { counts: { 7: { unread: 0, owe_reply: 0, as_of: 100 }, 9: { unread: 4, owe_reply: 0, as_of: 100 } } });
+      const counts = { counts: { 7: { unread: 0, owe_reply: 0 }, 9: { unread: 4, owe_reply: 0 } } };
+      qc.setQueryData(ROSTER, counts);
       qc.setQueryData(["of-notif-count", "7"], 1);
       qc.setQueryData(["notif-list", "7", "tip"], { list: [] });         // read before the warm
       empty(qc, ["notif-list", "8", "tip"]);                              // unarmed: never read
@@ -167,16 +168,14 @@ describe("useAccountStateEvents", () => {
       emit("creator_warmed", warmed("7", { roster: { unread: 2, owe_reply: 1, as_of: 200 }, notif_count: 5, now: Date.now() }));
       emit("creator_warmed", warmed("8", { roster: { unread: 1, owe_reply: 0, as_of: 200 }, notif_count: 3, now: Date.now() }));
       expect([isArmed("7"), isArmed("8"), isArmed("9")]).toEqual([true, true, false]);
-      expect((qc.getQueryData(ROSTER) as { counts: unknown }).counts).toEqual({
-        7: { unread: 2, owe_reply: 1, as_of: 200 }, 8: { unread: 1, owe_reply: 0, as_of: 200 }, 9: { unread: 4, owe_reply: 0, as_of: 100 },
-      });
+      expect(qc.getQueryData(ROSTER)).toBe(counts);
       expect([qc.getQueryData(["of-notif-count", "7"]), qc.getQueryData(["of-notif-count", "8"])]).toEqual([5, 3]);
       expect(keys()).toEqual([]);
       act(() => { vi.advanceTimersByTime(COALESCE_MS); });
       expect(keys()).toEqual([["notif-list", "7", "tip"]]);
     });
 
-    it("without values (an old relay, an expired entry): re-reads what it holds, not what it never read", () => {
+    it("without values (an old relay, an expired entry): re-reads what it holds, not what it never read; never roster-counts", () => {
       const qc = qcKeep();
       qc.setQueryData(ROSTER, { counts: {} });
       qc.setQueryData(["of-notif-count", "7"], 1);
@@ -185,7 +184,7 @@ describe("useAccountStateEvents", () => {
       emit("creator_warmed", warmed("7"));
       emit("creator_warmed", warmed("7"));
       act(() => { vi.advanceTimersByTime(COALESCE_MS); });
-      expect(keys()).toEqual([ROSTER, ["of-notif-count", "7"]]);
+      expect(keys()).toEqual([["of-notif-count", "7"]]);
     });
 
     it("a list read ending after it is not re-read; one in flight when it came is, even after that read ends", async () => {
@@ -201,13 +200,15 @@ describe("useAccountStateEvents", () => {
       expect(keys()).toEqual([["notif-list", "7", "purchases"]]);
     });
 
-    it("a roster read in flight when it came: written, no re-read (that read's merge keeps the newer as_of)", () => {
+    it("a roster read in flight when it came: untouched, no re-read; the read's answer stands", async () => {
       const qc = qcKeep();
-      qc.setQueryData(ROSTER, { counts: { 7: { unread: 0, owe_reply: 0, as_of: 100 } } });
-      inFlight(qc, ROSTER, { counts: {} });
+      qc.setQueryData(ROSTER, { counts: { 7: { unread: 0, owe_reply: 0 } } });
+      const end = inFlight(qc, ROSTER, { counts: { 7: { unread: 5, owe_reply: 0 } } });
       const { keys } = mount(qc);
       emit("creator_warmed", warmed("7", { roster: { unread: 2, owe_reply: 1, as_of: 200 }, now: Date.now() }));
-      expect((qc.getQueryData(ROSTER) as { counts: Record<string, unknown> }).counts[7]).toEqual({ unread: 2, owe_reply: 1, as_of: 200 });
+      expect((qc.getQueryData(ROSTER) as { counts: Record<string, unknown> }).counts[7]).toEqual({ unread: 0, owe_reply: 0 });
+      await end();
+      expect((qc.getQueryData(ROSTER) as { counts: Record<string, unknown> }).counts[7]).toEqual({ unread: 5, owe_reply: 0 });
       act(() => { vi.advanceTimersByTime(COALESCE_MS); });
       expect(keys()).toEqual([]);
     });
@@ -307,6 +308,37 @@ describe("useAccountStateEvents", () => {
     });
   });
 
+  describe("ping `badge` (a Badge version the tab missed)", () => {
+    const snap = (seq: number, v: number) => ({
+      account_id: "c1", boot: 1000, seq, now: 5_000, at: 4_000, cycle_s: 600, live: "up", live_since: null,
+      values: { unread_total: { n: 2, at: 4_000, v, grey: null } },
+    });
+    afterEach(() => { mockUser = null; vi.restoreAllMocks(); });
+
+    it("one behind ping refetches the accounts answer once (its seed catches up); an equal ping none", async () => {
+      vi.useRealTimers();
+      mockUser = { user_id: "owner-A", username: "owner-a" };
+      const get = vi.spyOn(relay, "get")
+        .mockResolvedValueOnce({ accounts: [{ id: "c1", freshness: snap(1, 3) }], active_account_id: "c1" })
+        .mockResolvedValueOnce({ accounts: [{ id: "c1", freshness: snap(2, 4) }], active_account_id: "c1" });
+      const qc = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } });
+      renderHook(() => { useAccountStateEvents(); useAccounts(); }, {
+        wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>,
+      });
+      const held = () => (qc.getQueryData(["creator-freshness", "owner-A"]) as Record<string, Record<string, unknown>> | undefined)?.c1;
+      const calls = () => get.mock.calls.filter(([path]) => path === "/admin/accounts").length;
+      await waitFor(() => expect(held()).toMatchObject({ seq: 1 }));
+      emit("ping", { ts: 9.9, fresh: {}, badge: { c1: 3 } });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(calls()).toBe(1);
+      emit("ping", { ts: 29.9, fresh: {}, badge: { c1: 4 } });
+      await waitFor(() => expect(held()).toMatchObject({ seq: 2 }));
+      emit("ping", { ts: 49.9, fresh: {}, badge: { c1: 4 } });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(calls()).toBe(2);
+    });
+  });
+
   it("invalidates account-state queries at once", () => {
     const { keys } = mount();
     emit("proxy_switched", { __account_id: "7", proxy_switched: { proxied: true } });
@@ -322,12 +354,28 @@ describe("useAccountStateEvents", () => {
     expect(keys()).toContainEqual(["automation-rules"]);
   });
 
-  it("does not re-arm them when Idle mode closed the stream", () => {
+  it("does not re-arm them when Idle mode closed the stream, nor on its reopen", () => {
     const { keys } = mount();
     act(() => { for (const fn of stateListeners) fn(true); });
     paused = true;
     act(() => { for (const fn of stateListeners) fn(false); });
+    paused = false;
+    act(() => { for (const fn of stateListeners) fn(true); });
     expect(keys()).toEqual([]);
+  });
+
+  it("refetches roster-counts once on the drop and once more on the reconnect, nothing else on the reconnect", () => {
+    const { keys } = mount();
+    const roster = () => keys().filter((k) => JSON.stringify(k) === '["roster-counts"]').length;
+    act(() => { for (const fn of stateListeners) fn(true); });
+    act(() => { for (const fn of stateListeners) fn(false); });
+    expect(roster()).toBe(1);
+    const atDrop = keys().length;
+    act(() => { for (const fn of stateListeners) fn(true); });
+    expect(keys().slice(atDrop)).toEqual([["roster-counts"]]);
+    act(() => { for (const fn of stateListeners) fn(false); });
+    act(() => { for (const fn of stateListeners) fn(true); });
+    expect(roster()).toBe(4);
   });
 
   it("chat_read_changed flips the fan's row in every cached list holding the Creator, All Models included; no read", () => {

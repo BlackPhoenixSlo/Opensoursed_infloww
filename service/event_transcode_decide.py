@@ -7,10 +7,12 @@ function of its arguments: no clock (callers pass `now`), no DB, no I/O, no
 import of `event_transcoder` (no cycle). Tables: tests/test_event_transcode_decide.py.
 
   route(event)              which writer an OF WS frame goes to
+  counter_of(event)         OF's Unread counter in a `chat_messages` frame (int >= 0), else None
   queue_fold / blasted      the "did this account just blast?" ring
+  queue_reread              did a finished blast just enter it (one window re-read)
   user_blob(payload)        the Fan touch a non-message frame carries
-  dm_key(aid, m)            Skip | Outbound | None: dm_plan's key/direction half
-  dm_plan(aid, m, now)      Skip | Outbound | Inbound for a chat_message
+  dm_key(aid, m)            Skip | Outbound | Echo | None: dm_plan's key/direction half
+  dm_plan(aid, m, now)      Skip | Outbound | Echo | Inbound for a chat_message
   is_inbound_dm(event)      would this frame's dm_plan be Inbound (the persist queue keeps it)
   money_bust(m)             does an inbound chat_message clear the money feeds' cache
   fan_upsert(plans)         the `fans` upsert of one chat's DM batch
@@ -56,7 +58,7 @@ def media_ids(media: list | None) -> list[int]:
 
 # ── Routing ──────────────────────────────────────────────────────────
 
-Lane = Literal["chat_message", "ppv", "toast", "queue", "other"]
+Lane = Literal["chat_message", "ppv", "toast", "queue", "counter", "other"]
 
 
 def route(event: Any) -> tuple[Lane, str, Any] | None:
@@ -75,7 +77,14 @@ def route(event: Any) -> tuple[Lane, str, Any] | None:
         return "toast", event_type, payload
     if event_type in ("chat_queue_finish", "chat_queue_update"):
         return "queue", event_type, payload
+    if event_type == "chat_messages":
+        return "counter", event_type, payload
     return "other", event_type, payload
+
+
+def counter_of(event: Any) -> int | None:
+    v = event.get("chat_messages") if isinstance(event, dict) else None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
 
 
 # ── Broadcast queue ring ─────────────────────────────────────────────
@@ -122,6 +131,12 @@ def queue_fold(ring: Ring, event_type: str, payload: Any, now: float) -> Ring:
         return ring
     kept = tuple(e for e in ring if e[0] != queue_id)
     return (kept + ((queue_id, now),))[-QUEUE_RING_MAX:]
+
+
+def queue_reread(before: Ring, after: Ring) -> bool:
+    """A finished broadcast `queue_fold` kept (5+ recipients, not cancelled) entered the ring: one window re-read,
+    so Fans the mass answered leave amber. A re-sent finish of a queue already held is no new entry."""
+    return bool({q for q, _at in after} - {q for q, _at in before})
 
 
 def blasted(ring: Ring, now: float, seconds: float) -> bool:
@@ -195,6 +210,13 @@ class Outbound:
 
 
 @dataclass(frozen=True)
+class Echo:
+    """A Creator send from any client (no `fromUser`, `chatUserId` names the Fan): no row, that Fan reads read."""
+    message_id: Any
+    fan_id: int
+
+
+@dataclass(frozen=True)
 class Inbound:
     """One inbound DM. `msg`: its `messages` row, exact columns less `raw_json`
     (the shell's). `image`: the image hook owns it, else the words hook does;
@@ -207,16 +229,29 @@ class Inbound:
     has_media: bool
 
 
-DmPlan = Union[Skip, Outbound, Inbound]
+DmPlan = Union[Skip, Outbound, Echo, Inbound]
 
 
-def dm_key(account_id: Any, m: dict) -> Union[Skip, Outbound, None]:
-    """The key/direction half of `dm_plan`, its one owner: Skip (no message id, no
-    `fromUser.id` — a non-dict `fromUser` has none — or no account), Outbound (the Fan
-    is the account), None (a Fan's DM: `dm_plan` builds the Inbound). Reads only those
-    keys, never raises."""
+def _int_id(v: Any) -> int | None:
+    if isinstance(v, bool):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def dm_key(account_id: Any, m: dict) -> Union[Skip, Outbound, Echo, None]:
+    """The key/direction half of `dm_plan`, its one owner: Echo (no `fromUser` dict, an
+    integer `chatUserId`, a message id and the account), Skip (no message id, no `fromUser.id` —
+    a non-dict `fromUser` has none — or no account), Outbound (the Fan is the account),
+    None (a Fan's DM: `dm_plan` builds the Inbound). Reads only those keys, never raises."""
     message_id = m.get("id")
     from_user = m.get("fromUser")
+    if not isinstance(from_user, dict) and message_id and account_id:
+        fan = _int_id(m.get("chatUserId"))
+        if fan:
+            return Echo(message_id, fan)
     fan_id = from_user.get("id") if isinstance(from_user, dict) else None
     if not message_id or not fan_id or not account_id:
         return Skip(message_id, fan_id)
