@@ -131,15 +131,24 @@ for (const form of document.querySelectorAll("[data-auth-form]")) {
 const demoFrame = document.querySelector("iframe[data-src]");
 if (demoFrame) {
   let timer;
-  new IntersectionObserver(
-    ([entry], observer) => {
-      clearTimeout(timer);
-      if (!entry.isIntersecting) return;
-      timer = setTimeout(() => {
-        demoFrame.src = demoFrame.dataset.src;
-        observer.disconnect();
-      }, 400);
+  let visible = false;
+  const restartDwell = () => {
+    clearTimeout(timer);
+    if (!visible) return;
+    timer = setTimeout(() => {
+      demoFrame.src = demoFrame.dataset.src;
+      observer.disconnect();
+      window.removeEventListener("scroll", restartDwell);
+    }, 400);
+  };
+  const observer = new IntersectionObserver(
+    (entries) => {
+      visible = entries.at(-1).intersectionRatio >= 0.2;
+      restartDwell();
     },
     { threshold: 0.2 },
-  ).observe(demoFrame);
+  );
+  demoFrame.hidden = false;
+  window.addEventListener("scroll", restartDwell, { passive: true });
+  observer.observe(demoFrame);
 }

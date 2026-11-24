@@ -5,7 +5,7 @@ date: 2026-10-12
 agency: "Example Talent Co."
 tagline: "14 creators, one checklist, and a software line item that rounds to zero because it is zero."
 stats:
-  - value: "$0/m"
+  - value: "$0"
     label: "Per creator per month, times 14 creators, times 12 months"
   - value: "12"
     label: "Steps on the onboarding checklist, all of them below"

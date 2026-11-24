@@ -124,12 +124,16 @@ ogDescription: "Two ways, both $0 a month: our hosted app is free for agencies u
       </div>
       <iframe
         data-src="{{ site.demoUrl }}"
+        hidden
         title="Inflowwww live demo, signed in as a synthetic agency"
         class="block h-[min(820px,80vh)] w-full border-0 bg-white"
         style="height: min(820px, 80vh)"
         allow="clipboard-write; fullscreen"
         referrerpolicy="strict-origin-when-cross-origin"
       ></iframe>
+      <noscript>
+        <a class="block px-4 py-6 text-center font-medium text-ink underline" href="{{ site.demoUrl }}">Open the live demo</a>
+      </noscript>
     </div>
 
     <a href="{{ site.demoUrl }}" class="group mt-12 block md:hidden" aria-label="Open the live demo">
