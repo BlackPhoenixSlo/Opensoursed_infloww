@@ -461,7 +461,7 @@ _provider_calls: list[str] = []
 def _patched_provider():
     import translate_api
 
-    async def _fake_fetch(client, sem, text: str, target: str):
+    async def _fake_fetch(client, sem, text: str, target: str, source: str = "auto"):
         _provider_calls.append(text)
         return {"text": f"EN:{text}", "lang": "es"}
 

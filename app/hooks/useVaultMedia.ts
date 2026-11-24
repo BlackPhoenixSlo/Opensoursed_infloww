@@ -278,6 +278,22 @@ export async function revalidateVaultLists(qc: QueryClient, accountId: string): 
   } finally { read.release(); }
 }
 
+/** useVaultLists for a form's folder select (Auto Post/Mass pools, Auto Story): once the copy on screen settles,
+ *  one more read through the relay's age gate (`revalidateVaultLists`), so a folder made on OF since the cached copy
+ *  shows up without a manual refresh. */
+export function useVaultListsRevalidated(accountId: string | null) {
+  const qc = useQueryClient();
+  const q = useVaultLists(accountId);
+  const doneFor = useRef<string | null>(null);
+  const settled = q.isSuccess && q.fetchStatus === "idle";
+  useEffect(() => {
+    if (!accountId || !settled || doneFor.current === accountId) return;
+    doneFor.current = accountId;
+    revalidateVaultLists(qc, accountId).catch(() => {});
+  }, [qc, accountId, settled]);
+  return q;
+}
+
 const sameIds = (a: VaultMediaResp, b: VaultMediaResp): boolean => {
   const x = a.list ?? [], y = b.list ?? [];
   return x.length === y.length && x.every((m, i) => m.id === y[i].id) && !!a.hasMore === !!b.hasMore;

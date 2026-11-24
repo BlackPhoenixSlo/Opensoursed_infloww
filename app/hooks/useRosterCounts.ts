@@ -13,21 +13,23 @@
  * chatter sees the union across every linked owner (the same set its roster
  * strip already renders). The Relay's answer is cached as is: the tab keeps no
  * count of its own. Polls every 5 min (60s while SSE is down) only while some
- * Creator's accounts row has no `unread_total` slot (that Knob off): with every
+ * Creator has no live `unread_total` slot: with every
  * slot present the snapshot, the Badge version, mount and the SSE reconnect
  * keep it fresh.
  */
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ssePoll } from "@/lib/events";
+import { eventBus, ssePoll } from "@/lib/events";
 import { relay } from "@/lib/relay";
 import { useOptionalUser } from "@/contexts/UserContext";
 import { useOptionalChatter } from "@/contexts/ChatterContext";
 import { usePrincipalId } from "@/hooks/useEmployeeKey";
 import { ownerAccountsQuery } from "@/lib/ownerAccounts";
 import { chatterAccountsQuery, chatterSeedRows } from "@/lib/chatterAccounts";
+import { useCreatorFreshnessState } from "@/hooks/useCreatorFreshness";
+import { redCircle, shownUnread } from "@/components/chat/redCircle";
 import type { SeedRow } from "@/lib/creatorFreshness";
 
 export interface RosterCount {
@@ -47,10 +49,8 @@ export function rosterCountsKey(principalId: string): readonly [string, string] 
   return ["roster-counts", principalId] as const;
 }
 
-/** Some Creator row has no `unread_total` slot (that Knob off). Dead and deactivated Creators count: the Relay
- *  gives every Creator row `freshness` while the Shared refresher is on. */
 const rosterPollNeeded = (rows: readonly SeedRow[]) =>
-  !rows.every((r) => !!r.freshness?.values && "unread_total" in r.freshness.values);
+  rows.some((r) => r.freshness?.values.unread_total == null);
 
 /** Read from the principal's accounts answer, never fetched here; no answer yet polls. */
 function useRosterPollNeeded(chatterOnly: boolean, userId: string | undefined): boolean {
@@ -62,7 +62,22 @@ function useRosterPollNeeded(chatterOnly: boolean, userId: string | undefined): 
 }
 
 export function useRosterCounts(): Record<string, RosterCount> {
-  return useRosterCountsRead().counts;
+  const { counts } = useRosterCountsRead();
+  const freshness = useCreatorFreshnessState();
+  const [reachable, setReachable] = useState(() => eventBus.isConnected());
+  useEffect(() => eventBus.onStateChange(setReachable), []);
+  return useMemo(() => {
+    if (!reachable) return counts;
+    const display = { ...counts };
+    for (const [id, snapshot] of Object.entries(freshness)) {
+      const slot = snapshot.values.unread_total;
+      if (!slot) continue;
+      const fallback = counts[id];
+      const unread = shownUnread(redCircle(slot, true, fallback?.unread, true));
+      display[id] = { unread, owe_reply: slot.amber ?? fallback?.owe_reply ?? 0 };
+    }
+    return display;
+  }, [counts, freshness, reachable]);
 }
 
 /** The counts, and whether their first read is over (answered, failed, or

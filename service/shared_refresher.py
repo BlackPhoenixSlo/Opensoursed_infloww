@@ -103,7 +103,8 @@ def live(account_id: str) -> str | None:
 
 def register(name: str, contributor: Any) -> None:
     """P1 Contract 8: `contributor.snapshot(aid) -> JSON | None` rides `values[name]` (None: null); its optional
-    `window_due(aid) -> bool` is asked after read 1 (ticket 19). Its state sits behind its own `threading.Lock`."""
+    `window_due(aid) -> bool` is asked after read 1 (ticket 19). An optional `on_tick(aid)` runs for each
+    tracked account before the tick reads contributor values. Its state sits behind its own `threading.Lock`."""
     _contributors[name] = contributor
 
 
@@ -274,6 +275,14 @@ async def tick() -> None:
     leased = frozenset(tracked & view_lease.leased_ids()) if tracked else frozenset()
     dead = frozenset(tracked & (await account_health.dead_session_map()).keys()) if tracked else frozenset()
     now_ms, prev_live = int(time.time() * 1000), {a: v["live"] for a, v in _state.shown.items()}
+    for name, contributor in list(_contributors.items()):
+        on_tick = getattr(contributor, "on_tick", None)
+        if on_tick is not None:
+            for aid in tracked:
+                try:
+                    on_tick(aid)
+                except Exception:
+                    log.warning("shared_refresher_tick_failed name=%s account=%s", name, aid, exc_info=True)
     inputs = decide.Inputs(now=_clock(), tracked=tracked, readable=readable,
                            warm_pending=frozenset(a for a in tracked if app_open_warm.pending(a)),
                            in_flight=frozenset(_in_flight), leased=leased,

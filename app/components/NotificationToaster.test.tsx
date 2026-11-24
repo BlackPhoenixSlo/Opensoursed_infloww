@@ -982,18 +982,50 @@ describe("NotificationToaster — Web Push", () => {
     expect(count(container, "lane first")).toBe(1);
   });
 
-  it("the push-notice before the lane's frame (idle mode's replay) → one toast; the frame still plays the sound, keyed once", async () => {
-    mockSettings = { ...mockSettings, sounds: { ...mockSettings.sounds, message: { on: true, sound: mockSettings.sounds.message.sound } } };
+  it("the push-notice before a sale's frame (idle mode's replay) → one toast; the frame still plays the sale sound, keyed once", async () => {
+    mockSettings = { ...mockSettings, sounds: { ...mockSettings.sounds, sale: { on: true, sound: "s12" } } };
     const Comp = await loadComponent();
     const { container } = renderToaster(Comp);
-    expect(offer(notice(9003, "push first"))).toBe(true);
-    expect(count(container, "push first")).toBe(1);
-    expect(container.textContent).toContain("Pushy");
+    const ppv = { v: 1, tag: "900:9060", title: "Buyer", body: "Unlocked your PPV — $5", type: "purchases", account_id: "900", href: "/messages-pro/900/778?refresh=media&fanTab=Buyer" };
+    expect(offer(ppv)).toBe(true);
     expect(mockPlayAlertOnce).not.toHaveBeenCalled();
-    fire("api2_chat_message", dm(9003, "push first"));
-    fire("api2_chat_message", dm(9003, "push first")); // a second replay
-    expect(count(container, "push first")).toBe(1);
-    expect(mockPlayAlertOnce.mock.calls).toEqual([["900:m9003", mockSettings.sounds.message.sound]]);
+    const buy = { __account_id: "900", purchase_notified: { notif_id: "9060", fan_id: 778, amount_cents: 500, name: "Buyer" } };
+    fire("purchase_notified", buy);
+    fire("purchase_notified", buy); // a second replay
+    expect(count(container, "Unlocked your PPV")).toBe(1);
+    expect(mockPlayAlertOnce.mock.calls).toEqual([["900:9060", "s12"]]);
+  });
+
+  it("sale sound ignores a replayed old purchase and plays a fresh purchase once", async () => {
+    mockSettings = { ...mockSettings, sounds: { ...mockSettings.sounds, sale: { on: true, sound: "s12" } } };
+    renderToaster(await loadComponent());
+    const buy = (notif_id: string, created_at: string) => ({
+      __account_id: "900", purchase_notified: { notif_id, fan_id: 778, amount_cents: 500, created_at },
+    });
+    fire("purchase_notified", buy("9061", new Date(Date.now() - 45 * 60_000).toISOString()));
+    expect(mockPlayAlertOnce).not.toHaveBeenCalled();
+    const fresh = buy("9062", new Date().toISOString());
+    fire("purchase_notified", fresh);
+    fire("purchase_notified", fresh);
+    expect(mockPlayAlertOnce.mock.calls).toEqual([["900:9062", "s12"]]);
+  });
+
+  it("sale sound: a tip plays it, a DM does not", async () => {
+    mockSettings = { ...mockSettings, sounds: { ...mockSettings.sounds, sale: { on: true, sound: "s3" } } };
+    const Comp = await loadComponent();
+    renderToaster(Comp);
+    fire("api2_chat_message", dm(9070, "just a dm"));
+    expect(mockPlayAlertOnce).not.toHaveBeenCalled();
+    fire("toasts", { __account_id: "900", toasts: [{ id: 9071, type: "tip", text: "tipped you $10", data: { relatedUser: { id: 779, name: "Tipper" } } }] });
+    expect(mockPlayAlertOnce.mock.calls).toEqual([["900:9071", "s3"]]);
+  });
+
+  it("sale sound off by the master switch → silent tip", async () => {
+    mockSettings = { ...mockSettings, enabled: false, sounds: { ...mockSettings.sounds, sale: { on: true, sound: "s3" } } };
+    const Comp = await loadComponent();
+    renderToaster(Comp);
+    fire("toasts", { __account_id: "900", toasts: [{ id: 9072, type: "tip", text: "tipped you $10", data: { relatedUser: { id: 779, name: "Tipper" } } }] });
+    expect(mockPlayAlertOnce).not.toHaveBeenCalled();
   });
 
   it("the push-notice before the lane's frame → the bell's history row is the lane's (avatar, username, OF's time), not the push's", async () => {

@@ -168,6 +168,6 @@ async def reject_if_resale(account_id: str, fan_id: int, body) -> None:
 
 
 async def record_fan_send(account_id: str, fan_id: int, result, *,
-                          employee_id: int | None, price: float) -> None:
+                          employee_id: int | None, price: float, before_send_at: int) -> None:
     return await live_server()._record_fan_send(
-        account_id, fan_id, result, employee_id=employee_id, price=price)
+        account_id, fan_id, result, employee_id=employee_id, price=price, before_send_at=before_send_at)

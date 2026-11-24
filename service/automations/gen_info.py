@@ -509,11 +509,7 @@ async def _enqueue_thin_fan_scrapes(
     enqueued — a thin fan already scraped within the cooldown is left to profile
     normally (OF genuinely has little for them).
 
-    A deferred row (`history_deferred_at`: a sweep skipped its oldest end) reads as never
-    scraped. Each deferred pick gets its own one-fan scrape through webhook_dispatch's
-    shared claim (`enqueue_fan_scrape`), which walks the recent end and keeps the deferral
-    (only a Click read buys the asc pass); one already claimed by an open or blast
-    inside the window is left out, and still returned as deferred for this pass."""
+    Deferred rows use the same cooldown as completed scrapes."""
     thin = [
         c for c in candidates
         if c.fan_id not in force_ids
@@ -534,30 +530,34 @@ async def _enqueue_thin_fan_scrapes(
                 ScrapeHistory.fan_id.in_([c.fan_id for c in thin]),
             )
         )).all()
-    # A deferred row's stamp is the sweep's page-1 read, not a deep scrape: never scraped.
-    hist = {int(fid): at for fid, at, held in rows if held is None}
+    hist = {int(fid): at for fid, at, _held in rows}
     held_back = {int(fid) for fid, _at, held in rows if held is not None}
     # `thin` preserves the candidate order (spend desc), so the highest-value fans are
     # scraped first; the rest get picked up on later passes — keeps any one job bounded.
     to_scrape = [
         c.fan_id for c in thin
         if (at := hist.get(c.fan_id)) is None or at < fresh_cutoff
-    ][:_AUTOSCRAPE_BATCH_MAX]
+    ]
     if not to_scrape:
         return set()
 
     import automation_executor as ax  # lazy: avoid an import cycle at module load
     import webhook_dispatch  # lazy: same
+    queued: set[int] = set()
+    plain: list[int] = []
     for fid in to_scrape:
-        if fid in held_back:
-            await webhook_dispatch.enqueue_fan_scrape(
-                account_id, fid, webhook_dispatch.GEN_INFO_PICK_SOURCE)
-    plain = [fid for fid in to_scrape if fid not in held_back]
+        if fid not in held_back:
+            plain.append(fid)
+        elif await webhook_dispatch.enqueue_fan_scrape(account_id, fid, webhook_dispatch.GEN_INFO_PICK_SOURCE):
+            queued.add(fid)
+        if len(plain) + len(queued) >= _AUTOSCRAPE_BATCH_MAX:
+            break
     if plain:
         await ax.enqueue_job(account_id, "scrape_chats", payload={"fan_ids": plain})
+    queued.update(plain)
     log.info("gen_info_autoscrape account=%s deferred=%d fans=%s",
-             account_id, len(to_scrape), to_scrape)
-    return set(to_scrape)
+             account_id, len(queued), sorted(queued))
+    return queued
 
 
 @register("gen_info")

@@ -489,6 +489,7 @@ async def run(account_id: str, data: bytes) -> JevResult:
 
     rec: dict[str, Any] = {}
     passes: list[str] = []
+    skipped: dict[str, str] = {}
     tok = 0
     t0 = time.monotonic()
     try:
@@ -496,31 +497,45 @@ async def run(account_id: str, data: bytes) -> JevResult:
             nonlocal tok
             r = await _ask(key, {"photo": await asyncio.to_thread(shrink, data, EDGE)}, Q)
             rec["resp"] = r; passes.append("1"); tok += _tokens(r)
+        async def followup(p: str, state: dict[str, bytes], questions: dict[str, dict]) -> None:
+            nonlocal tok
+            try:
+                r = await _ask(key, state, questions)
+            except Exception as e:
+                if _failed(e) != rules.REJECTED:
+                    raise
+                skipped[f"{p}s"] = "rejected"
+                return
+            rec[rules.RESP[p]] = r
+            passes.append(p)
+            tok += _tokens(r)
+
         _, scores = await _settled([p1(), nudenet_scores(data)])
         d = rules.derive8(rec)
         if d["need2"]:
-            p2 = await _ask(key, {"photo": await asyncio.to_thread(shrink, data, EDGE2)}, Q2)
-            rec["resp2"] = p2; passes.append("2"); tok += _tokens(p2)
+            await followup("2", {"photo": await asyncio.to_thread(shrink, data, EDGE2)}, Q2)
             d = rules.derive8(rec)
         if d["needL"]:
             def _crop_state() -> dict[str, bytes]:
                 return {k: enc(v, EDGE_L) for k, v in crops(data, "lower").items()}
             st = await asyncio.to_thread(_crop_state)
-            pl = await _ask(key, st, crop_questions(st, "lower"))
-            rec["respL"] = pl; passes.append("L"); tok += _tokens(pl)
+            if _crops_big_enough(st):
+                await followup("L", st, crop_questions(st, "lower"))
+            else:
+                skipped["Ls"] = "small"
         d = rules.final(rec, scores)
     except Exception as e:  # noqa: BLE001 — SDK, HTTP, timeout, NudeNet decode, a missing answer
         actual = cost_millicents(tok)
         await hold.done(actual, tokens_in=tok, ok=False, error=f"{type(e).__name__}: {e}"[:300],
                         latency_ms=int((time.monotonic() - t0) * 1000))
         log.warning("vault_jev failed account=%s passes=%s: %s", account_id, passes, type(e).__name__)
-        return JevResult(ok=False, status=_failed(e), detail=f"{type(e).__name__}: {e}"[:300],
-                         cost_millicents=actual, tok=tok, call_failed=True)
+        return _failure(e, actual, tok)
     actual = cost_millicents(tok)
     await hold.done(actual, tokens_in=tok, ok=True, latency_ms=int((time.monotonic() - t0) * 1000),
                     response=f"lane5={d['lane5']} passes={','.join(passes)}")
     b = rules.blob(d, scores, passes=passes, tok=tok, px=px, at=datetime.utcnow().isoformat(),
                    answers=rules.overlay(rec, d))
+    b.update(skipped)
     return JevResult(ok=True, status="ok", blob=b, cost_millicents=actual, tok=tok)
 
 
@@ -535,20 +550,33 @@ FRAME_CONCURRENCY = 6
 MIN_L_EDGE = 280
 
 
-async def _settled(coros: list[Any]) -> list[Any]:
-    """`gather` that lets every call finish (so its tokens are counted before the hold settles), then raises the
-    first failure."""
-    out = await asyncio.gather(*coros, return_exceptions=True)
+def _crops_big_enough(st: dict[str, bytes]) -> bool:
+    from PIL import Image as PImage
+
+    return all(min(PImage.open(io.BytesIO(b)).size) >= MIN_L_EDGE for b in st.values())
+
+
+async def _gather_all(coros: list[Any]) -> list[Any]:
+    """Let every call finish so its tokens are counted before the hold settles."""
+    return await asyncio.gather(*coros, return_exceptions=True)
+
+
+def _raise_first(out: list[Any]) -> None:
     for x in out:
         if isinstance(x, BaseException):
             raise x
+
+
+async def _settled(coros: list[Any]) -> list[Any]:
+    out = await _gather_all(coros)
+    _raise_first(out)
     return out
 
 
 async def run_video(account_id: str, frames: list[bytes], *, src: str, review: str | None,
                     nbytes: int) -> JevResult:
     """The whole pass over one video's frames (native stills, clip order). `run`'s contract: never raises for a
-    model / NudeNet failure; any frame's failed call fails the video (`error`, retried next sweep)."""
+    model / NudeNet failure. An invalid image skips its frame or follow-up pass."""
     import llm_client
     from tenant_keys import typesafe_key_for
     from PIL import Image as PImage
@@ -585,8 +613,12 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
                 raise refused[0]
             try:
                 r = await _ask(key, state, qs)
-            except Exception as e:  # noqa: BLE001 — re-raised; only a key refusal is remembered
-                if _failed(e) != "error":
+            except Exception as e:
+                status = _failed(e)
+                if p != "1" and status == rules.REJECTED:
+                    packs[i][f"{p}s"] = "rejected"
+                    return
+                if status in KEY_ERROR_KIND:
                     refused.append(e)
                 raise
         tok += _tokens(r)
@@ -604,26 +636,35 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
         def _crop_state() -> dict[str, bytes]:
             return {k: enc(v, EDGE_L) for k, v in crops(frames[i], "lower").items()}
         st = await asyncio.to_thread(_crop_state)
-        if min(min(PImage.open(io.BytesIO(b)).size) for b in st.values()) < MIN_L_EDGE:
+        if not _crops_big_enough(st):
             packs[i]["Ls"] = "small"
             return
         await ask(i, "L", st, crop_questions(st, "lower"))
 
     t0 = time.monotonic()
     try:
-        got = await _settled([*(p1(i) for i in range(len(frames))), *(nudenet_scores(f) for f in frames)])
-        scores = got[len(frames):]
-        await _settled([p2(i) for i in rules.video_targets(recs, "need2")])
-        await _settled([pl(i) for i in rules.video_targets(recs, "needL")])
-        scores = [{c: s.get(c, 0) for c in rules.NN} for s in scores]
+        got = await _gather_all([*(p1(i) for i in range(len(frames))), *(nudenet_scores(f) for f in frames)])
+        full_reads, scores = got[:len(frames)], got[len(frames):]
+        rejected = {i for i, value in enumerate(full_reads)
+                    if isinstance(value, BaseException) and _failed(value) == rules.REJECTED}
+        if refused:
+            raise refused[0]
+        if len(rejected) == len(frames):
+            _raise_first(full_reads)
+        kept = [i for i in range(len(frames)) if i not in rejected]
+        _raise_first([*(full_reads[i] for i in kept), *scores])
+        kept_recs = [recs[i] for i in kept]
+        await _settled([p2(kept[i]) for i in rules.video_targets(kept_recs, "need2")])
+        await _settled([pl(kept[i]) for i in rules.video_targets(kept_recs, "needL")])
+        recs, packs, px = kept_recs, [packs[i] for i in kept], [px[i] for i in kept]
+        scores = [{c: scores[i].get(c, 0) for c in rules.NN} for i in kept]
         ds, top = rules.video_final(recs, scores)
     except Exception as e:  # noqa: BLE001 — SDK, HTTP, timeout, NudeNet decode, a missing answer
         actual = cost_millicents(tok)
         await hold.done(actual, tokens_in=tok, ok=False, error=f"{type(e).__name__}: {e}"[:300],
                         latency_ms=int((time.monotonic() - t0) * 1000))
         log.warning("vault_jev video failed account=%s frames=%s: %s", account_id, len(frames), type(e).__name__)
-        return JevResult(ok=False, status=_failed(e), detail=f"{type(e).__name__}: {e}"[:300],
-                         cost_millicents=actual, tok=tok, call_failed=True)
+        return _failure(e, actual, tok)
     passes = [p for p in rules.ORDER if any(p in f for f in packs)]
     for f, d, s in zip(packs, ds, scores):
         f["nn"] = [s[c] for c in rules.NN]
@@ -632,8 +673,14 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
     await hold.done(actual, tokens_in=tok, ok=True, latency_ms=int((time.monotonic() - t0) * 1000),
                     response=f"lane5={ds[top]['lane5']} frame={top}/{len(frames)} src={src} passes={','.join(passes)}")
     b = rules.video_blob(ds, top, recs, scores, frames=packs, passes=passes, tok=tok, px=px,
-                         at=datetime.utcnow().isoformat(), src=src, review=review, nbytes=nbytes)
+                         at=datetime.utcnow().isoformat(), src=src,
+                         review=review or ("few_frames" if rejected else None), nbytes=nbytes)
     return JevResult(ok=True, status="ok", blob=b, cost_millicents=actual, tok=tok)
+
+
+def _failure(e: Exception, actual: int, tok: int) -> JevResult:
+    return JevResult(ok=False, status=_failed(e), detail=f"{type(e).__name__}: {e}"[:300],
+                     cost_millicents=actual, tok=tok, call_failed=True)
 
 
 def merge(prev: dict[str, Any], res: JevResult, now: datetime) -> dict[str, Any]:
@@ -644,6 +691,8 @@ def merge(prev: dict[str, Any], res: JevResult, now: datetime) -> dict[str, Any]
         out[rules.JEV_KEY] = res["blob"]
     elif res.get("status") != "capped":
         old = prev.get(rules.JEV_KEY) if isinstance(prev.get(rules.JEV_KEY), dict) else {}
-        out[rules.JEV_KEY] = {**old, "v": old.get("v", rules.VERSION), "status": res.get("status"),
-                       "error": str(res.get("detail") or "")[:200], "failed_at": now.isoformat()}
+        out[rules.JEV_KEY] = rules.keep_reject(prev, {
+            **old, "v": old.get("v", rules.VERSION), "status": res.get("status"),
+            "error": str(res.get("detail") or "")[:200], "failed_at": now.isoformat(),
+        })
     return out

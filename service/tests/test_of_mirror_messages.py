@@ -757,7 +757,7 @@ async def _backfills(aid):
     out = Counter()
     for p in rows:
         p = json.loads(p)
-        assert p.get("source") == "deferred_history" and len(p["fan_ids"]) == 1, p
+        assert p.get("source") == "deferred_history" and len(p["fan_ids"]) == 1 and p["after_click_at"], p
         out[p["fan_ids"][0]] += 1
     return dict(out)
 
@@ -856,6 +856,21 @@ def case_peek_head_read_peeks_uncached_and_buys_no_backfill():
     _with_head(run)
 
 
+def case_ascending_peek_rejected_before_of():
+    from fastapi import HTTPException
+
+    async def run(c, _read):
+        try:
+            await server.get_messages(9200, limit=10, order="asc", before_id=None, refresh=False, peek=True)
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("ascending peek accepted")
+        assert c.reads == []
+
+    _with_head(run)
+
+
 def case_peek_and_plain_reads_never_share_one_of_request():
     """In flight together, a peek and a plain head read make two OF calls (two plain ones, one)."""
     fan = 9211
@@ -903,9 +918,9 @@ def case_mark_read_is_the_click_read_of_a_warm_open():
     seen = []
     orig = wd.backfill_if_deferred
 
-    async def spy(account_id, fan_id):
+    async def spy(account_id, fan_id, at):
         seen.append(await local_unread_count(account_id, fan_id))
-        await orig(account_id, fan_id)
+        await orig(account_id, fan_id, at)
 
     async def run(c, read):
         await _seed_history(aid, fan, deferred=True, unread=2)
@@ -956,6 +971,50 @@ def case_head_read_and_mark_read_make_one_backfill():
         await read(fan)
         await _mark_read(fan)
         assert (await _backfills(aid)).get(fan) == 1, await _backfills(aid)
+    _with_head(run)
+
+
+def case_every_read_thread_page_is_saved_by_id():
+    """A chat open (head) and a scroll-up (before_id) both land their rows in messages, in
+    the background, by message id, the direction from the client's own user id."""
+    from sqlalchemy import select
+    from db.engine import get_session
+    from db.models import Message
+
+    async def run(c, read):
+        c.user_id = "999"
+        await read(7101)
+        await read(7101, before_id=400)
+        await asyncio.gather(*(t for t in asyncio.all_tasks() if t.get_name().startswith("thread-page")))
+        async with get_session() as s:
+            rows = (await s.execute(select(Message).where(
+                Message.account_id == "acct-open", Message.fan_id == 7101))).scalars().all()
+        assert sorted((m.message_id, m.direction) for m in rows) == [(501, "in"), (502, "in")], rows
+
+    _with_head(run)
+
+
+def case_peeked_head_dm_still_increments_unread_once():
+    import event_transcoder
+    from db.engine import get_session
+    from db.models import Chat, Message
+
+    async def run(c, read):
+        aid, fan = "acct-open", 7102
+        c.user_id = "999"
+        await _seed_history(aid, fan, deferred=False, unread=0)
+        payload = await read(fan, peek=True)
+        await asyncio.gather(*(t for t in asyncio.all_tasks() if t.get_name().startswith("thread-page")))
+        m = {**payload["list"][0], "createdAt": "2026-11-23T07:19:09+00:00",
+             "isTip": False, "price": 0, "responseType": "message"}
+        event = {"api2_chat_message": m, "__account_id": aid}
+        for _ in range(2):
+            await event_transcoder.transcode(event)
+            async with get_session() as s:
+                assert await s.get(Message, (aid, fan, m["id"])) is not None
+                chat = await s.get(Chat, (aid, fan))
+                assert chat.unread_count == 1, chat.unread_count
+
     _with_head(run)
 
 

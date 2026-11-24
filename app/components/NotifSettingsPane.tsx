@@ -74,8 +74,8 @@ export function NotifSettingsPane({ agency }: { agency?: ReactNode }) {
                     type="checkbox"
                     checked={pref.on}
                     onChange={(e) => set({ on: e.target.checked })}
-                    // The master toggle mutes the message sound; the reminder ignores it.
-                    disabled={k.key === "message" && !settings.enabled}
+                    // The master toggle mutes the sale sound; the reminder ignores it.
+                    disabled={k.key === "sale" && !settings.enabled}
                   />
                   {k.label}
                 </label>

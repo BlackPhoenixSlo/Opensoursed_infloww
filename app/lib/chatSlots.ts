@@ -87,15 +87,17 @@ export interface ScriptSourceSlot {
   label: string;
   /** A hook, called on every Composer render: the chat's current script and
    *  its next step; `markSent` after a send that rode one of its steps
-   *  (not a failed one), `dismiss` on the bubble's ✕. */
+   *  (not a failed one), `dismiss` on the bubble's End script, `skip` on its
+   *  Skip (step `step` done, nothing sent). */
   useSource: (accountId: string | null, fanId: FanId | null, fanSpokeLastAt: string | null) => {
     scriptId: string | null;
     next: SourceStep | null;
     dismiss: () => void;
+    skip: (scriptId: string, step: number) => void;
     markSent: (scriptId: string, step: number) => void;
   };
-  /** Drawn inside its next-step bubble, whose click and Enter load the step:
-   *  it stops its own events from reaching the bubble. `onDraft` puts a draft
+  /** Drawn inside its next-step bubble, beside the step's load button.
+   *  `onDraft` puts a draft
    *  in the composer as a suggestion (no script pick). */
   StepAction?: ComponentType<{ accountId: string; fanId: FanId; replyAt: string | null; onDraft: (text: string) => void }>;
 }

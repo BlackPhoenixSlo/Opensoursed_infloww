@@ -185,7 +185,7 @@ describe("CustomsTab pane", () => {
     expect(pending.has("ctx:1")).toBe(false);
     expect(pending.has("brief:1")).toBe(false);
 
-    await settle("rescrape:2", { ok: true });
+    await settle("rescrape:2", { ok: true, status: "complete" });
     expect(screen.getByText("Reading…")).toBeInTheDocument();
     expect(pullBtn(bob)).toHaveTextContent("…");
     await answerAll(2, "Bob");
@@ -197,7 +197,7 @@ describe("CustomsTab pane", () => {
     render(<CustomsTab />);
     await click(pullBtn(await rowOf("Alice")));
     await click(readBtn(await rowOf("Bob")));
-    await settle("rescrape:1", { ok: true });
+    await settle("rescrape:1", { ok: true, status: "complete" });
     expect(pending.has("brief:1")).toBe(false);
     expect(pending.has("ctx:1")).toBe(false);
     expect(pullBtn(await rowOf("Alice"))).toHaveTextContent("Pull");
@@ -212,7 +212,7 @@ describe("CustomsTab pane", () => {
     await answerAll(1, "Alice");
     await click(pullBtn(alice));
     await click(readBtn(alice)); // Hide
-    await settle("rescrape:1", { ok: true });
+    await settle("rescrape:1", { ok: true, status: "complete" });
     expect(pullBtn(alice)).toHaveTextContent("Pull");
     expect(readBtn(alice)).toHaveTextContent("Read");
     expect(screen.queryByText("Reading…")).toBeNull();
@@ -304,13 +304,22 @@ describe("CustomsTab pane", () => {
     expect(briefs.map((x) => x.body.at)).toEqual(["2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z"]);
   });
 
+  it.each(["partial", "pending"])("%s pull does not reopen the custom", async (status) => {
+    render(<CustomsTab />);
+    await click(pullBtn(await rowOf("Alice")));
+    await settle("rescrape:1", { ok: false, status });
+    expect(screen.getByText(status === "partial" ? "History incomplete" : "Pull still running")).toBeInTheDocument();
+    expect(pending.has("ctx:1")).toBe(false);
+    expect(pending.has("brief:1")).toBe(false);
+  });
+
   it("Sent on A mid-Pull: A's ok rescrape reopens nothing and asks no brief", async () => {
     render(<CustomsTab />);
     await click(pullBtn(await rowOf("Alice")));
     await click(sentBtn(await rowOf("Alice")));
     await settle("clear:1", { ok: true });
     expect(screen.queryByText("Alice")).toBeNull();
-    await settle("rescrape:1", { ok: true });
+    await settle("rescrape:1", { ok: true, status: "complete" });
     expect(pending.has("brief:1")).toBe(false);
     expect(pending.has("ctx:1")).toBe(false);
     expect(pending.has("order:1")).toBe(false);
@@ -324,8 +333,8 @@ describe("CustomsTab pane", () => {
     await click(pullBtn(await rowOf("Bob")));
     await click(sentBtn(await rowOf("Alice")));
     await settle("clear:1", { ok: true });
-    await settle("rescrape:1", { ok: true });
-    await settle("rescrape:2", { ok: true });
+    await settle("rescrape:1", { ok: true, status: "complete" });
+    await settle("rescrape:2", { ok: true, status: "complete" });
     expect(pending.has("brief:1")).toBe(false);
     await answerAll(2, "Bob");
     expect(screen.getByText("Bob brief")).toBeInTheDocument();
@@ -342,7 +351,7 @@ describe("CustomsTab pane", () => {
     await click(pullBtn(k1));
     await click(dismissBtn(k2));
     // K1's rescrape answers ok while the clear is still in flight.
-    await settle("rescrape:1", { ok: true });
+    await settle("rescrape:1", { ok: true, status: "complete" });
     expect(pending.has("brief:1")).toBe(false);
     expect(pending.has("ctx:1")).toBe(false);
     expect(pending.has("order:1")).toBe(false);

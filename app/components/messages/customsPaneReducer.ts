@@ -148,10 +148,11 @@ export interface Pane {
   copied: { n: number; ok: boolean } | null;
 }
 
+export type PullNotice = "partial" | "pending";
+
 export interface CustomsPaneState {
   pane: Pane | null;
-  /** Per row key: its pull running, or how the last one failed. */
-  pulls: Readonly<Record<string, "running" | Failed>>;
+  pulls: Readonly<Record<string, "running" | PullNotice | Failed>>;
 }
 
 export type CustomsPaneAction =
@@ -163,8 +164,7 @@ export type CustomsPaneAction =
   | { type: "briefRetry"; seq: number }
   | { type: "order"; seq: number; order: OrderLines | Failed }
   | { type: "pullStart"; key: string }
-  /** `error` set = the pull failed; it is shown on that row. */
-  | { type: "pullDone"; key: string; error?: string }
+  | { type: "pullDone"; key: string; error?: string; notice?: PullNotice }
   | { type: "copyDone"; seq: number; n: number; ok: boolean }
   | { type: "copyExpired"; n: number }
   /** Sent / Dismiss on fan `fan` (`fanKey`) succeeded. */
@@ -202,7 +202,8 @@ export function customsPaneReducer(
       return { ...s, pulls: { ...s.pulls, [a.key]: "running" } };
     case "pullDone": {
       const { [a.key]: _done, ...rest } = s.pulls;
-      return { ...s, pulls: a.error === undefined ? rest : { ...rest, [a.key]: { error: a.error } } };
+      const result = a.error === undefined ? a.notice : { error: a.error };
+      return { ...s, pulls: result === undefined ? rest : { ...rest, [a.key]: result } };
     }
     case "copyDone":
       return onPane(a.seq, { copied: { n: a.n, ok: a.ok } });

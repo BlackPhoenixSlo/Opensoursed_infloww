@@ -52,12 +52,12 @@ export interface NotifSettings {
   /** Per-platform switch: off mutes every account on that platform. */
   platforms: Record<Platform, boolean>;
   /** Alert sounds (lib/alertSounds): on/off and which of the 12, per kind.
-   *  "message" is an inbound DM (independent of its toast toggle, gated by
+   *  "sale" is a PPV purchase or tip (independent of its toast toggle, gated by
    *  `enabled`); "reminder" is the Composer's Timed reminder reaching zero. */
   sounds: Record<AlertKind, SoundPref>;
 }
 
-export type AlertKind = "message" | "reminder";
+export type AlertKind = "sale" | "reminder";
 
 export interface SoundPref {
   on: boolean;
@@ -65,7 +65,7 @@ export interface SoundPref {
 }
 
 export const ALERT_KINDS: { key: AlertKind; label: string }[] = [
-  { key: "message", label: "New message" },
+  { key: "sale", label: "New PPV sale or tip" },
   { key: "reminder", label: "Timed reminder" },
 ];
 
@@ -91,10 +91,8 @@ export const DEFAULT_NOTIF_SETTINGS: NotifSettings = {
   },
   osPing: true,
   platforms: { onlyfans: true, fansly: true },
-  // A reminder is something the user set, so it sounds; a message sound is
-  // opt-in (the message toast already shows each one).
   sounds: {
-    message: { on: false, sound: "s1" },
+    sale: { on: false, sound: "s1" },
     reminder: { on: true, sound: "s1" },
   },
 };
@@ -117,7 +115,10 @@ const DEFAULTS_ROUND = 2;
 const DEFAULT_ON = Object.fromEntries(Object.entries(DEFAULT_NOTIF_SETTINGS.toast).filter(([, on]) => on));
 
 export function readNotifSettings(): NotifSettings {
-  const parsed = readJSON<Partial<NotifSettings> & { defaultsRound?: number }>(STORAGE_KEY);
+  const parsed = readJSON<Omit<Partial<NotifSettings>, "sounds"> & {
+    defaultsRound?: number;
+    sounds?: Partial<NotifSettings["sounds"]> & { message?: unknown };
+  }>(STORAGE_KEY);
   if (!parsed) return DEFAULT_NOTIF_SETTINGS;
   const stale = (parsed.defaultsRound ?? 1) < DEFAULTS_ROUND;
   const forced = stale ? DEFAULT_ON : {};
@@ -128,7 +129,8 @@ export function readNotifSettings(): NotifSettings {
     osPing: parsed.osPing ?? DEFAULT_NOTIF_SETTINGS.osPing,
     platforms: { ...DEFAULT_NOTIF_SETTINGS.platforms, ...(parsed.platforms ?? {}) },
     sounds: {
-      message: readSoundPref(parsed.sounds?.message, DEFAULT_NOTIF_SETTINGS.sounds.message),
+      // Owner moved the old new-message sound to sales/tips: an old save's pick carries over.
+      sale: readSoundPref(parsed.sounds?.sale ?? parsed.sounds?.message, DEFAULT_NOTIF_SETTINGS.sounds.sale),
       reminder: readSoundPref(parsed.sounds?.reminder, DEFAULT_NOTIF_SETTINGS.sounds.reminder),
     },
   };

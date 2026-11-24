@@ -43,7 +43,7 @@ COLLECT_WAIT_S = 4 * 3600
 # flag) before it stops polling it and pauses `describe_still_running`, its sweep_start left in flight (reserved;
 # the next run awaits it). A sweep is one 250-item step; 2 h is well past one. Overturned by a step that needs longer.
 DESCRIBE_WAIT_S = 2 * 3600
-ZERO_SWEEPS_OPEN = 2        # sweeps in a row that describe nothing -> open no_progress
+ZERO_SWEEPS_OPEN = 2        # sweeps in a row that leave remaining slots unchanged or higher -> open no_progress
 DAY_S = 86400
 # The purposes the Describe cap ledger pools (service/llm_client.py `_DESCRIBE_PURPOSES`); the report sums
 # grok-calls spend per provider over these only.
@@ -122,13 +122,20 @@ def _done(before: Mapping[str, Any], goal: int) -> str:
     return "open:mirror_incomplete"
 
 
+def sweep_made_progress(remaining_before: int | None, remaining_after: int | None,
+                        described_before: int, described_after: int) -> bool:
+    if remaining_before is None or remaining_after is None:
+        return described_after > described_before
+    return remaining_after < remaining_before
+
+
 def sweep_outcome(before: Mapping[str, Any], after: Mapping[str, Any] | None,
                   progress: Mapping[str, Any] | None, cap: Mapping[str, Any] | None) -> str:
     """What a Creator does next: `continue | done | defer | open:<reason>`.
 
     before: the read before the sweep — `described`, `target` (the sweep's t), `goal`, `complete` (mirror),
-            `jev` ({ready}), `zero_sweeps` (sweeps in a row before this one that described nothing).
-    after:  the recount after the sweep (`described`, optional `goal`), or None for the pre-sweep check.
+            `jev` ({ready}), `zero_sweeps` (consecutive earlier sweeps without a drop in remaining slots).
+    after:  the recount after the sweep (`described`, optional `goal` and `remaining`), or None for the pre-sweep check.
     progress: describe-all/status `progress`, or `{"http": 429|424}` for a refused start, or None.
     cap:    the latest plan-route `cap` ({capped, key_missing, ...}).
     """
@@ -161,7 +168,9 @@ def sweep_outcome(before: Mapping[str, Any], after: Mapping[str, Any] | None,
     jev_capped = progress.get("jev_capped") or "jev_capped" in str(progress.get("error") or "")
     if progress.get("capped") or (jev_capped and got < int(before.get("target") or 0)):
         return "defer"
-    if got <= int(before.get("described") or 0) and int(before.get("zero_sweeps") or 0) + 1 >= ZERO_SWEEPS_OPEN:
+    made_progress = sweep_made_progress(before.get("remaining"), after.get("remaining"),
+                                        int(before.get("described") or 0), got)
+    if not made_progress and int(before.get("zero_sweeps") or 0) + 1 >= ZERO_SWEEPS_OPEN:
         return "open:no_progress"
     return "continue"
 
@@ -294,8 +303,8 @@ def resume(journal_lines: Iterable[Mapping[str, Any]], now: float | None = None)
     """The journal's state for a re-run (describe kinds; 3b adds the apply kinds).
 
     Per Creator: `state` done | deferred | open | running | pending, plus `until` (deferred), `reason` and
-    `sticky` (open), `sweep` (the in-flight `sweep_start` line), `zero_sweeps` (trailing sweeps that described
-    nothing, cap-deferred ones not counted). A deferral whose `until` is at or before `now` is pending. An open
+    `sticky` (open), `sweep` (the in-flight `sweep_start` line), `zero_sweeps` (trailing sweeps without a drop in remaining slots,
+    cap-deferred ones not counted). A deferral whose `until` is at or before `now` is pending. An open
     whose reason is not in STICKY_OPEN keeps state open with `sticky` False: the next run re-checks it. An open or
     defer line while a `sweep_start` is in flight is ignored: only its `sweep` line settles it. A `sweep_start` is
     the reservation journaled before the start POST; a `sweep` line with outcome `not_started` closes one the relay
@@ -335,8 +344,9 @@ def resume(journal_lines: Iterable[Mapping[str, Any]], now: float | None = None)
                 continue
             sweeps.append(ln)
             if outcome != "defer":
-                added = int(ln.get("after") or 0) - int(ln.get("before") or 0)
-                c["zero_sweeps"] = c["zero_sweeps"] + 1 if added <= 0 else 0
+                made_progress = sweep_made_progress(ln.get("remaining_before"), ln.get("remaining_after"),
+                                                    int(ln.get("before") or 0), int(ln.get("after") or 0))
+                c["zero_sweeps"] = 0 if made_progress else c["zero_sweeps"] + 1
             c["state"] = "done" if outcome == "done" else "pending"
         elif kind in ("defer", "open") and "sweep" in cr(ln.get("creator")):
             # only a `sweep` line settles a `sweep_start`: an open / defer written meanwhile (collect mode does not

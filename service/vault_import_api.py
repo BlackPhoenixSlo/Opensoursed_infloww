@@ -25,6 +25,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 import gdrive
+import read_flip
 import relay_host
 import vault_ai_api
 import vault_cache
@@ -414,9 +415,13 @@ async def of_vault_upload_batch(
             # Free by construction (`materialize_via_message` sends price 0),
             # so the guard passes today; it runs so that stays the guard's call.
             await relay_host.reject_if_resale(aid, fan["id"], relay_host.send_message_body(text=""))
-            result = await of_write_paced(aid, thunk, send_purpose="manual", operator=True)
-            await relay_host.record_fan_send(aid, fan["id"], result,
-                                             employee_id=employee_id, price=0)
+            def send():
+                before_send_at = read_flip.now_ms()
+                return before_send_at, thunk()
+
+            before_send_at, result = await of_write_paced(aid, send, send_purpose="manual", operator=True)
+            await relay_host.record_fan_send(aid, fan["id"], result, employee_id=employee_id, price=0,
+                                             before_send_at=before_send_at)
             return result
         return _hop(_send(), _VAULT_WRITE_GATE_TIMEOUT_S)
 

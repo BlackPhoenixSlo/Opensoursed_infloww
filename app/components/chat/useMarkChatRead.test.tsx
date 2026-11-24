@@ -10,6 +10,7 @@ vi.mock("@/lib/relay", () => ({ relay: { post: vi.fn(async () => ({ cleared: tru
 import { relay, type OFChatItem } from "@/lib/relay";
 import { commitChatPages } from "@/lib/chatsCache";
 import { shareChatPages } from "@/hooks/useChatList";
+import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
 import { useMarkChatRead } from "./useMarkChatRead";
 
 type Page = { rows: OFChatItem[]; hasMore: boolean };
@@ -47,9 +48,9 @@ describe("useMarkChatRead", () => {
     expect(client.getQueryState(KEY)?.fetchStatus).toBe("idle");
   });
 
-  it("OF refusing the mark-as-read (502) brings the dot back", async () => {
+  it.each([true, false, undefined])("OF refusal restores unread when hasUnread is %s", async (hasUnread) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    client.setQueryData(KEY, { pages: [{ rows: [unread], hasMore: false }], pageParams: [0] });
+    client.setQueryData(KEY, { pages: [{ rows: [{ ...unread, hasUnread }], hasMore: false }], pageParams: [0] });
     (relay.post as unknown as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {
       if (path.endsWith("/mark-as-read")) throw Object.assign(new Error("relay 502"), { status: 502 });
       return { cleared: true };
@@ -61,6 +62,23 @@ describe("useMarkChatRead", () => {
     await waitFor(() => expect(row().unreadMessagesCount).toBe(1));
     expect(row().hasUnread).toBe(true);
     expect(relay.post).toHaveBeenCalledWith("/api/of/v2/chats/7/mark-as-read", undefined, { accountId: "acct-a" });
+  });
+
+  it("a later read flip supersedes a failed optimistic read", async () => {
+    const client = new QueryClient();
+    client.setQueryData(KEY, { pages: [{ rows: [unread], hasMore: false }], pageParams: [0] });
+    let refuse!: (err: Error) => void;
+    (relay.post as unknown as ReturnType<typeof vi.fn>).mockImplementation((path: string) =>
+      path.endsWith("/mark-as-read") ? new Promise((_ok, reject) => { refuse = reject; }) : Promise.resolve({}),
+    );
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    renderHook(() => useMarkChatRead({ accountId: "acct-a", fanId: 7, markRead: "onOpen" }), { wrapper });
+    const row = () => client.getQueryData<InfiniteData<Page>>(KEY)!.pages[0].rows[0];
+    expect(row().unreadMessagesCount).toBe(0);
+    flipCachedReadState(client, "acct-a", { fanId: 7, unread: false, at: null });
+    refuse(new Error("relay 502"));
+    await Promise.resolve();
+    expect(row().unreadMessagesCount).toBe(0);
   });
 
   it("an open marks the chat read on OF even when the row says read", async () => {

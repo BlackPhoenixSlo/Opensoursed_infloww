@@ -87,7 +87,9 @@ class ReadsMixin:
         messages, bump it for more).
 
         `peek` sends a desc first page with `PEEK_CURSOR` so it never marks the
-        chat read; every other page is unchanged."""
+        chat read. Peek is unsupported with non-desc order."""
+        if peek and order != "desc":
+            raise ValueError("peek requires descending order")
         params: dict[str, Any] = {"limit": limit, "order": order, "skip_users": "all"}
         if before_id is not None:
             params["id"] = before_id

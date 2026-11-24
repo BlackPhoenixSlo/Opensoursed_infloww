@@ -105,7 +105,7 @@ _Avoid_: fan list (collides with Fan List), smart list (Infloww's Growth feature
 - **Fan List buttons** (Online Fans, Notifications; not Window header buttons): `app/components/chat/FanListButtons.tsx`
 - **Notifications panel** (ours; Infloww has none): `app/components/chat/FanListButtons.tsx`
 - **Notifications badge** (Infloww's plain unread count): `docs/messages-pro-parity.md`
-- **Split Inbox**, **Split Inbox group** (avoid: lanes): ADR-0004
+- **Split Inbox**, **Split Inbox group** (avoid: lanes): ADR-0004, bound per chatter by ADR-0052
 
 ### Thread
 
@@ -1031,7 +1031,7 @@ A Creator tab's count of Owe reply chats: read, the Fan spoke last, known not mu
 _Avoid_: orange count, awaiting badge, owe badge, OweMiniBadge (the component that draws it)
 
 **Grey circle**:
-A circle's state when the Relay has no trusted value for that Creator; it never reads as 0. The Relay names the first cause in this order: `unseeded`, `socket_down`, `r_unknown`, `dead`, `proxy_down`, `capped`, `stale`; the app adds only Relay unreachable.
+A circle's state when the Relay has no trusted value for that Creator; it never reads as 0. The Relay names the first cause in this order: `unseeded`, `socket_down`, `r_unknown`, `dead`, `proxy_down`, `stale`; the app adds only Relay unreachable.
 _Avoid_: zero, empty badge, "as of" (Data age's label), No-live-connection mark (a cause, not the state)
 ASSUMPTION: Grey circle supersedes Data age's "as of" label on Creator tabs (rung 2: plan "grey dot when unknown/stale"); overturned if the owner keeps "as of" beside grey.
 
@@ -1099,5 +1099,5 @@ _Avoid_: Cooldown on its own (Keep running's), per-chatter cooldown, debounce
 The one per-stack knob `BADGE_READS=full|lean|off` (Attribution gap 5 s / 15 s / no reads), default `full`. At `off`, the Red circle still follows the counter and the Amber circle moves only on events; no Attribution or hover read is made.
 _Avoid_: Badge reads switch, per-user flag, header flag, kill switch on its own
 
-- **badge_drift** (the Watch check for counter vs Unread list mismatch over 30 s, reads per Creator-hour vs cap, Grey circles over 10 min, counter drops after an un-peeked first-page GET): `scripts/proxy-health/watch.py`
-- **Attribution cap** (single-flight per Creator, 5 s gap, 120 reads per Creator-hour, honours the 429 exit hold): ADR-0051
+- **badge_drift** (the Watch check for counter vs Unread list mismatch over 30 s, reads per Creator-hour, Grey circles over 10 min, counter drops after an un-peeked first-page GET): `scripts/proxy-health/watch.py`
+- **Attribution gate** (single-flight per Creator, 5 s gap, no hourly cap, honours the 429 exit hold): ADR-0051

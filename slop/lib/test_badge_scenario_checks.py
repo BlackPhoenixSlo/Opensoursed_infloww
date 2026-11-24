@@ -392,7 +392,6 @@ def test_known_at_and_log_reads():
         f"{stamp},250 INFO of-relay.badge_reads: badge_read account=7 kind=frame calls=1 rows=3 counter=4",
         f"{stamp},500 INFO of-relay.badge_reads: badge_read_failed account=8 error=ProxyError",
         f"{stamp},600 INFO of-relay.badge_reads: badge_read account=9 kind=hover calls=- rows=3",
-        f"{stamp},700 INFO of-relay.badge_reads: badge_read_capped account=7",
         f"{stamp},800 INFO of-relay.badge_reads: badge_read_429_hold account=7 hold_s=20",
     ))
     assert degraded.log_reads(text) == [(1_700_000_000.25, "7"), (1_700_000_000.5, "8")]

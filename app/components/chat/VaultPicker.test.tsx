@@ -311,13 +311,15 @@ describe("VaultPicker cards with a Fan in scope", () => {
     ]);
   });
 
-  it("shows the last price on the purchased card's pill, and the total paid in its tooltip", async () => {
+  it("says BOUGHT with the total paid on the purchased card's pill, never the last ask price", async () => {
     renderPicker(42);
     await waitFor(() => expect(card(7001)).toBeInTheDocument());
     const purchased = card(7001);
-    expect(purchased).toHaveTextContent(/\$15(?![.\d])/);
-    expect(purchased).not.toHaveTextContent("$25");
+    expect(within(purchased).getByRole("button", { name: "BOUGHT $25" })).toBeInTheDocument();
+    expect(purchased).not.toHaveTextContent("$15");
     expect(purchased.title).toContain("$25");
+    expect(within(card(7002)).getByRole("button", { name: "SENT FREE" })).toBeInTheDocument();
+    expect(within(card(7003)).getByRole("button", { name: "SENT $20" })).toBeInTheDocument();
   });
 
   it("keeps a greyed card selectable: confirming passes both picks in pick order", async () => {
@@ -376,7 +378,7 @@ describe("VaultPicker cards with a Fan in scope", () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Close media details" }));
 
-    await user.click(within(card(7001)).getByRole("button", { name: "$15" }));
+    await user.click(within(card(7001)).getByRole("button", { name: "BOUGHT $25" }));
     const history = within(detailsPanel()).getByRole("region", { name: "Price history" });
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
     expect(scrollIntoView.mock.contexts[0]).toBe(history);

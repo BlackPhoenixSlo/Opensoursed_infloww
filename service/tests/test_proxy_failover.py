@@ -307,7 +307,7 @@ def case_assign_pool_loses_a_race_with_a_concurrent_failover():
         other = b if p["label"] == c else c
         if not raced:
             proxies.failover_pool(a, bad={a}, geo=lambda q: None,
-                                  verify=lambda q: q["label"] == other)
+                                  verify=lambda q: q["label"] == other, deactivated=frozenset())
             raced.append(other)
         return True
     proxy_health.verify_pick = _verify

@@ -122,7 +122,7 @@ These are the Out of Scope entries that no Phase builds, merged where two specs 
 - The gallery icon in the list header, the "Unread tips" chip, the gear's "Show only" items and the row "×" (P2). They are not in the plan, or the Clone gives them no action.
 - The "Needs reply" sort label (P2, P7). It is probably ours, and the app has no such label.
 - Messages Basic's sorts (P2). They belong to a different screen.
-- Binding Split Inbox groups to Employees, per-role permissions and server-side group filtering (P2). ADR-0004 rules them out, and OF has no group filter.
+- Per-role Split Inbox permissions (P2). Binding groups to chatters and server-side filtering are now built (ADR-0052, superseding ADR-0004 in part).
 - A `subscribed_at` field for New (P2). Badges use only fields already fetched.
 - Persisting Focus mode or the chosen group (P2). YAGNI until asked.
 - Restyling the folder picker, paging Chat folders past 50, and hiding mass-exclude system lists from folder chips (P2). None is a parity element.

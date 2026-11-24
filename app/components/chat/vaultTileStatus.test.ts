@@ -37,12 +37,12 @@ describe("describeTile", () => {
 
 describe("pillText", () => {
   it.each<[string, TileStatus, FanVaultEntry | undefined, number, string]>([
-    ["locked cents", "locked", LOCKED, 0, "$12.50"],
-    ["locked whole dollars", "locked", entry({ last_price_cents: 500 }), 0, "$5"],
-    ["locked, no price recorded", "locked", entry(), 0, "PPV"],
-    ["unlocked: last send price, not total", "unlocked", UNLOCKED, 0, "$6.99"],
-    ["unlocked, no price recorded", "unlocked", entry({ was_purchased: true }), 0, "PAID"],
-    ["free (wall price ignored)", "free", FREE, 699, "FREE"],
+    ["locked cents", "locked", LOCKED, 0, "SENT $12.50"],
+    ["locked whole dollars", "locked", entry({ last_price_cents: 500 }), 0, "SENT $5"],
+    ["locked, no price recorded", "locked", entry(), 0, "SENT PPV"],
+    ["unlocked: total paid, never the last ask price", "unlocked", UNLOCKED, 0, "BOUGHT $15"],
+    ["unlocked, nothing paid recorded (ask price ignored)", "unlocked", entry({ was_purchased: true, last_price_cents: 699 }), 0, "BOUGHT"],
+    ["free (wall price ignored)", "free", FREE, 699, "SENT FREE"],
     ["paid wall post", "on-wall", undefined, 699, "WALL $6.99"],
     ["free wall post", "on-wall", undefined, 0, "WALL"],
   ])("%s", (_n, status, e, wallCents, want) => expect(pillText(status, e, wallCents)).toBe(want));

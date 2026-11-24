@@ -52,6 +52,21 @@ describe("resolveChatTarget", () => {
     expect(resolveChatTarget({ __account_id: "100", api2_chat_message: { id: 9 } })).toBeNull();
   });
 
+  it("Creator echo (no fromUser) → outbound to chatUserId, msg stamped as the Creator's", () => {
+    const t = resolveChatTarget({
+      __account_id: "100",
+      api2_chat_message: { id: 11, text: "<p>hey :)</p>", chatUserId: 337, toUser: { id: 337 } },
+    });
+    expect(t).toMatchObject({ accountId: "100", fanId: 337, isOutbound: true, fromId: 100 });
+    expect(t?.msg.fromUser).toEqual({ id: 100 });
+  });
+
+  it("echo without a valid chatUserId, a non-numeric account, or a mass copy → null", () => {
+    expect(resolveChatTarget({ __account_id: "100", api2_chat_message: { id: 12, chatUserId: "x" as unknown as number } })).toBeNull();
+    expect(resolveChatTarget({ __account_id: "abc", api2_chat_message: { id: 13, chatUserId: 337 } })).toBeNull();
+    expect(resolveChatTarget({ __account_id: "100", api2_chat_message: { id: 14, chatUserId: 337, isFromQueue: true } })).toBeNull();
+  });
+
   it("non-numeric fromUser id → null", () => {
     expect(
       resolveChatTarget({

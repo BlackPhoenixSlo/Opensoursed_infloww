@@ -670,8 +670,8 @@ describe("Full AI Chat page › Settings", () => {
     fireEvent.change(composer(), { target: { value: "hey" } });
     expect(sendBtn().disabled).toBe(false);
     await act(async () => { fireEvent.click(settings().getByRole("switch", { name: "GIFs" })); });
-    expect(putCalls().length).toBe(1);
     expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true }, rev: 3 });
+    expect(putCalls()).toHaveLength(1);
     expect(sendBtn().disabled).toBe(true);
     expect(screen.getAllByText("Saving draft…").length).toBe(2);   // the settings column's status and Send's block
     await act(async () => { store(configBody({ draft: { ...CONFIG, gifs: true }, rev: 4 })); });

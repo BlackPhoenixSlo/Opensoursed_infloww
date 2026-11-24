@@ -74,10 +74,6 @@ def _break(name):
         tr["calls"].append(_call(4.0, A))
     elif name == "flight":
         tr["calls"].append(_call(1.1, A))
-    elif name == "cap":
-        tr["calls"] += [_call(600.0 + 5 * k, B) for k in range(121)]
-    elif name == "cap_queue":
-        tr["queue"] = [(300.0 + k, A) for k in range(121 - 44)]
     elif name == "pages":
         tr["calls"] += [_call(1.2, A, offset=10), _call(1.25, A, offset=20)]
     elif name == "stale":
@@ -102,8 +98,6 @@ def _break(name):
     ("final_dot", m.FINAL_EQUALS_TRUTH),             # a fan's dot off truth after the lean settle
     ("gap", m.READS_GAP_5S),                         # two reads 3 s apart
     ("flight", m.READS_SINGLE_FLIGHT),               # two reads in flight at once
-    ("cap", m.READS_CAP_120),                        # 121 reads in an hour
-    ("cap_queue", m.READS_CAP_120),                  # 44 Attribution reads + 77 kind=queue re-reads in an hour
     ("pages", m.READS_MAX_2_PAGES),                  # a third page
     ("stale", m.STALE_READ_NEVER_CLEARS),            # {X, 0} after X's DM, even though a later read heals it
     ("stale_end", m.STALE_READ_NEVER_CLEARS),        # X not unread at the race end
@@ -183,7 +177,6 @@ def test_sizes_rates_and_relay_constants(monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "service"))
     decide = importlib.import_module("badge_reads_decide")
     assert decide.GAP_MS == {"full": m.GAP_S * 1000, "lean": m.LEAN_GAP_S * 1000}
-    assert decide.CAP_PER_HOUR == m.CAP_PER_HOUR
     plan = m.plan([{"id": i} for i in range(m.CHATS)])
     kinds = Counter(f["kind"] for f in plan)
     assert len(plan) == m.CHATS <= 25 and kinds["only_friends"] >= 1 and kinds["muted"] == 1

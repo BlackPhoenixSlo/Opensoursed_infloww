@@ -33,7 +33,6 @@ import { FanList } from "@/components/chat/FanList";
 import { GroupPane } from "@/components/group/GroupPane";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
-import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { cachedOFUserQuery } from "@/hooks/useOFUser";
 import { cn } from "@/lib/utils";
 import { proxyImage } from "@/lib/mediaUrl";
@@ -59,11 +58,6 @@ import {
 } from "./groupTabStorage";
 
 export default function GroupChatPage() {
-  // Keep SSE patches landing in the right query caches — same hook the
-  // inbox page mounts. Without it the panes only pick up new messages
-  // via the 30s poll.
-  useInboxRealtime();
-
   // Hydration-gated: SSR renders nothing, the post-mount effect seeds
   // from sessionStorage + ?add=. Avoids a flicker of empty grid. Every
   // write to the slots, the shown pane and the owed add-acks is an action

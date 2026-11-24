@@ -6,17 +6,21 @@
  * proxied server-side because the browser can't reach it cross-origin).
  *
  * Keyed by the STRIPPED text (not message id) so translations survive
- * optimistic-id churn and repeat texts across fans cost one fetch. The
+ * optimistic-id churn. Unhinted answers are scoped to the account and fan. The
  * module-level cache lives for the tab's lifetime; the relay keeps its own
  * cross-session cache on top.
  *
- * A `null` cache entry means "tried and failed" — we deliberately don't
- * retry within the session so a rate-limited Google endpoint degrades to
- * originals instead of a request storm.
+ * A `null` cache entry can be retried when the effect runs again and
+ * FAILED_RETRY_MS has elapsed.
+ *
+ * `hint` is the Fan's language when the chatter set one: the relay translates
+ * one- or two-word texts from it, since Google misreads them ("Ja" → "And").
+ * Answers depend on it, so each hint has its own cache.
  */
 
 import { useEffect, useState } from "react";
 
+import type { FanId } from "@/lib/fanId";
 import { relay } from "@/lib/relay";
 
 export interface BubbleTranslation {
@@ -27,9 +31,24 @@ export interface BubbleTranslation {
 }
 
 const CHUNK = 40;
+export const FAILED_RETRY_MS = 60_000;
 
-const cache = new Map<string, BubbleTranslation | null>();
+const caches = new Map<string, Map<string, BubbleTranslation | null>>();
+const failedAt = new Map<string, number>();
 const inFlight = new Set<string>();
+
+function cacheFor(scope: string) {
+  let c = caches.get(scope);
+  if (!c) caches.set(scope, (c = new Map()));
+  return c;
+}
+
+/** Tests only: every hint's cache, failures and in-flight marks. */
+export function resetTranslationsForTests() {
+  caches.clear();
+  failedAt.clear();
+  inFlight.clear();
+}
 
 /** `accountId` is the chat's Creator, sent as `X-Account-Id` so the Relay's
  *  AI translation gate reads that Creator's Agency (spec phase-04, story 57).
@@ -45,13 +64,20 @@ export function useTranslations(
   texts: string[],
   enabled: boolean,
   accountId: string | null,
+  hint: string | null = null,
+  fanId: FanId | null = null,
 ): Map<string, BubbleTranslation | null> {
   const [, bump] = useState(0);
+  const scope = hint ? JSON.stringify([hint]) : JSON.stringify([accountId, fanId == null ? null : String(fanId)]);
+  const cache = cacheFor(scope);
 
   useEffect(() => {
     if (!enabled) return;
+    const tag = (t: string) => `${scope}\u0000${t}`;
+    const now = Date.now();
     const missing = Array.from(new Set(texts)).filter(
-      (t) => t && !cache.has(t) && !inFlight.has(t),
+      (t) => t && !inFlight.has(tag(t))
+        && (!cache.has(t) || (cache.get(t) === null && now - (failedAt.get(tag(t)) ?? 0) >= FAILED_RETRY_MS)),
     );
     if (!missing.length) return;
     let cancelled = false;
@@ -65,25 +91,33 @@ export function useTranslations(
         // effect), permanently blocking the tail of any >40-text thread from
         // ever translating. Worst case now is a bounded duplicate fetch when
         // two runs overlap — idempotent (same cache.set, relay caches too).
-        chunk.forEach((t) => inFlight.add(t));
+        chunk.forEach((t) => inFlight.add(tag(t)));
+        let results: Array<BubbleTranslation | null> = [];
         try {
           const resp = await relay.post<{ results: Array<BubbleTranslation | null> }>(
             "/admin/translate",
-            { texts: chunk, target: "en" },
+            hint ? { texts: chunk, target: "en", hint } : { texts: chunk, target: "en" },
             { accountId },
           );
-          chunk.forEach((t, j) => cache.set(t, resp.results?.[j] ?? null));
+          results = resp.results ?? [];
         } catch {
-          chunk.forEach((t) => cache.set(t, null));
+          results = [];
         } finally {
-          chunk.forEach((t) => inFlight.delete(t));
+          chunk.forEach((t) => inFlight.delete(tag(t)));
         }
+        const at = Date.now();
+        chunk.forEach((t, j) => {
+          const r = results[j] ?? null;
+          cache.set(t, r);
+          if (r) failedAt.delete(tag(t));
+          else failedAt.set(tag(t), at);
+        });
         if (cancelled) return;
         bump((v) => v + 1);
       }
     })();
     return () => { cancelled = true; };
-  }, [texts, enabled, accountId]);
+  }, [texts, enabled, accountId, hint, cache, scope]);
 
   return cache;
 }

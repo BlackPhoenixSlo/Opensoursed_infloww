@@ -202,6 +202,10 @@ def refuses_writes(account_id: str) -> bool:
     return str(account_id) in _writes_off
 
 
+def write_gate_snapshot() -> frozenset[str]:
+    return _writes_off
+
+
 async def load_write_gate() -> None:
     """Fill the mirror from the rows, once, at startup."""
     global _writes_off

@@ -67,6 +67,7 @@ import s4s_api  # noqa: E402
 import shared_refresher  # noqa: E402
 import shared_refresher_decide  # noqa: E402
 import unread_total  # noqa: E402
+from unread_total_decide import Restricted  # noqa: E402
 from of_client import OFClient  # noqa: E402
 
 A, B = "8131", "8132"           # the Relay's account id is the OF user id the client carries
@@ -143,7 +144,7 @@ def _client(aid: str, wire: _Wire) -> OFClient:
 def _r0() -> None:
     """Restricted unread 0 for both Creators, as their first roster-counts fold leaves it (the Red circle known)."""
     for a in _CREATORS:
-        unread_total.set_restricted_unread(a, 0, 0)
+        unread_total.set_restricted_unread(a, Restricted(0, False, 0), 0)
 
 
 @contextlib.contextmanager
@@ -227,12 +228,13 @@ def _totals(published) -> list:
 FAN, FAN2 = 9101, 9102
 
 
-async def _hold_window(rows: list) -> None:
+async def _hold_window(rows: list, *, fetched_at: int | None = None) -> None:
     """A's page-0 chats window held (what the Fan List and the roster badge read), as a list read left it."""
     from accounts_admin_api import _ROSTER_WINDOW_KEY
     relay_cache.invalidate("list_chats", A)
     await relay_cache.get_or_fetch("list_chats", A, _ROSTER_WINDOW_KEY, ttl_seconds=600,
-                                   fetcher=lambda: {"list": rows, "hasMore": False})
+                                   fetcher=lambda: {"list": rows, "hasMore": False,
+                                                    "fetched_at": fetched_at})
 
 
 def _row(fan: int, unread: bool) -> dict:
@@ -894,8 +896,7 @@ def _roster(wire: _Wire):
 
 async def _fold(counts, rows: list) -> dict:
     """A's page-0 window `rows` held (read now) and folded by roster-counts; A's count."""
-    await _hold_window(rows)
-    server._chats_window_fetched_at[A] = server._time_mod.monotonic()
+    await _hold_window(rows, fetched_at=_ms())
     return (await counts())[A]
 
 
@@ -919,7 +920,7 @@ async def case_counter_frame_sets_total():
     with _knobs(True, True):
         wire = _NoOF()
         with _world(wire) as pub:
-            unread_total.set_restricted_unread(A, 0, _ms())
+            unread_total.set_restricted_unread(A, Restricted(0, False, 0), _ms())
             await _settle()
             assert pub == [] and _slot() == _UNSEEDED, ("R alone: no confirmation, nothing published", pub)
             t0, t1 = await _feed(3)
@@ -936,7 +937,7 @@ async def case_counter_frame_sets_total():
 async def case_frame_before_seed_then_me():
     with _knobs(True, True):
         with _world(_NoOF()):
-            unread_total.set_restricted_unread(A, 0, 0)
+            unread_total.set_restricted_unread(A, Restricted(0, False, 0), 0)
             t1 = _ms()
             time.sleep(0.002)
             await _feed(4)
@@ -967,6 +968,28 @@ async def case_mark_read_frame_before_after_write():
             relay_cache.invalidate("list_chats", A)
 
 
+async def case_send_frame_before_response():
+    with _knobs(True, True):
+        wire = _Wire(3)
+        loop = asyncio.get_running_loop()
+        with _world(wire) as pub, _quiet_hooks():
+            await _feed(3)
+            await _hold_window([_row(FAN, True), _row(FAN2, True)])
+            answer = wire._answer
+            pub.clear()
+
+            def send(method, url):
+                if method == "POST" and urlsplit(url).path.endswith(f"/chats/{FAN}/messages"):
+                    time.sleep(0.002)
+                    asyncio.run_coroutine_threadsafe(events.handle_event(_frame(2)), loop).result(10)
+                return answer(method, url)
+
+            wire._answer = send
+            await server.send_message(request=None, chat_id=FAN, body=server.SendMessageBody(text="hi"))
+            await _settle()
+            assert _slot()["n"] == 2 and _ns(pub) == [2], (pub, _slot())
+
+
 async def case_dm_then_counter():
     import event_transcoder as et
     with _knobs(True, True):
@@ -986,7 +1009,7 @@ async def case_dm_then_counter():
 async def case_counter_never_asks_window():
     with _knobs(True, True):
         with _world(_NoOF()) as pub, _drift_log() as drifts:
-            unread_total.set_restricted_unread(A, 0, 0)
+            unread_total.set_restricted_unread(A, Restricted(0, False, 0), 0)
             unread_total.observe(A, {"chatMessagesCount": 5}, _ms() - 10)
             await _settle()
             await _feed(2)
@@ -998,7 +1021,7 @@ async def case_counter_never_asks_window():
 async def case_malformed_frames():
     with _knobs(True, True):
         with _world(_NoOF()) as pub:
-            unread_total.set_restricted_unread(A, 0, 0)
+            unread_total.set_restricted_unread(A, Restricted(0, False, 0), 0)
             for bad in (True, -1, "3", {"count": 3}, None, 2.0):
                 await events.handle_event({"__account_id": A, "chat_messages": bad})
             await events.handle_event({"__account_id": A, "unread_tips": 4})
@@ -1031,18 +1054,18 @@ async def case_only_friends_worked_example():
             await _fold(counts, sendable + friends + gone)
             await _feed(11)
             assert _slot()["n"] == 7, _slot()
-            assert unread_total._r[A][0] == 4, unread_total._r[A]
+            assert unread_total._r[A][0].n == 4, unread_total._r[A]
             assert (await counts())[A]["unread"] == 7, "roster-counts answers the Red circle"
 
 
 async def case_restricted_newest_wins():
     with _knobs(True, True):
         with _world(_NoOF()):
-            unread_total.set_restricted_unread(A, 2, 2000)
-            unread_total.set_restricted_unread(A, 5, 1000)
+            unread_total.set_restricted_unread(A, Restricted(2, False, 0), 2000)
+            unread_total.set_restricted_unread(A, Restricted(5, False, 0), 1000)
             await _feed(10)
             assert _slot()["n"] == 8, ("an older R changes nothing", _slot())
-            unread_total.set_restricted_unread(A, 5, 3000)
+            unread_total.set_restricted_unread(A, Restricted(5, False, 0), 3000)
             assert _slot()["n"] == 5, _slot()
 
 
@@ -1088,6 +1111,8 @@ async def _tick() -> None:
 
 
 async def case_grey_reasons():
+    from accounts_admin_api import _red
+
     with _knobs(True, True, r_known=False):
         wire = _NoOF()
         with _world(wire) as pub, _roster(wire) as counts:
@@ -1102,6 +1127,14 @@ async def case_grey_reasons():
             assert _slot() == folded and unread_total.snapshot(A) == folded, "a read alone moves nothing"
             pub.clear()
             with _live(None):
+                assert _red(A, {"unread": 0, "as_of": 0})["unread"] == 5
+                shared_refresher._values_noted(A)
+                assert unread_total.snapshot(A) == folded and not pub
+            await _feed(5)
+            assert _slot()["grey"] is None and _slot()["v"] == folded["v"] and not pub
+            with _live(None):
+                assert unread_total.snapshot(A)["grey"] is None
+                assert unread_total.badge_versions(frozenset({A})) == {A: folded["v"]}
                 await _tick()                           # the refresher sees the socket drop
                 (down,) = _totals(pub)
                 assert down["grey"] == "socket_down" and down["n"] == 5 and down["v"] == folded["v"] + 1, down
@@ -1144,12 +1177,15 @@ async def case_roster_counts_from_red():
             got = (await counts())[A]
             slot = _slot()
             assert got == {"unread": 40, "owe_reply": folded["owe_reply"], "as_of": slot["at"]}, (got, slot)
+            with _live(None):
+                await _tick()
+                assert (await counts())[A] == folded
 
 
 async def case_untracked_creator_frame_held():
     with _knobs(True, True):
         with _world(_NoOF()) as pub:
-            unread_total.set_restricted_unread(B, 0, 0)
+            unread_total.set_restricted_unread(B, Restricted(0, False, 0), 0)
             await _feed(6, B)
             assert _of(pub, "creator_refreshed") == [], ("no Open tab on B: nothing published", pub)
             rows = await asyncio.to_thread(_rows)
@@ -1304,7 +1340,7 @@ async def case_cold_route_calls():
         with _world(wire), _roster(wire) as counts:
             view_lease.renew(holder, [A], None)
             try:
-                unread_total.set_restricted_unread(A, 0, 0)
+                unread_total.set_restricted_unread(A, Restricted(0, False, 0), 0)
                 await _feed(4)
                 got = (await counts())[A]
                 await _feed(3)
@@ -1318,7 +1354,7 @@ async def case_knob_off_counter_ignored():
     with _knobs(True, False):
         wire = _NoOF()
         with _world(wire) as pub, _roster(wire) as counts:
-            unread_total.set_restricted_unread(A, 0, 0)
+            unread_total.set_restricted_unread(A, Restricted(0, False, 0), 0)
             await _feed(3)
             got = await _fold(counts, [_send_row(7900), _send_row(7901, False, isMutedNotifications=False)])
             assert unread_total._held == {} and unread_total._r == {}, (unread_total._held, unread_total._r)

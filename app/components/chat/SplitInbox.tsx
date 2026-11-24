@@ -5,8 +5,10 @@
  * selector's "Split Inbox settings" (docs/spec/phase-02-fan-list-pane.md,
  * Split Inbox; ADR-0004). Its first section, "Choose the number of groups",
  * picks 1 to 9 groups for the Creator. Its second, "Reassign fans to
- * different groups", moves a loaded Fan to another group (story 50). One Save
- * sends one PUT; on success the dialog closes, on failure it stays open with
+ * different groups", moves a loaded Fan to another group (story 50). Its
+ * third, "Chatters", binds each chatter who can see this Creator to one group
+ * ("All" = unbound); the relay then serves a bound chatter only that group's
+ * Fans. One Save sends one PUT; on success the dialog closes, on failure it stays open with
  * the relay's error and nothing is applied (story 62).
  *
  * Every select takes the kit's `.fx-select` Geometry (Gap row 30: 38px tall,
@@ -14,15 +16,17 @@
  * dialog's own box is ours (`MP.ours.SplitInbox`).
  */
 
-import { useId, useState } from "react";
+import { useId, useMemo, useReducer } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { IfButton } from "@/components/ui/infloww";
+import { useRoster } from "@/hooks/useRoster";
 import { useSplitInbox } from "@/hooks/useSplitInbox";
 import type { FanId } from "@/lib/fanId";
 import { groupOf, type SplitInboxConfig } from "@/lib/splitInbox";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 import { useInflowwPalette } from "./InflowwPalette";
+import { buildPayload, chatterGroupOf, initForm, splitInboxFormReducer } from "./splitInboxForm";
 
 const GROUP_COUNTS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 /** `.fx-select` (Gap row 30), shared by the count and every Fan's group. */
@@ -67,7 +71,7 @@ function SplitInboxBody({
   accountId, onClose, fans,
 }: { accountId: string; onClose: () => void; fans: SplitInboxFan[] }) {
   const { config, query, save } = useSplitInbox(accountId);
-  if (config) return <SplitInboxForm stored={config} save={save} onClose={onClose} fans={fans} />;
+  if (config) return <SplitInboxForm accountId={accountId} stored={config} save={save} onClose={onClose} fans={fans} />;
   if (query.isError) {
     return <p role="alert" className="text-sm text-err">{query.error.message}</p>;
   }
@@ -75,29 +79,30 @@ function SplitInboxBody({
 }
 
 function SplitInboxForm({
-  stored, save, onClose, fans,
+  accountId, stored, save, onClose, fans,
 }: {
+  accountId: string;
   stored: SplitInboxConfig;
   /** The body's save mutation, so the dialog holds one query observer. */
   save: ReturnType<typeof useSplitInbox>["save"];
   onClose: () => void;
   fans: SplitInboxFan[];
 }) {
-  const [groupCount, setGroupCount] = useState(stored.group_count);
-  // Starts from the stored moves, so a Save never erases moves saved from
-  // another device; moving a Fan writes only that Fan's entry, and every
-  // other Fan keeps following the hash spread.
-  const [assignments, setAssignments] = useState(stored.assignments);
+  // Starts from the stored moves and bindings, so a Save never erases what
+  // another device saved; every unmoved Fan keeps following the mod spread.
+  const [form, dispatch] = useReducer(splitInboxFormReducer, stored, initForm);
+  const { rows: roster } = useRoster({ includeDisabled: false });
+  const chatters = useMemo(
+    () => roster.filter((e) => e.kind !== "owner" && (e.account_ids == null || e.account_ids.includes(accountId))),
+    [roster, accountId],
+  );
   const headingId = useId();
   const reassignId = useId();
-  const draft = { group_count: groupCount, assignments };
+  const chattersId = useId();
+  const { groupCount } = form;
+  const draft = { group_count: groupCount, assignments: form.assignments };
   const groups = GROUP_COUNTS.slice(0, groupCount);
-  // A lowered count drops every move above it; those Fans are spread again
-  // by `groupOf` over the remaining groups (story 55).
-  const submit = () => save.mutate({
-    group_count: groupCount,
-    assignments: Object.fromEntries(Object.entries(assignments).filter(([, g]) => g <= groupCount)),
-  }, { onSuccess: onClose });
+  const submit = () => save.mutate(buildPayload(form), { onSuccess: onClose });
   return (
     <>
       <section aria-labelledby={headingId} className="flex flex-col gap-2">
@@ -105,7 +110,7 @@ function SplitInboxForm({
         <select
           aria-labelledby={headingId}
           value={groupCount}
-          onChange={(e) => setGroupCount(Number(e.target.value))}
+          onChange={(e) => dispatch({ type: "count", n: Number(e.target.value) })}
           disabled={save.isPending}
           className={SELECT_CLASS}
         >
@@ -123,10 +128,7 @@ function SplitInboxForm({
                 <select
                   aria-label={f.name}
                   value={groupOf(f.id, draft)}
-                  onChange={(e) => {
-                    const g = Number(e.target.value);
-                    setAssignments((a) => ({ ...a, [String(f.id)]: g }));
-                  }}
+                  onChange={(e) => dispatch({ type: "moveFan", fanId: String(f.id), group: Number(e.target.value) })}
                   disabled={save.isPending}
                   className={SELECT_CLASS}
                 >
@@ -134,6 +136,33 @@ function SplitInboxForm({
                 </select>
               </li>
             ))}
+          </ul>
+        </section>
+      )}
+      {groupCount > 1 && chatters.length > 0 && (
+        <section aria-labelledby={chattersId} className="mt-4 flex flex-col gap-2">
+          <h3 id={chattersId} className="text-sm font-medium">Chatters</h3>
+          <ul className="max-h-48 overflow-y-auto flex flex-col gap-2">
+            {chatters.map((c) => {
+              const id = String(c.chatter_id);
+              return (
+                <li key={id} className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate text-sm">{c.display_name}</span>
+                  <select
+                    aria-label={c.display_name}
+                    value={chatterGroupOf(form, id) ?? ""}
+                    onChange={(e) => dispatch({
+                      type: "bindChatter", chatterId: id, group: e.target.value === "" ? null : Number(e.target.value),
+                    })}
+                    disabled={save.isPending}
+                    className={SELECT_CLASS}
+                  >
+                    <option value="">All</option>
+                    {groups.map((n) => <option key={n} value={n}>Inbox {n}</option>)}
+                  </select>
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}

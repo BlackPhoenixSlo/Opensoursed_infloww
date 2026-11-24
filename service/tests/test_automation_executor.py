@@ -473,6 +473,7 @@ async def case_scrape_long_convo_both_ends():
 
     # Both paging directions were exercised.
     orders = {o for (o, _bid, _off) in fake.calls}
+    assert await _gap(aid, fan) == (200, 50, 151), await _gap(aid, fan)
     assert orders == {"desc", "asc"}, fake.calls
     assert any(off == 0 for (_o, _bid, off) in fake.calls if _o == "asc"), \
         "oldest end started at offset=0"
@@ -523,6 +524,394 @@ async def case_scrape_desc_catch_up_no_refetch_start():
         )).scalars().all())
         assert ids == list(range(181, 201)), ids
         assert 1 not in ids, "convo start was NOT re-fetched on a catch-up"
+
+
+async def _stored_ids(aid: str, fan: int) -> list[int]:
+    async with get_session() as s:
+        return sorted(m for m in (await s.execute(select(Message.message_id).where(
+            Message.account_id == aid, Message.fan_id == fan))).scalars().all())
+
+
+async def _gap(aid: str, fan: int):
+    async with get_session() as s:
+        h = await s.get(ScrapeHistory, (aid, fan))
+        return h.last_message_id, h.gap_after_id, h.gap_before_id
+
+
+def _msgs(fan: int, ids) -> list[dict]:
+    return [_of_msg(i, from_fan=(i % 2 == 0), text=f"m{i}",
+                    created=f"2026-06-02T{i // 3600:02d}:{i // 60 % 60:02d}:{i % 60:02d}+00:00", fan_id=fan)
+            for i in ids]
+
+
+async def case_gap_only_scrape_keeps_recency_and_preview():
+    from automations.scrape_chats import _scrape_one_chat
+    aid, fan = "acc_catchup", 5393
+    fresh = datetime(2026, 6, 3)
+    await _seed_account(aid)
+    async with get_session() as s:
+        s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=30,
+                            gap_after_id=10, gap_before_id=15))
+        s.add(Fan(account_id=aid, fan_id=fan, of_username="current", last_message_received_at=fresh,
+                  last_message_sent_at=fresh))
+        s.add(Chat(account_id=aid, fan_id=fan, last_message_id=29,
+                   last_message_preview="current", last_message_at=fresh))
+    fake = PagedFakeClient(fan, _msgs(fan, range(1, 31)))
+    chunk = await _scrape_one_chat(aid, OWN_ID, fake, fan, None, page_size=10, max_pages=2)
+    assert (chunk.inserted, chunk.seen) == (4, 4)
+    assert chunk.history_saved and not chunk.rate_limited and not chunk.gap_left, chunk
+    async with get_session() as s:
+        saved_fan = await s.get(Fan, (aid, fan))
+        saved_chat = await s.get(Chat, (aid, fan))
+        assert saved_fan.of_username == "current"
+        assert (saved_fan.last_message_received_at, saved_fan.last_message_sent_at) == (fresh, fresh)
+        assert (saved_chat.last_message_id, saved_chat.last_message_preview,
+                saved_chat.last_message_at) == (29, "current", fresh)
+
+
+async def case_dropped_dm_scrape_only_peeks():
+    from events_persist import DM_DROPPED_SOURCE
+    from webhook_dispatch import enqueue_fan_scrape
+    aid, fan = "acc_catchup", 5391
+    await _seed_account(aid)
+    await _read_chat(aid, fan)
+    fake = PagedFakeClient(fan, _msgs(fan, range(1, 130)))
+    ax._make_client = lambda account_id: fake
+    assert await enqueue_fan_scrape(aid, fan, DM_DROPPED_SOURCE, peek_only=True)
+    assert (await run_once(aid, "scrape_fan"))["status"] == "ok"
+    assert fake.calls and all(order == "desc" for order, _, _ in fake.calls), fake.calls
+
+
+async def case_idle_scrape_keeps_a_concurrently_opened_gap():
+    from automations.scrape_chats import _scrape_one_chat
+    aid, fan = "acc_catchup", 5392
+    await _seed_account(aid)
+    async with get_session() as s:
+        s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=10))
+
+    started, release = asyncio.Event(), asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    class Idle(PagedFakeClient):
+        def get_messages(self, chat_id, **kw):
+            loop.call_soon_threadsafe(started.set)
+            asyncio.run_coroutine_threadsafe(release.wait(), loop).result(timeout=5)
+            return super().get_messages(chat_id, **kw)
+
+    async def scrape(fake):
+        return await _scrape_one_chat(aid, OWN_ID, fake, fan, None, page_size=10,
+                                      max_pages=1, recent_cap=3)
+
+    idle = asyncio.create_task(scrape(Idle(fan, _msgs(fan, range(1, 11)))))
+    await asyncio.wait_for(started.wait(), 5)
+    try:
+        await scrape(PagedFakeClient(fan, _msgs(fan, range(1, 31))))
+    finally:
+        release.set()
+        chunk = await idle
+    assert not chunk.history_saved and chunk.gap_left, chunk
+    assert await _gap(aid, fan) == (30, 10, 28), await _gap(aid, fan)
+
+
+async def case_scrape_capped_catch_up_keeps_the_middle():
+    """A cursor walk that hits its cap keeps the cursor-to-oldest-row middle as the gap;
+    the next scrapes walk it first until they meet the old cursor. Nothing is skipped."""
+    aid, fan = "acc_catchup", 5300
+    await _seed_account(aid)
+    fake = PagedFakeClient(fan, _msgs(fan, range(1, 201)))
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    async with get_session() as s:
+        s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=20, last_message_text="m20"))
+
+    payload = {"chat_ids": [fan], "recent_cap": 50}
+    await enqueue_job(aid, "scrape_chats", payload=payload)
+    assert (await run_once(aid, "scrape_chats"))["status"] == "ok"
+    assert await _stored_ids(aid, fan) == list(range(151, 201))
+    assert await _gap(aid, fan) == (200, 20, 151), await _gap(aid, fan)
+
+    for want_lo, gap in ((101, (200, 20, 101)), (51, (200, 20, 51)), (21, (200, None, None))):
+        await enqueue_job(aid, "scrape_chats", payload=payload)
+        assert (await run_once(aid, "scrape_chats"))["status"] == "ok"
+        assert await _stored_ids(aid, fan) == list(range(want_lo, 201)), want_lo
+        assert await _gap(aid, fan) == gap, (want_lo, await _gap(aid, fan))
+    async with get_session() as s:
+        assert (await s.get(ScrapeHistory, (aid, fan))).last_message_text == "m200"
+    assert all(o == "desc" for (o, _b, _off) in fake.calls), fake.calls
+
+
+async def case_scrape_gap_merges_when_the_newest_end_caps_again():
+    """New messages past the cap while a gap is open: one gap from the oldest gap's low end
+    to the new walk's oldest row (re-walking stored rows between is harmless)."""
+    aid, fan = "acc_catchup", 5301
+    await _seed_account(aid)
+    fake = PagedFakeClient(fan, _msgs(fan, range(1, 201)))
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    async with get_session() as s:
+        s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=20, last_message_text="m20"))
+    payload = {"chat_ids": [fan], "recent_cap": 50}
+    await enqueue_job(aid, "scrape_chats", payload=payload)
+    await run_once(aid, "scrape_chats")
+    fake._asc += _msgs(fan, range(201, 301))
+    await enqueue_job(aid, "scrape_chats", payload=payload)
+    await run_once(aid, "scrape_chats")
+    assert await _gap(aid, fan) == (300, 20, 251), await _gap(aid, fan)
+    for _ in range(6):
+        await enqueue_job(aid, "scrape_chats", payload=payload)
+        await run_once(aid, "scrape_chats")
+    assert await _stored_ids(aid, fan) == list(range(21, 301))
+    assert await _gap(aid, fan) == (300, None, None)
+
+
+class _ThrottledAfter(PagedFakeClient):
+    def __init__(self, *a, ok_pages: int, **kw):
+        super().__init__(*a, **kw)
+        self.ok_pages = ok_pages
+
+    def get_messages(self, chat_id, **kw) -> dict:
+        if len(self.calls) >= self.ok_pages:
+            from of_client import OFAPIError
+            self.calls.append(("429", kw.get("before_id"), None))
+            raise OFAPIError("429", response=type("R", (), {"status_code": 429})())
+        return super().get_messages(chat_id, **kw)
+
+
+async def case_scrape_full_pull_keeps_what_it_read_on_429():
+    """The ↻ pull (pull mode): OF's 429 mid-walk keeps the pages read and the
+    rest as the gap; a 429 on page 1 raises (nothing read). Desc pages only."""
+    from automations.scrape_chats import _scrape_one_chat
+    from of_client import OFAPIError
+    aid, fan = "acc_catchup", 5302
+    await _seed_account(aid)
+    async with get_session() as s:
+        s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=10, last_message_text="m10"))
+    fake = _ThrottledAfter(fan, _msgs(fan, range(1, 201)), ok_pages=3)
+    chunk = await _scrape_one_chat(aid, OWN_ID, fake, fan, None, page_size=50,
+                                       max_pages=40, recent_cap=300, mode="pull")
+    assert chunk.rate_limited and chunk.seen == 39
+    assert chunk.inserted == 39 and await _stored_ids(aid, fan) == list(range(162, 201)), chunk
+    assert await _gap(aid, fan) == (200, 10, 162)
+    assert all(o in ("desc", "429") for (o, _b, _off) in fake.calls), fake.calls
+
+    fake = PagedFakeClient(fan, _msgs(fan, range(1, 201)))
+    await _scrape_one_chat(aid, OWN_ID, fake, fan, None, page_size=50,
+                           max_pages=40, recent_cap=300, mode="pull")
+    assert await _stored_ids(aid, fan) == list(range(11, 201))
+    assert await _gap(aid, fan) == (200, None, None)
+
+    fake = _ThrottledAfter(fan, _msgs(fan, range(1, 201)), ok_pages=0)
+    try:
+        await _scrape_one_chat(aid, OWN_ID, fake, fan, None, page_size=50,
+                               max_pages=40, recent_cap=300, mode="pull")
+    except OFAPIError as e:
+        assert "429" in str(e), e
+    else:
+        raise AssertionError("page-1 429 must raise")
+
+
+async def case_scrape_full_pull_first_scrape_cut_by_429_keeps_a_gap_to_the_start():
+    """A first ↻ pull 429'd mid-walk never reads asc; the rest down to the start is the gap."""
+    from automations.scrape_chats import _scrape_one_chat
+    aid, fan = "acc_catchup", 5307
+    await _read_chat(aid, fan)
+    fake = _ThrottledAfter(fan, _msgs(fan, range(1, 101)), ok_pages=2)
+    await _scrape_one_chat(aid, OWN_ID, fake, fan, None, page_size=50,
+                           max_pages=40, recent_cap=300, mode="pull")
+    assert await _stored_ids(aid, fan) == list(range(75, 101))
+    assert await _gap(aid, fan) == (100, 0, 75), await _gap(aid, fan)
+    assert {o for (o, _b, _off) in fake.calls} == {"desc", "429"}, fake.calls
+    fake = PagedFakeClient(fan, _msgs(fan, range(1, 101)))
+    await _scrape_one_chat(aid, OWN_ID, fake, fan, None, page_size=50, max_pages=40)
+    assert await _stored_ids(aid, fan) == list(range(1, 101))
+    assert await _gap(aid, fan) == (100, None, None)
+
+
+async def case_scrape_full_pull_first_scrape_reads_to_the_start():
+    """An uncapped first scrape walks desc to the chat's start: whole history, no asc read."""
+    from automations.scrape_chats import _scrape_one_chat
+    aid, fan = "acc_catchup", 5303
+    await _seed_account(aid)
+    await _read_chat(aid, fan)
+    fake = PagedFakeClient(fan, _msgs(fan, range(1, 301)))
+    await _scrape_one_chat(aid, OWN_ID, fake, fan, None, page_size=50,
+                           max_pages=40, recent_cap=300, mode="pull")
+    assert await _stored_ids(aid, fan) == list(range(1, 301))
+    assert {o for (o, _b, _off) in fake.calls} == {"desc"}, fake.calls
+
+
+async def case_rescrape_now_commits_a_bounded_chunk_and_resumes():
+    import messages as msg_routes
+    from automations import scrape_chats as sc
+    aid, fan = "acc_catchup", 5394
+    await _seed_account(aid)
+    fake = PagedFakeClient(fan, _msgs(fan, range(1, 125)))
+    budget = msg_routes._PULL_MAX_CHUNKS
+    real = (ax._make_client, msg_routes.assert_account_owned, sc._PAGE_SLEEP_S)
+    ax._make_client = lambda _aid: fake
+    msg_routes.assert_account_owned = lambda _aid: None
+    msg_routes._PULL_MAX_CHUNKS, sc._PAGE_SLEEP_S = 1, 0
+    try:
+        first = await msg_routes.rescrape_chat_now(aid, fan)
+        assert first["seen"] == 100 and not first["ok"] and first["status"] == "partial", first
+        assert await _gap(aid, fan) == (124, 0, 25)
+        assert await _stored_ids(aid, fan) == list(range(25, 125))
+        second = await msg_routes.rescrape_chat_now(aid, fan)
+        assert second["seen"] == 24 and second["ok"] and second["status"] == "complete", second
+        assert await _gap(aid, fan) == (124, None, None)
+        assert await _stored_ids(aid, fan) == list(range(1, 125))
+    finally:
+        ax._make_client, msg_routes.assert_account_owned, sc._PAGE_SLEEP_S = real
+        msg_routes._PULL_MAX_CHUNKS = budget
+
+
+async def case_rescrape_now_retries_after_losing_the_gap_cas():
+    import messages as msg_routes
+    from automations import scrape_chats as sc
+    aid, fan = "acc_catchup", 5397
+    await _seed_account(aid)
+    async with get_session() as s:
+        s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=10))
+
+    timeline = _msgs(fan, range(1, 31))
+    loop = asyncio.get_running_loop()
+
+    class InterleavedPull(PagedFakeClient):
+        def get_messages(self, chat_id, **kw):
+            if not self.calls:
+                winner = PagedFakeClient(fan, timeline[:15])
+                scrape = sc._scrape_one_chat(aid, OWN_ID, winner, fan, None,
+                                             page_size=13, max_pages=1, mode="peek")
+                asyncio.run_coroutine_threadsafe(scrape, loop).result(timeout=5)
+            return super().get_messages(chat_id, **kw)
+
+    fake = InterleavedPull(fan, timeline)
+    real = (ax._make_client, ax._SCRAPE_MAX_PAGES, msg_routes.assert_account_owned, sc._PAGE_SLEEP_S)
+    ax._make_client = lambda _aid: fake
+    ax._SCRAPE_MAX_PAGES = 1
+    msg_routes.assert_account_owned = lambda _aid: None
+    sc._PAGE_SLEEP_S = 0
+    try:
+        result = await msg_routes.rescrape_chat_now(aid, fan)
+        assert result["ok"] and result["status"] == "complete", result
+        assert await _stored_ids(aid, fan) == list(range(11, 31)), result
+        assert await _gap(aid, fan) == (30, None, None)
+    finally:
+        ax._make_client, ax._SCRAPE_MAX_PAGES, msg_routes.assert_account_owned, sc._PAGE_SLEEP_S = real
+
+
+async def case_rescrape_now_stops_on_429_with_a_resumable_gap():
+    import messages as msg_routes
+    from automations import scrape_chats as sc
+    aid, fan = "acc_catchup", 5396
+    await _seed_account(aid)
+    fake = _ThrottledAfter(fan, _msgs(fan, range(1, 125)), ok_pages=2)
+    real = (ax._make_client, msg_routes.assert_account_owned, sc._PAGE_SLEEP_S)
+    ax._make_client = lambda _aid: fake
+    msg_routes.assert_account_owned = lambda _aid: None
+    sc._PAGE_SLEEP_S = 0
+    try:
+        result = await msg_routes.rescrape_chat_now(aid, fan)
+        assert not result["ok"] and result["status"] == "partial" and result["seen"] == 26, result
+        assert len(fake.calls) == 3, fake.calls
+        assert await _gap(aid, fan) == (124, 0, 99)
+
+        fake.ok_pages = 4
+        result = await msg_routes.rescrape_chat_now(aid, fan)
+        assert not result["ok"] and result["status"] == "partial" and result["seen"] == 0, result
+        assert len(fake.calls) == 5, fake.calls
+        assert await _gap(aid, fan) == (124, 0, 99)
+    finally:
+        ax._make_client, msg_routes.assert_account_owned, sc._PAGE_SLEEP_S = real
+
+
+async def case_rescrape_now_pulls_whole_history_and_continues_past_the_wait():
+    """↻ (rescrape-now): the whole missing history down to the cursor; a pull longer than
+    the wait answers `continuing` and keeps going; a repeat click joins the same pull."""
+    import time as _time
+    import messages as msg_routes
+    from automations import scrape_chats as sc
+    aid, fan = "acc_catchup", 5306
+    await _seed_account(aid)
+    async with get_session() as s:
+        s.add(ScrapeHistory(account_id=aid, fan_id=fan, last_message_id=5, last_message_text="m5"))
+
+    class Slow(PagedFakeClient):
+        def get_messages(self, chat_id, **kw):
+            _time.sleep(0.02)
+            return super().get_messages(chat_id, **kw)
+
+    fake = Slow(fan, _msgs(fan, range(1, 501)))
+    real = (ax._make_client, msg_routes.assert_account_owned, msg_routes._PULL_WAIT_S, sc._PAGE_SLEEP_S)
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    msg_routes.assert_account_owned = lambda _a: None
+    msg_routes._PULL_WAIT_S, sc._PAGE_SLEEP_S = 0.05, 0
+    try:
+        first = await msg_routes.rescrape_chat_now(aid, fan)
+        assert not first["ok"] and first.get("status") == "pending", first
+        task = msg_routes._full_pulls[(aid, fan)]
+        again = await msg_routes.rescrape_chat_now(aid, fan)
+        assert again.get("status") == "pending" and msg_routes._full_pulls[(aid, fan)] is task, again
+        await task
+        assert (aid, fan) not in msg_routes._full_pulls
+        assert await _stored_ids(aid, fan) == list(range(6, 501))
+        assert await _gap(aid, fan) == (500, None, None)
+        assert {o for (o, _b, _off) in fake.calls} == {"desc"}
+        msg_routes._PULL_WAIT_S = 5
+        done = await msg_routes.rescrape_chat_now(aid, fan)
+        assert done["ok"] and done["status"] == "complete" and done["inserted"] == 0, done
+    finally:
+        ax._make_client, msg_routes.assert_account_owned, msg_routes._PULL_WAIT_S, sc._PAGE_SLEEP_S = real
+
+
+async def case_scrape_heals_only_a_stored_zero_price():
+    """A PPV first stored at price 0 (a lastMessage preview) takes OF's price on the next
+    scrape; a stored non-zero price is never overwritten."""
+    from automations.scrape_chats import _upsert_message
+    aid, fan = "acc_catchup", 5304
+    await _seed_account(aid)
+    async with get_session() as s:
+        for mid, cents in ((1, 0), (2, 700)):
+            s.add(Message(account_id=aid, fan_id=fan, message_id=mid, direction="out", sender_name="",
+                          body="ppv", media_ids="[]", media_count=0, price_cents=cents, is_tip=False,
+                          is_unsent=False, raw_json="{}", created_at=datetime(2026, 6, 1)))
+    async with get_session() as s:
+        for mid in (1, 2):
+            await _upsert_message(s, aid, fan, OWN_ID, _of_msg(
+                mid, False, "ppv", "2026-06-01T00:00:00+00:00", fan_id=fan, price=12.5, is_opened=False))
+    async with get_session() as s:
+        got = {m.message_id: m.price_cents for m in (await s.execute(select(Message).where(
+            Message.account_id == aid, Message.fan_id == fan))).scalars()}
+    assert got == {1: 1250, 2: 700}, got
+
+
+async def case_thread_page_save_upserts_by_id():
+    """A thread page the relay read (chat open / scroll-up) lands in messages by id; a
+    shifted re-read only re-writes rows."""
+    from automations.scrape_chats import save_thread_page
+    aid, fan = "acc_catchup", 5305
+    await _seed_account(aid)
+    await save_thread_page(aid, fan, OWN_ID, list(reversed(_msgs(fan, range(40, 51)))))
+    await save_thread_page(aid, fan, OWN_ID, list(reversed(_msgs(fan, range(35, 46)))))
+    assert await _stored_ids(aid, fan) == list(range(35, 51))
+    async with get_session() as s:
+        dirs = {m.message_id: m.direction for m in (await s.execute(select(Message).where(
+            Message.account_id == aid, Message.fan_id == fan))).scalars()}
+    assert dirs[40] == "in" and dirs[41] == "out", dirs
+
+
+async def case_stale_thread_page_keeps_confirmed_unsend():
+    from automations.scrape_chats import save_thread_page
+    from messages_unsent import mark_unsent
+    aid, fan, mid = "acc_catchup", 5395, 41
+    await _seed_account(aid)
+    rows = _msgs(fan, [mid])
+    await save_thread_page(aid, fan, OWN_ID, rows)
+    assert await mark_unsent(aid, mid, fan) == 1
+    async with get_session() as s:
+        unsent_at = (await s.get(Message, (aid, fan, mid))).unsent_at
+    await save_thread_page(aid, fan, OWN_ID, rows)
+    async with get_session() as s:
+        saved = await s.get(Message, (aid, fan, mid))
+        assert saved.is_unsent and unsent_at is not None and saved.unsent_at == unsent_at
 
 
 # ── A full sweep stops after SCRAPE_SWEEP_FAIL_FAST systemic failures in a row ──
@@ -887,7 +1276,7 @@ async def case_scrape_cursor_write_clears_the_deferred_mark():
         fake.calls.clear()
         if how == "reply":
             fake._asc.append(_of_msg(151, True, "finally", "2026-06-06T03:00:00+00:00", fan_id=fan))
-        await _scrape(aid, fake, {"fan_ids": [fan], "source": "deferred_history"} if how == "explicit" else {})
+        await _scrape(aid, fake, {"fan_ids": [fan], "source": "deferred_history", "after_click_at": datetime.utcnow().isoformat()} if how == "explicit" else {})
         assert {o for o, _b, _off in fake.calls} == {"desc", "asc"}, (how, fake.calls)
         assert ("asc", None, 0) in fake.calls, (how, fake.calls)
         ids, hist, _, _ = await _thread(aid, fan)
@@ -978,7 +1367,10 @@ async def case_scrape_deferred_backfill_counts_under_its_own_caller_kind():
                                     last_scrape_at=datetime.utcnow(),
                                     history_deferred_at=datetime.utcnow()))
         ax._make_client = lambda account_id, f=fake: f  # type: ignore[attr-defined]
-        res = await ax.run_once("acc_defer", "scrape_chats", payload={"fan_ids": [fan], "source": source})
+        payload = {"fan_ids": [fan], "source": source}
+        if source == "deferred_history":
+            payload["after_click_at"] = datetime.utcnow().isoformat()
+        res = await ax.run_once("acc_defer", "scrape_chats", payload=payload)
         assert res["status"] == "ok", res
         got[fan] = set(fake.kinds)
         assert (("asc", None, 0) in fake.calls) is (fan != 5701), (fan, fake.calls)
@@ -1103,7 +1495,10 @@ async def case_scrape_explicit_missing_chat_row_defers():
     assert _recent_end_only(fake.calls), fake.calls
     _, hist, chat, _ = await _thread(aid, fan)
     assert hist.history_deferred_at is not None and hist.last_message_id is None
-    assert chat.unread_count == 1, chat.unread_count
+    assert chat.unread_count == 0, chat.unread_count
+    fake = PeekRecordingClient(fan, _fan_msgs(fan), unread=0)
+    await _scrape(aid, fake, {})
+    assert ("asc", None, 0) in fake.calls, fake.calls
 
 
 async def case_scrape_deferred_row_backfills_only_on_the_click():
@@ -1121,6 +1516,7 @@ async def case_scrape_deferred_row_backfills_only_on_the_click():
     assert hist.history_deferred_at is not None
     await _read_chat(aid, fan, 0)
     for payload in ({"fan_ids": [fan]}, {"fan_ids": [fan], "source": wd.GEN_INFO_PICK_SOURCE},
+                    {"fan_ids": [fan], "source": wd.DEFERRED_HISTORY_SOURCE},
                     {"fan_ids": [fan], "source": "blast_reply"}):
         fake.calls.clear()
         await _scrape(aid, fake, payload)
@@ -1128,7 +1524,8 @@ async def case_scrape_deferred_row_backfills_only_on_the_click():
         _, hist, _, _ = await _thread(aid, fan)
         assert hist.history_deferred_at is not None and hist.last_message_id is None, payload
     fake.calls.clear()
-    await _scrape(aid, fake, {"fan_ids": [fan], "source": wd.DEFERRED_HISTORY_SOURCE})
+    await _scrape(aid, fake, {"fan_ids": [fan], "source": wd.DEFERRED_HISTORY_SOURCE,
+                                   "after_click_at": datetime.utcnow().isoformat()})
     assert ("asc", None, 0) in fake.calls, fake.calls
     ids, hist, _, _ = await _thread(aid, fan)
     assert hist.history_deferred_at is None and hist.last_message_id == 150
@@ -1146,7 +1543,8 @@ async def case_scrape_click_backfill_before_local_zeroing_pulls_both_ends():
     fake = PeekRecordingClient(fan, _fan_msgs(fan))
     await _scrape(aid, fake, {"fan_ids": [fan]})
     fake.calls.clear()
-    await _scrape(aid, fake, {"fan_ids": [fan], "source": wd.DEFERRED_HISTORY_SOURCE})
+    await _scrape(aid, fake, {"fan_ids": [fan], "source": wd.DEFERRED_HISTORY_SOURCE,
+                                   "after_click_at": datetime.utcnow().isoformat()})
     assert ("asc", None, 0) in fake.calls, fake.calls
     _, hist, _, _ = await _thread(aid, fan)
     assert hist.history_deferred_at is None
@@ -1228,6 +1626,52 @@ async def case_scrape_unread_flip_before_asc_defers():
     assert all(o == "desc" for o, _b, _off in fake.calls), fake.calls
     _, hist, _, _ = await _thread(aid, fan)
     assert hist.history_deferred_at is not None and hist.last_message_id is None
+
+
+async def case_scrape_dm_during_ascending_pace_defers():
+    from unittest.mock import patch
+    from automations import scrape_chats
+
+    aid, fan = "acc_peek", 5861
+    await _seed_account(aid)
+    await _read_chat(aid, fan, 0)
+    fake = PeekRecordingClient(fan, _fan_msgs(fan))
+    pauses = 0
+    sleep = asyncio.sleep
+
+    async def paced(delay, *args):
+        nonlocal pauses
+        if delay == 17:
+            pauses += 1
+            if pauses == 2:
+                await _read_chat(aid, fan, 1)
+            delay = 0
+        return await sleep(delay, *args)
+
+    with (patch.object(scrape_chats, "_PAGE_SLEEP_S", 17),
+          patch.object(asyncio, "sleep", paced), patch.object(ax, "_make_client", return_value=fake)):
+        await scrape_chats._automation_scrape_chats(aid, {"fan_ids": [fan], "max_pages": 1}, run_id=0)
+    assert pauses >= 2
+    assert _page_one_only(fake.calls), fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None
+
+
+async def case_scrape_dm_between_click_and_job_defers():
+    import webhook_dispatch as wd
+
+    aid, fan = "acc_peek", 5862
+    await _seed_account(aid)
+    await _read_chat(aid, fan, 1)
+    messages = _fan_msgs(fan)
+    click = datetime(2026, 6, 7, 2, 30)
+    messages[-1]["createdAt"] = "2026-06-07T02:30:01+00:00"
+    fake = PeekRecordingClient(fan, messages)
+    await _scrape(aid, fake, {"fan_ids": [fan], "source": wd.DEFERRED_HISTORY_SOURCE,
+                              "after_click_at": click.isoformat()})
+    assert _recent_end_only(fake.calls), fake.calls
+    _, hist, _, _ = await _thread(aid, fan)
+    assert hist.history_deferred_at is not None
 
 
 def _bump_marker(aid: str, fan: int, unread: int):
@@ -2588,6 +3032,21 @@ _harness.run(
     case_scrape_full_sweep_mark_only_on_empty_payload,
     case_scrape_long_convo_both_ends,
     case_scrape_desc_catch_up_no_refetch_start,
+    case_gap_only_scrape_keeps_recency_and_preview,
+    case_dropped_dm_scrape_only_peeks,
+    case_idle_scrape_keeps_a_concurrently_opened_gap,
+    case_scrape_capped_catch_up_keeps_the_middle,
+    case_scrape_gap_merges_when_the_newest_end_caps_again,
+    case_scrape_full_pull_keeps_what_it_read_on_429,
+    case_scrape_full_pull_first_scrape_reads_to_the_start,
+    case_scrape_full_pull_first_scrape_cut_by_429_keeps_a_gap_to_the_start,
+    case_rescrape_now_commits_a_bounded_chunk_and_resumes,
+    case_rescrape_now_retries_after_losing_the_gap_cas,
+    case_rescrape_now_stops_on_429_with_a_resumable_gap,
+    case_rescrape_now_pulls_whole_history_and_continues_past_the_wait,
+    case_scrape_heals_only_a_stored_zero_price,
+    case_thread_page_save_upserts_by_id,
+    case_stale_thread_page_keeps_confirmed_unsend,
     case_scrape_sweep_stops_after_five_systemic_failures_in_a_row,
     case_scrape_sweep_fail_fast_counts_only_in_a_row,
     case_scrape_sweep_fail_fast_before_first_scan_and_knob,
@@ -2611,6 +3070,8 @@ _harness.run(
     case_scrape_eager_history_does_not_backfill_unread,
     case_scrape_unread_silent_mass_chat_still_costs_one_page,
     case_scrape_unread_flip_before_asc_defers,
+    case_scrape_dm_during_ascending_pace_defers,
+    case_scrape_dm_between_click_and_job_defers,
     case_scrape_click_backfill_before_local_zeroing_pulls_both_ends,
     case_scrape_resweep_of_a_deferred_unread_chat_reads_page_one,
     case_scrape_dm_after_the_sweep_list_defers,

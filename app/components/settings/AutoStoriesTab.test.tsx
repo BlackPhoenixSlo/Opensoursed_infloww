@@ -28,7 +28,7 @@ vi.mock("@/hooks/useAccounts", async (importOriginal) => {
   };
 });
 vi.mock("@/hooks/useVaultMedia", () => ({
-  useVaultLists: () => ({ isLoading: false, data: { list: [{ id: 5, name: "Teasers", photosCount: 3 }] } }),
+  useVaultListsRevalidated: () => ({ isLoading: false, isFetching: false, refresh: vi.fn(), data: { list: [{ id: 5, name: "Teasers", photosCount: 3 }] } }),
 }));
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
 

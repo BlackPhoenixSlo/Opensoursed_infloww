@@ -52,6 +52,8 @@ from pydantic import BaseModel, Field, field_validator
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+from isotime import parse_iso  # noqa: E402
+
 import accounts as account_registry  # noqa: E402
 import admission  # noqa: E402  # bounded-concurrency lanes (see service/admission.py)
 import lane_config  # noqa: E402  # durable store behind the Concurrency panel
@@ -68,7 +70,8 @@ import sign_rules  # noqa: E402  # one sign-rule refresh for every account (2.17
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
 import owner_tokens as _owner_tokens  # noqa: E402  # `Bearer ifw_…` parse, for the share-token gate
 import token_auth as _token_auth  # noqa: E402  # owner-token cookie strip (ASGI) + route allowlist
-from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, READ_TIMING, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError, OFSessionRetired, OFSignedPoolBusy, timing_add  # noqa: E402
+from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, READ_TIMING, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError, OFDispatchRefused, OFSessionRetired, OFSignedPoolBusy, PRE_DISPATCH, timing_add  # noqa: E402
+from of_sends import SendsMixin  # noqa: E402
 from of_rich_text import MARKUP_MAX, is_of_html, sanitize_of_html  # noqa: E402
 import client_pool  # noqa: E402 — the relay's one OFClient pool
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
@@ -108,6 +111,7 @@ import vault_ingest  # noqa: E402  # a finished import -> mirror rows (the grid 
 import vault_upload  # noqa: E402  # batch vault import (spool -> OF -> clear spool)
 import vault_ai_api  # noqa: E402  # an import's per-file details -> mirror rows
 import gdrive  # noqa: E402  # the Drive key's reader, for the import card's on/off flag
+from events_decide import is_plain_chat_view  # noqa: E402
 import relay_cache  # noqa: E402  # in-process TTL cache for hot-path OF endpoints (Stage C will wire call-sites)
 import of_promos  # noqa: E402  # `to_cents`, OF's dollars to our cents
 import of_pacing  # noqa: E402  # background walks: the per-Creator pacer, 429 retry, busy signal
@@ -211,6 +215,7 @@ from chatters import (  # noqa: E402
     allowed_folder_ids_for_chatter as _allowed_folder_ids_for_chatter,
     COOKIE_NAME as _CHATTER_COOKIE_NAME,
 )
+import split_inbox  # noqa: E402
 import unread_total  # noqa: E402  # registers `values.unread_total` with the Shared refresher (UNREAD_TOTAL); on_reply
 
 
@@ -1511,6 +1516,24 @@ async def _close_streams_on_term() -> None:
     signal.signal(signal.SIGTERM, _on_term)
 
 
+async def _rebind_deactivated_proxies(off: frozenset[str]) -> None:
+    try:
+        if not proxy_registry.pool_entries():
+            return
+    except Exception:
+        log.exception("could not read proxy pool for deactivated Creator rebind")
+        return
+    for aid in off:
+        try:
+            session = account_registry.latest_session_path(aid)
+            route = proxy_registry.egress(proxy_registry.registry(), aid, session.name if session else None)
+            if isinstance(route, proxy_registry.Direct):
+                await asyncio.to_thread(proxy_health.assign_pool, aid)
+                log.info("restored proxy binding for deactivated Creator %s", aid)
+        except Exception:
+            log.exception("could not restore proxy binding for deactivated Creator %s", aid)
+
+
 @app.on_event("startup")
 async def _start_event_pumps() -> None:
     global _supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task, _main_loop
@@ -1529,7 +1552,7 @@ async def _start_event_pumps() -> None:
     except Exception:
         log.exception("Inflowwww proxy pool sync failed — pool unchanged")
 
-    # Vault-import crash recovery, FIRST and off the loop, then hourly. A batch
+    # Vault-import crash recovery at boot and hourly, off the loop. A batch
     # that died mid-flight can have left a scheduled carrier post on a real
     # creator's feed; left alone it publishes on its postedAt date. Boot alone
     # is not a schedule — this container runs for weeks and a carrier is 30 days
@@ -1545,11 +1568,12 @@ async def _start_event_pumps() -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("vault sweep failed: %s", e)
 
-    async def _vault_sweep_loop() -> None:
+    async def _vault_sweep_loop(gate_loaded: bool) -> None:
         while True:
+            if gate_loaded and (off := account_health.write_gate_snapshot()):
+                await _rebind_deactivated_proxies(off)
             await _vault_sweep_once()
             await asyncio.sleep(3600)
-    _spawn_bg(_vault_sweep_loop(), "vault-sweep")
 
     # Bump the anyio thread pool. `/img` is a sync streaming endpoint —
     # each in-flight video / avatar fetch holds one thread for as long as
@@ -1603,19 +1627,14 @@ async def _start_event_pumps() -> None:
         log.exception("runtime switch overrides not loaded: env / defaults apply; retrying in the background")
         _spawn_bg(runtime_switches.load_until_loaded(), "runtime-switches-load")
 
-    # OFClient's deactivated-Creator write gate (account_health.refuses_writes),
-    # filled once; deactivate/activate keep it after. The vault sweep spawned
-    # above only removes carriers, which the gate lets through anyway.
     try:
         await account_health.load_write_gate()
     except Exception:
         log.exception("deactivated Creators not loaded: their OF writes are NOT refused until a restart")
-    try:
-        freed = [aid for aid in await account_health.deactivated_ids() if proxy_registry.unbind_pool(aid)]
-        if freed:
-            log.info("deactivated Creators released their pool proxies: %s", freed)
-    except Exception:
-        log.exception("deactivated Creators' pool proxies not released")
+        gate_loaded = False
+    else:
+        gate_loaded = True
+    _spawn_bg(_vault_sweep_loop(gate_loaded), "vault-sweep")
 
     # Pre-add the default "strokes" funnel (once per box, insert-if-missing by
     # name — never overwrites an edited one, never resurrects a deleted one).
@@ -2753,7 +2772,11 @@ def _pool_safe_error(aid: str | None, text: str, label: str | None = None) -> st
     return POOL_PROXY_ERROR
 
 
-def _proxy(call, *, client: OFClient | None = None):
+class _SendRetryExpired(of_pacing.SendDispatchExpired, OFDispatchRefused):
+    pass
+
+
+def _proxy(call, *, client: OFClient | None = None, send: bool = False, started: float | None = None):
     """Translate OFAPIError + curl_cffi proxy/network errors into a structured
     502 so the frontend can react, and log a one-liner instead of a 200-line
     traceback for transient proxy failures (cf-tunnel 403s, timeouts, DNS).
@@ -2769,7 +2792,12 @@ def _proxy(call, *, client: OFClient | None = None):
     busy signed pool (OFSignedPoolBusy: nothing evicted), answers 503 +
     Retry-After (a write retried from the top could repeat what it sent).
     `client`: the one `call` runs on when it was loaded before `_proxy` (a bound
-    method), so a dead-session answer evicts only that client."""
+    method), so a dead-session answer evicts only that client.
+
+    OF's 429 on a GET request (or `send`: a write OF refuses whole on a 429) closes the
+    Creator's 429 gate: it and the Creator's later ones queue, off the lane, and are sent again
+    (of_pacing.absorb_429; sends have their own cutoff, from `started`: the send request's arrival)."""
+    send_deadline = (started or _time_mod.monotonic()) + of_pacing.SEND_BUDGET_S if send else None
     aid: str | None = None
     token = None
     loaded: list[OFClient] = []
@@ -2784,18 +2812,37 @@ def _proxy(call, *, client: OFClient | None = None):
             # Someone is waiting on this request: its reads fail fast on a dead proxy.
             if _current_priority() != "background":
                 token = INTERACTIVE_READ.set(True)
-        with _priority_lane(aid):
-            t_call = _time_mod.monotonic()
+        def _attempt():
+            with _priority_lane(aid):
+                t_call = _time_mod.monotonic()
+                try:
+                    return call()
+                except OFSessionRetired as e:
+                    # A busy pool was not evicted: a re-run would wait on the same handles again.
+                    if isinstance(e, OFSignedPoolBusy) or req is None or req.method != "GET":
+                        raise
+                    log.info("client evicted mid-read account=%s: re-run on the current client", aid)
+                    return call()
+                finally:
+                    timing_add("call_s", _time_mod.monotonic() - t_call)
+        if send_deadline is not None:
+            previous = PRE_DISPATCH.get()
+
+            def _before_send():
+                if _time_mod.monotonic() >= send_deadline:
+                    raise _SendRetryExpired("Send window expired before dispatch.")
+                return previous() if previous is not None else None
+
+            guard = PRE_DISPATCH.set(_before_send)
             try:
-                return call()
-            except OFSessionRetired as e:
-                # A busy pool was not evicted: a re-run would wait on the same handles again.
-                if isinstance(e, OFSignedPoolBusy) or req is None or req.method != "GET":
-                    raise
-                log.info("client evicted mid-read account=%s: re-run on the current client", aid)
-                return call()
+                return of_pacing.absorb_429(aid, _attempt, send_deadline=send_deadline, clock=_time_mod.monotonic)
             finally:
-                timing_add("call_s", _time_mod.monotonic() - t_call)
+                PRE_DISPATCH.reset(guard)
+        if getattr(req, "method", None) == "GET":
+            return of_pacing.absorb_429(aid, _attempt)
+        return _attempt()
+    except of_pacing.SendDispatchExpired as e:
+        raise HTTPException(status_code=504, detail="Send window expired before dispatch.") from e
     except OFDeactivatedError as e:
         raise HTTPException(status_code=409, detail=_DEACTIVATED_DETAIL) from e
     except OFSessionRetired as e:  # before OFDeniedError (its base)
@@ -3200,13 +3247,17 @@ async def users_me(max_age: int | None = None) -> dict[str, Any]:
         aid = _current_aid()
     except HTTPException:
         return await asyncio.to_thread(_users_me_read)   # as _account_ttl: the route answers its 403/404/503
-    if not max_age:
-        return await relay_cache.get_or_fetch("users_me", aid, ("users_me",), _ME_TTL_S, _users_me_read)
-    held = relay_cache.peek_fresh("users_me", aid, ("users_me",))
-    if held is not None:
-        return held
-    age = int(min(max(max_age, _ME_TTL_S), _ME_MAX_AGE_MAX_S))
-    return await relay_cache.get_or_fetch("users_me", aid, ("users_me", "max_age", age), age, _users_me_read)
+    key = ("users_me",)
+    age = _ME_TTL_S
+    held = relay_cache.peek_fresh("users_me", aid, key) if max_age else None
+    if held is None:
+        if max_age:
+            age = int(min(max(max_age, _ME_TTL_S), _ME_MAX_AGE_MAX_S))
+            key = (*key, "max_age", age)
+        held = await relay_cache.get_or_fetch("users_me", aid, key, age, _users_me_read)
+    if await split_inbox.chatter_inbox_filter(aid) is not None:
+        return split_inbox.without_count(held, "chatMessagesCount")
+    return held
 
 
 # ── Image proxy ────────────────────────────────────────────────
@@ -3287,7 +3338,11 @@ async def admin_chats_recent(
                 "unreadMessagesCount": chat.unread_count or 0,
                 "isMutedNotifications": bool(fan.is_muted) if fan else False,
             })
-        return {"list": out, "source": "local-db"}
+    chatter_id = split_inbox.acting_chatter_id()
+    if chatter_id is not None:
+        keeps = {aid: await split_inbox.filter_for(chatter_id, aid) for aid in {r["__accountId"] for r in out}}
+        out = [r for r in out if (k := keeps[r["__accountId"]]) is None or k(r["withUser"]["id"])]
+    return {"list": out, "source": "local-db"}
 
 
 app.include_router(img_api.router)
@@ -3451,9 +3506,17 @@ def _assemble_chats_page(
 _CHATS_429_HOLD = chats_page.ThrottleHold()
 
 
-def _is_plain_view(filter: str | None, list_id: str | None, q: str | None) -> bool:
-    """The chat list with no filter, folder or search: an unbiased window of the roster."""
-    return not filter and list_id is None and not q
+async def _cached_or_held_on_429(namespace: str, aid: str, extras: tuple, **kw: Any) -> tuple[Any, bool]:
+    """relay_cache.get_or_fetch; when OF still 429s (or its hold answers), the copy held for
+    the key at any age instead, if there is one."""
+    try:
+        return await relay_cache.get_or_fetch(namespace, aid, extras, **kw), False
+    except HTTPException as e:
+        held = relay_cache.peek(namespace, aid, extras) if of_pacing.retry_after(e) is not None else None
+        if held is None:
+            raise
+        log.info("%s 429: served the held copy account=%s", namespace, aid)
+        return held, True
 
 
 @app.get("/api/of/v2/chats")
@@ -3477,12 +3540,13 @@ async def list_chats(
     aid = _current_aid()
     q = query or search
     coalesce_key = ("list_chats", aid, limit, offset, order, filter, list_id, q)
+    plain_view = is_plain_chat_view(filter, list_id, q)
     # The badge folds its counts from the plain recent page-0 window — when
     # THIS request happens to be that exact view, a live read here also resets
     # the badge's staleness clock (see _chats_window_fetched_at).
     is_badge_window = (
         limit == _ROSTER_SCAN_MAX and offset == 0 and order == "recent"
-        and _is_plain_view(filter, list_id, q)
+        and plain_view
     )
     async def _fetch():
         _timing_detach_foreign()  # the SWR refresh runs this off the request's task
@@ -3499,6 +3563,7 @@ async def list_chats(
             )
             if is_badge_window:
                 _chats_window_fetched_at[aid] = _time_mod.monotonic()
+                return {**value, "fetched_at": int(_time_mod.time() * 1000)}
             return value
         async def _upstream():
             # Inside the detached flight: a waiter cancelled meanwhile doesn't lose OF's 429.
@@ -3518,7 +3583,7 @@ async def list_chats(
         # from WS frames, so it is not OF's read state and must not overwrite the
         # mirror. Only the unfiltered/no-search/no-folder view (unbiased
         # snapshot); fire-and-forget so it never adds latency.
-        if value and _is_plain_view(filter, list_id, q):
+        if value and plain_view:
             chats = value.get("list") or value.get("chats") or []
             if chats:
                 from messages import reconcile_chats_from_of
@@ -3527,8 +3592,9 @@ async def list_chats(
                     name=f"reconcile-chats-{aid}",
                 )
         return value
+    held_before = accounts_admin_api.held_window(aid) if is_badge_window else None
     with _of_read_timing("chats", aid):
-        resp = await relay_cache.get_or_fetch(
+        resp, _ = await _cached_or_held_on_429(
             "list_chats", aid, (limit, offset, order, filter, list_id, q),
             ttl_seconds=_LIST_CHATS_TTL, fetcher=_fetch, bypass=refresh,
             stale_while_revalidate=_LIST_CHATS_SWR,
@@ -3540,8 +3606,18 @@ async def list_chats(
         # Without this, the one button users press when badge≠list leaves the badge
         # serving pre-refresh counts for up to its own TTL: the symptom survives its
         # own remedy.
-        if refresh and offset == 0 and _is_plain_view(filter, list_id, q):
+        if refresh and offset == 0 and plain_view:
             relay_cache.invalidate("roster_count", aid)
+        held = accounts_admin_api.held_window(aid) if is_badge_window else None
+        if held is not None and held is resp and held is not held_before and unread_total.ENABLED:
+            try:
+                me = getattr(await asyncio.to_thread(_get_client), "user_id", None)
+                if me is not None:
+                    await accounts_admin_api.fold_held_roster_window(aid, str(me))
+            except Exception:
+                log.warning("list_chats: fresh page-0 window not folded for %s", aid, exc_info=True)
+        scanned = len(resp.get("list") or resp.get("chats") or [])
+        resp = split_inbox.filter_rows({**resp, "scanned": scanned}, await split_inbox.chatter_inbox_filter(aid))
         return await _annotate_chat_rows(aid, resp)
 
 
@@ -3696,6 +3772,8 @@ async def get_messages(
     refresh: bool = Query(False, alias="refresh"),
     peek: bool = False,
 ) -> dict[str, Any]:
+    if peek and order != "desc":
+        raise HTTPException(400, "peek requires descending order")
     # BC2: cache ONLY paginated history (before_id non-None). Head page
     # (before_id=None) is where new messages land — we have no
     # per-message WS invalidator, so head MUST go through to OF every
@@ -3705,29 +3783,36 @@ async def get_messages(
     with _of_read_timing("messages", aid, chat_id):
         coalesce_key = ("get_messages", aid, chat_id, before_id, limit, order, peek)
         async def _fetch():
-            return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
+            return await asyncio.to_thread(
                 _proxy, lambda: _get_client().get_messages(
                     chat_id, limit=limit, order=order, before_id=before_id, peek=peek,
                 ),
-            ))
+            )
+
+        held = False
         if before_id is None:
             # Head page: skip cache entirely. New inbound DMs arrive via the
             # WS pump + SSE; caching the head would mask them for ~TTL.
-            payload = await _fetch()
+            async def _fetch_head():
+                click_at = read_flip.now_ms() if not peek else None
+                return click_at, await _fetch()
+
+            click_at, payload = await relay_coalesce.coalesce(coalesce_key, _fetch_head)
             _timing_post_start()
             if isinstance(payload, dict) and aid:
                 # A reply sent from OF web / app has no event of its own.
                 relay_hooks.fire_thread_head(aid, chat_id, payload.get("list"))
-                if not peek:
-                    relay_hooks.fire_thread_click_read(aid, chat_id)
+                if click_at is not None:
+                    relay_hooks.fire_thread_click_read(aid, chat_id, click_at)
         else:
             # Paginated tail: mostly immutable, but PPV lock/unlock state can flip
             # on an old message when a fan pays — so cap the cache at 5min (not
             # 10) to bound how long a just-paid PPV lingers as "locked". Still
             # plenty to coalesce a scroll-burst; `bypass=refresh` forces fresh.
-            payload = await relay_cache.get_or_fetch(
+            payload, held = await _cached_or_held_on_429(
                 "get_messages_tail", aid, (chat_id, before_id, limit),
-                ttl_seconds=300.0, fetcher=_fetch, bypass=refresh,
+                ttl_seconds=300.0, fetcher=functools.partial(relay_coalesce.coalesce, coalesce_key, _fetch),
+                bypass=refresh,
             )
             _timing_post_start()
         # Media render-stability (18_chat_render_stability §1.1): surface
@@ -3751,7 +3836,18 @@ async def get_messages(
                 await stamp_rest_media_dims(str(aid), int(chat_id), of_rows)
             except Exception:  # noqa: BLE001
                 log.debug("stamp_rest_media_dims failed for chat %s", chat_id, exc_info=True)
-            if of_rows:
+            try:
+                own_user_id = getattr(_get_client(), "user_id", None) if of_rows and not held else None
+            except Exception:  # noqa: BLE001
+                own_user_id = None
+            if own_user_id:
+                from automations.scrape_chats import save_thread_page  # noqa: PLC0415
+                asyncio.create_task(
+                    save_thread_page(str(aid), int(chat_id), own_user_id, of_rows,
+                                     peek_head=peek and before_id is None),
+                    name=f"thread-page-{aid}-{chat_id}",
+                )
+            if of_rows and not held:
                 # `persist_rest_media_dims` swallows its own exceptions — in a bare
                 # create_task an escaping error would only ever surface as an
                 # unretrieved-task warning.
@@ -3863,17 +3959,11 @@ async def list_users(
     # should coalesce. The OF response is keyed by user-id string anyway,
     # so per-waiter slicing is order-insensitive.
     # No priority in the key: relay_coalesce adds the class (a person's read never joins a
-    # background flight and its 429 retry; a background one may join a person's).
-    background = _current_priority() == "background"
+    # background flight; a background one may join a person's).
     key = ("list_users", aid, view, tuple(sorted(ids)))
 
-    async def _read():
-        return await asyncio.to_thread(_proxy, lambda: _get_client().list_users(ids, view=view))
-
     async def _fetch():
-        # A page's own background name fill (X-Priority: background, e.g. 8 batches at once) is
-        # user-triggered: never paced, only OF's 429 retried once (of_pacing); a person's read is not.
-        resp = await (of_pacing.retry_429(aid, _read) if background else _read())
+        resp = await asyncio.to_thread(_proxy, lambda: _get_client().list_users(ids, view=view))
         _timing_post_start()  # the leader's line: its context rode into this task
         if isinstance(resp, list):
             resp = {}
@@ -4103,6 +4193,7 @@ async def send_message(
     Automation employee when the header is absent). The transcoder skips
     outbound chat_message events on purpose; this is the single producer
     of outbound rows."""
+    started = _time_mod.monotonic()
     # Extract context BEFORE _proxy — its lambda has no request scope.
     account_id = _resolve_account_id(request)
     # Same chatter-aware resolution as the mass-message path above. For
@@ -4115,41 +4206,48 @@ async def send_message(
 
     await _reject_if_resale(account_id, int(chat_id), body)
 
-    # Bridge sync _proxy from this async handler.
-    try:
-        result = await asyncio.to_thread(
-            _proxy,
-            lambda: _get_client().send_message(
-                chat_id,
-                text=body.text,
-                locked_text=body.locked_text,
-                price=body.price,
-                media_files=body.media_files,
-                previews=body.previews,
-                is_forward=body.is_forward,
-                reply_to_message_id=body.reply_to_message_id,
-                tagged_users=body.tagged_users,
-                giphy_id=body.giphy_id,
-                rf_guest=body.rf_guest,
-                rf_partner=body.rf_partner,
-                # A human is composing this one and has the tag picker right there,
-                # so their choice stands as made — the co-performer auto-tag
-                # (media_cotag) covers the automated senders, which have no operator
-                # to make it. Flip to True to auto-tag the composer too.
-                auto_tag=False,
-            ),
+    before_send_at = read_flip.now_ms()
+
+    def send():
+        fields = dict(
+            text=body.text,
+            locked_text=body.locked_text,
+            price=body.price,
+            media_files=body.media_files,
+            previews=body.previews,
+            is_forward=body.is_forward,
+            reply_to_message_id=body.reply_to_message_id,
+            tagged_users=body.tagged_users,
+            giphy_id=body.giphy_id,
+            rf_guest=body.rf_guest,
+            rf_partner=body.rf_partner,
+            # A human is composing this one and has the tag picker right there,
+            # so their choice stands as made — the co-performer auto-tag
+            # (media_cotag) covers the automated senders, which have no operator
+            # to make it. Flip to True to auto-tag the composer too.
+            auto_tag=False,
         )
+        # Fansly shim, demo FakeOF and slop's offline client answer send_message only.
+        if not isinstance(_proxy(_get_client), SendsMixin):
+            return _proxy(lambda: _get_client().send_message(chat_id, **fields))
+        prepared_chat_id, path, payload, retry_plan = _proxy(
+            lambda: _get_client().prepare_message(chat_id, **fields))
+        return _proxy(lambda: _get_client().post_message(prepared_chat_id, path, payload, retry_plan),
+                      send=retry_plan is None, started=started)
+
+    try:
+        result = await asyncio.to_thread(send)
     except HTTPException as e:
         relay_hooks.fire_send_failed(account_id, int(chat_id), e)
         raise
 
     await _record_fan_send(account_id, int(chat_id), result,
-                           employee_id=employee_id, price=body.price)
+                           employee_id=employee_id, price=body.price, before_send_at=before_send_at)
     return result
 
 
 async def _record_fan_send(account_id: str, fan_id: int, result: Any, *,
-                           employee_id: int | None, price: float) -> None:
+                           employee_id: int | None, price: float, before_send_at: int) -> None:
     """Everything a fan DM owes the relay once OnlyFans has said 200: the
     outbound `messages` row, the `chat_responded` announcement, the media pin,
     the chat-list cache bust.
@@ -4160,12 +4258,12 @@ async def _record_fan_send(account_id: str, fan_id: int, result: Any, *,
     to its linked fan). Never raises: the send already happened."""
     # The Unread total: a reply reads an unread chat (prior peeked from our record / the held
     # window, so before the bust below and before an awaited write lets the WS echo drop it).
-    unread_total.on_reply(account_id, fan_id)
+    read_flip.after_reply(account_id, fan_id, before_send_at)
     # Best-effort attribution write. Never raise — the OF send already
     # succeeded and the frontend reconcile depends on the response.
     try:
         from attribution import write_outbound_attribution
-        from event_transcoder import _parse_iso, _to_cents
+        from event_transcoder import _to_cents
         msg_id = result.get("id") if isinstance(result, dict) else None
         if msg_id:
             await write_outbound_attribution(
@@ -4175,7 +4273,7 @@ async def _record_fan_send(account_id: str, fan_id: int, result: Any, *,
                 sent_by_employee_id=employee_id,
                 body=str(result.get("text") or ""),
                 price_cents=_to_cents(price),
-                created_at=_parse_iso(result.get("createdAt")) or datetime.utcnow(),
+                created_at=parse_iso(result.get("createdAt")) or datetime.utcnow(),
             )
     except Exception:
         log.exception("attribution write failed (chat_id=%s)", fan_id)
@@ -5507,6 +5605,8 @@ async def of_mark_all_chats_read():
     """Mark EVERY chat as read (bulk no-arg endpoint). The local unread clears only for what the platform took
     (read_flip.after_write); anything less answers 502 (`_read_not_landed`)."""
     aid = _current_aid()
+    if await split_inbox.chatter_inbox_filter(aid) is not None:
+        raise HTTPException(409, "Mark chats individually for a split inbox")
     result, at = await read_flip.write(aid, None, lambda: _proxy(lambda: _get_client().mark_all_chats_read()))
     if not await read_flip.after_write(aid, None, 0, result, at=at):
         raise _read_not_landed(result)
@@ -5536,7 +5636,7 @@ async def of_mark_chat_read(chat_id: int):
         raise _read_not_landed(result)
     # An open served from a peeked warm page sends no plain head read: this is its Click read.
     # After after_write, so the backfill's scrape finds the local marker already zeroed.
-    relay_hooks.fire_thread_click_read(aid, chat_id)
+    relay_hooks.fire_thread_click_read(aid, chat_id, at)
     return result
 
 @app.delete("/api/of/v2/chats/{chat_id}/mark-as-read")
@@ -5556,9 +5656,8 @@ async def of_mute_chat(chat_id: int):
     """Mute notifications for a chat."""
     aid = _current_aid()
     r, _at = await read_flip.write(aid, chat_id, lambda: _proxy(lambda: _get_client().mute_chat(chat_id)))
-    relay_hooks.fire_mute(chat_id, True)
     if read_flip.landed(r):
-        accounts_admin_api.amber_mute(aid, chat_id, True)
+        relay_hooks.fire_mute(chat_id, True, account_id=aid)
     _bust_chat_detail(None, chat_id)  # isMutedNotifications rides the detail
     _bust_chat_list()                 # ...and the cached /chats row the head poll reads
     return r
@@ -5567,9 +5666,8 @@ async def of_mute_chat(chat_id: int):
 async def of_unmute_chat(chat_id: int):
     aid = _current_aid()
     r, _at = await read_flip.write(aid, chat_id, lambda: _proxy(lambda: _get_client().unmute_chat(chat_id)))
-    relay_hooks.fire_mute(chat_id, False)
     if read_flip.landed(r):
-        accounts_admin_api.amber_mute(aid, chat_id, False)
+        relay_hooks.fire_mute(chat_id, False, account_id=aid)
     _bust_chat_detail(None, chat_id)  # isMutedNotifications rides the detail
     _bust_chat_list()                 # ...and the cached /chats row the head poll reads
     return r
@@ -5691,6 +5789,47 @@ def of_block_user(user_id: int):
 def of_unblock_user(user_id: int):
     return _proxy(lambda: _get_client().unblock_user(user_id))
 
+def _publish_restrict_changed(aid: str, user_id: int, restricted: bool) -> None:
+    """`chat_restrict_changed {fan_id, restricted}` once OF took a restrict or lift: every tab of the Creator
+    (any-scope) patches the row's restrict flags in its cached chat lists without a read (app
+    hooks/useAccountStateEvents.ts). Best-effort: the write already landed."""
+    try:
+        import events  # noqa: PLC0415
+        events.publish({"chat_restrict_changed": {"fan_id": events.js_safe_id(int(user_id)), "restricted": restricted},
+                        "__account_id": str(aid)})
+    except Exception:  # noqa: BLE001
+        log.warning("chat_restrict_changed publish failed (account=%s fan=%s)", aid, user_id, exc_info=True)
+
+def _restricted_row(row: dict, restricted: bool) -> dict:
+    """A chat row after a restrict or lift, as OF's next read shows it (app lib/chatsCache `restrictedRow`): a
+    restrict blocks the send with reason "muted"; a lift clears only that reason, keeping a block for another."""
+    if restricted and row.get("canSendMessage") is not False:
+        row = {**row, "canSendMessage": False, "canNotSendReason": "muted"}
+    elif not restricted and row.get("canNotSendReason") == "muted":
+        row = {**row, "canSendMessage": True, "canNotSendReason": None}
+    wu = {k: v for k, v in (row.get("withUser") or {}).items() if k != "isRestricted"}
+    return {**row, "withUser": {**wu, "isRestricted": True} if restricted else wu}
+
+
+async def restrict_landed(aid: str, user_id: int, restricted: bool, *, visibility_changed: bool) -> None:
+    import badge_reads
+
+    def change(row: dict) -> dict:
+        return _restricted_row(row, restricted)
+
+    try:
+        badge_reads.patch_restriction(aid, user_id, change)
+        accounts_admin_api.patch_window(aid, {user_id: change})
+        relay_cache.invalidate("roster_count", aid)
+        relay_cache.invalidate("get_chat", aid, match=lambda ex: ex == (user_id,))
+    except Exception:
+        log.warning("restrict window patch failed (account=%s fan=%s)", aid, user_id, exc_info=True)
+    await accounts_admin_api.restrict_refresh(aid)
+    if visibility_changed:
+        relay_cache.invalidate("list_chats", aid)
+    _publish_restrict_changed(aid, user_id, restricted)
+
+
 @app.post("/api/of/v2/users/{user_id}/restrict")
 async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(True),
                            hide: bool = Query(True)) -> dict:
@@ -5742,10 +5881,7 @@ async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(Tru
         except Exception:
             log.warning("restrict hide-chat failed (account=%s fan=%s) — restricted anyway",
                         account_id, user_id, exc_info=True)
-    # The counts derive from the cached window + this registry — drop both
-    # folds so the next badge/list read reflects the exclusion (and the hidden
-    # row's disappearance) immediately.
-    _bust_chat_list_and_badges(account_id, user_id)
+    await restrict_landed(account_id, user_id, True, visibility_changed=hidden)
     return {"ok": True, "restricted": True, "acked": acked, "hidden": hidden, "of": result}
 
 @app.delete("/api/of/v2/users/{user_id}/restrict")
@@ -5760,13 +5896,15 @@ async def of_unrestrict_user(user_id: int, request: Request, unhide: bool = Quer
     account_id = _resolve_account_id(request)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().unrestrict_user(user_id))
     await set_of_restricted_skip(account_id, user_id, False)
+    unhidden = False
     if unhide:
         try:
             await asyncio.to_thread(_proxy, lambda: _get_client().unhide_chat(user_id))
+            unhidden = True
         except Exception:
             log.warning("unrestrict unhide-chat failed (account=%s fan=%s)",
                         account_id, user_id, exc_info=True)
-    _bust_chat_list_and_badges(account_id, user_id)
+    await restrict_landed(account_id, user_id, False, visibility_changed=unhidden)
     return {"ok": True, "restricted": False, "of": result}
 
 @app.get("/api/of/v2/stories")
@@ -6954,10 +7092,12 @@ async def sse_events(
                 else chatter.owner_user_ids | {sessions_audience("chatter", chatter.id)}
                 if chatter is not None else frozenset())
     readable = await _chats_readable(accounts) if chatter is not None else None
+    if chatter is not None:
+        await split_inbox.warm(accounts or ())
     body = sse_stream(request, scope, accounts=accounts, agencies=agencies,
                       last_event_id=request.headers.get("last-event-id") or last_event_id,
                       tab=is_app_tab(lease, request.headers.get("referer")), readable=readable,
-                      granted_at=granted_at)
+                      granted_at=granted_at, chatter=chatter.id if chatter is not None else None)
     import view_lease
     legacy = view_lease.legacy_stream_ids(lease, request.headers.get("referer"), accounts,
                                           account_registry.is_watcher)

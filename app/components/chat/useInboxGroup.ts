@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 
 import { useSplitInbox } from "@/hooks/useSplitInbox";
 import type { OFChatItem } from "@/lib/relay";
-import { groupOf } from "@/lib/splitInbox";
+import { groupOf, lockedGroup } from "@/lib/splitInbox";
 
 /**
  * The Split Inbox group chosen in the "All inboxes" selector
@@ -18,9 +18,12 @@ import { groupOf } from "@/lib/splitInbox";
  *
  * `inGroup` is the client-side filter over loaded rows, and null while "All
  * inboxes" is chosen: the one place that decides whether a group applies.
+ *
+ * A chatter the owner bound to a group is `locked` to it: the relay already
+ * serves only that group's Fans, and the selector offers no other.
  */
 export function useInboxGroup(accountId: string | null) {
-  const { config } = useSplitInbox(accountId);
+  const { config, myGroup } = useSplitInbox(accountId);
   const [picked, setPicked] = useState<number | null>(null);
   const [pickedFor, setPickedFor] = useState(accountId);
   if (pickedFor !== accountId) {
@@ -28,14 +31,18 @@ export function useInboxGroup(accountId: string | null) {
     setPicked(null);
   }
   if (config && picked != null && picked > config.group_count) setPicked(null);
+  const locked = lockedGroup(config, myGroup);
+  const group = locked ?? picked;
   const inGroup = useMemo(() => {
-    if (!config || picked == null) return null;
-    return (c: OFChatItem) => groupOf(c.withUser.id, config) === picked;
-  }, [config, picked]);
+    if (!config || group == null) return null;
+    return (c: OFChatItem) => groupOf(c.withUser.id, config) === group;
+  }, [config, group]);
   return {
     groupCount: config?.group_count ?? 1,
-    group: inGroup ? picked : null,
+    group: inGroup ? group : null,
     setGroup: setPicked,
     inGroup,
+    locked: locked != null,
+    wholeInbox: config !== null && locked == null && inGroup === null,
   };
 }

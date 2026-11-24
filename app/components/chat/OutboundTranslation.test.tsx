@@ -114,4 +114,25 @@ describe("OutboundTranslation", () => {
     await user.click(screen.getByRole("button", { name: "Translate my messages" }));
     expect(strip()).toBeNull();
   });
+
+  it("a failed translation says so and Retry asks again", async () => {
+    localStorage.setItem(fanLanguageKey("acct-1", FAN), "de");
+    let fail = true;
+    relayPost.mockImplementation((path: string, body?: unknown) => Promise.resolve(
+      path === "/admin/translate"
+        ? { results: (body as { texts: string[] }).texts.map((t) => (fail ? null : { text: `[de] ${t}`, lang: "en" })) }
+        : {},
+    ));
+    const user = userEvent.setup();
+    await renderComposer({ fanId: FAN });
+
+    await user.type(textbox(), "want to see");
+    await waitFor(() => expect(screen.getByText("Translation failed.")).toBeInTheDocument(), SETTLE);
+    expect(screen.getByRole("button", { name: "Send translation" })).toBeDisabled();
+
+    fail = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("[de] want to see")).toBeInTheDocument(), SETTLE);
+    expect(screen.queryByText("Translation failed.")).toBeNull();
+  });
 });

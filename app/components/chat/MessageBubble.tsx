@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { giphyUrl } from "@/lib/ofMedia";
 import { useCompactMedia } from "@/hooks/useCompactMedia";
 import { useTranslations, type BubbleTranslation } from "@/hooks/useTranslations";
+import { useFanLanguage } from "@/lib/fanLanguage";
 import { scriptDraftHasContent } from "@/lib/messageScripts";
 import { BubbleStatusRow, BubbleTimeRow, timeRowShows } from "@/components/chat/BubbleMeta";
 import { BubbleActions } from "@/components/chat/BubbleActions";
@@ -90,7 +91,8 @@ export const Bubble = memo(function Bubble({
   // `threadTranslate` arrives gated already.
   const own = translateAllowed ? ownTranslate : null;
   const ownTexts = useMemo(() => (own && strippedText ? [strippedText] : []), [own, strippedText]);
-  const translationCache = useTranslations(ownTexts, own === true, accountId);
+  const [fanLanguage] = useFanLanguage(accountId, fanId);
+  const translationCache = useTranslations(ownTexts, own === true, accountId, fanLanguage, fanId);
   const translated = (own ?? threadTranslate) && !!strippedText;
   // undefined: not answered yet; null: tried and failed.
   const entry = !translated ? undefined

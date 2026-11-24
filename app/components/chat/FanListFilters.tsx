@@ -110,7 +110,7 @@ type GearSettings = {
 export function FanListFilters({
   active, onActiveChange, unreadCount, unreadAge, activeCount, oweReplyCount,
   pinnedFolders, hasLists, onOpenFolderPicker,
-  showInboxSelector, groupCount, group, onGroupChange, onOpenSplitInbox,
+  showInboxSelector, groupCount, group, groupLocked = false, onGroupChange, onOpenSplitInbox,
   fetching, onRefresh, sortMode, onSortModeChange, tipsEnabled, ...gear
 }: {
   active: ActiveChip;
@@ -135,6 +135,8 @@ export function FanListFilters({
   groupCount: number;
   /** The chosen group, or null for "All inboxes". */
   group: number | null;
+  /** A chatter the owner bound to `group`: the selector shows it and offers nothing else. */
+  groupLocked?: boolean;
   onGroupChange: (group: number | null) => void;
   /** Open the Split Inbox dialog, offered as "Split Inbox settings". Null
    *  for a chatter-only session, which is not offered it (the relay refuses
@@ -158,6 +160,7 @@ export function FanListFilters({
           <InboxSelector
             groupCount={groupCount}
             group={group}
+            locked={groupLocked}
             onGroupChange={onGroupChange}
             onOpenSettings={onOpenSplitInbox}
           />
@@ -243,12 +246,14 @@ export function FanListFilters({
  *  only "All inboxes" as a group (story 10); a split Creator adds "Inbox 1"
  *  to "Inbox N", and the label shows the chosen entry (story 9). Owners also
  *  get "Split Inbox settings" after the groups (story 49); `onOpenSettings`
- *  is null for a chatter-only session. */
+ *  is null for a chatter-only session. `locked`: a bound chatter's group,
+ *  shown disabled. */
 function InboxSelector({
-  groupCount, group, onGroupChange, onOpenSettings,
+  groupCount, group, locked, onGroupChange, onOpenSettings,
 }: {
   groupCount: number;
   group: number | null;
+  locked: boolean;
   onGroupChange: (group: number | null) => void;
   onOpenSettings: (() => void) | null;
 }) {
@@ -260,7 +265,8 @@ function InboxSelector({
       <button
         type="button"
         {...triggerProps}
-        title="Choose which inbox to show (Split Inbox)"
+        disabled={locked}
+        title={locked ? "Your inbox, set by the owner (Split Inbox)" : "Choose which inbox to show (Split Inbox)"}
         className={cn(G.inbox, "w-full flex items-center text-left border-border text-fg hover:border-border-light")}
       >
         <Mail className={cn(G.inboxIcon, "shrink-0 text-fg-dim")} />

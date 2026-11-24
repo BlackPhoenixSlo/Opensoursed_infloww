@@ -289,6 +289,12 @@ def test_resume_one_of_three_slots_in_flight():
     assert [c[k]["state"] for k in ("a", "b", "c")] == ["pending", "running", "done"]
 
 
+def test_resume_terminal_progress_resets_zero_sweeps():
+    j = HEAD + [_sw("a", 0, 0, "continue", remaining_before=1000, remaining_after=1000),
+                _sw("a", 0, 0, "continue", remaining_before=1000, remaining_after=500)]
+    assert rd.resume(j)["creators"]["a"]["zero_sweeps"] == 0
+
+
 def test_resume_zero_sweeps_skip_cap_defers():
     j = HEAD + [_sw("a", 250, 250, "continue"), _sw("a", 250, 250, "defer"), _ln("defer", "a", until=5.0)]
     assert rd.resume(j, now=10.0)["creators"]["a"]["zero_sweeps"] == 1
@@ -473,7 +479,7 @@ def test_three_creators_sweep_in_parallel_in_250_steps(serve, tmp_path):
     for path, aid, body in fake.posts:
         if path.endswith("/describe-all"):
             targets.setdefault(aid, []).append(body["target"])
-    assert targets == {"100": [250, 500, 750, 1000], "101": [250, 500, 600], "102": [250, 280]}
+    assert targets == {"100": [250, 500, 750, 1000], "101": [250, 500, 600], "102": [250, 300]}
     assert [c.described for c in crs] == [1000, 600, 280]
     sweeps = kinds(tmp_path, "sweep")
     for c in crs:   # the journal's recount is the DB's count
@@ -538,6 +544,21 @@ def test_jev_down_box_wide_pauses_without_looping(serve, tmp_path):
     assert run(url, tmp_path, "describe", "--live") == 3
     assert [p["reason"] for p in kinds(tmp_path, "pause")] == ["jev"]
     assert fake.posts == []
+
+
+def test_terminal_only_sweeps_keep_moving(serve, tmp_path):
+    class TerminalRelay(Fake):
+        def tick(self, c):
+            if c.running_target is not None and sum(event[0] == "end" for event in self.events) != 2:
+                c.terminal += 250
+            super().tick(c)
+
+    creator = Cr("100", "a", describable=1000, zero=True)
+    fake = TerminalRelay([creator])
+    assert run(serve(fake), tmp_path, "describe", "--live") == 0
+    assert (creator.described, creator.terminal) == (0, 1000)
+    assert kinds(tmp_path, "open") == []
+    assert rd.resume(journal(tmp_path))["creators"]["100"]["zero_sweeps"] == 0
 
 
 def test_two_zero_progress_sweeps_open_no_progress(serve, tmp_path):
@@ -816,3 +837,12 @@ def test_status_4xx_while_running_is_retried_not_recounted(serve, tmp_path, monk
     assert (sw["before"], sw["after"], sw["outcome"]) == (0, 250, "done")
     assert rd.resume(journal(tmp_path))["spent_mc"] == 250 * ITEM_MC_REAL
     assert len([p for p in fake.posts if p[0] == DA]) == 1
+
+
+def test_rollout_stages_against_requested_target(serve, tmp_path):
+    c = Cr("100", "a", describable=1000, described=980, terminal=10)
+    c.goal = lambda target: max(0, min(target, c.describable) - c.terminal)
+    fake = Fake([c])
+    assert run(serve(fake), tmp_path, "describe", "--live") == 0
+    assert ("start", c.id, 1000) in fake.events
+    assert c.described == 990

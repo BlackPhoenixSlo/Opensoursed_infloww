@@ -182,6 +182,8 @@ class Fixtures:
             if one("sort") == "asc":
                 items = items[::-1]
             return {"list": [self._vault_item(v) for v in items], "hasMore": False}
+        if path == "/api/of/v2/messages/templates":
+            return []
         if path == "/api/of/v2/vault/upload/status":
             return {"list": [], "uploads": []}
         if re.fullmatch(r"/api/of/v2/chats/(\d+)/pinned", path) or path in (

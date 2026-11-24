@@ -1,5 +1,7 @@
 # Split Inbox groups are stored per Creator on the relay and are not bound to Employees
 
+Status: superseded in part by ADR-0052 (owner and client AE, 2026-11-23). Groups are now bound per chatter and filtered on the relay. The store decided here stands.
+
 Infloww's Split Inbox divides one Creator's Fans into 1 to 9 Split Inbox groups. Assigning Employees to groups is verbal only, and the app records no binding (`docs/infloww-screens.md` §3.3, C[H262029]). We build the UI plus the group assignments only. Assignments are stored per Creator on the relay, beside the Creator's account config, so that every Employee and every device sees the same split. Groups carry no Employee binding and grant no permissions, which matches Infloww. A later binding would need a data migration and auth changes, and that is why this decision is recorded.
 
 ## Considered Options

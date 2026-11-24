@@ -838,39 +838,75 @@ async def _clear_unread(conn, items: list) -> list:
     return out
 
 
+# A full pull still running after the route returned, per (account, fan): a repeat click joins it.
+_full_pulls: dict[tuple[str, int], asyncio.Task] = {}
+_PULL_WAIT_S = 8.0
+_PULL_MAX_CHUNKS = 20
+_PULL_BUDGET_S = 60.0
+
+
+async def _pull_whole_history(account_id: str, fan_id: int) -> tuple[int, int, bool]:
+    from automation_executor import _make_client, _scrape_one_chat, _SCRAPE_MAX_PAGES, _SCRAPE_PAGE_SIZE  # noqa: PLC0415
+    import of_pacing  # noqa: PLC0415
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _PULL_BUDGET_S
+    client = await asyncio.to_thread(_make_client, account_id)
+
+    async def pull():
+        inserted = seen = 0
+        for _ in range(_PULL_MAX_CHUNKS):
+            if loop.time() >= deadline:
+                break
+            chunk = await _scrape_one_chat(
+                account_id, client.user_id, client, fan_id, None,
+                page_size=_SCRAPE_PAGE_SIZE, max_pages=_SCRAPE_MAX_PAGES,
+                mode="pull", deadline=deadline,
+            )
+            inserted += chunk.inserted
+            seen += chunk.seen
+            if chunk.rate_limited:
+                break
+            if not chunk.history_saved:
+                continue
+            if loop.time() < deadline and not chunk.gap_left:
+                return inserted, seen, True
+            if not chunk.seen:
+                break
+        return inserted, seen, False
+
+    return await of_pacing.walk(account_id, "chat_refresh", pull)
+
+
+def _pull_done(key: tuple[str, int], task: asyncio.Task) -> None:
+    _full_pulls.pop(key, None)
+    if not task.cancelled() and task.exception() is not None:
+        log.warning("chat_history_pull_failed account=%s chat=%s", *key, exc_info=task.exception())
+
+
 @router.post("/admin/messages/{account_id}/{fan_id}/rescrape-now")
 async def rescrape_chat_now(account_id: str, fan_id: int) -> dict[str, Any]:
-    """Synchronously re-scrape ONE fan's chat from OF into the local DB and
-    return when done — the chat ↻ refresh's "instant re-cache".
+    """Re-scrape ONE fan's chat from OF into the local DB — the chat ↻ refresh.
 
-    Runs INLINE, NOT via the automation queue, on purpose. The queued
-    scrape_chats path dispatches per (account, kind) behind a per-(account, kind)
-    in-flight guard, so an interactive single-fan refresh would otherwise wait
-    for a whole multi-minute account-wide scrape sweep that shares the same
-    (account, 'scrape_chats') pair to finish first. Calling _scrape_one_chat
-    directly sidesteps the queue, both bulk-lane slots, and that guard, so the
-    re-cache lands in ~1-2s regardless of background sweeps. Recent-end fast-skip
-    makes repeat clicks cheap. Best-effort: returns ok=false on failure — the UI
-    already shows live OF data (messages/profile/PPV) regardless of this call."""
+    Commits bounded chunks of history. Returns `complete` when the tracked gap
+    is filled, `partial` when the pull stops early, or `pending` while it is
+    still running. Only `complete` returns ok=true."""
     assert_account_owned(account_id)
-    try:
-        # Local import: the executor pulls in the whole automation graph; defer
-        # it to request time (it's already loaded in-process) to avoid a cycle.
-        from automation_executor import (  # noqa: PLC0415
-            _make_client, _scrape_one_chat,
-            _SCRAPE_PAGE_SIZE, _SCRAPE_MAX_PAGES,
-        )
-        client = await asyncio.to_thread(_make_client, account_id)
-        inserted, seen = await _scrape_one_chat(
-            account_id, client.user_id, client, int(fan_id), None,
-            page_size=_SCRAPE_PAGE_SIZE, max_pages=_SCRAPE_MAX_PAGES,
-        )
-        return {"account_id": account_id, "fan_id": fan_id,
-                "ok": True, "inserted": inserted, "seen": seen}
-    except Exception as exc:  # best-effort — never 500 a UI refresh
-        log.warning("rescrape_chat_now(%s,%s) failed — best-effort",
-                    account_id, fan_id, exc_info=True)
-        return {"account_id": account_id, "fan_id": fan_id, "ok": False, "error": str(exc)}
+    key = (str(account_id), int(fan_id))
+    task = _full_pulls.get(key)
+    if task is None:
+        task = asyncio.create_task(_pull_whole_history(*key), name=f"chat-pull-{account_id}-{fan_id}")
+        _full_pulls[key] = task
+        task.add_done_callback(lambda t: _pull_done(key, t))
+    done, _ = await asyncio.wait({task}, timeout=_PULL_WAIT_S)
+    if not done:
+        return {"account_id": account_id, "fan_id": fan_id, "ok": False, "status": "pending"}
+    exc = task.exception()
+    if exc is not None:
+        return {"account_id": account_id, "fan_id": fan_id, "ok": False, "status": "partial", "error": str(exc)}
+    inserted, seen, complete = task.result()
+    return {"account_id": account_id, "fan_id": fan_id, "ok": complete,
+            "status": "complete" if complete else "partial", "inserted": inserted, "seen": seen}
 
 
 @router.post("/admin/messages/detect-mass")

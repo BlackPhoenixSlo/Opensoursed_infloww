@@ -14,20 +14,26 @@
     drive.py snapshot [--path name.yml]                 ARIA tree of the page, written to the evidence dir
     drive.py screenshot --path name.png [--phone]       --phone: same URL, same session, 390x844
     drive.py db "select ..."                            read-only SQL on the run's temp DB
-    drive.py api /admin/...                             GET as the active session (status + JSON)
+    drive.py api /admin/...                             GET as the active session (status + body or redirect Location)
     drive.py of-writes                                  POST/PUT/DELETE the app sent to /api/of/* (never left the box)
+    drive.py sse [--type TYPE] [--json ENVELOPE]         queue a mocked Relay event for the next /events connection
+    drive.py inbox-msg --account <id> --text "x"        a live message lands in the Relay's chats window
+    drive.py reads [--match vault/lists]                GET /api/of/v2/chats (or /api/* urls containing --match) sent
+    drive.py visibility hidden|visible                  emulated tab hide/return
     drive.py down                                       stop what `up` started; evidence stays
 
 Every command prints one JSON object and appends it to <evidence>/log.jsonl.
 Run selection: --run <id>, else $VERIFY_APP_RUN, else the newest run.
 Nothing leaves the machine: the browser resolves only localhost, /api/of/* is answered from
-scripts/demo-shots/fixtures.py, the relay and next run behind demo-shots' network guards.
+scripts/demo-shots/fixtures.py for browser traffic, and the relay and next have network guards.
+The api command bypasses browser routing, so it refuses /api/of routes and never follows redirects.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -37,14 +43,12 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 SHOTS = ROOT / "scripts/demo-shots"
 RUNS = ROOT / ".scratch/verify-app"
 PY = ROOT / "venv/bin/python"
-DESKTOP = {"width": 1280, "height": 800}
-PHONE = {"width": 390, "height": 844}
-PASSWORD = "demo-shots-throwaway"  # seed.py writes it for every login
 ROLES = {"owner": 0, "manager": 1, "chatter": 4}  # dataset.EMPLOYEES index: Alex Morgan, Jordan Lee, Hannah Kim
 
 
@@ -112,93 +116,157 @@ def http_get(url: str, timeout: float = 10) -> int:
 # ── up / down ────────────────────────────────────────────────────────────────
 def cmd_up(a):
     rid = a.run or datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", rid):
+        fail("run id must contain only letters, digits, underscores or hyphens")
     run = RUNS / rid
-    if (run / "state.json").exists():
-        fail(f"run {rid} exists; pick another --run or `drive.py down --run {rid}` first")
-    run.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "DEMO_SHOTS_DIST_DIR": f".next/verify-app-{rid}"}  # own next build dir: concurrent runs OK
-    log = (run / "stack.log").open("w")
-    stack = subprocess.Popen(["nice", "-n", "10", str(SHOTS / "run.sh"), "serve"], cwd=ROOT, env=env,
-                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    save_state(run, run_id=rid, stack_pid=stack.pid, dist_dir=env["DEMO_SHOTS_DIST_DIR"], started=time.time())
-    urls = {}
-    deadline = time.time() + a.timeout
-    while time.time() < deadline:
-        text = (run / "stack.log").read_text()
-        for line in text.splitlines():
-            if line.startswith("demo-shots: relay "):  # "demo-shots: relay URL, app URL, temp DIR"
-                parts = line.replace(",", "").split()
-                urls = {"relay": parts[2], "app": parts[4], "tmp": parts[6]}
-        if "demo-shots: serving." in text:
-            break
-        if stack.poll() is not None:
-            fail(f"run.sh exited {stack.returncode} during startup; read {run}/stack.log, then `drive.py down --run {rid}`",
-                 run, tail=text.splitlines()[-15:])
-        time.sleep(1)
-    else:
-        fail(f"stack not ready after {a.timeout}s; read {run}/stack.log, then `drive.py down --run {rid}`", run)
-    save_state(run, **urls, db=f"{urls['tmp']}/relay.db")
-    dlog = (run / "daemon.log").open("w")
-    daemon = subprocess.Popen(["nice", "-n", "10", str(PY), "-u", __file__, "_daemon", "--run", rid], cwd=ROOT,
-                              stdout=dlog, stderr=subprocess.STDOUT, start_new_session=True)
-    save_state(run, daemon_pid=daemon.pid)
-    while time.time() < deadline:
-        s = state(run)
-        if s.get("ready"):
-            break
-        if daemon.poll() is not None:
-            fail(f"browser daemon exited during seeding; read {run}/daemon.log, then `drive.py down --run {rid}`", run)
-        time.sleep(1)
-    else:
-        fail(f"seeding not done after {a.timeout}s; read {run}/daemon.log, then `drive.py down --run {rid}`", run)
+    try:
+        run.mkdir(parents=True)
+    except FileExistsError:
+        fail(f"run {rid} exists; pick another --run")
+    env = os.environ.copy()
+    save_state(run, run_id=rid, started=time.time())
+    children = {}
+    interrupted = False
+
+    def interrupt(*_):
+        nonlocal interrupted
+        interrupted = True
+
+    def check_interrupted():
+        if interrupted:
+            raise KeyboardInterrupt("startup interrupted by SIGTERM")
+
+    # Defer interruption until the child is registered for teardown.
+    previous_term = signal.signal(signal.SIGTERM, interrupt)
+    try:
+        stack = start_process(run, "stack", [str(SHOTS / "run.sh"), "serve"], env, children)
+        urls = {}
+        deadline = time.monotonic() + a.timeout
+        while time.monotonic() < deadline:
+            check_interrupted()
+            text = (run / "stack.log").read_text()
+            line = next((line for line in text.splitlines() if line.startswith("demo-shots: serving. ")), "")
+            if line:
+                urls = dict(re.findall(r"DEMO_SHOTS_(RELAY|APP|TMP)=([^ ]+)", line))
+                if len(urls) == 3:
+                    urls = {key.lower(): value for key, value in urls.items()}
+                    break
+            if stack.poll() is not None:
+                raise RuntimeError(f"run.sh exited {stack.returncode} during startup; read {run}/stack.log")
+            time.sleep(1)
+        else:
+            raise RuntimeError(f"stack not ready after {a.timeout}s; read {run}/stack.log")
+        save_state(run, **urls, db=f"{urls['tmp']}/relay.db")
+        check_interrupted()
+        daemon = start_process(run, "daemon", [str(PY), "-u", __file__, "_daemon", "--run", rid], env, children)
+        while time.monotonic() < deadline:
+            check_interrupted()
+            s = state(run)
+            if s.get("ready"):
+                break
+            if daemon.poll() is not None:
+                raise RuntimeError(f"browser daemon exited during seeding; read {run}/daemon.log")
+            time.sleep(1)
+        else:
+            raise RuntimeError(f"seeding not done after {a.timeout}s; read {run}/daemon.log")
+        check_interrupted()
+    except BaseException as exc:
+        cleanup = teardown(run, children=children)
+        if isinstance(exc, (RuntimeError, KeyboardInterrupt)):
+            fail(str(exc) or "startup interrupted", run, cleanup=cleanup)
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, previous_term)
     s = state(run)
     out({"ok": True, "run": rid, "evidence": str(run), "app": s["app"], "relay": s["relay"], "db": s["db"],
          "logins": s["logins"], "thread": s["thread"], "next": f"export VERIFY_APP_RUN={rid}; scripts/verify-app/drive.py doctor"}, run)
 
 
-def _kill_group(pid: int, wait: float) -> bool:
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        return True
-    end = time.time() + wait
-    while time.time() < end:
+def group_identity(pid: int) -> str | None:
+    result = subprocess.run(["ps", "-p", str(pid), "-o", "pgid=", "-o", "lstart="],
+                            capture_output=True, text=True)
+    fields = result.stdout.split(maxsplit=1)
+    if len(fields) == 2 and fields[0] == str(pid):
+        return fields[1].strip()
+    return None
+
+
+def start_process(run: Path, name: str, args: list[str], env: dict, children: dict) -> subprocess.Popen:
+    with (run / f"{name}.log").open("w") as log:
+        proc = subprocess.Popen(["nice", "-n", "10", *args], cwd=ROOT, env=env,
+                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    identity = group_identity(proc.pid)
+    if identity is None:
+        # The unreaped child still reserves the process group ID.
         try:
-            os.killpg(pid, 0)
+            os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
-            return True
-        time.sleep(0.3)
+            pass
+        try:
+            proc.wait(timeout=80)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+        raise RuntimeError(f"{name} process identity unavailable; read {run}/{name}.log")
+    children[name] = (proc, identity)
+    save_state(run, **{f"{name}_pid": proc.pid, f"{name}_identity": identity})
+    return proc
+
+
+def _kill_group(pid: int, identity: str, wait: float, child: subprocess.Popen | None = None) -> str | None:
+    current = group_identity(pid)
+    if current != identity and current is not None:
+        return None
     try:
-        os.killpg(pid, signal.SIGKILL)
+        if current is None:
+            os.killpg(pid, 0)
+            return "process group still exists but its leader could not be verified"
+        os.killpg(pid, signal.SIGTERM)
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            if child is not None:
+                child.poll()
+            os.killpg(pid, 0)
+            time.sleep(0.2)
+        if group_identity(pid) == identity:
+            os.killpg(pid, signal.SIGKILL)
+        return "process group did not exit after SIGTERM"
     except ProcessLookupError:
-        pass
-    return False
+        return None
+    except PermissionError:
+        return "permission denied stopping process group"
+
+
+def teardown(run: Path, children: dict) -> dict:
+    s = state(run)
+    failures = {}
+    cleared = {}
+    for name, wait in (("daemon", 10), ("stack", 80)):
+        child, identity = children.get(name, (None, s.get(f"{name}_identity")))
+        pid = child.pid if child is not None else s.get(f"{name}_pid")
+        if pid and identity:
+            if error := _kill_group(pid, identity, wait, child):
+                failures[name] = error
+        elif pid:
+            failures[name] = "process identity unavailable"
+        if name not in failures:
+            cleared.update({f"{name}_pid": None, f"{name}_identity": None})
+    tmp = s.get("tmp")
+    if not tmp and (run / "stack.log").exists():
+        match = re.search(r"^demo-shots: temp (.+)$",
+                          (run / "stack.log").read_text(), re.MULTILINE)
+        tmp = match[1] if match else None
+    if tmp and Path(tmp).exists():
+        failures["tmp"] = f"stack temp directory remains: {tmp}"
+    save_state(run, stopped=time.time(), ready=False, cleanup=failures, **cleared)
+    return failures
 
 
 def cmd_down(a):
     run = pick_run(a.run)
-    s = state(run)
-    done = {}
-    if s.get("daemon_pid"):
-        done["daemon"] = _kill_group(s["daemon_pid"], 10)
-    if s.get("stack_pid"):  # run.sh's EXIT trap stops relay + next and restores app/tsconfig.json
-        done["stack"] = _kill_group(s["stack_pid"], 40)
-    leftovers = []
-    for key in ("relay", "app"):  # a port this run allocated still listening = our orphan (run.sh got SIGKILL)
-        port = (s.get(key) or "").rsplit(":", 1)[-1]
-        if port.isdigit():
-            pids = subprocess.run(["lsof", "-nti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True,
-                                  text=True).stdout.split()
-            for p in pids:
-                os.kill(int(p), signal.SIGTERM)
-                leftovers.append(int(p))
-    dist = s.get("dist_dir", "")
-    if dist.startswith(".next/verify-app-"):
-        subprocess.run(["rm", "-rf", str(ROOT / "app" / dist)])
-    save_state(run, stopped=time.time(), ready=False)
-    kept = sorted(p.name for p in run.iterdir())
-    out({"ok": True, "run": run.name, "stopped": done, "orphans_killed": leftovers, "evidence": str(run),
-         "evidence_files": kept}, run)
+    failures = teardown(run, {})
+    out({"ok": not failures, "run": run.name, "cleanup": failures, "evidence": str(run),
+         "evidence_files": sorted(p.name for p in run.iterdir())}, run, int(bool(failures)))
 
 
 # ── read-only commands (no daemon needed) ────────────────────────────────────
@@ -264,6 +332,18 @@ def _call(run: Path, payload: dict, exit_on_error: bool = True) -> dict:
         fail(f"daemon call failed ({e}); `drive.py doctor`", run)
 
 
+def api_url(app: str, route: str) -> str:
+    if not route.startswith("/") or any(ord(c) <= 32 or ord(c) == 127 for c in route):
+        raise ValueError("api requires an absolute local path")
+    path = urlsplit(app + route).path
+    if "%" in path or "\\" in path or any(part in (".", "..") for part in path.split("/")):
+        raise ValueError("api requires an unambiguous path")
+    parts = path.lower().split("/")
+    if [part for part in parts if part][:2] == ["api", "of"]:
+        raise ValueError("api does not serve /api/of routes; use the browser fixtures")
+    return app + route
+
+
 def cmd_browser(a):
     run = pick_run(a.run)
     payload = {k: v for k, v in vars(a).items() if k not in ("run", "fn", "sub") and v is not None}
@@ -276,6 +356,12 @@ def cmd_browser(a):
 
 
 # ── the daemon: one Playwright browser, one context per session ──────────────
+def navigation_error(page, response) -> dict | None:
+    if response is not None and response.status >= 400:
+        return {"ok": False, "error": "navigation failed", "status": response.status, "url": page.url}
+    return None
+
+
 def daemon(rid: str):
     run = RUNS / rid
     s = state(run)
@@ -286,7 +372,7 @@ def daemon(rid: str):
     sys.path.insert(0, str(SHOTS))
     from playwright.sync_api import Error as PwError, sync_playwright
     import dataset
-    from capture import LAUNCH_ARGS, Router
+    from capture import DESKTOP, LAUNCH_ARGS, PASSWORD, PHONE, Router
     from fixtures import Fixtures
     from seed import Api, seed
 
@@ -296,11 +382,24 @@ def daemon(rid: str):
     of_writes: list[dict] = []  # what the app sent towards OnlyFans (answered by fixtures, never sent)
     plain_handle = router.handle
 
+    # `sse`: from the first call on, /events is answered here (the Relay's stream mocked; reload the page to take
+    # it): each connect gets the queued frames and closes, and EventSource reconnects in 500 ms.
+    sse_queue: list[tuple[str, dict]] = []
+    sse_on = {"on": False}
+    reads: list[dict] = []  # GET /api/* the page sent, query included (`reads`)
+
     def handle_route(route, request):
         path = request.url.split("?", 1)[0].split("/", 3)[-1]
+        if sse_on["on"] and request.method == "GET" and path.rstrip("/").endswith("events"):
+            body = "retry: 500\n\n" + "".join(f"event: {t}\ndata: {json.dumps(e)}\n\n" for t, e in sse_queue)
+            sse_queue.clear()
+            return route.fulfill(status=200, headers={"content-type": "text/event-stream"}, body=body)
         if request.method != "GET" and path.startswith("api/"):
             of_writes.append({"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "method": request.method,
                               "path": "/" + path, "body": (request.post_data or "")[:4000]})
+        elif path.startswith("api/"):
+            reads.append({"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "path": path,
+                          "url": request.url.split("/", 3)[-1]})
         return plain_handle(route, request)
     pw = sync_playwright().start()
     browser = pw.chromium.launch(args=LAUNCH_ARGS)
@@ -310,10 +409,6 @@ def daemon(rid: str):
         raise SystemExit(f"register -> {r.status} {r.text()[:200]}")
     seed(d, db=Path(s["tmp"]) / "relay.db", sessions=Path(s["tmp"]) / "sessions", user_id=r.json()["user_id"],
          api=Api(boot.request, app))
-    # Scaffolding: seeded chatters are older than the 7-day trial, so every page load would open the
-    # "Free trial exceeded" nag; this is the owner's own Settings > Preferences "Disable free trial popup".
-    api = Api(boot.request, app)
-    api.put("/admin/settings/preferences", {**api.get("/admin/settings/preferences")["config"], "hide_trial_popup": True})
     states = {"owner": boot.storage_state(), "anon": None}
     boot.close()
     logins = {"owner": {"username": dataset.OWNER_USERNAME, "password": PASSWORD, "form": "/login"}}
@@ -330,18 +425,21 @@ def daemon(rid: str):
     ctxs: dict = {}
     cur = {"role": "owner"}
 
-    def ctx_for(role: str, phone: bool = False):
-        k = (role, phone)
-        if k not in ctxs:
-            c = browser.new_context(viewport=PHONE if phone else DESKTOP, device_scale_factor=2 if phone else 1,
+    def new_context(storage_state, phone: bool = False):
+        c = browser.new_context(viewport=PHONE if phone else DESKTOP, device_scale_factor=2 if phone else 1,
                                     is_mobile=phone, has_touch=phone, service_workers="block",
-                                    storage_state=states[role], timezone_id="UTC", locale="en-US")
-            c.add_init_script("try{localStorage.setItem('chatterly:theme','light')}catch(e){}")
-            c.route("**/*", handle_route)
-            c.route_web_socket("**/*", router.ws)
-            c.set_default_timeout(15_000)
-            ctxs[k] = (c, c.new_page())
-        return ctxs[k]
+                                    storage_state=storage_state, timezone_id="UTC", locale="en-US")
+        c.add_init_script("try{localStorage.setItem('chatterly:theme','light')}catch(e){}")
+        c.route("**/*", handle_route)
+        c.route_web_socket("**/*", router.ws)
+        c.set_default_timeout(15_000)
+        return c
+
+    def ctx_for(role: str):
+        if role not in ctxs:
+            c = new_context(states[role])
+            ctxs[role] = (c, c.new_page())
+        return ctxs[role]
 
     def page():
         return ctx_for(cur["role"])[1]
@@ -387,15 +485,20 @@ def daemon(rid: str):
                     "unmatched": len(set(router.unmatched)), "active": cur["role"], "url": p.url}
         if cmd == "login":
             if q["as_"] == "anon":  # always a fresh, signed-out browser (a form sign-in leaves cookies behind)
-                for k in [k for k in ctxs if k[0] == "anon"]:
-                    ctxs.pop(k)[0].close()
+                if "anon" in ctxs:
+                    ctxs.pop("anon")[0].close()
             cur["role"] = q["as_"]
             p = page()
-            p.goto(app + q.get("goto", "/login" if q["as_"] == "anon" else "/"), wait_until="domcontentloaded")
+            response = p.goto(app + q.get("goto", "/login" if q["as_"] == "anon" else "/"),
+                              wait_until="domcontentloaded")
+            if error := navigation_error(p, response):
+                return error
             settle(p)
             return {"ok": True, "as": q["as_"], "login": logins.get(q["as_"]), "url": p.url}
         if cmd == "goto":
-            p.goto(app + q["route"], wait_until="domcontentloaded", timeout=180_000)
+            response = p.goto(app + q["route"], wait_until="domcontentloaded", timeout=180_000)
+            if error := navigation_error(p, response):
+                return error
             settle(p)
             return {"ok": True, "url": p.url, "title": p.title()}
         if cmd == "click":
@@ -419,20 +522,63 @@ def daemon(rid: str):
             return {"ok": True, "url": p.url, "path": str(path), "lines": text.count("\n") + 1}
         if cmd == "screenshot":
             path = Path(q["path"])
-            target = p
-            if q.get("phone"):
-                target = ctx_for(cur["role"], phone=True)[1]
-                target.goto(p.url, wait_until="domcontentloaded", timeout=180_000)
+            if not q.get("phone"):
+                p.screenshot(path=str(path), full_page=bool(q.get("full")))
+                return {"ok": True, "url": p.url, "path": str(path), "viewport": p.viewport_size}
+            desktop_url = p.url
+            phone = new_context(p.context.storage_state(), phone=True)
+            try:
+                target = phone.new_page()
+                response = target.goto(desktop_url, wait_until="domcontentloaded", timeout=180_000)
+                if error := navigation_error(target, response):
+                    return error
                 settle(target)
                 if q.get("text"):
                     locate(target, {"text": q["text"], "nth": 0}).wait_for(state="visible")
                 target.wait_for_timeout(800)
-            target.screenshot(path=str(path), full_page=bool(q.get("full")))
-            return {"ok": True, "url": target.url, "path": str(path), "viewport": target.viewport_size}
+                if urlsplit(target.url).path != urlsplit(desktop_url).path:
+                    return {"ok": False, "error": "phone navigated away from the desktop path",
+                            "url": target.url, "desktop_url": desktop_url}
+                target.screenshot(path=str(path), full_page=bool(q.get("full")))
+                return {"ok": True, "url": target.url, "path": str(path), "viewport": target.viewport_size}
+            finally:
+                phone.close()
+        if cmd == "sse":
+            sse_on["on"] = True
+            if q.get("json"):
+                sse_queue.append((q["type"], json.loads(q["json"])))
+            return {"ok": True, "queued": len(sse_queue)}
+        if cmd == "inbox-msg":
+            # The Relay's chats window after a live message (WS-patched cache): that fan's row on top, new preview.
+            rows = router.fx.chats(q["account"])
+            i = 1 if q.get("nth") is None else q["nth"]
+            r = dict(rows.pop(i))
+            r["lastMessage"] = {**r["lastMessage"], "id": int(time.time()), "text": q["text"],
+                                "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                "fromUser": {"id": r["withUser"]["id"]}}
+            r["unreadMessagesCount"] = (r.get("unreadMessagesCount") or 0) + 1
+            r["hasUnread"] = True
+            rows.insert(0, r)
+            return {"ok": True, "fan": r["withUser"]["id"], "text": q["text"]}
+        if cmd == "reads":
+            m = q.get("match")
+            hits = [{"t": r["t"], "url": r["url"]} for r in reads
+                    if (m in r["url"] if m else r["path"].startswith("api/of/v2/chats") and r["path"].rstrip("/").endswith("chats"))]
+            return {"ok": True, "count": len(hits), "reads": hits[-q.get("last", 50):]}
+        if cmd == "visibility":
+            # Emulated tab hide/return: headless Chromium never hides a page on its own.
+            p.evaluate("""s => { Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => s});
+                Object.defineProperty(document, 'hidden', {configurable: true, get: () => s === 'hidden'});
+                document.dispatchEvent(new Event('visibilitychange'));
+                if (s === 'visible') window.dispatchEvent(new Event('focus')); }""", q["state"])
+            return {"ok": True, "state": q["state"]}
         if cmd == "of-writes":
             return {"ok": True, "count": len(of_writes), "writes": of_writes[-q.get("last", 20):]}
         if cmd == "api":
-            res = ctx_for(cur["role"])[0].request.get(app + q["route"])
+            res = ctx_for(cur["role"])[0].request.get(api_url(app, q["route"]), max_redirects=0)
+            if 300 <= res.status < 400:
+                return {"ok": res.ok, "status": res.status, "route": q["route"],
+                        "location": res.headers.get("location")}
             try:
                 body = res.json()
             except Exception:  # noqa: BLE001
@@ -522,8 +668,21 @@ def main():
     p.add_argument("--full", action="store_true", default=None)
     p.add_argument("--text", help="with --phone: wait for this text first")
     sp("api", cmd_browser, "GET a relay route as the active session").add_argument("route")
+    p = sp("sse", cmd_browser, "queue one event for the page's next /events connect (the Relay stream, mocked)")
+    p.add_argument("--type", default="api2_chat_message")
+    p.add_argument("--json", help="the envelope; omit to only switch the mock on")
     sp("of-writes", cmd_browser, "non-GET /api/* requests the app sent towards OnlyFans (fixture-answered)"
        ).add_argument("--last", type=int, default=20)
+    p = sp("inbox-msg", cmd_browser, "a live message lands in the Relay's chats window: row nth moves on top")
+    p.add_argument("--account", required=True)
+    p.add_argument("--text", required=True)
+    p.add_argument("--nth", type=int, default=None)
+    p = sp("reads", cmd_browser, "GET /api/of/v2/chats the page sent, with times (the list's poll rate); --match: "
+           "every GET /api/* url containing it, query included")
+    p.add_argument("--last", type=int, default=50)
+    p.add_argument("--match")
+    sp("visibility", cmd_browser, "emulate tab hide/return (visibilitychange; focus on visible)"
+       ).add_argument("state", choices=["hidden", "visible"])
     p = sub.add_parser("_daemon")
     p.add_argument("--run", required=True)
     p.set_defaults(fn=lambda a: daemon(a.run))

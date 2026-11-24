@@ -11,35 +11,44 @@ import { queryOptions } from "@tanstack/react-query";
 import type { FanId } from "@/lib/fanId";
 import { relay, type RelayContext } from "@/lib/relay";
 
-/** The stored split: 1 to 9 groups, and only the explicit moves
- *  (Fan id → group); every other Fan's group is computed. */
+/** The stored split: 1 to 9 groups, the explicit moves (Fan id → group) and
+ *  the owner's chatter bindings (chatter id → group; absent = sees every group).
+ *  A chatter's read carries no `chatter_groups`. */
 export interface SplitInboxConfig {
   group_count: number;
   assignments: Record<string, number>;
+  chatter_groups?: Record<string, number>;
 }
 
 export interface SplitInboxResponse {
   account_id: string;
   config: SplitInboxConfig;
+  /** The signed-in chatter's bound group; the relay serves it only that
+   *  group's Fans. Null for an owner or an unbound chatter. */
+  my_group?: number | null;
 }
 
 /** The Split Inbox group (1 to N) a Fan belongs to: the Fan's explicit move
- *  when it is within range, otherwise a stable hash (32-bit FNV-1a) of the
- *  Fan id taken as text, modulo N, plus 1. Every Fan is in exactly one group,
- *  and a new split divides the Fans at once, the same way on every device
- *  (story 51). The id is never turned into a number, so a 19-digit id keeps
- *  its precision. */
+ *  when it is within range, else the Fan id mod N plus 1, as the relay's
+ *  split_inbox.group_of (it filters a bound chatter's Fans by the same rule).
+ *  The mod is taken over the digit string, so a 19-digit id keeps its
+ *  precision; a non-numeric id is in group 1. */
 export function groupOf(fanId: FanId, config: SplitInboxConfig): number {
   const n = config.group_count;
   const id = String(fanId);
   const moved = config.assignments[id];
   if (Number.isInteger(moved) && moved >= 1 && moved <= n) return moved;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < id.length; i++) {
-    hash ^= id.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return ((hash >>> 0) % n) + 1;
+  if (!/^[0-9]+$/.test(id)) return 1;
+  let r = 0;
+  for (let i = 0; i < id.length; i++) r = (r * 10 + id.charCodeAt(i) - 48) % n;
+  return r + 1;
+}
+
+/** The group a bound chatter is locked to, or null (an owner, an unbound
+ *  chatter, or a binding the current count no longer reaches). */
+export function lockedGroup(config: SplitInboxConfig | null, myGroup: number | null | undefined): number | null {
+  if (!config || myGroup == null || config.group_count <= 1) return null;
+  return myGroup >= 1 && myGroup <= config.group_count ? myGroup : null;
 }
 
 const BG_CTX: RelayContext = { priority: "background" };

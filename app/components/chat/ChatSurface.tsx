@@ -27,7 +27,7 @@ import { useSendMessage, type SendStatus } from "@/hooks/useSendMessage";
 import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
 import { useChatPinned } from "@/hooks/useChatPinned";
-import { normalizeVaultHistory, type FanVaultHistoryResp } from "@/hooks/useFanVaultHistory";
+import { setVaultHistory, vaultHistoryKey, type FanVaultHistoryResp } from "@/hooks/useFanVaultHistory";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { useCreateSavedReply } from "@/hooks/useSavedReplies";
 import { scriptDraftFromMessage } from "@/lib/messageScripts";
@@ -56,7 +56,7 @@ import { PinnedBar, PinnedPopover } from "./PinnedPanel";
 import { quoteFromMessage, type QuotedReply } from "./ReplyStrip";
 import { useUnsendChoice } from "./UnsendChoice";
 import { chatDrawerReducer, initialChatDrawer } from "./chatDrawer";
-import { newBackfillIds } from "./jumpAnchor";
+import { newBackfillKeys } from "./jumpAnchor";
 import { attributionAsks, noteAsks, type Asked } from "./attributionRefresh";
 import { useJumpToMessage } from "./useJumpToMessage";
 import { useMarkChatRead } from "./useMarkChatRead";
@@ -416,15 +416,19 @@ export function ChatSurface({
   // start so they don't compete with the message fetch on chat-open.
   // Delay even this small query so the visible message list gets first
   // crack at the relay's request budget.
+  // The sync walks OF's chat gallery into vault_sends at most once a week per fan (no OF call
+  // otherwise) and answers with the fan's history.
   useEffect(() => {
     if (!accountId || fanId == null) return;
     const t = setTimeout(() => {
-      qc.prefetchQuery({
-        queryKey: ["vault-history", accountId, fanId],
-        queryFn: () =>
-          relay.get(`/admin/vault/fan-history?account_id=${encodeURIComponent(accountId)}&fan_id=${fanId}`),
-        staleTime: 60_000,
-      }).catch(() => {});
+      relay
+        .post<{ history?: Partial<FanVaultHistoryResp> | null } | undefined>(
+          "/admin/vault/fan-history/sync",
+          { account_id: accountId, fan_id: fanId },
+          { accountId, priority: "background" },
+        )
+        .then((resp) => setVaultHistory(qc, accountId, fanId, resp?.history))
+        .catch(() => {});
     }, 500);
     return () => clearTimeout(t);
   }, [accountId, fanId, qc]);
@@ -439,7 +443,7 @@ export function ChatSurface({
   // Idempotent on the backend (dupe-checks by message_id) so it's safe
   // to fire on every load — older pages picked up via loadOlder also
   // trigger this when handle.data changes.
-  const backfilledMsgIdsRef = useRef<Set<string>>(new Set());
+  const backfilledKeysRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!accountId || fanId == null) return;
     const messages = handle.data ?? [];
@@ -451,6 +455,7 @@ export function ChatSurface({
       media_ids: number[];
       price_cents: number;
       was_purchased: boolean | null;
+      sent_at: string | null;
     }> = [];
     for (const m of messages) {
       // Keyed as TEXT: a Fansly message id is a snowflake past 2^53, so
@@ -473,47 +478,38 @@ export function ChatSurface({
         // also reports isOpened=true when the fan opens the chat, which
         // is meaningless — leave was_purchased null in that case.
         was_purchased: (m.price ?? 0) > 0 ? !!m.isOpened : null,
+        sent_at: m.createdAt || null,
       });
     }
-    // Each id once (its first message), and never one already backfilled.
-    const firstById = new Map<string, (typeof candidates)[number]>();
-    for (const c of candidates) if (!firstById.has(c.message_id)) firstById.set(c.message_id, c);
-    const ids = newBackfillIds(backfilledMsgIdsRef.current, candidates.map((c) => c.message_id));
-    const items = ids.map((id) => firstById.get(id)!);
-    for (const id of ids) backfilledMsgIdsRef.current.add(id);
+    // Keyed by id + bought, so a PPV the fan unlocks later goes again (the backend flips its row).
+    // Each key once (its first message), and never one already backfilled or in flight.
+    const keyOf = (c: (typeof candidates)[number]) => `${c.message_id}:${c.was_purchased ? 1 : 0}`;
+    const firstByKey = new Map<string, (typeof candidates)[number]>();
+    for (const c of candidates) if (!firstByKey.has(keyOf(c))) firstByKey.set(keyOf(c), c);
+    const keys = newBackfillKeys(backfilledKeysRef.current, candidates.map(keyOf));
+    const items = keys.map((k) => firstByKey.get(k)!);
     if (items.length === 0) return;
+    for (const k of keys) backfilledKeysRef.current.add(k);
 
     relay
-      .post<{ inserted?: number; history?: Partial<FanVaultHistoryResp> | null } | undefined>("/admin/vault/sends/backfill", {
-        account_id: accountId,
-        fan_id: fanId,
-        items,
-      })
-      .then((resp) => {
-        if ((resp?.inserted ?? 0) === 0) return;
+      .post<{ inserted?: number; updated?: number; history?: Partial<FanVaultHistoryResp> | null } | undefined>(
+        "/admin/vault/sends/backfill", {
+          account_id: accountId,
+          fan_id: fanId,
+          items,
+        })
+      .then(async (resp) => {
+        if ((resp?.inserted ?? 0) === 0 && (resp?.updated ?? 0) === 0) return;
         // The new history comes with the answer (vault_sends_api): set it, no second read.
-        if (resp?.history && typeof resp.history === "object") {
-          qc.setQueryData<FanVaultHistoryResp>(["vault-history", accountId, fanId], normalizeVaultHistory(resp.history));
-        } else {
-          qc.invalidateQueries({ queryKey: ["vault-history", accountId, fanId] });
+        if (!(await setVaultHistory(qc, accountId, fanId, resp?.history))) {
+          qc.invalidateQueries({ queryKey: vaultHistoryKey(accountId, fanId) });
         }
       })
-      .catch((err) => console.warn("[vault backfill] failed", err));
+      .catch((err) => {
+        for (const k of keys) backfilledKeysRef.current.delete(k);
+        console.warn("[vault backfill] failed", err);
+      });
   }, [accountId, fanId, handle.data, meQ.data?.id, qc]);
-
-  // #19: the vault "restock" — the SENT / PURCHASED / UNSEEN badges the picker
-  // reads from ["vault-history"] — must refresh every time a chat is opened,
-  // from ANY entry point (a Tips-tab row, a PPV-message row, a deep link). The
-  // backfill effect above only invalidates when it *inserts* new rows, so a chat
-  // whose sends were already backfilled on an earlier open (e.g. first reached
-  // from Chat messages) never re-fetched its history when later opened from a
-  // tip — the reported "restock doesn't trigger from a tip" bug. A plain
-  // invalidate on open makes the restock entry-point-agnostic; it's a cheap,
-  // idempotent read (a no-op while the picker isn't mounted).
-  useEffect(() => {
-    if (!accountId || fanId == null) return;
-    qc.invalidateQueries({ queryKey: ["vault-history", accountId, fanId] });
-  }, [accountId, fanId, qc]);
 
   // The `chat` prop is a snapshot captured at click time and never refreshed.
   // After a scope switch the ChatList serves placeholderData while the new

@@ -23,15 +23,14 @@ export function anchorNext({ loading, found, pages, hasOlder, loadingOlder }: {
   return pages >= ANCHOR_MAX_PAGES ? "giveUp" : "loadOlder";
 }
 
-/** The message ids not yet backfilled, in order, each once. Keyed as TEXT: a
- *  Fansly message id is a snowflake past 2^53. Does not mutate `seen`. */
-export function newBackfillIds(seen: ReadonlySet<string>, ids: readonly string[]): string[] {
+/** The keys (opaque strings) not yet backfilled, in order, each once. Does not mutate `seen`. */
+export function newBackfillKeys(seen: ReadonlySet<string>, keys: readonly string[]): string[] {
   const out: string[] = [];
   const taken = new Set<string>();
-  for (const id of ids) {
-    if (seen.has(id) || taken.has(id)) continue;
-    taken.add(id);
-    out.push(id);
+  for (const key of keys) {
+    if (seen.has(key) || taken.has(key)) continue;
+    taken.add(key);
+    out.push(key);
   }
   return out;
 }

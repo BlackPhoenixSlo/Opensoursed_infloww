@@ -1,7 +1,7 @@
 /**
  * The Composer's script source slot (lib/chatSlots.ts `scriptSource`), with a stand-in plugin: its step fills the
  * "Next in" bubble when no user Script has a step to go, its action sits beside that bubble and drafts into the
- * composer without a pick, ✕ and a send of its step go back to it, and the Scripts picker hides its other scripts
+ * composer without a pick, End script, Skip and a send of its step go back to it, and the Scripts picker hides its other scripts
  * and lists the current one first under its label.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react
 
 const source = vi.hoisted(() => ({
   dismiss: vi.fn(),
+  skip: vi.fn(),
   markSent: vi.fn(),
   calls: [] as Array<[string | null, unknown, string | null]>,
 }));
@@ -24,6 +25,7 @@ vi.mock("@/lib/plugins.generated.register", () => ({
           scriptId: "SRC1",
           next: { scriptId: "SRC1", step: 1, label: "1", text: "source line one" },
           dismiss: source.dismiss,
+          skip: source.skip,
           markSent: source.markSent,
         };
       },
@@ -56,7 +58,7 @@ beforeEach(() => {
     row(1, "promo one", "Promo", 1), row(2, "source line one", "SRC1", 1), row(3, "other source line", "SRC2", 1),
   ] }));
 });
-afterEach(() => { cleanup(); onSend.mockClear(); source.dismiss.mockClear(); source.markSent.mockClear(); });
+afterEach(() => { cleanup(); onSend.mockClear(); source.dismiss.mockClear(); source.skip.mockClear(); source.markSent.mockClear(); });
 
 async function mount() {
   const { Composer } = await import("./Composer");
@@ -87,6 +89,21 @@ describe("the Composer's script source slot", () => {
     await act(async () => { fireEvent.keyDown(ta(), { key: "Enter" }); });
     await waitFor(() => expect(source.markSent).toHaveBeenCalledWith("SRC1", 1));
     expect(window.localStorage.getItem("chatterly:scriptCursor:acc:7")).toBeNull();
+  });
+
+  it("Skip goes to the source with the shown step and is disabled after loading", async () => {
+    await mount();
+    await waitFor(() => expect(bubble()).not.toBeNull());
+    fireEvent.click(screen.getByTestId("script-skip"));
+    expect(source.skip).toHaveBeenCalledWith("SRC1", 1);
+    expect(ta().value).toBe("");
+    fireEvent.click(bubble()!);
+    await waitFor(() => expect(ta().value).toBe("source line one"));
+    expect((screen.getByTestId("script-skip") as HTMLButtonElement).disabled).toBe(true);
+    resetSendGapForTests();
+    await act(async () => { fireEvent.keyDown(ta(), { key: "Enter" }); });
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    expect(source.markSent).toHaveBeenCalledWith("SRC1", 1);
   });
 
   it("the Scripts picker lists the current source script first under its label and hides the others", async () => {

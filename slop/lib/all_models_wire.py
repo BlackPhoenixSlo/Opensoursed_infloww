@@ -1,9 +1,7 @@
 """OF's chat list read state at its wire, for scenarios/2026-11-20-all-models-shared-inbox.py. Installs into
 lib/of_wire.FakeOF through its generic hook, `extra_routes` (answered before the built-ins):
 
-  GET    /api2/v2/chats                     `chats[uid]` as the built-in pages it, plus `filter=unread` honoured
-                                            (only rows with unreadMessagesCount > 0 or hasUnread; any other filter:
-                                            every row, the built-in's status quo) and OF's per-response cap
+  GET    /api2/v2/chats                     `chats[uid]` as the built-in pages and filters it, plus OF's per-response cap
                                             (PAGE_CAP rows whatever `limit` asks: service/chats_page.py:109, so the
                                             relay's 25-row page costs 3 reads as on OF), `hasMore`, `nextOffset`
   POST   /api2/v2/chats/{fan}/mark-as-read  that row read (unread 0, hasUnread false); `{"success": true}`
@@ -19,17 +17,13 @@ mutated, and every change is made under `fake.lock` (h._record takes it too: ans
 """
 from __future__ import annotations
 
-import re
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs
 
+from slop.lib.of_wire import FakeOF, chat_mark_request, chat_page, unread, unread_rows
+
 PAGE_CAP = 10          # OF's /chats rows per response (service/chats_page.py:109 "OF caps /chats at ~10 rows")
-_MARK_ONE = re.compile(r"/api2/v2/chats/(\d+)/mark-as-read")
-
-
-def unread(row: dict) -> bool:
-    return bool(row.get("hasUnread")) or (row.get("unreadMessagesCount") or 0) > 0
 
 
 def _iso(dt: datetime) -> str:
@@ -110,7 +104,7 @@ class Wire:
 
     def _unread_rows(self, aid: str) -> list[dict]:
         """Under `fake.lock`: the rows OF counts and lists under `filter=unread`."""
-        return [r for r in self.fake.chats.get(aid, ()) if unread(r)]
+        return unread_rows(self.fake.chats.get(aid, []))
 
     def _unread_list(self, aid: str) -> list[dict]:
         return self._unread_rows(aid)
@@ -120,16 +114,8 @@ class Wire:
             return next((dict(r) for r in self.fake.chats.get(aid, ()) if r["withUser"]["id"] == fan_id), None)
 
     def _mark(self, aid: str, fan_id: int | None, read: bool, via: str) -> bool:
-        changed = False
         with self.fake.lock:
-            rows = list(self.fake.chats.get(aid, ()))
-            for i, r in enumerate(rows):
-                if fan_id is not None and r["withUser"]["id"] != fan_id:
-                    continue
-                changed = changed or unread(r) == read
-                rows[i] = {**r, "unreadMessagesCount": 0 if read else max(1, r.get("unreadMessagesCount") or 0),
-                           "hasUnread": not read}
-            self.fake.chats[aid] = rows
+            changed = FakeOF.mark(self.fake, aid, fan_id, read)
             self._recount(aid)
             self.reads.append({"t": time.time(), "account": aid, "fan": fan_id, "via": via, "read": read})
         return changed
@@ -138,21 +124,14 @@ class Wire:
     def handle(self, h, method, u, uid, route, raw) -> bool:
         if method == "GET" and u.path == "/api2/v2/chats":
             q = parse_qs(u.query)
-            off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
-            n = max(1, min(lim, PAGE_CAP))
             with self.fake.lock:
-                rows = (self._unread_list(uid) if (q.get("filter") or [""])[0] == "unread"
+                rows = (self._unread_list(uid) if q.get("filter", [""])[0] == "unread"
                         else list(self.fake.chats.get(uid, ())))
-            h._record(uid, route, 200, {"list": rows[off:off + n], "hasMore": off + n < len(rows),
-                                        "nextOffset": off + n})
+                page = chat_page(q, rows, cap=PAGE_CAP)
+            h._record(uid, route, 200, page)
             return True
-        m = _MARK_ONE.fullmatch(u.path)
-        if m and method in ("POST", "DELETE"):
-            self._mark(uid, int(m.group(1)), method == "POST", "relay")
-            h._record(uid, route, 200, {"success": True})
-            return True
-        if method == "POST" and u.path == "/api2/v2/chats/mark-as-read":
-            self._mark(uid, None, True, "relay")
+        if mark := chat_mark_request(method, u.path):
+            self._mark(uid, *mark, "relay")
             h._record(uid, route, 200, {"success": True})
             return True
         return False

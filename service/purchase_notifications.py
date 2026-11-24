@@ -389,6 +389,20 @@ async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> bool:
     return reached > 0
 
 
+async def _announce_vault_history(account_id: str, fan_id: int) -> None:
+    """`vault_history_changed {fan_id}` after a stamp committed: an open picker re-reads the Fan's
+    badges (useInboxRealtime). Sent after the stamp, never with `purchase_notified`, which goes
+    before it. Never raises."""
+    try:
+        from events import broadcast as _sse_broadcast, js_safe_id
+        await _sse_broadcast({
+            "vault_history_changed": {"fan_id": js_safe_id(int(fan_id))},
+            "__account_id": str(account_id),
+        })
+    except Exception:  # noqa: BLE001
+        log.debug("vault_history_changed broadcast failed account=%s", account_id, exc_info=True)
+
+
 async def _message_paid(account_id: str, fan_id: int, message_id: int) -> bool:
     async with get_session() as s:
         return bool((await s.execute(
@@ -443,6 +457,8 @@ async def _apply_chat(account_id: str, n: Any, out: dict[str, int],
         account_id, parsed["fan_id"], parsed["message_id"],
         price_cents=parsed["amount_cents"], context="notif_chat")
     out["stamped"] += stamped
+    if stamped:
+        await _announce_vault_history(account_id, parsed["fan_id"])
     # Done once flipped/stamped/already-paid; a message row that
     # hasn't landed yet (scrape lag) stays retryable.
     if key.notif_id is not None and (
@@ -471,6 +487,8 @@ async def _apply_post(account_id: str, client: Any, n: Any,
         price_cents=post["amount_cents"], client=client,
         context="notif_post")
     out["stamped"] += res["stamped"]
+    if res["stamped"]:
+        await _announce_vault_history(account_id, post["fan_id"])
     if key.notif_id is not None and res["resolved"]:
         _remember(_DONE_NOTIFS, key)
 

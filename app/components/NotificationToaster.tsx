@@ -31,6 +31,7 @@ import ClockDialog from "@/components/shifts/ClockDialog";
 import { useOptionalChatter } from "@/contexts/ChatterContext";
 import { useOptionalUser } from "@/contexts/UserContext";
 import { useAccessChangeNotices } from "@/hooks/useAccessChangeNotices";
+import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { proxyImage } from "@/lib/mediaUrl";
 import { onNotice } from "@/lib/notices";
 import { onNotificationClick } from "@/lib/notificationLink";
@@ -50,6 +51,12 @@ import { useNotificationDelta } from "./useNotificationDelta";
  *  render boundary, so its scope/accounts/settings re-renders skip ToastStack. */
 function NotificationDeltaPoller() {
   useNotificationDelta();
+  return null;
+}
+
+/** The live chat patcher (`useInboxRealtime`) for every page, as its own leaf like the poller above. */
+function InboxRealtimeListener() {
+  useInboxRealtime();
   return null;
 }
 
@@ -231,6 +238,7 @@ export function NotificationToaster() {
   return (
     <>
       <NotificationDeltaPoller />
+      <InboxRealtimeListener />
       <ClockInReminder />
       <NoticeBridge />
       <ToastStack />

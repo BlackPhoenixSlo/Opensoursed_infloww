@@ -166,9 +166,6 @@ def egress(reg: Registry, account_id: str, session_filename: str | None = None) 
     p = _account_entry(data, account_id) or _session_entry(data, session_filename)
     if p is not None:
         return Proxy(p)
-    import account_health
-    if account_health.refuses_writes(account_id):
-        return Refuse("deactivated Creator with no proxy: never sent from the host IP")
     return Direct()
 
 
@@ -626,8 +623,9 @@ def is_reserved_label(label: str) -> bool:
     return bool(_POOL_LABEL_RE.match(label or ""))
 
 
-def pool_entries() -> list[dict[str, Any]]:
-    return [p for p in list_proxies() if is_pool(p)]
+def pool_entries(reg: Registry | None = None) -> list[dict[str, Any]]:
+    data = load() if reg is None else _known(reg)
+    return [p for p in (data or {}).get("proxies", []) if is_pool(p)]
 
 
 def parse_pool(text: str | None) -> tuple[list[dict[str, Any]], list[str]]:
@@ -778,8 +776,9 @@ Verify = Callable[[dict[str, Any]], bool]
 
 
 def _pick_pool(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
-               rng: random.Random, *, like: dict[str, Any] | None, geo: Geo) -> dict[str, Any]:
-    """The least-used of `candidates`: fewest other accounts already leaving
+               rng: random.Random, *, like: dict[str, Any] | None, geo: Geo,
+               deactivated: frozenset[str]) -> dict[str, Any]:
+    """The least-used of `candidates`: fewest other active accounts already leaving
     from its egress (`_egress_key`; bindings on any proxy in `data` count), ties broken at
     random, so a new account gets an IP of its own while one is free. With
     `like`, a candidate in the same country as `like` (when both are known:
@@ -792,7 +791,7 @@ def _pick_pool(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
     key = _egress_key(entries)
     used: dict[str, int] = {}
     for p in entries:
-        used[key(p)] = used.get(key(p), 0) + sum(1 for x in _ids_on(p) if x != aid)
+        used[key(p)] = used.get(key(p), 0) + sum(1 for x in _ids_on(p) if x != aid and x not in deactivated)
     want_geo = country(like) if like else None
     same = [p for p in candidates if want_geo and country(p) == want_geo]
     candidates = same or candidates
@@ -802,7 +801,7 @@ def _pick_pool(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
 
 def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
                     rng: random.Random, *, like: dict[str, Any] | None, geo: Geo,
-                    verify: Verify, checked: dict[str, bool],
+                    verify: Verify, checked: dict[str, bool], deactivated: frozenset[str],
                     probes: int | None = None, first_tier: int | None = None) -> dict[str, Any] | None:
     """The one destination check, for a new binding and a failover alike: from
     the best `_tiers` group with one that answers (a later tier only when none
@@ -815,7 +814,7 @@ def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid:
     for tier in _tiers(candidates, first_tier):
         left = list(tier)
         while left:
-            pick = _pick_pool(left, data, aid, rng, like=like, geo=geo)
+            pick = _pick_pool(left, data, aid, rng, like=like, geo=geo, deactivated=deactivated)
             label = pick.get("label") or ""
             if label not in checked:
                 if probes is not None and probes <= 0:
@@ -853,6 +852,7 @@ def _pool_entry_of(data: dict[str, Any], aid: str) -> dict[str, Any] | None:
 
 
 def assign_pool(account_id: str, *, bad: set[str], dead: set[str], due: set[str], geo: Geo, verify: Verify,
+                deactivated: frozenset[str],
                 rng: random.Random | None = None) -> tuple[dict[str, Any], bool]:
     """Bind `account_id` to an Inflowwww proxy (callers: `proxy_health.assign_pool`,
     which injects `bad` (its unusable labels: bad or herd-guarded), `dead` (those
@@ -887,13 +887,15 @@ def assign_pool(account_id: str, *, bad: set[str], dead: set[str], due: set[str]
     candidates = [p for p in pool if p.get("label") not in bad and p.get("label") != cur]
     checked: dict[str, bool] = {}
     pick = _pick_answering(candidates, data, aid, rng, like=current, geo=geo, verify=verify, checked=checked,
+                           deactivated=deactivated,
                            probes=ATTACH_PROBES, first_tier=_tier(current) if current else None)
     if pick is None:
         if current:
             return current, True
         untried = [p for p in candidates if (p.get("label") or "") not in checked]
         alive = [p for p in pool if p.get("label") not in dead]
-        pick = _pick_pool(_tiers(untried or candidates or alive or pool)[0], data, aid, rng, like=None, geo=geo)
+        pick = _pick_pool(_tiers(untried or candidates or alive or pool)[0], data, aid, rng,
+                          like=None, geo=geo, deactivated=deactivated)
     with _lock:
         data = _load_for_write()
         now = _pool_entry_of(data, aid)
@@ -905,6 +907,7 @@ def assign_pool(account_id: str, *, bad: set[str], dead: set[str], due: set[str]
 
 
 def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
+                  deactivated: frozenset[str],
                   rng: random.Random | None = None) -> list[str] | None:
     """Move every account on the bad pool proxy `label` to a pool proxy not in
     `bad` that answers right now (`_pick_answering`: the source's own tier
@@ -928,7 +931,7 @@ def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
     plan: dict[str, str] = {}
     for aid in _ids_on(source):
         target = _pick_answering(healthy, data, aid, rng, like=source, geo=geo, verify=verify, checked=checked,
-                                 first_tier=_tier(source))
+                                 deactivated=deactivated, first_tier=_tier(source))
         if target is None:
             break   # nobody answers: the rest stay too
         plan[aid] = target["label"]

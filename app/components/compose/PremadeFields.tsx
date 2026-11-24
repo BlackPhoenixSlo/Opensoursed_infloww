@@ -7,7 +7,8 @@ import { ListColumn, SYSTEM_AUDIENCES, useFanLists } from "@/components/audience
 import { sanitizePriceInput } from "@/lib/priceInput";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { IfButton, IfHelp, IfInput, IfLabel, IfSegmented, IfSelect } from "@/components/ui/infloww";
-import { useVaultLists } from "@/hooks/useVaultMedia";
+import { FolderRefreshButton } from "@/components/vault/FolderRefreshButton";
+import { useVaultListsRevalidated } from "@/hooks/useVaultMedia";
 
 import { customIncludes, hasMoreAudience, lastChatChips, priceLabel, type Row, type RowAction } from "./premadeRows";
 import { GUARD_DEFAULT_H, ppvPrice, type Kind } from "./payloadRules";
@@ -42,7 +43,7 @@ export function PremadeFields({
 
   // Vault folders for the folder pool (same hook as AutoStoriesTab).
   // Only folders WITH photos — posts/mass attach photos.
-  const foldersQ = useVaultLists(accountId);
+  const foldersQ = useVaultListsRevalidated(accountId);
   const photoFolders = useMemo(
     () => (foldersQ.data?.list ?? []).filter((f) => (f.photosCount ?? 0) > 0),
     [foldersQ.data],
@@ -89,6 +90,7 @@ export function PremadeFields({
       <MediaPool
         idPrefix={`pm-${kind}`}
         folderSelect={(id) => folderSelect(id, r.folderId, (v) => patchRow({ folderId: v }))}
+        folderRefresh={<FolderRefreshButton refresh={foldersQ.refresh} fetching={foldersQ.isFetching} />}
         picked={r.media.length}
         pickLabel="Pick image pool"
         pickedLabel={`${r.media.length} in pool`}
@@ -268,9 +270,10 @@ export function PremadeFields({
 }
 
 /** Folder pool + picked-image pool, side by side. */
-function MediaPool({ idPrefix, folderSelect, picked, pickLabel, pickedLabel, onPick, onClear }: {
+function MediaPool({ idPrefix, folderSelect, folderRefresh, picked, pickLabel, pickedLabel, onPick, onClear }: {
   idPrefix: string;
   folderSelect: (id: string) => ReactNode;
+  folderRefresh?: ReactNode;
   picked: number;
   pickLabel: string;
   pickedLabel: string;
@@ -280,7 +283,10 @@ function MediaPool({ idPrefix, folderSelect, picked, pickLabel, pickedLabel, onP
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
-        <IfLabel htmlFor={`${idPrefix}-folder`}>Folder pool</IfLabel>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <IfLabel htmlFor={`${idPrefix}-folder`} className="mb-0">Folder pool</IfLabel>
+          {folderRefresh}
+        </div>
         {folderSelect(`${idPrefix}-folder`)}
       </div>
       <div>

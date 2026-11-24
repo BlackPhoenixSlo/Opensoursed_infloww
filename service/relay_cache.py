@@ -45,7 +45,7 @@ import heapq
 import itertools
 import logging
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, NamedTuple
 
 import relay_coalesce
 
@@ -399,6 +399,12 @@ def invalidate(
     return removed
 
 
+class Expired(NamedTuple):
+    """A `patch` fn's answer: keep `value` but expire the entry now, so a stale-while-revalidate read serves it
+    and re-reads upstream once (a 429 then still has a copy to serve, which dropping would lose)."""
+    value: Any
+
+
 def patch(
     namespace: str,
     account_id: str,
@@ -407,8 +413,9 @@ def patch(
     """Rewrite cached entries for (namespace, account_id) in place.
 
     `fn(key_extras, value)` returns the new value (keeps the entry and its
-    expiry) or `None` (drops it, as `invalidate` would). `fn` must not mutate
-    `value` — readers may still hold it — so build a copy.
+    expiry), `Expired(new_value)` (keeps it, expired now) or `None` (drops it,
+    as `invalidate` would). `fn` must not mutate `value` — readers may still
+    hold it — so build a copy.
 
     Bumps the pair generation like `invalidate`: a fetch in flight read
     upstream before the change being patched in, so its write-back must not
@@ -428,6 +435,8 @@ def patch(
             new_value = None
         if new_value is None:
             _cache.pop(key, None)
+        elif isinstance(new_value, Expired):
+            _cache[key] = (new_value.value, min(expires_at, time.monotonic()))
         else:
             _cache[key] = (new_value, expires_at)
 

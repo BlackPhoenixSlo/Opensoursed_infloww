@@ -27,6 +27,9 @@ concurrently and are recorded in arrival order.
                                            zeroes every count;
                                            answers `{counters}` (the count shape), each (t, type) kept per
                                            Creator in order (`notif_reads`)
+  POST /api2/v2/chats/{fan}/mark-as-read    that chat read (`unreadMessagesCount` 0 in `chats[uid]`), DELETE:
+                                           unread (1); POST /api2/v2/chats/mark-as-read: every chat read;
+                                           `{"success": true}`
   GET  /cdn-cgi/trace                      Cloudflare's trace, as `proxy_probe.probe` reads it
                                            (ip / loc / colo lines; lib/relay.py points
                                            `proxy_probe.TRACE_URL` here under OF_WIRE), so a
@@ -237,13 +240,53 @@ CONSENT_BODY = {"error": {"code": 0, "message": "Consent not accepted"}}
 _SEND = re.compile(r"/api2/v2/chats/(\d+)/messages")
 _VAULT_ONE = re.compile(r"/api2/v2/vault/media/(\d+)")
 _QUEUE_ONE = re.compile(r"/api2/v2/messages/queue/(\d+)")
+_MARK_ONE = re.compile(r"/api2/v2/chats/(\d+)/mark-as-read")
 _LIST_USERS = re.compile(r"/api2/v2/lists/(\d+)/users(?:/(\d+))?")
 _LIST = re.compile(r"/api2/v2/lists/(\d+)")
 _NUM = re.compile(r"/\d+(?=/|$)")
 _CHUNK = re.compile(r"/static/prod/f/[^/]+/2313\.js")
 
 
+def unread(row: dict) -> bool:
+    return bool(row.get("hasUnread")) or (row.get("unreadMessagesCount") or 0) > 0
+
+
+def chat_mark_request(method: str, path: str) -> tuple[int | None, bool] | None:
+    if method == "POST" and path == "/api2/v2/chats/mark-as-read":
+        return None, True
+    if method in ("POST", "DELETE") and (match := _MARK_ONE.fullmatch(path)):
+        return int(match[1]), method == "POST"
+    return None
+
+
+def unread_rows(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if unread(row)]
+
+
+def chat_page(query: dict, rows: list[dict], *, cap: int | None = None) -> dict:
+    off, lim = int((query.get("offset") or ["0"])[0]), int((query.get("limit") or ["10"])[0])
+    if cap is not None:
+        lim = max(1, min(lim, cap))
+    end = off + lim
+    return {"list": rows[off:end], "hasMore": end < len(rows), "nextOffset": end}
+
+
 class FakeOF:
+    def mark(self, uid: str, fan: int | None, read: bool) -> bool:
+        # Callers hold lock so scenario counters and read logs can update with the rows.
+        if uid not in self.chats:
+            return False
+        rows = list(self.chats[uid])
+        changed = False
+        for i, row in enumerate(rows):
+            if fan is not None and row["withUser"]["id"] != fan:
+                continue
+            changed = changed or unread(row) == read
+            rows[i] = {**row, "unreadMessagesCount": 0 if read else max(1, row.get("unreadMessagesCount") or 0),
+                       "hasUnread": not read}
+        self.chats[uid] = rows
+        return changed
+
     def __init__(self, latency_s: float = LATENCY_S):
         self.latency_s = latency_s
         self.otp: set[str] = set()
@@ -509,18 +552,19 @@ class FakeOF:
                 if method == "GET" and u.path == "/api2/v2/users/me":
                     me = {"id": int(uid or 0), "username": f"u{uid}", "name": f"Creator {uid}", "isPerformer": True,
                           "wsUrl": f"ws://127.0.0.1:{fake._ws_port}/ws3/{uid}", "wsAuthToken": f"slop-ws-{uid}"}
-                    me |= fake.profiles.get(uid, {})
+                    with fake.lock:
+                        me |= fake.profiles.get(uid, {})
                     if law:
                         me |= {"needConsent": True, "needConsentState": law,
                                "consentStatus": "approved" if signed else None}
                     return self._record(uid, route, 200, me)
                 if method == "GET" and u.path == "/api2/v2/chats":
                     q = parse_qs(u.query)
-                    off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
                     with fake.lock:
                         chats = list(fake.chats.get(uid, ()))
-                    return self._record(uid, route, 200, {"list": chats[off:off + lim],
-                                                          "hasMore": off + lim < len(chats), "nextOffset": off + lim})
+                    if q.get("filter") == ["unread"]:
+                        chats = unread_rows(chats)
+                    return self._record(uid, route, 200, chat_page(q, chats))
                 if method == "GET" and (m := _SEND.fullmatch(u.path)) and uid not in fake.messages:
                     # A chat's messages page: one text from the Fan (the thread a click opens). A Creator whose
                     # threads a scenario modelled (`messages[uid]`) is answered from them below instead.
@@ -539,6 +583,10 @@ class FakeOF:
                         fake.notif_counts[uid] = counts
                         fake.notif_reads.setdefault(uid, []).append((time.time(), None))
                     return self._record(uid, route, 200, {"counters": counts})
+                if mark := chat_mark_request(method, u.path):
+                    with fake.lock:
+                        fake.mark(uid, *mark)
+                    return self._record(uid, route, 200, {"success": True})
                 if method == "GET" and u.path == "/api2/v2/subscriptions/count/all":
                     n = fake.fan_counts.get(uid, int(uid or 0) % 900 + 100)
                     return self._record(uid, route, 200, {"subscribers": {"active": n, "all": 2 * n, "expired": n},

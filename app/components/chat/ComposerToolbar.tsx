@@ -108,6 +108,8 @@ export interface ComposerToolbarProps {
   onVault: () => void;
   onCalendar: () => void;
   onSend: () => void;
+  /** Empties the draft; absent (nothing to clear), no button. */
+  onClear?: () => void;
   /** A queue's Send & next, beside Send (⌘/Ctrl+Enter's send, then the next
    *  Fan); absent, no button. Below lg its ⏭ icon alone, named "Send & next". */
   onSendNext?: () => void;
@@ -124,7 +126,7 @@ export interface ComposerToolbarProps {
 export function ComposerToolbar({
   emoji, favourites, quick, input, ai, scripts, timed, gif, tag, children,
   vaultOn, ppvOpen, ppvHeld, vaultDisabled, scheduleOn, canSend, sendBlockedReason, sendLabel, inflight, disabled,
-  onTogglePpv, onUploadFiles, onVault, onCalendar, onSend, onSendNext, accountId, onToggleOutbound, aa,
+  onTogglePpv, onUploadFiles, onVault, onCalendar, onSend, onClear, onSendNext, accountId, onToggleOutbound, aa,
 }: ComposerToolbarProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   return (
@@ -235,6 +237,24 @@ export function ComposerToolbar({
         <div className="ml-auto self-end flex items-center gap-2">
           {inflight > 0 && (
             <span className={cn(MP.ours.ComposerToolbar.inflight, "text-fg-dim")}>{inflight} sending…</span>
+          )}
+          {onClear && (
+            <button
+              type="button"
+              onClick={onClear}
+              disabled={disabled}
+              aria-label="Clear message"
+              title="Clear the message"
+              className={cn(
+                MP.composer.send,
+                MP.ours.ComposerToolbar.send,
+                MP.ours.ComposerToolbar.clear,
+                "border-accent text-[var(--inf-accent-text,var(--color-accent))] bg-transparent hover:bg-accent/10",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+              )}
+            >
+              Clear
+            </button>
           )}
           {onSendNext && (
             <button

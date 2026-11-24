@@ -5,7 +5,7 @@ unread, measured on sandbox OF 80000112).
 
   case_peek_table: peeked newest-first first page -> Int64-max Peek cursor; peek with an
       older-than cursor -> that cursor; no peek with an older-than cursor (load-older, vault
-      poll) -> that cursor, unchanged; peek with an asc or offset page -> no cursor; no peek
+      poll) -> that cursor, unchanged; peek with an offset page -> no cursor; peek with asc is rejected; no peek
       -> no cursor. One GET each.
   case_pinned_read_peeks: get_pinned_messages always sends filter=pinned plus the Peek
       cursor (without an `id` it marks the chat read too).
@@ -40,8 +40,6 @@ def case_peek_table():
         ({"limit": 50, "peek": True}, {**base, "id": PEEK}),
         ({"limit": 50, "before_id": 777, "peek": True}, {**base, "id": 777}),
         ({"limit": 50, "before_id": 777}, {**base, "id": 777}),
-        ({"limit": 50, "order": "asc", "offset": 0, "peek": True}, {**asc, "offset": 0}),
-        ({"limit": 50, "order": "asc", "peek": True}, asc),
         ({"limit": 50, "offset": 10, "peek": True}, {**base, "offset": 10}),
         ({"limit": 50, "order": "asc", "offset": 0}, {**asc, "offset": 0}),
         ({"limit": 50}, base),
@@ -50,6 +48,18 @@ def case_peek_table():
         c = _client()
         c.get_messages(42, **kw)
         assert c.sent == [(path, want)], (kw, c.sent)
+
+
+def case_peek_rejects_non_desc_before_wire():
+    for order in ("asc", "other"):
+        c = _client()
+        try:
+            c.get_messages(42, order=order, peek=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid peek accepted")
+        assert c.sent == []
 
 
 def case_pinned_read_peeks():

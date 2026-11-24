@@ -682,6 +682,7 @@ describe("FanList", () => {
 
   it("marks every unread chat of the Creator read in one OF write once confirmed, and nothing when cancelled", async () => {
     const user = userEvent.setup();
+    serveSplit(1, {});
     const confirm = vi.fn(() => false);
     vi.stubGlobal("confirm", confirm);
     serveChats(CHATS);
@@ -699,6 +700,21 @@ describe("FanList", () => {
     await user.click(screen.getByText("Mark all as read"));
     await vi.waitFor(() => expect(relayPost.mock.calls).toEqual([
       ["/api/of/v2/chats/mark-as-read", undefined, { accountId: ACCOUNT_ID }],
+    ]));
+  });
+
+  it("marks only loaded chats while split config is pending", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("confirm", () => true);
+    routeRelay("/admin/split-inbox?", () => new Promise(() => {}));
+    serveChats(CHATS);
+    renderFanList();
+    await rowOf("Fixture Fan Three");
+    await openSettings(user);
+    await user.click(screen.getByText("Mark all as read"));
+    await vi.waitFor(() => expect(relayPost.mock.calls.map(([path]) => path)).toEqual([
+      `/api/of/v2/chats/${FANS[0].id}/mark-as-read`,
+      `/api/of/v2/chats/${FANS[1].id}/mark-as-read`,
     ]));
   });
 
@@ -808,6 +824,26 @@ describe("FanList", () => {
     expect(screen.queryByRole("button", { name: /Fixture Fan Four/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Owe reply 2" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("2 owed · scanned all 4")).toBeInTheDocument();
+  });
+
+  it("All Models keeps filling Owe reply while a Creator's pages fail", async () => {
+    scopeKind = "all";
+    ACCOUNTS = [CREATOR_ACCOUNT, OTHER_ACCOUNT];
+    routeRelay("/api/of/v2/chats?", (path, ctx) => {
+      if (ctx?.accountId === OTHER_ACCOUNT.id) throw new Error("upstream 429");
+      const offset = Number(new URLSearchParams(path.split("?")[1]).get("offset"));
+      return offset === 0
+        ? { list: [CHATS[0]], hasMore: true }
+        : { list: [CHATS[1]], hasMore: false };
+    });
+    const user = userEvent.setup();
+    renderFanList();
+    await rowOf("Fixture Fan One");
+
+    await user.click(screen.getByRole("button", { name: "Owe reply 1" }));
+
+    expect(await rowOf("Fixture Fan Two")).toBeInTheDocument();
+    expect(chatRequests().map(([path]) => path)).toEqual([pageUrl(0), pageUrl(0), pageUrl(25), pageUrl(25)]);
   });
 
   it("shows the owe dot only while Owe reply is the active filter", async () => {
@@ -1643,6 +1679,19 @@ describe("FanList", () => {
       }
     });
 
+    it.each([25, 0])("caps a bound inbox scan when each empty page reports scanned=%i", async (scanned) => {
+      routeRelay("/admin/split-inbox?", () => ({
+        account_id: ACCOUNT_ID, config: { group_count: 2, assignments: {} }, my_group: 2,
+      }));
+      routeRelay("/api/of/v2/chats?", (path) => ({
+        list: [], scanned,
+        hasMore: Number(new URLSearchParams(path.split("?")[1]).get("offset")) < 125,
+      }));
+      renderFanList();
+      await screen.findByText("No conversations found");
+      expect(chatRequests()).toEqual([0, 25, 50, 75].map((o) => [pageUrl(o), { refresh: false }]));
+    });
+
     it("a page that fails ends the fill: it is asked for once, and the load error shows", async () => {
       serveSplit(2, { [FANS[0].id]: 1, [FANS[1].id]: 1, [FANS[2].id]: 1 });
       routeRelay("/api/of/v2/chats?", (path) => (new URLSearchParams(path.split("?")[1]).get("offset") === "0"
@@ -1755,7 +1804,7 @@ describe("FanList", () => {
     expect(put).toHaveBeenCalledTimes(1);
     expect(put).toHaveBeenCalledWith("/admin/split-inbox", {
       account_id: ACCOUNT_ID,
-      config: { group_count: 2, assignments: { [FANS[0].id]: 2, [FANS[1].id]: 2, [FANS[2].id]: 2 } },
+      config: { group_count: 2, assignments: { [FANS[0].id]: 2, [FANS[1].id]: 2, [FANS[2].id]: 2 }, chatter_groups: {} },
     });
 
     await chooseInbox(user, "Inbox 2");
@@ -1782,7 +1831,7 @@ describe("FanList", () => {
     // Fan Three's move to the group that is gone is dropped.
     expect(put).toHaveBeenCalledWith("/admin/split-inbox", {
       account_id: ACCOUNT_ID,
-      config: { group_count: 2, assignments: { [FANS[0].id]: 1, [FANS[1].id]: 2 } },
+      config: { group_count: 2, assignments: { [FANS[0].id]: 1, [FANS[1].id]: 2 }, chatter_groups: {} },
     });
 
     await vi.waitFor(() => expect(within(filterRow()).getByRole("button", { name: "All inboxes" })).toBeInTheDocument());

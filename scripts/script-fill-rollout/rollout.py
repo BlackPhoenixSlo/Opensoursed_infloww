@@ -215,23 +215,25 @@ def _trim(progress: dict | None) -> dict:
 
 
 def probe_target(ctx: Ctx, cid: str, p: dict, before: dict, cap: dict) -> tuple[str, Any, int]:
-    """The Creator's next sweep target: the next 250 step above `described` whose `target_remaining` is above 0
-    (a step met since the first read is skipped). ("sweep", t, remaining); ("settle", outcome, 0) when the goal
-    turns out met; ("unreadable", None, 0) when a plan read at t failed. Shared by the live wave and the dry run."""
-    goal, t = before["goal"], rd.next_target(before["described"], before["goal"])
-    while True:
-        if t == rd.DESCRIBE_TARGET:
-            rem = int(p.get("target_remaining") or 0)
-        else:
-            pt = ctx.plan(cid, t)
-            if pt is None:
-                return "unreadable", None, 0
-            rem = int(pt.get("target_remaining") or 0)
+    """Probe staged requests using filled slots (described plus terminal), and settle against the full plan."""
+    goal = before["goal"]
+    full_remaining = int(p.get("target_remaining") or 0)
+    if full_remaining == 0:
+        return "settle", rd.sweep_outcome({**before, "described": goal}, None, None, cap), 0
+
+    cov = p.get("coverage") or {}
+    requested = min(rd.DESCRIBE_TARGET, int(cov.get("describable") or rd.DESCRIBE_TARGET))
+    filled = before["described"] + int(cov.get("terminal") or 0)
+    t = rd.next_target(filled, requested)
+    while t < requested:
+        pt = ctx.plan(cid, t)
+        if pt is None:
+            return "unreadable", None, 0
+        rem = int(pt.get("target_remaining") or 0)
         if rem > 0:
             return "sweep", t, rem
-        if t >= goal:   # counts moved since the first read: the goal is met
-            return "settle", rd.sweep_outcome({**before, "described": goal}, None, None, cap), 0
-        t = rd.next_target(t, goal)
+        t = rd.next_target(t, requested)
+    return "sweep", requested, full_remaining
 
 
 def in_flight(st: dict, ctx: Ctx) -> list[str]:
@@ -359,11 +361,12 @@ class Wave:
             return
         started = now()
         sw = {"target": t, "before": before["described"], "cap_before": cap, "started": started,
-              "goal": goal, "complete": before["complete"], "zero_sweeps": before["zero_sweeps"]}
+              "goal": goal, "complete": before["complete"], "zero_sweeps": before["zero_sweeps"],
+              "remaining_before": p.get("target_remaining")}
         # The reservation is journaled BEFORE the paid POST: a kill after the relay accepted it leaves this
         # sweep_start in flight, so the next run awaits it and recounts its spend from `cap_before` (W30 F5).
         self.j.write("sweep_start", cid, target=t, before=sw["before"], cap_before=cap, started=started,
-                     goal=goal, complete=sw["complete"])
+                     goal=goal, complete=sw["complete"], remaining_before=sw["remaining_before"])
         say(f"sweep {cid}: target {t} (described {before['described']}, goal {goal}, {rem} to describe)")
         self.post(cid, sw, cap)
 
@@ -407,7 +410,8 @@ class Wave:
         if p is None:
             return self.keep_or_unsettle(cid, sw, "recount")
         cov = p["coverage"]
-        after = {"described": int(cov.get("described") or 0), "goal": int(cov.get("goal") or 0)}
+        after = {"described": int(cov.get("described") or 0), "goal": int(cov.get("goal") or 0),
+                 "remaining": p.get("target_remaining")}
         cap_after = cap_of(p)
         lost = sw.get("lost_start")
         if (lost is not None and after["described"] <= int(sw.get("before") or 0)
@@ -426,17 +430,20 @@ class Wave:
         self.fails.pop(cid, None)
         before = {"described": int(sw.get("before") or 0), "target": int(sw.get("target") or 0),
                   "goal": int(sw.get("goal") or 0), "complete": sw.get("complete", True),
-                  "zero_sweeps": int(sw.get("zero_sweeps") or 0)}
+                  "zero_sweeps": int(sw.get("zero_sweeps") or 0), "remaining": sw.get("remaining_before")}
         out = rd.sweep_outcome(before, after, progress, cap_after)
         ended = now()
         line = {"target": before["target"], "before": before["described"], "after": after["described"],
+                "remaining_before": before["remaining"], "remaining_after": after["remaining"],
                 "progress": _trim(progress), "cap_before": sw.get("cap_before") or {}, "cap_after": cap_after,
                 "started": sw.get("started"), "ended": ended, "outcome": out}
         self.j.write("sweep", cid, **line)
         self.spent += rd.sweep_spend(line["cap_before"], cap_after)
         self.window["stops"].append([cid, rd.error_class(progress)])
         if out != "defer":
-            self.zero[cid] = self.zero.get(cid, 0) + 1 if after["described"] <= before["described"] else 0
+            made_progress = rd.sweep_made_progress(before["remaining"], after["remaining"],
+                                                  before["described"], after["described"])
+            self.zero[cid] = 0 if made_progress else self.zero.get(cid, 0) + 1
         say(f"swept {cid}: {before['described']} -> {after['described']} of {after['goal']} "
             f"in {round((ended - float(sw.get('started') or ended)) / 60, 1)} min, "
             f"spend {rd.dollars(rd.sweep_spend(line['cap_before'], cap_after))}: {out}")

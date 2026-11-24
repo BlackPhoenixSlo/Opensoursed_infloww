@@ -688,8 +688,7 @@ class _OFUser:
         return of_client.UploadClaim(media={"name": Path(path).name})
 
     def materialize_via_message(self, send_with, fan_id, *, gate, **_):
-        sent = gate(lambda: {"id": 5555, "text": "", "media": [{"id": 901}],
-                             "createdAt": "2026-10-18T10:00:00+00:00"})
+        sent = gate(lambda: {"id": 5555, "text": "", "media": [{"id": 901}]})
         self.uploads.append((send_with[0]["name"], fan_id))
         return {"vault_id": 901, "message_id": sent["id"]}
 
@@ -851,11 +850,18 @@ def case_fan_dm_is_paced_as_manual_and_recorded():
     c = _OFUser()
     spawned, saved = _patched(server, c)
     purposes: list = []
+    replies: list = []
+    send_stamps: list = []
+    orig_reply = server.unread_total.on_reply
+    server.unread_total.on_reply = lambda *args: replies.append(args)
     orig_paced = automation_executor.of_write_paced
 
     async def paced(aid, fn, **kw):
         purposes.append(kw.get("send_purpose"))
-        return fn()
+        send_stamps.append(server.read_flip.now_ms())
+        result = fn()
+        send_stamps.append(server.read_flip.now_ms())
+        return result
 
     automation_executor.of_write_paced = paced
     try:
@@ -865,6 +871,7 @@ def case_fan_dm_is_paced_as_manual_and_recorded():
             files=[("files", ("a.jpg", b"x" * 16, "image/jpeg"))],
             headers={"X-Account-Id": creator}), spawned)
     finally:
+        server.unread_total.on_reply = orig_reply
         automation_executor.of_write_paced = orig_paced
         _unpatch(server, saved)
     assert r.status_code == 200, r.text
@@ -872,6 +879,9 @@ def case_fan_dm_is_paced_as_manual_and_recorded():
     assert [i["status"] for i in st["items"]] == ["done"], st["items"]
     assert c.uploads == [("a.jpg", 31337)], c.uploads
     assert purposes == ["manual"], f"the fan DM went out as {purposes}"
+
+    [(aid, fan, stamp)] = replies
+    assert (aid, fan) == (creator, 31337) and send_stamps[0] <= stamp <= send_stamps[1], replies
 
     async def rows():
         async with get_session() as s:

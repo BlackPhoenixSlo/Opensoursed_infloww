@@ -11,7 +11,7 @@
  *     has a session. We merge by lastMessage.createdAt, tag each row with
  *     __accountId so the UI can show the colored dot.
  *
- * Polling: a 90s background poll (5min while the tab is hidden) that re-reads
+ * Polling: a background poll (`headPollDelay`) that re-reads
  * the HEAD PAGE ONLY — see `useHeadPagePoll` below for why, and for what the
  * deeper pages rely on instead. SSE events drive cheaper between-poll patches
  * (Phase B.2); the Refresh button is the full re-walk.
@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
+  focusManager,
   hashKey,
   keepPreviousData,
   replaceEqualDeep,
@@ -35,7 +36,7 @@ import { relay, relayFocus, type OFChatItem, type OFChatsResp, type OFUserMini }
 import { fanIdFromParam, type FanId } from "@/lib/fanId";
 import { CHATS_PAGE } from "@/lib/screenBundle";
 import {
-  chatRowKey, commitChatPages, compareChats, completeUnreadView, localSeq, type StampedPage, type UnreadView,
+  chatRowKey, commitChatPages, compareChats, completeUnreadView, decodeChatsKey, isLiveView, localSeq, type StampedPage, type UnreadView,
 } from "@/lib/chatsCache";
 import { relayNow, relayOffsetKnown } from "@/lib/ageClock";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
@@ -64,8 +65,10 @@ export function shareChatPages(prev: unknown, next: unknown): unknown {
   const pages = n.pages.map((pg, i) => {
     const was = p.pages[i];
     if (pg === was) return was;
-    let same = !!was && was.hasMore === pg.hasMore && was.session === pg.session &&
+    let same = !!was && was.hasMore === pg.hasMore && was.session === pg.session && was.scanned === pg.scanned &&
       !was.partial === !pg.partial &&
+      replaceEqualDeep(was.missing, pg.missing) === was.missing &&
+      replaceEqualDeep(was.moreAccounts, pg.moreAccounts) === was.moreAccounts &&
       was.rows.length === pg.rows.length;
     const rows = pg.rows.map((c, j) => {
       const prevRow = old.get(chatRowKey(c));
@@ -81,10 +84,18 @@ export function shareChatPages(prev: unknown, next: unknown): unknown {
   if (allSame && pageParams === p.pageParams) return p;
   return { ...n, pages, pageParams };
 }
-/** Background poll cadence: foreground with no live SSE, and the safety poll
- *  while the tab is hidden or SSE (useInboxRealtime) patches the list. */
 const POLL_MS = 90_000;
 const HIDDEN_POLL_MS = 5 * 60_000;
+/** Web Push can arrive while idle mode has paused SSE. */
+export const IDLE_POLL_MS = 30_000;
+/** A tab return (visibilitychange + focus fire together) reads the head once. */
+const RETURN_GAP_MS = 5_000;
+
+/** Head-poll cadence. Exported for tests. */
+export function headPollDelay(s: { paused: boolean; hidden: boolean; connected: boolean; idlePoll: boolean }): number | null {
+  if (s.paused) return s.idlePoll ? IDLE_POLL_MS : null;
+  return s.hidden || s.connected ? HIDDEN_POLL_MS : POLL_MS;
+}
 
 /** OF's own `filter` values for GET /chats (its web app's chats list: `who_tipped` is the "With Tips" tab, `unread_tips`
  *  its "Unread with tips" dropdown filter). Messages Pro sends the first three. */
@@ -330,6 +341,14 @@ export function listPaintKey(
   return `chat.list:${scopeKey}:${filter ?? ""}:${listId ?? ""}:${query ?? ""}`;
 }
 
+type ScannedChatsResponse = OFChatsResp & { scanned?: number };
+
+function readChatPage(resp: ScannedChatsResponse, accountId: string, qc: QueryClient) {
+  const rows = normalizeChats(resp, accountId);
+  void enrichWithUsers(rows, accountId, qc).catch(() => {});
+  return { rows, hasMore: !!resp.hasMore, scanned: resp.scanned ?? rows.length };
+}
+
 async function fetchPage(
   scope: ReturnType<typeof useScope>["scope"],
   accounts: ReturnType<typeof usePlatformAccounts>,
@@ -390,17 +409,12 @@ async function fetchPage(
 
   if (scope.kind === "model") {
     try {
-      const resp = await relay.get<OFChatsResp>(
+      const resp = await relay.get<ScannedChatsResponse>(
         path, { accountId: scope.accountId, priority }, signal, { refresh },
       );
-      const raw = normalizeChats(resp, scope.accountId);
-      perfDelivered(opId, "chat.list", { count: raw.length, hasMore: !!resp.hasMore });
-      // Kick off enrichment in the BACKGROUND so the rail paints immediately.
-      // Enrichment writes per-fan profiles to the ["of-user", aid, fid] cache;
-      // the row component observes that cache and picks up names + nicknames
-      // as soon as /users/list lands. Don't await — that would slow cold paint.
-      void enrichWithUsers(raw, scope.accountId, qc).catch(() => {});
-      return { rows: raw.sort(sort), hasMore: !!resp.hasMore, ...stamp };
+      const page = readChatPage(resp, scope.accountId, qc);
+      perfDelivered(opId, "chat.list", { count: page.rows.length, hasMore: page.hasMore });
+      return { ...page, rows: page.rows.sort(sort), moreAccounts: page.hasMore ? [scope.accountId] : [], ...stamp };
     } catch (err) {
       perfError(opId, "chat.list", { message: (err as Error)?.message });
       throw err;
@@ -416,33 +430,35 @@ async function fetchPage(
   const focus = relayFocus();
   const results = await Promise.allSettled(
     accounts.map(async (acc) => {
-      const r = await relay.get<OFChatsResp>(
+      const r = await relay.get<ScannedChatsResponse>(
         path, { accountId: acc.id, priority: acc.id === focus ? priority : "background" }, signal, { refresh },
       );
-      const raw = normalizeChats(r, acc.id);
-      void enrichWithUsers(raw, acc.id, qc).catch(() => {});
-      return { raw, hasMore: !!r.hasMore };
+      return readChatPage(r, acc.id, qc);
     }),
   );
   // A superseded search: every account's call was aborted, not failed.
   signal?.throwIfAborted();
   const merged: OFChatItem[] = [];
-  let anyMore = false;
-  let failed = 0;
-  for (const r of results) {
+  let scanned = 0;
+  const moreAccounts: string[] = [];
+  const missing: string[] = [];
+  results.forEach((r, i) => {
     if (r.status === "fulfilled") {
-      merged.push(...r.value.raw);
-      if (r.value.hasMore) anyMore = true;
+      merged.push(...r.value.rows);
+      scanned += r.value.scanned;
+      if (r.value.hasMore) moreAccounts.push(accounts[i].id);
     } else {
-      failed += 1;
+      missing.push(accounts[i].id);
     }
-  }
+  });
+  const failed = missing.length;
+  const anyMore = moreAccounts.length > 0;
   perfDelivered(opId, "chat.list", {
     count: merged.length, hasMore: anyMore, accountCount: accounts.length, failed,
   });
   return {
-    rows: merged.sort(sort), hasMore: anyMore, ...stamp,
-    ...(failed ? { partial: true } : {}),
+    rows: merged.sort(sort), hasMore: anyMore, moreAccounts, scanned, ...stamp,
+    ...(failed ? { partial: true, missing } : {}),
   };
 }
 
@@ -546,10 +562,11 @@ function useHeadPagePoll(args: {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
 
+    let inFlight = false;
+    let lastRun = 0;
+    let dueAt = Infinity;
+
     const tick = async (): Promise<void> => {
-      // Idle mode (useIdleMode) pauses SSE; the disconnect must not turn this
-      // into the faster offline cadence. Resume refetches stale queries.
-      if (eventBus.isPaused()) return;
       const { queryKey: key, fetchHead } = latest.current;
       const state = qc.getQueryState(key);
       // A fetch is already running on this key (manual Refresh, filter switch,
@@ -584,23 +601,60 @@ function useHeadPagePoll(args: {
       }
     };
 
-    // Re-read `document.hidden` at each scheduling point rather than arming one
-    // fixed interval — same shape as the function-form `refetchInterval` this
-    // replaces: 90s in the foreground, 5min once the tab is hidden or SSE is live.
-    const schedule = () => {
-      const hidden = typeof document !== "undefined" && document.hidden;
-      timer = setTimeout(run, hidden || eventBus.isConnected() ? HIDDEN_POLL_MS : POLL_MS);
+    const idlePoll = isLiveView(decodeChatsKey(queryKey));
+    const delay = () => headPollDelay({
+      paused: eventBus.isPaused(),
+      hidden: typeof document !== "undefined" && document.hidden,
+      connected: eventBus.isConnected(),
+      idlePoll,
+    });
+    const schedule = (immediate = false) => {
+      if (cancelled || inFlight) return;
+      const ms = delay();
+      if (ms === null) {
+        if (timer) clearTimeout(timer);
+        timer = undefined;
+        return;
+      }
+      if (immediate) {
+        run();
+        return;
+      }
+      const at = Date.now() + ms;
+      if (timer && at >= dueAt) return;
+      if (timer) clearTimeout(timer);
+      dueAt = at;
+      timer = setTimeout(run, ms);
     };
     // Schedule-AFTER-settle, never a bare interval: at most one tick is ever in
     // flight, so a slow fan-out can't stack ticks on top of itself.
     const run = () => {
+      if (inFlight) return;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      inFlight = true;
+      lastRun = Date.now();
       void tick().catch(() => {}).then(() => {
+        inFlight = false;
         if (!cancelled) schedule();
       });
     };
+    const onReturn = () => {
+      if (document.visibilityState === "visible") schedule(Date.now() - lastRun >= RETURN_GAP_MS);
+    };
 
     schedule();
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // Idle mode restores focus before resuming SSE.
+    const offFocus = focusManager.subscribe(() => queueMicrotask(() => schedule()));
+    document.addEventListener("visibilitychange", onReturn);
+    window.addEventListener("focus", onReturn);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      offFocus();
+      document.removeEventListener("visibilitychange", onReturn);
+      window.removeEventListener("focus", onReturn);
+    };
     // `keyHash` stands in for `queryKey` (read through `latest`): re-arm the
     // timer when the cache it writes to changes, not on every render.
   }, [enabled, keyHash, qc]);
@@ -681,8 +735,8 @@ export function useChatList(params: ChatListParams = {}) {
     },
     staleTime: 30_000,
     // NO refetchInterval — it would re-walk every loaded page. The background
-    // refresh is `useHeadPagePoll` below (90s foreground / 5min hidden, page 0
-    // only); read its comment before reinstating anything here.
+    // refresh is `useHeadPagePoll` below (page 0 only); read its comment before
+    // reinstating anything here.
     refetchOnWindowFocus: false,
     // The previous key's rows stand in within one scope kind (a chip, folder
     // or search switch, or an All Models session set changing as sessions
@@ -757,6 +811,8 @@ export function useChatList(params: ChatListParams = {}) {
     /** Each fetched page's rows, in page order (before the flatten's de-dupe). */
     pages: q.data?.pages.map((p) => p.rows),
     hasMore: !!q.hasNextPage,
+    // IndexedDB can restore chats pages written before the scan count was stamped.
+    scanned: q.data?.pages.reduce((sum, p) => sum + (p.scanned ?? p.rows.length), 0) ?? 0,
     loadMore: () => q.fetchNextPage(),
     isFetchingMore: q.isFetchingNextPage,
     refresh,

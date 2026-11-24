@@ -37,6 +37,7 @@ import live_rev
 import of_call_counter
 import of_pacing
 import proxy_health
+import account_health
 import proxies as proxy_registry
 from of_managed_session import ManagedSession
 from of_cookie_events import apply_cookie_events, cookie_from_row, response_cookie_events
@@ -579,6 +580,10 @@ class _Transport:
             account_id = path.parent.name
             reg = proxy_registry.registry()
             eg = proxy_registry.egress(reg, account_id, path.name)
+            if (isinstance(eg, proxy_registry.Direct)
+                    and account_id in account_health.write_gate_snapshot()
+                    and proxy_registry.pool_entries(reg)):
+                eg = proxy_registry.Refuse("deactivated Creator is missing a proxy binding")
             if isinstance(eg, proxy_registry.Refuse):
                 log_of.warning("client_egress_refused account=%s reason=%s", account_id, eg.reason)
                 raise proxy_registry.EgressRefused(eg.reason)

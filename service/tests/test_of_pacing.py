@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 of_pacing — background OF walks: 429 parse, the shared per-Creator pacer, the
-one retry, no claim; the browser name fill's retry; link_prewarm.prewarm_all's
+one retry, no claim; a request's absorbed 429s; link_prewarm.prewarm_all's
 busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
 
   case_parse_allow_table:   "Please allow N seconds" -> N; none -> default; cap.
@@ -19,8 +19,14 @@ busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
   case_retry_once:          a 429 retries the SAME call once; a second 429 raises.
   case_walk_no_claim:       two walks with one key both run (each its own result);
                             a nested same-key walk runs; the caller never sees the walk.
-  case_retry_429_unpaced:   the name fill: 8 at once leave at once (no pacer); a 429
-                            is sent once more after OF's wait; a second 429 raises.
+  case_absorb_429_table:    a request through the Creator's 429 gate (fake clock): open, never
+                            paced; each 429 in a row waits the next Fibonacci cooldown (capped),
+                            a success resets the ladder; a read gives up past READ_BUDGET_S, a
+                            send keeps waiting to SEND_BUDGET_S; any other error at once.
+  case_gate_one_probe:      10 concurrent reads on one Creator (threads, tiny cooldowns): after
+                            the first close exactly one call per cooldown, then the queue drains
+                            PAGE_GAP_S apart; another Creator never waits on it.
+  case_walk_waits_cooling:  a walk's page waits out its Creator's cooling gate.
   case_prewarm_busy_table:  prewarm_all walks idle Creators in order and skips one with a
                             person's read in the last USER_WINDOW_S (no waiting); the next
                             pass walks it once idle.
@@ -48,12 +54,15 @@ from __future__ import annotations
 import _harness  # MUST be first (binds a temp DB; this file never touches it)
 
 import asyncio  # noqa: E402
+import threading  # noqa: E402
 import time  # noqa: E402
-from types import SimpleNamespace  # noqa: E402
+from types import SimpleNamespace
+from unittest.mock import patch  # noqa: E402
 
 import of_pacing  # noqa: E402
 
-_KNOBS = ("PAGE_GAP_S", "JITTER_S", "RETRY_DEFAULT_S", "RETRY_MAX_S", "USER_WINDOW_S")
+_KNOBS = ("PAGE_GAP_S", "JITTER_S", "RETRY_DEFAULT_S", "RETRY_MAX_S", "USER_WINDOW_S", "COOLDOWNS_S",
+          "READ_BUDGET_S", "SEND_BUDGET_S", "POLL_S")
 _REAL = {k: getattr(of_pacing, k) for k in _KNOBS}
 
 
@@ -62,6 +71,7 @@ def _knobs(**kw):
         setattr(of_pacing, k, kw.get(k, v))
     of_pacing._next_at.clear()
     of_pacing._last_user.clear()
+    of_pacing._gates.clear()
 
 
 class _E429(Exception):
@@ -130,6 +140,10 @@ def case_asked_wait_table():
         ((None, None), None),            # nothing
     ]:
         assert of_pacing.asked_wait(*args) == want, (args, want)
+
+    with patch.object(of_pacing.time, "time", return_value=1.0):
+        assert of_pacing.asked_wait("Thu, 01 Jan 1970 00:00:00 GMT", 7.0) == 7.0
+        assert of_pacing.asked_wait("Thu, 01 Jan 1970 00:00:01 GMT", 7.0) == 7.0
 
 
 def case_outside_walk_plain():
@@ -250,34 +264,330 @@ def case_walk_no_claim():
     asyncio.run(main())
 
 
-def case_retry_429_unpaced():
-    _knobs(PAGE_GAP_S=0.5, RETRY_MAX_S=0.05)
+class _Clock:
+    def __init__(self):
+        self.t, self.slept = 1000.0, []
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, d):
+        self.slept.append(round(d, 3))
+        self.t += d
+
+
+def _absorb(answers, clock, send=False):
+    it, n = iter(answers), []
+
+    def call():
+        n.append(clock.t)
+        a = next(it)
+        if isinstance(a, Exception):
+            raise a
+        return a
+    try:
+        got = of_pacing.absorb_429("a1", call, send_deadline=clock() + of_pacing.SEND_BUDGET_S if send else None,
+                                     sleep=clock.sleep, clock=clock)
+    except Exception as e:
+        got = type(e)
+    return len(n), got
+
+
+def case_absorb_429_table():
+    _knobs(PAGE_GAP_S=5.0, JITTER_S=0.0)
+    E = _E429
+    fib = [3.0, 5.0, 8.0, 13.0, 21.0, 34.0]
+    # (answers, send, send budget, want calls, want result or the error type raised, want sleeps)
+    for answers, send, budget, calls, want, sleeps in [
+        (["ok"], False, 90.0, 1, "ok", []),
+        ([E(), "ok"], False, 90.0, 2, "ok", [3.0]),
+        ([E("Please allow 9 seconds"), E(), "ok"], False, 90.0, 3, "ok", [9.0, 5.0]),
+        ([E()] * 7 + ["ok"], True, 1000.0, 8, "ok", fib + [34.0]),
+        ([E()] * 5 + ["ok"], False, 90.0, 5, E, fib[:4]),
+        ([E()] * 6 + ["ok"], True, 90.0, 7, "ok", fib),
+        ([E()] * 7 + ["ok"], True, 90.0, 7, E, fib),
+        ([ValueError("boom"), "ok"], False, 90.0, 1, ValueError, []),
+    ]:
+        of_pacing.SEND_BUDGET_S = budget
+        of_pacing._gates.clear()
+        clock = _Clock()
+        got = _absorb(answers, clock, send) + (clock.slept,)
+        assert got == (calls, want, sleeps), (len(answers), send, got)
+    of_pacing.SEND_BUDGET_S = _REAL["SEND_BUDGET_S"]
+    assert of_pacing._next_at == {}, "a request's call is never paced"
+
+    of_pacing._gates.clear()
+    clock = _Clock()
+    assert _absorb([E(), E(), "ok"], clock) == (3, "ok") and clock.slept == [3.0, 5.0]
+    g = of_pacing._gates["a1"]
+    assert not g.closed and g.step == 0 and not g.queue, g
+    clock.slept.clear()
+    assert _absorb(["ok"], clock) == (1, "ok") and clock.slept == [], "open gate: sent at once"
+    assert _absorb([E(), "ok"], clock) == (2, "ok") and clock.slept == [3.0], "ladder reset after success"
+
+
+def case_send_retry_cutoff_after_oversleep():
+    _knobs()
+    clock = _Clock()
+    sent = []
+
+    def call():
+        sent.append(clock.t)
+        raise _E429()
+
+    def sleep(delay):
+        clock.sleep(delay + 60)
+
+    try:
+        of_pacing.absorb_429("a1", call, send_deadline=clock() + of_pacing.SEND_BUDGET_S,
+                             sleep=sleep, clock=clock)
+    except _E429:
+        pass
+    assert sent == [1000.0]
+
+
+async def case_walk_rechecks_gate_and_probes():
+    _knobs(PAGE_GAP_S=10.0, JITTER_S=0.0)
+    clock = _Clock()
+    of_pacing._next_at["a1"] = clock.t + 1
+    gate = of_pacing._gates.setdefault("a1", of_pacing._Gate())
+    sent = []
+    other_probe_active = False
+
+    def sleep(delay):
+        nonlocal other_probe_active
+        clock.sleep(delay)
+        if len(clock.slept) == 1:
+            gate.closed = gate.probing = other_probe_active = True
+        elif len(clock.slept) == 2:
+            gate.probing = other_probe_active = False
+
+    def paged():
+        assert not other_probe_active and gate.probing
+        sent.append(clock.t)
+        if len(sent) == 1:
+            raise _E429()
+
+    async def run():
+        of_pacing.paced("a1", paged)
+
+    with patch.object(of_pacing.time, "monotonic", clock), patch.object(of_pacing.time, "sleep", sleep):
+        await of_pacing.walk("a1", "test", run)
+
+    assert len(sent) == 2, sent
+    assert not gate.closed and not gate.probing
+
+
+async def case_walk_yields_to_queued_send_and_drain():
+    _knobs(PAGE_GAP_S=1.0, JITTER_S=0.0)
+    clock = _Clock()
+    gate = of_pacing._Gate(closed=True, last_429=_E429(), queue={(0, -1)})
+    of_pacing._gates["a1"] = gate
+    sent = []
+
+    def sleep(delay):
+        clock.sleep(delay)
+        if not sent:
+            assert of_pacing._admit(gate, (0, -1), clock()) == ("probe", 0.0)
+            sent.append(("send", clock()))
+            of_pacing._open("a1", gate, clock())
+
+    async def run():
+        of_pacing.paced("a1", lambda: sent.append(("walk", clock())))
+
+    with patch.object(of_pacing.time, "monotonic", clock), patch.object(of_pacing.time, "sleep", sleep):
+        await of_pacing.walk("a1", "test", run)
+    assert [kind for kind, _ in sent] == ["send", "walk"], sent
+    assert sent[1][1] - sent[0][1] >= of_pacing.PAGE_GAP_S
+
+
+async def case_walk_429_closes_gate_for_reads():
+    _knobs(PAGE_GAP_S=0.0, JITTER_S=0.0)
+    clock = _Clock()
+
+    def fail():
+        raise _E429()
+
+    def during_cooldown(delay):
+        if not clock.slept:
+            read_clock = _Clock()
+            assert _absorb(["read"], read_clock) == (1, "read")
+            assert read_clock.slept == [3.0]
+        clock.sleep(delay)
+
+    calls = 0
+
+    async def run():
+        def paged():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                fail()
+        of_pacing.paced("a1", paged)
+
+    with patch.object(of_pacing.time, "monotonic", clock), patch.object(of_pacing.time, "sleep", during_cooldown):
+        await of_pacing.walk("a1", "test", run)
+    assert calls == 2
+
+
+def case_cancelled_probe_and_waiter_release():
+    _knobs()
+    clock = _Clock()
+
+    class Cancel(BaseException):
+        pass
+
+    def cancel():
+        raise Cancel()
+
+    n = 0
+
+    def call():
+        nonlocal n
+        n += 1
+        if n == 1:
+            raise _E429()
+        cancel()
+
+    for invoke, sleep in [(call, clock.sleep), (lambda: "queued", lambda _d: cancel())]:
+        if n == 2:
+            of_pacing._gates["a1"].cool_until += 3
+        try:
+            of_pacing.absorb_429("a1", invoke, sleep=sleep, clock=clock)
+        except Cancel:
+            pass
+        else:
+            raise AssertionError("expected cancellation")
+        g = of_pacing._gates["a1"]
+        assert not g.probing and not g.queue
+    assert _absorb(["ok"], clock) == (1, "ok")
+
+
+def case_retry_after_header_respects_remaining_budget():
+    from email.utils import formatdate
+
+    _knobs()
+    for header, expected in [("9", [9.0]), (formatdate(1009, usegmt=True), [9.0]), ("80", [])]:
+        of_pacing._gates.clear()
+        clock = _Clock()
+        err = _E429("Too many requests")
+        err.response.headers = {"Retry-After": header}
+        with patch.object(of_pacing.time, "time", return_value=1000.0):
+            assert _absorb([err, "ok"], clock) == ((2, "ok") if expected else (1, _E429))
+        assert clock.slept == expected
+
+
+def case_late_429_extends_cooldown_without_climbing():
+    _knobs()
+    clock = _Clock()
+    g = of_pacing._Gate()
+    of_pacing._close("a1", g, _E429(), clock.t)
+    step, epoch, cool = g.step, g.epoch, g.cool_until
+    late = _E429("Too many requests")
+    late.response.headers = {"Retry-After": "60"}
+    try:
+        of_pacing._gate_call("a1", g, lambda: (_ for _ in ()).throw(late), False, epoch - 1, clock)
+    except _E429:
+        pass
+    assert g.cool_until == clock.t + 60 > cool and (g.step, g.epoch) == (step, epoch), vars(g)
+
+
+def case_read_waiter_cap():
+    _knobs()
+    clock = _Clock()
+    g = of_pacing._gates.setdefault("a1", of_pacing._Gate(
+        closed=True, cool_until=clock.t + 3, last_429=_E429()))
+    g.queue.update((1, ticket) for ticket in range(-of_pacing.MAX_READ_WAITERS, 0))
+    assert _absorb(["read"], clock) == (0, _E429)
+    assert clock.slept == [] and len(g.queue) == of_pacing.MAX_READ_WAITERS
+
+
+def case_accountless_bypasses_gate():
+    _knobs()
+    clock = _Clock()
+
+    def fail():
+        raise _E429()
+
+    try:
+        of_pacing.absorb_429(None, fail, sleep=clock.sleep, clock=clock)
+    except _E429:
+        pass
+    assert "None" not in of_pacing._gates
+
+
+def case_gate_one_probe():
+    _knobs(READ_BUDGET_S=1.0)
+    clock = _Clock()
+    assert _absorb([_E429()], clock) == (1, _E429)
+    assert of_pacing._gates["a1"].closed
+    assert of_pacing.absorb_429("a2", lambda: "b", sleep=clock.sleep, clock=clock) == "b"
+    assert not clock.slept, "another Creator never waits on a1's gate"
+
+    cools, gap = (0.06, 0.1, 0.16), 0.03
+    _knobs(PAGE_GAP_S=gap, JITTER_S=0.0, COOLDOWNS_S=cools, RETRY_MAX_S=0.0, POLL_S=0.005)
+    events: list[tuple[str, float]] = []
+    lock = threading.Lock()
+    real_close = of_pacing._close
+
+    def close(aid, g, e, now):
+        events.append(("close", time.monotonic()))
+        real_close(aid, g, e, now)
+
+    initial = threading.Barrier(10, timeout=5)
+
+    def call():
+        with lock:
+            events.append(("call", time.monotonic()))
+            k = sum(1 for e in events if e[0] == "call")
+        if k <= 10:
+            initial.wait()
+        if k <= 12:
+            raise _E429()
+        return "ok"
+
+    out: list = []
+    go = threading.Barrier(10)
+
+    def worker():
+        go.wait()
+        out.append(of_pacing.absorb_429("a1", call))
+    of_pacing._close = close
+    try:
+        ts = [threading.Thread(target=worker) for _ in range(10)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(10)
+    finally:
+        of_pacing._close = real_close
+    assert out == ["ok"] * 10, out
+    calls = [t for k, t in events if k == "call"]
+    closes = [t for k, t in events if k == "close"]
+    assert len(calls) == 22 and len(closes) >= 3, (len(calls), len(closes))
+    for a, b in zip(closes, closes[1:]):
+        assert len([t for t in calls if a < t < b]) == 1, "exactly one probe per cooldown"
+    drained = [t for t in calls if t > closes[-1]]
+    assert len(drained) == 10, len(drained)
+    assert drained[0] - closes[-1] >= cools[-1] / 2, "the probe waits the cooldown"
+    assert min(b - a for a, b in zip(drained, drained[1:])) >= gap / 2, "the queue drains paced"
+    g = of_pacing._gates["a1"]
+    assert not g.closed and not g.queue and g.step == 0, g
+
+
+def case_walk_waits_cooling():
+    _knobs(PAGE_GAP_S=0.0, JITTER_S=0.0)
+    g = of_pacing._gates.setdefault("a1", of_pacing._Gate())
+    g.closed, g.cool_until = True, time.monotonic() + 0.08
     sent: list[float] = []
+    t0 = time.monotonic()
 
-    async def ok():
-        sent.append(time.monotonic())
-        return {"ok": 1}
-
-    async def main():
-        t0 = time.monotonic()
-        res = await asyncio.gather(*(of_pacing.retry_429("a1", ok) for _ in range(8)))
-        assert res == [{"ok": 1}] * 8
-        assert max(sent) - t0 < 0.05, "the name fill is never paced"
-        for fails, want in ((1, 2), (2, 2)):
-            n = []
-
-            async def flaky():
-                n.append(time.monotonic())
-                if len(n) <= fails:
-                    raise _E429()
-                return "done"
-            try:
-                assert await of_pacing.retry_429("a1", flaky) == "done" and fails == 1
-            except _E429:
-                assert fails == 2, "a second 429 raises"
-            assert len(n) == want, (fails, n)
-            assert n[1] - n[0] >= 0.04, "waits what OF asks (capped)"
-    asyncio.run(main())
+    async def run():
+        return await of_pacing.walk("a1", "k", lambda: asyncio.to_thread(
+            of_pacing.paced, "a1", lambda: sent.append(time.monotonic())))
+    asyncio.run(run())
+    assert sent[0] - t0 >= 0.07, sent[0] - t0
+    assert of_pacing.paced("a1", lambda: 1) == 1, "outside a walk: never gated"
 
 
 def case_prewarm_busy_table():

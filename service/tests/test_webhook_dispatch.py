@@ -742,8 +742,10 @@ async def case_deferred_fan_dm_buys_no_backfill():
             assert await _scrapes(aid) == [], await _scrapes(aid)
             replies = await _pending_jobs(aid, "welcome_chatter_for_info")
             assert len(replies) == (1 if gate else 0), [j.payload_json for j in replies]
-            # Claims nothing: the Click read's backfill for the same fan still enqueues.
-            assert await wd.enqueue_fan_scrape(aid, fan, wd.DEFERRED_HISTORY_SOURCE) is True
+            wd.history_deferred = orig
+            await wd.backfill_if_deferred(aid, fan, 1)
+            assert len(await _scrapes(aid)) == 1
+            wd.history_deferred = boom
     finally:
         wd.history_deferred = orig
 

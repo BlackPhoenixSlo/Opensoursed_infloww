@@ -14,7 +14,7 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   return { ...mod, relay: { ...mod.relay, get: vi.fn(async () => []), post: vi.fn(), patch: vi.fn() } };
 });
 vi.mock("@/hooks/useVaultMedia", () => ({
-  useVaultLists: () => ({ data: { list: [] }, isLoading: false }),
+  useVaultListsRevalidated: () => ({ data: { list: [] }, isLoading: false, isFetching: false, refresh: vi.fn() }),
 }));
 // The vault picker's last props (it renders nothing).
 type PickerProps = { open: boolean; onClose: () => void };

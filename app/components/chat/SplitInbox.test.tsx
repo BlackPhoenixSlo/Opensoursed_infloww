@@ -21,7 +21,16 @@ vi.mock("@/lib/relay", async (orig) => ({
   relay: relayMock,
 }));
 
+const rosterMock = vi.hoisted(() => ({ rows: [] as unknown[] }));
+vi.mock("@/hooks/useRoster", () => ({ useRoster: () => ({ rows: rosterMock.rows }) }));
+
 const ACCOUNT_ID = "100000001";
+/** Chatters on the owner's roster: two see this Creator, one sees another only. */
+const ROSTER = [
+  { chatter_id: "c-a", display_name: "Fixture Chatter A", is_active: true, kind: "login", account_ids: null },
+  { chatter_id: "c-b", display_name: "Fixture Chatter B", is_active: true, kind: "login", account_ids: [ACCOUNT_ID] },
+  { chatter_id: "c-x", display_name: "Fixture Chatter X", is_active: true, kind: "login", account_ids: ["100000009"] },
+];
 /** A Creator split three ways, with one Fan moved by hand. */
 const STORED = { group_count: 3, assignments: { "200000001": 2 } };
 /** The Fans the Fan List has loaded, in its order, as it passes them in. */
@@ -31,7 +40,7 @@ const FANS = [
   { id: 200000003, name: "Fixture Fan Three" },
 ];
 /** The split the mocked relay answers with; STORED unless a case serves another. */
-let stored: { group_count: number; assignments: Record<string, number> } = STORED;
+let stored: { group_count: number; assignments: Record<string, number>; chatter_groups?: Record<string, number> } = STORED;
 
 function Host() {
   const [open, setOpen] = useState(true);
@@ -50,6 +59,7 @@ const optionsOf = (select: HTMLElement) => within(select).getAllByRole("option")
 
 beforeEach(() => {
   stored = STORED;
+  rosterMock.rows = [];
   relayMock.get.mockImplementation((path: string) =>
     path.startsWith(`/admin/split-inbox?account_id=${ACCOUNT_ID}`)
       ? Promise.resolve({ account_id: ACCOUNT_ID, config: stored })
@@ -83,7 +93,7 @@ describe("SplitInbox", () => {
     expect(relayMock.put).toHaveBeenCalledTimes(1);
     expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
       account_id: ACCOUNT_ID,
-      config: { group_count: 5, assignments: { "200000001": 2 } },
+      config: { group_count: 5, assignments: { "200000001": 2 }, chatter_groups: {} },
     });
     await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
   });
@@ -133,7 +143,7 @@ describe("SplitInbox", () => {
     expect(relayMock.put).toHaveBeenCalledTimes(1);
     expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
       account_id: ACCOUNT_ID,
-      config: { group_count: 4, assignments: { "200000001": 2, "200000002": Number(moveTo) } },
+      config: { group_count: 4, assignments: { "200000001": 2, "200000002": Number(moveTo) }, chatter_groups: {} },
     });
     await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
   });
@@ -153,7 +163,34 @@ describe("SplitInbox", () => {
     expect(relayMock.put).toHaveBeenCalledTimes(1);
     expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
       account_id: ACCOUNT_ID,
-      config: { group_count: 2, assignments: { "200000001": 2 } },
+      config: { group_count: 2, assignments: { "200000001": 2 }, chatter_groups: {} },
+    });
+  });
+
+  it("lists the chatters who see this Creator; binding one PUTs chatter_groups, \"All\" unbinds", async () => {
+    const user = userEvent.setup();
+    rosterMock.rows = ROSTER;
+    stored = { ...STORED, chatter_groups: { "c-b": 3 } };
+    relayMock.put.mockImplementation((_path: string, body: { config: unknown }) =>
+      Promise.resolve({ account_id: ACCOUNT_ID, ...body }));
+    renderWithProviders(<Host />);
+    await countSelect();
+    const region = screen.getByRole("region", { name: "Chatters" });
+    expect(within(region).getAllByRole("combobox").map((c) => c.getAttribute("aria-label")))
+      .toEqual(["Fixture Chatter A", "Fixture Chatter B"]);
+    const a = within(region).getByRole("combobox", { name: "Fixture Chatter A" });
+    const b = within(region).getByRole("combobox", { name: "Fixture Chatter B" });
+    expect(optionsOf(a)).toEqual(["All", "Inbox 1", "Inbox 2", "Inbox 3"]);
+    expect(a).toHaveValue("");
+    expect(b).toHaveValue("3");
+
+    await user.selectOptions(a, "Inbox 1");
+    await user.selectOptions(b, "All");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
+      account_id: ACCOUNT_ID,
+      config: { group_count: 3, assignments: { "200000001": 2 }, chatter_groups: { "c-a": 1 } },
     });
   });
 });

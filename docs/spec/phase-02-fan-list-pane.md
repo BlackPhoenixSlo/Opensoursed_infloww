@@ -238,13 +238,13 @@ The left pane matches Infloww's. At the top are the Creator's name, a search ico
   - Filtering is client-side over the loaded rows. The group filter applies on top of (AND) the active chip or folder and the search. Chip counts stay as defined under Filters and are not narrowed by the group.
   - With a group selected, the list runs the same bounded fill that Owe reply runs, with its constants (`OWE_REPLY_TARGET` and `OWE_REPLY_SCAN_CAP`, `ChatList.tsx:57-58`, loop at `:597-612`): it pages until enough rows match, the scan cap is reached, or no pages remain. "No conversations found" shows when nothing matches, and "Load more conversations" stays under it while `hasMore` is true.
   - When a saved split lowers the count below the selected group, the selection returns to "All inboxes".
-  ASSUMPTION: the group fill reuses Owe reply's target and cap (rung 3), because a hash split leaves about 1/N of loaded rows in each group. This is overturned if groups routinely come up empty at the cap.
-  - `groupOf` returns the Fan's explicit assignment if it has one and it is within range. Otherwise it returns a stable string hash of the Fan id modulo N, plus 1, so a new split divides Fans immediately and identically on every device.
+  ASSUMPTION: the group fill reuses Owe reply's target and cap (rung 3), because a mod split leaves about 1/N of loaded rows in each group. This is overturned if groups routinely come up empty at the cap.
+  - `groupOf` returns the Fan's explicit assignment if it has one and it is within range. Otherwise it returns the Fan id modulo N, plus 1 (a non-numeric id goes to group 1), so a new split divides Fans immediately and identically on every device and on the relay (ADR-0052).
   - Concurrent saves are last-write-wins.
   - A failed save keeps the dialog open with the relay's error and applies nothing. Other Employees and devices see a saved split on their next fetch of the config, which follows `useNudgeConfig`'s 60-second `staleTime` and invalidation on save (`app/hooks/useNudgeConfig.ts:77`, `:91`; rung 3). There is no push.
   ASSUMPTION: the selector is Infloww's Split Inbox filter, and its settings entry is where the group count is chosen (§3.3 marks both locations G). This is overturned by a capture showing otherwise.
   ASSUMPTION: groups are labelled "Inbox 1" to "Inbox N", because no source gives a label. This is overturned by an Infloww label.
-  ASSUMPTION: Fans without an assignment are spread by hash, and changing N re-spreads them and drops assignments above the new N. This is overturned if Infloww starts every Fan in group 1.
+  Fans without an assignment are spread by fan id mod N (ADR-0052), and changing N re-spreads them and drops assignments above the new N. This is overturned if Infloww starts every Fan in group 1.
   ASSUMPTION: the reassign screen lists only the Fans already loaded and has no search, because that is the smallest version (rung 5). This is overturned if owners need to move Fans who are not loaded yet.
   ASSUMPTION: "admin/owner by default" means a User principal, which is what `assert_owner()` checks. Chatter-only sessions (`useIsChatterOnly`, `app/components/shell/useIsChatterOnly.ts:8`) get the filter but not the settings entry, and the relay rejects their PUT (Contracts). This is overturned if the human wants some chatters to edit the split, which needs the per-role permission model we do not have.
   ASSUMPTION: the selector and the folder chips are hidden in All Models, because both are per Creator. This is overturned if All Models should show a merged group filter.
@@ -288,7 +288,7 @@ Tests check behaviour that is visible from outside each module and never assert 
   - Saving PUTs `{group_count, assignments}`.
   - Reassigning a Fan changes only that Fan's entry.
   - Lowering N drops out-of-range assignments.
-  - `groupOf` is stable for the same id, always in `1..N`, honours explicit assignments, and hashes a 19-digit string id without losing precision.
+  - `groupOf` is stable for the same id, always in `1..N`, honours explicit assignments, and maps a 19-digit string id without losing precision.
   - A failed PUT keeps the dialog open with the error.
 - **Existing tests that must stay green:** `components/chat/fanDrawerEditFreshness.test.tsx` (it mocks `useFanActivity` with two maps, which still type-checks because the third map is additive), `hooks/useChatList.test.tsx`, and Phase 0's `app/messages-pro/windowed.test.tsx`, whose Deep link case asserts the selected row's `aria-current` and scroll.
 - **Relay seam: `service/tests/test_split_inbox_api.py`.** It is plain-assert and drives the routes over HTTP through `_harness.make_client()` (`service/tests/_harness.py:88`) against the temp DB, so router registration and the session middleware are exercised. The precedent for cookie-authenticated cases is `service/tests/test_chatter_auth.py:185-261`. Cases:
@@ -368,7 +368,7 @@ python3 -m json.tool docs/screenshots/messages-pro-report.json > /dev/null
 - **Row "×" (`.cx`):** the Clone gives it no handler and no source names its action, so building it would fake a control.
 - **The "Needs reply" sort label:** §3.3 tags it as probably ours. The order survives as "Spend + unread on top".
 - **Messages Basic's "Oldest first" / "Unread with Tips":** §3.3 marks them as a different screen.
-- **Binding Split Inbox groups to Employees, and per-role edit permissions:** ADR-0004 rules out binding, and we have no per-role permission model.
+- **Per-role edit permissions for Split Inbox:** we have no per-role permission model. Binding groups to chatters is now built and enforced on the relay (ADR-0052).
 - **Server-side group filtering:** OF has no such filter, and client-side filtering over loaded rows is enough.
 - **A `subscribed_at` field for New:** the plan limits badges to fields already fetched.
 - **Persisting Focus mode or the chosen group:** YAGNI until asked.
@@ -389,7 +389,7 @@ The open questions below are already decided, and each is flagged inline above:
 - Badge placement (Rows, Gap table).
 - The owe dot as part of the extra (Rows).
 - The broadcast and Post targets (Header).
-- Selector placement and labels, the hash spread, and the group fill (Split Inbox). The role gate is now enforced on the relay (Contracts).
+- Selector placement and labels, the mod spread, and the group fill (Split Inbox). The role gate is now enforced on the relay (Contracts).
 - Focus mode's placement, wording and count (Focus mode).
 - The sort default (Filters).
 - The token mapping and the geometry constant's handover to Phase 6 (Geometry).

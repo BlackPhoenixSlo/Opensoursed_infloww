@@ -15,7 +15,7 @@
  *     `vault-history` keys are whitelisted in providers.tsx).
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
@@ -39,13 +39,32 @@ export function normalizeVaultHistory(resp: Partial<FanVaultHistoryResp> | null 
   return { ...resp, by_media: resp?.by_media ?? {} };
 }
 
+export function vaultHistoryKey(accountId: string | null, fanId: FanId | null) {
+  return ["vault-history", accountId, fanId] as const;
+}
+
+/** Writes a history answer to the fan's cache only when it carries `by_media`, so a reply without one never
+ *  empties cached badges; false when nothing was written. */
+export async function setVaultHistory(
+  qc: QueryClient,
+  accountId: string | null,
+  fanId: FanId | null,
+  history: Partial<FanVaultHistoryResp> | null | undefined,
+): Promise<boolean> {
+  if (!history || typeof history.by_media !== "object" || history.by_media === null) return false;
+  const queryKey = vaultHistoryKey(accountId, fanId);
+  await qc.cancelQueries({ queryKey, exact: true });
+  qc.setQueryData<FanVaultHistoryResp>(queryKey, normalizeVaultHistory(history));
+  return true;
+}
+
 export function useFanVaultHistory(
   accountId: string | null,
   fanId: FanId | null,
   enabled = true,
 ) {
   return useQuery<FanVaultHistoryResp>({
-    queryKey: ["vault-history", accountId, fanId],
+    queryKey: vaultHistoryKey(accountId, fanId),
     enabled: enabled && !!accountId && fanId != null,
     queryFn: async () => {
       const qs = new URLSearchParams({

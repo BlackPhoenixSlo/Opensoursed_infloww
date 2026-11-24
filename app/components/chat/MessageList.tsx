@@ -21,11 +21,12 @@
 
 import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 
-import { describeLoadError, type OFMessage } from "@/lib/relay";
+import { describeLoadError, isRateLimited, type OFMessage } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import { cn } from "@/lib/utils";
 import { useEffectiveTranslateMode } from "@/hooks/useTranslateMode";
 import { useTranslations, type BubbleTranslation } from "@/hooks/useTranslations";
+import { useFanLanguage } from "@/lib/fanLanguage";
 import { pickEagerMediaIds } from "@/components/chat/MediaTile";
 import { automationLabel } from "@/components/messages/MessageRowGeneric";
 import type { AttributionEntry } from "@/hooks/useChatAttribution";
@@ -162,7 +163,8 @@ export function MessageList(props: MessageListProps) {
     () => (translateOn ? messages.filter((m) => m.text).map((m) => ofPlainText(m.text)) : []),
     [messages, translateOn],
   );
-  const translationCache = useTranslations(translatableTexts, translateOn, accountId);
+  const [fanLanguage] = useFanLanguage(accountId, fanId ?? null);
+  const translationCache = useTranslations(translatableTexts, translateOn, accountId, fanLanguage, fanId ?? null);
 
   const { containerRef, topSentinelRef, showJumpLatest, autoPinActive, jumpToLatest, jumpToMessage } =
     useThreadPin({ messages, hasOlder, loadingOlder, olderFailed, headSettled, onLoadOlder });
@@ -361,7 +363,7 @@ export function MessageList(props: MessageListProps) {
        *  the thread away. `sticky` (not `absolute`) so it never covers the
        *  first message and never shifts the column: it rides the top of the
        *  scroll viewport and scrolls with the content underneath it. */}
-      {isError && (
+      {isError && !isRateLimited(error) && (
         <div
           role="status"
           className={cn(MP.ours.MessageList.notice, "sticky z-20 bg-err/10 text-err",

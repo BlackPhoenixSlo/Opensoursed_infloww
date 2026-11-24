@@ -338,36 +338,34 @@ def _thin(fan_id: int) -> gen_info_plan.Candidate:
     return c
 
 
-async def case_deferred_row_is_never_scraped_and_shares_the_claim():
+async def case_deferred_row_honors_cooldown_and_only_skips_when_queued():
     import webhook_dispatch as wd
     aid, now = "acc_gi_deferred", datetime.utcnow()
     await _seed_account(aid)
     deferred, claimed, plain, fresh = 8101, 8102, 8103, 8104
+    old = now - gen_info._SCRAPE_REFRESH_AGE - timedelta(seconds=1)
     async with get_session() as s:
-        for fid in (deferred, claimed):   # the row a `{}` sweep leaves: stamped now, no cursor, marked
-            s.add(ScrapeHistory(account_id=aid, fan_id=fid, last_message_id=None, last_scrape_at=now,
-                                history_deferred_at=now))
-        s.add(ScrapeHistory(account_id=aid, fan_id=fresh, last_message_id=9, last_scrape_at=now))
+        for fid, at in ((deferred, old), (claimed, old), (fresh, now)):
+            s.add(ScrapeHistory(account_id=aid, fan_id=fid, last_message_id=None,
+                                last_scrape_at=at, history_deferred_at=at))
     wd._fan_scrape_claims.clear()
-    # A Click read's backfill on `claimed` first: it holds the claim (and its own job).
-    await wd.enqueue_fan_scrape(aid, claimed, wd.DEFERRED_HISTORY_SOURCE)
-    assert await _scrape_jobs(aid) == [{"fan_ids": [claimed], "source": "deferred_history"}]
-
-    out = await gen_info._enqueue_thin_fan_scrapes(
-        aid, [_thin(f) for f in (deferred, claimed, plain, fresh)], set(), now)
-    assert out == {deferred, claimed, plain}, out
-    assert await _scrape_jobs(aid) == [
-        {"fan_ids": [claimed], "source": "deferred_history"},
-        {"fan_ids": [deferred], "source": "gen_info_pick"},
-        {"fan_ids": [plain]},
-    ], await _scrape_jobs(aid)
-    # gen_info's pick keeps the row at page 1, so a Click read inside the window still buys
-    # its backfill; a second Click read none.
-    for _ in range(2):
-        await wd.enqueue_fan_scrape(aid, deferred, wd.DEFERRED_HISTORY_SOURCE)
-    assert [j.get("source") for j in await _scrape_jobs(aid) if j["fan_ids"] == [deferred]] == [
-        "gen_info_pick", "deferred_history"], await _scrape_jobs(aid)
-    wd._fan_scrape_claims.clear()
+    try:
+        await wd.enqueue_fan_scrape(aid, claimed, "blast_reply")
+        candidates = [_thin(f) for f in (deferred, claimed, plain, fresh)]
+        out = await gen_info._enqueue_thin_fan_scrapes(aid, candidates, set(), now)
+        assert out == {deferred, plain}, out
+        out = await gen_info._enqueue_thin_fan_scrapes(aid, candidates[:2], set(), now)
+        assert out == set(), out
+        for _ in range(2):
+            await wd.backfill_if_deferred(aid, deferred, 1)
+        assert await _scrape_jobs(aid) == [
+            {"fan_ids": [claimed], "source": "blast_reply"},
+            {"fan_ids": [deferred], "source": "gen_info_pick"},
+            {"fan_ids": [plain]},
+            {"fan_ids": [deferred], "source": "deferred_history", "after_click_at": "1970-01-01T00:00:00.001000+00:00"},
+        ]
+    finally:
+        wd._fan_scrape_claims.clear()
 
 
 async def case_gone_deferred_chat_not_reenqueued():
@@ -982,7 +980,7 @@ _harness.run(
     case_lagging_spend_column_rescues_payer,
     case_muted_creator_not_profiled,
     case_thin_paying_fan_autoscraped,
-    case_deferred_row_is_never_scraped_and_shares_the_claim,
+    case_deferred_row_honors_cooldown_and_only_skips_when_queued,
     case_gone_deferred_chat_not_reenqueued,
     case_rerun_gate,
     case_prompt_is_fan_only,

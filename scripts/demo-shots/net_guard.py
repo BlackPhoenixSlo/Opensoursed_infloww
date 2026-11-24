@@ -7,6 +7,7 @@ import json
 import os
 import socket
 from pathlib import Path
+from urllib.parse import urlsplit
 
 TMP = Path(os.environ["DEMO_SHOTS_TMP"])
 LOG = TMP / "server-offhost.jsonl"
@@ -106,6 +107,42 @@ def gethostbyname_ex(host):
 
 socket.socket.connect, socket.socket.connect_ex, socket.create_connection = connect, connect_ex, create_connection
 socket.getaddrinfo, socket.gethostbyname, socket.gethostbyname_ex = getaddrinfo, gethostbyname, gethostbyname_ex
+
+# Opt-in: scripts/of-live-proof/relay_live.py loads this guard too, and its live mode must reach OnlyFans through
+# curl_cffi under its own Live guard.
+if os.environ.get("DEMO_SHOTS_CURL_GUARD") == "1":
+    from curl_cffi import Curl, CurlOpt
+
+    _curl_setopt = Curl.setopt
+
+
+    def _check_curl_url(value, proxy=False):
+        url = value.decode("ascii", "replace") if isinstance(value, bytes) else value
+        if proxy and "://" not in url:
+            url = "http://" + url
+        try:
+            parts = urlsplit(url)
+            host = parts.hostname
+        except ValueError:
+            host = None
+        if (not host or not _loopback(host) or "\\" in url or any(ord(c) <= 32 for c in url)
+                or (not proxy and parts.scheme not in ("http", "https", "ws", "wss"))):
+            raise ConnectionRefusedError(_refused("curl_cffi.proxy" if proxy else "curl_cffi", host))
+
+
+    def curl_setopt(self, option, value):
+        if option == CurlOpt.URL:
+            _check_curl_url(value)
+            # libcurl reads proxy environment variables unless given an explicit proxy setting.
+            _curl_setopt(self, CurlOpt.PROXY, "")
+        elif option in (CurlOpt.PROXY, CurlOpt.PRE_PROXY) and value:
+            _check_curl_url(value, proxy=True)
+        elif option == CurlOpt.FOLLOWLOCATION:
+            value = 0
+        return _curl_setopt(self, option, value)
+
+
+    Curl.setopt = curl_setopt
 
 # service/.env holds real keys; db/engine.py, llm_providers.py and auth.py
 # read it through `from dotenv import ...`. No-op both before any import.

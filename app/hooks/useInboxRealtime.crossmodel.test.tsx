@@ -20,7 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 
 import type { OFChatItem } from "@/lib/relay";
 
@@ -55,6 +55,10 @@ vi.mock("@/hooks/useServerScheduledSends", () => ({
 
 // eslint-disable-next-line import/first
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
+// eslint-disable-next-line import/first
+import { chatsQueryKey } from "@/hooks/useChatList";
+// eslint-disable-next-line import/first
+import { CHATS_PAGE } from "@/lib/ofMirrorDataQueries";
 
 function chatRow(fanId: number, accountId: string): OFChatItem {
   return {
@@ -180,6 +184,49 @@ describe("useInboxRealtime writes only the chat lists a message changes", () => 
     expect(a.pages[1]).toBe(deeper);
   });
 
+  it("does not insert a read row into Unread while the thread is open", () => {
+    const unreadKey = ["chats", "model", MODEL_A, "unread", null, null, 25] as const;
+    client.setQueryData(KEY_A, infinite([chatRow(FAN_AB, MODEL_A)]));
+    client.setQueryData(unreadKey, infinite([]));
+    const observer = new QueryObserver(client, { queryKey: ["messages", MODEL_A, FAN_AB], queryFn: async () => [] });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      renderHook(() => useInboxRealtime(), { wrapper });
+      fanWrote(9300);
+      expect(client.getQueryData<Infinite>(unreadKey)?.pages[0].rows).toEqual([]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("inserts a DM already present in All into the Unread view without counting it twice", () => {
+    const unreadKey = ["chats", "model", MODEL_A, "unread", null, null, 25] as const;
+    client.setQueryData(KEY_A, infinite([chatRow(FAN_AB, MODEL_A)]));
+    renderHook(() => useInboxRealtime(), { wrapper });
+    fanWrote(9300);
+    const known = client.getQueryData<Infinite>(KEY_A)!;
+    client.setQueryData(unreadKey, infinite([]));
+    fanWrote(9300);
+    expect(client.getQueryData(KEY_A)).toBe(known);
+    expect(client.getQueryData<Infinite>(unreadKey)?.pages[0].rows).toEqual(known.pages[0].rows);
+    expect(known.pages[0].rows[0].unreadMessagesCount).toBe(1);
+    expect(client.getQueryData<Infinite>(unreadKey)?.pages[0].rows[0].__accountId).toBe(MODEL_A);
+  });
+
+  it("preserves the prior row's account when a new DM inserts it into Unread", () => {
+    const unreadKey = ["chats", "all", `${MODEL_A},${MODEL_B}`, "unread", null, null, 25] as const;
+    client.setQueryData(KEY_A, infinite([chatRow(FAN_AB, MODEL_A)]));
+    client.setQueryData(unreadKey, infinite([chatRow(FAN_AB, MODEL_B)]));
+    renderHook(() => useInboxRealtime(), { wrapper });
+
+    fanWrote(9300);
+
+    const rows = client.getQueryData<Infinite>(unreadKey)?.pages[0].rows;
+    expect(rows?.map((row) => [row.__accountId, row.lastMessage?.id])).toEqual([
+      [MODEL_A, 9300], [MODEL_B, FAN_AB],
+    ]);
+  });
+
   it("the same message delivered twice writes once and counts its unread once", () => {
     client.setQueryData(KEY_A, infinite([chatRow(FAN_B, MODEL_A), chatRow(FAN_AB, MODEL_A)]));
     renderHook(() => useInboxRealtime(), { wrapper });
@@ -190,5 +237,72 @@ describe("useInboxRealtime writes only the chat lists a message changes", () => 
 
     expect(client.getQueryData(KEY_A)).toBe(once);
     expect(once.pages[0].rows[0].unreadMessagesCount).toBe(1);
+  });
+});
+
+describe("useInboxRealtime mounted app-wide", () => {
+  const fanWrote = (id: number, account = MODEL_A, fanId = FAN_AB) => fire({
+    __account_id: account,
+    api2_chat_message: { id, text: "live", fromUser: { id: fanId, name: `fan${fanId}` }, createdAt: "2026-06-21T19:00:00.000Z" },
+  });
+
+  it("mounted twice (app-wide listener + a leftover page mount), one message counts one unread", () => {
+    client.setQueryData(KEY_A, infinite([chatRow(FAN_B, MODEL_A), chatRow(FAN_AB, MODEL_A)]));
+    renderHook(() => useInboxRealtime(), { wrapper });
+    renderHook(() => useInboxRealtime(), { wrapper });
+    expect(handlers.get("api2_chat_message")?.size).toBe(2);
+
+    fanWrote(9400);
+
+    const a = client.getQueryData<Infinite>(KEY_A)!;
+    expect(ids(a)).toEqual([FAN_AB, FAN_B]);
+    expect(a.pages[0].rows[0].unreadMessagesCount).toBe(1);
+    expect(a.pages[0].rows[0].hasUnread).toBe(true);
+  });
+
+  it("patches OF Manager's chat lists (its own page size) on any page, and keeps another model's clean", () => {
+    const mirrorA = chatsQueryKey("model", MODEL_A, { limit: CHATS_PAGE });
+    const mirrorUnreadA = chatsQueryKey("model", MODEL_A, { filter: "unread", limit: CHATS_PAGE });
+    const mirrorB = chatsQueryKey("model", MODEL_B, { limit: CHATS_PAGE });
+    client.setQueryData(mirrorA, infinite([chatRow(FAN_AB, MODEL_A)]));
+    client.setQueryData(mirrorUnreadA, infinite([]));
+    client.setQueryData(mirrorB, infinite([chatRow(FAN_B, MODEL_B)]));
+    const bBefore = client.getQueryData(mirrorB);
+    renderHook(() => useInboxRealtime(), { wrapper });
+
+    fanWrote(9500, MODEL_A, FAN_A);
+
+    expect(ids(client.getQueryData<Infinite>(mirrorA))).toEqual([FAN_A, FAN_AB]);
+    expect(ids(client.getQueryData<Infinite>(mirrorUnreadA))).toEqual([FAN_A]);
+    expect(client.getQueryData(mirrorB)).toBe(bBefore);
+  });
+});
+
+describe("useInboxRealtime Creator echo (her send from OF web/app: no fromUser, chatUserId = the Fan)", () => {
+  it("appends to the open thread and moves the Fan's row with her text, unread untouched", () => {
+    const row = { ...chatRow(FAN_AB, MODEL_A), hasUnread: true, unreadMessagesCount: 2 } as OFChatItem;
+    const unread = chatsQueryKey("model", MODEL_A, { filter: "unread" });
+    client.setQueryData(unread, infinite([]));
+    client.setQueryData(KEY_A, infinite([chatRow(FAN_B, MODEL_A), row]));
+    client.setQueryData(["messages", MODEL_A, FAN_AB], [
+      { id: 1, text: "old", fromUser: { id: FAN_AB }, createdAt: "2026-06-04T00:00:00.000Z" },
+    ]);
+    renderHook(() => useInboxRealtime(), { wrapper });
+
+    fire({
+      __account_id: MODEL_A,
+      api2_chat_message: { id: 9400, text: "<p>hey :)</p>", chatUserId: FAN_AB, toUser: { id: FAN_AB },
+                           createdAt: "2026-06-21T18:00:00+00:00" },
+    });
+
+    const thread = client.getQueryData<{ id: number; fromUser: { id: number } }[]>(["messages", MODEL_A, FAN_AB])!;
+    expect(thread.map((m) => m.id)).toEqual([1, 9400]);
+    expect(thread[1].fromUser.id).toBe(Number(MODEL_A));
+    const top = client.getQueryData<Infinite>(KEY_A)!.pages[0].rows[0];
+    expect(top.withUser.id).toBe(FAN_AB);
+    expect(top.lastMessage?.text).toBe("<p>hey :)</p>");
+    expect(top.lastMessage?.fromUser?.id).toBe(Number(MODEL_A));
+    expect(top.unreadMessagesCount).toBe(2);
+    expect(ids(client.getQueryData<Infinite>(unread))).toEqual([]);
   });
 });

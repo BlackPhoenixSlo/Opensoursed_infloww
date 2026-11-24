@@ -27,10 +27,13 @@ const RELAY_BASE = ""; // Next rewrites front the relay; same-origin.
 export class RelayError extends Error {
   status: number;
   body: unknown;
+  upstreamStatus: number | undefined;
   constructor(status: number, body: unknown, message?: string) {
     super(message || `relay ${status}`);
     this.status = status;
     this.body = body;
+    const upstream = (body as { detail?: { upstream_status?: unknown } } | null)?.detail?.upstream_status;
+    this.upstreamStatus = typeof upstream === "number" ? upstream : undefined;
   }
 }
 
@@ -199,11 +202,17 @@ export function describeLoadError(
   notFound = "OnlyFans no longer has this.",
 ): string {
   const raw = error?.message || "";
+  if (isRateLimited(error)) return "OnlyFans is busy. Try again shortly.";
   if (/User not found/i.test(raw) || /upstream 404/.test(raw)) return notFound;
   if (/proxy_unreachable|network/i.test(raw)) return "Can't reach OnlyFans right now.";
   if (/timeout/i.test(raw)) return "OnlyFans timed out.";
   if (/upstream 401|upstream 403/.test(raw)) return "This account's OnlyFans session expired.";
-  return `Couldn't refresh: ${raw || "unknown error"}`;
+  const said = /^upstream \S+: \{.*?"message":"([^"]+)"/.exec(raw)?.[1];
+  return `Couldn't refresh: ${said || raw || "unknown error"}`;
+}
+
+export function isRateLimited(error: unknown): boolean {
+  return error instanceof RelayError && (error.status === 429 || error.upstreamStatus === 429);
 }
 
 // ── Background read queue (rules: lib/relaySchedule.ts) ─────────────────────

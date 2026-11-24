@@ -6,7 +6,7 @@
  * (`purchase_notified`) and `chat_responded`. The three arrival lanes are
  * each parse (toastStore's pure `*Arrival`) → on EVERY frame the history row
  * (`mirrorNotification`) and the lane's own side effects (name / rail seeding,
- * the username lookup, the sound) → claim (`claimUnseen`) → pings
+ * the username lookup, the sale/tip sound) → claim (`claimUnseen`) → pings
  * (`pingNotification`). The claim gates the pings only: a Web Push the service
  * worker offered this focused page (`push-notice`, toastStore.deliverPushNotice,
  * same scope as the lanes, pings only) may have claimed the arrival first, and
@@ -43,6 +43,7 @@ import { MONEY_ROWS_CAP, isMoney, moneyListKey } from "@/lib/notifText";
 import {
   markNotifHistoryResponded,
   patchNotifHistoryUser,
+  type NotifSettings,
   type NotifTypeKey,
 } from "@/lib/notifSettings";
 import {
@@ -59,6 +60,17 @@ import {
   type Arrival,
   type PurchaseNotified,
 } from "./toastStore";
+
+/** The sale/tip sound has its own switch (not the toast's); the master toggle
+ *  (and the account's platform switch) mutes it like every other ping. One
+ *  window plays it, once per arrival: its own claim, apart from the toast's
+ *  (a push-notice may have claimed that one first). */
+function playSaleSound(s: NotifSettings, n: Arrival): void {
+  if (!isMoney(n.typeKey) || Math.abs(Date.now() - n.createdMs) > 5 * 60_000) return;
+  if (s.enabled && s.sounds.sale.on && claimUnseen(`${n.accountId}#sound`, n.id)) {
+    playAlertOnce(`${n.accountId}:${n.id}`, s.sounds.sale.sound);
+  }
+}
 
 /**
  * A money arrival goes straight into the rail's cached OF list — no OF
@@ -154,6 +166,7 @@ export function useNotificationDelta(): void {
         // must still list a muted arrival (incl. likes).
         mirrorNotification(arrival);
         if (inScope && claimUnseen(aid, id)) pingNotification(settingsFor(aid), arrival);
+        if (inScope) playSaleSound(settingsFor(aid), arrival);
         // No notif-list refetch, muted or not: a tip/purchase is seeded into
         // the rail's list from this payload; anything else reaches the bell
         // through the history mirror it already merges.
@@ -210,13 +223,6 @@ export function useNotificationDelta(): void {
       const s = settingsFor(aid);
       mirrorNotification(arrival);
       if (claimUnseen(aid, id)) pingNotification(s, arrival);
-      // The new-message sound has its own switch (not the toast's); the master
-      // toggle (and the account's platform switch) mutes it like every other
-      // ping. One window plays it, once per message: its own claim, apart
-      // from the toast's (a push-notice may have claimed that one first).
-      if (s.enabled && s.sounds.message.on && claimUnseen(`${aid}#sound`, id)) {
-        playAlertOnce(`${aid}:${id}`, s.sounds.message.sound);
-      }
     });
     return off;
   }, [qc, settingsFor, ready, targetIds]);
@@ -262,6 +268,7 @@ export function useNotificationDelta(): void {
       // OF's own id, unprefixed — the dedupe this whole design rests on.
       mirrorNotification(arrival);
       if (inScope && claimUnseen(aid, arrival.id)) pingNotification(settingsFor(aid), arrival);
+      if (inScope) playSaleSound(settingsFor(aid), arrival);
       // The relay read this off OF's purchases feed — the list already has it,
       // so seed the row instead of re-reading it.
       seedMoneyList(qc, arrival);

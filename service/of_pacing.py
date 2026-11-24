@@ -22,11 +22,11 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
       whose kind is in _PROXY_PACED_KINDS (the ledger's `transactions`) resolves it (once a page)
       and takes the Creator's slot AND that exit's, both free, both stamped at once; any other
       walk's, the Creator's only (never resolved).
-  retry_429(account_id, call)      (async)
-      The 429 retry alone, for a request a person's page sends itself (`X-Priority:
-      background` /users/list name fill, server.py): user-triggered, so never paced. The
-      wait is on the loop (no worker thread), but inside the request's background
-      admission: it holds the Creator's background lane slot (<= RETRY_MAX_S).
+  absorb_429(account_id, call, *, send_deadline=None)
+      OF's 429 closes the Creator's gate. After a cooldown, one probe goes:
+      sends first, then reads, then walk pages, oldest first within each class.
+      A successful probe opens the gate and spaces out queued requests.
+      Reads have READ_BUDGET_S to wait. Sends pass an absolute dispatch deadline.
   upstream(exc) / allow_s(text) / asked_wait(header, allow)
       The one reader of OF's answer behind an exception: (status, body, Retry-After header);
       "Please allow N seconds" as N, uncapped; OF's asked wait (the header first, else the
@@ -43,7 +43,9 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
 The pacer is ONE per Creator, shared by every job: a background GET leaves PAGE_GAP_S
 (+ 0..JITTER_S) after the Creator's previous one, whichever walk sent it, so two jobs'
 1 s loops cannot burst together. Pages only: CDN, media and /img fetches never come here.
-User reads never do either: no walk, no pause, no retry. Stdlib only plus of_call_counter (a leaf: of_client
+User reads are never paced; only absorb_429's gate holds them. A walk's page never leaves while its
+Creator's gate is cooling or probing. A walk can close the gate and claim a probe.
+Stdlib only plus of_call_counter (a leaf: of_client
 imports it).
 
 Ledger walk pages are paced per proxy exit too (AE 2026-11-08, measured: the ledger's 429s
@@ -79,15 +81,17 @@ Limits, as built (kept on purpose):
 """
 from __future__ import annotations
 
-import asyncio
+import copy
 import hashlib
+import itertools
 import logging
 import random
 import re
 import threading
 import time
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 from typing import Any, Awaitable, Callable
 
 import of_call_counter
@@ -98,6 +102,12 @@ PAGE_GAP_S = 1.0          # OF: "Please allow 1 seconds"
 JITTER_S = 0.3
 RETRY_DEFAULT_S = 1.0     # a 429 whose text names no wait
 RETRY_MAX_S = 10.0
+COOLDOWNS_S = (3.0, 5.0, 8.0, 13.0, 21.0, 34.0)   # owner: the gate's cooldown per 429 in a row
+READ_BUDGET_S = 45.0
+SEND_BUDGET_S = 55.0      # leaves room for the OF POST before Cloudflare's origin deadline
+MAX_READ_WAITERS = 16
+RETRY_HEADER_MAX_S = 120.0
+POLL_S = 0.25             # a queued request's re-check while the probe is out
 USER_WINDOW_S = 10.0      # link_prewarm.prewarm_all skips a Creator with a person's read this recent
 
 _ALLOW = re.compile(r"allow\s+(\d+(?:\.\d+)?)\s*sec", re.I)
@@ -115,6 +125,24 @@ _lock = threading.Lock()
 _next_at: dict[str, float] = {}       # pace key (a Creator, or "proxy <exit>") -> monotonic time its next
                                       # background GET may leave
 _last_user: dict[str, float] = {}     # Creator -> monotonic time of its last user request
+
+
+@dataclass
+class _Gate:
+    closed: bool = False
+    cool_until: float = 0.0
+    step: int = 0
+    epoch: int = 0                 # bumped on every close and open: a 429 counts only for its own epoch
+    probing: bool = False
+    next_at: float = 0.0           # the next drained request's departure
+    closed_at: float = 0.0
+    queue: set[tuple[int, int]] = field(default_factory=set)   # (0 send / 1 read / 2 walk, ticket): min() leaves first
+    last_429: BaseException | None = None
+
+
+_gates: dict[str, _Gate] = {}
+_gates_lock = threading.Lock()
+_tickets = itertools.count()
 
 
 def note_user(account_id: Any) -> None:
@@ -138,15 +166,19 @@ def allow_s(text: str | None) -> float | None:
 
 
 def asked_wait(header: str | None, allow: float | None) -> float | None:
-    """OF's asked wait, uncapped: its `Retry-After` header in seconds first, else
-    `allow` (the body's "Please allow N seconds", allow_s), else None."""
+    """OF's uncapped wait from Retry-After seconds or HTTP-date, then body text."""
     if header is not None:
         try:
             v = float(str(header).strip())
             if v >= 0:
                 return v
         except ValueError:
-            pass
+            try:
+                v = parsedate_to_datetime(header).timestamp() - time.time()
+                if v > 0:
+                    return v
+            except (ValueError, TypeError, OverflowError, OSError):
+                pass
     return allow
 
 
@@ -173,10 +205,12 @@ def upstream(exc: BaseException) -> tuple[int | str | None, str, str | None]:
 
 
 def retry_after(exc: BaseException) -> float | None:
-    """The wait OF asks for when `exc` is its 429 (see `upstream`), capped (parse_allow),
-    else None."""
-    status, body, _ = upstream(exc)
-    return parse_allow(body) if status == 429 else None
+    """Capped retry delay for an OF 429, or None for another error."""
+    status, body, header = upstream(exc)
+    if status != 429:
+        return None
+    wait = asked_wait(header, None)
+    return parse_allow(body) if wait is None else min(wait, RETRY_HEADER_MAX_S)
 
 
 def _turn(*keys: str) -> float:
@@ -196,11 +230,6 @@ def _turn(*keys: str) -> float:
         return 0.0
 
 
-def _wait_turn(*keys: str) -> None:
-    while (d := _turn(*keys)) > 0:
-        time.sleep(d)
-
-
 def exit_label(exit_: str | None) -> str:
     """The log name of an exit key: "-" none, "direct" as is, else `p-<8 hex of the key>`
     (app_open_warm's exit label too): never an IP, host, port or credential."""
@@ -218,9 +247,8 @@ def paced(account_id: Any, call: Callable[[], Any], proxy_key: Callable[[], str]
     aid = str(account_id)
     exit_ = proxy_key() if proxy_key is not None and w.kind in _PROXY_PACED_KINDS else None
     keys = (aid,) if exit_ is None else (aid, f"proxy {exit_}")
-    _wait_turn(*keys)
     try:
-        return call()
+        return _walk_attempt(aid, keys, call)
     except Exception as e:
         wait = retry_after(e)
         if wait is None:
@@ -230,20 +258,156 @@ def paced(account_id: Any, call: Callable[[], Any], proxy_key: Callable[[], str]
     log.info("bg_walk_429_retry account=%s kind=%s walk=%s proxy=%s wait_s=%.1f", aid, w.kind,
              w.account_id or "-", exit_label(exit_), wait)
     time.sleep(wait)
-    _wait_turn(*keys)
-    return call()
+    return _walk_attempt(aid, keys, call)
 
 
-async def retry_429(account_id: Any, call: Callable[[], Awaitable[Any]]) -> Any:
+def _walk_attempt(aid: str, keys: tuple[str, ...], call: Callable[[], Any]) -> Any:
+    with _gates_lock:
+        g = _gates.setdefault(aid, _Gate())
+    me = (2, next(_tickets))
     try:
-        return await call()
+        while True:
+            with _gates_lock:
+                action, delay = _admit(g, me, time.monotonic(), keys)
+                epoch = g.epoch
+            if action != "wait":
+                return _gate_call(aid, g, call, action == "probe", epoch, time.monotonic)
+            time.sleep(delay)
+    finally:
+        with _gates_lock:
+            g.queue.discard(me)
+
+
+def _close(aid: str, g: _Gate, e: BaseException, now: float) -> None:
+    if g.closed and now - g.cool_until > COOLDOWNS_S[-1]:
+        g.step = 0   # nobody probed for a whole top cooldown: start the ladder again
+    cool = max(COOLDOWNS_S[min(g.step, len(COOLDOWNS_S) - 1)], retry_after(e) or 0.0)
+    if not g.closed:
+        g.closed_at = now
+    g.closed, g.probing, g.last_429 = True, False, e
+    g.cool_until = now + cool
+    g.step += 1
+    g.epoch += 1
+    log.info("of_gate_closed account=%s step=%d cooldown_s=%.0f waiting=%d", aid, g.step, cool, len(g.queue))
+
+
+def _open(aid: str, g: _Gate, now: float) -> None:
+    log.info("of_gate_opened account=%s step=%d closed_s=%.1f waiting=%d", aid, g.step, now - g.closed_at,
+             len(g.queue))
+    g.closed = g.probing = False
+    g.epoch += 1
+    g.next_at = now + PAGE_GAP_S + random.uniform(0.0, JITTER_S)
+    if not g.queue:
+        g.step = 0
+
+
+def _admit(
+    g: _Gate, me: tuple[int, int], now: float, pace_keys: tuple[str, ...] = (),
+) -> tuple[str, float]:
+    """("go" | "probe", 0) to send now, else ("wait", seconds). Under _gates_lock."""
+    queued = g.closed or bool(g.queue)
+    if queued:
+        g.queue.add(me)
+        if g.closed and g.cool_until > now:
+            return "wait", g.cool_until - now
+        if g.probing or min(g.queue) != me:
+            return "wait", POLL_S if g.closed else max(g.next_at - now, POLL_S)
+    if not g.closed and (queued or pace_keys) and g.next_at > now:
+        return "wait", g.next_at - now
+    if pace_keys and (delay := _turn(*pace_keys)):
+        return "wait", delay
+    g.queue.discard(me)
+    if g.closed:
+        g.probing = True
+        return "probe", 0.0
+    if queued:
+        g.next_at = now + PAGE_GAP_S + random.uniform(0.0, JITTER_S)
+        if not g.queue:
+            g.step = 0
+    return "go", 0.0
+
+
+def _gate_call(
+    aid: str, g: _Gate, call: Callable[[], Any], probe: bool, epoch: int, clock: Callable[[], float],
+) -> Any:
+    try:
+        out = call()
     except Exception as e:
-        wait = retry_after(e)
-        if wait is None:
-            raise
-    log.info("bg_request_429_retry account=%s wait_s=%.1f", account_id, wait)
-    await asyncio.sleep(wait)
-    return await call()
+        if retry_after(e) is not None:
+            with _gates_lock:
+                now = clock()
+                if epoch == g.epoch:
+                    _close(aid, g, e, now)
+                elif g.closed and not g.probing:
+                    g.cool_until = max(g.cool_until, now + (retry_after(e) or 0.0))
+        raise
+    else:
+        if probe:
+            with _gates_lock:
+                _open(aid, g, clock())
+        return out
+    finally:
+        if probe:
+            with _gates_lock:
+                if epoch == g.epoch:
+                    g.probing = False
+
+
+class SendDispatchExpired(Exception):
+    pass
+
+
+def absorb_429(account_id: Any, call: Callable[[], Any], *,
+               sleep: Callable[[float], Any] = time.sleep, clock: Callable[[], float] = time.monotonic,
+               send_deadline: float | None = None) -> Any:
+    if account_id is None:
+        return call()
+    aid = str(account_id)
+    with _gates_lock:
+        g = _gates.setdefault(aid, _Gate())
+    send = send_deadline is not None
+    me = (0 if send else 1, next(_tickets))
+    t0 = clock()
+    deadline = send_deadline if send_deadline is not None else t0 + READ_BUDGET_S
+    own: BaseException | None = None
+    try:
+        while True:
+            with _gates_lock:
+                now = clock()
+                last = g.last_429 if g.closed or g.queue else None
+                full = (not send and me not in g.queue and
+                        sum(priority == 1 for priority, _ in g.queue) >= MAX_READ_WAITERS)
+                if full or (now >= deadline and (send or own is not None or last is not None)):
+                    break
+                action, delay = _admit(g, me, now)
+                epoch = g.epoch
+            if action == "wait":
+                if now + delay >= deadline:
+                    break
+                sleep(delay)
+                continue
+            try:
+                return _gate_call(aid, g, call, action == "probe", epoch, clock)
+            except SendDispatchExpired:
+                now = clock()
+                break
+            except Exception as e:
+                if retry_after(e) is None:
+                    raise
+                own = e
+                with _gates_lock:
+                    now = clock()
+                    wait = max(g.cool_until - now, 0.0)
+                log.info("request_429_retry account=%s wait_s=%.1f waited_s=%.1f", aid, wait, now - t0)
+        log.info("request_429_gave_up account=%s waited_s=%.1f send=%d", aid, now - t0, send)
+        if own is not None:
+            raise own from None
+        if last is not None:
+            raise copy.copy(last) from None
+        raise SendDispatchExpired() from None
+    finally:
+        with _gates_lock:
+            g.queue.discard(me)
 
 
 async def walk(account_id: Any, kind: str, run: Callable[[], Awaitable[Any]]) -> Any:

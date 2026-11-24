@@ -11,7 +11,8 @@ import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  API_KEY_ERROR_EVENT, ApiKeyError, RelayError, describeLoadError, prefetchScreenBundle, relay, request,
+  API_KEY_ERROR_EVENT, ApiKeyError, RelayError, describeLoadError, isRateLimited, prefetchScreenBundle,
+  relay, request,
   type ApiKeyErrorPayload,
 } from "@/lib/relay";
 import { resetInline, seedInline } from "@/lib/inlineBoot";
@@ -55,6 +56,32 @@ describe("describeLoadError", () => {
 
   it("passes an unrecognised error through rather than swallowing it", () => {
     expect(describeLoadError(err("HTTP 500"))).toBe("Couldn't refresh: HTTP 500");
+  });
+
+  const OF_429 = 'upstream 429: {"error":{"code":0,"message":"Too many requests. Please allow 1 seconds.","payload":{"retry":1}}}';
+  const rateLimit = new RelayError(502, { detail: { upstream_status: 429, upstream_body: "busy" } }, OF_429);
+  it("renders structured upstream throttling without promising another retry", () => {
+    expect(describeLoadError(rateLimit)).toBe("OnlyFans is busy. Try again shortly.");
+  });
+  it.each([
+    ['upstream 500: {"error":{"code":0,"message":"Something broke"}}', "Couldn't refresh: Something broke"],
+    ["upstream 4290: x", "Couldn't refresh: upstream 4290: x"],
+  ])("%s -> %s (never the raw JSON)", (raw, want) => {
+    const out = describeLoadError(err(raw), "GONE");
+    expect(out).toBe(want);
+    expect(out).not.toContain("{");
+  });
+
+  it.each([
+    [err(OF_429), false],
+    [new RelayError(429, null), true],
+    [rateLimit, true],
+    [err("upstream 404: x"), false],
+    [err("HTTP 500"), false],
+    [null, false],
+    [undefined, false],
+  ])("isRateLimited(%s) = %s", (e, want) => {
+    expect(isRateLimited(e)).toBe(want);
   });
 
   it("survives a null/blank error without rendering 'undefined'", () => {

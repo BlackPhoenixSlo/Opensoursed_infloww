@@ -31,3 +31,14 @@ describe("notif settings defaults round 2", () => {
     expect(readNotifSettings().toast.message).toBe(false);
   });
 });
+
+describe("sale sound", () => {
+  it.each([
+    ["old new-message pick carries over", { message: { on: true, sound: "s12" } }, { on: true, sound: "s12" }],
+    ["a saved sale pick wins", { message: { on: true, sound: "s12" }, sale: { on: false, sound: "s4" } }, { on: false, sound: "s4" }],
+    ["nothing saved → default", undefined, DEFAULT_NOTIF_SETTINGS.sounds.sale],
+  ])("%s", (_name, sounds, want) => {
+    window.localStorage.setItem(KEY, JSON.stringify({ defaultsRound: 2, sounds }));
+    expect(readNotifSettings().sounds.sale).toEqual(want);
+  });
+});

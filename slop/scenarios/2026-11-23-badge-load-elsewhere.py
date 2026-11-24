@@ -31,10 +31,9 @@ Checks (`judge`, over the driver's truth log, the tabs' dots and Red circles, an
 DOT_FLIP_P95_UNDER_8S / DOT_FLIP_MAX_UNDER_30S (lib/badge_metrics `lag` per fan on the full leg's elsewhere changes;
 DMs are truth, never judged); FINAL_EQUALS_TRUTH (after the full and lean settles: every plain fan's dot = truth,
 every Red circle = `truth_red`, never `raw_counter`); READS_GAP_5S (full + race starts, GAP_SLACK_S of request
-jitter), READS_SINGLE_FLIGHT, READS_CAP_120 (with relay.log's `badge_read kind=queue` re-reads, none here),
-READS_MAX_2_PAGES (`group_reads` starts and spans; raw attempts a metric); STALE_READ_NEVER_CLEARS (no
-`chat_read_changed {X, 0}` arriving after X's DM and X's dot unread at the race end, on Creators where an Attribution
-read spans the DM; the `badge-ordering-fence-off` fault's target);
+jitter), READS_SINGLE_FLIGHT, READS_MAX_2_PAGES (`group_reads` starts and spans; raw attempts a metric);
+STALE_READ_NEVER_CLEARS (no `chat_read_changed {X, 0}` arriving after X's DM and X's dot unread at the race end, on
+Creators where an Attribution read spans the DM; the `badge-ordering-fence-off` fault's target);
 LEAN_GAP_15S; LEAN_READS_HALVE (lean reads/Creator-min <= LEAN_RATIO x full's); OFF_ZERO_READS (no `filter=unread`
 call in the off leg, Red circle = `truth_red` at its end). Every check `ctx.skip`s while Phase B's slot is absent.
 
@@ -51,8 +50,8 @@ from slop.actors.badge_tab import open_ts
 from slop.lib.badge_load import CHATS, PATTERN, SLOT_S, DotTab, Driver, close_tabs, dot_tabs, phase_b, plan, pumps
 from slop.lib.badge_load import PLAIN as PLAIN, ONLY_FRIENDS as ONLY_FRIENDS, PLAIN_HIGH as PLAIN_HIGH
 from slop.lib.badge_load import PLAIN_UNREAD as PLAIN_UNREAD, RESTRICTED as RESTRICTED
-from slop.lib.badge_metrics import (UNREAD_ROUTE, cap_rates, gap_ok, group_reads, held_at, lag, over_pages, p95,
-                                    queue_reads, raw_attempts, single_flight_ok)
+from slop.lib.badge_metrics import (UNREAD_ROUTE, gap_ok, group_reads, held_at, lag, over_pages, p95, raw_attempts,
+                                    single_flight_ok)
 from slop.lib.badge_wire import BadgeWire, restrict_in_relay
 
 PROFILE = "flat_agency"
@@ -68,21 +67,19 @@ DOT_FLIP_MAX_UNDER_30S = "DOT_FLIP_MAX_UNDER_30S"
 FINAL_EQUALS_TRUTH = "FINAL_EQUALS_TRUTH"
 READS_GAP_5S = "READS_GAP_5S"
 READS_SINGLE_FLIGHT = "READS_SINGLE_FLIGHT"
-READS_CAP_120 = "READS_CAP_120"
 READS_MAX_2_PAGES = "READS_MAX_2_PAGES"
 STALE_READ_NEVER_CLEARS = "STALE_READ_NEVER_CLEARS"
 LEAN_GAP_15S = "LEAN_GAP_15S"
 LEAN_READS_HALVE = "LEAN_READS_HALVE"
 OFF_ZERO_READS = "OFF_ZERO_READS"
 CHECKS = (DOT_FLIP_P95_UNDER_8S, DOT_FLIP_MAX_UNDER_30S, FINAL_EQUALS_TRUTH, READS_GAP_5S, READS_SINGLE_FLIGHT,
-          READS_CAP_120, READS_MAX_2_PAGES, STALE_READ_NEVER_CLEARS, LEAN_GAP_15S, LEAN_READS_HALVE, OFF_ZERO_READS)
+          READS_MAX_2_PAGES, STALE_READ_NEVER_CLEARS, LEAN_GAP_15S, LEAN_READS_HALVE, OFF_ZERO_READS)
 BUDGETED = (DOT_FLIP_P95_UNDER_8S, DOT_FLIP_MAX_UNDER_30S)
 DOT_P95_S = 8.0
 DOT_MAX_S = 30.0
 GAP_S = 5.0
 LEAN_GAP_S = 15.0
 GAP_SLACK_S = 0.25
-CAP_PER_HOUR = 120
 MAX_PAGES = 2
 LEAN_RATIO = 0.6
 DEEP_FILL = 10
@@ -99,11 +96,11 @@ SETTLE_S = {"full": 10.0, "deep": 10.0, "lean": 20.0, "off": 5.0}
 
 
 def judge(truth: list, seen: dict, init: dict, reds: dict, ends: dict, legs: dict, calls: list,
-          race: dict, queue: list[tuple[float, str]] = ()) -> dict[str, tuple[bool | None, dict]]:
+          race: dict) -> dict[str, tuple[bool | None, dict]]:
     """Every check's (ok | None, detail). `truth` (t, aid, fan, unread, cause); `seen[(aid, fan)]` the dot's
     (arrival t, unread), time order; `init[aid][fan]` a plain fan's seeded unread; `reds[aid]` the Red circle (t, n);
     `ends[leg]` {t, unread: {aid: plain fans}, red: {aid: truth_red}} at its settle; `legs[leg]` (t0, t1, settled);
-    `race[aid]` {fan, dm_t}; `queue` relay.log's `badge_read kind=queue` re-reads (t, aid), in READS_CAP_120."""
+    `race[aid]` {fan, dm_t}."""
     out: dict[str, tuple[bool | None, dict]] = {}
     seen = {k: sorted(v) for k, v in seen.items()}
     reds = {k: sorted(v, key=lambda x: x[0]) for k, v in reds.items()}
@@ -163,10 +160,6 @@ def judge(truth: list, seen: dict, init: dict, reds: dict, ends: dict, legs: dic
     flights = {aid: single_flight_ok([(r.start, r.end) for r in rs]) for aid, rs in by_aid.items()}
     out[READS_SINGLE_FLIGHT] = (None if not reads else all(ok for ok, _ in flights.values()),
                                 {"reads": len(reads), "overlaps": {a: o[:3] for a, (ok, o) in flights.items() if not ok}})
-    rates = cap_rates(reads, queue, CAP_PER_HOUR)
-    out[READS_CAP_120] = (None if not reads else all(ok for ok, _ in rates.values()),
-                          {"max_per_hour": {a: n for a, (_, n) in rates.items()}, "queue_reads": len(queue),
-                           "cap": CAP_PER_HOUR})
     over = over_pages(reads, MAX_PAGES)
     out[READS_MAX_2_PAGES] = (None if not reads else not over,
                               {"reads": len(reads), "over": [vars(r) for r in over[:5]],
@@ -351,9 +344,7 @@ async def run(ctx) -> None:
         "per_creator": dict(Counter(r.account for r in reads)), "raw_attempts": raw_attempts(calls)})
     ctx.metric("tabs", {t.name: {"dots": sum(len(v) for v in t.dots.values()), "reconnects": t.reconnects,
                                  "errors": t.errors[:5], "ended": t.ended} for g in gens for t in g})
-    text = (ctx.out / "relay.log").read_text(errors="replace") if (ctx.out / "relay.log").exists() else ""
-    report(ctx, judge(driver.truth, seen, init, reds, ends, legs, calls, race,
-                      [(t, a) for t, a in queue_reads(text) if a in init]))
+    report(ctx, judge(driver.truth, seen, init, reds, ends, legs, calls, race))
     deep = two_page_report(driver.truth, seen, legs, calls)
     ctx.metric("two_page_leg", deep)
     if deep:

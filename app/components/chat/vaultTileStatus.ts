@@ -56,27 +56,18 @@ export function describeTile(m: VaultMedia, entry: FanVaultEntry, onWall: boolea
   return `${base} · ${kind} (${entry.send_count}×)${wallNote}`;
 }
 
-/** Price string for the corner badge: the last send price (locked or
- *  unlocked); the cumulative total paid lives in `describeTile`, the
- *  tooltip. Free + wall-only return null. */
-function tilePriceLabel(entry: FanVaultEntry | undefined): string | null {
-  if (!entry || entry.last_price_cents <= 0) return null;
-  return `${fmtPrice(entry.last_price_cents)}`;
-}
-
-/** The corner pill's text: the price for locked/unlocked ($X, else PPV /
- *  PAID), "FREE" for sent-free, and the wall marker. Paid wall posts carry
- *  the price OF was charging on the wall ("WALL $6.99"); free wall posts
- *  stay a plain "WALL". */
+/** The corner pill's text: "BOUGHT" (+ the total the fan paid, whole dollars, never the
+ *  last ask price), "SENT $X" for a locked send (else "SENT PPV"), "SENT FREE", and the
+ *  wall marker. Paid wall posts carry the price OF was charging on the wall ("WALL $6.99");
+ *  free wall posts stay a plain "WALL". */
 export function pillText(status: TileStatus, entry: FanVaultEntry | undefined, wallCents: number): string {
-  const priceLabel = tilePriceLabel(entry);
   switch (status) {
     case "unlocked":
-      return priceLabel ?? "PAID";
+      return entry && entry.total_paid_cents > 0 ? `BOUGHT ${fmtCents(entry.total_paid_cents)}` : "BOUGHT";
     case "locked":
-      return priceLabel ?? "PPV";
+      return entry && entry.last_price_cents > 0 ? `SENT ${fmtPrice(entry.last_price_cents)}` : "SENT PPV";
     case "free":
-      return "FREE";
+      return "SENT FREE";
     case "on-wall":
       return wallCents > 0 ? `WALL ${fmtPrice(wallCents)}` : "WALL";
   }

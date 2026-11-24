@@ -40,6 +40,7 @@ import of_call_counter  # noqa: E402
 import of_ws  # noqa: E402
 import shared_refresher  # noqa: E402
 import unread_total  # noqa: E402
+from unread_total_decide import Restricted  # noqa: E402
 from of_client import OFClient  # noqa: E402
 
 A = "8241"
@@ -198,7 +199,7 @@ async def case_grey_on_off():
     with _world() as (_client, _t, lines):
         now = int(time.time() * 1000)
         unread_total.observe_counter(A, 3, now)
-        unread_total.set_restricted_unread(A, 0, now)
+        unread_total.set_restricted_unread(A, Restricted(0, False, 0), now)
         assert lines == [f"badge_grey account={A} state=on reason=r_unknown",
                          f"badge_grey account={A} state=off reason=r_unknown"], lines
         lines.clear()

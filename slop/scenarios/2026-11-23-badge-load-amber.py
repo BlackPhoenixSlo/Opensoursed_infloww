@@ -17,8 +17,7 @@ between DM windows (CHAT_AT_S). Then SETTLE_S of nothing moving.
 Checks (pure `judge`): AMBER_P95_UNDER_8S / AMBER_MAX_UNDER_30S (lib/badge_metrics `lag` from each amber truth change
 in the load to the tab's Amber circle); NO_FAN_IN_BOTH (`in_both`: the Amber circle never counts more Fans than are
 outside the Relay's per-Fan Red view and held Fan-last); FINAL_EQUALS_TRUTH (each Amber circle = `truth_amber`
-after the settle); READS_CAP_120 (Attribution read starts plus relay.log's `badge_read kind=queue` re-reads per
-Creator-hour). Every check goes through `badge_metrics.amber_gate`: SKIP while Phase F's `amber` is absent from the
+after the settle). Every check goes through `badge_metrics.amber_gate`: SKIP while Phase F's `amber` is absent from the
 accounts answer, FAIL then and when unjudged under `--set require_amber=1`. The raw OF counter is never asserted.
 
 Bypasses (declared): OF at its wire (lib/badge_wire.py on lib/of_wire.py); tabs are API tabs; masses are sent
@@ -36,7 +35,7 @@ from collections import Counter, defaultdict
 from slop.actors.badge_tab import open_ts
 from slop.lib import badge_load
 from slop.lib.badge_load import CHATS, SLOT_S, close_tabs, dot_tabs, phase_b, pumps
-from slop.lib.badge_metrics import (amber_gate, cap_rates, group_reads, held_at, lag, p95, queue_reads,
+from slop.lib.badge_metrics import (amber_gate, group_reads, held_at, lag, p95, queue_reads,
                                     window_reads)
 from slop.lib.badge_wire import BadgeWire, restrict_in_relay
 
@@ -51,12 +50,10 @@ AMBER_P95_UNDER_8S = "AMBER_P95_UNDER_8S"
 AMBER_MAX_UNDER_30S = "AMBER_MAX_UNDER_30S"
 NO_FAN_IN_BOTH = "NO_FAN_IN_BOTH"
 FINAL_EQUALS_TRUTH = "FINAL_EQUALS_TRUTH"
-READS_CAP_120 = "READS_CAP_120"
-CHECKS = (AMBER_P95_UNDER_8S, AMBER_MAX_UNDER_30S, NO_FAN_IN_BOTH, FINAL_EQUALS_TRUTH, READS_CAP_120)
+CHECKS = (AMBER_P95_UNDER_8S, AMBER_MAX_UNDER_30S, NO_FAN_IN_BOTH, FINAL_EQUALS_TRUTH)
 BUDGETED = (AMBER_P95_UNDER_8S, AMBER_MAX_UNDER_30S)
 AMBER_P95_S = 8.0
 AMBER_MAX_S = 30.0
-CAP_PER_HOUR = 120
 BOTH_SLACK_S = 2.0
 AWAITING = 6
 REPLY_AMBER_MIN = 2
@@ -200,11 +197,11 @@ def in_both(drawn: list[tuple[float, int]], pool: list[int], dots0: dict[int, in
 
 
 def judge(truth: dict[str, list[tuple[float, int]]], drawn: dict[str, list[tuple[float, int]]],
-          legs: tuple[float, float, float], final: dict[str, int], calls: list[dict],
-          queue: list[tuple[float, str]], both: dict[str, dict]) -> dict[str, tuple[bool | None, dict]]:
+          legs: tuple[float, float, float], final: dict[str, int],
+          both: dict[str, dict]) -> dict[str, tuple[bool | None, dict]]:
     """Every check's (ok | None, detail). `truth[aid]` the amber truth changes (t, n); `drawn[aid]` the tab's Amber
-    circle (t, n); `legs` (load start, load end, settled); `final[aid]` amber truth when settled; `calls` the fake's;
-    `queue` relay.log's kind=queue re-reads (t, aid); `both[aid]` `in_both`'s keyword inputs past `drawn`."""
+    circle (t, n); `legs` (load start, load end, settled); `final[aid]` amber truth when settled; `both[aid]`
+    `in_both`'s keyword inputs past `drawn`."""
     out: dict[str, tuple[bool | None, dict]] = {}
     t0, t1, te = legs
     lags, worst = [], []
@@ -237,11 +234,6 @@ def judge(truth: dict[str, list[tuple[float, int]]], drawn: dict[str, list[tuple
         if shown != n:
             wrong[aid] = {"amber": shown, "truth_amber": n}
     out[FINAL_EQUALS_TRUTH] = (None if not final else not wrong, {"judged": len(final), "wrong": wrong})
-
-    rates = cap_rates(group_reads(calls), queue, CAP_PER_HOUR)
-    out[READS_CAP_120] = (None if not rates else all(ok for ok, _ in rates.values()),
-                          {"max_per_hour": {a: n for a, (_, n) in rates.items()}, "queue_reads": len(queue),
-                           "cap": CAP_PER_HOUR})
     return out
 
 
@@ -341,7 +333,7 @@ async def run(ctx) -> None:
                          "window": {a: len(v) for a, v in windows.items()}})
     ctx.metric("tabs", {t.name: {"amber_changes": len(drawn.get(t.aids[0], ())), "dots": len(t.dots[t.aids[0]]),
                                  "reconnects": t.reconnects, "errors": t.errors[:5], "ended": t.ended} for t in tabs})
-    report(ctx, judge(truth, drawn, legs, final, calls, queue, both), True, require)
+    report(ctx, judge(truth, drawn, legs, final, both), True, require)
     (ctx.out / "badge-load-amber.json").write_text(json.dumps({
         "legs": legs, "final": final, "truth": truth, "drawn": drawn, "queue": queue, "both": both,
     }, default=str))

@@ -4,10 +4,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
 
 import type { SendStatus } from "@/hooks/useSendMessage";
-import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
+import { flipCachedReadState, optimisticRead } from "@/hooks/useAccountStateEvents";
 import { relayNow } from "@/lib/ageClock";
 import {
-  decodeChatsKey, freshestFanRow, keyHoldsAccount, patchChatCaches, patchFanRows, type ChatPages,
+  patchChatCaches, patchFanRows,
 } from "@/lib/chatsCache";
 import { relay, type OFChatItem } from "@/lib/relay";
 import type { FanId } from "@/lib/fanId";
@@ -27,9 +27,7 @@ export function patchCachedChat(
 function markChatRead(
   qc: ReturnType<typeof useQueryClient>, accountId: string, fanId: FanId,
 ): void {
-  const wasUnread = !!freshestFanRow(qc.getQueryCache().findAll({ queryKey: ["chats"] })
-    .filter((q) => keyHoldsAccount(decodeChatsKey(q.queryKey), accountId))
-    .map((q) => q.state.data as ChatPages | undefined), accountId, fanId)?.hasUnread;
+  const optimistic = optimisticRead(qc, accountId, fanId);
   relay
     .post(`/admin/messages/${accountId}/${fanId}/mark-read`, undefined)
     .catch((err) => console.warn("[mark-read local] failed", err));
@@ -37,11 +35,10 @@ function markChatRead(
     .post(`/api/of/v2/chats/${fanId}/mark-as-read`, undefined, { accountId })
     .catch((err) => {
       console.warn("[mark-as-read] failed", err);
-      if (wasUnread) {
+      if (optimistic.current() && optimistic.wasUnread) {
         flipCachedReadState(qc, accountId, { fanId, unread: true, at: relayNow() }, { own: true });
       }
     });
-  flipCachedReadState(qc, accountId, { fanId, unread: false, at: relayNow() }, { own: true });
 }
 
 /** Marks the chat read on open ("onOpen") or on the first send that reaches OF

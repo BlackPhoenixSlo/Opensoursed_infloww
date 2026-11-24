@@ -18,11 +18,6 @@ A, B = "1", "2"
 LEGS = (0.0, 180.0, 195.0)
 
 
-def _call(t0, account, offset=0, dur=0.3):
-    return {"t0": t0, "t": t0 + dur, "account": account, "route": "GET /api2/v2/chats", "status": 200,
-            "query": f"limit=10&offset={offset}&filter=unread"}
-
-
 def _trace():
     # A: Fans 1, 2 awaiting; 4 read elsewhere at 10; 1 replied elsewhere at 40 (echo at 40.7); 2 DMs at 70;
     # 4 in a mass at 100 (window re-read at 103). B: 5 awaiting; 6 read elsewhere at 20; 5 chat-replied at 60.
@@ -33,8 +28,6 @@ def _trace():
                   B: [(-4.0, 1), (25.0, 2), (61.0, 1)]},
         "legs": LEGS,
         "final": {A: 0, B: 1},
-        "calls": [_call(5.0 + 10 * k, aid) for aid in (A, B) for k in range(15)],
-        "queue": [(103.0, A)],
         "both": {
             A: {"pool": [1, 2, 3, 4], "dots0": {1: 0, 2: 0, 3: 0, 4: 1}, "dots": {4: [(13.0, 0)], 2: [(70.05, 1)]},
                 "last0": {1: True, 2: True, 3: False, 4: True}, "last": {1: [(40.0, False)], 4: [(100.0, False)]},
@@ -53,7 +46,6 @@ def test_green_trace_passes_every_check():
     v = _judge(_trace())
     assert {k: ok for k, (ok, _) in v.items()} == {k: True for k in m.CHECKS}, v
     assert v[m.AMBER_MAX_UNDER_30S][1]["n"] == 6, "only truth changes inside the load are judged"
-    assert v[m.READS_CAP_120][1]["max_per_hour"] == {A: 16, B: 15}, "kind=queue re-reads join the cap"
 
 
 def _break(name):
@@ -70,8 +62,6 @@ def _break(name):
         tr["both"][A]["dots"][4] = [(13.0, 0), (101.0, 1)]
     elif name == "final":
         tr["final"][B] = 2
-    elif name == "cap":
-        tr["queue"] += [(110.0 + k, A) for k in range(120 - 16 + 1)]
     return tr
 
 
@@ -81,17 +71,10 @@ def _break(name):
     ("both", m.NO_FAN_IN_BOTH),             # Fan 2's DM lights his dot but amber still counts him
     ("both_mass", m.NO_FAN_IN_BOTH),        # Fan 4 marked unread (dot red) while amber keeps him
     ("final", m.FINAL_EQUALS_TRUTH),        # B's Amber circle off truth when settled
-    ("cap", m.READS_CAP_120),               # 16 + 105 reads in an hour, kind=queue included
 ])
 def test_each_check_fails_on_its_broken_trace(broken, check):
     ok, detail = _judge(_break(broken))[check]
     assert ok is False, detail
-
-
-def test_cap_counts_queue_reads_up_to_120():
-    tr = _trace()
-    tr["queue"] += [(110.0 + k, A) for k in range(120 - 16)]
-    assert _judge(tr)[m.READS_CAP_120][0] is True
 
 
 def test_in_both_is_lenient_inside_the_slack_only():
@@ -106,7 +89,7 @@ def test_in_both_is_lenient_inside_the_slack_only():
 
 
 def test_unjudged_without_evidence():
-    v = m.judge({}, {}, LEGS, {}, [], [], {})
+    v = m.judge({}, {}, LEGS, {}, {})
     assert all(ok is None for ok, _ in v.values()), v
 
 
@@ -135,7 +118,7 @@ def test_report_goes_through_the_require_amber_gate(present, require, want):
 
 
 def test_unjudged_check_fails_under_require_amber():
-    v = m.judge({}, {}, LEGS, {}, [], [], {})
+    v = m.judge({}, {}, LEGS, {}, {})
     ctx = _Ctx()
     m.report(ctx, v, True, True)
     assert {ok for _, ok, _, _ in ctx.got} == {False}
@@ -146,9 +129,8 @@ def test_unjudged_check_fails_under_require_amber():
 
 def test_sizes_rates_and_relay_constants(monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "service"))
-    reads = importlib.import_module("badge_reads_decide")
     transcode = importlib.import_module("event_transcode_decide")
-    assert m.CAP_PER_HOUR == reads.CAP_PER_HOUR and m.QUEUE_TO >= transcode.QUEUE_MIN_RECIPIENTS
+    assert m.QUEUE_TO >= transcode.QUEUE_MIN_RECIPIENTS
     assert [(v["creators"], v["seconds"]) for v in m.TIERS.values()] == [(3, 180.0), (10, 300.0)]
     plan = m.plan([{"id": i} for i in range(m.CHATS)])
     assert len(plan) == m.CHATS <= 25, "every chat inside the 25-row window amber folds"

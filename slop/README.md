@@ -1547,15 +1547,14 @@ A flow with a `README.<flow>.md` lists its scenarios there (every one: `ls slop/
     race ~30 s (Unread list snapshot held, chats GETs 4 s slow, a DM inside the read), then a Relay restart per leg
     with `BADGE_READS` in the stack's relay env: lean 180 s, off 60 s (~11 min; full: 10 Creators, 300/30/300/60 s,
     ~14 min, run alone). Checks `DOT_FLIP_P95_UNDER_8S`, `DOT_FLIP_MAX_UNDER_30S`, `FINAL_EQUALS_TRUTH`,
-    `READS_GAP_5S`, `READS_SINGLE_FLIGHT`, `READS_CAP_120`, `READS_MAX_2_PAGES`, `STALE_READ_NEVER_CLEARS`,
+    `READS_GAP_5S`, `READS_SINGLE_FLIGHT`, `READS_MAX_2_PAGES`, `STALE_READ_NEVER_CLEARS`,
     `LEAN_GAP_15S`, `LEAN_READS_HALVE`, `OFF_ZERO_READS` (pure `judge`, `lib/test_badge_load_elsewhere.py`); metric
     Attribution reads per leg. Evidence `badge-load-elsewhere.json`.
   - `2026-11-23-badge-load-amber` (`OF_WIRE`, Phase F, 2b): 2a's world and Driver with 6 awaiting chats per Creator,
     replies elsewhere with echoes, a chatter reply through the Relay every 12 s and a mass elsewhere to 5 read Fans
     every 60 s (`BadgeWire.queue_elsewhere`: no per-Fan echo, then `chat_queue_finish`); 3 Creators x 1 tab, 180 s
     (~5 min; full: 10 Creators, 300 s, ~8 min). Checks `AMBER_P95_UNDER_8S`, `AMBER_MAX_UNDER_30S`, `NO_FAN_IN_BOTH`,
-    `FINAL_EQUALS_TRUTH` (amber), `READS_CAP_120` (Attribution starts + relay.log `badge_read kind=queue`); pure
-    `judge`, `lib/test_badge_load_amber.py`. Evidence `badge-load-amber.json`.
+    `FINAL_EQUALS_TRUTH` (amber); pure `judge`, `lib/test_badge_load_amber.py`. Evidence `badge-load-amber.json`.
   - Each check `ctx.skip`s while its Phase is absent (B's slot, A's Peek cursor, C's Hover cooldown, grey causes and completeness). Phase C's 6 joins
     this group in its own delivery. Phase F checks go through `badge_metrics.amber_gate`: SKIP
     while F's `amber` is absent from the accounts answer, FAIL (absent or unjudged) under `--set require_amber=1`.

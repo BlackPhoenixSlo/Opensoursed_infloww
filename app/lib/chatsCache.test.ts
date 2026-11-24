@@ -3,7 +3,8 @@ import { QueryClient } from "@tanstack/react-query";
 
 import {
   applyReadFlip, applyReply, badgeUnreadView, bumpAfterSend, bumpChatPages, commitChatPages, completeUnreadView, decodeChatsKey,
-  fanRowMatcher, freshestFanRow, isUnreadList, JOURNAL_MS, patchChatCaches, keyHoldsAccount, mayAddRow, UNREAD_VIEW_MAX_AGE_MS, parseReadFlip, parseReply, patchFanRows, readElsewhere, type ChatPage, type ChatPages,
+  fanRowMatcher, freshestFanRow, isUnreadList, JOURNAL_MS, preserveChatRows, patchChatCaches, keyHoldsAccount, viewAdmits, UNREAD_VIEW_MAX_AGE_MS, parseReadFlip, parseReply, parseRestrictFlip, patchFanRows, readElsewhere,
+  applyRestrictFlip, restrictedRow, type ChatPage, type ChatPages, type StampedPage,
   type Reply, type SentMessage,
 } from "@/lib/chatsCache";
 import type { FanId } from "@/lib/fanId";
@@ -18,14 +19,14 @@ const row = (aid: string, fid: FanId, lastId = 1, at = "2026-10-01T00:00:00Z", u
 const pagesOf = (...pages: OFChatItem[][]): ChatPage[] => pages.map((rows) => ({ rows, hasMore: true }));
 const ids = (pages: ChatPage[]) => pages.map((p) => p.rows.map((r) => `${r.__accountId}:${r.withUser.id}`));
 
-describe("decodeChatsKey / keyHoldsAccount / mayAddRow", () => {
+describe("decodeChatsKey / keyHoldsAccount / viewAdmits", () => {
   it.each([
     // key, unfiltered, holds "a1", holds "a2", new a1 row may enter, new a2 row may enter
     [["chats", "model", "a1", null, null, null, 30], true, true, false, true, false],
     [["chats", "model", "a1", "unread", null, null, 30], false, true, false, false, false],
     [["chats", "model", "a1", null, "list9", null, 30], false, true, false, false, false],
     [["chats", "model", "a1", null, null, "bob", 30], false, true, false, false, false],
-    [["chats", "all", "a1,a2", null, null, null, 30, "oldest"], true, true, true, true, true],
+    [["chats", "all", "a1,a2", null, null, null, 30, "old"], true, true, true, false, false],
     [["chats", "all", "a1,a2", "pinned", null, null, 30], false, true, true, false, false],
     [["chats", "all", "a2,a3", null, null, null, 30], true, false, true, false, true],
     [["chats", "all", "a11", null, null, null, 30], true, false, false, false, false],
@@ -36,12 +37,25 @@ describe("decodeChatsKey / keyHoldsAccount / mayAddRow", () => {
       expect(k.unfiltered).toBe(unfiltered);
       expect(keyHoldsAccount(k, "a1")).toBe(a1);
       expect(keyHoldsAccount(k, "a2")).toBe(a2);
-      expect(mayAddRow(key, "a1")).toBe(add1);
-      expect(mayAddRow(key, "a2")).toBe(add2);
+      expect(viewAdmits(decodeChatsKey(key), row("a1", 1))).toBe(add1);
+      expect(viewAdmits(decodeChatsKey(key), row("a2", 1))).toBe(add2);
     });
+  it.each([
+    // a fan's message may also enter the plain Unread list of a scope holding his Creator
+    [["chats", "model", "a1", "unread", null, null, 30], true, false],
+    [["chats", "all", "a1,a2", "unread", null, null, 30], true, true],
+    [["chats", "model", "a1", "unread_tips", null, null, 30], false, false],
+    [["chats", "model", "a1", "unread", "list9", null, 30], false, false],
+    [["chats", "model", "a1", "pinned", null, null, 30], false, false],
+    [["chats", "model", "a1", null, null, null, 30], true, false],
+  ] as const)("inbound %j → may add a1 %s / a2 %s; not outbound on a filter", (key, add1, add2) => {
+    expect(viewAdmits(decodeChatsKey(key), row("a1", 1, 1, undefined, 1))).toBe(add1);
+    expect(viewAdmits(decodeChatsKey(key), row("a2", 1, 1, undefined, 1))).toBe(add2);
+    if (key[3] !== null) expect(viewAdmits(decodeChatsKey(key), row("a1", 1))).toBe(false);
+  });
   it("reads every position", () => {
     expect(decodeChatsKey(["chats", "model", 7, "pinned", 3, "q", 30])).toEqual({
-      scopeKind: "model", accountKey: "7", filter: "pinned", listId: 3, query: "q", unfiltered: false,
+      scopeKind: "model", accountKey: "7", filter: "pinned", listId: 3, query: "q", order: "recent", unfiltered: false,
     });
   });
 });
@@ -191,6 +205,67 @@ describe("patchFanRows", () => {
     const data = of(row("b", 1));
     expect(patchFanRows(data, "a", 1, { hasUnread: false })).toBe(data);
     expect(patchFanRows(undefined, "a", 1, { hasUnread: false })).toBeUndefined();
+  });
+});
+
+describe("parseRestrictFlip", () => {
+  it.each([
+    [{ fan_id: 7, restricted: true }, { fanId: 7, restricted: true }],
+    [{ fan_id: "9007199254740993", restricted: false }, { fanId: "9007199254740993", restricted: false }],
+    [{ fan_id: 7, restricted: 1 }, null],
+    [{ fan_id: "", restricted: true }, null],
+    [{ restricted: true }, null],
+    [null, null],
+  ] as const)("%j", (body, want) => {
+    expect(parseRestrictFlip(body)).toEqual(want);
+  });
+});
+
+describe("restrictedRow", () => {
+  const base = row("a", 1);
+  const r = (extra: Partial<OFChatItem>, wu: Record<string, unknown> = {}): OFChatItem =>
+    ({ ...base, ...extra, withUser: { ...base.withUser, ...wu } });
+  const flags = (c: OFChatItem) => [
+    c.canSendMessage ?? null, c.canNotSendReason ?? null, !!c.withUser.isRestricted, !!c.withUser.badgeExcluded,
+  ];
+  it.each([
+    ["restrict a sendable row", r({ canSendMessage: true }), true, [false, "muted", true, true]],
+    ["restrict a row with no send fields", base, true, [false, "muted", true, true]],
+    ["restrict keeps another block's reason", r({ canSendMessage: false, canNotSendReason: "expired" }), true,
+      [false, "expired", true, true]],
+    ["lift a restricted row", r({ canSendMessage: false, canNotSendReason: "muted" }, { isRestricted: true, badgeExcluded: true }),
+      false, [true, null, false, false]],
+    ["lift keeps another block, still excluded", r({ canSendMessage: false, canNotSendReason: "expired" },
+      { isRestricted: true, badgeExcluded: true }), false, [false, "expired", false, true]],
+  ] as const)("%s", (_n, c, restricted, want) => {
+    expect(flags(restrictedRow(c, restricted))).toEqual(want);
+  });
+
+  it("the same row when it already shows the state", () => {
+    const on = r({ canSendMessage: false, canNotSendReason: "muted" }, { isRestricted: true, badgeExcluded: true });
+    expect(restrictedRow(on, true)).toBe(on);
+    const off = r({ canSendMessage: true });
+    expect(restrictedRow(off, false)).toBe(off);
+  });
+});
+
+describe("applyRestrictFlip", () => {
+  const of = (...rows: OFChatItem[]): ChatPages => ({ pages: [{ rows, hasMore: false }], pageParams: [0] });
+  const restrictedOf = (d: ChatPages) => d.pages.flatMap((p) => p.rows.map((c) => !!c.withUser.isRestricted));
+  it.each([
+    ["every copy of the model's fan row", of(row("a", 1), row("a", 2), row("a", 1)), "a", 1, [true, false, true]],
+    ["a string fan id against a number one", of(row("a", 1)), "a", "1", [true]],
+    ["the same fan under another model is left alone", of(row("b", 1)), "a", 1, [false]],
+  ] as const)("%s", (_n, data, aid, fid, want) => {
+    expect(restrictedOf(applyRestrictFlip(data, aid, { fanId: fid, restricted: true }))).toEqual(want);
+  });
+
+  it("the same object when nothing changes; no data passes through", () => {
+    const data = of(row("b", 1));
+    expect(applyRestrictFlip(data, "a", { fanId: 1, restricted: true })).toBe(data);
+    const on = applyRestrictFlip(of(row("a", 1)), "a", { fanId: 1, restricted: true });
+    expect(applyRestrictFlip(on, "a", { fanId: 1, restricted: true })).toBe(on);
+    expect(applyRestrictFlip(undefined, "a", { fanId: 1, restricted: true })).toBeUndefined();
   });
 });
 
@@ -447,7 +522,7 @@ describe("the live-write journal (W30-mu #31)", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const opts = {
       queryKey: KEY, initialPageParam: 0, getNextPageParam: () => undefined,
-      queryFn: async () => ({ rows: [row("a1", 7, 1, undefined, 2)], hasMore: false }),
+      queryFn: async () => ({ rows: [row("a1", 7, 1, undefined, 2)], hasMore: false, moreAccounts: [], scanned: 1 }),
       structuralSharing: commitChatPages(client, KEY, (_p, n) => n),
     };
     await client.fetchInfiniteQuery(opts);
@@ -456,5 +531,93 @@ describe("the live-write journal (W30-mu #31)", () => {
     vi.setSystemTime(Date.now() + JOURNAL_MS + 1);
     await client.refetchQueries({ queryKey: KEY });
     expect(client.getQueryData<ChatPages>(KEY)!.pages[0].rows[0].unreadMessagesCount).toBe(2);
+  });
+});
+
+describe("keepLiveRows: a read never takes back what the list shows", () => {
+  const NOW = Date.parse("2026-11-23T12:00:00Z");
+  const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
+  const PLAIN = ["chats", "all", "a1,a2", null, null, null, 25] as const;
+  const UNREAD = ["chats", "all", "a1,a2", "unread", null, null, 25] as const;
+  const OLD = ["chats", "all", "a1,a2", null, null, null, 25, "old"] as const;
+  const data = (...pages: StampedPage[]) => ({ pages, pageParams: pages.map((_, i) => i * 25) });
+  const page = (rows: OFChatItem[], extra: Partial<StampedPage> = {}): StampedPage =>
+    ({ rows, hasMore: true, askedAt: NOW, scanned: rows.length,
+      moreAccounts: extra.hasMore === false ? [] : ["a1", "a2"], ...extra });
+  const all = () => true;
+  const show = (d: ChatPages) => d.pages.map((p) => p.rows.map((r) => `${r.__accountId}:${r.withUser.id}:m${r.lastMessage?.id}`));
+
+  it.each<[string, readonly unknown[], OFChatItem[], StampedPage, string[][]]>([
+    ["a row the read shows older than the list (live DM, 1 min ago): the list's row, re-sorted",
+      PLAIN, [row("a1", 1, 9, at(1)), row("a1", 2, 2, at(5))], page([row("a1", 2, 2, at(5)), row("a1", 1, 1, at(30))]),
+      [["a1:1:m9", "a1:2:m2"]]],
+    ["the same message (an optimistic send's row keeps the old id): the read's row",
+      PLAIN, [row("a1", 1, 1, at(1))], page([row("a1", 1, 1, at(30))]), [["a1:1:m1"]]],
+    ["a newer row older than LIVE_ROW_MS: the read's row",
+      PLAIN, [row("a1", 1, 9, at(21))], page([row("a1", 1, 1, at(30))]), [["a1:1:m1"]]],
+    ["the read shows a newer message: the read's row",
+      PLAIN, [row("a1", 1, 1, at(30))], page([row("a1", 1, 9, at(1))]), [["a1:1:m9"]]],
+    ["page 0 lacks a live row that belongs on it: kept, sorted in",
+      PLAIN, [row("a1", 1, 9, at(1)), row("a1", 2, 2, at(5))], page([row("a1", 2, 2, at(5)), row("a1", 3, 3, at(20))]),
+      [["a1:1:m9", "a1:2:m2", "a1:3:m3"]]],
+    ["page 0 lacks a live row older than its last row (fell to a later page): left out",
+      PLAIN, [row("a1", 1, 9, at(9))], page([row("a1", 2, 2, at(1)), row("a1", 3, 3, at(2))]), [["a1:2:m2", "a1:3:m3"]]],
+    ["page 0 is the whole list and lacks a live row: kept",
+      PLAIN, [row("a1", 1, 9, at(9))], page([row("a1", 2, 2, at(1))], { hasMore: false }), [["a1:2:m2", "a1:1:m9"]]],
+    ["page 0 lacks a row older than LIVE_ROW_MS: left out",
+      PLAIN, [row("a1", 1, 9, at(21))], page([row("a1", 2, 2, at(1))], { hasMore: false }), [["a1:2:m2"]]],
+    ["the Unread list lacking a row read since (unread 0): left out",
+      UNREAD, [row("a1", 1, 9, at(1))], page([row("a1", 2, 2, at(5))]), [["a1:2:m2"]]],
+    ["a Creator's live unread row is kept even when another Creator has newer rows",
+      UNREAD, [row("a2", 1, 9, at(7), 1)], page([row("a1", 2, 2, at(5))]),
+      [["a1:2:m2", "a2:1:m9"]]],
+    ["the Unread list lacking a live unread row: kept, sorted in",
+      UNREAD, [row("a1", 1, 9, at(1), 1)], page([row("a1", 2, 2, at(5))]), [["a1:1:m9", "a1:2:m2"]]],
+    ["the Unread list lacking a live unread row 11 min old (the Relay's cached window): kept",
+      UNREAD, [row("a1", 1, 9, at(11), 1)], page([row("a1", 2, 2, at(15))]), [["a1:1:m9", "a1:2:m2"]]],
+    ["the Unread list lacking an unread row older than LIVE_ROW_MS: left out",
+      UNREAD, [row("a1", 1, 9, at(21), 1)], page([row("a1", 2, 2, at(25))]), [["a1:2:m2"]]],
+    ["a searched list lacking a live unread row: left out",
+      ["chats", "all", "a1,a2", null, null, "x", 25], [row("a1", 1, 9, at(1), 1)], page([row("a1", 2, 2, at(5))]), [["a1:2:m2"]]],
+    ["Oldest First lacking a row: left out", OLD, [row("a1", 1, 9, at(1))], page([row("a1", 2, 2, at(5))]), [["a1:2:m2"]]],
+    ["a failed Creator (missing a2): its shown rows stay, any age",
+      PLAIN, [row("a2", 5, 5, at(1)), row("a1", 2, 2, at(5)), row("a2", 6, 6, at(600))],
+      page([row("a1", 2, 2, at(5))], { partial: true, missing: ["a2"] }), [["a2:5:m5", "a1:2:m2", "a2:6:m6"]]],
+  ])("%s", (_n, key, shownRows, read, want) => {
+    const prev = data(page(shownRows));
+    expect(show(preserveChatRows(key, prev, data(read), all))).toEqual(want);
+  });
+
+  describe("missing Creators", () => {
+    const head = page([row("a1", 1, 1, at(5)), row("a2", 2, 2, at(30))]);
+    const tail = page([row("a2", 3, 3, at(60)), row("a1", 4, 4, at(90))]);
+    const shorter = page([head.rows[0]], { hasMore: false, missing: ["a2"] });
+
+    it.each<[string, StampedPage[], boolean, string[][]]>([
+      ["keeps same-page rows and moves failed rows off dropped pages", [shorter], true,
+        [["a1:1:m1", "a2:2:m2", "a2:3:m3"]]],
+      ["keeps rows on their original pages when those pages survived", [shorter, page([], { missing: ["a2"] })], true,
+        [["a1:1:m1", "a2:2:m2"], ["a2:3:m3"]]],
+      ["does not duplicate a Fan who is present in a surviving read", [shorter, page([head.rows[1]])], true,
+        [["a1:1:m1"], ["a2:2:m2"]]],
+      ["retains nothing for pages that were not freshly read", [shorter], false, [["a1:1:m1"]]],
+    ])("%s", (_name, pages, fresh, want) => {
+      const next = data(...pages);
+      const kept = preserveChatRows(PLAIN, data(head, tail), next, () => fresh);
+      expect(show(kept)).toEqual(want);
+      expect(kept.pageParams).toBe(next.pageParams);
+      expect(kept.pages.map(({ hasMore, scanned }) => ({ hasMore, scanned }))).toEqual(
+        pages.map(({ hasMore, scanned }) => ({ hasMore, scanned })),
+      );
+    });
+  });
+
+  it("leaves a page that is not a fresh read alone, and returns the SAME data when nothing changes", () => {
+    const prev = data(page([row("a1", 1, 9, at(1))]));
+    const next = data(page([row("a1", 1, 1, at(30))]));
+    expect(preserveChatRows(PLAIN, prev, next, () => false)).toBe(next);
+    const same = data(page([row("a1", 1, 9, at(1))]));
+    expect(preserveChatRows(PLAIN, prev, same, all)).toBe(same);
+    expect(preserveChatRows(PLAIN, undefined, same, all)).toBe(same);
   });
 });

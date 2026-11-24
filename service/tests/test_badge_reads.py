@@ -23,9 +23,9 @@ Relay clock injected (`badge_reads._clock`), the loop driven by `badge_reads.tic
   case_one_frame_during_the_read_judges_it: F read on OF, his counter frame landing while page 1 is in flight, the
                                  list matching it -> complete at once, `{F, 0}`; two frames mid-read, or one the list
                                  is off by, or two pages -> incomplete, no flip.
-  case_gap_and_cap_full_and_lean: 10 frames in 3 s -> one read and exactly one follow-up >= 5 s later (lean 15 s);
-                                 200 frames over a fake hour -> 120 reads and one `badge_read_capped` line; page 1
-                                 held 1.3 s past the admit (the pacer) -> OF still sees starts >= the gap apart.
+  case_gap_full_and_lean:        10 frames in 3 s -> one read and exactly one follow-up >= 5 s later (lean 15 s);
+                                 200 frames over a fake hour -> 200 reads, no hourly cap; page 1 held 1.3 s past the
+                                 admit (the pacer) -> OF still sees starts >= the gap apart.
   case_429_holds_exit:           a terminal 429 on page 2 (kept on the read) or page 1 -> the exit held
                                  (`app_open_warm.exit_held_s` > 0); the next frame reads nothing until it ends; each
                                  read, failed or not, is noted on the exit queue once (`note_read`).
@@ -37,6 +37,9 @@ Relay clock injected (`badge_reads._clock`), the loop driven by `badge_reads.tic
                                  at the ask time, `note_values` poked), Phase B's red = counter - 1, `restricted=1`.
   case_muted_dm_keeps_restricted: a DM + same-value frame from a muted registry fan (held row muted, or muted through
                                  `relay_hooks.mute`) -> 0 list calls, R unchanged.
+  case_unmuted_elsewhere_heals_held_row: F unmuted on OF (held row muted), MF muted through `relay_hooks.mute` ->
+                                 a read listing both unmuted patches F's held row and MF's mute map entry; F then read
+                                 elsewhere -> `{F, 0}` (the muted guard no longer holds it).
   case_newer_dm_survives_read:   a DM landing while a read is in flight whose answer lacks that fan -> he stays in
                                  `unread_set`.
   case_explained_frames_cost_nothing: an ordinary Inbound DM 0.4 s before a frame, a `chatUserId` echo 1 s before
@@ -59,16 +62,16 @@ Relay clock injected (`badge_reads._clock`), the loop driven by `badge_reads.tic
                                  blip under 15 s -> none; a live `/users/me` mid-outage keeps the poll's confirmation; a Complete poll -> slot `grey` null, `n` = `of_counts` rows -
                                  R (the counter from before the drop plays no part); polls failing for 45 s -> `stale` on the refresher's 5 s re-read, no frame, one
                                  republish (Badge version +1) and none while unchanged; an incomplete poll -> stays
-                                 grey; a two-hour outage -> <= 120 reads in any 3600 s, `capped` while capped and
-                                 cleared by the next admitted poll.
+                                 grey; a two-hour outage -> a poll every 15 s throughout (240 in an hour, no hourly
+                                 cap), never a `capped` grey.
   case_fold_rescores_from_set:   a set held -> a roster-counts fold writes R from the set (rows from a newer window,
                                  the registry as loaded): restricted here or on OF -> excluded at that fold,
                                  unrestricted -> counts again, an older window leaves a row; no set -> R from the window.
   case_hover_cooldown_shared:    the owner and a Chatter `?bust=` A 5 s apart -> 1 window read, the second answered
                                  from the held fold; 31 s later -> a second read; two concurrent busts while the
                                  read's wire is held -> 1 read, both answers equal, the page-0 entry fresh after;
-                                 each read one `kind=hover` line; hover reads leave the Attribution gate (and its
-                                 hourly cap) untouched. A failing window read: leader and follower get equal zeros,
+                                 each read one `kind=hover` line; hover reads leave the Attribution gate
+                                 untouched. A failing window read: leader and follower get equal zeros,
                                  a bust 5 s later is held at 0 calls, no `kind=hover` line. UNREAD_TOTAL off: every
                                  bust reads, as before the cooldown, no line.
   case_failed_write_retires_intent: a mark-read route whose OF write errors, then an unrelated frame -> one list call.
@@ -108,6 +111,7 @@ import relay_cache  # noqa: E402
 import relay_hooks  # noqa: E402
 import shared_refresher  # noqa: E402
 import unread_total  # noqa: E402
+from unread_total_decide import Restricted  # noqa: E402
 from accounts_admin_api import _ROSTER_WINDOW_KEY  # noqa: E402
 from of_client import OFAPIError, OFClient  # noqa: E402
 
@@ -267,10 +271,11 @@ def _row(fan: int, unread: bool = True, muted=False) -> dict:
             "lastMessage": {"id": fan * 10, "createdAt": _iso(int(time.time() * 1000) - 60_000)}}
 
 
-async def _hold_window(rows: list, aid=A) -> None:
+async def _hold_window(rows: list, aid=A, *, fetched_at: int | None = None) -> None:
     relay_cache.invalidate("list_chats", aid)
     await relay_cache.get_or_fetch("list_chats", aid, _ROSTER_WINDOW_KEY, ttl_seconds=600,
-                                   fetcher=lambda: {"list": rows, "hasMore": False})
+                                   fetcher=lambda: {"list": rows, "hasMore": False,
+                                                    "fetched_at": fetched_at})
 
 
 async def _hold_other(aid=A) -> tuple:
@@ -466,7 +471,7 @@ def _starts(wire: _Wire) -> list:
     return [t for t, (_p, q) in zip(wire.at, wire.calls) if q["offset"] == "0"]
 
 
-async def case_gap_and_cap_full_and_lean():
+async def case_gap_full_and_lean():
     for knob, gap in (("full", 5000), ("lean", 15000)):
         wire = _Wire(unread=[_row(F)])
         with _world(wire, knob=knob) as (clock, _pub, _lines):
@@ -485,8 +490,7 @@ async def case_gap_and_cap_full_and_lean():
             clock.t = t0 + i * 18_000
             await _frame(1)
             await _tick_at(clock, clock.t + 1500)
-        assert len(_starts(wire)) == 120 and len(lines) == 120, len(_starts(wire))
-        assert [m for m in _LOG if m.startswith("badge_read_capped")] == [f"badge_read_capped account={A}"], _LOG
+        assert len(_starts(wire)) == 200 and len(lines) == 200, len(_starts(wire))
     for knob, gap in (("full", 5000), ("lean", 15000)):
         wire = _Wire(unread=[_row(F)])
         with _world(wire, knob=knob) as (clock, _pub, _lines):
@@ -537,25 +541,26 @@ async def case_429_holds_exit():
             wire.page2 = wire.fail = None
             wire.calls.clear()
             clock.t += 10_000
-            await _frame(35)
             await _tick_at(clock, clock.t + 1500)
             assert wire.calls == [], (why, "no read while the exit is held", wire.calls)
             await asyncio.sleep(app_open_warm.exit_held_s(A) + 0.05)
             await _tick_at(clock, clock.t + 1000)
-            assert len(wire.calls) == 2, (why, "the held frame's read, after the hold", wire.calls)
+            assert len(wire.calls) == 2, (why, "one retry after the hold, without another frame", wire.calls)
             assert noted == [A, A], (why, "one note_read per read", noted)
+            await _tick_at(clock, clock.t + 10_000)
+            assert len(wire.calls) == 2, (why, wire.calls)
 
 
 async def case_switch_off_and_lean():
     wire = _Wire(unread=[_row(F)])
     with _world(wire, knob="off") as (clock, pub, lines):
-        await _hold_window([_row(F)])
+        await _hold_window([_row(F)], fetched_at=clock.t)
         await events.handle_event(_echo(F, 1))
         assert _flips(pub) == [] and _window()[0]["hasUnread"] is True, ("off: an echo flips nothing", pub)
         with _busting(wire) as bust:
             server._chats_window_fetched_at[A] = server._time_mod.monotonic()
             assert A in await bust(_User()) and wire.calls == [], ("off: ?bust= serves held, 0 calls", wire.calls)
-        unread_total.set_restricted_unread(A, 0, 0)
+        unread_total.set_restricted_unread(A, Restricted(0, False, 0), 0)
         for i in range(20):
             clock.t += 6000
             await _frame(20 - i)
@@ -628,7 +633,8 @@ async def case_restricted_unread_feeds_red():
                 noted.clear()
                 await _tick_at(clock, clock.t + 1500)
             assert badge_reads.restricted_unread(A) == 1 and noted == [A], (badge_reads.restricted_unread(A), noted)
-            assert unread_total._r[A] == (1, clock.t), ("R at the read's ask time", unread_total._r[A])
+            restricted, at = unread_total._r[A]
+            assert (restricted.n, at) == (1, clock.t), ("R at the read's ask time", unread_total._r[A])
             assert unread_total.snapshot(A)["n"] == 9, ("red = counter - R", unread_total.snapshot(A))
             assert lines[-1].endswith("complete=1 mismatch=0 flips=0 restricted=1"), lines
             view = badge_reads.unread_set(A)
@@ -637,15 +643,31 @@ async def case_restricted_unread_feeds_red():
             assert badge_reads.unread_set(A) is None, "a restart holds no set"
 
 
+async def case_landed_mute_rescores_held_restricted_unread():
+    wire = _Wire(unread=[_row(RF), _row(F)])
+    async with _registry(RF):
+        with _world(wire) as (clock, _pub, _lines):
+            await _hold_window([_row(F)])
+            await _seed(clock, 2)
+            assert (badge_reads.restricted_unread(A), unread_total.snapshot(A)["n"]) == (1, 1)
+            calls = len(wire.calls)
+            for muted, counter, restricted in ((True, 1, 0), (False, 2, 1)):
+                clock.t += 100
+                relay_hooks.fire_mute(RF, muted, account_id=A)
+                await _frame(counter)
+                got = (badge_reads.restricted_unread(A), unread_total.snapshot(A)["n"])
+                assert got == (restricted, 1), (muted, got)
+            assert len(wire.calls) == calls
+
+
 async def case_muted_dm_keeps_restricted():
-    import relay_host
     wire = _Wire(unread=[_row(RF)])
     async with _registry(RF, MF, MF2):
-        with _world(wire) as (clock, _pub, _lines), _swap(relay_host, "request_account_header", lambda: A):
+        with _world(wire) as (clock, _pub, _lines):
             await _hold_window([_row(MF, unread=False, muted=True)])
             await _seed(clock, 1)
             assert badge_reads.restricted_unread(A) == 1
-            relay_hooks.fire_mute(MF2, True)
+            relay_hooks.fire_mute(MF2, True, account_id=A)
             for fan, mid in ((MF, 1), (MF2, 2)):
                 wire.calls.clear()
                 clock.t += 6000
@@ -655,6 +677,21 @@ async def case_muted_dm_keeps_restricted():
                 assert wire.calls == [], (fan, "a DM explains its frame: 0 list calls", wire.calls)
                 assert badge_reads.restricted_unread(A) == 1, (fan, badge_reads.restricted_unread(A))
                 assert fan not in badge_reads.unread_set(A).fans
+
+
+async def case_unmuted_elsewhere_heals_held_row():
+    wire = _Wire(unread=[_row(F), _row(K), _row(MF)])
+    with _world(wire) as (clock, pub, _lines):
+        await _hold_window([_row(F, muted=True), _row(K)])
+        relay_hooks.fire_mute(MF, True, account_id=A)
+        await _seed(clock, 3)
+        assert [r["isMutedNotifications"] for r in _window()] == [False, False], _window()
+        assert badge_reads._muted[(A, MF)] == (False, clock.t), ("stamped at the ask", badge_reads._muted)
+        wire.unread = [_row(K), _row(MF)]
+        clock.t += 6000
+        await _frame(2)
+        await _tick_at(clock, clock.t + 1500)
+        assert [(f, u) for f, u, _at in _flips(pub)] == [(F, 0)], ("F read elsewhere now flips", pub)
 
 
 async def case_newer_dm_survives_read():
@@ -729,7 +766,7 @@ async def case_echo_branch_flips_read():
         assert [(r["hasUnread"], r["unreadMessagesCount"]) for r in _window()] == [(False, 0), (True, 1), (False, 0)]
         assert badge_reads.unread_set(A).fans == {K, deep}, badge_reads.unread_set(A)
         clock.t = t + 200
-        await _frame(1)
+        await _frame(2)
         for dt in (1700, 5000):
             await _tick_at(clock, t + dt)
         assert wire.calls == [] and len(lines) == 1, ("the echo explains its frame", wire.calls)
@@ -890,11 +927,9 @@ async def case_socket_down_polls_15s():
             grey.append((t + s, _grey()))
         starts = _starts(wire)
         worst = max(sum(1 for y in starts if x <= y < x + 3_600_000) for x in starts)
-        assert worst <= 120 and len(starts) >= 200, (worst, len(starts))
-        capped = [at for at, g in grey if g == "capped"]
-        assert capped, "capped while the cap is spent"
-        after = [s for s in starts if s > capped[0]]
-        assert after and all(g != "capped" for at, g in grey if after[0] <= at < after[0] + 5000), grey[-5:]
+        assert worst == 240 and len(starts) == 479, (worst, len(starts))
+        assert {b - a for a, b in zip(starts, starts[1:])} == {badge_reads.POLL_MS}, "paced by the poll, no cap"
+        assert all(g != "capped" for _at, g in grey), [g for _at, g in grey if g == "capped"][:3]
 
 
 class _User:
@@ -917,7 +952,10 @@ def _roster(wire: _Wire):
         for a in _CREATORS:
             relay_cache.invalidate("roster_count", a)
             accounts_admin_api._roster_last.pop(a, None)
-        server._chats_window_fetched_at[A] = server._time_mod.monotonic() + ahead_s
+        stamp = int((time.time() + ahead_s) * 1000)
+        relay_cache.patch("list_chats", A, lambda key, value: (
+            {**value, "fetched_at": stamp} if key == _ROSTER_WINDOW_KEY else None
+        ))
         await accounts_admin_api.admin_accounts_roster_counts(_R())
     try:
         yield fold
@@ -937,7 +975,7 @@ async def case_fold_rescores_from_set():
     restricted_f = {**_row(F), "canSendMessage": False, "canNotSendReason": "muted"}
 
     def rec(aid, r, at):
-        writes.append((aid, r))
+        writes.append((aid, r.n))
         real(aid, r, at)
     for knob, set_held in ((None, True), ("off", False)):
         with _world(wire, knob=knob) as (clock, _pub, _lines), _roster(wire) as fold:
@@ -964,7 +1002,8 @@ async def case_fold_rescores_from_set():
                     writes.clear()
                     await fold(ahead_s=5)
                     assert writes == [(A, 1)], ("restricted on OF: his newer window row excludes him", writes)
-                    assert unread_total._r[A] == (1, badge_reads._sets[A].as_of), \
+                    restricted, at = unread_total._r[A]
+                    assert (restricted.n, at) == (1, badge_reads._sets[A].as_of), \
                         ("R at the set's own time, not the window's: a read landing later still writes", unread_total._r[A])
                     await _hold_window(window)
                     writes.clear()
@@ -1170,6 +1209,287 @@ async def case_failed_write_retires_intent():
         await _frame(1)
         await _tick_at(clock, clock.t + 1500)
         assert len(wire.calls) == 1, ("the write did not land: its intent hides no other frame", wire.calls)
+
+
+async def case_held_answer_does_not_reopen_local_read():
+    for seeded in (False, True):
+        wire = _Wire(unread=[_row(F)])
+        with _world(wire) as (clock, pub, _lines):
+            await _hold_window([_row(F)])
+            if seeded:
+                await _seed(clock, 1)
+                clock.t += 6000
+            await _frame(1)
+            entered, release = threading.Event(), threading.Event()
+            answer = wire._answer
+
+            def held_answer(method, url):
+                entered.set()
+                assert release.wait(5)
+                return answer(method, url)
+
+            wire._answer = held_answer
+            reader = asyncio.create_task(_tick_at(clock, clock.t + 1500))
+            try:
+                assert await asyncio.to_thread(entered.wait, 5)
+                clock.t += 10
+                badge_reads.on_read_flip(A, F, 0, clock.t)
+                await _hold_window([_row(F, unread=False)])
+            finally:
+                release.set()
+                await reader
+            assert _flips(pub) == [] and not _window()[0]["hasUnread"]
+            assert F not in badge_reads.unread_set(A).fans
+
+
+async def case_known_contradiction_reconciles_elsewhere_drop():
+    for event in (_echo(G, 21), _dm(K, 22)):
+        wire = _Wire(unread=[_row(F), _row(K)])
+        with _world(wire) as (clock, pub, _lines):
+            await _hold_window([_row(F), _row(G, unread=False), _row(K)])
+            await _seed(clock, 2)
+            wire.calls.clear()
+            wire.unread = [_row(K)]
+            clock.t += 6000
+            await events.handle_event(event)
+            clock.t += 200
+            await _frame(1)
+            await _tick_at(clock, clock.t + 1500)
+            assert len(wire.calls) == 1 and [(f, u) for f, u, _ in _flips(pub)] == [(F, 0)]
+
+
+async def case_incomplete_restricted_grey_or_confirmed_floor():
+    async with _registry(RF):
+        for actionable in (4, 9):
+            wire = _Wire(unread=[_row(RF)])
+            with _world(wire) as (clock, _pub, _lines):
+                await _seed(clock, 1)
+                wire.unread = [_row(2000 + i) for i in range(actionable)]
+                wire.more = True
+                clock.t += 6000
+                await _frame(26)
+                await _tick_at(clock, clock.t + 1500)
+                assert RF in badge_reads.unread_set(A).fans
+                slot = unread_total.snapshot(A)
+                assert (slot["n"], slot["grey"]) == ((None, "r_unknown") if actionable < 9 else (9, None)), slot
+                clock.t += 100
+                await _frame(0)
+                slot = unread_total.snapshot(A)
+                assert (slot["n"], slot["grey"]) == (None, "r_unknown"), slot
+
+
+async def case_settle_rejects_two_counter_frames():
+    wire = _Wire(unread=[_row(K)])
+    with _world(wire) as (clock, pub, lines):
+        await _hold_window([_row(F), _row(K)])
+        await _frame(2)
+
+        answered = threading.Event()
+        answer = wire._answer
+
+        def signal_answer(method, url):
+            response = answer(method, url)
+            answered.set()
+            return response
+
+        wire._answer = signal_answer
+
+        async def trailing():
+            assert await asyncio.to_thread(answered.wait, 15)
+            await asyncio.sleep(0.3)
+            clock.t += 100
+            await _frame(3)
+            clock.t += 100
+            await _frame(1)
+
+        frames = asyncio.create_task(trailing())
+        await _tick_at(clock, clock.t + 1500)
+        await frames
+        assert any("complete=0" in line for line in lines) and _flips(pub) == []
+
+
+async def case_replayed_echo_does_not_clear_newer_dm():
+    for seen in (False, True):
+        wire = _Wire(unread=[_row(F)])
+        with _world(wire) as (clock, pub, _lines):
+            await _hold_window([_row(F)])
+            await _seed(clock, 1)
+            echo = _echo(F, 123)
+            echo["api2_chat_message"]["createdAt"] = _iso(clock.t + 1)
+            if seen:
+                clock.t += 10
+                await events.handle_event(echo)
+            clock.t += 20
+            dm = _dm(F, F * 10 + 1)
+            dm["api2_chat_message"]["createdAt"] = _iso(clock.t)
+            await events.handle_event(dm)
+            pub.clear()
+            clock.t += 1
+            await events.handle_event(echo)
+            assert not _flips(pub) and F in badge_reads.unread_set(A).fans and _window()[0]["hasUnread"]
+
+
+async def case_off_mode_watches_unpeeked_drop():
+    import badge_watch
+    wire = _Wire()
+    with _world(wire, knob="off") as (clock, _pub, _lines):
+        records = []
+        class Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+        handler = Capture()
+        badge_watch.log.addHandler(handler)
+        try:
+            await _frame(2)
+            badge_watch.note_unpeeked(A, F)
+            await _frame(1)
+            await _tick_at(clock, clock.t + 1500)
+        finally:
+            badge_watch.log.removeHandler(handler)
+        assert any(f"badge_unpeeked_drop account={A} chat={F} " in line for line in records)
+        assert not wire.calls
+
+
+async def case_mute_uses_resolved_account_without_header():
+    import relay_host
+    wire = _Wire()
+    request = server._request_ctx.set(None)
+    try:
+        with _world(wire) as (clock, _pub, _lines), _swap(server, "_active_for", lambda _req: lambda: A):
+            await _hold_window([_row(F)])
+
+            def answer(method, url):
+                assert (method, urlsplit(url).path) == ("POST", f"/api2/v2/chats/{F}/mute")
+                return _Resp(url, 200, {"success": True})
+
+            wire._answer = answer
+            assert not relay_host.request_account_header()
+            await server.of_mute_chat(F)
+            assert badge_reads._muted[(A, F)] == (True, clock.t)
+    finally:
+        server._request_ctx.reset(request)
+
+
+async def case_window_mute_normalizes_fan_id():
+    with _world(_Wire()):
+        row = _row(F)
+        row["withUser"]["id"] = str(F)
+        await _hold_window([row])
+        relay_hooks.fire_mute(F, True, account_id=A)
+        assert _window()[0]["isMutedNotifications"] is True
+
+
+def case_wiring_registers_hooks_once():
+    import badge_reads_wiring
+    import relay_hooks
+    from fastapi import FastAPI
+
+    badge_reads_wiring.wire(FastAPI())
+    badge_reads_wiring.wire(FastAPI())
+    assert sum(h.__module__ == "badge_reads" and h.__name__ == "on_frame" for h in relay_hooks.inbound_message) == 1
+    assert sum(h.__module__ == "badge_reads" and h.__name__ == "start" for h in relay_hooks.background_loops) == 1
+
+
+def case_mute_hook_uses_resolved_account():
+    with _world(_Wire()) as (clock, _pub, _lines):
+        relay_hooks.fire_mute(F, True, account_id=A)
+        assert badge_reads._muted[(A, F)] == (True, clock.t)
+        relay_hooks.fire_mute(F, False, account_id=A)
+        assert badge_reads._muted[(A, F)] == (False, clock.t)
+
+
+async def case_receipt_patch_preserves_prior_dm_delta():
+    wire = _Wire()
+    with _world(wire) as (clock, _pub, _lines):
+        await _hold_window([_row(F, unread=False)])
+        await _seed(clock, 0)
+        wire.calls.clear()
+        wire.unread = [_row(F)]
+        clock.t += 6000
+        await events.handle_event(_dm(F, F * 10 + 1))
+        assert _window()[0]["hasUnread"]
+        clock.t += 200
+        await _frame(1)
+        await _tick_at(clock, clock.t + 1500)
+        assert wire.calls == []
+
+
+
+async def _held_read(wire: _Wire, clock: _Clock, during) -> None:
+    entered, release = threading.Event(), threading.Event()
+    answer = wire._answer
+
+    def held_answer(method, url):
+        entered.set()
+        assert release.wait(5)
+        return answer(method, url)
+
+    wire._answer = held_answer
+    reader = asyncio.create_task(_tick_at(clock, clock.t + 1500))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        await during()
+    finally:
+        release.set()
+        await reader
+
+
+async def case_mark_read_landing_mid_read_stays_read():
+    import read_flip
+    for seeded in (False, True):
+        wire = _Wire(unread=[_row(F)])
+        with _world(wire) as (clock, pub, _lines):
+            await _hold_window([_row(F)])
+            if seeded:
+                await _seed(clock, 1)
+                clock.t += 6000
+            await _frame(1)
+
+            async def mark_read_lands():
+                write_at = clock.t - 50
+                clock.t += 10
+                await read_flip.after_write(A, F, 0, {}, at=write_at)
+            await _held_read(wire, clock, mark_read_lands)
+            assert [(f, u) for f, u, _ in _flips(pub)] == [(F, 0)], (seeded, pub)
+            assert F not in badge_reads.unread_set(A).fans, (seeded, badge_reads.unread_set(A))
+
+
+async def case_one_echo_explains_one_drop():
+    wire = _Wire(unread=[_row(F), _row(K)])
+    with _world(wire) as (clock, pub, _lines):
+        await _hold_window([_row(F), _row(K)])
+        await _seed(clock, 2)
+        wire.calls.clear()
+        wire.unread = []
+        clock.t += 6000
+        await events.handle_event(_echo(F, 41))
+        for n in (1, 0):
+            clock.t += 200
+            await _frame(n)
+        await _tick_at(clock, clock.t + 1500)
+        assert len(wire.calls) == 1 and (K, 0) in [(f, u) for f, u, _ in _flips(pub)], (wire.calls, pub)
+
+
+async def case_reply_echo_explains_its_frame():
+    import read_flip
+    for echo_first in (False, True):
+        wire = _Wire(unread=[_row(F)])
+        with _world(wire) as (clock, _pub, _lines):
+            await _hold_window([_row(F)])
+            await _seed(clock, 1)
+            wire.calls.clear()
+            wire.unread = []
+            clock.t += 6000
+            if echo_first:
+                await events.handle_event(_echo(F, 51))
+            read_flip.after_reply(A, F, clock.t - 300)
+            if not echo_first:
+                clock.t += 100
+                await events.handle_event(_echo(F, 51))
+            clock.t += 200
+            await _frame(0)
+            await _tick_at(clock, clock.t + 1500)
+            assert wire.calls == [], (echo_first, "the reply's echo explains its frame", wire.calls)
 
 
 _harness.run()

@@ -13,6 +13,7 @@ import of `event_transcoder` (no cycle). Tables: tests/test_event_transcode_deci
   user_blob(payload)        the Fan touch a non-message frame carries
   dm_key(aid, m)            Skip | Outbound | Echo | None: dm_plan's key/direction half
   dm_plan(aid, m, now)      Skip | Outbound | Echo | Inbound for a chat_message
+  echo_row(aid, m, echo, now)  the out `messages` row of a Creator echo, None for a queue copy
   is_inbound_dm(event)      would this frame's dm_plan be Inbound (the persist queue keeps it)
   money_bust(m)             does an inbound chat_message clear the money feeds' cache
   fan_upsert(plans)         the `fans` upsert of one chat's DM batch
@@ -58,7 +59,7 @@ def media_ids(media: list | None) -> list[int]:
 
 # ── Routing ──────────────────────────────────────────────────────────
 
-Lane = Literal["chat_message", "ppv", "toast", "queue", "counter", "other"]
+Lane = Literal["chat_message", "ppv", "toast", "queue", "other"]
 
 
 def route(event: Any) -> tuple[Lane, str, Any] | None:
@@ -78,7 +79,7 @@ def route(event: Any) -> tuple[Lane, str, Any] | None:
     if event_type in ("chat_queue_finish", "chat_queue_update"):
         return "queue", event_type, payload
     if event_type == "chat_messages":
-        return "counter", event_type, payload
+        return None  # Counted at receipt because the persistence queue can lag or drop frames.
     return "other", event_type, payload
 
 
@@ -211,7 +212,7 @@ class Outbound:
 
 @dataclass(frozen=True)
 class Echo:
-    """A Creator send from any client (no `fromUser`, `chatUserId` names the Fan): no row, that Fan reads read."""
+    """A Creator send from any client (no `fromUser`, `chatUserId` names the Fan): an out row (`echo_row`), that Fan reads read."""
     message_id: Any
     fan_id: int
 
@@ -297,6 +298,22 @@ def dm_plan(account_id: Any, m: dict, now: datetime) -> DmPlan:
     )
     return Inbound(msg, from_user, max(tip_cents, 0),
                    image=bool(mids or giphy_dm_id(m)) and not is_tip, has_media=bool(mids))
+
+
+def echo_row(account_id: Any, m: dict, echo: Echo, now: datetime) -> dict | None:
+    """The out `messages` row of a Creator echo, exact columns less `raw_json`. None for an `isFromQueue`
+    copy: a mass's per-Fan rows belong to its placeholders (attribution.write_mass_optimistic_rows)."""
+    if m.get("isFromQueue"):
+        return None
+    price_cents = to_cents(m.get("price"))
+    mids = media_ids(m.get("media"))
+    return dict(
+        account_id=str(account_id), fan_id=int(echo.fan_id), message_id=int(echo.message_id),
+        direction="out", sender_name="", body=m.get("text") or "",
+        media_ids=json.dumps(mids), media_count=int(m.get("mediaCount") or 0),
+        price_cents=price_cents, is_paid=False if price_cents > 0 else None, is_tip=False,
+        is_unsent=False, created_at=parse_iso(m.get("createdAt")) or now,
+    )
 
 
 def is_inbound_dm(event: Any) -> bool:

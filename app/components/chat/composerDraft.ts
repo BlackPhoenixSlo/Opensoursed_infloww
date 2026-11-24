@@ -148,7 +148,9 @@ export type DraftAction =
   | { type: "clearPpv" }
   /** The FM bubble's AI draft replaces the text: it is no Script step. */
   | { type: "dropScript" }
+  | { type: "endScript"; scriptId: string }
   | { type: "sent" }
+  | { type: "clear" }
   | { type: "restore"; snapshot: ComposerDraft };
 
 export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
@@ -219,9 +221,12 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "clearPpv":
       // Only the row's fields: tags are not in it, and the Script step, formatting and saved reply ride on the text.
       return { ...s, ...PPV_EMPTY };
+    case "endScript":
+      return s.script?.scriptId === a.scriptId ? { ...s, script: null } : s;
     case "dropScript":
       return { ...s, script: null, replyId: null };
     case "sent":
+    case "clear":
       return { ...EMPTY_DRAFT, mode: richMode(s.mode, { type: "sent" }) };
     case "restore":
       // The snapshot whole, "Aa" and its box included: the text goes back as it was sent (formatted, into the rich
@@ -259,12 +264,20 @@ export interface FullDraft {
   draft: ComposerDraft;
 }
 
+export interface LiveDraft extends FullDraft {
+  uploadChips: number;
+}
+
+export function isEmptyLiveDraft({ text, draft, uploadChips }: LiveDraft): boolean {
+  return text === "" && uploadChips === 0 && isEmptyDraft(draft);
+}
+
 /** Where a refused schedule's draft goes: back into an untouched Composer
  *  (still as `sent` left it), else, once the chatter has typed or attached
  *  since, or left the chat (`now` null: no Composer to go back into), as an
  *  offer to restore it. Nothing is lost. */
-export function afterRefusedSchedule(now: FullDraft | null): "restore" | "offer" {
-  return now != null && now.text === "" && isEmptyDraft(now.draft) ? "restore" : "offer";
+export function afterRefusedSchedule(now: LiveDraft | null): "restore" | "offer" {
+  return now != null && isEmptyLiveDraft(now) ? "restore" : "offer";
 }
 
 /** A price > 0, else null: a typed price > 0 is the sole paid signal. */

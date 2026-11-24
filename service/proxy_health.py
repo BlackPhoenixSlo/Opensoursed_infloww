@@ -122,6 +122,7 @@ import threading
 import time
 from typing import Any, Callable
 
+import account_health
 import proxies
 import proxy_health_decide as ph
 import proxy_probe
@@ -383,7 +384,7 @@ def assign_pool(account_id: str, rng: random.Random | None = None) -> tuple[dict
                                dead={lb for lb, why in reasons.items() if why == "down"}, due=_due_labels(),
                                geo=last_geo,
                                verify=lambda p: verify_pick(p, timeout_s=ATTACH_PROBE_TIMEOUT_S, region=False),
-                               rng=rng)
+                               rng=rng, deactivated=account_health.write_gate_snapshot())
 
 
 def record_probe(label: str, result: dict[str, Any]) -> None:
@@ -488,7 +489,8 @@ def _failover(label: str) -> list[str]:
     or logged when the proxy is not a pool proxy or nobody is on it
     (failover_pool returns None). Logged; [] when nobody moved (they stay,
     surfaced)."""
-    moved = proxies.failover_pool(label, bad=unusable_labels(bad_reasons()), geo=last_geo, verify=verify_pick)
+    moved = proxies.failover_pool(label, bad=unusable_labels(bad_reasons()), geo=last_geo, verify=verify_pick,
+                                 deactivated=account_health.write_gate_snapshot())
     if moved is None:
         return []
     _step(label, lambda: ph.FailedOver(_now(), tuple(moved)))

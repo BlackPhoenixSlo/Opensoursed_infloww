@@ -143,8 +143,6 @@ export const noHorizontalOverflowPhone = always(() => overflow.current === null)
 // ── Actions ──────────────────────────────────────────────────────────────────
 // Signed out (any reason) -> sign back in as the seeded owner (seed_session.py), so the run keeps
 // exploring the app instead of the login page. The sign-out controls themselves are never clicked.
-const OWNER = { username: "northstar", password: "ui-explore-throwaway" };
-
 function onLogin(): boolean {
   return /^\/(login|chatter-login)\/?$/.test(page.current.pathname);
 }
@@ -163,12 +161,13 @@ const home = registerCustomAction("home", async (_document, window, origin: stri
 });
 
 const reauth = registerCustomAction("reauth", async (_document, window) => {
-  await window.fetch("/auth/login", {
+  const response = await window.fetch("/__ui-explore/reauth", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(OWNER),
+    redirect: "error",
     credentials: "same-origin",
   });
+  if (!response.ok) throw new Error(`Seeded owner login failed (HTTP ${response.status})`);
   window.location.assign("/");
 });
 

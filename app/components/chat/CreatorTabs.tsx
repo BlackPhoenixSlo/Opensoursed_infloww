@@ -233,6 +233,7 @@ function CreatorTab({
   // Dead-session Creator.
   const { count: notifs } = useOfNotifCount(account.session_dead_at ? null : account.id);
   const mark = useLiveMark(account);
+  const title = [name, circleTitle(circle), amberTitle(amber), mark?.title].filter(Boolean).join(" — ");
   return (
     <OpenInNewWindowMenu href={creatorWindowHref(account.id)}>
       <div
@@ -264,10 +265,7 @@ function CreatorTab({
           onMouseLeave={onHoverEnd}
           onFocus={onHover}
           onBlur={onHoverEnd}
-          // The Clone's tooltip (messages.js:268-269): the whole name, which the
-          // tab may cut short, and the unread total; then the Amber circle's, unless the Grey circle stands for both;
-          // then the live mark's.
-          title={`${name} — ${circleTitle(circle)}${circle.kind === "grey" ? "" : ` — ${amberTitle(amber)}`}${mark ? ` — ${mark.title}` : ""}`}
+          title={title}
           className={cn(O.tabPick, "flex min-w-0 h-full items-center")}
         >
           <span aria-hidden className="relative flex flex-none">

@@ -3,7 +3,7 @@ import time
 import pytest
 
 from slop.lib.badge_metrics import (Read, amber_gate, both_circles, counter_moves, dots, gap_ok, group_reads,
-                                    over_pages, p95, per_hour, queue_reads, raw_attempts, raw_leak, relay_marks,
+                                    over_pages, p95, queue_reads, raw_attempts, raw_leak, relay_marks,
                                     single_flight_ok, lag, stale_answers, window_reads)
 
 
@@ -96,17 +96,6 @@ def test_gap_ok(starts, want):
 ])
 def test_single_flight_ok(spans, ok, overlaps):
     assert single_flight_ok(spans) == (ok, overlaps)
-
-
-@pytest.mark.parametrize("starts, ok, rate", [
-    ([], True, 0),
-    ([i * 30.0 for i in range(120)], True, 120),
-    ([i * 29.0 for i in range(121)], False, 121),
-    ([i * 30.0 for i in range(121)], True, 120),
-    ([i * 30.0 for i in range(120)] + [3599.0], False, 121),
-])
-def test_per_hour(starts, ok, rate):
-    assert per_hour(starts, 120) == (ok, rate)
 
 
 @pytest.mark.parametrize("red, amber, want", [

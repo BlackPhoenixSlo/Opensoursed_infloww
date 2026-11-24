@@ -74,9 +74,11 @@ class Sweep:
         return self.capped or self.down
 
     def note(self, res: vault_jev.JevResult) -> None:
+        import vault_sweep
+
         if res.get("status") == "capped":
             self.capped = True
-        elif res.get("call_failed") and res.get("status") != vault_jev_rules.REJECTED:
+        elif res.get("call_failed") and res.get("status") not in vault_sweep.NEUTRAL:
             self.failed_in_row += 1
             self.last_error = str(res.get("detail") or "")[:200]
         elif res.get("ok"):
@@ -170,8 +172,8 @@ async def _hold(account_id: str, media_id: int, n: int, detail: str, *, terminal
         if item is None:
             return
         fields = load_json(item.ai_fields_json, {}) or {}
-        fields[JEV_KEY] = held_blob(fields.get(JEV_KEY), n, detail, datetime.utcnow().isoformat(),
-                                    terminal=terminal)
+        held = held_blob(fields.get(JEV_KEY), n, detail, datetime.utcnow().isoformat(), terminal=terminal)
+        fields[JEV_KEY] = vault_jev_rules.keep_reject(fields, held)
         _picks(item, fields)
         item.ai_fields_json = json.dumps(fields, ensure_ascii=False, default=str)
         if fields[JEV_KEY].get("lane5") == "review" and vault_jev_flags.TIER_COLUMN not in _locked(item):
@@ -276,17 +278,14 @@ async def _one(account_id: str, media_id: int, *, sweep: Sweep | None = None,
             await _sync_flags(account_id, media_id)
         return None
     prev = fields.get(JEV_KEY) if isinstance(fields.get(JEV_KEY), dict) else {}
-    if sweep is not None and not sweep_due(fields, datetime.utcnow()):   # not AI-read: given up, or in its backoff
-        if vault_jev_rules.rejected(fields):
-            return {"media_id": media_id, "ok": False, "status": vault_jev_rules.REJECTED, "cost_millicents": 0,
-                    "detail": "TypeSafe refused this image (invalid dimensions): not retried by sweeps"}
-        if vault_jev_rules.retries_spent(fields):   # a sweep never re-fetches it (the operator may)
-            return {"media_id": media_id, "ok": False, "status": GAVE_UP, "cost_millicents": 0,
-                    "detail": f"clip sources failed {prev.get('retries') or RETRY_MAX} times: Jev gave up, held "
-                              "for review (re-read it from the item to try again)"}
-        return {"media_id": media_id, "ok": False, "status": RETRY_WAIT, "cost_millicents": 0,
-                "detail": f"clip sources failed briefly: retry {int(prev.get('retries') or 0) + 1}/{RETRY_MAX} "
-                          "waits out its backoff"}
+    if sweep is not None:
+        if reason := vault_jev_rules.stop_reason(fields):
+            return {"media_id": media_id, "ok": False, "status": reason, "cost_millicents": 0,
+                    "detail": vault_jev_rules.STOP_DETAILS[reason]}
+        if not retry_due(prev, datetime.utcnow()):
+            return {"media_id": media_id, "ok": False, "status": RETRY_WAIT, "cost_millicents": 0,
+                    "detail": f"clip sources failed briefly: retry {int(prev.get('retries') or 0) + 1}/{RETRY_MAX} "
+                              "waits out its backoff"}
     if sweep is not None and sweep.capped:
         return {"media_id": media_id, "ok": False, "status": vault_jev_rules.JEV_CAPPED, "detail": CAP_SKIP,
                 "notice": CAP_SKIP, "cost_millicents": 0}

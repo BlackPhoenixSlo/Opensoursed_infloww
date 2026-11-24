@@ -103,6 +103,17 @@ describe("FanListFilters", () => {
     expect(within(menu).getAllByRole("button").map((b) => b.textContent)).toEqual(["All inboxes"]);
   });
 
+  it("a chatter bound to a group sees only that group, locked: no menu, no \"All inboxes\"", async () => {
+    const user = userEvent.setup();
+    const { onGroupChange } = renderFilters({ groupCount: 3, group: 2, groupLocked: true, onOpenSplitInbox: null });
+    const selector = screen.getByRole("button", { name: "Inbox 2" });
+    expect(selector).toBeDisabled();
+    await user.click(selector);
+    expect(screen.queryByRole("region", { name: "Inboxes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "All inboxes" })).not.toBeInTheDocument();
+    expect(onGroupChange).not.toHaveBeenCalled();
+  });
+
   it("with a count of 3, the selector's menu lists \"All inboxes\", \"Inbox 1\" to \"Inbox 3\", then \"Split Inbox settings\"; choosing a group reports it, and the label shows the chosen entry", async () => {
     const user = userEvent.setup();
     const { onGroupChange } = renderFilters({ groupCount: 3 });

@@ -51,14 +51,15 @@ def _pool_assign_drops_unanswered_login() -> None:
 
     real = proxies.assign_pool
 
-    def assign_pool(account_id, *, bad, dead, due, geo, verify, rng=None):
+    def assign_pool(account_id, *, bad, dead, due, geo, verify, deactivated, rng=None):
         answers: list[bool] = []
 
         def counted(p):
             answers.append(bool(verify(p)))
             return answers[-1]
         was_on_pool = proxies.is_pool(proxies.get_for_account(account_id))
-        out = real(account_id, bad=bad, dead=dead, due=due, geo=geo, verify=counted, rng=rng)
+        out = real(account_id, bad=bad, dead=dead, due=due, geo=geo, verify=counted,
+                   deactivated=deactivated, rng=rng)
         if not was_on_pool and not out[1] and answers and not any(answers):
             proxies.unbind_pool(account_id)
             raise LookupError("slop fault pool-assign-drops-unanswered-login: no Inflowwww proxy answers")

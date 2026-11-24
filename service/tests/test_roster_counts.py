@@ -24,6 +24,7 @@ import _harness  # noqa: F401 — MUST be first (binds temp DB before engine imp
 
 _harness.bootstrap()
 
+import asyncio
 from datetime import datetime  # noqa: E402
 
 import server  # noqa: E402
@@ -564,10 +565,12 @@ async def case_roster_counts_read_of_only_for_leased_creators():
     try:
         # U's window was read once (the warm), long ago: past the badge's age and the list TTL alike.
         t0 = time.time() * 1000
-        await accounts_admin_api._compute_roster_count_of(U, bypass=True)
+        warm = await accounts_admin_api._compute_roster_count_of(U, bypass=True)
         assert clients[U].calls == 1
-        aged = server._time_mod.monotonic() - 3600
-        server._chats_window_fetched_at[U] = aged
+        server._chats_window_fetched_at[U] = server._time_mod.monotonic() - 3600
+        server.relay_cache.patch("list_chats", U, lambda _key, window: {
+            **window, "fetched_at": warm["as_of"] - 3600_000,
+        })
         _lease(L)
 
         r = (await accounts_admin_api.admin_accounts_roster_counts(_Resp()))["counts"]
@@ -575,7 +578,7 @@ async def case_roster_counts_read_of_only_for_leased_creators():
         assert clients[L].calls == 1, clients[L].calls   # leased: today's path, one live read
         assert clients[U].calls == 1 and clients[N].calls == 0, (clients[U].calls, clients[N].calls)
         assert _bare(r[U]) == {"unread": 2, "owe_reply": 3}, r[U]
-        assert abs(r[U]["as_of"] - (t0 - 3600_000)) < 5_000, (r[U]["as_of"], t0)   # the window's read time
+        assert r[U]["as_of"] == warm["as_of"] - 3600_000, r[U]
         assert r[L]["as_of"] >= t0, r[L]
 
         # The window gone (an outbound echo busted it): the last-known count, still no read.
@@ -760,7 +763,7 @@ async def case_fold_reports_restricted_unread():
     ]
     got: list = []
     orig_set, orig_load = unread_total.set_restricted_unread, server._load_client
-    unread_total.set_restricted_unread = lambda a, r, at: got.append((a, r, at))
+    unread_total.set_restricted_unread = lambda a, r, at: got.append((a, r.n, at))
     server._load_client = lambda _aid: _FakeClient(me, rows)
     real = unread_total_decide.excluded_from_badges
     server.relay_cache.invalidate("list_chats", aid)
@@ -857,7 +860,31 @@ async def case_owe_reply_excludes_latest_unread_set():
         _forget(aid)
 
 
+
+async def case_invalidated_window_does_not_cache_roster_count():
+    aid = "acct-invalidated-window"
+    loop = asyncio.get_running_loop()
+
+    async def invalidate():
+        server.relay_cache.invalidate("list_chats", aid)
+
+    class InvalidatedClient(_FakeClient):
+        def list_chats(self, **kwargs):
+            asyncio.run_coroutine_threadsafe(invalidate(), loop).result(5)
+            return super().list_chats(**kwargs)
+
+    original = server._load_client
+    server._load_client = lambda _aid: InvalidatedClient(999, [_chat(1)])
+    try:
+        await accounts_admin_api.rewarm_roster_count(aid)
+        assert accounts_admin_api.held_window(aid) is None
+        assert server.relay_cache.peek_fresh("roster_count", aid, ()) is None
+    finally:
+        server._load_client = original
+        server.relay_cache.invalidate("roster_count", aid)
+
 _harness.run(
+    case_invalidated_window_does_not_cache_roster_count,
     case_fold_reports_restricted_unread,
     case_owe_reply_uses_amber_guards,
     case_owe_reply_excludes_latest_unread_set,

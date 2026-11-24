@@ -1,4 +1,4 @@
-{"openapi_sha1": "5ba7bf881c7b2e712e91aab4a6660af2ad2f9de0",
+{"openapi_sha1": "f312fb2b44e1643105bf221ba7fc1879e94f17d8",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -677,6 +677,7 @@
   ["POST", "/admin/vault/sends/backfill", "admin_vault_sends_backfill"],
   ["GET", "/admin/vault/wall-media", "admin_vault_wall_media"],
   ["GET", "/admin/vault/fan-history", "admin_vault_fan_history"],
+  ["POST", "/admin/vault/fan-history/sync", "admin_vault_fan_history_sync"],
   ["GET", "/admin/ingest/transactions/health", "admin_ingest_tx_health"],
   ["POST", "/admin/ingest/transactions/{account_id}/run", "admin_ingest_tx_run"],
   ["POST", "/admin/roster/{account_id}/crawl", "admin_roster_crawl"],

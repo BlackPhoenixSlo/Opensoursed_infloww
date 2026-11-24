@@ -29,15 +29,113 @@ case "$VIEWPORT" in
   phone) W=390 H=844 ;;
   *) echo "ui-explore: --viewport is desktop or phone" >&2; exit 2 ;;
 esac
-test -x "$PY" || { echo "ui-explore: $PY not found (the repo's relay venv)" >&2; exit 3; }
-if ! test -x "$HERE/node_modules/.bin/bombadil"; then
-  (cd "$HERE" && nice -n 10 npm ci --no-audit --no-fund >/dev/null)
+if [ -n "$REPRO" ] && [ "$MODE" != shrink ]; then
+  DEADLINE=420
+else
+  if [[ ! "$LIMIT" =~ ^([0-9]{1,9})([smhd])$ ]]; then
+    echo "ui-explore: --time-limit requires an integer with s, m, h or d suffix" >&2
+    exit 2
+  fi
+  case "${BASH_REMATCH[2]}" in
+    s) UNIT=1 ;;
+    m) UNIT=60 ;;
+    h) UNIT=3600 ;;
+    d) UNIT=86400 ;;
+  esac
+  DEADLINE=$((10#${BASH_REMATCH[1]} * UNIT + 120))
 fi
-BOMBADIL="$HERE/node_modules/.bin/bombadil"
-
+test -x "$PY" || { echo "ui-explore: $PY not found (the repo's relay venv)" >&2; exit 3; }
 RUN_ID="$(date -u +%Y%m%d-%H%M%S)-$VIEWPORT-$$"
 OUT="$ROOT/.scratch/ui-explore/$RUN_ID"
 mkdir -p "$OUT"
+PIDS=()
+ACTIVE="" WATCHDOG=""
+# Bombadil launches Chrome in a separate process group.
+track_chrome() {
+  local pid started pgid current
+  [ -f "$OUT/chrome.pids" ] || return 0
+  while read -r pid started; do
+    if read -r pgid current < <(ps -p "$pid" -o pgid= -o lstart=) &&
+       [ "$pid" = "$pgid" ] && [ "$started" = "$current" ]; then
+      PIDS+=("$pid")
+      kill -TERM -- "-$pid" 2>/dev/null || true
+    fi
+  done <"$OUT/chrome.pids"
+  rm "$OUT/chrome.pids"
+}
+
+cleanup() {
+  local code=$?
+  trap - EXIT INT TERM
+  local pid alive=0
+  rm -f "$OUT/session"
+  if [ -n "$WATCHDOG" ]; then kill -TERM -- "-$WATCHDOG" 2>/dev/null || true; fi
+  if [ -n "$ACTIVE" ]; then PIDS=("$ACTIVE" ${PIDS[@]+"${PIDS[@]}"}); fi
+  # Keep the relay/next logs for triage; demo-shots removes its temp dir on exit.
+  # (gone if next/relay died: demo-shots then already cleaned up; must not abort the kills below)
+  [ -n "${STACK_TMP:-}" ] && cp "$STACK_TMP/relay.log" "$STACK_TMP/next.log" "$OUT/" 2>/dev/null || true
+  # Only the process groups started here; demo-shots' own trap then stops next/relay and removes its temp dir.
+  for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill -TERM -- "-$pid" 2>/dev/null || true; done
+  track_chrome
+  for _ in $(seq 1 100); do
+    alive=0
+    for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill -0 -- "-$pid" 2>/dev/null && alive=1; done
+    [ "$alive" = 0 ] && break
+    sleep 0.2
+  done
+  if [ "$alive" != 0 ]; then
+    for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill -KILL -- "-$pid" 2>/dev/null || true; done
+    echo "ui-explore: a process group needed SIGKILL; see $OUT" >&2
+    if [ "$code" = 0 ]; then code=1; fi
+  fi
+  exit "$code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+bounded() {
+  local seconds="$1" code=0 watchdog_code=0
+  shift
+  set -m
+  nice -n 10 "$@" &
+  ACTIVE=$!
+  (
+    set +m
+    trap 'exit "$watchdog_code"' TERM
+    watchdog_code=143
+    sleep "$seconds" &
+    wait "$!"
+    watchdog_code=124
+    echo "ui-explore: command exceeded ${seconds}s: $1" >&2
+    kill -TERM -- "-$ACTIVE" 2>/dev/null || exit 124
+    sleep 3 &
+    wait "$!"
+    kill -KILL -- "-$ACTIVE" 2>/dev/null || true
+    exit 124
+  ) &
+  WATCHDOG=$!
+  set +m
+  wait "$ACTIVE" || code=$?
+  kill -TERM -- "-$WATCHDOG" 2>/dev/null || true
+  wait "$WATCHDOG" 2>/dev/null || watchdog_code=$?
+  WATCHDOG=""
+  if [ "$watchdog_code" = 124 ]; then code=124; fi
+  if kill -0 -- "-$ACTIVE" 2>/dev/null; then
+    kill -TERM -- "-$ACTIVE" 2>/dev/null || true
+    sleep 1
+    if kill -KILL -- "-$ACTIVE" 2>/dev/null && [ "$code" = 0 ]; then code=1; fi
+  fi
+  ACTIVE=""
+  return "$code"
+}
+
+if ! test -x "$HERE/node_modules/.bin/bombadil"; then
+  bounded 180 npm --prefix "$HERE" ci --no-audit --no-fund >"$OUT/setup.log" 2>&1 ||
+    { echo "ui-explore: npm setup failed; see $OUT/setup.log" >&2; exit 3; }
+fi
+BOMBADIL="$HERE/node_modules/.bin/bombadil"
+
 # Same dataset anchor for seed and shim; a reproduction reuses the original run's.
 if [ -n "$REPRO" ] && [ -f "$(dirname "$REPRO")/anchor" ]; then
   DEMO_SHOTS_NOW="$(cat "$(dirname "$REPRO")/anchor")"
@@ -46,29 +144,6 @@ else
 fi
 export DEMO_SHOTS_NOW
 echo "$DEMO_SHOTS_NOW" >"$OUT/anchor"
-
-PIDS=()
-cleanup() {
-  local code=$?
-  trap - EXIT INT TERM
-  local pid
-  # Keep the relay/next logs for triage; demo-shots removes its temp dir on exit.
-  # (gone if next/relay died: demo-shots then already cleaned up; must not abort the kills below)
-  [ -n "${STACK_TMP:-}" ] && cp "$STACK_TMP/relay.log" "$STACK_TMP/next.log" "$OUT/" 2>/dev/null || true
-  # Only the process groups started here; demo-shots' own trap then stops next/relay and removes its temp dir.
-  for pid in "${PIDS[@]+"${PIDS[@]}"}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
-  for _ in $(seq 1 100); do
-    local alive=0
-    for pid in "${PIDS[@]+"${PIDS[@]}"}"; do kill -0 -- "-$pid" 2>/dev/null && alive=1; done
-    [ "$alive" = 0 ] && break
-    sleep 0.2
-  done
-  for pid in "${PIDS[@]+"${PIDS[@]}"}"; do kill -KILL -- "-$pid" 2>/dev/null || true; done
-  exit "$code"
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 
 set -m  # own process group per job
 nice -n 10 "$ROOT/scripts/demo-shots/run.sh" serve >"$OUT/stack.log" 2>&1 &
@@ -84,7 +159,9 @@ LINE="$(grep "demo-shots: serving." "$OUT/stack.log")" || { echo "ui-explore: st
 APP="$(sed -E 's/.*DEMO_SHOTS_APP=([^ ]+).*/\1/' <<<"$LINE")"
 STACK_TMP="$(sed -E 's/.*DEMO_SHOTS_TMP=([^ ]+).*/\1/' <<<"$LINE")"
 
-COOKIE="$(DEMO_SHOTS_TMP="$STACK_TMP" nice -n 10 "$PY" "$HERE/seed_session.py" "$APP")"
+DEMO_SHOTS_TMP="$STACK_TMP" bounded 180 "$PY" "$HERE/seed_session.py" "$APP" >"$OUT/session"
+IFS= read -r COOKIE <"$OUT/session"
+rm "$OUT/session"
 
 SHIM_PORT="$("$PY" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 SHIM="http://127.0.0.1:$SHIM_PORT"
@@ -93,20 +170,29 @@ UI_EXPLORE_NEXT="$APP" UI_EXPLORE_PORT="$SHIM_PORT" UI_EXPLORE_OUT="$OUT" DEMO_S
   nice -n 10 "$PY" "$HERE/shim.py" >"$OUT/shim.log" 2>&1 &
 PIDS=($! "${PIDS[@]}"); disown $!  # stopped before the stack it forwards to
 set +m
-for _ in $(seq 1 30); do curl --noproxy '*' -s -o /dev/null "$SHIM/__assets/" && break; sleep 1; done
+SHIM_READY=0
+for _ in $(seq 1 30); do
+  if curl --noproxy '*' -s -o /dev/null --max-time 2 "$SHIM/__assets/"; then
+    SHIM_READY=1
+    break
+  fi
+  sleep 1
+done
+[ "$SHIM_READY" = 1 ] || { echo "ui-explore: shim not ready; see $OUT/shim.log" >&2; exit 4; }
 # Chrome resolves no name but loopback: nothing the page asks for can leave the machine.
 RESOLVER="--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"
 CHROME_BIN="$("$PY" -c 'from playwright.sync_api import sync_playwright
 with sync_playwright() as p: print(p.chromium.executable_path)')"
 cat >"$OUT/chrome.sh" <<EOF
 #!/bin/sh
-exec "$CHROME_BIN" "$RESOLVER" "\$@"
+printf '%s %s\n' "\$\$" "\$(ps -p "\$\$" -o lstart=)" >>"\$UI_EXPLORE_CHROME_PIDS"
+exec "$CHROME_BIN" "$RESOLVER" --disable-breakpad --disable-crash-reporter "\$@"
 EOF
 chmod +x "$OUT/chrome.sh"
 
 # next dev compiles the page and its client chunks on first load. Load it once in a browser so
 # Bombadil (stops after 60 s without an event) and replays (act at once) meet a hydrated app.
-nice -n 10 "$PY" "$HERE/warm.py" "$SHIM" "$COOKIE" "$RESOLVER" "$W" "$H" ||
+bounded 200 "$PY" "$HERE/warm.py" "$SHIM" "$COOKIE" "$RESOLVER" "$W" "$H" ||
   echo "ui-explore: warm-up load failed (continuing)" >&2
 
 ARGS=(browser "$MODE" --headless --width "$W" --height "$H" --instrument-javascript files
@@ -116,14 +202,15 @@ elif [ -n "$REPRO" ]; then ARGS+=(--reproduce "$REPRO")
 else ARGS+=(--time-limit "$LIMIT"); fi
 [ -n "$EXIT_ON" ] && [ -z "$REPRO" ] && ARGS+=(--exit-on-violation)
 echo "ui-explore: $MODE $SHIM ($VIEWPORT ${W}x$H, ${REPRO:-$LIMIT}); trace $OUT/trace.bin"
-set +e
-CHROME="$OUT/chrome.sh" nice -n 10 "$BOMBADIL" "${ARGS[@]}" "$SHIM/" "$HERE/specification.ts" >"$OUT/bombadil.log" 2>&1
-CODE=$?
-set -e
-
-"$BOMBADIL" trace "$OUT/trace.bin" >"$OUT/trace.txt" 2>&1 || true
-"$PY" "$HERE/summary.py" "$BOMBADIL" "$OUT" || true
+CODE=0 TRACE_CODE=0 SUMMARY_CODE=0
+CHROME="$OUT/chrome.sh" UI_EXPLORE_CHROME_PIDS="$OUT/chrome.pids" \
+  bounded "$DEADLINE" "$BOMBADIL" "${ARGS[@]}" "$SHIM/" "$HERE/specification.ts" >"$OUT/bombadil.log" 2>&1 || CODE=$?
+track_chrome
+bounded 60 "$BOMBADIL" trace "$OUT/trace.bin" >"$OUT/trace.txt" 2>&1 || TRACE_CODE=$?
+bounded 120 "$PY" "$HERE/summary.py" "$BOMBADIL" "$OUT" || SUMMARY_CODE=$?
 echo "ui-explore: unmatched OF reads (got {}): $(cat "$OUT/shim-unmatched.txt" 2>/dev/null | wc -l | tr -d " ")"
 echo "ui-explore: inspect: $BOMBADIL browser inspect $OUT/trace.bin"
 echo "ui-explore: replay:  scripts/ui-explore/run.sh --viewport=$VIEWPORT --reproduce=$OUT/trace.bin"
-exit "$CODE"
+(( CODE == 0 )) || exit "$CODE"
+(( TRACE_CODE == 0 )) || exit "$TRACE_CODE"
+exit "$SUMMARY_CODE"

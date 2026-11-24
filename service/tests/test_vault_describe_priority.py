@@ -976,4 +976,18 @@ async def case_target_sweep_skips_terminal_dupe_members() -> None:
         assert snap(await _row(aid, mid)) == before[mid], f"Terminal dupe member {mid} was written"
 
 
+async def case_coverage_counts_rejected_images() -> None:
+    for stamp in ({"status": "jev_rejected"},
+                  {"status": "error", "error": "Invalid image: TypeSafeBadRequestError"},
+                  {"status": "ok", "gave_up": True}):
+        aid = await _world([])
+        async with get_session() as s:
+            s.add_all(VaultItem(account_id=aid, media_id=i, kind="photo", created_at=T0, describe_status="described")
+                      for i in range(1, 1000))
+            s.add(VaultItem(account_id=aid, media_id=1000, kind="photo", created_at=T0,
+                            ai_fields_json=json.dumps({"_jev": stamp})))
+            await s.commit()
+        assert (await vault_ai_vision.describe_coverage(aid, 1000))["remaining"] == 0
+
+
 _harness.run()

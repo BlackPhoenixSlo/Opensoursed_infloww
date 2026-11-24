@@ -193,7 +193,7 @@ def case_the_backfill_answers_the_new_history():
         OWNER_A, "/admin/vault/fan-history", account_id=A1, fan_id=FAN)[1], got
     assert "55" in got["history"]["by_media"], got["history"]
     again = OWNER_A.post("/admin/vault/sends/backfill", json={"account_id": A1, "fan_id": FAN, "items": [item]}).json()
-    assert again == {"ok": True, "inserted": 0, "skipped": 1}, again
+    assert again == {"ok": True, "inserted": 0, "updated": 0, "skipped": 1}, again
 
 
 try:

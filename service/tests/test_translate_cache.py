@@ -3,36 +3,7 @@
 POST /admin/translate — the three cache tiers behind the 🌐 chat-translate
 toggle. Durable regression suite (plain-assert, no pytest — repo convention).
 
-Google's gtx endpoint is faked, so there is no network; what's under test is how
-many times we'd have CALLED it, which is the entire point of the feature. Before
-the durable tier existed the only caches were a per-tab JS Map and this module's
-dict, so every page reload and every relay deploy re-bought the same
-translations (~1.5s per 40 fresh bubbles, measured from the VPS).
-
-Cases:
-  case_first_batch_calls_google_once_per_distinct_text:
-      the in-batch dedupe — the UI sends whatever is on screen, so "hey" three
-      times must still be ONE call, and the answer lands on all three slots in
-      the right order.
-  case_second_batch_is_free:
-      the warm path. No gtx call at all on a repeat batch.
-  case_survives_a_relay_restart:
-      the whole reason the table exists: wipe process memory (what a deploy does)
-      and the answers must still come back with ZERO calls.
-  case_failure_is_not_cached:
-      a transient Google failure must NOT pin "untranslatable" — the next batch
-      retries and can succeed. Cache the null and a rate-limited minute would
-      poison a thread until the next restart.
-  case_blank_texts_never_call_out:
-      empty/whitespace bubbles (media-only sends) map to null without a call.
-  case_results_survive_a_mid_batch_eviction:
-      the response is assembled from a per-request map, not re-read out of the
-      evicting module cache — the invariant that made the old assembly work was
-      never written down, so a bigger batch would have blanked real answers.
-  case_prune_holds_the_cap:
-      the age-ordered sweep keeps the table bounded and evicts OLDEST first —
-      the cap is what stops a nice-to-have readability aid from becoming the
-      biggest table in a DB that has been corrupted before.
+Google's gtx endpoint is faked.
 
 Run: cd service/tests && \
   PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_translate_cache.py
@@ -46,9 +17,15 @@ _harness.bootstrap()
 
 from datetime import datetime, timedelta  # noqa: E402
 
+import time  # noqa: E402
+
+import httpx  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 
 import translate_api  # noqa: E402 — module under test
+
+_real_fetch = translate_api._fetch_one
+_RealClient = httpx.AsyncClient
 from db.engine import get_session  # noqa: E402
 from db.models import TranslationCache  # noqa: E402
 
@@ -68,10 +45,16 @@ class _FakeClient:
         return False
 
 
-async def _fake_fetch(client, sem, text: str, target: str):
+_sources: list[str] = []
+
+
+async def _fake_fetch(client, sem, text: str, target: str, source: str = "auto"):
     _calls.append(text)
+    _sources.append(source)
     if text in _fail_for:
         return None                       # what a 429 / timeout looks like here
+    if source != "auto":
+        return {"text": f"{source.upper()}:{text}", "lang": source}
     return {"text": f"EN:{text}", "lang": "es"}
 
 
@@ -83,16 +66,18 @@ def _install_fakes() -> None:
 async def _reset() -> None:
     """Fresh process memory, call log AND durable tier — each case starts cold."""
     _calls.clear()
+    _sources.clear()
     _fail_for.clear()
     translate_api._cache.clear()
     translate_api._rows_since_prune = 0
+    translate_api._cooldown_until = 0.0
     async with get_session() as s:
         await s.execute(TranslationCache.__table__.delete())
         await s.commit()
 
 
-async def _post(texts: list[str]) -> list[dict | None]:
-    body = translate_api.TranslateBody(texts=texts, target="en")
+async def _post(texts: list[str], target: str = "en", hint: str | None = None) -> list[dict | None]:
+    body = translate_api.TranslateBody(texts=texts, target=target, hint=hint)
     return (await translate_api.translate_batch(body))["results"]
 
 
@@ -102,12 +87,12 @@ async def case_first_batch_calls_google_once_per_distinct_text():
     _install_fakes()
     await _reset()
 
-    out = await _post(["hola", "hey", "hey", "hey", "adios"])
+    out = await _post(["hola", "hallo", "hallo", "hallo", "adios"])
 
     # 5 bubbles, 3 distinct — and first-seen order, so the batch is stable.
-    assert _calls == ["hola", "hey", "adios"], f"not deduped: {_calls}"
+    assert _calls == ["hola", "hallo", "adios"], f"not deduped: {_calls}"
     assert [r["text"] for r in out] == [
-        "EN:hola", "EN:hey", "EN:hey", "EN:hey", "EN:adios"
+        "EN:hola", "EN:hallo", "EN:hallo", "EN:hallo", "EN:adios"
     ], f"wrong order/content: {out}"
     assert out[0]["lang"] == "es", f"detected language dropped: {out[0]}"
 
@@ -242,7 +227,180 @@ async def case_prune_holds_the_cap():
         translate_api._DB_CAP, translate_api._DB_PRUNE_TO = cap, prune_to
 
 
+async def case_429_pauses_google():
+    import asyncio
+    await _reset()
+    hits: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        hits.append(req.url.params["q"])
+        return httpx.Response(429)
+
+    sem = asyncio.Semaphore(1)
+    async with _RealClient(transport=httpx.MockTransport(handler)) as client:
+        assert await _real_fetch(client, sem, "hola", "en") is None
+        assert translate_api._cooling_down(), "a 429 must start the cooldown"
+        assert await _real_fetch(client, sem, "adios", "en") is None
+    assert hits == ["hola"], f"called Google during the cooldown: {hits}"
+
+
+async def case_cooldown_skips_google_keeps_cache():
+    _install_fakes()
+    await _reset()
+    await _post(["hola"])
+    translate_api._cache.clear()
+    _calls.clear()
+
+    translate_api._cooldown_until = time.monotonic() + 60
+    out = await _post(["hola", "adios"])
+    assert _calls == [], f"called Google during the cooldown: {_calls}"
+    assert out[0]["text"] == "EN:hola", f"cached answer must still serve: {out[0]}"
+    assert out[1] is None, out[1]
+
+    translate_api._cooldown_until = 0.0
+    out = await _post(["adios"])
+    assert _calls == ["adios"], f"after the cooldown Google must be tried again: {_calls}"
+    assert out[0]["text"] == "EN:adios", out[0]
+
+
+async def case_english_skips_google():
+    _install_fakes()
+    await _reset()
+
+    out = await _post(["hey babe how are you", "hallo wie geht es dir", "Turn um"])
+    assert _calls == ["hallo wie geht es dir", "Turn um"], f"wrong gtx calls: {_calls}"
+    assert out[0] == {"text": "hey babe how are you", "lang": "en"}, out[0]
+    assert out[1]["text"] == "EN:hallo wie geht es dir", out[1]
+
+    _calls.clear()
+    out = await _post(["hey babe how are you"], target="de")
+    assert _calls == ["hey babe how are you"], f"outbound en→de skipped gtx: {_calls}"
+
+
+async def case_short_text_uses_thread_language():
+    _install_fakes()
+    await _reset()
+
+    out = await _post(["Ja", "hast du noch was anderes", "Ne"])
+    assert _calls == ["hast du noch was anderes", "Ja", "Ne"], _calls
+    assert _sources == ["auto", "es", "es"], f"short texts not sent from the thread's language: {_sources}"
+    assert out[0] == {"text": "ES:Ja", "lang": "es"}, out[0]
+    assert out[2]["text"] == "ES:Ne", out[2]
+
+    _calls.clear()
+    _sources.clear()
+    out = await _post(["Ja"])
+    assert _sources == ["auto"], f"a lone short text with no context must auto-detect: {_sources}"
+    assert out[0]["text"] == "EN:Ja", "an auto answer must not reuse the hinted cache row"
+
+
+async def case_hint_wins_for_short_text():
+    _install_fakes()
+    await _reset()
+
+    assert translate_api._is_short("t'as faim")
+    out = await _post(["Ja"], hint="de")
+    assert _sources == ["de"], _sources
+    assert out[0] == {"text": "DE:Ja", "lang": "de"}, out[0]
+
+    _calls.clear()
+    await _post(["Ja", "frase larga aqui"], hint="de-AT")
+    assert _calls == ["frase larga aqui"], f"hinted short text not cached: {_calls}"
+
+    _calls.clear()
+    _sources.clear()
+    await _post(["Ja"], hint="en")
+    assert _sources == ["auto"], f"a hint equal to the target must be ignored: {_sources}"
+
+    _sources.clear()
+    await _post(["Ja"], hint="x'; drop")
+    assert _sources == [], f"a malformed hint must fall back to the cached auto answer: {_sources}"
+
+
+async def case_batches_share_google_permits():
+    import asyncio
+
+    await _reset()
+    saturated = asyncio.Event()
+    release = asyncio.Event()
+    hits = 0
+
+    async def handler(_req):
+        nonlocal hits
+        hits += 1
+        if hits >= translate_api._CONCURRENCY:
+            saturated.set()
+        await release.wait()
+        return httpx.Response(429)
+
+    translate_api._fetch_one = _real_fetch
+    translate_api.httpx.AsyncClient = lambda *a, **kw: _RealClient(transport=httpx.MockTransport(handler))
+    batches = asyncio.gather(*(_post([f"bonjour mes amis numéro {i}"]) for i in range(12)))
+    try:
+        await asyncio.wait_for(saturated.wait(), 5)
+        await asyncio.sleep(0.05)
+    finally:
+        release.set()
+        await batches
+    assert hits == translate_api._CONCURRENCY, hits
+
+
+async def case_english_shortcut_respects_hint_and_cache():
+    _install_fakes()
+    await _reset()
+    for text, hint in [("Bad", "de"), ("I love you auch", None), ("Ya", None),
+                       ("Hey babe, how are you? Danke", None)]:
+        assert (await _post([text], hint=hint))[0]["text"] != text, text
+
+    text = "hey babe how are you"
+    key = translate_api._cache_key(text, "en")
+    await translate_api._db_put("en", {key: (text, {"text": "cached answer", "lang": "es"})})
+    assert (await _post([text]))[0]["text"] == "cached answer"
+
+
+async def case_forced_echo_retries_auto_and_never_persists_echo():
+    await _reset()
+    key = translate_api._cache_key("Salut", "en", "de")
+    await translate_api._db_put("en", {key: ("Salut", {"text": "SALUT ", "lang": "de"})})
+    calls = []
+
+    def handler(req):
+        source, text = req.url.params["sl"], req.url.params["q"]
+        calls.append((source, text))
+        result = "Hello" if source == "auto" and text == "Salut" else text.upper() + " "
+        return httpx.Response(200, json=[[[result]], None, "fr" if source == "auto" else source])
+
+    translate_api._fetch_one = _real_fetch
+    translate_api.httpx.AsyncClient = lambda *a, **kw: _RealClient(transport=httpx.MockTransport(handler))
+    assert (await _post(["Salut"], hint="de")) == [{"text": "Hello", "lang": "fr"}]
+    assert calls == [("de", "Salut"), ("auto", "Salut")]
+    echo = [{"text": "MACHIN ", "lang": "fr"}]
+    assert (await _post(["Machin"], hint="de")) == echo
+    assert calls[-2:] == [("de", "Machin"), ("auto", "Machin")]
+    assert (await _post(["visit my URL"], hint="de")) == [{"text": "VISIT MY URL ", "lang": "fr"}]
+    assert calls[-1] == ("auto", "visit my URL")
+    assert (await _post(["Machin"], hint="de")) == echo
+    assert len(calls) == 5
+    async with get_session() as session:
+        rows = (await session.execute(select(TranslationCache.source_text, TranslationCache.src_lang))).all()
+    assert sorted(rows) == [("Machin", "fr"), ("Salut", "fr"), ("visit my URL", "fr")]
+    translate_api._cache.clear()
+    calls.clear()
+    assert (await _post(["Salut"], hint="de")) == [{"text": "Hello", "lang": "fr"}]
+    assert (await _post(["Machin"], hint="de")) == echo
+    assert (await _post(["visit my URL"], hint="de")) == [{"text": "VISIT MY URL ", "lang": "fr"}]
+    assert calls == []
+
+
 _harness.run(
+    case_batches_share_google_permits,
+    case_english_shortcut_respects_hint_and_cache,
+    case_forced_echo_retries_auto_and_never_persists_echo,
+    case_short_text_uses_thread_language,
+    case_hint_wins_for_short_text,
+    case_english_skips_google,
+    case_429_pauses_google,
+    case_cooldown_skips_google_keeps_cache,
     case_first_batch_calls_google_once_per_distinct_text,
     case_second_batch_is_free,
     case_survives_a_relay_restart,

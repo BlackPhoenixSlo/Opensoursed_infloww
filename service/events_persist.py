@@ -100,7 +100,8 @@ class _Lanes:
         return item
 
 
-def enqueue(account_id: str | None, event_type: str | None, persistable: dict, event: dict) -> None:
+def enqueue(account_id: str | None, event_type: str | None, persistable: dict, event: dict,
+            prior: ed.PriorInboxRow = ed.InboxRowUnpatched.VALUE) -> None:
     """Hand one OF frame to the worker. Bounded (`_Lanes.put`): on overflow the
     oldest queued frame that is not a Fan's DM is displaced, or the incoming one
     is dropped when every queued frame is a DM (a dropped DM is logged). Never
@@ -109,7 +110,7 @@ def enqueue(account_id: str | None, event_type: str | None, persistable: dict, e
     fire-and-forget create_task path so we don't lose data."""
     global _persist_drops, _persist_dm_drops
     if _persist_queue is not None:
-        item = ed.PersistItem(account_id, event_type, persistable, event, td.is_inbound_dm(event))
+        item = ed.PersistItem(account_id, event_type, persistable, event, td.is_inbound_dm(event), prior)
         outcome = _persist_queue.put(item)
         if outcome != "queued":
             _persist_drops += 1
@@ -126,6 +127,7 @@ def enqueue(account_id: str | None, event_type: str | None, persistable: dict, e
                     if _persist_dm_drops % 100 == 1:
                         log.error("persist queue full of DMs — a Fan's DM dropped unwritten "
                                   "(%d so far, account=%s)", _persist_dm_drops, account_id)
+                    _scrape_dropped_dm(account_id, event)
                 return   # the incoming frame was dropped: nothing went in or out
             write_telemetry.dequeued()
         write_telemetry.enqueued(_persist_queue.qsize())
@@ -135,7 +137,21 @@ def enqueue(account_id: str | None, event_type: str | None, persistable: dict, e
         rows = ed.persist_plan([ed.PersistItem(account_id, event_type, persistable, event)])
         if rows:
             asyncio.create_task(_persist_batch(rows))
-        asyncio.create_task(_transcode(event))
+        asyncio.create_task(_transcode(event, prior))
+
+
+def _scrape_dropped_dm(account_id: str | None, event: dict) -> None:
+    """A dropped DM's chat gets a one-fan scrape (deduped per fan by enqueue_fan_scrape),
+    which reads the message back from OF."""
+    fan = td._int_id(td.route(event)[2]["fromUser"]["id"])   # an inbound DM: is_inbound_dm held
+    if not account_id or not fan:
+        return
+    import webhook_dispatch  # noqa: PLC0415 — lazy: it imports the executor graph
+    asyncio.create_task(webhook_dispatch.enqueue_fan_scrape(
+        str(account_id), fan, DM_DROPPED_SOURCE, peek_only=True))
+
+
+DM_DROPPED_SOURCE = "dm_dropped"
 
 
 async def _persist_batch(rows: list[dict]) -> None:
@@ -197,17 +213,17 @@ async def _persist_worker_loop() -> None:
         _persist_inflight = len(batch)
         rows = ed.persist_plan(batch)
 
-        async def _one(event) -> None:
+        async def _one(event, prior) -> None:
             global _persist_inflight
             try:
-                await _transcode(event)
+                await _transcode(event, prior)
             except Exception:
                 log.exception("persist worker: transcode failed")
                 write_telemetry.drop("transcode_exception")
             _persist_inflight -= 1
 
         with write_telemetry.writer("persist"):
-            await asyncio.gather(_persist_batch(rows), *(_one(it.event) for it in batch))
+            await asyncio.gather(_persist_batch(rows), *(_one(it.event, it.prior) for it in batch))
 
 
 def start_persist_worker() -> bool:

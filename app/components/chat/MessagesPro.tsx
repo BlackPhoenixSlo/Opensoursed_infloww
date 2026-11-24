@@ -30,7 +30,6 @@ import { ThreadEmptyState } from "@/components/chat/ThreadEmptyState";
 import { WindowHeader } from "@/components/chat/WindowHeader";
 import { useCreatorTabs } from "@/components/chat/useCreatorTabs";
 import { ScopeSelect } from "@/components/shell/ScopeSelect";
-import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { UNREAD_WARM_REUSE_MS } from "@/hooks/useUnreadMessagesPrefetch";
 import { ofUserFullKey, ofUserNameKey, ofUserNameQuery, ofUserQuery, type OFUserName } from "@/hooks/useOFUser";
 import { useOnlineSubscribers } from "@/hooks/useOnlineSubscribers";
@@ -78,7 +77,6 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
   // "Online Fans": the Fan List shows only online Fans while on.
   const [onlineOnly, setOnlineOnly] = useState(false);
   const desktop = useIsDesktop();
-  useInboxRealtime();
   const qc = useQueryClient();
   const accounts = usePlatformAccounts();
   const { pickAll } = usePickAllModels();

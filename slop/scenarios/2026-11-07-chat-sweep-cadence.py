@@ -62,14 +62,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections import Counter
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs
 
 from slop.actors import fan_dm
 from slop.lib.client import Recorder
-from slop.lib.of_wire import TOO_MANY_BODY
+from slop.lib.of_wire import TOO_MANY_BODY, unread
 from slop.lib.sweep_cadence_faults import (ANCHOR, BACKFILL_ON_DEMAND, COLLAPSE, DEFER, DEFER_NET, FAILFAST,
                                            ONE_OPEN)
 from slop.seed import ts
@@ -105,7 +104,6 @@ TRIGGERS = (("read", "read"),
 # Creator 0's second Silent mass-only chat (the other Creators' stay untriggered): his reply leaves it unread, and
 # neither it nor the warms after it buy anything.
 REPLY_LEG = ("reply", "warm", "warm")
-MARK_PATH = re.compile(r"/api2/v2/chats/(\d+)/mark-as-read")
 UNREAD_WAIT_S = 5      # the reply frame's unread bump lands off the inject request
 EXPECTED_TRACEBACKS = (("scrape_chat_failed account=", "Too many requests"),
                        ("kind=scrape_chats", "full sweep stopped after"))
@@ -116,6 +114,7 @@ async def run(ctx) -> None:
     w.data["flat_creators"] = int(ctx.param("creators", CREATORS))
     await ctx.build(PROFILE)
     creators = [c["id"] for c in w.data["creators"]]
+    assert len(creators) >= len(TRIGGERS) + 2, "need a live Creator for each trigger leg"
     live, off, dead = creators[:-2], creators[-2], creators[-1]
     rng = w.rng("scenario:sweep-cadence")
 
@@ -153,11 +152,7 @@ async def run(ctx) -> None:
             deep[(aid, fan)] = rows
 
     def deep_route(h, method, u, uid, route, _raw) -> bool:
-        """A deep thread's messages page as OF pages it: desc older than `id`, asc from `offset`; its
-        mark-as-read `{"success": true}`."""
-        if method == "POST" and (m := MARK_PATH.fullmatch(u.path)) and (uid, int(m.group(1))) in deep:
-            h._record(uid, route, 200, {"success": True})
-            return True
+        """A deep thread's messages page as OF pages it: desc older than `id`, asc from `offset`."""
         if method != "GET" or route != MSG_ROUTE:
             return False
         rows = deep.get((uid, int(u.path.rsplit("/", 2)[-2])))
@@ -356,22 +351,40 @@ async def run(ctx) -> None:
             of = [c for c in fake.calls[at:] if c["route"] == MSG_ROUTE and c["account"] == aid
                   and int(c["path"].rsplit("/", 2)[-2]) == fan]
         head_ms.append(ms)
-        return {"status": r.status_code, "of_reads": len(of), "ms": ms, "warm": warm}
+        ids = [parse_qs(c["query"], keep_blank_values=True).get("id", []) for c in of]
+        return {"status": r.status_code, "of_reads": len(of), "ids": ids, "ms": ms, "warm": warm}
+
+    def head_ok(read: dict) -> bool:
+        return (read["status"] == 200 and read["ids"] == ([[PEEK_ID]] if read["warm"] else [[]])
+                and (not read["warm"] or read["unread_before"] == read["unread_after"]))
 
     legs = [(aid, silent_of[aid][0], "read", TRIGGERS[i % len(TRIGGERS)]) for i, aid in enumerate(live)]
     legs.append((live[0], silent_of[live[0]][1], "reply", REPLY_LEG))
     for aid, fan, leg, steps in legs:
         t = trig[(aid, fan)] = {"leg": leg, "steps": list(steps), "deferred_before": deferred_now(aid, fan),
-                                "reads": [], "marks": [], "replies": 0, "unread_after_reply": None, "jobs_after": []}
+                                "reads": [], "marks": [], "replies": 0, "unread_before_reply": None,
+                                "unread_after_reply": None, "jobs_after": []}
+        if "mark" in steps:
+            with fake.lock:
+                fake.mark(aid, fan, read=False)
         for how in steps:
             if how == "mark":
+                with fake.lock:
+                    at = len(fake.calls)
+                    was_unread = next(unread(row) for row in fake.chats[aid] if row["withUser"]["id"] == fan)
                 r = await opener.post(f"/api/of/v2/chats/{fan}/mark-as-read", headers={"X-Account-Id": aid},
                                       timeout=60)
-                t["marks"].append(r.status_code)
+                with fake.lock:
+                    reached_of = any(c["account"] == aid and c["route"].startswith("POST ") and c["status"] == 200
+                                     and c["path"] == f"/api2/v2/chats/{fan}/mark-as-read" for c in fake.calls[at:])
+                    is_unread = next(unread(row) for row in fake.chats[aid] if row["withUser"]["id"] == fan)
+                t["marks"].append({"status": r.status_code, "reached_of": reached_of,
+                                   "was_unread": was_unread, "is_unread": is_unread})
             elif how == "reply":
                 fr = fan_dm.frame(next(reply_ids), {"id": fan, "username": f"u{fan}", "name": f"Fan {fan}"},
                                   "hey are you there")
                 before = marker(aid, fan)
+                t["unread_before_reply"] = before
                 (await fan_dm.inject(hook, aid, fr)).raise_for_status()
                 t["replies"] += 1
                 for _ in range(UNREAD_WAIT_S * 10):
@@ -380,13 +393,18 @@ async def run(ctx) -> None:
                     await asyncio.sleep(0.1)
                 t["unread_after_reply"] = marker(aid, fan)
             else:
-                t["reads"].append(await head_read(aid, fan, warm=how == "warm"))
+                if how == "warm":
+                    before = marker(aid, fan)
+                read = await head_read(aid, fan, warm=how == "warm")
+                t["reads"].append(read)
             # the trigger's job lands off the request (the read's fired task): wait for it, or for a wrong one
             for _ in range(30):
                 if not t["deferred_before"] or backfills()[(aid, fan)]:
                     break
                 await asyncio.sleep(0.1)
             await asyncio.sleep(0.3)
+            if how == "warm":
+                read.update(unread_before=before, unread_after=marker(aid, fan))
             t["jobs_after"].append(backfills()[(aid, fan)])
     not_deferred_reads = {aid: await head_read(aid, plain_deep[aid]) for aid in live}
     await asyncio.sleep(0.5)
@@ -429,23 +447,24 @@ async def run(ctx) -> None:
                 ok = n_jobs == 0
             elif t["leg"] == "reply":   # unread from his reply on, warms only: nothing bought, history still deferred
                 ok = (t["deferred_before"] and n_jobs == 0 and not any(t["jobs_after"])
-                      and (t["unread_after_reply"] or 0) > 0
+                      and t["unread_after_reply"] > t["unread_before_reply"]
                       and db["cursor"] is None and db["deferred_at"] is not None and pg["asc"] == 0
-                      and all(x["status"] == 200 and x["of_reads"] == 1 for x in t["reads"]))
+                      and all(map(head_ok, t["reads"])))
             else:
                 # each Creator's FIRST Click read buys the job alone; a warm before it buys none
-                want = 1 if t["deferred_before"] else 0
                 first = next(i for i, how in enumerate(t["steps"]) if how in CLICKS)
-                ok = (n_jobs == want and t["jobs_after"] == [0] * first + [want] * (len(t["steps"]) - first)
-                      and all(st == 200 for st in t["marks"])
+                ok = (t["deferred_before"] and n_jobs == 1
+                      and t["jobs_after"] == [0] * first + [1] * (len(t["steps"]) - first)
+                      and t["marks"] == [{"status": 200, "reached_of": True, "was_unread": True, "is_unread": False}]
+                      * t["steps"].count("mark")
                       and db["cursor"] is not None and db["deferred_at"] is None
                       and db["rows"] == after_db[(aid, ref)]["rows"] and pg["asc"] == pages[(aid, ref)]["asc"]
-                      and all(x["status"] == 200 and x["of_reads"] == 1 for x in t["reads"]))
+                      and all(map(head_ok, t["reads"])))
             if not ok:
                 backfill_bad.append({"creator": aid, "fan": fan, "triggers": t, "jobs": n_jobs, "pages": pg,
                                      "ref_pages": pages[(aid, ref)], "ref_rows": after_db[(aid, ref)]["rows"], **db})
         nd = not_deferred_reads[aid]
-        if jobs_by_fan[(aid, ref)] or nd["status"] != 200 or nd["of_reads"] != 1:
+        if jobs_by_fan[(aid, ref)] or not head_ok(nd):
             backfill_bad.append({"creator": aid, "fan": ref, "kind": "not deferred", "jobs": jobs_by_fan[(aid, ref)],
                                  "read": nd})
     net_silent = sum(pages[(a, f)]["desc"] + pages[(a, f)]["asc"] for a in live for f in silent_of[a])

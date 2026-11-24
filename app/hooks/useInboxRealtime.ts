@@ -15,6 +15,8 @@
  *     and event_transcoder.py. Drops the fan drawer's revenue caches
  *     (chart, Sales list, spend stats) so a sale shows up without
  *     waiting out their staleTimes.
+ *   • vault_history_changed   — a purchase stamp committed the fan's media as
+ *     bought (purchase_notifications.py): the vault picker's badges re-read.
  *
  * Strategy:
  *   • For chat message events, append the message to that chat's cache
@@ -22,12 +24,14 @@
  *     row jumps to the top.
  *   • Fallback: invalidate the chat-list query so the next paint refetches.
  *
- * Mount this once at the top of /inbox.
+ * Mounted once app-wide (NotificationToaster's InboxRealtimeListener), so
+ * every chat list (OF Manager's too) stays live on any page.
  */
 
 import { useEffect, useMemo, useRef } from "react";
 import { hashKey, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
+import { vaultHistoryKey } from "@/hooks/useFanVaultHistory";
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { ofUserFullKey } from "@/hooks/useOFUser";
@@ -36,7 +40,7 @@ import { scheduledSendsKey } from "@/hooks/useServerScheduledSends";
 import type { OFChatItem, OFMessage } from "@/lib/relay";
 import { isValidFanId, sameUserId, type FanId } from "@/lib/fanId";
 import {
-  applyReply, bumpChatPages, fanRowMatcher, freshestFanRow, mayAddRow, parseReply, patchChatCaches, rowNewerThan,
+  applyReply, bumpChatPages, fanRowMatcher, freshestFanRow, decodeChatsKey, viewAdmits, parseReply, patchChatCaches, rowNewerThan,
   type ChatPages,
   type Reply,
 } from "@/lib/chatsCache";
@@ -47,6 +51,10 @@ interface ChatMessagePayload {
   text?: string;
   fromUser?: { id: number; name?: string; username?: string; avatar?: string };
   toUser?: { id: number };
+  /** The Fan, on a Creator echo (her send from OF web/app or another tool), which has no `fromUser`. */
+  chatUserId?: number;
+  /** A mass's per-Fan copy: its rows are the mass's placeholders, not this echo. */
+  isFromQueue?: boolean;
   createdAt?: string;
   mediaCount?: number;
   media?: OFMessage["media"];
@@ -89,13 +97,21 @@ export interface ChatTarget {
  * outbound event omits the recipient, so worker-emitted outbound events carry
  * the recipient as `__fan_id` (with `toUser.id` as a fallback). Returns null for
  * a malformed event OR a bare OF outbound echo with no recipient to route to —
- * those are left to the optimistic path + the 90s chat-list poll.
+ * those are left to the optimistic path + the 90s chat-list poll. A Creator echo
+ * (no `fromUser`, `chatUserId` = the Fan) is outbound to `chatUserId`, its `msg`
+ * given `fromUser` = the Creator; a mass copy (`isFromQueue`) is null.
  */
 export function resolveChatTarget(e: ChatMessageEvent): ChatTarget | null {
   const accountId = e.__account_id ?? null;
   const msg = e.api2_chat_message ?? null;
-  const fromUser = msg?.fromUser ?? null;
-  if (!accountId || !msg || !fromUser) return null;
+  if (!accountId || !msg) return null;
+  if (!msg.fromUser) {
+    const fanId = msg.chatUserId;
+    const fromId = Number(accountId);
+    if (msg.isFromQueue || !isValidFanId(fanId) || !Number.isSafeInteger(fromId)) return null;
+    return { accountId, fanId, isOutbound: true, msg: { ...msg, fromUser: { id: fromId } }, fromId };
+  }
+  const fromUser = msg.fromUser;
   // Keep ids EXACTLY as the wire sent them. These were `Number(...)`, which
   // truncates a Fansly snowflake — and the truncated value then keyed every
   // invalidation below (["messages"…], ["fan"…], ["of-user"…], scheduled
@@ -143,6 +159,8 @@ function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: FanId) 
   void qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] });
   // Per-account payouts walk — "Last purchase" stat (24h staleTime otherwise).
   void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
+  // Vault picker badges (bought / sent): a sale can flip one.
+  void qc.invalidateQueries({ queryKey: vaultHistoryKey(accountId, fanId) });
   // Spend-batch chunks holding him (key: `aid`, comma-joined ids) — the list
   // chips. His chunks only.
   void qc.invalidateQueries({
@@ -200,11 +218,7 @@ export function useInboxRealtime() {
       const priorRow = owned ? findFanChatRow(qc, accountId, fanId) : null;
       const eventAt = toUtcIso(msg.createdAt);
       const evtMs = Date.parse(eventAt);
-      const priorMs = priorRow?.lastMessage?.createdAt
-        ? Date.parse(priorRow.lastMessage.createdAt)
-        : NaN;
-      const isStale =
-        Number.isFinite(evtMs) && Number.isFinite(priorMs) && evtMs < priorMs;
+      const isStale = rowNewerThan(priorRow, evtMs);
 
       // A scheduled send firing arrives as an outbound message. Drop its ghost
       // bubble the instant the real one lands (instead of waiting for the poll).
@@ -242,6 +256,9 @@ export function useInboxRealtime() {
       // the socket may have missed.
       const threadKey = ["messages", accountId, fanId];
       const thread = qc.getQueryCache().get<OFMessage[]>(hashKey(threadKey));
+      // The chat is on screen (an enabled thread observer, visible tab): the person sees the message, so the
+      // row's unread is left as it was; the list's next read brings OF's own count.
+      const onScreen = !!thread?.isActive() && !(typeof document !== "undefined" && document.hidden);
       if (thread && (thread.state.data !== undefined || thread.state.fetchStatus === "fetching"
           || thread.isActive())) {
         patchQueryData<OFMessage[]>(qc, threadKey, (prev = []) => insertMsg(prev, candidate));
@@ -272,11 +289,11 @@ export function useInboxRealtime() {
             name: isOutbound ? "" : (fromUser.name ?? fromUser.username ?? ""),
           },
         } as OFChatItem);
+        const keepUnread = isOutbound || onScreen;
         return {
           ...base,
-          // We sent it → don't raise the unread badge; only inbound bumps it.
-          hasUnread: isOutbound ? (base.hasUnread ?? false) : true,
-          unreadMessagesCount: isOutbound
+          hasUnread: keepUnread ? (base.hasUnread ?? false) : true,
+          unreadMessagesCount: keepUnread
             ? (base.unreadMessagesCount ?? 0)
             : (base.unreadMessagesCount ?? 0) + 1,
           lastMessage: {
@@ -308,12 +325,14 @@ export function useInboxRealtime() {
         qc.setQueryData(q.queryKey, { ...data, list: [row, ...data.list.filter((c) => !isFanRow(c))] });
       });
 
-      // New row only where lib/chatsCache `mayAddRow` (never on a replay); otherwise a fan-less cache keeps its
-      // reference. Replayed over a page read before it (`patchChatCaches`), a row showing a newer message stays.
       patchChatCaches(qc, accountId, (data, { key, replay }) => {
-        const mayAdd = !replay && mayAddRow(key, accountId);
-        const pages = bumpChatPages(data.pages, isFanRow,
-          (e) => (e ? (replay && rowNewerThan(e, evtMs) ? null : bumpRow(e)) : mayAdd ? bumpRow(null) : null));
+        const view = decodeChatsKey(key);
+        const pages = bumpChatPages(data.pages, isFanRow, (existing) => {
+          if (existing) return replay && rowNewerThan(existing, evtMs) ? null : bumpRow(existing);
+          if (replay || (isOutbound && view.filter === "unread")) return null;
+          const inserted = bumpRow(priorRow) ?? priorRow;
+          return inserted && viewAdmits(view, inserted) ? inserted : null;
+        });
         return pages === data.pages ? data : { ...data, pages };
       });
     });
@@ -346,6 +365,15 @@ export function useInboxRealtime() {
       void qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] });
     });
 
+    const offVault = eventBus.on("vault_history_changed", (env: EventEnvelope) => {
+      const accountId = env.__account_id ?? null;
+      const fanId = (env.vault_history_changed as { fan_id?: FanId } | undefined)?.fan_id ?? null;
+      if (!accountId || !isValidFanId(fanId)) return;
+      const allowed = allowedRef.current;
+      if (allowed.size > 0 && !allowed.has(accountId)) return;
+      void qc.invalidateQueries({ queryKey: vaultHistoryKey(accountId, fanId) });
+    });
+
     // Note: we used to invalidate ["chats"] on every "chat_messages" event,
     // but with useInfiniteQuery that refetches *every* loaded page — after a
     // few "load more" clicks that becomes 40+ pages per OF preview event.
@@ -355,6 +383,6 @@ export function useInboxRealtime() {
     // that slipped through near the top. Deep rows keep moving on this handler
     // alone, which is exactly why the poll no longer needs to re-walk them.
 
-    return () => { offMsg(); offReply(); offTx(); };
+    return () => { offMsg(); offReply(); offTx(); offVault(); };
   }, [qc]);
 }

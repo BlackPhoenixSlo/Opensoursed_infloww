@@ -17,10 +17,12 @@ vi.mock("@/contexts/ChatterContext", async (orig) => ({
 import { eventBus } from "@/lib/events";
 import { relay } from "@/lib/relay";
 import { ownerAccountsQuery } from "@/lib/ownerAccounts";
+import { dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
 import {
   useRosterCountActions,
   useRosterCountsRead,
+  useRosterCounts,
   resetRosterCountsModuleState,
   type RosterCountsResp,
 } from "./useRosterCounts";
@@ -53,6 +55,64 @@ describe("the roster-counts cache holds the Relay's answer, nothing of the tab's
     }) as never);
   });
   afterEach(() => vi.restoreAllMocks());
+
+  it("displays a fresh unread count over the retained route answer", async () => {
+    const qc = qcOf();
+    vi.spyOn(eventBus, "isConnected").mockReturnValue(true);
+    const cached = { counts: { a: { unread: 4, owe_reply: 1 } } };
+    qc.setQueryData(KEY, cached);
+    const read = renderHook(() => useRosterCounts(), { wrapper: wrap(qc) });
+    expect(read.result.current.a.unread).toBe(4);
+
+    const publish = (seq: number, slot: { n: number; grey?: string } | null) => act(() => {
+      dispatchCreatorFreshness(qc, "u1", {
+        type: "refreshed",
+        body: { account_id: "a", boot: 1, seq, now: seq, values: { unread_total: slot } },
+        receivedAt: seq,
+      });
+    });
+    publish(2, { n: 0 });
+    expect(read.result.current.a).toEqual({ unread: 0, owe_reply: 1 });
+    expect(qc.getQueryData(KEY)).toEqual(cached);
+    publish(3, { n: 4, grey: "r_unknown" });
+    expect(read.result.current.a).toEqual({ unread: 0, owe_reply: 1 });
+    expect(qc.getQueryData(KEY)).toEqual(cached);
+    publish(4, null);
+    expect(read.result.current.a.unread).toBe(4);
+  });
+
+  it("falls back to the roster response when SSE disconnects and restores the slot on reconnect", async () => {
+    const qc = qcOf();
+    const connected = vi.spyOn(eventBus, "isConnected").mockReturnValue(true);
+    const listeners = new Set<(up: boolean) => void>();
+    vi.spyOn(eventBus, "onStateChange").mockImplementation((listener) => {
+      listeners.add(listener);
+      listener(eventBus.isConnected());
+      return () => { listeners.delete(listener); };
+    });
+    const setConnected = (up: boolean) => act(() => {
+      connected.mockReturnValue(up);
+      listeners.forEach((listener) => listener(up));
+    });
+
+    qc.setQueryData(KEY, { counts: { a: { unread: 2, owe_reply: 1 } } });
+    dispatchCreatorFreshness(qc, "u1", {
+      type: "refreshed",
+      body: { account_id: "a", boot: 1, seq: 1, now: 1, values: { unread_total: { n: 4, amber: 3 } } },
+      receivedAt: 1,
+    });
+    const read = renderHook(() => useRosterCounts(), { wrapper: wrap(qc) });
+    expect(read.result.current.a).toEqual({ unread: 4, owe_reply: 3 });
+
+    setConnected(false);
+    expect(read.result.current.a).toEqual({ unread: 2, owe_reply: 1 });
+    void act(() => { void qc.refetchQueries({ queryKey: KEY }); });
+    await answer(FULL, { counts: { a: { unread: 0, owe_reply: 0 } } });
+    await waitFor(() => expect(read.result.current.a).toEqual({ unread: 0, owe_reply: 0 }));
+
+    setConnected(true);
+    expect(read.result.current.a).toEqual({ unread: 4, owe_reply: 3 });
+  });
 
   it("a full answer replaces the cached one as is: no merge with a prior entry", async () => {
     const qc = qcOf();
@@ -139,14 +199,15 @@ describe("useRosterCountsRead polls only while some Creator's accounts row has n
   it.each([
     ["stream up", true],
     ["stream down", false],
-  ])("every row has the slot (a non-OF Creator's null included): the mount read only over 10 min, %s", async (_n, up) => {
+  ])("every row has a live slot: the mount read only over 10 min, %s", async (_n, up) => {
     vi.spyOn(eventBus, "isConnected").mockReturnValue(up);
-    const reads = mount({ owner: [{ id: "a1", ...slot(on) }, { id: "a2", ...slot(null) }] });
+    const reads = mount({ owner: [{ id: "a1", ...slot(on) }, { id: "a2", ...slot(on) }] });
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(reads()).toBe(1);
   });
 
   it.each([
+    ["owner: null slot", { owner: [{ id: "a1", ...slot(on) }, { id: "a2", ...slot(null) }] }, true, 3],
     ["owner: Shared refresher on, Unread total off", { owner: [{ id: "a1", ...slot(on) }, { id: "a2", freshness: { values: {} } }] }, true, 3],
     ["owner: Shared refresher off (no freshness)", { owner: [{ id: "a1", ...slot(on) }, { id: "a2" }] }, true, 3],
     ["owner: Shared refresher off, stream down", { owner: [{ id: "a1", ...slot(on) }, { id: "a2" }] }, false, 11],

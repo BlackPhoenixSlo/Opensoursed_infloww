@@ -117,27 +117,57 @@ def publish(aid: str, fan_id: int | None, unread: int, at: int | None = None) ->
         log.warning("chat_read_changed publish failed (account=%s fan=%s)", aid, fan_id, exc_info=True)
 
 
+def after_reply(aid: str, fan_id: int, at: int) -> None:
+    import badge_reads
+    import unread_total
+
+    unread_total.on_reply(aid, fan_id, at)
+    badge_reads.on_reply(aid, fan_id, at)
+    if not unread_total.ENABLED:
+        return
+    import accounts_admin_api
+    import unread_total_decide as utd
+
+    me = accounts_admin_api.amber_creator_id(aid)
+    _apply_amber_arrival(aid, fan_id, utd.ECHO, at,
+                         None if me is None else lambda row: utd.reply_row(row, me, at))
+
+
+def _apply_amber_arrival(aid: str, fan: int, kind: str, at: int,
+                         row_change: Callable[[dict], dict] | None) -> None:
+    try:
+        import accounts_admin_api
+        import badge_reads
+        import unread_total_decide as utd
+
+        badge_reads.note_arrival(aid, fan, kind, at)
+        if row_change is None:
+            return
+        arrivals = badge_reads.arrivals(aid).get(fan, {})
+        if max(arrivals.items(), key=utd.arrival_order, default=None) == (kind, at):
+            accounts_admin_api.patch_window(aid, {fan: row_change})
+        accounts_admin_api.amber_refresh(aid)
+    except Exception:
+        log.warning("amber move failed account=%s fan=%s kind=%s", aid, fan, kind, exc_info=True)
+
+
 def _move_unread_total(aid: str, fan_id: int | None, unread: int, at: int | None) -> None:
     """unread_total.on_read_flip (Knob off: returns at once; never raises), before the bust: it peeks the held row."""
     import unread_total  # noqa: PLC0415 — deferred: keeps this module's import light for the automations
     unread_total.on_read_flip(aid, fan_id, unread, at)
 
 
-def _move_amber(aid: str, fan_id: int | None, unread: int) -> None:
+def _move_amber(aid: str, fan_id: int | None, unread: int, at: int | None) -> None:
     """The Amber circle (creator-badges 0F) before the bust drops the window it folds: the fan's held row takes the
     flip, then `amber_refresh`. Mark all: the next window read moves it. Knob off: nothing. Never raises."""
     import unread_total  # noqa: PLC0415 — deferred: keeps this module's import light for the automations
     if not unread_total.ENABLED or fan_id is None:
         return
-    try:
-        import accounts_admin_api  # noqa: PLC0415 — loaded by the server
-        import badge_reads  # noqa: PLC0415
-        import unread_total_decide as utd  # noqa: PLC0415
-        relay_cache.patch("list_chats", aid, badge_reads._patcher({int(fan_id): unread}))
-        badge_reads.note_arrival(aid, int(fan_id), utd.UNREAD if unread else utd.READ, unread_total._clock())
-        accounts_admin_api.amber_refresh(aid)
-    except Exception:  # noqa: BLE001
-        log.warning("read flip amber move failed account=%s fan=%s", aid, fan_id, exc_info=True)
+    import unread_total_decide as utd
+
+    flip_at = at if at is not None else unread_total._clock()
+    kind = utd.UNREAD if unread else utd.READ
+    _apply_amber_arrival(aid, fan_id, kind, flip_at, lambda row: utd.unread_row(row, unread))
 
 
 async def after_write(aid: str, fan_id: int | None, unread: int, result: Any, *, at: int | None = None) -> bool:
@@ -156,7 +186,7 @@ async def after_write(aid: str, fan_id: int | None, unread: int, result: Any, *,
         await set_local_unread(aid, fan_id=fid, value=unread, at=at)
         _move_unread_total(aid, fid, unread, at)
         badge_reads.on_read_flip(aid, fid, unread, at)
-        _move_amber(aid, fid, unread)
+        _move_amber(aid, fid, unread, at)
         bust_chat_list_and_badges(aid, fid)
         publish(aid, fid, unread, at)
     if acked is not None:

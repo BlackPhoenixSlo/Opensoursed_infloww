@@ -4,7 +4,7 @@ import type { VaultMedia } from "@/lib/relay";
 import { PRICE_NOTE } from "@/lib/sendGuards";
 
 import {
-  EMPTY_DRAFT, FAILED_UPLOAD_NOTE, afterRefusedSchedule, buildSendArgs, canSend, composerDraft, composerView,
+  EMPTY_DRAFT, FAILED_UPLOAD_NOTE, afterRefusedSchedule, type LiveDraft, buildSendArgs, canSend, composerDraft, composerView,
   effectivePreviewCount, isEmptyDraft, isScheduling, richText, sendBlockedReason, sentReplyId,
   type ComposerDraft, type DraftAction, type SendCtx, type ViewCtx,
 } from "./composerDraft";
@@ -65,6 +65,9 @@ describe("composerDraft", () => {
       { ...EMPTY_DRAFT, taggedCreators: [tag(7)], script: STEP, rich: FULL.rich, mode: FULL.mode, replyId: 42 }],
     ["dropScript (the FM bubble's AI draft) forgets the Script step and its saved reply only", FULL,
       [{ type: "dropScript" }], { script: null, replyId: null }],
+    ["endScript detaches the matching step and keeps its saved reply", FULL,
+      [{ type: "endScript", scriptId: "s1" }], { script: null, replyId: 42 }],
+    ["endScript leaves a different script loaded", FULL, [{ type: "endScript", scriptId: "s2" }], {}],
     ["sent empties everything, the Script step too; \"Aa\" stays on", FULL, [{ type: "sent" }],
       { ...EMPTY_DRAFT, mode: { toolbar: true, rich: true } }],
     ["restore is the snapshot", draft({ price: "3" }), [{ type: "restore", snapshot: FULL }], FULL],
@@ -298,20 +301,22 @@ describe("composerView", () => {
 });
 
 describe("afterRefusedSchedule", () => {
-  const typed = { text: "new", draft: EMPTY_DRAFT };
-  const attachedSince = { text: "", draft: draft({ attached: [media(9)] }) };
-  const pickedSince = { text: "", draft: draft({ script: { scriptId: "s2", scriptStep: 1 } }) };
-  it.each<[string, { text: string; draft: ComposerDraft } | null, "restore" | "offer"]>([
-    ["untouched since the send: the refused draft comes back", { text: "", draft: EMPTY_DRAFT }, "restore"],
+  const typed = { text: "new", draft: EMPTY_DRAFT, uploadChips: 0 };
+  const attachedSince = { text: "", draft: draft({ attached: [media(9)] }), uploadChips: 0 };
+  const pickedSince = { text: "", draft: draft({ script: { scriptId: "s2", scriptStep: 1 } }), uploadChips: 0 };
+  it.each<[string, LiveDraft | null, "restore" | "offer"]>([
+    ["untouched since the send: the refused draft comes back", { text: "", draft: EMPTY_DRAFT, uploadChips: 0 }, "restore"],
     ["left the chat (no Composer): offered", null, "offer"],
     ["typed on since: their text stays, the refused one is offered", typed, "offer"],
     ["attached since: their media stay", attachedSince, "offer"],
+    ["upload-only draft: the refused schedule stays an offer", { text: "", draft: EMPTY_DRAFT, uploadChips: 1 }, "offer"],
     ["picked a Script step since: it stays (its media, price and step)", pickedSince, "offer"],
   ])("%s", (_name, now, want) => {
     expect(afterRefusedSchedule(now)).toBe(want);
   });
   it("only what `sent` leaves is empty: every draft field counts", () => {
     expect(isEmptyDraft(run(FULL, { type: "sent" }))).toBe(true);
+    expect(isEmptyDraft(run(FULL, { type: "clear" }))).toBe(true);
     // `mode` is the box's look (rich editor or textarea), not content.
     for (const k of (Object.keys(EMPTY_DRAFT) as (keyof ComposerDraft)[]).filter((k) => k !== "mode")) {
       expect(FULL[k], k).not.toEqual(EMPTY_DRAFT[k]);

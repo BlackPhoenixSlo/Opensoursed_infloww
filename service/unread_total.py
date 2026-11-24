@@ -35,15 +35,7 @@ and Unread lists agree again. Rows below page 0 stay until a tab re-reads them (
 Unread counter frames (creator-badges 0B, ADR-0049): `events.handle_event` calls `observe_counter` with each frame's
 `chat_messages` at receipt, before the persist queue; a frame confirms the total like `/users/me` (one watermark) but
 never logs drift or asks a window read. The published slot is the Red circle: OF's number minus Restricted unread
-(`set_restricted_unread`, from every roster-counts fold until Phase C; newest `at` wins), floored at 0, `n` null while
-R is unknown since start (OF's raw number is never published), `v` the Badge version (+1 on any slot key change, never
-on `at` alone); a changed slot calls `note_values`. `grey` is `decide.grey_reason` with the Live connection's up time
-(`of_ws.connected_since`), re-read on every snapshot, so a `live` flip moves `v` on the refresher's next re-read.
-The Amber circle (creator-badges 0F) rides the same slot as `amber` / `amber_at` (`set_amber`, from
-`accounts_admin_api.amber_refresh`; `decide.amber_slot`).
-Phase C (creator-badges 0C): `observe_poll` confirms from a Complete socket-down poll, `set_grey_cause` holds `dead`,
-`proxy_down` or `capped`, and `stale` is decided against `_clock()` at each snapshot, so the refresher's 5 s re-read
-is the grey check that moves it without a frame.
+(`set_restricted_unread`; newest `at` wins). Amber rides the same slot as `amber` / `amber_at`.
 
 Between Cycles (0 OF calls): `on_dm_in` (event_transcoder, an inbound DM, before its window patch), `on_read_flip`
 (read_flip.after_write, a landed mark read / unread / all, before its bust) and `on_reply` (server._record_fan_send,
@@ -69,6 +61,7 @@ import relay_cache
 import shared_refresher
 import unread_total_decide as decide
 from env_knob import env_float
+from events_decide import InboxRowUnpatched, PriorInboxRow
 
 log = logging.getLogger("of-relay.unread_total")
 
@@ -77,10 +70,11 @@ ENABLED = shared_refresher.ENABLED and env_float("UNREAD_TOTAL", 0.0, 0.0) == 1.
 _ME = re.compile(r"/api2/v2/users/me/?")
 _lock = threading.Lock()
 _held: dict[str, decide.State] = {}     # Creator -> its held total
-_r: dict[str, tuple[int, int]] = {}     # Creator -> (Restricted unread, as of epoch ms)
+
+_r: dict[str, tuple[decide.Restricted, int]] = {}
 _v: dict[str, int] = {}                 # Creator -> Badge version
 _shown: dict[str, dict] = {}            # Creator -> its slot as last versioned
-_cause: dict[str, str] = {}             # Creator -> Phase C's held Grey cause (dead, proxy_down, capped)
+_cause: dict[str, str] = {}             # Creator -> Phase C's held Grey cause (dead, proxy_down)
 _amber: dict[str, tuple[int, int | None]] = {}  # Creator -> (Amber circle, its window's fetched-at epoch ms)
 _UNSEEDED = {**decide.slot(decide.State(), None, None, 0), **decide.amber_slot(None)}   # version 0
 
@@ -96,9 +90,9 @@ def _up_since(aid: str) -> int | None:
 
 
 def _slot(aid: str) -> dict:
-    r, now = _r.get(aid), _clock()
-    return {**decide.slot(_held.get(aid, decide.State()), None if r is None else r[0], _up_since(aid), now,
-                          _cause.get(aid)),
+    restricted, now = _r.get(aid), _clock()
+    return {**decide.slot(_held.get(aid, decide.State()), restricted[0] if restricted is not None else None,
+                          _up_since(aid), now, _cause.get(aid)),
             **decide.amber_slot(_amber.get(aid))}
 
 
@@ -182,7 +176,7 @@ def observe_counter(account_id: str, n: int, at_ms: int) -> None:
         log.warning("unread_total_counter_failed account=%s", account_id, exc_info=True)
 
 
-def set_restricted_unread(account_id: str, r: int, at_ms: int) -> None:
+def set_restricted_unread(account_id: str, r: decide.Restricted, at_ms: int) -> None:
     """The Creator's Restricted unread `r` as of `at_ms` (the window's or list's fetch time); an older one changes
     nothing."""
     if not ENABLED:
@@ -192,7 +186,7 @@ def set_restricted_unread(account_id: str, r: int, at_ms: int) -> None:
         held = _r.get(aid)
         if held is not None and at_ms < held[1]:
             return
-        _r[aid] = (int(r), int(at_ms))
+        _r[aid] = (r, at_ms)
         moved = _moved(aid)
     if moved:
         shared_refresher.note_values(aid)
@@ -224,7 +218,7 @@ def observe_poll(account_id: str, n: int, asked_at: int) -> None:
 
 
 def set_grey_cause(account_id: str, cause: str | None) -> None:
-    """Phase C's Grey cause for the Creator (`decide.DEAD`, `PROXY_DOWN`, `CAPPED`; None: none)."""
+    """Phase C's Grey cause for the Creator (`decide.DEAD`, `PROXY_DOWN`; None: none)."""
     if not ENABLED:
         return
     aid = str(account_id)
@@ -242,24 +236,27 @@ def set_grey_cause(account_id: str, cause: str | None) -> None:
 
 def _window_rows(account_id: str) -> list | None:
     """The Creator's held page-0 chats window rows (any age), else None. No OF call."""
-    from accounts_admin_api import _ROSTER_WINDOW_KEY  # noqa: PLC0415 — lazy: it imports this module's peers
-    held = relay_cache.peek("list_chats", account_id, _ROSTER_WINDOW_KEY)
-    return (held.get("list") or held.get("chats") or []) if isinstance(held, dict) else None
+    from accounts_admin_api import held_window
+    value = held_window(account_id)
+    return decide.window_rows(value) if value is not None else None
 
 
-def _window_row(account_id: str, fan_id: int) -> dict | None:
+def peek_window_row(account_id: str, fan_id: int) -> dict | None:
     """The fan's row in that window, else None."""
-    return next((r for r in _window_rows(account_id) or () if decide._fan(r) == fan_id), None)
+    return next((r for r in _window_rows(account_id) or () if decide.window_fan_id(r) == fan_id), None)
 
 
-def _adjust(account_id: str, fan_id: int | None, event_of) -> None:
+_window_row = peek_window_row
+
+
+def _adjust(account_id: str, fan_id: int | None, event_of, prior_row: PriorInboxRow = InboxRowUnpatched.VALUE) -> None:
     """One between-Cycle move: `event_of(fan, prior)` is the event, given the fan (int, None: every chat) and the
     chat's prior state."""
     if not ENABLED:
         return
     try:
         aid, fan = str(account_id), None if fan_id is None else int(fan_id)
-        row = None if fan is None else _window_row(aid, fan)
+        row = None if fan is None else peek_window_row(aid, fan) if prior_row is InboxRowUnpatched.VALUE else prior_row
         with _lock:
             st = _held.get(aid, decide.State())
             _held[aid] = decide.adjust(st, event_of(fan, decide.prior_of(st, fan, row)), int(time.time() * 1000))
@@ -270,10 +267,10 @@ def _adjust(account_id: str, fan_id: int | None, event_of) -> None:
         log.warning("unread_total_adjust_failed account=%s fan=%s", account_id, fan_id, exc_info=True)
 
 
-def on_dm_in(account_id: str, fan_id: int, at: int | None = None) -> None:
-    """An inbound DM from `fan_id` (before the transcoder patches the window), `at` its `createdAt` epoch ms (None:
-    unknown)."""
-    _adjust(account_id, fan_id, lambda fan, prior: decide.DmIn(fan, prior, at))
+def on_dm_in(account_id: str, fan_id: int, at: int | None = None, prior_row: PriorInboxRow = InboxRowUnpatched.VALUE) -> None:
+    """An inbound DM from `fan_id`, `at` its `createdAt` epoch ms (None: unknown). `prior_row` is the receipt
+    patch's answer."""
+    _adjust(account_id, fan_id, lambda fan, prior: decide.DmIn(fan, prior, at), prior_row)
 
 
 def on_read_flip(account_id: str, fan_id: int | None, unread: int, at: int | None) -> None:
@@ -283,21 +280,23 @@ def on_read_flip(account_id: str, fan_id: int | None, unread: int, at: int | Non
         fan, int(unread), int(time.time() * 1000) if at is None else int(at), prior))
 
 
-def on_reply(account_id: str, fan_id: int) -> None:
+def on_reply(account_id: str, fan_id: int, at: int) -> None:
     """Our landed send to `fan_id` (before the send route's bust)."""
-    _adjust(account_id, fan_id, decide.Reply)
+    _adjust(account_id, fan_id, lambda fan, prior: decide.Reply(fan, prior, at))
 
 
 def snapshot(account_id: str) -> dict[str, Any] | None:
-    """P1 C8: `values.unread_total`, `{n, at, v, grey}`; None with the Knob off or for a non-OF Creator (no OF
-    counter: the tab keeps the route's count). The refresher re-reads it every tick, so a `live` flip that changes
-    `grey` moves `v` there; a read of an unchanged slot moves nothing."""
     aid = str(account_id)
     if not ENABLED or account_registry.get_platform(aid) == "fansly":
         return None
     with _lock:
-        _moved(aid)
-        return {**_shown[aid], "v": _v.get(aid, 0)}
+        return {**_shown.get(aid, _UNSEEDED), "v": _v.get(aid, 0)}
+
+
+def on_tick(account_id: str) -> None:
+    if ENABLED and account_registry.get_platform(account_id) != "fansly":
+        with _lock:
+            _moved(account_id)
 
 
 def badge_versions(account_ids: frozenset[str]) -> dict[str, int]:

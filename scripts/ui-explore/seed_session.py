@@ -1,7 +1,7 @@
 """Register the demo owner on a `demo-shots/run.sh serve` stack, seed the synthetic agency
 (demo-shots dataset.py -> seed.py, as capture.py does) and print the owner's session cookie.
 
-    DEMO_SHOTS_TMP=... seed_session.py <app-url>   -> stdout: chatterly_session=<value>
+    DEMO_SHOTS_TMP=... seed_session.py <app-url>   -> stdout: session cookie
 """
 from __future__ import annotations
 
@@ -23,9 +23,10 @@ PASSWORD = "ui-explore-throwaway"
 def main() -> int:
     app, tmp = sys.argv[1], Path(os.environ["DEMO_SHOTS_TMP"])
     d = dataset.build()
+    owner = {"username": dataset.OWNER_USERNAME, "password": PASSWORD}
     with sync_playwright() as pw:
         req = pw.request.new_context()
-        r = req.post(f"{app}/auth/register", data={"username": dataset.OWNER_USERNAME, "password": PASSWORD})
+        r = req.post(f"{app}/auth/register", data=owner)
         if not r.ok:
             print(f"ui-explore: register -> {r.status} {r.text()[:200]}", file=sys.stderr)
             return 1

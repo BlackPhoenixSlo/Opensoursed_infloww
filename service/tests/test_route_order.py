@@ -276,6 +276,9 @@ Golden refresh (2026-11-22, rwl W30 settings-theme F2): GET + DELETE /admin/erro
 `_errors_where` (was `_errors_scope`); no route row changes; diff = the sha (re-pinned after rebase on #958).
 Golden refresh (2026-11-22, background reads peek): GET /api/of/v2/chats/{chat_id}/messages gains query `peek`;
 no route row changes; diff = the sha.
+Golden refresh (2026-11-23, vault picker bought badges): adds POST /admin/vault/fan-history/sync right after
+GET /admin/vault/fan-history; POST /admin/vault/sends/backfill items gain optional `sent_at` and its doc says
+bought rows flip; no other row moves.
 """
 from __future__ import annotations
 

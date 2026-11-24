@@ -270,20 +270,43 @@ def gave_up(fields: dict[str, Any] | None) -> bool:
 GAVE_UP_MARK = "gave_up"   # `_jev` key a terminal hold sets (`vault_jev_pass.held_blob`); picks / failed re-reads keep it
 
 
-def retries_spent(fields: dict[str, Any] | None) -> bool:
-    """The Jev pass stopped retrying this clip: `gave_up`, or a gave-up hold an operator pick (`vault_jev_manual`)
-    or a failed re-read (`vault_jev.merge`) has since rewritten (its GAVE_UP_MARK stays). No sweep fetches it; a
-    successful read (a new blob) clears it. Unlike `gave_up` it says nothing about pricing (W30 C2)."""
+REJECT_MARK = "image_rejected"
+TERMINAL_MARKERS = (HELD, GAVE_UP_MARK, REJECTED, REJECT_MARK, REJECT_TEXT[0])
+STOP_DETAILS = {
+    REJECTED: "TypeSafe rejected the full image or every full video frame: skipped by sweeps",
+    GAVE_UP: "Jev gave up after source failures: skipped by sweeps (re-read from the item to retry)",
+}
+
+
+def stop_reason(fields: dict[str, Any] | None) -> str | None:
+    if rejected(fields):
+        return REJECTED
     j = (fields or {}).get(JEV_KEY)
-    return gave_up(fields) or rejected(fields) or (isinstance(j, dict) and j.get(GAVE_UP_MARK) is True)
+    if gave_up(fields) or (isinstance(j, dict) and j.get(GAVE_UP_MARK) is True):
+        return GAVE_UP
+    return None
+
+
+def retries_spent(fields: dict[str, Any] | None) -> bool:
+    return stop_reason(fields) is not None
+
+
+def invalid_image_error(text: str) -> bool:
+    return all(token in text for token in REJECT_TEXT)
 
 
 def rejected(fields: dict[str, Any] | None) -> bool:
     j = (fields or {}).get(JEV_KEY)
     if not isinstance(j, dict):
         return False
-    err = str(j.get("error") or "")
-    return j.get("status") == REJECTED or (j.get("status") == "error" and all(t in err for t in REJECT_TEXT))
+    return (j.get(REJECT_MARK) is True or j.get("status") == REJECTED
+            or (j.get("status") == "error" and invalid_image_error(str(j.get("error") or ""))))
+
+
+def keep_reject(prev_fields: dict[str, Any], blob: dict[str, Any]) -> dict[str, Any]:
+    if blob.get("status") == REJECTED or rejected(prev_fields):
+        return {**blob, REJECT_MARK: True}
+    return blob
 
 
 def current(fields: dict[str, Any] | None) -> bool:

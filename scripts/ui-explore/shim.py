@@ -4,6 +4,7 @@ capture.py answers OnlyFans reads in its Playwright router; Bombadil drives its 
 so the same answers are served here at HTTP level instead (same Fixtures, same dataset):
   /api/*, /admin/* reads fixtures.py knows   -> fixture JSON (unmatched /api/* -> {} as capture.py)
   /img?u=<asset>, /__assets/<file>           -> scripts/demo-shots/assets
+  POST /__ui-explore/reauth                 -> log in the seeded demo owner
   /auth/me, /chatter/me                      -> forwarded, created_at nulled (no trial nag, as capture.py)
   /admin/vault-ai/{image,thumb,poster}       -> the dataset's vault image (relay would fetch from OF)
   everything else (pages, HMR websocket, SSE) -> forwarded to next dev
@@ -40,6 +41,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect  # noqa: E402
 
 import dataset  # noqa: E402
 from fixtures import AssetRef, Fixtures  # noqa: E402
+from seed_session import PASSWORD  # noqa: E402
 
 NEXT = os.environ["UI_EXPLORE_NEXT"].rstrip("/")
 PORT = int(os.environ["UI_EXPLORE_PORT"])
@@ -103,11 +105,12 @@ async def static_chunk(up: httpx.Request) -> Response:
     return r
 
 
-async def forward(req: Request, mutate=None) -> Response:
-    url = NEXT + req.url.path + (f"?{req.url.query}" if req.url.query else "")
+async def forward(req: Request, mutate=None, *, path: str | None = None, body: bytes | None = None) -> Response:
+    url = NEXT + (path or req.url.path) + (f"?{req.url.query}" if req.url.query else "")
     headers = [(k, v) for k, v in req.headers.items() if k.lower() not in HOP]
     headers.append(("accept-encoding", "identity"))
-    body = await req.body()
+    if body is None:
+        body = await req.body()
     up = client.build_request(req.method, url, headers=headers, content=body or None)
     if req.url.path.startswith("/_next/static/"):
         return await static_chunk(up)
@@ -152,14 +155,16 @@ async def http(req: Request) -> Response:
     p = req.url.path
     if p.startswith("/__assets/"):
         return asset(p)
+    if p == "/__ui-explore/reauth" and req.method == "POST":
+        if req.headers.get("origin") != SELF or req.headers.get("content-type") != "application/json":
+            return Response(status_code=403)
+        owner = {"username": dataset.OWNER_USERNAME, "password": PASSWORD}
+        return await forward(req, path="/auth/login", body=json.dumps(owner).encode())
     if not relay_bound(p):
         return await forward(req)
     q = parse_qs(req.url.query)
     if p == "/img" or p.startswith("/img/"):
-        u = (q.get("u") or [""])[0]
-        if u.startswith((ASSET_ORIGIN, LOCAL_ASSETS, "/__assets")):
-            return asset(u)
-        return await forward(req)
+        return asset((q.get("u") or [""])[0])
     if p in ("/auth/me", "/chatter/me"):
         return await forward(req, no_created_at)
     if p == "/events" or p.startswith("/ws"):

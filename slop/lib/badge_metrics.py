@@ -135,23 +135,6 @@ def single_flight_ok(spans: list[tuple[float, float]]) -> tuple[bool, list[tuple
     return not overlaps, overlaps
 
 
-def per_hour(starts: list[float], cap: int) -> tuple[bool, int]:
-    """Most starts in any half-open 3600 s window."""
-    s = sorted(starts)
-    rate = max((bisect.bisect_left(s, a + 3600) - i for i, a in enumerate(s)), default=0)
-    return rate <= cap, rate
-
-
-def cap_rates(reads: list[Read], queue: list[tuple[float, str]], cap: int) -> dict[str, tuple[bool, int]]:
-    """Per Creator, `per_hour` over its Attribution read starts plus its `kind=queue` re-reads `(t, Creator)`."""
-    starts: dict[str, list[float]] = {}
-    for r in reads:
-        starts.setdefault(r.account, []).append(r.start)
-    for t, aid in queue:
-        starts.setdefault(str(aid), []).append(t)
-    return {aid: per_hour(xs, cap) for aid, xs in starts.items()}
-
-
 def held_at(series: list[tuple[float, object]], t: float, default=None):
     """The value a time-sorted `(t, value)` series holds at `t` (its last at or before), else `default`."""
     i = bisect.bisect_right(series, t, key=lambda x: x[0])

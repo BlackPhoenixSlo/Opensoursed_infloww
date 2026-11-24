@@ -29,6 +29,6 @@ describe("amberCircle", () => {
 
   it("title", () => {
     expect([NONE, count("3", 3), count("9+", 40), GREY].map(amberTitle))
-      .toEqual(["0 awaiting reply", "3 awaiting reply", "9+ awaiting reply", "awaiting reply unknown"]);
+      .toEqual([null, "3 awaiting reply", "9+ awaiting reply", "awaiting reply unknown"]);
   });
 });

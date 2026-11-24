@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
+from time import monotonic
 
 import relay_host
 
@@ -32,26 +33,47 @@ _RAW_JSON_EVICT_INTERVAL_S = int(os.environ.get("RAW_JSON_EVICT_INTERVAL_S", str
 # How long after startup a DAILY sweeper takes its first pass (see `server._periodic`
 # for why the daily ones need one at all). Long enough to stay out of startup's
 # way — index creation, the pumps connecting, the first ingest walk — and short
-# enough that a relay restarted twice a day still prunes twice a day. A restart
-# loop therefore re-sweeps, which is harmless: after the first pass these
-# deletes match nothing and cost only their scan.
+# enough that a relay restarted twice a day still prunes twice a day.
 _EVICT_BOOT_GRACE_S = int(os.environ.get("EVICT_BOOT_GRACE_S", str(5 * 60)))
 
 
+_RAW_JSON_MAX_BATCH = 500
+_RAW_JSON_BATCH = int(os.environ.get("RAW_JSON_BATCH", str(_RAW_JSON_MAX_BATCH)))
+_RAW_JSON_BUDGET_S = 60.0
+
+
 async def _raw_json_sweep() -> None:
+    # No index serves this filter: one UPDATE scans every row (3M on AE, ~75 s) under the write
+    # lock, so every other writer hits busy_timeout. Scan under a WAL read (no lock), write in batches.
     from db.engine import get_session
-    from db.models import Message
-    from sqlalchemy import update as sa_update
-    cutoff = datetime.utcnow() - timedelta(seconds=_RAW_JSON_RETAIN_S)
-    async with get_session() as s:
-        res = await s.execute(
-            sa_update(Message)
-            .where(Message.created_at < cutoff, Message.raw_json.isnot(None))
-            .values(raw_json=None)
-        )
-        await s.commit()
-        if (res.rowcount or 0) > 0:
-            log.info("raw_json evictor cleared %d rows (retain=%ds)", res.rowcount, _RAW_JSON_RETAIN_S)
+    from sqlalchemy import bindparam, text
+    cutoff = _floor_cutoff_str(_RAW_JSON_RETAIN_S)
+    scan = text(
+        "SELECT rowid FROM messages WHERE rowid > :last AND created_at < :cutoff "
+        "AND raw_json IS NOT NULL ORDER BY rowid LIMIT :batch"
+    )
+    clear = text(
+        "UPDATE messages SET raw_json = NULL WHERE rowid IN :ids "
+        "AND created_at < :cutoff AND raw_json IS NOT NULL"
+    ).bindparams(bindparam("ids", expanding=True))
+    last = cleared = 0
+    batch = min(_RAW_JSON_MAX_BATCH, max(1, _RAW_JSON_BATCH))
+    deadline = monotonic() + _RAW_JSON_BUDGET_S
+    while monotonic() < deadline:
+        async with get_session() as s:
+            ids = (await s.execute(scan, {"last": last, "cutoff": cutoff, "batch": batch})).scalars().all()
+        if not ids:
+            break
+        last = ids[-1]
+        async with get_session() as s:
+            res = await s.execute(clear, {"ids": ids, "cutoff": cutoff})
+            await s.commit()
+        cleared += int(res.rowcount or 0)
+        if len(ids) < batch:
+            break
+        await asyncio.sleep(0)
+    if cleared:
+        log.info("raw_json evictor cleared %d rows (retain=%ds)", cleared, _RAW_JSON_RETAIN_S)
 
 
 async def _raw_json_evictor_loop() -> None:

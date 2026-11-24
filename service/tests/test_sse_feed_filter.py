@@ -116,4 +116,19 @@ async def case_typing_forwarded_and_throttled():
     await _with_queues(_go)
 
 
+async def case_vault_history_reaches_only_its_account():
+    other = await events.subscribe("model:9999")
+    event = {"__account_id": AID, "vault_history_changed": {"fan_id": 1}}
+
+    async def go(sub, _persisted):
+        assert await events.broadcast(event) == 1
+        assert _drain(sub) == [event]
+        assert _drain(other) == []
+
+    try:
+        await _with_queues(go)
+    finally:
+        await events.unsubscribe("model:9999", other)
+
+
 _harness.run()

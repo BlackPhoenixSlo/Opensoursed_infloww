@@ -20,7 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() }, relayFocus: () => null }));
 vi.mock("@/lib/perfLog", () => ({
@@ -70,7 +70,7 @@ vi.mock("@/hooks/useServerScheduledSends", () => ({
   scheduledSendsKey: (a: string, f: number) => ["scheduled-sends", a, f],
 }));
 
-import { chatsQueryKey, shareChatPages, useCachedChatPages, useChatList } from "@/hooks/useChatList";
+import { IDLE_POLL_MS, chatsQueryKey, headPollDelay, shareChatPages, useCachedChatPages, useChatList } from "@/hooks/useChatList";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
 import { applyCachedReply } from "@/hooks/useInboxRealtime";
@@ -233,14 +233,78 @@ describe("useChatList periodic refresh", () => {
     expect(chatCalls()[0].refresh).toBe(true);
   });
 
-  it("skips the poll while idle mode has SSE paused", async () => {
+  it("polls the head every 30 s while idle mode has SSE paused", async () => {
     await renderThreePages();
     ssePaused = true;
+    act(() => { focusManager.setFocused(false); });
+    try {
+      await settle(IDLE_POLL_MS);
+      expect(chatCalls().map((c) => c.offset)).toEqual([0]);
+      await settle(IDLE_POLL_MS);
+      expect(chatCalls().map((c) => c.offset)).toEqual([0, 0]);
+    } finally {
+      act(() => { focusManager.setFocused(undefined); });
+    }
+  });
+
+  it.each([{ filter: "pinned" as const }, { query: "fan" }, { listId: "folder" }])(
+    "skips idle polling for %o", async (params) => {
+      ssePaused = true;
+      serve = () => ({ list: [row(10, "2026-08-25T10:00:00Z")], hasMore: false });
+      const h = renderHook(() => useChatList(params), { wrapper });
+      await until("page 0", () => h.result.current.data.length === 1);
+      relayGet.mockClear();
+      await settle(POLL_MS);
+      expect(chatCalls()).toEqual([]);
+    },
+  );
+
+  it("rearms polling for a filtered view when idle mode resumes before SSE reconnects", async () => {
+    serve = () => ({ list: [row(10, "2026-08-25T10:00:00Z")], hasMore: false });
+    const h = renderHook(() => useChatList({ filter: "pinned" }), { wrapper });
+    await until("page 0", () => h.result.current.data.length === 1);
+    relayGet.mockClear();
+
+    act(() => {
+      ssePaused = true;
+      focusManager.setFocused(false);
+    });
     await settle(POLL_MS);
     expect(chatCalls()).toEqual([]);
 
-    ssePaused = false;
+    act(() => {
+      focusManager.setFocused(undefined);
+      ssePaused = false;
+    });
+    await settle();
     await settle(POLL_MS);
+    expect(chatCalls().map((c) => c.offset)).toEqual([0]);
+  });
+
+  it("pulls a hidden tab's 5-minute tick in to 30 s when idle mode starts", async () => {
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    try {
+      await renderThreePages();
+      await settle(60_000);
+      expect(chatCalls()).toEqual([]);
+      ssePaused = true;
+      act(() => { focusManager.setFocused(false); });
+      await settle(IDLE_POLL_MS);
+      expect(chatCalls().map((c) => c.offset)).toEqual([0]);
+    } finally {
+      act(() => { focusManager.setFocused(undefined); });
+      hidden.mockRestore();
+    }
+  });
+
+  it("reads the head at once on tab return, once for visibilitychange + focus", async () => {
+    await renderThreePages();
+    await settle(10_000);
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("focus"));
+    });
+    await settle();
     expect(chatCalls().map((c) => c.offset)).toEqual([0]);
   });
 
@@ -438,6 +502,17 @@ function fireInbound(fanId: number, text: string, createdAt: string) {
   });
 }
 
+describe("headPollDelay", () => {
+  it.each([
+    [{ paused: false, hidden: false, connected: false, idlePoll: false }, 90_000],
+    [{ paused: false, hidden: false, connected: true, idlePoll: true }, 300_000],
+    [{ paused: false, hidden: true, connected: false, idlePoll: false }, 300_000],
+    [{ paused: true, hidden: false, connected: false, idlePoll: true }, 30_000],
+    [{ paused: true, hidden: true, connected: false, idlePoll: true }, 30_000],
+    [{ paused: true, hidden: false, connected: false, idlePoll: false }, null],
+  ])("%o → %s", (s, ms) => { expect(headPollDelay(s)).toBe(ms); });
+});
+
 describe("useChatList head poll x useInboxRealtime", () => {
   it("SSE still lifts a DEEP row to the head, and the poll leaves that intact", async () => {
     const h = await renderThreePages();
@@ -473,6 +548,88 @@ describe("useChatList head poll x useInboxRealtime", () => {
     relayGet.mockClear();
     await act(async () => { await h.result.current.loadMore(); });
     expect(chatCalls().map((c) => c.offset)).toEqual([75]);
+  });
+
+  it("a poll whose Relay window predates the DM does not take the lifted row back", async () => {
+    const h = await renderThreePages();
+    renderHook(() => useInboxRealtime(), { wrapper });
+    fireInbound(8, "hey", new Date().toISOString());
+    await until("sse bump", () => h.result.current.data[0]?.withUser.id === 8);
+
+    await settle(POLL_MS);
+    await until("poll read", () => chatCalls().length > 0);
+    await settle(); await settle();
+
+    expect(h.result.current.data[0].withUser.id).toBe(8);
+    expect(h.result.current.data[0].lastMessage?.text).toBe("hey");
+  });
+
+  it("All Models: a permanently failing Creator retains its loaded rows without extending paging", async () => {
+    mockScope = { kind: "all" };
+    mockAccounts = [{ id: "acct-a" }, { id: "acct-b" }];
+    serve = (aid, offset) => ({
+      list: [row(aid === "acct-a" ? 10 : 20 + offset, "2026-08-25T10:00:00Z")],
+      hasMore: aid === "acct-b" && offset === 0,
+    });
+    const h = renderHook(() => useChatList({ filter: "unread" }), { wrapper });
+    await until("page 0", () => h.result.current.hasMore);
+    await act(async () => { await h.result.current.loadMore(); });
+    await until("page 1", () => h.result.current.data.some((c) => c.withUser.id === 45));
+    const initial = serve;
+    relayGet.mockClear();
+    serve = (aid, offset) => {
+      if (aid === "acct-b") throw new Error("429");
+      return initial(aid, offset);
+    };
+    await act(async () => { await h.result.current.refresh(); });
+    await until("paging ends after the partial refresh", () => !h.result.current.hasMore);
+    expect(chatCalls().map((c) => c.offset)).toEqual([0, 0]);
+    await act(async () => { await h.result.current.loadMore(); });
+    expect(chatCalls().map((c) => c.offset)).toEqual([0, 0]);
+    expect(h.result.current.data.some((c) => c.withUser.id === 45)).toBe(true);
+  });
+
+  it("All Models: a poll where one Creator's read fails keeps that Creator's rows", async () => {
+    mockScope = { kind: "all" };
+    mockAccounts = [{ id: "acct-a" }, { id: "acct-b" }];
+    serve = (aid) => aid === "acct-a"
+      ? { list: [row(10, "2026-08-25T10:00:00Z")], hasMore: false }
+      : { list: [{ ...row(20, "2026-08-25T09:00:00Z"), __accountId: "acct-b" } as OFChatItem], hasMore: false };
+    const h = renderHook(() => useChatList({}), { wrapper });
+    await until("page 0", () => h.result.current.data.length === 2);
+    renderHook(() => useInboxRealtime(), { wrapper });
+    act(() => {
+      sseHandlers.get("api2_chat_message")?.forEach((fn) => fn({
+        __account_id: "acct-b",
+        api2_chat_message: { id: 777, text: "b-new", fromUser: { id: 20, name: "x" }, createdAt: "2026-08-25T11:00:00Z" },
+      }));
+    });
+    await until("sse bump", () => h.result.current.data[0]?.lastMessage?.text === "b-new");
+
+    relayGet.mockClear();
+    serve = (aid) => {
+      if (aid === "acct-b") throw Object.assign(new Error("429"), { status: 429 });
+      return { list: [row(10, "2026-08-25T10:00:00Z")], hasMore: false };
+    };
+    await settle(POLL_MS);
+    await until("poll read", () => chatCalls().length >= 2);
+    await settle(); await settle();
+
+    expect(h.result.current.data.map((c) => `${c.__accountId}:${c.withUser.id}:${c.lastMessage?.text}`))
+      .toEqual(["acct-b:20:b-new", "acct-a:10:msg-10"]);
+  });
+});
+
+describe("useChatList Unread chip x useInboxRealtime", () => {
+  it("a read fan's new message enters the Unread list at the top", async () => {
+    serve = () => ({ list: [{ ...row(10, "2026-08-25T10:00:00Z"), hasUnread: true, unreadMessagesCount: 1 }], hasMore: false });
+    const h = renderHook(() => useChatList({ filter: "unread" }), { wrapper });
+    await until("page 0", () => h.result.current.data.length === 1);
+    renderHook(() => useInboxRealtime(), { wrapper });
+    fireInbound(8, "hey", "2026-08-25T11:00:00Z");
+    await until("sse add", () => h.result.current.data.length === 2);
+    expect(h.result.current.data.map((c) => c.withUser.id)).toEqual([8, 10]);
+    expect(h.result.current.data[0].lastMessage?.text).toBe("hey");
   });
 });
 
@@ -511,8 +668,13 @@ describe("useChatList fetchedLive: rows read from OF in this page load", () => {
   const unread = (id: number) => ({ ...row(id, `2026-08-25T${String(20 - id).padStart(2, "0")}:00:00Z`), unreadMessagesCount: 1 }) as OFChatItem;
   /** A list restored from disk: its rows as an earlier page load cached them. */
   function restore(pages: OFChatItem[][], updatedAt = Date.now()) {
-    const rows = pages.map((list) => ({ rows: list.map((c) => ({ ...c, __accountId: "acct-a", hasUnread: true })), hasMore: true }));
-    rows[rows.length - 1].hasMore = false;
+    const rows = pages.map((list, i) => {
+      const hasMore = i < pages.length - 1;
+      return {
+        rows: list.map((c) => ({ ...c, __accountId: "acct-a", hasUnread: true })),
+        hasMore, moreAccounts: hasMore ? ["acct-a"] : [], scanned: list.length,
+      };
+    });
     client.setQueryData(MODEL_KEY, { pages: rows, pageParams: pages.map((_, i) => i * 25) }, { updatedAt });
   }
 
@@ -628,7 +790,7 @@ describe("shareChatPages: rows shared by (account, fan), not by index", () => {
   const row = (fanId: number, text = "hi") => ({
     __accountId: "1", withUser: { id: fanId }, lastMessage: { id: fanId, text },
   }) as OFChatItem;
-  const data = (rows: OFChatItem[]) => ({ pages: [{ rows, hasMore: false }], pageParams: [0] });
+  const data = (rows: OFChatItem[]) => ({ pages: [{ rows, hasMore: false, moreAccounts: [], scanned: rows.length }], pageParams: [0] });
 
   it("a row moved to the top keeps every other row's object", () => {
     const [a, b, c] = [row(1), row(2), row(3)];
@@ -894,10 +1056,10 @@ describe("useChatList askedAt on the Relay's clock (W30-mu #14)", () => {
 describe("useCachedChatPages: another list's entry, subscribed without an observer (W30-mu #20)", () => {
   it("re-renders on a live patch of that entry and never fetches it", async () => {
     const key = chatsQueryKey("model", "acct-a", { filter: "unread" });
-    client.setQueryData(key, { pages: [{ rows: [unreadRow(10, "2026-08-25T10:00:00Z")], hasMore: false }], pageParams: [0] });
+    client.setQueryData(key, { pages: [{ rows: [unreadRow(10, "2026-08-25T10:00:00Z")], hasMore: false, moreAccounts: [], scanned: 1 }], pageParams: [0] });
     const h = renderHook(() => useCachedChatPages(key), { wrapper });
     expect(h.result.current?.pages[0]).toMatchObject({ rows: [{ withUser: { id: 10 } }] });
-    act(() => { client.setQueryData(key, { pages: [{ rows: [], hasMore: false }], pageParams: [0] }); });
+    act(() => { client.setQueryData(key, { pages: [{ rows: [], hasMore: false, moreAccounts: [], scanned: 0 }], pageParams: [0] }); });
     expect(h.result.current?.pages[0]).toMatchObject({ rows: [] });
     expect(relayGet).not.toHaveBeenCalled();
   });

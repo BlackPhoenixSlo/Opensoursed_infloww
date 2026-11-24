@@ -1,14 +1,11 @@
 """service/split_inbox_api.py — read/write account_ai_config.split_inbox_json.
 
-Split Inbox divides one Creator's Fans into 1 to 9 groups (ADR-0004). The split
-is stored per Creator on the relay so every Employee on every device reads the
-same groups. Groups bind to no Employee and grant no permissions, so the store
-holds only the count and the explicit moves; every other Fan's group is
-computed in the app.
+Split Inbox divides one Creator's Fans into 1 to 9 groups (ADR-0004); the rule
+and its enforcement live in split_inbox.py.
 
-  GET /admin/split-inbox?account_id=   → {account_id, config}
-       An unset Creator reads {group_count: 1, assignments: {}}. Open to
-       chatters, who filter by group.
+  GET /admin/split-inbox?account_id=   → {account_id, config, my_group}
+       Open to chatters, who get no `chatter_groups`, only `my_group` (their bound
+       group, null when unbound or unsplit). An unset Creator reads one group.
   PUT /admin/split-inbox               → upsert, returns {account_id, config}
        Owner-only: a chatter session gets 403, an anonymous one 401. Concurrent
        saves are last-write-wins.
@@ -24,6 +21,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import split_inbox
 from auth import assert_account_owned
 from chatters import assert_owner
 from db.engine import get_session
@@ -33,44 +31,29 @@ log = logging.getLogger("of-relay.split_inbox_api")
 
 router = APIRouter()
 
-MAX_GROUPS = 9
-
-
-def _unset() -> dict[str, Any]:
-    return {"group_count": 1, "assignments": {}}
-
-
-def _is_int(v: Any) -> bool:
-    # bool is an int subclass in Python; JSON true is not a group.
-    return isinstance(v, int) and not isinstance(v, bool)
-
 
 def _validate_config(cfg: dict) -> dict:
-    """422 on a bad count or non-object assignments. Keys are coerced to
-    strings, entries outside 1..group_count are dropped, and unknown keys are
-    dropped, so the store can hold no Employee binding (story 54)."""
-    n = cfg.get("group_count")
-    if not _is_int(n) or not 1 <= n <= MAX_GROUPS:
-        raise HTTPException(422, f"group_count must be an integer from 1 to {MAX_GROUPS}")
-    raw = cfg.get("assignments")
-    if not isinstance(raw, dict):
-        raise HTTPException(422, "assignments must be an object")
-    assignments = {str(fan): g for fan, g in raw.items() if _is_int(g) and 1 <= g <= n}
-    return {"group_count": n, "assignments": assignments}
+    try:
+        return split_inbox.clean(cfg)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
 
 
 @router.get("/admin/split-inbox")
 async def get_split_inbox(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
+    generation = split_inbox.generation(account_id)
     async with get_session() as s:
         row = await s.get(AccountAiConfig, account_id)
-    config = _unset()
-    if row is not None and row.split_inbox_json:
-        try:
-            config = _validate_config(json.loads(row.split_inbox_json))
-        except Exception:
-            config = _unset()
-    return {"account_id": account_id, "config": config}
+    config = split_inbox.heal(
+        account_id, split_inbox.parse(row.split_inbox_json if row is not None else None), since=generation,
+    )
+    chatter_id = split_inbox.acting_chatter_id()
+    if chatter_id is None:
+        return {"account_id": account_id, "config": config, "my_group": None}
+    return {"account_id": account_id,
+            "config": {k: v for k, v in config.items() if k != "chatter_groups"},
+            "my_group": split_inbox.bound_group(config, chatter_id)}
 
 
 class _ConfigBody(BaseModel):
@@ -83,17 +66,19 @@ async def put_split_inbox(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     assert_owner()
     assert_account_owned(body.account_id)
     clean = _validate_config(body.config)
-    now = datetime.utcnow()
-    payload = json.dumps(clean)
-    async with get_session() as s:
-        await s.execute(
-            sqlite_insert(AccountAiConfig)
-            .values(account_id=body.account_id, utc_offset=0,
-                    split_inbox_json=payload, updated_at=now)
-            .on_conflict_do_update(
-                index_elements=["account_id"],
-                set_={"split_inbox_json": payload, "updated_at": now})
-        )
-    log.info("split_inbox_saved account=%s groups=%d moves=%d",
-             body.account_id, clean["group_count"], len(clean["assignments"]))
+    async with split_inbox.save_lock(body.account_id):
+        now = datetime.utcnow()
+        payload = json.dumps(clean)
+        async with get_session() as s:
+            await s.execute(
+                sqlite_insert(AccountAiConfig)
+                .values(account_id=body.account_id, utc_offset=0,
+                        split_inbox_json=payload, updated_at=now)
+                .on_conflict_do_update(
+                    index_elements=["account_id"],
+                    set_={"split_inbox_json": payload, "updated_at": now})
+            )
+        split_inbox.remember(body.account_id, clean)
+    log.info("split_inbox_saved account=%s groups=%d moves=%d bound=%d",
+             body.account_id, clean["group_count"], len(clean["assignments"]), len(clean["chatter_groups"]))
     return {"account_id": body.account_id, "config": clean}

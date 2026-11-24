@@ -125,8 +125,7 @@ const headOldest = new Map<string, number>();
 const headMore = new Map<string, boolean>();
 
 /** A thread's newest page, oldest-first: OF returns newest-first, and the UI
- *  scrolls oldest→newest top-to-bottom (the way humans read a thread).
- *  `peek`: background reads must peek, OF marks a chat read on a plain head read. */
+ *  scrolls oldest→newest top-to-bottom (the way humans read a thread). */
 async function fetchHeadPage(
   accountId: string,
   fanId: FanId,
@@ -149,7 +148,7 @@ async function fetchHeadPage(
  *  the background lane. */
 const backgroundFetches = new Set<string>();
 
-/** Warm one thread's head page (always a peek: a warm-up is no click) on the relay's BACKGROUND lane, under the same
+/** Warm one thread's head page on the relay's BACKGROUND lane, under the same
  *  key + result shape as useChatMessages' queryFn (merged over whatever is
  *  cached so load-older pages survive). A no-op while the cached thread is
  *  still fresh; never throws. If the chat opens while this is in flight,

@@ -288,6 +288,23 @@ def case_chatter_sees_only_its_creators_and_naming_another_reads_nothing():
     assert sorted(both["profile"]) == sorted([A1, A2, B1])
 
 
+def case_a_shared_inbox_read_never_crosses_a_split_inbox_binding():
+    """Identical reads share one answer per principal (`_shared`): two chatters bound to different Split Inbox
+    groups and the owner, asking within SHARE_S, each get their own rows."""
+    _use(a1=FakeOF(A1), a2=FakeOF(A2))
+    put = lambda cfg: OWNER_A.put("/admin/split-inbox", json={"account_id": A1, "config": cfg})
+    assert put({"group_count": 2, "assignments": {},
+                "chatter_groups": {IDS["chatter_a"]: 1, IDS["chatter_ab"]: 2}}).status_code == 200
+    try:
+        ids = lambda c: [r["withUser"]["id"] for r in _inbox(c, accounts=A1)["chats"][A1]["list"]]
+        owner, one, two = ids(OWNER_A), ids(CHATTER_A), ids(CHATTER_AB)
+        assert len(owner) == 25 and {i % 2 for i in owner} == {0, 1}, owner
+        assert one and all(i % 2 == 0 for i in one), one
+        assert two and all(i % 2 == 1 for i in two), two
+    finally:
+        put({"group_count": 1, "assignments": {}, "chatter_groups": {}})
+
+
 def case_a_role_without_the_dashboard_gets_the_routes_own_403():
     _use(a1=FakeOF(A1), a2=FakeOF(A2))
     _role({"/messages-pro": True})

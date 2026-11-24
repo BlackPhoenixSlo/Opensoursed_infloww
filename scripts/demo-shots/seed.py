@@ -53,6 +53,7 @@ def seed(d: Dataset, *, db: Path, sessions: Path, user_id: str, api: Api) -> dic
     """Write the dataset; returns employee index -> employees.id."""
     con = sqlite3.connect(db, timeout=30)
     con.execute("PRAGMA foreign_keys=ON")
+    con.execute("PRAGMA cache_size=-262144")  # 256 MB: the credit triggers' message lookups thrash the 2 MB default
     now = d.now
     with con:
         _accounts(con, d, sessions, user_id)
@@ -154,7 +155,13 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
     _fill_fan_columns(con, sorted({s["account_id"] for s in d.subs}))
     # NOT NULL text columns the insert above leaves to their defaults are filled here if the schema has no default.
 
-    # Messages first: a sale's credit trigger reads the message that earned it.
+    # Messages first: a sale's credit trigger reads the message that earned it. The messages credit triggers only
+    # re-credit existing transactions and there are none yet, so they are dropped for this insert (same rows, ~3 s less).
+    assert con.execute("SELECT 1 FROM transactions LIMIT 1").fetchone() is None
+    msg_triggers = con.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='messages' "
+                               "AND name LIKE 'trg\\_msg\\_credit\\_%' ESCAPE '\\'").fetchall()
+    for name, _ in msg_triggers:
+        con.execute(f'DROP TRIGGER "{name}"')
     con.executemany(
         "INSERT INTO messages(account_id, fan_id, message_id, direction, sender_name, body, media_ids, media_count, "
         "price_cents, is_paid, is_tip, purchased_at, is_unsent, is_promise, sent_by_employee_id, created_at, "
@@ -165,6 +172,8 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
           ts(m["purchased_at"]) if m["purchased_at"] else None,
           emp[m["employee"]] if m["employee"] is not None else None, ts(m["created_at"]), ts(m["created_at"]))
          for m in sorted(d.messages, key=lambda m: m["created_at"])])
+    for _, sql in msg_triggers:
+        con.execute(sql)
 
     desc = {"subscription": "Subscription from ", "rebill": "Recurring subscription from ",
             "ppv_message": "Payment for message from ", "custom": "Custom request from ", "ppv_post": "Post purchase by ",

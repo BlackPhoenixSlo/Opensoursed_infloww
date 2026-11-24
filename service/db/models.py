@@ -724,6 +724,10 @@ class ScrapeHistory(Base):
     # Set when a `{}` sweep kept only page 1 of a Silent mass-only chat (deep history
     # deferred, cursor NULL); every cursor write clears it. NULL = not deferred.
     history_deferred_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # A cursor walk that stopped short: ids strictly between these two are unread on OF
+    # yet; the next scrape walks them (desc from gap_before_id) first. Both NULL = no gap.
+    gap_after_id: Mapped[int | None] = mapped_column(BigInteger)
+    gap_before_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
 # ── §4.4 Transactions (split for fast spend queries) ─────────────────
@@ -1187,6 +1191,19 @@ class VaultSend(Base):
         Index("ix_vault_sends_fan", "account_id", "fan_id", "sent_at"),
         Index("ix_vault_sends_media", "account_id", "media_id", "sent_at"),
     )
+
+
+class FanMediaSync(Base):
+    """One Fan's OF chat-media walk into `vault_sends` (vault_sends_api's fan-history sync).
+    `synced_at` = last walk that finished; `last_attempt_at` alone newer = last walk failed."""
+    __tablename__ = "fan_media_syncs"
+
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fan_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime)
+    pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class PurchaseFollowupClaim(Base):

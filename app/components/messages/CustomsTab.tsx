@@ -39,7 +39,7 @@ import CustomsPane from "./CustomsPane";
 import {
   customsPaneReducer, fanKey, handoffText, initialCustomsPane, initialReopenLedger, isFailed,
   mayReopen, pullTicket, reopenLedger, rowKey,
-  type Brief, type ContextMsg, type Failed, type OrderLines, type Pane, type PaneRow,
+  type Brief, type ContextMsg, type Failed, type OrderLines, type Pane, type PaneRow, type PullNotice,
 } from "./customsPaneReducer";
 
 /** An account taking custom-sized tips with no watcher on it. */
@@ -234,24 +234,29 @@ function Section({
    *  existing chat ↻ endpoint (`rescrape-now`) — synchronous, ~1-2s, and
    *  best-effort: it answers ok=false rather than throwing. A failed pull
    *  leaves the pane exactly as it was (no re-read, no second paid brief) and
-   *  says so on the row. An ok pull reopens the row only if `mayReopen`. */
+   *  says so on the row. A complete pull reopens the row only if `mayReopen`. */
   const pull = useCallback(
     async (r: CustomRow) => {
       const key = rowKey(r);
       const ticket = pullTicket(ledger.current, fanKey(r));
       dispatch({ type: "pullStart", key });
       let error: string | undefined;
+      let notice: PullNotice | undefined;
       try {
-        const res = await relay.post<{ ok: boolean; error?: string }>(
+        const res = await relay.post<{ status: "complete" | PullNotice; error?: string }>(
           `/admin/messages/${r.account_id}/${r.fan_id}/rescrape-now`,
           {},
         );
-        if (!res.ok) error = res.error || "pull failed";
-        else if (mayReopen(ledger.current, ticket)) await openRow(r);
+        if (res.status === "complete") {
+          if (mayReopen(ledger.current, ticket)) await openRow(r);
+        } else {
+          error = res.error;
+          notice = res.status;
+        }
       } catch (e) {
         error = e instanceof Error ? e.message : "pull failed";
       }
-      dispatch({ type: "pullDone", key, error });
+      dispatch({ type: "pullDone", key, error, notice });
     },
     [openRow],
   );
@@ -386,6 +391,11 @@ function Section({
                     >
                       {p ? "Hide" : "Read"}
                     </button>
+                    {(pullState === "partial" || pullState === "pending") && (
+                      <span className="mr-2 text-xs">
+                        {pullState === "partial" ? "History incomplete" : "Pull still running"}
+                      </span>
+                    )}
                     {isFailed(pullState) && (
                       <span className="mr-2 text-xs text-err" title={pullState.error}>
                         Pull failed

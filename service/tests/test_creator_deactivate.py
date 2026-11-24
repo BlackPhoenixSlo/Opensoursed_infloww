@@ -61,13 +61,28 @@ must stop for a deactivated Creator (service/account_health.py "Deactivation").
       activating cancels the pending jobs that fell due while the Creator was
       off; one due before the deactivation, one due later, and a cleanup
       (unsend_messages) job that fell due while off stay pending.
-  case_deactivate_releases_pool_proxy:
-      deactivate drops the Creator's Inflowwww pool proxy and its egress is
-      refused (never the host IP) while an unbound active Creator stays direct;
-      activate binds a pool proxy again; a custom proxy is kept through both.
   case_trigger_backfill_reopens_the_window:
       on an account already fully backfilled, trigger_backfill's next backfill
       window runs from now down to `since` (it used to sit wholly below it).
+
+  case_deactivate_keeps_proxy_for_carrier_cleanup:
+      a deactivated pool Creator keeps its route for the carrier DELETE.
+  case_toggle_preserves_direct_and_manual_routing:
+      toggling preserves direct and manual routing with and without a pool.
+  case_empty_pool_skips_rebind:
+      an empty pool leaves the Creator unbound without probing.
+  case_rebind_preserves_legacy_session_proxy:
+      a session-bound manual proxy survives rebind.
+  case_attach_ignores_deactivated_pool_occupancy:
+      a new binding prefers the proxy whose only Creator is deactivated.
+  case_failover_ignores_deactivated_pool_occupancy:
+      failover prefers that same destination and moves deactivated bindings too.
+  case_startup_rebinds_before_sweep_without_blocking_boot:
+      startup finishes while the probe is held, then the first sweep sees the binding.
+  case_startup_retries_failed_rebind:
+      a failed rebind is retried before the next vault sweep.
+  case_startup_gate_failure_skips_rebind:
+      the sweep still runs after a write-gate load failure without probing the pool.
 
 No network: the registry, pumps and OF calls are all stubbed.
 
@@ -81,10 +96,14 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import json  # noqa: E402
+import random  # noqa: E402
 import tempfile  # noqa: E402
 import uuid  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from pathlib import Path  # noqa: E402
+from threading import Event  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -96,6 +115,8 @@ import automation_executor as ax  # noqa: E402
 import link_prewarm  # noqa: E402
 import of_client  # noqa: E402
 import of_stats_daily  # noqa: E402
+import proxies  # noqa: E402
+import proxy_health  # noqa: E402
 import purchase_poll as pp  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
 import vault_upload  # noqa: E402
@@ -667,34 +688,249 @@ async def case_trigger_backfill_reopens_the_window() -> None:
     assert start == since and datetime.utcnow() - end < timedelta(minutes=1), (start, end)
 
 
-async def case_deactivate_releases_pool_proxy() -> None:
-    import proxies as proxy_registry
-    import proxy_health
-    orig_path, orig_verify = proxy_registry.REGISTRY_PATH, proxy_health.verify_pick
-    proxy_registry.REGISTRY_PATH = Path(tempfile.mkdtemp(prefix="deact_proxy_")) / "proxies.json"
-    proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": []}))
-    proxy_health.verify_pick = lambda p, **_: True
-    owner = _login("/auth/login", "boss")
-    try:
-        proxy_registry.sync_pool("pool-1.invalid:8001:u:pw")
-        pool = proxy_registry.pool_entries()[0]["label"]
-        proxy_registry.assign_account(pool, OFF)
-        assert owner.post(f"/admin/accounts/{OFF}/active", json={"active": False}).status_code == 200
-        assert proxy_registry.get_for_account(OFF) is None, "pool proxy kept by a deactivated Creator"
-        reg = proxy_registry.registry()
-        assert isinstance(proxy_registry.egress(reg, OFF), proxy_registry.Refuse)
-        assert isinstance(proxy_registry.egress(reg, ON), proxy_registry.Direct)
-        assert owner.post(f"/admin/accounts/{OFF}/active", json={"active": True}).status_code == 200
-        assert proxy_registry.get_for_account(OFF)["label"] == pool, "no pool proxy after activate"
+@contextmanager
+def _proxy_registry(pool_size):
+    with tempfile.TemporaryDirectory() as td, patch.object(
+        proxies, "REGISTRY_PATH", Path(td) / "proxies.json"
+    ):
+        proxies.REGISTRY_PATH.write_text('{"proxies": []}')
+        if pool_size:
+            proxies.sync_pool("\n".join(f"pool-{i}.invalid:800{i}:u:pw" for i in range(1, pool_size + 1)))
+        yield [p["label"] for p in proxies.pool_entries()]
 
-        proxy_registry.upsert({"label": "mine", "host": "custom.invalid", "port": 9000})
-        proxy_registry.assign_account("mine", OFF)
-        owner.post(f"/admin/accounts/{OFF}/active", json={"active": False})
-        assert proxy_registry.get_for_account(OFF)["label"] == "mine", "custom proxy dropped on deactivate"
-        owner.post(f"/admin/accounts/{OFF}/active", json={"active": True})
-        assert proxy_registry.get_for_account(OFF)["label"] == "mine", "custom proxy replaced on activate"
+
+async def case_deactivate_keeps_proxy_for_carrier_cleanup() -> None:
+    owner = _login("/auth/login", "boss")
+    with _proxy_registry(1) as (pool,):
+        proxies.assign_account(pool, OFF)
+        assert owner.post(f"/admin/accounts/{OFF}/active", json={"active": False}).status_code == 200
+        route = proxies.egress(proxies.registry(), OFF)
+        assert isinstance(route, proxies.Proxy), route
+        wire = _Wired()
+        of_client.remove_carrier(wire.client(OFF), 9001)
+        assert wire.sent == ["DELETE /api2/v2/posts/9001"]
+        assert owner.post(f"/admin/accounts/{OFF}/active", json={"active": True}).status_code == 200
+        assert proxies.get_for_account(OFF)["label"] == pool
+
+
+async def case_toggle_preserves_direct_and_manual_routing() -> None:
+    owner = _login("/auth/login", "boss")
+    for pool_size, label in ((1, None), (0, None), (0, "mine")):
+        with _proxy_registry(pool_size):
+            if label:
+                proxies.upsert({"label": label, "host": "custom.invalid", "port": 9000})
+                proxies.assign_account(label, OFF)
+            for active in (False, True):
+                assert owner.post(f"/admin/accounts/{OFF}/active", json={"active": active}).status_code == 200
+                assert (proxies.get_for_account(OFF) or {}).get("label") == label
+
+
+def _session_file(root):
+    path = Path(root) / OFF / "session_test.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({
+        "headers": {"user_id": OFF, "x_bc": "test", "x_of_rev": "test", "user_agent": "test"},
+        "signing": {"rules": {
+            "static_param": "test", "start": "test", "end": "test",
+            "checksum_indexes": [], "checksum_constant": 0,
+        }},
+    }))
+    return path
+
+
+def _client_proxy(path):
+    client = OFClient.from_session_file(path)
+    try:
+        return client.proxy_label
     finally:
-        proxy_registry.REGISTRY_PATH, proxy_health.verify_pick = orig_path, orig_verify
+        client.http.close()
+
+
+async def case_empty_pool_skips_rebind() -> None:
+    await account_health.deactivate(OFF)
+    try:
+        with _proxy_registry(0), tempfile.TemporaryDirectory() as td, patch.object(proxy_health, "verify_pick") as probe:
+            assert _client_proxy(_session_file(td)) is None
+            await server._rebind_deactivated_proxies(account_health.write_gate_snapshot())
+            assert proxies.get_for_account(OFF) is None
+            probe.assert_not_called()
+    finally:
+        await account_health.activate(OFF)
+
+
+async def case_rebind_preserves_legacy_session_proxy() -> None:
+    await account_health.deactivate(OFF)
+    try:
+        with (
+            _proxy_registry(1),
+            tempfile.TemporaryDirectory() as td,
+            patch.object(proxy_health, "verify_pick", return_value=True) as probe,
+        ):
+            path = _session_file(td)
+            path.with_name("latest.json").write_text(json.dumps({"session": path.name}))
+            proxies.upsert({"label": "mine", "host": "custom.invalid", "port": 9000})
+            proxies.assign("mine", path.name)
+            with patch.object(account_registry, "ACCOUNTS_DIR", Path(td)):
+                assert account_registry.latest_session_path(OFF) == path
+                await server._rebind_deactivated_proxies(account_health.write_gate_snapshot())
+            assert _client_proxy(path) == "mine"
+            assert proxies.get_for_account(OFF) is None
+            probe.assert_not_called()
+    finally:
+        await account_health.activate(OFF)
+
+
+async def case_attach_ignores_deactivated_pool_occupancy() -> None:
+    await account_health.deactivate(OFF)
+    try:
+        with _proxy_registry(2) as (p1, p2), patch.object(proxy_health, "verify_pick", return_value=True):
+            proxies.assign_account(p1, OFF)
+            proxies.assign_account(p2, ON)
+            proxy_health.assign_pool(FOREIGN, rng=random.Random(0))
+            assert proxies.get_for_account(FOREIGN)["label"] == p1
+            assert proxies.get_for_account(OFF)["label"] == p1
+    finally:
+        await account_health.activate(OFF)
+
+
+async def case_failover_ignores_deactivated_pool_occupancy() -> None:
+    await account_health.deactivate(OFF)
+    try:
+        with _proxy_registry(3) as (p1, p2, source), patch.object(proxy_health, "verify_pick", return_value=True):
+            proxies.assign_account(p1, OFF)
+            proxies.assign_account(p2, ON)
+            proxies.assign_account(source, FOREIGN)
+            assert proxy_health._failover(source) == [FOREIGN]
+            assert proxies.get_for_account(FOREIGN)["label"] == p1
+            assert proxies.get_for_account(OFF)["label"] == p1
+
+            proxies.assign_account(source, OFF)
+            assert proxy_health._failover(source) == [OFF]
+            assert proxies.get_for_account(OFF)["label"] != source
+    finally:
+        await account_health.activate(OFF)
+
+
+async def _run_registered_startup():
+    startup = next(h for h in server.app.router.on_startup if h.__name__ == "_start_event_pumps")
+    await startup()
+
+
+async def _cancel_new_background_tasks(before):
+    tasks = server._bg_tasks - before
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def case_startup_rebinds_before_sweep_without_blocking_boot() -> None:
+    loop = asyncio.get_running_loop()
+    probing, swept = asyncio.Event(), asyncio.Event()
+    release = Event()
+    routes = []
+
+    def verify(_, **kwargs):
+        loop.call_soon_threadsafe(probing.set)
+        return release.wait(10)
+
+    def sweep(_):
+        routes.append(proxies.egress(proxies.registry(), OFF))
+        loop.call_soon_threadsafe(swept.set)
+        return {}
+
+    await account_health.deactivate(OFF)
+    with _proxy_registry(1) as (pool,), tempfile.TemporaryDirectory() as td, patch.object(
+        proxy_health, "verify_pick", side_effect=verify
+    ), patch.object(
+        vault_upload, "sweep", side_effect=sweep
+    ), patch.object(account_health, "deactivated_ids", wraps=account_health.deactivated_ids) as read_off:
+        before = set(server._bg_tasks)
+        boot = asyncio.create_task(_run_registered_startup())
+        try:
+            await asyncio.wait_for(probing.wait(), 5)
+            await asyncio.wait_for(asyncio.shield(boot), 2)
+            assert account_health.refuses_writes(OFF)
+            assert not swept.is_set()
+            path = _session_file(td)
+            try:
+                _client_proxy(path)
+            except proxies.EgressRefused:
+                pass
+            else:
+                raise AssertionError("unbound deactivated Creator built a direct client")
+            release.set()
+            await asyncio.wait_for(swept.wait(), 5)
+            assert isinstance(routes[0], proxies.Proxy)
+            assert _client_proxy(path) == pool
+            read_off.assert_awaited_once()
+        finally:
+            release.set()
+            await boot
+            await _cancel_new_background_tasks(before)
+            await account_health.activate(OFF)
+
+
+async def case_startup_retries_failed_rebind() -> None:
+    loop = asyncio.get_running_loop()
+    swept_twice = asyncio.Event()
+    routes = []
+    sleep = asyncio.sleep
+    advanced = False
+
+    async def advance_once(delay, *args, **kwargs):
+        nonlocal advanced
+        if delay == 3600 and not advanced:
+            advanced = True
+            return
+        await sleep(delay, *args, **kwargs)
+
+    def sweep(_):
+        routes.append(type(proxies.egress(proxies.registry(), OFF)))
+        if len(routes) == 2:
+            loop.call_soon_threadsafe(swept_twice.set)
+        return {}
+
+    await account_health.deactivate(OFF)
+    with (
+        _proxy_registry(1),
+        patch.object(proxy_health, "verify_pick", side_effect=[OSError("probe failed"), True]),
+        patch.object(vault_upload, "sweep", side_effect=sweep),
+        patch.object(asyncio, "sleep", side_effect=advance_once),
+    ):
+        before = set(server._bg_tasks)
+        try:
+            await _run_registered_startup()
+            await asyncio.wait_for(swept_twice.wait(), 5)
+            assert routes == [proxies.Direct, proxies.Proxy], routes
+        finally:
+            await _cancel_new_background_tasks(before)
+            await account_health.activate(OFF)
+
+
+async def case_startup_gate_failure_skips_rebind() -> None:
+    loop = asyncio.get_running_loop()
+    swept = asyncio.Event()
+
+    def sweep(_):
+        loop.call_soon_threadsafe(swept.set)
+        return {}
+
+    await account_health.deactivate(OFF)
+    with (
+        _proxy_registry(1),
+        patch.object(account_health, "load_write_gate", side_effect=RuntimeError("gate failed")),
+        patch.object(proxy_health, "verify_pick") as probe,
+        patch.object(vault_upload, "sweep", side_effect=sweep),
+    ):
+        before = set(server._bg_tasks)
+        try:
+            await _run_registered_startup()
+            await asyncio.wait_for(swept.wait(), 5)
+            assert proxies.get_for_account(OFF) is None
+            probe.assert_not_called()
+        finally:
+            await _cancel_new_background_tasks(before)
+            await account_health.activate(OFF)
 
 
 _harness.run()

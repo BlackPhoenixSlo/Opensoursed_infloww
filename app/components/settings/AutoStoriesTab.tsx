@@ -40,7 +40,8 @@ import {
 import { Menu } from "@/components/ui/Menu";
 import { PageFrame } from "@/components/shell/PageFrame";
 import { VaultPicker } from "@/components/chat/VaultPicker";
-import { useVaultLists } from "@/hooks/useVaultMedia";
+import { FolderRefreshButton } from "@/components/vault/FolderRefreshButton";
+import { useVaultListsRevalidated } from "@/hooks/useVaultMedia";
 import {
   useAutomationRules,
   useCreateRule,
@@ -80,7 +81,7 @@ export default function AutoStoriesTab() {
     [rulesReady, rulesQ.data],
   );
 
-  const foldersQ = useVaultLists(accountId);
+  const foldersQ = useVaultListsRevalidated(accountId);
   // Only folders that actually hold photos are postable as stories.
   const folders = useMemo(
     () => (foldersQ.data?.list ?? []).filter((f) => (f.photosCount ?? 0) > 0),
@@ -248,7 +249,10 @@ export default function AutoStoriesTab() {
 
         <FormBlock title="Source">
           <div>
-            <IfLabel htmlFor="story-folder">Vault folder</IfLabel>
+            <div className="mb-2 flex items-center gap-3">
+              <IfLabel htmlFor="story-folder" className="mb-0">Vault folder</IfLabel>
+              <FolderRefreshButton refresh={foldersQ.refresh} fetching={foldersQ.isFetching} />
+            </div>
             {foldersQ.isLoading ? (
               <Skeleton className="h-9 w-full" />
             ) : folders.length === 0 ? (

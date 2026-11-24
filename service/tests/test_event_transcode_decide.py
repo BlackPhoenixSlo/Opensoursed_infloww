@@ -109,8 +109,8 @@ P = {"id": 1}
     ({"chat_queue_finish": P}, ("queue", "chat_queue_finish", P)),
     ({"chat_queue_update": P}, ("queue", "chat_queue_update", P)),
     ({"typing": P}, ("other", "typing", P)),
-    ({"__account_id": A, "chat_messages": 3, "unread_tips": 0}, ("counter", "chat_messages", 3)),
-    ({"chat_messages": {"count": 3}}, ("counter", "chat_messages", {"count": 3})),
+    ({"__account_id": A, "chat_messages": 3, "unread_tips": 0}, None),
+    ({"chat_messages": {"count": 3}}, None),
     ({"__account_id": A}, None),
     ({}, None),
     ("not a dict", None),
@@ -475,6 +475,20 @@ def test_ppv_fields(payload, want):
     assert td.ppv_fields(payload, NOW) == want
 
 
+@table("m, want", [
+    (echo(), dict(account_id=A, fan_id=FAN, message_id=10001, direction="out", sender_name="",
+                  body="<p>on it</p>", media_ids="[]", media_count=0, price_cents=0, is_paid=None,
+                  is_tip=False, is_unsent=False, created_at=T)),
+    (echo(price=9.99, media=[{"id": 5}, {"id": "x"}], mediaCount=1, text=None, createdAt=None),
+     dict(account_id=A, fan_id=FAN, message_id=10001, direction="out", sender_name="", body="",
+          media_ids="[5]", media_count=1, price_cents=999, is_paid=False, is_tip=False, is_unsent=False,
+          created_at=NOW)),
+    (echo(isFromQueue=True), None),                                              # a mass copy: its placeholder's
+])
+def test_echo_row(m, want):
+    assert td.echo_row(A, m, td.dm_key(A, m), NOW) == want
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in list(globals().items()):
@@ -483,3 +497,4 @@ if __name__ == "__main__":
                 fn(*(row if isinstance(row, tuple) else (row,)))
                 n += 1
     print(f"all {n} cases passed")
+

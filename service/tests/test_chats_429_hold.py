@@ -11,7 +11,10 @@ UI's re-asks answer it from RAM instead of 429-ing OF again.
   case_route_reads_after_hold:  once the hold ends the page reads OF again.
   case_route_non_429_not_held:  any other upstream error is never held.
   case_hold_serves_cache_and_gates_swr: the hold gates the upstream fetch only: a cached
-                                window is served during it, an SWR refresh inside it reads nothing.
+                                window is served during it (a ?refresh=1 that 429s too), an SWR
+                                refresh inside it reads nothing.
+  case_held_copy_served_past_swr: a window expired past its SWR grace (still held) is served
+                                when OF 429s; none held: OF's 429 as before.
 
 Run: ./venv/bin/python service/tests/test_chats_429_hold.py   (exit 0 = pass)
 """
@@ -140,9 +143,9 @@ async def case_route_non_429_not_held():
 
 
 async def case_hold_serves_cache_and_gates_swr():
-    """W30 #6: the hold sits at the upstream fetch. A ?refresh=1 429 holds the page, yet a plain
-    re-ask is served its cached window (no 502); a stale window's SWR refresh inside the hold
-    reads OF nothing."""
+    """W30 #6: the hold sits at the upstream fetch. A ?refresh=1 429 holds the page and is
+    answered the cached window, as is a plain re-ask (no 502); a stale window's SWR refresh
+    inside the hold reads OF nothing."""
     import asyncio
     import time as _t
     reads, _clk, undo = _patched(429, "Please allow 3 seconds")
@@ -158,11 +161,9 @@ async def case_hold_serves_cache_and_gates_swr():
     try:
         await server.list_chats(refresh=False, offset=0, **_KW)          # cached
         ok["on"] = False
-        try:
-            await server.list_chats(refresh=True, offset=0, **_KW)       # 429 -> held
-            raise AssertionError("refresh should 429")
-        except HTTPException as e:
-            assert e.detail["upstream_status"] == 429, e.detail
+        got = await server.list_chats(refresh=True, offset=0, **_KW)     # 429 -> held, cached served
+        assert got["list"] == [] and reads[-1] == 0, (got, reads)
+        assert server._CHATS_429_HOLD.check(("list_chats", _AID, 25, 0, "recent", None, None, None)), "held"
         n = len(reads)
         got = await server.list_chats(refresh=False, offset=0, **_KW)    # cache hit during the hold
         assert got["list"] == [], got
@@ -171,6 +172,23 @@ async def case_hold_serves_cache_and_gates_swr():
         await server.list_chats(refresh=False, offset=0, **_KW)          # stale served, SWR starts
         await asyncio.sleep(0.2)
         assert len(reads) == n, f"SWR refresh read OF during the hold: {reads[n:]}"
+    finally:
+        undo()
+
+
+async def case_held_copy_served_past_swr():
+    reads, _clk, undo = _patched(429, "Please allow 1 seconds")
+    real = server._assemble_chats_page
+    server._assemble_chats_page = lambda client, **kw: {"list": [{"withUser": {"id": 7}}], "hasMore": False}
+    try:
+        await server.list_chats(refresh=False, offset=0, **_KW)
+        key = next(k for k in relay_cache._cache if k[0] == "list_chats" and k[1] == _AID)
+        relay_cache._cache[key] = (relay_cache._cache[key][0], -1e9)    # long past SWR, still held
+        server._assemble_chats_page = real
+        got = await server.list_chats(refresh=False, offset=0, **_KW)
+        assert [r["withUser"]["id"] for r in got["list"]] == [7] and reads == [0], (got, reads)
+        e = await _ask(offset=25)
+        assert e.detail["upstream_status"] == 429, e.detail
     finally:
         undo()
 
@@ -206,6 +224,37 @@ async def case_cancelled_waiter_keeps_the_hold():
     finally:
         release.set()
         undo()
+
+
+async def case_expired_history_fallback_does_not_save_thread():
+    import asyncio
+    import types
+    from unittest.mock import AsyncMock, patch
+
+    from automations import scrape_chats
+
+    payload = {"list": [{"id": 8}]}
+    key = (42, 9, 10)
+
+    async def cached_page():
+        return payload
+
+    def get_messages(*_args, **_kwargs):
+        raise OFAPIError("429", response=_Resp(429, "Too many requests"))
+
+    await relay_cache.get_or_fetch("get_messages_tail", _AID, key, ttl_seconds=300, fetcher=cached_page)
+    cache_key = next(k for k in relay_cache._cache if k[:2] == ("get_messages_tail", _AID))
+    relay_cache._cache[cache_key] = (payload, -1e9)
+    client = types.SimpleNamespace(user_id=4242, get_messages=get_messages)
+    with (
+        patch.object(server, "_current_aid", return_value=_AID),
+        patch.object(server, "_get_client", return_value=client),
+        patch.object(scrape_chats, "save_thread_page", new_callable=AsyncMock) as save,
+    ):
+        got = await server.get_messages(42, limit=10, order="desc", before_id=9, refresh=False)
+        await asyncio.sleep(0)
+    assert got == payload
+    save.assert_not_called()
 
 
 _harness.run()

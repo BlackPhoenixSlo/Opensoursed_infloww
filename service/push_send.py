@@ -48,6 +48,7 @@ import events_decide as ed
 import push_decide as pd
 import push_notice as pn
 import push_scope
+import split_inbox
 
 log = logging.getLogger("of-relay.push")
 
@@ -174,6 +175,12 @@ async def _scope(sub: Sub) -> frozenset | None | bool:
         return False
 
 
+def _in_group(sub: Sub, n: pn.Notice) -> bool:
+    """`n` is about a Fan in `sub`'s Split Inbox group, or `sub` is no group-bound chatter."""
+    return n.fan_id is None or sub.kind != "chatter" or split_inbox.allows_cached(
+        sub.principal_id, n.account_id, n.fan_id)
+
+
 async def _dispatch() -> None:
     assert _inbox is not None
     while True:
@@ -184,8 +191,10 @@ async def _dispatch() -> None:
                 continue
             durable = "purchase_notified" in frame       # the lane a restart re-walks
             plat = {n.account_id: await _platform(n.account_id) for n in notices}
+            if any(n.fan_id is not None for n in notices):
+                await split_inbox.warm({n.account_id for n in notices})
             for sub in list(_subs.values()):
-                mine = [n for n in notices if pd.wanted(sub, n, plat[n.account_id])]
+                mine = [n for n in notices if pd.wanted(sub, n, plat[n.account_id]) and _in_group(sub, n)]
                 if not mine:
                     continue                             # type / platform off: no scope read
                 accounts = await _scope(sub)

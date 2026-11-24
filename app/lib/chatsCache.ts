@@ -38,6 +38,7 @@ export interface ChatsKey {
   filter: unknown;
   listId: unknown;
   query: unknown;
+  order: unknown;
   /** No filter, folder or search: the only view a brand-new row may enter. */
   unfiltered: boolean;
 }
@@ -49,7 +50,7 @@ export function decodeChatsKey(key: readonly unknown[]): ChatsKey {
   return {
     scopeKind: key[1],
     accountKey: String(key[2] ?? ""),
-    filter, listId, query,
+    filter, listId, query, order: key[7] ?? "recent",
     unfiltered: filter === null && listId === null && query === null,
   };
 }
@@ -62,12 +63,13 @@ export function keyHoldsAccount(k: ChatsKey, accountId: string): boolean {
     : k.accountKey.split(",").includes(accountId);
 }
 
-/** May a brand-new row for the account enter this cache? Only the unfiltered
- *  view (a new fan may not match a filter / folder / search) whose scope holds
- *  the account (another model's list would be the cross-model leak). */
-export function mayAddRow(key: readonly unknown[], accountId: string): boolean {
-  const k = decodeChatsKey(key);
-  return k.unfiltered && keyHoldsAccount(k, accountId);
+export function isLiveView(key: ChatsKey): boolean {
+  return (key.unfiltered && key.order === "recent") || isPlainUnread(key);
+}
+
+export function viewAdmits(key: ChatsKey, row: OFChatItem): boolean {
+  return isLiveView(key) && keyHoldsAccount(key, row.__accountId ?? "")
+    && (key.unfiltered || isUnreadChat(row));
 }
 
 /** The row predicate for one fan of one model, across the number/string id split. */
@@ -303,6 +305,10 @@ export interface StampedPage extends ChatPage {
   askedSeq?: number;
   /** All Models: a Creator's call failed, its rows are missing. */
   partial?: boolean;
+  /** Those Creators' ids. */
+  missing?: string[];
+  moreAccounts: string[];
+  scanned: number;
 }
 
 /** A page's ask time to hold against a Relay time (an event's `at`): -Infinity when unknown or a guess, so the
@@ -375,8 +381,11 @@ export function parseReadFlip(body: unknown): ReadFlip | null {
 /** Is this cache a plain Unread-filter list (no folder, no search, default
  *  order)? A read flip adds or drops rows there; elsewhere it flips flags. */
 export function isUnreadList(key: readonly unknown[]): boolean {
-  const k = decodeChatsKey(key);
-  return k.filter === "unread" && k.listId === null && k.query === null && (key[7] ?? "recent") === "recent";
+  return isPlainUnread(decodeChatsKey(key));
+}
+
+function isPlainUnread(k: ChatsKey): boolean {
+  return k.filter === "unread" && k.listId === null && k.query === null && k.order === "recent";
 }
 
 /** One chats cache after a read flip on `accountId`. A page read after the
@@ -449,6 +458,51 @@ export function patchFanRows<T extends ChatPages | undefined>(
   };
 }
 
+/** An OF restrict or lift through the relay (`chat_restrict_changed`, service server._publish_restrict_changed). */
+export interface RestrictFlip { fanId: FanId; restricted: boolean }
+
+/** `chat_restrict_changed`'s body (`{fan_id, restricted}`), or null when malformed. */
+export function parseRestrictFlip(body: unknown): RestrictFlip | null {
+  const b = (body ?? {}) as { fan_id?: unknown; restricted?: unknown };
+  if (typeof b.restricted !== "boolean") return null;
+  if (!(typeof b.fan_id === "number" || (typeof b.fan_id === "string" && b.fan_id !== ""))) return null;
+  return { fanId: b.fan_id, restricted: b.restricted };
+}
+
+/** A chat row after a restrict or lift, as the Relay's next read would serve it: OF answers a restricted chat
+ *  `canSendMessage:false, canNotSendReason:"muted"`, and `badgeExcluded` is `excluded_from_badges` (the registry, or
+ *  `canSendMessage` false). A block for another reason is kept. The SAME row when nothing changes. */
+export function restrictedRow(c: OFChatItem, restricted: boolean): OFChatItem {
+  let { canSendMessage, canNotSendReason } = c;
+  if (restricted && canSendMessage !== false) [canSendMessage, canNotSendReason] = [false, "muted"];
+  if (!restricted && canNotSendReason === "muted") [canSendMessage, canNotSendReason] = [true, null];
+  const isRestricted = restricted || undefined;
+  const badgeExcluded = (restricted || canSendMessage === false) || undefined;
+  const wu = c.withUser;
+  if (canSendMessage === c.canSendMessage && canNotSendReason === c.canNotSendReason
+    && isRestricted === (wu.isRestricted || undefined) && badgeExcluded === (wu.badgeExcluded || undefined)) return c;
+  const withUser = { ...wu, isRestricted, badgeExcluded };
+  if (!isRestricted) delete withUser.isRestricted;
+  if (!badgeExcluded) delete withUser.badgeExcluded;
+  return { ...c, canSendMessage, canNotSendReason, withUser };
+}
+
+/** One chats cache with `flip` on every copy of the fan's row (`restrictedRow`); the SAME `data` when nothing
+ *  changes, so the HTTP answer's refetch and the event, either first, agree. */
+export function applyRestrictFlip<T extends ChatPages | undefined>(data: T, accountId: string, flip: RestrictFlip): T {
+  if (!data?.pages) return data;
+  const isRow = fanRowMatcher(accountId, flip.fanId);
+  let changed = false;
+  const pages = data.pages.map((p) => {
+    if (!p.rows.some(isRow)) return p;
+    const rows = p.rows.map((c) => (isRow(c) ? restrictedRow(c, flip.restricted) : c));
+    if (rows.every((c, i) => c === p.rows[i])) return p;
+    changed = true;
+    return { ...p, rows };
+  });
+  return changed ? { ...data, pages } : data;
+}
+
 /** One live write to a chats cache's rows: `data` after it, the SAME `data` when nothing changes. `key` is the
  *  cache's; `observed`: a list on screen; `replay`: re-applied at a commit to pages read before it
  *  (`commitChatPages`), where it adds no row (the live write already placed one where it belonged) and leaves a row
@@ -503,10 +557,10 @@ export function patchChatCaches(qc: QueryClient, accountId: string, patch: Chats
  *  captured pages and its new one all predate it; the head poll re-reads page 0), so a patch that lifts a row to
  *  the top of the pages it gets lifts it to the list's top, never onto a later page. */
 function replayJournal(qc: QueryClient, key: readonly unknown[], next: unknown): unknown {
-  const data = next as InfiniteData<StampedPage> | undefined;
+  const data = next as ChatPages | undefined;
   if (!data?.pages?.length) return next;
   const k = decodeChatsKey(key);
-  const since = data.pages.map((p) => seen.get(p) ?? p.askedSeq ?? -Infinity);
+  const since = data.pages.map((p) => seen.get(p) ?? (p as StampedPage).askedSeq ?? -Infinity);
   const floor = Math.max(Math.min(...since), Date.now() - JOURNAL_MS);
   const facts = (journals.get(qc) ?? []).filter((f) => f.seq > floor && keyHoldsAccount(k, f.accountId));
   if (!facts.length) return next;
@@ -521,13 +575,91 @@ function replayJournal(qc: QueryClient, key: readonly unknown[], next: unknown):
   return pages.every((p, i) => p === data.pages[i]) ? next : { ...data, pages };
 }
 
+/** How long a read can lack a live message: the Relay answers a list from its cached window for up to
+ *  `_LIST_CHATS_TTL` + `_LIST_CHATS_SWR` (service/server.py, 600 + 600 s) when the live patch missed it. */
+export const LIVE_ROW_MS = 20 * 60_000;
+
+function lastMessageMs(c: OFChatItem): number {
+  const at = c.lastMessage?.createdAt;
+  return at ? Date.parse(toUtcIso(at)) : NaN;
+}
+
+function keepMissingCreatorRows(prev: ChatPages, next: ChatPages) {
+  return (next.pages as StampedPage[]).map((page, i) => {
+    if (!page.missing?.length) return undefined;
+    const missing = new Set(page.missing);
+    const fromMissingCreator = (row: OFChatItem) => missing.has(row.__accountId ?? "");
+    // A failed Creator cannot extend paging, so its rows from dropped pages stay on the last read page.
+    const overflow = i === next.pages.length - 1
+      ? prev.pages.slice(i + 1).flatMap((p) => p.rows.filter(fromMissingCreator))
+      : [];
+    return { fromMissingCreator, overflow };
+  });
+}
+
+function keepLiveRows(
+  page: StampedPage, shown: ReadonlyMap<string, OFChatItem>, view: ReturnType<typeof decodeChatsKey>, head: boolean,
+) {
+  const floor = (page.askedAt ?? Date.now()) - LIVE_ROW_MS;
+  const live = (c: OFChatItem) => lastMessageMs(c) >= floor;
+  const rows = page.rows.map((c) => {
+    const was = shown.get(chatRowKey(c));
+    if (!was || was === c || !live(was) || !rowNewerThan(was, lastMessageMs(c))) return c;
+    if (String(was.lastMessage?.id) === String(c.lastMessage?.id)) return c;
+    return was;
+  });
+  if (!head) return { rows };
+
+  const tails = new Map(page.rows.map((row) => [row.__accountId ?? "", lastMessageMs(row)]));
+  // IndexedDB can restore chats pages written before the per-Creator paging stamp.
+  const moreAccounts = new Set(page.moreAccounts ?? (page.hasMore ? view.accountKey.split(",") : []));
+  const keepOnHead = (c: OFChatItem) => {
+    const accountId = c.__accountId ?? "";
+    return live(c) && viewAdmits(view, c)
+      && (!moreAccounts.has(accountId) || !(lastMessageMs(c) <= (tails.get(accountId) ?? NaN)));
+  };
+  return { rows, keepOnHead };
+}
+
+export function preserveChatRows<T extends ChatPages | undefined>(
+  key: readonly unknown[], prev: ChatPages | undefined, next: T, fresh: (p: ChatPage) => boolean,
+): T {
+  if (!prev?.pages?.length || !next?.pages?.length) return next;
+  const shown = new Map<string, OFChatItem>();
+  for (const p of prev.pages) for (const c of p.rows) if (!shown.has(chatRowKey(c))) shown.set(chatRowKey(c), c);
+  const inNext = new Set(next.pages.flatMap((p) => p.rows.map(chatRowKey)));
+  const view = decodeChatsKey(key);
+  const sort = view.order === "old" ? (a: OFChatItem, b: OFChatItem) => compareChats(b, a) : compareChats;
+  const missing = keepMissingCreatorRows(prev, next);
+  const pages = (next.pages as StampedPage[]).map((page, i) => {
+    if (!fresh(page)) return page;
+    const { rows, keepOnHead } = keepLiveRows(page, shown, view, i === 0);
+    const failed = missing[i];
+    const kept = (prev.pages[i]?.rows ?? []).filter((c) =>
+      !inNext.has(chatRowKey(c)) && (failed?.fromMissingCreator(c) || keepOnHead?.(c)));
+    for (const c of kept) inNext.add(chatRowKey(c));
+    for (const c of failed?.overflow ?? []) {
+      const key = chatRowKey(c);
+      if (inNext.has(key)) continue;
+      kept.push(c);
+      inNext.add(key);
+    }
+    if (!kept.length && rows.every((row, j) => row === page.rows[j])) return page;
+    return { ...page, rows: [...rows, ...kept].sort(sort) };
+  });
+  return pages.every((page, i) => page === next.pages[i]) ? next : { ...next, pages };
+}
+
 /** A chats query's commit (its `structuralSharing`; every chats query sets it, a prefetch too: a query keeps the
  *  options of its last fetch): the journaled live writes re-applied (`replayJournal`), so a read started before a
  *  read flip, a reply or a live message never undoes it, whichever page of a multi-page refetch it lands between;
- *  then `share` (useChatList's row-wise sharing); every page committed is then known to hold every write so far. */
+ *  then what the list shows kept over a read that lacks it (`preserveChatRows`); then `share` (useChatList's row-wise
+ *  sharing); every page committed is then known to hold every write so far. */
 export function commitChatPages(qc: QueryClient, key: readonly unknown[], share: (prev: unknown, next: unknown) => unknown) {
   return (prev: unknown, next: unknown): unknown => {
-    const out = share(prev, replayJournal(qc, key, next)) as ChatPages | undefined;
+    const replayed = replayJournal(qc, key, next) as ChatPages | undefined;
+    const kept = preserveChatRows(key, prev as ChatPages | undefined, replayed, (p) => !seen.has(p));
+    const out = share(prev, kept) as ChatPages | undefined;
     for (const p of out?.pages ?? []) seen.set(p, lastSeq);
     return out;
   };

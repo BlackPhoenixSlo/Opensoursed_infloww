@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ANCHOR_MAX_PAGES, anchorNext, newBackfillIds, type AnchorStep } from "./jumpAnchor";
+import { ANCHOR_MAX_PAGES, anchorNext, newBackfillKeys, type AnchorStep } from "./jumpAnchor";
 
 describe("ANCHOR_MAX_PAGES", () => {
   it("keeps the 6-page bound", () => {
@@ -27,7 +27,7 @@ describe("anchorNext", () => {
   });
 });
 
-describe("newBackfillIds", () => {
+describe("newBackfillKeys", () => {
   it.each<[string, string[], string[], string[]]>([
     ["nothing seen keeps all, in order", [], ["3", "1", "2"], ["3", "1", "2"]],
     ["drops seen ids", ["1"], ["1", "2"], ["2"]],
@@ -37,12 +37,12 @@ describe("newBackfillIds", () => {
       ["9007199254740993", "9007199254740992"], ["9007199254740992"]],
     ["no ids", ["1"], [], []],
   ])("%s", (_, seen, ids, out) => {
-    expect(newBackfillIds(new Set(seen), ids)).toEqual(out);
+    expect(newBackfillKeys(new Set(seen), ids)).toEqual(out);
   });
 
   it("does not mutate seen", () => {
     const seen = new Set(["1"]);
-    newBackfillIds(seen, ["2", "3"]);
+    newBackfillKeys(seen, ["2", "3"]);
     expect([...seen]).toEqual(["1"]);
   });
 });

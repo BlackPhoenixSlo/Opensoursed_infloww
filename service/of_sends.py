@@ -128,7 +128,23 @@ class SendsMixin:
 
     # ── Messages: write ─────────────────────────────────────────
 
-    def send_message(self, chat_id: str | int, text: str, *,
+    def send_message(self, chat_id: str | int, text: str, **kwargs: Any) -> dict:
+        return self.post_message(*self.prepare_message(chat_id, text, **kwargs))
+
+    def post_message(self, chat_id: str | int, path: str, body: dict, retry_plan: _CoTagRetry | None) -> dict:
+        import sends_inflight
+        account_id = getattr(self, "account_id", None)
+        pending = sends_inflight.begin(account_id, chat_id)
+        try:
+            result = self._post_dropping_auto_cotag(path, body, retry_plan)
+        except Exception:
+            sends_inflight.post_finished(account_id, chat_id, pending)
+            raise
+        sends_inflight.post_finished(account_id, chat_id, pending,
+                                    result.get("id") if isinstance(result, dict) else None)
+        return result
+
+    def prepare_message(self, chat_id: str | int, text: str, *,
                      locked_text: bool = False, price: int | float = 0,
                      media_files: list | None = None,
                      previews: list[int] | None = None,
@@ -138,8 +154,8 @@ class SendsMixin:
                      giphy_id: str | None = None,
                      rf_guest: list[int] | None = None,
                      rf_partner: list[int] | None = None,
-                     auto_tag: bool = True) -> dict:
-        """POST /api2/v2/chats/{chat_id}/messages — send a message to one fan
+                     auto_tag: bool = True) -> tuple[str | int, str, dict, _CoTagRetry | None]:
+        """Prepare /api2/v2/chats/{chat_id}/messages for one fan
         (or another creator, when both subscribe to each other).
 
         `chat_id` is the *other user's* numeric id.
@@ -156,10 +172,7 @@ class SendsMixin:
 
         `reply_to_message_id` is OF's native quote-reply: setting it makes
         the receiving side render the original message as a card above
-        this one (matches OF web's "↪ Reply" UX exactly).
-
-        Returns the created message object (same shape as items in
-        /chats/.../messages.list)."""
+        this one (matches OF web's "↪ Reply" UX exactly)."""
         text = _guard_outbound(text, chat=True)  # read as `_wrap_text_as_p` sends it
         body = self._message_body(
             text, locked_text=locked_text, price=price, media_files=media_files,
@@ -192,8 +205,8 @@ class SendsMixin:
         # turn, the operator's sends that automation leaves room for.
         import dm_rate
         dm_rate.record(getattr(self, "account_id", None))
-        return self._post_dropping_auto_cotag(
-            f"{API_BASE}/chats/{chat_id}/messages", body, retry_plan)
+        path = f"{API_BASE}/chats/{chat_id}/messages"
+        return chat_id, path, body, retry_plan
 
     @staticmethod
     def _message_body(text: str, *, locked_text: bool,

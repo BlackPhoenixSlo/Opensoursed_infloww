@@ -36,6 +36,9 @@ export interface OutboundTranslation {
   /** The current draft in the Fan's language; null while none is ready. */
   translated: string | null;
   translating: boolean;
+  /** The relay gave no translation for the draft as it stands. */
+  failed: boolean;
+  retry: () => void;
 }
 
 export function useOutboundTranslation(accountId: string | null, fanId: FanId | null, text: string): OutboundTranslation {
@@ -58,7 +61,11 @@ export function useOutboundTranslation(accountId: string | null, fanId: FanId | 
     queryKey: ["translate-out", accountId, target, settled],
     queryFn: () => relay.post<{ results: Array<{ text: string } | null> }>(
       "/admin/translate", { texts: [settled], target }, { accountId },
-    ).then((r) => r.results?.[0]?.text ?? null),
+    ).then((r) => {
+      const out = r.results?.[0]?.text;
+      if (!out) throw new Error("no translation");
+      return out;
+    }),
     enabled: on && !!settled,
     staleTime: Infinity,
     retry: false,
@@ -69,6 +76,8 @@ export function useOutboundTranslation(accountId: string | null, fanId: FanId | 
     available, open: available && open, toggle, target, setTarget,
     translated: current ? q.data ?? null : null,
     translating: on && !!draft && (settled !== draft || q.isFetching),
+    failed: current && q.isError && !q.isFetching,
+    retry: () => void q.refetch(),
   };
 }
 
@@ -128,7 +137,14 @@ export function OutboundTranslationStrip({
         {LANGUAGES.map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
       </select>
       <span className="flex-1 min-w-0 truncate" title={t.translated ?? undefined}>
-        {t.translated ?? (t.translating ? "Translating…" : "")}
+        {t.translated ?? (t.translating ? "Translating…" : t.failed ? (
+          <>
+            <span role="status" className="text-fg-dim">Translation failed. </span>
+            <button type="button" onClick={t.retry} className="text-[var(--inf-accent-text,var(--color-accent))]">
+              Retry
+            </button>
+          </>
+        ) : "")}
       </span>
       <button
         type="button"

@@ -32,7 +32,7 @@ _URL_ALLOWED = {
     ("of_reads.py", "get_messages"): "takes `peek`; its callers are checked above",
     ("of_reads.py", "get_pinned_messages"): "always sends PEEK_CURSOR (test_of_reads_peek)",
     ("of_reads.py", "search_chat"): "/messages/search does not mark read (measured 2026-11-22)",
-    ("of_sends.py", "send_message"): "POST: a send",
+    ("of_sends.py", "prepare_message"): "POST: a send",
     ("of_sends.py", "unpin_all_messages"): "DELETE: unpin",
 }
 _THREAD_URL = re.compile(r"/chats/[^/]+/messages")

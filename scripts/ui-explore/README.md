@@ -11,12 +11,15 @@ scripts/ui-explore/run.sh --reproduce=<trace.bin> [--viewport=...]  # replay (sa
 Exit 0 = clean; non-zero = violations or a Bombadil failure (stall, CDP/navigation timeout under heavy load; the summary says which).
 
 ## Stack
+
+First run needs npm registry access to install Bombadil and its dependencies. The exploration stack is loopback-only.
+
 - `scripts/demo-shots/run.sh serve`: temp-DB relay + `next dev`, loopback-only guards. Needs `venv/`, `cwebp`, `magick`.
-- `seed_session.py`: registers the owner and seeds the demo agency, then prints the session cookie.
+- `seed_session.py`: registers the owner and seeds the demo agency, then prints the session cookie and throwaway login for the wrapper.
 - `shim.py`: the browser origin in front of next. It answers OnlyFans reads from the demo-shots fixtures (the relay would 503 them), serves vault stills, and drops next's `serverComponentChanges` HMR message. It also retries chunks that next truncates while recompiling.
 - `warm.py`: loads the app once so next has compiled it.
 - Chrome resolves only loopback names (`--host-resolver-rules`). Every process runs at `nice -n 10`.
-- Teardown signals only the process groups `run.sh` started.
+- The wrapper caps replay at 7 minutes, exploration and shrink at 1 hour, and bounds setup and trace processing. Teardown signals only the process groups `run.sh` started.
 
 ## Properties (`specification.ts`)
 - No uncaught exceptions or unhandled rejections.

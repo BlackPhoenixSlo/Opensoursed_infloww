@@ -65,9 +65,9 @@
                               before; `ws_at` outlives a newer `/users/me`.
   case_badge_version:         +1 on any slot key change (or the slot appearing / going), never on `at` alone.
   case_phase_c_causes:        Phase C's causes held by the shell: `dead` / `proxy_down` first, before `unseeded`;
-                              `capped` after `r_unknown`; socket down with a poll of this outage (after the newest
-                              frame) -> no `socket_down`, a `/users/me` since included; that poll older than 45 s ->
-                              `stale`; a poll before the reconnect, or before a later frame, confirms nothing.
+                              socket down with a poll of this outage (after the newest frame) -> no `socket_down`, a
+                              `/users/me` since included; that poll older than 45 s -> `stale`; a poll before the
+                              reconnect, or before a later frame, confirms nothing.
   case_poll_confirmation:     a Complete socket-down poll (`via="poll"`) confirms through the one watermark like a frame
                               (no drift, no window read, `due` kept) and stamps `poll_at`; an older one changes nothing.
 
@@ -138,15 +138,22 @@ def case_older_read_never_wins():
 def case_slot():
     up = T0 - 1
     rows = [
-        (State(), 0, up, {"n": None, "at": None, "grey": "unseeded"}, "no confirmation: an object, grey"),
-        (State(n=3, at=T0), 0, up, {"n": 3, "at": T0, "grey": None}, "confirmed"),
-        (State(n=11, at=T0), 4, up, {"n": 7, "at": T0, "grey": None}, "owner amendment #3: 11 - 4 only_friends"),
-        (State(n=2, at=T0), 5, up, {"n": 0, "at": T0, "grey": None}, "floored at 0"),
+        (State(), d.Restricted(0, False, 0), up, {"n": None, "at": None, "grey": "unseeded"}, "no confirmation: an object, grey"),
+        (State(n=3, at=T0), d.Restricted(0, False, 0), up, {"n": 3, "at": T0, "grey": None}, "confirmed"),
+        (State(n=11, at=T0), d.Restricted(4, False, 0), up, {"n": 7, "at": T0, "grey": None}, "owner amendment #3: 11 - 4 only_friends"),
+        (State(n=2, at=T0), d.Restricted(5, False, 0), up, {"n": 0, "at": T0, "grey": None}, "floored at 0"),
         (State(n=5, at=T0), None, up, {"n": None, "at": T0, "grey": "r_unknown"}, "R unknown: never OF's raw number"),
-        (State(n=5, at=T0), 1, None, {"n": 4, "at": T0, "grey": "socket_down"}, "socket down: `n` kept, grey"),
+        (State(n=5, at=T0), d.Restricted(1, False, 0), None, {"n": 4, "at": T0, "grey": "socket_down"}, "socket down: `n` kept, grey"),
     ]
     for st, r, up_since, want, why in rows:
         assert d.slot(st, r, up_since, T0 + 10) == want, (why, d.slot(st, r, up_since, T0 + 10))
+
+
+def case_slot_bounds_uncertain_floor_by_latest_confirmation():
+    restricted = d.Restricted(1, True, 12)
+    for n, expected in ((15, 12), (9, 9), (8, None), (0, None)):
+        slot = d.slot(State(n=n, at=T0), restricted, T0 - 1, T0 + 10)
+        assert slot == {"n": expected, "at": T0, "grey": "r_unknown" if expected is None else None}, slot
 
 
 def case_grey_reason():
@@ -208,7 +215,7 @@ def case_clamped_at_zero():
 
 def case_no_total_yet():
     st = d.adjust(State(), DmIn(FAN, READ), T0 + 10)
-    assert st.n is None and d.slot(st, 0, T0, T0)["grey"] == "unseeded", st
+    assert st.n is None and d.slot(st, d.Restricted(0, False, 0), T0, T0)["grey"] == "unseeded", st
 
 
 def case_flips_kept_until_a_read_asked_after_they_landed():
@@ -571,6 +578,31 @@ def case_overlay():
     assert d.amber_count(d.overlay([row()], {FAN: {d.ECHO: ask + 1}}, ask, str(me)), me, set(), None) == 0, "me as str"
 
 
+def case_reply_row_fence():
+    me = 999
+
+    def row(created=None, sender=FAN):
+        last = {"id": 1, "fromUser": {"id": sender}}
+        if created is not None:
+            last["createdAt"] = created
+        return {"withUser": {"id": FAN}, "unreadMessagesCount": 0, "hasUnread": False,
+                "isMutedNotifications": False, "lastMessage": last}
+
+    def replied(r):
+        return {**r, "lastMessage": {**r["lastMessage"], "fromUser": {"id": me}}}
+    newer, older = d.created_ms(row(AFTER)), d.created_ms(row(BEFORE))
+    rows = [
+        (row(AFTER), ASK, row(AFTER), "fan-last newer than the reply: kept"),
+        (row(AFTER), newer, row(AFTER), "fan-last at the reply's ms: the Fan's message last"),
+        (row(BEFORE), ASK, replied(row(BEFORE)), "fan-last older: Creator-last"),
+        (row(), ASK, replied(row()), "no createdAt: Creator-last"),
+        (row(AFTER, sender=me), ASK, row(AFTER, sender=me), "Creator-last newer: Creator-last"),
+    ]
+    for r, at, want, why in rows:
+        assert d.reply_row(r, me, at) == want, (why, d.reply_row(r, me, at))
+    assert d.overlay([row(AFTER)], {FAN: {d.ECHO: ASK}}, older, me) == [row(AFTER)], "overlay echo older than the row"
+    assert d.amber_count(d.overlay([row(AFTER)], {FAN: {d.ECHO: ASK}}, older, me), me, set(), None) == 1
+
 def case_amber_one_predicate():
     me = 999
     owed = {"withUser": {"id": REG}, "unreadMessagesCount": 0, "isMutedNotifications": False,
@@ -668,16 +700,11 @@ def case_phase_c_causes():
     rows = [
         (State(), 0, T0 - 1, T0, "dead", "dead", "dead since boot: dead, not unseeded"),
         (State(), None, None, T0, "proxy_down", "proxy_down", "proxy down since boot"),
-        (State(), 0, T0 - 1, T0, "capped", "unseeded", "capped: unseeded first"),
         (held, 0, T0 - 1, None, "dead", "dead", "Dead session"),
         (held, None, None, None, "dead", "dead", "dead before socket_down and r_unknown"),
         (held, 0, None, None, "proxy_down", "proxy_down", "proxy down before socket_down"),
-        (held, 0, T0 - 1, None, "capped", "capped", "capped"),
-        (held, None, T0 - 1, None, "capped", "r_unknown", "r_unknown before capped"),
-        (held, 0, None, T0 + 60_000, "capped", "socket_down", "socket down, no poll: socket_down before capped"),
         (polled, 0, None, T0 + 45_000, None, None, "socket down, polled 45 s ago: confirmed"),
         (polled, 0, None, T0 + 45_001, None, "stale", "socket down, newest poll older than 45 s"),
-        (polled, 0, None, T0 + 60_000, "capped", "capped", "capped before stale"),
         (polled, None, None, T0 + 1_000, None, "r_unknown", "polled, no R"),
         (State(n=3, at=T0 + 5, poll_at=T0), 0, None, T0 + 10, None, None, "a /users/me during the outage"),
         (State(n=3, at=T0 + 50_000, poll_at=T0), 0, None, T0 + 50_000, None, "stale", "a /users/me: the poll ages"),
@@ -688,7 +715,7 @@ def case_phase_c_causes():
     ]
     for st, r, up_since, now, cause, want, why in rows:
         assert d.grey_reason(st, r, up_since, now, cause) == want, (why, d.grey_reason(st, r, up_since, now, cause))
-    assert d.slot(polled, 1, None, T0 + 50_000) == {"n": 2, "at": T0, "grey": "stale"}, "stale keeps `n`"
+    assert d.slot(polled, d.Restricted(1, False, 0), None, T0 + 50_000) == {"n": 2, "at": T0, "grey": "stale"}, "stale keeps `n`"
 
 
 def case_poll_confirmation():
@@ -704,6 +731,12 @@ def case_poll_confirmation():
     assert st2 == State(n=5, at=T0, seen=T0 + 100), ("a poll asked before the newest answer changes nothing", st2)
     st3, _ = d.reconcile(d.reconcile(State(), 4, T0, T0, via="poll")[0], 4, T0 + 10, T0 + 10, via="ws")
     assert st3.poll_at == T0 and st3.at == T0 + 10, ("a later frame confirms; the poll stamp stays", st3)
+
+
+def case_adjust_keeps_poll_confirmation():
+    state = State(n=3, at=T0, poll_at=T0)
+    moved = d.adjust(state, ReadFlip(FAN, 0, T0 + 5, UNREAD), T0 + 10)
+    assert moved.poll_at == T0 and d.slot(moved, d.Restricted(0, False, 0), None, T0 + 10)["grey"] is None
 
 
 _harness.run()

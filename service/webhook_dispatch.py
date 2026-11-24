@@ -36,7 +36,7 @@ import os
 import random
 import time
 import weakref
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -76,7 +76,6 @@ def _fan_serial(account_id: str, fan_id: int) -> asyncio.Lock:
 # inside the 4h window we ourselves leave open before the mass unsend erases it.
 # ~34 calls/day fleet-wide, measured against 238 blind inbounds a week.
 # Only on accounts a registered scrape gate allows (`_scrape_after_blast`).
-# Background reads must peek (a first-page thread GET marks the chat read on OF).
 _BLAST_SCRAPE_WINDOW = timedelta(minutes=60)
 # One claim per fan for the one-fan scrape triggers (`enqueue_fan_scrape`): the
 # after-blast scrape and a gen_info pick; a deferred chat's Click read has its own.
@@ -368,15 +367,13 @@ async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | N
     care whether it worked.
 
     Gated per Creator by `_scrape_allowed` (the plugin gates), and NOT on
-    `_load_config` (W7's own switch). Background reads must peek (a first-page
-    thread GET marks the chat read on OF): the scrape's page 1 does. A gate
-    answers per account, not per blast or fan.
+    `_load_config` (W7's own switch). A gate answers per account, not per blast or fan.
 
     What the scrape brings back is the newest rows since his last scrape — his
     inbound, our replies, and the blast copy with its real id, media and
     `raw_json.queueId`. The promise is THE COPY, not "the gap closes": a fan with
-    more than 100 rows since a days-old cursor keeps his middle gap, because
-    `_fetch_recent_end` stops at 100 and the cursor then jumps to the newest id.
+    more than 100 rows since a days-old cursor gets the newest 100 now; the middle
+    stays the scrape's gap, walked by his next scrape.
     The blast, sent under an hour ago, is always inside that newest 100."""
     try:
         if not (blasted if blasted is not None else await _blasted_recently(account_id)):
@@ -389,34 +386,28 @@ async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | N
                     account_id, fan_id, exc_info=True)
 
 
-async def enqueue_fan_scrape(account_id: str, fan_id: int, source: str) -> bool:
-    """One bounded one-fan `scrape_fan` job `{"fan_ids": [fan], "source": source}`
-    (scrape_chats' handler on the sender lane, its own run key: never queued behind
-    the account's sweep, automations/scrape_chats.py), due now, supervisor woken, unless the fan's scrape is claimed inside
-    `_FAN_SCRAPE_DEDUP_S`: the other triggers (a blast reply, a gen_info pick) share one
-    claim, so they make one job per fan per window. A Click read's backfill
-    (DEFERRED_HISTORY_SOURCE) has its own claim, which also covers the others: theirs
-    keep a deferred row's asc pass deferred, so it must never be swallowed by one of them.
-    True = this call enqueued it. Never raises.
-    ⚠️ NO AWAIT BETWEEN THE CHECK AND THE SET (`decide.blast_claim` is sync): that is
-    what makes two concurrent triggers produce one job instead of two."""
+async def enqueue_fan_scrape(account_id: str, fan_id: int, source: str, *, peek_only: bool = False) -> bool:
+    key = (str(account_id), int(fan_id))
+    # No await between this check and _enqueue_claimed's claim set: two concurrent triggers must make one job.
+    clicked_at = _fan_scrape_claims.get((*key, "click"))
+    if clicked_at is not None and time.monotonic() - clicked_at < _FAN_SCRAPE_DEDUP_S:
+        return False
+    payload = {"fan_ids": [key[1]], "source": source}
+    if peek_only:
+        payload["peek_only"] = True
+    return await _enqueue_claimed(key, payload)
+
+
+async def _enqueue_claimed(key: tuple, payload: dict) -> bool:
+    global _fan_scrape_claims
+    account_id, fan_id = key[:2]
+    source = payload["source"]
     try:
-        global _fan_scrape_claims
-        key, now = (str(account_id), int(fan_id)), time.monotonic()
-        if source == DEFERRED_HISTORY_SOURCE:
-            key = (*key, DEFERRED_HISTORY_SOURCE)
-        else:
-            clicked_at = _fan_scrape_claims.get((*key, DEFERRED_HISTORY_SOURCE))
-            if clicked_at is not None and now - clicked_at < _FAN_SCRAPE_DEDUP_S:
-                return False
         claimed, _fan_scrape_claims = decide.blast_claim(
-            _fan_scrape_claims, key, now, _FAN_SCRAPE_DEDUP_S, _FAN_SCRAPE_CLAIM_MAX)
+            _fan_scrape_claims, key, time.monotonic(), _FAN_SCRAPE_DEDUP_S, _FAN_SCRAPE_CLAIM_MAX)
         if not claimed:
             return False
-        await ax.enqueue_job(
-            account_id, "scrape_fan",
-            payload={"fan_ids": [int(fan_id)], "source": source},
-            run_at=datetime.utcnow())
+        await ax.enqueue_job(account_id, "scrape_fan", payload=payload, run_at=datetime.utcnow())
         ax.wake_supervisor()
         log.info("fan_scrape source=%s account=%s fan=%s", source, account_id, fan_id)
         return True
@@ -429,8 +420,7 @@ async def enqueue_fan_scrape(account_id: str, fan_id: int, source: str) -> bool:
 # ── A deferred chat's backfill (fetch-diet phase-03) ───────────────────
 # A `{}` sweep keeps page 1 of a Silent mass-only chat, or the recent end of an unread one, and
 # defers its deep history (`scrape_history.history_deferred_at`, automations/scrape_chats.py). Only a Click read
-# (a plain head read or a landed mark-as-read, deferred_history_wiring.py) buys the backfill's asc pass, source
-# DEFERRED_HISTORY_SOURCE: the read already marked the chat read on OF. A gen_info
+# (a plain head read or a landed mark-as-read, deferred_history_wiring.py) buys the backfill's asc pass. A gen_info
 # thin-history pick (GEN_INFO_PICK_SOURCE) or any other one-fan scrape walks the recent end
 # only and keeps the deferral. His DM buys nothing: it would only hold the fan's claim.
 DEFERRED_HISTORY_SOURCE = "deferred_history"
@@ -448,12 +438,16 @@ async def history_deferred(account_id: str, fan_id: int, *, s=None) -> bool:
     return at is not None
 
 
-async def backfill_if_deferred(account_id: str, fan_id: int) -> None:
+async def backfill_if_deferred(account_id: str, fan_id: int, at: int) -> None:
     """The Click read trigger (a plain head read or a landed mark-as-read of the chat): a deferred chat gets its
     backfill. Never raises."""
     try:
         if await history_deferred(account_id, fan_id):
-            await enqueue_fan_scrape(account_id, fan_id, DEFERRED_HISTORY_SOURCE)
+            await _enqueue_claimed((str(account_id), int(fan_id), "click"), {
+                "fan_ids": [int(fan_id)],
+                "source": DEFERRED_HISTORY_SOURCE,
+                "after_click_at": datetime.fromtimestamp(at / 1000, UTC).isoformat(),
+            })
     except Exception:
         log.warning("fan_scrape_failed source=%s account=%s fan=%s",
                     DEFERRED_HISTORY_SOURCE, account_id, fan_id, exc_info=True)

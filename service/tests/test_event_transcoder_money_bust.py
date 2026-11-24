@@ -14,8 +14,8 @@ money does:
 
 Unchanged by it: every inbound DM still drops `roster_count` (the unread badge).
 
-A Creator echo (no `fromUser`, `chatUserId` = the Fan) writes no `messages` row, drops only that Fan's
-`get_chat` and leaves the outbound debounce alone.
+A Creator echo (no `fromUser`, `chatUserId` = the Fan) writes one out `messages` row, drops only that Fan's
+`get_chat`, keeps the money feeds and leaves the outbound debounce alone (its own cases: test_event_transcoder_echo.py).
 
 Run: ./venv/bin/python service/tests/test_event_transcoder_money_bust.py   (exit 0 = pass)
 """
@@ -142,7 +142,7 @@ async def _messages() -> int:
         return await s.scalar(select(func.count()).select_from(Message).where(Message.account_id == _AID))
 
 
-async def case_echo_drops_only_its_get_chat():
+async def case_echo_stores_an_out_row_and_drops_only_its_get_chat():
     await _seed_account()
     before = await _messages()
     other = _FAN + 1
@@ -152,13 +152,17 @@ async def case_echo_drops_only_its_get_chat():
     for ns in ("list_chats", "roster_count"):
         await _warm(ns, ())
     et._last_out_bust.pop(_AID, None)
+    for ns, extras in _MONEY:
+        await _warm(ns, extras)
     await et.transcode({"api2_chat_message": {"id": next(_ids), "text": "<p>on it</p>", "chatUserId": _FAN,
+                                              "price": 0, "isTip": False,
                                               "createdAt": "2026-11-09T10:00:00+00:00"}, "__account_id": _AID})
     await _drain()
-    assert await _messages() == before, "no messages row"
+    assert await _messages() == before + 1, "one out row"
+    assert {ns: await _kept(ns, extras) for ns, extras in _MONEY} == _ALL_KEPT, "money feeds kept"
     assert relay_cache.peek("get_chat", _AID, (_FAN,)) is None, "that Fan's chat detail dropped"
     assert relay_cache.peek("get_chat", _AID, (other,)) is not None, "another Fan's kept"
-    assert await _kept("list_chats", ()) and await _kept("roster_count", ()), "no outbound bust"
+    assert await _kept("roster_count", ()), "no outbound bust"
     assert _AID not in et._last_out_bust, "the outbound debounce untouched"
 
 

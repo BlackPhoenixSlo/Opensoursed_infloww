@@ -23,7 +23,6 @@ vi.mock("@/components/group/GroupPane", () => ({
     return <div data-testid="pane" data-fan={`${typeof fanId}:${fanId}`} />;
   },
 }));
-vi.mock("@/hooks/useInboxRealtime", () => ({ useInboxRealtime: () => {} }));
 vi.mock("@/hooks/useIsDesktop", () => ({ useIsDesktop: () => renders.desktop }));
 
 import GroupChatPage from "./page";

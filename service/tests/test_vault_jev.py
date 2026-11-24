@@ -1776,4 +1776,104 @@ def case_video_cap_env_and_budget():
         assert vault_frames.JEV_VIDEO_CAP_BYTES == 50_000_000 and vault_frames.JEV_VIDEO_TIMEOUT_S == 240
 
 
+def case_rejection_survives_operator_pick_and_failed_read():
+    import vault_jev_manual
+
+    for stamp in ({"status": "jev_rejected"},
+                  {"status": "error", "error": "Invalid image: TypeSafeBadRequestError"}):
+        prev = {"_jev": stamp}
+        picked = {"_jev": vault_jev_manual.overlay(stamp, {"lane": "free"}, "photo")}
+        failed = vault_jev.merge(prev, {"ok": False, "status": "error", "detail": "timeout"}, datetime.utcnow())
+        for fields in (picked, failed):
+            assert rules.rejected(fields), fields
+            assert not vault_jev_pass.sweep_due(fields, datetime.utcnow()), fields
+            reread = vault_jev.merge(fields, {"ok": True, "blob": {"status": "ok"}}, datetime.utcnow())
+            assert not rules.rejected(reread)
+
+
+async def case_rejection_survives_video_fetch_hold():
+    for terminal in (False, True):
+        aid = await _seed(kind="video", fields={"_jev": {"status": "jev_rejected"}})
+        await vault_jev_pass._hold(aid, 7001, 3, "no frames", terminal=terminal)
+        assert rules.stop_reason(await _fields(aid)) == rules.REJECTED
+
+
+async def case_video_only_rejects_when_every_full_frame_is_invalid():
+    from typesafe_sdk import TypeSafeBadRequestError
+
+    frames = _clip([_gold("$100"), *[_gold("free")] * 7])
+    aid = await _seed(kind="video")
+    for count, status in ((1, "ok"), (8, "jev_rejected")):
+        with _FrameSeams(frames) as sm:
+            original = sm.client.system_one
+            failures = []
+            invalid_sizes = {tuple(_size(vault_jev.shrink(data, vault_jev.EDGE))) for data, _ in frames[:count]}
+
+            async def ask(**kwargs):
+                if tuple(_size(bytes(kwargs["state"]["photo"].data))) in invalid_sizes:
+                    failures.append(kwargs)
+                    raise TypeSafeBadRequestError(400, {"detail": "Invalid image"}, {})
+                return await original(**kwargs)
+
+            sm.client.system_one = ask
+            res = await vault_jev.run_video(aid, [data for data, _ in frames], src="720", review=None, nbytes=1)
+            assert res["status"] == status, res
+            assert len(sm.client.calls) + len(failures) == len(frames)
+            if count == 1:
+                blob = res["blob"]
+                outcome = (blob["review"], blob["lane5"], blob.get("read_lane5"))
+                assert outcome == ("few_frames", "review", "free"), outcome
+                expected_px = [list(_size(frames[i][0])) for i in sm.passes("resp")]
+                assert [f["px"] for f in blob["frames"]] == expected_px
+                assert blob["px"] == blob["frames"][blob["frame"]]["px"]
+                assert res["tok"] == sum(frames[i][1]["rec"]["resp"]["usage"]["input_tokens"]
+                                         for i in sm.passes("resp"))
+            assert rules.rejected(vault_jev.merge({}, res, datetime.utcnow())) == (count == 8)
+
+
+async def case_followup_invalid_image_keeps_full_read():
+    from typesafe_sdk import TypeSafeBadRequestError
+
+    for kind in ("photo", "video"):
+        aid = await _seed(kind=kind)
+        for pass_no, golden in (
+            ("2", _gold("$50", has=("resp", "resp2"), need="need2")),
+            ("L", _gold("$10", has=("resp", "respL"), need="needL")),
+        ):
+            frames = _clip([golden])
+            data = frames[0][0]
+            rejected = 0
+            with _FrameSeams(frames) as sm:
+                original = sm.client.system_one
+
+                async def ask(**kwargs):
+                    nonlocal rejected
+                    n = len(kwargs["questions"])
+                    current = {len(vault_jev.Q): "1", len(vault_jev.Q2): "2"}.get(n, "L")
+                    if current == pass_no:
+                        rejected += 1
+                        raise TypeSafeBadRequestError(400, {"detail": "Invalid image"}, {})
+                    return await original(**kwargs)
+
+                sm.client.system_one = ask
+                if kind == "photo":
+                    res = await vault_jev.run(aid, data)
+                else:
+                    res = await vault_jev.run_video(aid, [data], src="720", review=None, nbytes=1)
+            assert rejected == 1 and res["ok"], (kind, pass_no, res)
+            blob = res["blob"]
+            stamp = blob if kind == "photo" else blob["frames"][0]
+            assert stamp[f"{pass_no}s"] == "rejected" and pass_no not in blob["passes"], blob
+            assert res["tok"] >= golden["rec"]["resp"]["usage"]["input_tokens"]
+
+
+async def case_photo_min_dimension_skips_pass_l():
+    gl = _gold("$10", has=("resp", "respL"), need="needL")
+    aid = await _seed()
+    frames = [(_jpeg(400, 202), gl)]
+    with _FrameSeams(frames) as sm:
+        res = await vault_jev.run(aid, frames[0][0])
+    assert res["ok"] and sm.passes("respL") == [] and res["blob"]["Ls"] == "small", res
+
+
 _harness.run()

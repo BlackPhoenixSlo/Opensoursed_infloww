@@ -110,7 +110,7 @@ def test_any_scope(scope, accounts, event, wanted):
 
 def test_types():
     assert "creator_warmed" in ed.SSE_TYPES and "creator_refreshed" in ed.SSE_TYPES
-    assert ed.ANY_SCOPE_TYPES == frozenset({"creator_warmed", "creator_refreshed", "chat_read_changed",
+    assert ed.ANY_SCOPE_TYPES == frozenset({"creator_warmed", "creator_refreshed", "chat_read_changed", "chat_restrict_changed",
                                          "chat_responded", "transaction_recorded", "purchase_notified", "toasts"})
     assert ed.ANY_SCOPE_TYPES <= ed.SSE_TYPES
     assert not (ed.ANY_SCOPE_TYPES & ed.STATE_TYPES)

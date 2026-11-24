@@ -27,7 +27,7 @@ export function amberCircle(
   return typeof slot.amber === "number" ? draw(slot.amber) : { kind: "grey" };
 }
 
-export function amberTitle(c: AmberCircle): string {
+export function amberTitle(c: AmberCircle): string | null {
   if (c.kind === "grey") return "awaiting reply unknown";
-  return `${c.kind === "count" ? c.text : 0} awaiting reply`;
+  return c.kind === "count" ? `${c.text} awaiting reply` : null;
 }

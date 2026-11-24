@@ -161,12 +161,12 @@ async def case_unmute_clears_skip_on_fast_skip_scrape():
     assert await _has_muted_skip(fid)
 
     async def _nothing_new(*a, **kw):
-        return [], False, False
+        return scrape_chats._RecentEnd([], False, True, False)
     scrape_chats._fetch_recent_end = _nothing_new
     res = await scrape_chats._scrape_one_chat(
         ACCT, OWN, None, fid, {"id": fid}, page_size=10, max_pages=1,
         is_muted=False)
-    assert res == (0, 0)
+    assert (res.inserted, res.seen, res.rate_limited, res.gap_left) == (0, 0, False, False)
     assert not await _has_muted_skip(fid), "un-mute did not clear the skip"
     async with get_session() as s:
         muted = (await s.execute(select(Fan.is_muted).where(

@@ -19,7 +19,9 @@ vi.mock("@/hooks/useAccounts", () => ({
   usePlatformAccounts: () => [{ id: "acct1", nickname: "A", color: "#fff" }],
 }));
 vi.mock("@/hooks/useAllModelsInclude", () => ({ useAllModelsInclude: () => ({ isIncluded: () => true, toggle: vi.fn() }) }));
-vi.mock("@/hooks/useVaultMedia", () => ({ useVaultLists: () => ({ data: { list: [] }, isLoading: false }) }));
+vi.mock("@/hooks/useVaultMedia", () => ({
+  useVaultListsRevalidated: () => ({ data: { list: [] }, isLoading: false, isFetching: false, refresh: vi.fn() }),
+}));
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
 
 import LinkMetaFields, { useLinkMetaFields } from "@/components/growth/LinkMetaFields";

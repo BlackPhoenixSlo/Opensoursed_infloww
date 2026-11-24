@@ -415,6 +415,35 @@ describe("useAccountStateEvents", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it("chat_restrict_changed writes the fan's restrict flags into every cached list and his OF user; no OF read", () => {
+    const qc = makeTestQueryClient();
+    const restricted = {
+      __accountId: "a1", withUser: { id: 7, isRestricted: true, badgeExcluded: true },
+      canSendMessage: false, canNotSendReason: "muted",
+    };
+    const model = ["chats", "model", "a1", null, null, null, 25];
+    const all = ["chats", "all", "a1,a2", null, null, null, 25];
+    const other = ["chats", "model", "a2", null, null, null, 25];
+    for (const k of [model, all]) qc.setQueryData(k, { pages: [{ rows: [restricted], hasMore: false }], pageParams: [0] });
+    qc.setQueryData(other, { pages: [{ rows: [{ ...restricted, __accountId: "a2" }], hasMore: false }], pageParams: [0] });
+    const otherBefore = qc.getQueryData(other);
+    qc.setQueryData(["of-user", "a1", 7, "full"], { id: 7, isRestricted: true });
+    const { keys } = mount(qc);
+    const rowOf = (k: unknown[]) => (qc.getQueryData(k) as { pages: { rows: typeof restricted[] }[] }).pages[0].rows[0];
+
+    emit("chat_restrict_changed", { __account_id: "a1", chat_restrict_changed: { fan_id: 7, restricted: false } });
+    for (const k of [model, all]) {
+      expect(rowOf(k)).toEqual({ __accountId: "a1", withUser: { id: 7 }, canSendMessage: true, canNotSendReason: null });
+    }
+    expect(qc.getQueryData(other)).toBe(otherBefore);
+    expect(qc.getQueryData(["of-user", "a1", 7, "full"])).toEqual({ id: 7, isRestricted: false });
+    expect(keys()).toEqual([["automation-restrict", "a1"]]);
+
+    emit("chat_restrict_changed", { __account_id: "a1", chat_restrict_changed: { fan_id: "7", restricted: true } });
+    expect(rowOf(model)).toEqual(restricted);
+    expect(qc.getQueryData(["of-user", "a1", 7, "full"])).toEqual({ id: 7, isRestricted: true });
+  });
+
   it("chat_read_changed older than a list's read (a replay after reconnect) leaves that list alone", () => {
     const qc = makeTestQueryClient();
     const row = (fid: number, unread: boolean) =>

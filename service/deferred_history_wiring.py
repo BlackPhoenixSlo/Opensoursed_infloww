@@ -18,11 +18,11 @@ import relay_hooks
 log = logging.getLogger("of-relay.events")
 
 
-def _on_click_read(account_id: str, chat_id: int) -> None:
+def _on_click_read(account_id: str, chat_id: int, at: int) -> None:
     coro = None
     try:
         import webhook_dispatch   # lazy: it pulls in the executor
-        coro = webhook_dispatch.backfill_if_deferred(str(account_id), int(chat_id))
+        coro = webhook_dispatch.backfill_if_deferred(str(account_id), int(chat_id), at)
         relay_host.spawn_bg(coro, "deferred-history")
     except Exception:
         if coro is not None:

@@ -66,8 +66,8 @@ import { OfRichTextEditor, type OfRichTextEditorHandle } from "@/components/ui/O
 import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
 import { TagCreatorsPicker, TaggedCreatorChips, type TaggedCreatorChoice } from "./TagCreatorsPicker";
 import {
-  EMPTY_DRAFT, afterRefusedSchedule, buildSendArgs, richFromEditor, richText, canBeFreePreview, canSend, composerDraft,
-  composerView, sentReplyId, type FullDraft, type SendArgs,
+  EMPTY_DRAFT, afterRefusedSchedule, buildSendArgs, richFromEditor, richText, canBeFreePreview, canSend, composerDraft, isEmptyLiveDraft,
+  composerView, sentReplyId, type FullDraft, type LiveDraft, type SendArgs,
 } from "./composerDraft";
 import { gifPlan, scheduledToast } from "./composerSubmit";
 import { ComposerToolbar } from "./ComposerToolbar";
@@ -190,10 +190,7 @@ export function Composer({
   // The whole draft as last rendered, for a refused schedule that settles
   // after the chatter has typed on (`afterRefusedSchedule`); null once the
   // chat closed (a switch remounts the Composer), as there is none to go into.
-  const latestRef = useRef<FullDraft | null>({ text, draft });
-  useLayoutEffect(() => {
-    latestRef.current = { text, draft };
-  });
+  const latestRef = useRef<LiveDraft | null>({ text, draft, uploadChips: 0 });
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
   useEffect(() => () => {
     latestRef.current = null;
@@ -229,6 +226,10 @@ export function Composer({
   // Uploads from the computer. The Composer remounts per Fan chat, so they
   // are per Fan as the rest of the draft is.
   const uploads = useComposerUploads(accountId, (media) => act({ type: "uploaded", media }));
+  const fullDraft = { text, draft, uploadChips: uploads.chips.length };
+  useLayoutEffect(() => {
+    latestRef.current = fullDraft;
+  });
   const uploadDisabled = !!disabled || !accountId;
   // Send hands a running upload to the send; a schedule needs the media ids
   // now, so the Schedule button and the Timed message wait for it.
@@ -310,11 +311,7 @@ export function Composer({
     // An identity switch while it is in flight makes its refusal stale.
     const epoch = readRefusedOffers().epoch;
     previews.markSent(draft.attached);
-    setText("");
-    // The markup goes with its text, rich text on or off: a stale one left stored would reopen "Aa" over nothing.
-    savedRich.current = null;
-    writeChatRich(accountId, fanId, null);
-    act({ type: "sent" });
+    emptyComposer("sent");
     // Files still uploading go with this send (canSend keeps a schedule from
     // getting here while one runs). The chatter types on at once.
     if (!args.scheduledAt) {
@@ -322,7 +319,7 @@ export function Composer({
       if (pending.length > 0) args.uploads = pending;
     }
     focusInput();
-    const picked = refused.draft.script;
+    const advanceScript = scripts.afterSend(refused.draft.script);
     let sent: SendOutcome | undefined | void;
     try {
       const sending = onSend(args);
@@ -349,7 +346,7 @@ export function Composer({
     if (args.scheduledAt) showToast(scheduledToast(args.scheduledAt, Date.now(), EXECUTOR_MAX_MINUTES));
     // Advance the Script if the just-sent message rode a step of one (the
     // draft's `script`, set by its template pick).
-    scripts.advance(picked, !!sent?.failure);
+    advanceScript?.(!!sent?.failure);
     // A send at once that rode a saved reply counts toward its send count
     // once OF took it (a schedule is not counted: it has not gone out).
     const replyId = sentReplyId(refused.draft);
@@ -459,6 +456,21 @@ export function Composer({
   function clearPpvRow() {
     act({ type: "clearPpv" });
     uploads.clear();
+  }
+
+  function emptyComposer(type: "sent" | "clear") {
+    setText("");
+    setSlashClosedFor(null);
+    savedRich.current = null;
+    writeChatRich(accountId, fanId, null);
+    act({ type });
+  }
+
+  function clearDraft() {
+    emptyComposer("clear");
+    onClearQuoted?.();
+    uploads.clear();
+    focusInput();
   }
 
   /** Image and video files dragged from the computer onto the Composer upload;
@@ -587,47 +599,56 @@ export function Composer({
           <TimedReminderNotice accountId={accountId} fanId={fanId} />
           <OutboundTranslationStrip t={outbound} onUse={setText} onSend={sendTranslation} canSend={view.canSend}
             formatted={richOn && richHtml != null} />
-          {scripts.nextSteps.map((nextStep) => (
-            <div
-              key={nextStep.key}
-              role="button"
-              tabIndex={0}
-              onClick={() => onPickScript(nextStep.picked)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onPickScript(nextStep.picked);
-                }
-              }}
-              title="Tap to load this step into the composer"
-              className={cn(MP.ours.Composer.notice, "flex items-center border-accent/40 bg-accent/10 text-[var(--inf-accent-text,var(--color-accent))] cursor-pointer hover:bg-accent/15 focus:outline-none focus:ring-2 focus:ring-accent/50 select-none")}
-            >
-              <span className="font-medium shrink-0">
-                ▶ Next in “{nextStep.scriptId}” · step {nextStep.label}
-              </span>
-              <span className="flex-1 min-w-0 text-fg-dim truncate">
-                {nextStep.title ? <strong className="text-fg mr-1">{nextStep.title}:</strong> : null}
-                {isOfHtml(nextStep.text) ? ofPreviewText(nextStep.text) : nextStep.text}
-              </span>
-              {StepAction && SCRIPT_SOURCE?.owns(nextStep.scriptId) && accountId && (
-                <StepAction key={`${accountId}:${fanId}`} accountId={accountId} fanId={fanId}
-                  replyAt={fanSpokeLastAt} onDraft={onStepDraft} />
-              )}
-              <button
-                type="button"
-                onClick={(e) => {
-                  // Stop the row's click handler from also firing the pick —
-                  // ✕ is an "end script" action, not a "pick + dismiss" combo.
-                  e.stopPropagation();
-                  scripts.dismiss(nextStep.scriptId);
-                }}
-                className="text-fg-dim hover:text-fg shrink-0"
-                title="End script — stop suggesting next steps"
+          {scripts.nextSteps.map((nextStep) => {
+            const loadedStep = draft.script?.scriptId === nextStep.scriptId && draft.script.scriptStep === nextStep.step;
+            return (
+              <div
+                key={nextStep.key}
+                className={cn(MP.ours.Composer.notice, "flex items-center border-accent/40 bg-accent/10 text-[var(--inf-accent-text,var(--color-accent))] select-none")}
               >
-                ✕
-              </button>
-            </div>
-          ))}
+                <button
+                  type="button"
+                  onClick={() => onPickScript(nextStep.picked)}
+                  title="Tap to load this step into the composer"
+                  className="flex flex-1 min-w-0 items-center text-left cursor-pointer rounded hover:bg-accent/15 focus:outline-none focus:ring-2 focus:ring-accent/50"
+                >
+                  <span className="font-medium shrink-0">
+                    ▶ Next in “{nextStep.scriptId}” · step {nextStep.label}
+                  </span>
+                  <span className="flex-1 min-w-0 text-fg-dim truncate">
+                    {nextStep.title ? <strong className="text-fg mr-1">{nextStep.title}:</strong> : null}
+                    {isOfHtml(nextStep.text) ? ofPreviewText(nextStep.text) : nextStep.text}
+                  </span>
+                </button>
+                {StepAction && SCRIPT_SOURCE?.owns(nextStep.scriptId) && accountId && (
+                  <StepAction key={`${accountId}:${fanId}`} accountId={accountId} fanId={fanId}
+                    replyAt={fanSpokeLastAt} onDraft={onStepDraft} />
+                )}
+                <button
+                  type="button"
+                  data-testid="script-skip"
+                  disabled={loadedStep}
+                  onClick={() => scripts.skip(nextStep.scriptId, nextStep.step)}
+                  className="ml-2 shrink-0 whitespace-nowrap text-fg-dim enabled:hover:text-fg disabled:opacity-50"
+                  title={loadedStep ? "Clear the loaded step before skipping" : "Skip this step — send nothing"}
+                >
+                  Skip
+                </button>
+                <button
+                  type="button"
+                  data-testid="script-end"
+                  onClick={() => {
+                    act({ type: "endScript", scriptId: nextStep.scriptId });
+                    scripts.dismiss(nextStep.scriptId);
+                  }}
+                  className="ml-2 shrink-0 whitespace-nowrap text-fg-dim hover:text-fg"
+                  title="End script — stop suggesting next steps"
+                >
+                  ✕ End script
+                </button>
+              </div>
+            );
+          })}
           <TaggedCreatorChips selected={taggedCreators} onChange={setTags} />
           {gifPickerOpen && (
             <GifPickerStrip
@@ -738,6 +759,7 @@ export function Composer({
           onVault={openVault}
           onCalendar={() => act({ type: "schedule", open: !scheduleOpen })}
           onSend={() => submit()}
+          onClear={quoted || !isEmptyLiveDraft(fullDraft) ? clearDraft : undefined}
           onSendNext={onAdvance ? () => submit({ advance: true }) : undefined}
           accountId={accountId}
           onToggleOutbound={outbound.toggle}

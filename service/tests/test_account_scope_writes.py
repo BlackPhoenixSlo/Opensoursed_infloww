@@ -236,6 +236,37 @@ async def case_send_with_header_200() -> None:
     assert _FakeOF.sends == [(B, 4242)], f"OF sends: {_FakeOF.sends}"
 
 
+class _SendOnlyOF:
+    """Demo FakeOF's shape: send_message, and __getattr__ answering every other name."""
+    sends: list[tuple[str, int]] = []
+
+    def __init__(self, aid: str) -> None:
+        self.aid = aid
+
+    def send_message(self, chat_id, text, **_kw):
+        _SendOnlyOF.sends.append((self.aid, int(chat_id)))
+        return {"id": 910000, "text": text, "createdAt": "2026-10-31T00:00:00Z"}
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return lambda *_a, **_kw: {}
+
+
+async def case_send_only_client_200() -> None:
+    saved = server._load_client
+    server._load_client = _SendOnlyOF
+    _SendOnlyOF.sends.clear()
+    try:
+        async with _client() as c:
+            r = await c.post("/api/of/v2/chats/4242/messages", json={"text": "hi"},
+                             headers={"X-Account-Id": B})
+    finally:
+        server._load_client = saved
+    assert r.status_code == 200, f"send-only client: {r.status_code} {r.text[:200]}"
+    assert _SendOnlyOF.sends == [(B, 4242)], f"sends: {_SendOnlyOF.sends}"
+
+
 async def case_get_fan_concurrent_stub() -> None:
     """Forced race: `_ensure_account_row` runs after our miss, so the other open's
     insert lands there (own session, committed) before ours. The old add+commit

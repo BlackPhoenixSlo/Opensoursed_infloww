@@ -353,7 +353,7 @@ def overlay(jev: Any, picks: Mapping[str, Any] | None, kind: str, *, at: str | N
             for k in ("lane5", "lane"):
                 w.drop(k)
 
-    out = w.b
+    out = rules.keep_reject({rules.JEV_KEY: base}, w.b)
     out["undo"] = w.record()
     out["op"] = sorted(picks)
     out["ai"] = {k: v for k in picks if (v := value(base if read else None, k)) is not None}

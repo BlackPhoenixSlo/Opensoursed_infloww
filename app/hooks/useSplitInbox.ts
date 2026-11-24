@@ -9,6 +9,7 @@
  * a 60-second freshness window and invalidation on save. Other Employees and
  * devices see a save on their next fetch; nothing is pushed. The relay answers
  * an unset Creator with one group and no moves, and refuses a chatter's save.
+ * `myGroup`: the signed-in chatter's bound group (null for an owner).
  * The read is lib/splitInbox's, shared with its other readers.
  */
 
@@ -27,5 +28,5 @@ export function useSplitInbox(accountId: string | null) {
       relay.put<SplitInboxResponse>(`/admin/split-inbox`, { account_id: accountId, config }),
     onSuccess: () => qc.invalidateQueries({ queryKey: splitInboxKey(accountId) }),
   });
-  return { config: query.data?.config ?? null, query, save };
+  return { config: query.data?.config ?? null, myGroup: query.data?.my_group ?? null, query, save };
 }

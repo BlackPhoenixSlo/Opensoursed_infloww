@@ -43,6 +43,7 @@ from db.engine import get_session
 from db.models import Chat, Fan, Message, Transaction, is_paid_ratchet
 from automations._common import source_self_heal_set
 import event_transcode_decide as td
+from events_decide import InboxRowUnpatched, PriorInboxRow, can_stub_chat_view
 import relay_cache
 from jsonsafe import dump_capped
 
@@ -90,9 +91,9 @@ _strip_html = td.strip_html
 
 # ── Top-level dispatch ─────────────────────────────────────────────
 
-async def transcode(event: dict) -> None:
+async def transcode(event: dict, prior: PriorInboxRow = InboxRowUnpatched.VALUE) -> None:
     """Route an event to the right canonical-table writer. Called
-    fire-and-forget from `events.handle_event`."""
+    fire-and-forget from `events.handle_event`. `prior`: `patch_inbox_at_receipt`'s answer."""
     r = td.route(event)
     if r is None:
         return
@@ -102,7 +103,7 @@ async def transcode(event: dict) -> None:
     try:
         match lane:
             case "chat_message":
-                await _transcode_chat_message(account_id, payload)
+                await _transcode_chat_message(account_id, payload, prior)
             case "ppv":
                 # PPV-unlock path. Shape not yet observed in production — we
                 # log + record a best-effort transaction so the first one in
@@ -118,8 +119,6 @@ async def transcode(event: dict) -> None:
                 # user blob for `_touch_fan_from_event` and the shape is known, so the
                 # discovery log has nothing left to learn from it.
                 _record_queue_frame(account_id, event_type, payload)
-            case "counter":
-                pass    # read at receipt (events.handle_event), never here: the persist queue may lag or drop it
             case "other":
                 # Online/typing/stories/etc. don't get full transcodes yet,
                 # but they often carry up-to-date avatar + display name. Touch
@@ -250,7 +249,7 @@ async def _touch_fans(conn, items: list) -> list:
 
 # ── api2_chat_message ─────────────────────────────────────────────
 
-async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
+async def _transcode_chat_message(account_id: str | None, m: dict, prior: PriorInboxRow = InboxRowUnpatched.VALUE) -> None:
     """Upsert messages + fans + chats rows for one OF chat_message event.
 
     `m` is the payload after key-strip — i.e. the contents of
@@ -281,7 +280,7 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     """
     plan = td.dm_plan(account_id, m, datetime.utcnow())
     if isinstance(plan, td.Echo):
-        relay_cache.invalidate("get_chat", str(account_id), match=lambda ex, c=plan.fan_id: ex == (c,))
+        await _transcode_echo(str(account_id), plan, m)
         return
     if isinstance(plan, td.Skip):
         # Without all three we can't form a primary key — log + bail.
@@ -339,19 +338,18 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
         account_id, fan_id, message_id, plan.msg["price_cents"], plan.tip_cents,
     )
 
-    # The Unread total moves by the chat's prior state, peeked from the held
-    # window row: before the patch below flags it unread (Knob off: no-op).
+    # The Unread total moves by the chat's prior state: the held window row from
+    # before the receipt patch (`prior`), else peeked now, before the patch below
+    # flags it unread (Knob off: no-op). The receipt patch done, the window has it.
     # A re-delivered frame (WS replay) is already counted: new rows only. on_dm_in never raises.
     if is_new is not False:     # False: the row was already stored
         import unread_total
         # Stamped with the message's createdAt (naive UTC, always set: td.dm_plan): a /users/me asked after it
         # already counts it.
         created = plan.msg["created_at"]
-        unread_total.on_dm_in(aid_s, fan_id, int(created.replace(tzinfo=timezone.utc).timestamp() * 1000))
-    # Cache invalidation — must run AFTER the write above has committed
-    # (of_writer.write returns once its batch has) so a concurrent reader
-    # that re-fetches doesn't cache the pre-commit upstream state.
-    relay_cache.patch("list_chats", aid_s, _inbox_patcher(fan_id, m))
+        unread_total.on_dm_in(aid_s, fan_id, int(created.replace(tzinfo=timezone.utc).timestamp() * 1000), prior)
+    if prior is InboxRowUnpatched.VALUE:
+        relay_cache.patch("list_chats", aid_s, _inbox_patcher(fan_id, m))
     # The fan's chat detail (server.of_get_chat: lastMessage moved) — that chat only.
     try:
         relay_cache.invalidate("get_chat", aid_s, match=lambda ex, c=int(fan_id): ex == (c,))
@@ -411,6 +409,84 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
             )
         except Exception:
             log.debug("tip dispatch hook failed", exc_info=True)
+
+
+_deferred_echoes: set[asyncio.Task] = set()
+
+
+async def _transcode_echo(aid: str, echo: td.Echo, m: dict) -> None:
+    import sends_inflight
+    now = datetime.utcnow()
+    if sends_inflight.pending(aid, echo.fan_id):
+        log.debug("creator_echo_deferred account=%s fan=%s msg=%s", aid, echo.fan_id, echo.message_id)
+        task = asyncio.create_task(_wait_for_attribution(aid, echo, m, now))
+        _deferred_echoes.add(task)
+        task.add_done_callback(_deferred_echoes.discard)
+        return
+    await _store_echo(aid, echo, m, now)
+
+
+async def _wait_for_attribution(aid: str, echo: td.Echo, m: dict, now: datetime) -> None:
+    import sends_inflight
+    deadline = time.monotonic() + sends_inflight.ECHO_WAIT_S
+    while sends_inflight.pending(aid, echo.fan_id) and time.monotonic() < deadline:
+        await asyncio.sleep(sends_inflight.ECHO_POLL_S)
+    await _store_echo(aid, echo, m, now, deferred=True)
+
+
+async def _store_echo(aid: str, echo: td.Echo, m: dict, now: datetime, *, deferred: bool = False) -> None:
+    try:
+        row = td.echo_row(aid, m, echo, now)
+        new = row is not None and await of_writer.write(_write_echo, (row, dump_capped(m), deferred),
+                                                        key=("echo", aid, echo.fan_id))
+    except Exception:
+        log.exception("creator_echo_failed account=%s fan=%s msg=%s", aid, echo.fan_id, echo.message_id)
+        new = False
+    if new:
+        relay_cache.patch("list_chats", aid, _inbox_patcher(echo.fan_id, {**m, "fromUser": {"id": _int_or_none(aid)}},
+                                                            outbound=True, created_at=row["created_at"]))
+        import relay_hooks
+        relay_hooks.fire_outbound_sent(aid, echo.fan_id, echo.message_id, row["created_at"])
+        log.info("creator_echo_stored account=%s fan=%s msg=%s priced=%d", aid, echo.fan_id, echo.message_id,
+                 row["price_cents"] > 0)
+    relay_cache.invalidate("get_chat", aid, match=lambda ex, c=echo.fan_id: ex == (c,))
+
+
+async def _write_echo(conn, items: list) -> list:
+    """of_writer op: echo rows; per item, was it new (only a new row advances the chat preview)."""
+    from attribution import _MASS_PLACEHOLDER_BASE, _preview_text
+    new: list[bool] = []
+    for row, raw_json, deferred in items:
+        res = await conn.execute(sqlite_insert(Message).values(**row, raw_json=raw_json).on_conflict_do_nothing(
+            index_elements=["account_id", "fan_id", "message_id"]))
+        new.append(bool(res.rowcount))
+        if res.rowcount:
+            mid, at = row["message_id"], row["created_at"]
+            preview = {
+                "last_message_id": mid,
+                "last_message_at": at,
+                "last_message_preview": _preview_text(row["body"]),
+            }
+            try:
+                await conn.execute(sqlite_insert(Chat).values(
+                    account_id=row["account_id"], fan_id=row["fan_id"], **preview, unread_count=0,
+                ).on_conflict_do_update(
+                    index_elements=["account_id", "fan_id"],
+                    set_=preview if deferred else {**preview, "unread_count": 0},
+                    where=(
+                        Chat.last_message_at.is_(None)
+                        | (Chat.last_message_at < at)
+                        | ((Chat.last_message_at == at) & (
+                            Chat.last_message_id.is_(None)
+                            | (Chat.last_message_id < mid)
+                            | (Chat.last_message_id >= _MASS_PLACEHOLDER_BASE)
+                        ))
+                    ),
+                ))
+            except Exception:
+                log.debug("echo preview advance skipped account=%s fan=%s msg=%s",
+                          row["account_id"], row["fan_id"], mid, exc_info=True)
+    return new
 
 
 async def _write_dms(conn, items: list) -> list:
@@ -516,7 +592,7 @@ async def _write_dms(conn, items: list) -> list:
     return new
 
 
-def _inbox_patcher(fan_id: int, m: dict):
+def _inbox_patcher(fan_id: int | str, m: dict, *, outbound: bool = False, created_at: datetime | None = None):
     """`relay_cache.patch` fn for one inbound DM: move the fan's row to the top
     of each cached recent page-0 window, set `lastMessage` to this frame (OF's
     /chats `lastMessage` is the same message shape) and bump the unread count.
@@ -524,36 +600,104 @@ def _inbox_patcher(fan_id: int, m: dict):
     Dropping the whole window on every DM made ~24% of inbox loads a 3-call OF
     re-read (p50 ~2 s). Any window the DM cannot be placed in exactly is
     dropped instead: a deeper page (every row below shifts), a non-recent
-    order, or a page-0 window the fan is not in (new chat, or ranked past the
-    window — OF's /chats row carries fields we cannot fabricate), and a frame
-    without a message id. A frame not newer than the row's `lastMessage` (a WS
+    order, a frame without a message id, and a page-0 window the fan is not in
+    unless `_stub_on_top` can place it. A frame not newer than the row's `lastMessage` (a WS
     replay, or one the window was already read after) leaves the window as is:
     no second unread bump, no re-ordering."""
+    from attribution import _MASS_PLACEHOLDER_BASE
+
     msg_id = _int_or_none(m.get("id"))
+    fan_key = str(fan_id)
 
     def _fn(extras: tuple, value: Any) -> Any:
-        _limit, offset, order, *_rest = extras
+        limit, offset, order, filt, list_id, q, *_ = (*extras, None, None, None)
         if msg_id is None or offset != 0 or order != "recent" or not isinstance(value, dict):
-            return None
+            return value if outbound else None
         rows_key = "list" if "list" in value else "chats"
         rows = value.get(rows_key) or []
         idx = next((i for i, ch in enumerate(rows)
-                    if (ch.get("withUser") or {}).get("id") == fan_id), None)
+                    if str((ch.get("withUser") or {}).get("id")) == fan_key), None)
         if idx is None:
-            return None
-        last_id = _int_or_none((rows[idx].get("lastMessage") or {}).get("id"))
-        if last_id is not None and msg_id <= last_id:
+            if outbound:
+                return value
+            if not isinstance(limit, int) or not can_stub_chat_view(filt, list_id, q):
+                return None
+            return _stub_on_top(limit, value, rows_key, rows, m)
+        last = rows[idx].get("lastMessage") or {}
+        last_id = _int_or_none(last.get("id"))
+        synthetic = last_id is not None and last_id >= _MASS_PLACEHOLDER_BASE
+        at = created_at or _parse_iso(m.get("createdAt"))
+        last_at = _parse_iso(last.get("createdAt"))
+        if (outbound or synthetic) and at is not None and last_at is not None:
+            if at < last_at or (at == last_at and not synthetic and last_id is not None and msg_id <= last_id):
+                return value
+        elif last_id is not None and msg_id <= last_id:
             return value
-        row = {
-            **rows[idx],
-            "lastMessage": m,
-            "hasUnread": True,
-            "unreadMessagesCount": int(rows[idx].get("unreadMessagesCount") or 0) + 1,
-        }
-        if m.get("isTip"):
+        if outbound:
+            row = {**rows[idx], "lastMessage": m}
+        else:
+            row = {
+                **rows[idx],
+                "lastMessage": m,
+                "hasUnread": True,
+                "unreadMessagesCount": int(rows[idx].get("unreadMessagesCount") or 0) + 1,
+            }
+        if m.get("isTip") and not outbound:
             row["hasUnreadTips"] = True
         return {**value, rows_key: [row] + rows[:idx] + rows[idx + 1:]}
     return _fn
+
+
+def _message_ms(message: dict) -> float | None:
+    created = message.get("createdAt")
+    if isinstance(created, (int, float)) and not isinstance(created, bool):
+        return created * 1000 if abs(created) < 1e11 else created
+    if isinstance(created, str):
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp() * 1000
+    return None
+
+
+def _stub_on_top(limit: int, value: dict, rows_key: str, rows: list, m: dict) -> Any:
+    """A fan new to a page-0 recent window the DM belongs in (unfiltered or Unread, no folder or search): a stub row
+    from the frame on top, trimmed to the limit, the entry expired so the next read re-reads OF's real row. Other
+    windows drop."""
+    tail = _message_ms(rows[-1].get("lastMessage") or {}) if rows else None
+    frame = _message_ms(m)
+    if rows and (tail is None or frame is None or not frame >= tail):
+        return None
+    if not rows:
+        asked_at = value.get("asked_at")
+        if not isinstance(asked_at, (int, float)) or frame is None or not frame > asked_at:
+            return value
+    stub = {"withUser": dict(m.get("fromUser") or {}), "lastMessage": m,
+            "hasUnread": True, "unreadMessagesCount": 1}
+    if m.get("isTip"):
+        stub["hasUnreadTips"] = True
+    out = {**value, rows_key: [stub, *rows][:limit]}
+    if len(rows) >= limit:
+        out["hasMore"] = True
+    return relay_cache.Expired(out)
+
+
+def patch_inbox_at_receipt(account_id: Any, event: dict) -> PriorInboxRow:
+    """Patch before SSE and return the prior row (None if the fan was absent)."""
+    if account_id is None or not td.is_inbound_dm(event):
+        return InboxRowUnpatched.VALUE
+    try:
+        m = td.route(event)[2]
+        fan_id = m["fromUser"]["id"]
+        aid = str(account_id)
+        import unread_total  # noqa: PLC0415 — lazy: unread_total → shared_refresher → events
+        prior = unread_total.peek_window_row(aid, int(fan_id))
+        relay_cache.patch("list_chats", aid, _inbox_patcher(fan_id, m))
+        return prior
+    except Exception:  # noqa: BLE001 — the persist worker patches instead
+        log.warning("inbox receipt patch failed account=%s", account_id, exc_info=True)
+        return InboxRowUnpatched.VALUE
 
 
 def _int_or_none(v: Any) -> int | None:

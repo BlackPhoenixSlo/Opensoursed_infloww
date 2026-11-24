@@ -820,7 +820,8 @@ def case_pick_pool_table():
     for entries, labels, aid, like, geo, want in rows:
         cands = [e for e in entries if e["label"] in labels]
         assert len(cands) == len(labels), (labels, entries)
-        got = proxy_registry._pick_pool(cands, {"proxies": entries}, aid, _FirstRng(), like=like, geo=geo)
+        got = proxy_registry._pick_pool(cands, {"proxies": entries}, aid, _FirstRng(), like=like, geo=geo,
+                                       deactivated=frozenset())
         assert got["label"] == want, (want, got)
 
 
@@ -847,7 +848,7 @@ def case_pick_answering_table():
             return answers[p["label"]]
         checked = dict(before)
         got = proxy_registry._pick_answering([a, b, c], data, "9", _FirstRng(), like=None, geo=nogeo,
-                                             verify=verify, checked=checked, probes=probes)
+                                             verify=verify, checked=checked, deactivated=frozenset(), probes=probes)
         assert (got["label"] if got else None, seen) == (want, probed), (answers, before, probes, got, seen)
         assert all(checked[k] == answers[k] for k in seen), checked
 
@@ -876,7 +877,7 @@ def case_assign_fallback_table():
             seen.append(p["label"])
             return answers[p["label"]]
         got, kept = proxy_registry.assign_pool("9", bad=set(bad), dead=set(dead), due=set(), geo=nogeo,
-                                               verify=verify, rng=_FirstRng())
+                                               verify=verify, deactivated=frozenset(), rng=_FirstRng())
         assert (got["label"], seen, kept) == (want, probed, False), (entries, bad, dead, got, seen)
         assert proxy_registry.get_for_account("9")["label"] == want
 
@@ -907,7 +908,7 @@ def case_tier_order_table():
     ]:
         by, seen = setup(), []
         p, kept = proxy_registry.assign_pool(aid, bad=set(), dead=set(), due={by[n] for n in due}, geo=nogeo,
-                                             verify=verify_of(dead, seen), rng=_FirstRng())
+                                             verify=verify_of(dead, seen), deactivated=frozenset(), rng=_FirstRng())
         assert (name_of[p["label"]], "".join(seen), kept) == (want, probed, False), (aid, due, dead, p, seen)
     # failover_pool: (failed source, dead) -> (its account's destination, probed)
     for src, dead, want, probed in [
@@ -919,7 +920,7 @@ def case_tier_order_table():
     ]:
         by, seen = setup(), []
         moved = proxy_registry.failover_pool(by[src], bad=set(), geo=nogeo, verify=verify_of(dead, seen),
-                                             rng=_FirstRng())
+                                             deactivated=frozenset(), rng=_FirstRng())
         assert len(moved) == 1, moved
         got = name_of[proxy_registry.get_for_account(moved[0])["label"]]
         assert (got, "".join(seen)) == (want, probed), (src, dead, got, seen)

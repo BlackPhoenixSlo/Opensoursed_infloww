@@ -10,6 +10,12 @@ through `events.handle_event` frames, `badge_reads.tick()` and the real routes, 
                              the read that flipped it (one Attribution call, no window read), red -1, F out of the
                              Unread set; our own mark read of unread K -> amber +1 before the route's bust, kept after.
   case_mute_drops_amber:     the mute route on owed M -> amber -1; on unread F -> no publish (never +1).
+  case_restrict_moves_amber_and_r: restrict owed M -> amber -1, red unchanged; restrict unread F -> R +1, red -1;
+                             unrestrict each -> back; all at the route, 0 OF reads.
+  case_restrict_badge_reads_off: no Unread set held -> R from the held window, the same moves at the route.
+  case_lift_restores_amber_no_window_read: restrict owed M -> amber -1, the held window kept with M's row restricted
+                             (`canSendMessage` false, reason "muted"); lift -> amber +1, the row sendable again; no
+                             window read between, 0 OF reads.
   case_amber_unknown_until_window: no window since restart -> `amber` null; a held window -> its count, `amber_at`
                              its fetched-at stamp; dropped -> kept; an hour old with no read since -> still its count
                              (a stale Creator greys red instead).
@@ -36,9 +42,10 @@ through `events.handle_event` frames, `badge_reads.tick()` and the real routes, 
                              driven by `badge_reads.tick()`: finish total 23 -> one page-0 window read (3 calls on the
                              wire, `walk:badge_queue`), one exact `kind=queue` line; the same frame again or total 4
                              -> none; `BADGE_READS=off`, no Open tab, Dead session, proxy down, 429 exit hold -> none;
-                             `lean` -> a second finish waits its 15 s gap; the hour's cap spent by Attribution starts
-                             -> none, no `badge_read_capped`, no Grey; two finishes inside the gap -> one read, then
-                             one follow-up; an Attribution ask and a finish together -> the Attribution read first.
+                             `lean` -> a second finish waits its 15 s gap; a finish 1 s after an Attribution start ->
+                             waits the rest of the gap (queued, no Attribution re-ask), then one read; two finishes
+                             inside the gap -> one read, then one follow-up; an Attribution ask and a finish together
+                             -> the Attribution read first.
   case_mass_clears_amber:    owed Fans in the held window; the mass's re-read lands with them Creator-last -> the
                              published amber falls to 0 in that read; the route's `owe_reply` too, at 0 calls.
 
@@ -56,6 +63,7 @@ import json  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
 import time  # noqa: E402
+from dataclasses import replace
 from datetime import datetime, timezone  # noqa: E402
 from urllib.parse import parse_qs, urlsplit  # noqa: E402
 
@@ -184,8 +192,13 @@ class _Writer:
     def __init__(self):
         self.calls: list = []
 
+    def send_message(self, fan, **kwargs):
+        self.calls.append(("send_message", fan))
+        return {"text": kwargs["text"]}
+
     def __getattr__(self, name):
-        if name in ("mark_chat_read", "mark_chat_unread", "mute_chat", "unmute_chat"):
+        if name in ("mark_chat_read", "mark_chat_unread", "mute_chat", "unmute_chat", "restrict_user",
+                    "unrestrict_user", "hide_chat", "unhide_chat"):
             return lambda *a: self.calls.append((name, *a)) or {}
         raise AttributeError(name)
 
@@ -256,7 +269,8 @@ async def _land_window(rows: list) -> None:
     """A page-0 window read landing (held, stamped now, folded by roster-counts): 0 OF calls."""
     relay_cache.invalidate("list_chats", A)
     await relay_cache.get_or_fetch("list_chats", A, _ROSTER_WINDOW_KEY, ttl_seconds=600,
-                                   fetcher=lambda: {"list": rows, "hasMore": False, "asked_at": unread_total._clock()})
+                                   fetcher=lambda: {"list": rows, "hasMore": False, "asked_at": unread_total._clock(),
+                                                    "fetched_at": unread_total._clock()})
     server._chats_window_fetched_at[A] = time.monotonic()
     await accounts_admin_api._held_roster_count(A)
 
@@ -318,11 +332,89 @@ async def case_mute_drops_amber():
         assert writer.calls == [("mute_chat", M), ("mute_chat", F)], writer.calls
 
 
+@contextlib.asynccontextmanager
+async def _unrestricted_after(*fans: int):
+    try:
+        yield
+    finally:
+        from automations._common import set_of_restricted_skip
+        for fan in fans:
+            await set_of_restricted_skip(A, fan, False)
+
+
+async def case_restrict_moves_amber_and_r():
+    wire = _Wire()
+    with _world(wire) as (clock, noted):
+        with badge_reads._lock:
+            badge_reads._sets[A] = badge_reads_decide.replace_set(None, [_row(F, unread=1)], clock.t, True)
+        await _land_window([_row(M), _row(F, unread=1)])
+        await _frame(1)
+        assert (_slot()["n"], _slot()["amber"]) == (1, 1), _slot()
+        writer = _Writer()
+        async with _unrestricted_after(M, F):
+            with _routes(writer, clock):
+                await server.of_restrict_user(M, request=None, ack=False, hide=False)
+                assert (_slot()["n"], _slot()["amber"]) == (1, 0), ("restrict owed M: amber -1, red holds", _slot())
+                await server.of_restrict_user(F, request=None, ack=False, hide=False)
+                assert (_slot()["n"], _slot()["amber"]) == (0, 0), ("restrict unread F: R +1 at once", _slot())
+                assert badge_reads.restricted_unread(A) == 1
+                await server.of_unrestrict_user(F, request=None, unhide=False)
+                assert (_slot()["n"], _slot()["amber"]) == (1, 0), ("unrestrict F: R back", _slot())
+                await _land_window([_row(M), _row(F, unread=1)])
+                assert (_slot()["n"], _slot()["amber"]) == (1, 0), ("a fold keeps M out while restricted", _slot())
+                await server.of_unrestrict_user(M, request=None, unhide=False)
+                assert (_slot()["n"], _slot()["amber"]) == (1, 1), ("unrestrict M: amber back", _slot())
+        assert wire.calls == [], ("0 OF reads", wire.calls)
+        assert writer.calls == [("restrict_user", M), ("restrict_user", F), ("unrestrict_user", F),
+                                ("unrestrict_user", M)], writer.calls
+
+
+async def case_restrict_badge_reads_off():
+    with _world(_Wire(), "off") as (clock, noted):
+        await _land_window([_row(M), _row(F, unread=1)])
+        await _frame(1)
+        assert (_slot()["n"], _slot()["amber"]) == (1, 1), _slot()
+        writer = _Writer()
+        async with _unrestricted_after(M, F):
+            with _routes(writer, clock):
+                await server.of_restrict_user(F, request=None, ack=False, hide=False)
+                assert (_slot()["n"], _slot()["amber"]) == (0, 1), ("restrict unread F: R +1 at once", _slot())
+                await _land_window([_row(M), _row(F, unread=1)])
+                await server.of_unrestrict_user(F, request=None, unhide=False)
+                assert (_slot()["n"], _slot()["amber"]) == (1, 1), ("unrestrict F: R back", _slot())
+
+
+async def case_lift_restores_amber_no_window_read():
+    wire = _Wire()
+    with _world(wire) as (clock, noted):
+        await _land_window([_row(M), _row(F, unread=1)])
+        await _frame(1)
+        assert _slot()["amber"] == 1, _slot()
+        writer = _Writer()
+        async with _unrestricted_after(M):
+            with _routes(writer, clock):
+                await server.of_restrict_user(M, request=None, ack=False, hide=False)
+                assert _slot()["amber"] == 0, ("restrict owed M: amber -1", _slot())
+                held = relay_cache.peek("list_chats", A, _ROSTER_WINDOW_KEY)
+                assert held is not None, "the route patches the held window, never drops it"
+                m = next(r for r in held["list"] if r["withUser"]["id"] == M)
+                assert (m["canSendMessage"], m["canNotSendReason"], m["withUser"].get("isRestricted")) == \
+                    (False, "muted", True), m
+                noted.clear()
+                await server.of_unrestrict_user(M, request=None, unhide=False)
+                assert _slot()["amber"] == 1 and A in noted, ("lift M: amber +1 with no window read", _slot())
+                m = next(r for r in relay_cache.peek("list_chats", A, _ROSTER_WINDOW_KEY)["list"]
+                         if r["withUser"]["id"] == M)
+                assert (m["canSendMessage"], m["canNotSendReason"], "isRestricted" in m["withUser"]) == \
+                    (True, None, False), m
+        assert wire.calls == [], ("0 OF reads", wire.calls)
+
+
 async def case_amber_unknown_until_window():
     with _world(_Wire()) as (clock, noted):
         assert (_slot()["amber"], _slot()["amber_at"]) == (None, None), ("no window since restart", _slot())
         await _land_window([_row(M)])
-        at = accounts_admin_api._window_as_of(A)
+        at = _held_window()["fetched_at"]
         clock.t = at
         assert _slot()["amber"] == 1 and abs(_slot()["amber_at"] - at) <= 1, _slot()
         relay_cache.invalidate("list_chats", A)
@@ -652,7 +744,10 @@ def _qworld(wire: _QWire, knob: str | None = None, tabs=frozenset({QA})):
             if msg.startswith("badge_read"):
                 lines.append(msg)
     cap = _Cap()
-    logging.getLogger("of-relay.badge_reads").addHandler(cap)
+    logger = logging.getLogger("of-relay.badge_reads")
+    level = logger.level
+    logger.setLevel(logging.INFO)
+    logger.addHandler(cap)
     for m in (shared_refresher, unread_total, badge_reads):
         importlib.reload(m)
     client = _of_client(wire)
@@ -673,7 +768,8 @@ def _qworld(wire: _QWire, knob: str | None = None, tabs=frozenset({QA})):
     try:
         yield clock, lines
     finally:
-        logging.getLogger("of-relay.badge_reads").removeHandler(cap)
+        logger.removeHandler(cap)
+        logger.setLevel(level)
         (server._load_client, events.open_tab_accounts, of_ws.connected_since, app_open_warm.exit_held_s,
          proxy_health.bad_reasons, proxies.get_for_account) = orig
         for ns in ("list_chats", "roster_count"):
@@ -763,15 +859,14 @@ async def case_queue_finish_rereads_once():
     with _qworld(wire) as (clock, lines):
         t = clock.t
         with badge_reads._lock:
-            badge_reads._gates[QA] = badge_reads_decide.Gate(
-                starts=tuple(t - 3_000_000 + i * 20_000 for i in range(badge_reads_decide.CAP_PER_HOUR)))
+            badge_reads._gates[QA] = badge_reads_decide.Gate(last_start=t - 1000)
         await _finish(1)
         await _tick_at(clock, t)
-        await _tick_at(clock, t + 6000)
-        assert wire.calls == [] and lines == [], ("the cap Attribution reads spent is shared", wire.calls, lines)
-        assert QA not in badge_reads._capped, "a queue ask alone greys nothing"
-        await _tick_at(clock, t + 700_000)                      # the hour's oldest starts have left it
-        assert wire.calls == [], ("a capped ask is dropped, not kept for later", wire.calls)
+        await _tick_at(clock, t + 3999)
+        assert wire.calls == [] and QA in badge_reads._queued, ("the gap Attribution reads set is shared", wire.calls)
+        assert not badge_reads._gates[QA].pending, "a waiting queue ask re-asks no Attribution read"
+        await _tick_at(clock, t + 4000)
+        assert len(wire.calls) == READS and len(lines) == 1 and QA not in badge_reads._queued, (wire.calls, lines)
 
     wire = _QWire(WINDOW)
     with _qworld(wire) as (clock, lines):
@@ -802,6 +897,7 @@ async def case_queue_finish_rereads_once():
         try:
             await _tick_at(clock, t)
             assert kinds == ["frame"] and wire.calls == [], ("the Attribution read goes first", kinds, wire.calls)
+            badge_reads._gates[QA] = replace(badge_reads._gates[QA], pending=True)
             await _tick_at(clock, t + 5000)
             assert kinds == ["frame"] and len(wire.calls) == READS, ("then the queue read", kinds, wire.calls)
         finally:
@@ -823,6 +919,151 @@ async def case_mass_clears_amber():
         assert unread_total.snapshot(QA)["amber"] == 0, ("the re-read's fold publishes amber 0", unread_total.snapshot(QA))
         after = await accounts_admin_api._compute_roster_count_of(QA)
         assert after["owe_reply"] == 0 and len(wire.calls) == READS, (after, wire.calls)
+
+
+async def case_send_clears_amber_before_echo():
+    with _world(_Wire(), "off") as (clock, _), _routes(_Writer(), clock), _quiet_hooks():
+        await _land_window([_row(F)])
+        await server.send_message(None, F, server.SendMessageBody(text="answered"))
+        assert _slot()["amber"] == 0, _slot()
+        assert _held_window() is None
+
+
+async def case_restrict_ack_hide_clears_amber():
+    writer = _Writer()
+    with _world(_Wire(), "off") as (clock, _), _routes(writer, clock), _quiet_hooks():
+        await _land_window([_row(F), _row(M)])
+        async with _unrestricted_after(F):
+            result = await server.of_restrict_user(F, request=None, ack=True, hide=True)
+            assert result["acked"] and result["hidden"], result
+            assert _slot()["amber"] == 1, _slot()
+
+
+async def case_restrict_hide_removes_cached_row():
+    with _world(_Wire()) as (clock, _), _routes(_Writer(), clock):
+        await _land_window([_row(F), _row(M)])
+        async with _unrestricted_after(F):
+            assert (await server.of_restrict_user(F, request=None, ack=False, hide=True))["hidden"]
+            held = _held_window()
+            assert held is None or F not in {r["withUser"]["id"] for r in held["list"]}, held
+            assert _slot()["amber"] == 1, _slot()
+            await _land_window([_row(M)])
+            await server.of_unrestrict_user(F, request=None, unhide=True)
+            assert _held_window() is None
+
+
+async def case_unhide_then_page0_get_restores_amber():
+    class Writer(_Writer):
+        user_id = ME
+
+        def list_chats(self, **kw):
+            return _Client([_row(F), _row(M)]).list_chats(**kw)
+
+    with _world(_Wire()) as (clock, _), _routes(Writer(), clock):
+        await _land_window([_row(F), _row(M)])
+        assert _slot()["amber"] == 2, _slot()
+        async with _unrestricted_after(F):
+            await server.of_restrict_user(F, request=None, ack=False, hide=True)
+            await server.of_unrestrict_user(F, request=None, unhide=True)
+            assert _held_window() is None and _slot()["amber"] == 1, _slot()
+            await server.list_chats(limit=25, offset=0, order="recent", filter=None, list_id=None,
+                                    query=None, search=None, refresh=False)
+            assert _slot()["amber"] == 2, _slot()
+
+async def case_late_reply_keeps_newer_fan_row():
+    with _world(_Wire(), "off") as (clock, _):
+        row = _row(F)
+        row["lastMessage"]["createdAt"] = _iso(clock.t + 5000)
+        await _land_window([row])
+        assert _slot()["amber"] == 1, _slot()
+        read_flip.after_reply(A, F, clock.t)
+        assert _held_window()["list"] == [row] and _slot()["amber"] == 1, (_held_window(), _slot())
+
+async def case_lift_corrects_newer_attribution_row():
+    wire = _Wire(unread=[{**_row(F, unread=1), "canSendMessage": False, "canNotSendReason": "muted"}])
+    with _world(wire) as (clock, _), _routes(_Writer(), clock):
+        await _land_window([_row(F, unread=1)])
+        async with _unrestricted_after(F):
+            await server.of_restrict_user(F, request=None, ack=False, hide=False)
+            clock.t += 1000
+            await badge_reads._read(A, "frame")
+            assert badge_reads.restricted_unread(A) == 1
+            await server.of_unrestrict_user(F, request=None, unhide=False)
+            assert badge_reads.restricted_unread(A) == 0
+
+
+async def case_same_ms_unread_wins_over_read():
+    with _world(_Wire(), "off") as (clock, _), _routes(_Writer(), clock):
+        await _land_window([_row(F)])
+        badge_reads.note_arrival(A, F, unread_total_decide.READ, clock.t)
+        await server.of_mark_chat_unread(F)
+        assert _slot()["amber"] == 0, _slot()
+
+
+async def case_reply_before_first_amber_fold():
+    row = _row(F)
+    row["lastMessage"]["fromUser"]["id"] = ME
+    wire = _Wire(window=[row])
+    with _world(wire) as (clock, _):
+        client = server._load_client(A)
+        client.user_id = str(ME)
+        with _routes(client, clock), _quiet_hooks():
+            await server.list_chats(limit=25, offset=0, order="recent", filter=None, list_id=None,
+                                    query=None, search=None, refresh=False)
+        accounts_admin_api._amber_ctx.pop(A, None)
+        read_flip.after_reply(A, F, clock.t)
+        sender = _held_window()["list"][0]["lastMessage"]["fromUser"]["id"]
+        folded = await accounts_admin_api._held_roster_count(A)
+        assert (sender, folded["owe_reply"], _slot()["amber"]) == (ME, 0, 0)
+
+
+async def case_manual_refresh_publishes_amber():
+    wire = _Wire(window=[_row(F)])
+    with _world(wire) as (clock, _):
+        await _land_window([_row(F), _row(M)])
+        client = server._load_client(A)
+        loads = []
+        server._load_client = lambda aid: loads.append(aid) or client
+        with _routes(client, clock), _quiet_hooks():
+            await server.list_chats(limit=25, offset=0, order="recent", filter=None, list_id=None,
+                                    query=None, search=None, refresh=True)
+        assert wire.calls and _slot()["amber"] == 1 and not loads, (wire.calls, _slot(), loads)
+
+
+async def case_rejected_window_keeps_muted_amber():
+    wire = _Wire(window=[_row(F)])
+    with _world(wire) as (clock, _), _routes(_Writer(), clock):
+        await accounts_admin_api.rewarm_roster_count(A)
+        wire.calls.clear()
+        stamp = _slot()["amber_at"]
+        loop, answer = asyncio.get_running_loop(), wire._answer
+
+        def during_mute(method, url):
+            wire._answer = answer
+            asyncio.run_coroutine_threadsafe(server.of_mute_chat(F), loop).result(10)
+            return answer(method, url)
+
+        wire._answer = during_mute
+        out = await accounts_admin_api.rewarm_roster_count(A)
+        assert wire.calls and out["owe_reply"] == 0 and _slot()["amber"] == 0, (out, _slot())
+        assert out["as_of"] == _slot()["amber_at"] == stamp, (out, _slot(), stamp)
+
+
+async def case_read_write_keeps_inflight_dm():
+    with _world(_Wire(), "off") as (clock, _):
+        await _land_window([_row(F, unread=1)])
+        loop = asyncio.get_running_loop()
+
+        class Writer(_Writer):
+            def mark_chat_read(self, fan):
+                asyncio.run_coroutine_threadsafe(_deliver(_dm(fan, 951), clock), loop).result(10)
+                clock.t += 1
+                return {}
+
+        clock.t += 1
+        with _routes(Writer(), clock):
+            await server.of_mark_chat_read(F)
+        assert _slot()["amber"] == 0, _slot()
 
 
 _harness.run()

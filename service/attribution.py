@@ -359,79 +359,78 @@ async def write_outbound_attribution(
         having run, or anything else), log a WARNING and write NULL —
         attribution is degraded but the row still lands.
     """
-    relay_hooks.fire_outbound_sent(account_id, fan_id, message_id, created_at)
-    try:  # every send lands here: drop that fan's cached chat detail (server.of_get_chat)
-        relay_cache.invalidate("get_chat", str(account_id), match=lambda ex, c=int(fan_id): ex == (c,))
-    except Exception:  # noqa: BLE001
-        log.debug("get_chat invalidation skipped", exc_info=True)
-    # The Automation sentinel's id, looked up at most ONCE per write: by the
-    # fallback below when it runs, else for the tag / yield decision further down.
-    auto_id: int | None = None
-    if sent_by_employee_id is None:
-        # Chatter session present? Then the resolver in employees.py
-        # SHOULD have returned a mirror Employee id, but raised /
-        # short-circuited (logged at WARN via that path). Writing
-        # Automation here would falsely credit the system sentinel for
-        # a chatter's send. Leave it NULL so the row is honest and the
-        # UI's "render only on truthy display_name" guard hides the
-        # bogus label entirely.
-        try:
-            from chatters import get_request_chatter
-            chatter = get_request_chatter()
-        except Exception:
-            chatter = None
-        if chatter is not None:
-            log.warning(
-                "outbound message %s left sent_by_employee_id=NULL — "
-                "chatter resolver returned None for chatter=%s account=%s. "
-                "Inspect logs for 'chatter→employee resolution failed'.",
-                message_id, chatter.id, account_id,
-            )
-        else:
+    hook_at = created_at
+    try:
+        try:  # every send lands here: drop that fan's cached chat detail (server.of_get_chat)
+            relay_cache.invalidate("get_chat", str(account_id), match=lambda ex, c=int(fan_id): ex == (c,))
+        except Exception:  # noqa: BLE001
+            log.debug("get_chat invalidation skipped", exc_info=True)
+        # The Automation sentinel's id, looked up at most ONCE per write: by the
+        # fallback below when it runs, else for the tag / yield decision further down.
+        auto_id: int | None = None
+        if sent_by_employee_id is None:
+            # Chatter session present? Then the resolver in employees.py
+            # SHOULD have returned a mirror Employee id, but raised /
+            # short-circuited (logged at WARN via that path). Writing
+            # Automation here would falsely credit the system sentinel for
+            # a chatter's send. Leave it NULL so the row is honest and the
+            # UI's "render only on truthy display_name" guard hides the
+            # bogus label entirely.
+            try:
+                from chatters import get_request_chatter
+                chatter = get_request_chatter()
+            except Exception:
+                chatter = None
+            if chatter is not None:
+                log.warning(
+                    "outbound message %s left sent_by_employee_id=NULL — "
+                    "chatter resolver returned None for chatter=%s account=%s. "
+                    "Inspect logs for 'chatter→employee resolution failed'.",
+                    message_id, chatter.id, account_id,
+                )
+            else:
+                try:
+                    from employees import get_automation_employee_id
+                    sent_by_employee_id = auto_id = await get_automation_employee_id()
+                except LookupError:
+                    log.warning(
+                        "Automation employee not found (migration 0011 not run?); "
+                        "writing message %s with sent_by_employee_id=NULL",
+                        message_id,
+                    )
+                except Exception:
+                    log.warning(
+                        "Automation employee lookup raised; writing message %s "
+                        "with sent_by_employee_id=NULL",
+                        message_id,
+                        exc_info=True,
+                    )
+
+        # MASS row → the visible sender tag ("mass-kingsley1", `_mass_sender_tag`); a
+        # 1:1 send stays untagged (the Messages tab surfaces it via the Employee join).
+        # 1:1 row → maybe the W7 HARD YIELD (`attribution_pair.hard_yield`: who counts
+        # as a human 1:1 sender, why a broadcast never rests its audience). Both AFTER
+        # the sent_by fallback above, so an automation-fired send (Automation
+        # sentinel) gets neither. Reads only, BEFORE the write, so the row, the preview
+        # and the cooldown are ONE short write transaction. A failed sentinel lookup
+        # skips the yield (the tag still resolves); late imports avoid the
+        # attribution↔executor cycle.
+        if sent_by_employee_id is not None and auto_id is None:
             try:
                 from employees import get_automation_employee_id
-                sent_by_employee_id = auto_id = await get_automation_employee_id()
-            except LookupError:
-                log.warning(
-                    "Automation employee not found (migration 0011 not run?); "
-                    "writing message %s with sent_by_employee_id=NULL",
-                    message_id,
-                )
+                auto_id = await get_automation_employee_id()
             except Exception:
-                log.warning(
-                    "Automation employee lookup raised; writing message %s "
-                    "with sent_by_employee_id=NULL",
-                    message_id,
-                    exc_info=True,
-                )
-
-    # MASS row → the visible sender tag ("mass-kingsley1", `_mass_sender_tag`); a
-    # 1:1 send stays untagged (the Messages tab surfaces it via the Employee join).
-    # 1:1 row → maybe the W7 HARD YIELD (`attribution_pair.hard_yield`: who counts
-    # as a human 1:1 sender, why a broadcast never rests its audience). Both AFTER
-    # the sent_by fallback above, so an automation-fired send (Automation
-    # sentinel) gets neither. Reads only, BEFORE the write, so the row, the preview
-    # and the cooldown are ONE short write transaction. A failed sentinel lookup
-    # skips the yield (the tag still resolves); late imports avoid the
-    # attribution↔executor cycle.
-    if sent_by_employee_id is not None and auto_id is None:
-        try:
-            from employees import get_automation_employee_id
-            auto_id = await get_automation_employee_id()
-        except Exception:
-            if mass_run_id is None:
-                log.debug("w7 hard-yield cooldown skipped", exc_info=True)
-    if mass_run_id is not None:
-        mass_tag = await _mass_sender_tag(sent_by_employee_id, auto_id)
-    else:
-        mass_tag = ""
-    # Stand-down duration is per-account (Instant reply settings,
-    # webhook_config_json.manual_yield_minutes); default 1 min, 0 disables.
-    yield_s = (await _manual_yield_seconds(str(account_id))
-               if hard_yield(mass_run_id=mass_run_id, sent_by=sent_by_employee_id,
-                             automation_id=auto_id) else 0)
-
-    try:
+                if mass_run_id is None:
+                    log.debug("w7 hard-yield cooldown skipped", exc_info=True)
+        if mass_run_id is not None:
+            mass_tag = await _mass_sender_tag(sent_by_employee_id, auto_id)
+        else:
+            mass_tag = ""
+        # Stand-down duration is per-account (Instant reply settings,
+        # webhook_config_json.manual_yield_minutes); default 1 min, 0 disables.
+        yield_s = (await _manual_yield_seconds(str(account_id))
+                   if hard_yield(mass_run_id=mass_run_id, sent_by=sent_by_employee_id,
+                                 automation_id=auto_id) else 0)
         # Ours, not OF's (who sent it is nowhere on OF): its own immediate
         # transaction, not the OF-cache writer's batch.
         from db import of_writer
@@ -470,13 +469,19 @@ async def write_outbound_attribution(
                     message_id=int(message_id), body=body, created_at=created_at,
                     conn=conn,
                 )
-                if yield_s > 0:
-                    try:
-                        from automation_executor import start_fan_cooldown
-                        await start_fan_cooldown(str(account_id), int(fan_id),
-                                                 cooldown_s=yield_s, conn=conn)
-                    except Exception:
-                        log.debug("w7 hard-yield cooldown skipped", exc_info=True)
+            else:
+                hook_at = (await conn.execute(select(Message.created_at).where(
+                    Message.account_id == str(account_id), Message.fan_id == int(fan_id),
+                    Message.message_id == int(message_id),
+                ))).scalar_one_or_none() or created_at
+            # Not gated on a new row: an echo (event_transcoder._transcode_echo) or a scrape may have inserted it.
+            if yield_s > 0:
+                try:
+                    from automation_executor import start_fan_cooldown
+                    await start_fan_cooldown(str(account_id), int(fan_id),
+                                             cooldown_s=yield_s, conn=conn)
+                except Exception:
+                    log.debug("w7 hard-yield cooldown skipped", exc_info=True)
         if (res.rowcount or 0) == 0:
             # Somebody inserted this row first — tag it anyway. See the docstring
             # on _backfill_attribution: losing the tag does not just skew stats,
@@ -508,6 +513,10 @@ async def write_outbound_attribution(
             "attribution write failed (account=%s fan=%s msg=%s)",
             account_id, fan_id, message_id,
         )
+    finally:
+        import sends_inflight
+        sends_inflight.end(account_id, fan_id, message_id)
+        relay_hooks.fire_outbound_sent(account_id, fan_id, message_id, hook_at)
 
 
 async def write_mass_optimistic_rows(

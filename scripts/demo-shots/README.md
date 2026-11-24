@@ -40,7 +40,7 @@ resize.
 |---|---|
 | `run.sh` | Starts the throwaway stack in a temp dir, seeds it, runs capture.py, tears down and restores `app/tsconfig.json` and `app/next-env.d.ts` (which `next dev` rewrites). |
 | `relay_guarded.py` | The relay on a temp SQLite DB with network guards and the secret store and `sessions/` redirected into the temp dir (same model as `scripts/ui-shots.sh`). |
-| `net_guard.py` | Socket and dotenv guards shared by relay and bio launchers; `DEMO_SHOTS_PROCESS` labels network log rows (`relay` by default). Both launchers use `loop=asyncio` because uvloop connects past these socket guards. |
+| `net_guard.py` | Socket, curl_cffi and dotenv guards shared by relay and bio launchers. With `DEMO_SHOTS_CURL_GUARD=1` (set by `run.sh`; of-live-proof's live mode leaves it off) curl refuses off-host URLs and explicit proxies, ignores environment proxies, and leaves redirects unfollowed. `DEMO_SHOTS_PROCESS` labels network log rows (`relay` by default). Both launchers use `loop=asyncio` because uvloop connects past the socket guards. |
 | `fetch-guard.cjs` | Preloaded into `next dev`: refuses any non-loopback request and logs it. |
 | `dataset.py` | The synthetic agency, built from a fixed seed relative to the anchor. |
 | `seed.py` | Writes the dataset into the relay's DB and API (sales, messages, shifts, clock events, scripts, posts, links, roles, employees). |

@@ -45,7 +45,7 @@ async def _run_worker(items, *, insert=None):
         calls.append(list(rows))
         await (insert or real_insert)(rows)
 
-    async def _transcode(ev):
+    async def _transcode(ev, _prior=None):
         transcoded.append(ev)
 
     persisted: list[int] = []
@@ -215,7 +215,7 @@ async def case_stop_transcodes_dms_first():
     transcoded: list[dict] = []
     release = asyncio.Event()
 
-    async def _transcode(ev):
+    async def _transcode(ev, _prior=None):
         transcoded.append(ev)
         if ev is first:
             await release.wait()
@@ -265,7 +265,7 @@ async def case_mixed_lanes_drain_in_arrival_order():
     items = [other("typing", 1), dm(1), other("toasts", 2), dm(2), dm(3), other("typing", 3)]
     transcoded: list[dict] = []
 
-    async def _transcode(ev):
+    async def _transcode(ev, _prior=None):
         transcoded.append(ev)
 
     orig_t = event_transcoder.transcode
@@ -316,6 +316,26 @@ async def case_overflow_all_dms_counts_the_dropped_dm():
     assert events_persist._persist_dm_drops - dm0 == 1, "only the dropped DM counts as a DM drop"
 
 
+async def case_dropped_dm_queues_a_one_fan_scrape():
+    """A dropped DM's chat gets a one-fan scrape (it reads the message back from OF); a
+    dropped non-DM does not."""
+    import webhook_dispatch
+    calls = []
+
+    async def _fake(account_id, fan_id, source, *, peek_only=False):
+        calls.append((account_id, fan_id, source, peek_only))
+        return True
+
+    real = webhook_dispatch.enqueue_fan_scrape
+    webhook_dispatch.enqueue_fan_scrape = _fake
+    try:
+        await _overflow([dm(1), dm(2), dm(3)], [dm(4), other("typing")])
+        await asyncio.sleep(0)
+    finally:
+        webhook_dispatch.enqueue_fan_scrape = real
+    assert calls == [(A, FAN, events_persist.DM_DROPPED_SOURCE, True)], calls
+
+
 async def case_overflow_is_constant_time():
     """A full 2000-frame queue under a burst: each overflow is O(1) (the old take-all/refill
     reshuffled the whole queue on the loop per frame: ~2000 get/put per incoming frame)."""
@@ -345,7 +365,7 @@ async def case_stop_deadline_counts_queued_and_inflight_loss():
     transcoded: list[dict] = []
     never = asyncio.Event()
 
-    async def _transcode(ev):
+    async def _transcode(ev, _prior=None):
         transcoded.append(ev)
         if ev is first:
             await never.wait()

@@ -29,7 +29,7 @@ from datetime import datetime
 from typing import Any, Collection, Mapping
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import and_, case, func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 
 import llm_client
 import vault_ai_brief
@@ -774,14 +774,9 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
             why = jev_res.get("status")
         else:
             why = j.get("status") if j.get("status") not in (None, "ok") else "jev_missing"
-        if vault_jev_rules.rejected(prev_ai):
-            return {"media_id": media_id, "ok": False, "status": vault_jev_rules.REJECTED,
-                    "detail": f"no Jev reading for this {item.kind}: TypeSafe refused the image (invalid dimensions) "
-                              "— not retried by sweeps"}
-        if vault_jev_rules.retries_spent(prev_ai):   # terminal: no sweep retries it (honest skip, `vault_sweep.NEUTRAL`)
-            return {"media_id": media_id, "ok": False, "status": vault_jev_rules.GAVE_UP,
-                    "detail": f"no Jev reading for this {item.kind}: its sources kept failing, Jev gave up — "
-                              "not retried by sweeps (re-read it from the item)"}
+        if reason := vault_jev_rules.stop_reason(prev_ai):
+            return {"media_id": media_id, "ok": False, "status": reason,
+                    "detail": vault_jev_rules.STOP_DETAILS[reason]}
         return {"media_id": media_id, "ok": False, "status": why,
                 "detail": f"no Jev reading for this {item.kind} ({why}) — skipped, retried by a later sweep"}
     raw = load_json(item.raw_json, {}) or {}
@@ -1160,16 +1155,14 @@ def _target_of(raw: Any) -> int:
 
 
 async def _coverage_rows(account_id: str) -> list[tuple[int, str | None, dict[str, Any] | None]]:
-    """(media_id, describe_status, ai_fields) of every Describable item, for
-    `coverage` / `is_terminal`. Fields are read only where a terminal held
-    `_jev` can be (not described, the hold's marker in the blob), so a big
-    vault does not ship every blob for a count."""
-    held = and_(VaultItem.describe_status.isnot("described"),
-                VaultItem.ai_fields_json.like(f'%{vault_jev_pass.HELD}%'))
+    terminal_candidate = and_(
+        VaultItem.describe_status.isnot("described"),
+        or_(*(VaultItem.ai_fields_json.contains(marker) for marker in vault_jev_rules.TERMINAL_MARKERS)),
+    )
     async with get_session() as s:
         rows = (await s.execute(
             select(VaultItem.media_id, VaultItem.describe_status,
-                   case((held, VaultItem.ai_fields_json), else_=None))
+                   case((terminal_candidate, VaultItem.ai_fields_json), else_=None))
             .where(live_describable(account_id)))).all()
     return [(int(m), st, load_json(fj, {}) if fj else None) for m, st, fj in rows]
 

@@ -41,10 +41,11 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import { MP } from "@/lib/messagesPro";
 import { ofMeQuery } from "@/lib/ofMe";
+import { CHATS_PAGE } from "@/lib/screenBundle";
 import { cn } from "@/lib/utils";
 import { badgeUnreadView, chatRowKey, UNREAD_VIEW_MAX_AGE_MS, type UnreadView } from "@/lib/chatsCache";
 import { relayNow } from "@/lib/ageClock";
-import { describeLoadError, relay, setRelayFocus, type OFChatItem } from "@/lib/relay";
+import { describeLoadError, isRateLimited, relay, setRelayFocus, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, lastMessageFromFan } from "@/lib/fanId";
 import { excludedFromBadges, isUnreadChat } from "@/lib/chatUnread";
@@ -361,11 +362,11 @@ export function FanList({
   );
   // Owe reply and a group narrow the loaded rows client-side, so each pages
   // on until OWE_REPLY_TARGET rows match, OWE_REPLY_SCAN_CAP rows are
-  // scanned, or no pages remain (story 61), or a load failed, so a failing
-  // page is not retried in a loop; see the fill effect below.
+  // scanned, the remaining Creators are exhausted, or the query errors.
   const fillActive = oweReplyActive || inbox.group != null;
-  const fillDone = !fillActive || rows.length >= OWE_REPLY_TARGET ||
-    allRows.length >= OWE_REPLY_SCAN_CAP || !q.hasMore || q.isError;
+  const scanCapped = q.scanned >= OWE_REPLY_SCAN_CAP ||
+    (q.pages?.length ?? 0) >= Math.ceil(OWE_REPLY_SCAN_CAP / CHATS_PAGE);
+  const fillDone = !fillActive || rows.length >= OWE_REPLY_TARGET || scanCapped || !q.hasMore || q.isError;
   // The fill has finished its bounded walk: no other loader pages past it.
   const fillExhausted = fillActive && fillDone;
   // A group still filling is not an empty group.
@@ -525,7 +526,7 @@ export function FanList({
   // still ranks them by their ledger sum, as it did before; otherwise an
   // unknown spend sorts with the zeros.
   const spendForRow = useCallback((c: OFChatItem) => {
-    const key = `${c.__accountId ?? ""}:${c.withUser.id}`;
+    const key = chatRowKey(c);
     return totalSpendOf(spendMap.get(key), recentSpendMap.get(key)) ?? recentSpendMap.get(key) ?? 0;
   }, [spendMap, recentSpendMap]);
   const sortedDisplayRows = useMemo<OFChatItem[]>(
@@ -546,14 +547,14 @@ export function FanList({
   const profileMap = useOFUserNameMap();
   // Every loaded Fan, for the Split Inbox dialog's reassign list, named as their rows are.
   const splitFans = useMemo(() => (q.data ?? []).map((c) => ({
-    id: c.withUser.id, name: fanNameOf(c, profileMap.get(`${c.__accountId ?? ""}:${c.withUser.id}`)),
+    id: c.withUser.id, name: fanNameOf(c, profileMap.get(chatRowKey(c))),
   })), [q.data, profileMap]);
 
   // The rows on screen: the sorted rows, narrowed to online Fans while
   // `onlineOnly` is on.
   const shownRows = useMemo(() => {
     if (!onlineOnly) return sortedDisplayRows;
-    return sortedDisplayRows.filter((c) => isFanOnline(c, profileMap.get(`${c.__accountId ?? ""}:${c.withUser.id}`), onlineIds));
+    return sortedDisplayRows.filter((c) => isFanOnline(c, profileMap.get(chatRowKey(c)), onlineIds));
   }, [onlineOnly, sortedDisplayRows, profileMap, onlineIds]);
   // Warm the top unread threads in the order on screen (sort mode, Online
   // Fans). A spend sort re-orders as spend and activity land: warm the
@@ -602,7 +603,7 @@ export function FanList({
   // no page left. Marking all of them is then OF's one "mark every chat
   // read" write instead of one write per chat.
   const wholeCreator =
-    scope.kind === "model" && !inbox.inGroup && !query && !serverListId &&
+    scope.kind === "model" && inbox.wholeInbox && !query && !serverListId &&
     (serverFilter === null || serverFilter === "unread") && !q.hasMore
       ? scope.accountId
       : null;
@@ -638,13 +639,13 @@ export function FanList({
   // either fill the target (5–8 filtered rows on screen) or scan-cap hits
   // (100 raw rows). OF has no native "fan sent last" or group filter, so we
   // have to walk the chat list ourselves; the cap keeps that walk bounded.
-  const oweReplyScanned = oweReplyActive ? allRows.length : 0;
+  const oweReplyScanned = oweReplyActive ? q.scanned : 0;
   const oweReplyMatches = oweReplyActive ? rows.length : 0;
   useEffect(() => {
     if (fillDone) return;
     if (q.isFetchingMore) return;
     loadMore();
-  }, [fillDone, rows.length, allRows.length, q.isFetchingMore, loadMore]);
+  }, [fillDone, rows.length, q.scanned, q.isFetchingMore, loadMore]);
 
   // Auto-load more pages only after the user has actually scrolled the
   // panel. Without this gate, an empty/short panel keeps the sentinel in
@@ -771,6 +772,7 @@ export function FanList({
           showInboxSelector={scope.kind === "model"}
           groupCount={inbox.groupCount}
           group={inbox.group}
+          groupLocked={inbox.locked}
           onGroupChange={inbox.setGroup}
           onOpenSplitInbox={chatterOnly ? null : () => setSplitInboxOpen(true)}
           fetching={q.isFetching}
@@ -828,7 +830,7 @@ export function FanList({
           q.isFetching && q.isPlaceholderData && "opacity-60",
         )}
       >
-        {q.isError && (
+        {q.isError && !(isRateLimited(q.error) && rows.length > 0) && (
           <div className="p-4 text-xs text-err">
             {describeLoadError(q.error as Error)}
           </div>
@@ -887,7 +889,7 @@ export function FanList({
                 ? `Scanning… ${oweReplyMatches} found in ${oweReplyScanned}`
                 : oweReplyMatches === 0
                   ? `No replies needed in last ${oweReplyScanned} chats.`
-                  : oweReplyScanned >= OWE_REPLY_SCAN_CAP && q.hasMore
+                  : scanCapped && q.hasMore
                     ? (
                       <button
                         type="button"

@@ -754,6 +754,11 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
                 freshness=shared_refresher.snapshot(r.account_id) if shared_refresher.ENABLED and role is None
                 else None,
             )
+    import split_inbox
+    await split_inbox.warm(seen)
+    for a in seen.values():
+        if a.freshness is not None and split_inbox.bound_cached(c.id, a.account_id):
+            a.freshness = split_inbox.without_unread_total(a.freshness)
     return sorted(
         seen.values(),
         key=lambda a: (a.owner_username.lower(), (a.nickname or a.account_id).lower()),

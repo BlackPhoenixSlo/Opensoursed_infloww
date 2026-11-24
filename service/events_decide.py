@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Union
 
 RING_MAX = 256      # per account: a laptop sleep or a dropped socket on a busy Creator
@@ -168,6 +169,44 @@ def first_key(event: Any) -> Optional[str]:
         if not k.startswith("__"):
             return k
     return None
+
+
+def frame_fan_id(event: Mapping) -> Any:
+    """The fan a frame is about, or None: an `api2_chat_message`'s fan (outbound: `__fan_id` / `toUser`, as
+    the app's resolveChatTarget), else a body's `fan_id` (chat_typing, chat_read_changed, chat_responded...)."""
+    kind = first_key(event)
+    body = event.get(kind) if kind else None
+    if not isinstance(body, Mapping):
+        return None
+    if kind == "api2_chat_message":
+        sender = (body.get("fromUser") or {}).get("id") if isinstance(body.get("fromUser"), Mapping) else None
+        if sender is not None and str(sender) != str(event.get("__account_id")):
+            return sender
+        if event.get("__fan_id") is not None:
+            return event["__fan_id"]
+        target = body.get("toUser")
+        if isinstance(target, Mapping) and target.get("id") is not None:
+            return target["id"]
+        from event_transcode_decide import Echo, dm_key
+        plan = dm_key(event.get("__account_id"), body)
+        return plan.fan_id if isinstance(plan, Echo) else None
+    return body.get("fan_id")
+
+
+def toast_fan_id(toast: Any) -> Any:
+    """A `toasts` entry's fan, as push_notice._toast names it: `data.relatedUser.id`, its `{RELATED_USER_ID}`
+    replacement, else `fromUser.id`; None when it names none."""
+    if not isinstance(toast, Mapping):
+        return None
+    data = toast.get("data") if isinstance(toast.get("data"), Mapping) else {}
+    rel = data.get("relatedUser")
+    if isinstance(rel, Mapping) and rel.get("id") is not None:
+        return rel["id"]
+    repl = data.get("replacements")
+    if isinstance(repl, Mapping) and repl.get("{RELATED_USER_ID}"):
+        return repl["{RELATED_USER_ID}"]
+    sender = toast.get("fromUser")
+    return sender.get("id") if isinstance(sender, Mapping) else None
 
 
 def ring_key(frame: Mapping) -> str:
@@ -276,6 +315,7 @@ SSE_TYPES = frozenset({
     "toasts",
     "transaction_recorded",
     "purchase_notified",
+    "vault_history_changed",
     "chat_typing",
     # A mass message's OF queue progress, as OF sends it (`{id, total,
     # pending, isDone, isCanceled, ...}`, id = the broadcast's queue id): the
@@ -294,14 +334,17 @@ SSE_TYPES = frozenset({
     # A chatter's read flip through the relay (server._publish_read_flip; any-scope): other tabs flip the row's unread
     # flags in their cached chat lists (app hooks/useAccountStateEvents.ts).
     "chat_read_changed",
+    # An OF restrict or lift through the relay (server._publish_restrict_changed; any-scope): other tabs patch the
+    # row's restrict flags in their cached chat lists (app hooks/useAccountStateEvents.ts).
+    "chat_restrict_changed",
 }) | STATE_TYPES
 
 # Account events that reach a model-scoped subscriber for every Creator in its clamp, not only
-# the one its scope names (`wants`): `creator_warmed`, `creator_refreshed`, `chat_read_changed`, `chat_responded` (a tab's
+# the one its scope names (`wants`): `creator_warmed`, `creator_refreshed`, `chat_read_changed`, `chat_restrict_changed`, `chat_responded` (a tab's
 # cached All Models lists hold every Creator) and what the Money Rail and the bell seed from: `transaction_recorded`, `purchase_notified`, and a `toasts` frame holding a tip or
 # purchase toast (`is_money_toast`; any other toast routes by scope).
-ANY_SCOPE_TYPES = frozenset({"creator_warmed", "creator_refreshed", "chat_read_changed", "chat_responded",
-                             "transaction_recorded", "purchase_notified", "toasts"})
+ANY_SCOPE_TYPES = frozenset({"creator_warmed", "creator_refreshed", "chat_read_changed", "chat_restrict_changed",
+                             "chat_responded", "transaction_recorded", "purchase_notified", "toasts"})
 # OF's toast types the app reads as money (app/lib/notifSettings.ts mapOfTypeToKey: tip, purchases).
 MONEY_TOAST_TYPES = frozenset({"tip", "tips", "purchase", "purchases", "paided_message"})
 
@@ -394,7 +437,8 @@ def strips_message(readable: Optional[frozenset], event: Mapping) -> bool:
 
 # ── the rings ──
 def _missed(st: Rings, last_id: Optional[str], sees: Callable[[str], bool],
-            wants: Callable[[Any], bool], sees_any: Optional[Callable[[str], bool]] = None) -> tuple[list, bool]:
+            wants: Callable[[Any], bool], sees_any: Optional[Callable[[str], bool]],
+            project: Callable[[Any], Any]) -> tuple[list, bool]:
     """What the stream missed after `last_id`, oldest first, and whether it must resync. A ring the
     stream does not `sees` but `sees_any` (a model-scoped stream's other clamped Creators) is read
     too, `wants` keeping only its any-scope frames, and resyncs only when one of those was evicted."""
@@ -418,7 +462,8 @@ def _missed(st: Rings, last_id: Optional[str], sees: Callable[[str], bool],
             continue
         if evicted.get(key, 0) > since:
             gap = True
-        missed.extend((seq, f) for seq, f in ring if seq > since and wants(f))
+        missed.extend((seq, out) for seq, f in ring if seq > since and wants(f)
+                      and (out := project(f)) is not None)
     missed.sort(key=lambda t: t[0])
     return [f for _, f in missed], gap
 
@@ -454,12 +499,13 @@ def ended_since(st: Rings, since: int, wants: Callable[[Any], bool]) -> bool:
 
 
 def replay(st: Rings, last_id: Optional[str], sees: Callable[[str], bool], wants: Callable[[Any], bool],
-           knobs: Knobs, sees_any: Optional[Callable[[str], bool]] = None) -> tuple[RingEffect, ...]:
+           knobs: Knobs, sees_any: Optional[Callable[[str], bool]] = None,
+           *, project: Callable[[Any], Any] = lambda frame: frame) -> tuple[RingEffect, ...]:
     """What a stream opening with `last_id` is sent before its live events: Resync?, Emit per chunk
     (BATCH_MAX when batching is on, else 1; each coalesced), Head. `sees(key)`: the stream sees that
     account's ring; `sees_any(key)`: it gets that account's any-scope events (ANY_SCOPE_TYPES);
     `wants(frame)`: that frame may reach it."""
-    missed, gap = _missed(st, last_id, sees, wants, sees_any)
+    missed, gap = _missed(st, last_id, sees, wants, sees_any, project)
     effects: list[RingEffect] = [Resync()] if gap else []
     step = BATCH_MAX if batching_on(knobs) else 1
     effects.extend(Emit(tuple(coalesce(missed[i:i + step]))) for i in range(0, len(missed), step))
@@ -503,6 +549,21 @@ def inbox_row(account_id: Optional[str], event_type: Optional[str], payload: Any
             "payload": payload, "provider_event_id": provider_id}
 
 
+def can_stub_chat_view(filter: str | None, list_id: str | None, query: str | None) -> bool:
+    return (not filter or filter == "unread") and list_id is None and not query
+
+
+def is_plain_chat_view(filter: str | None, list_id: str | None, query: str | None) -> bool:
+    return not filter and can_stub_chat_view(filter, list_id, query)
+
+
+class InboxRowUnpatched(Enum):
+    VALUE = "unpatched"
+
+
+PriorInboxRow = dict | None | InboxRowUnpatched
+
+
 class PersistItem(NamedTuple):
     """One OF frame on the persist worker's queue."""
     account_id: Optional[str]
@@ -510,6 +571,7 @@ class PersistItem(NamedTuple):
     persistable: dict      # the frame minus its `__` sentinels: the event_inbox payload
     event: dict            # the frame as received: what the worker transcodes
     inbound_dm: bool = False   # a Fan's DM (event_transcode_decide.is_inbound_dm): kept over the rest
+    prior: PriorInboxRow = InboxRowUnpatched.VALUE
 
 
 def persist_plan(batch: list[PersistItem]) -> list[dict]:

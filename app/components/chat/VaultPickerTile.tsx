@@ -401,11 +401,8 @@ export function VaultPickerTile({
           )}
         </div>
       )}
-      {/* Price/state corner: replaces the plain dot with a
-       *  small pill that carries the price for locked/unlocked
-       *  ($X), the word "FREE" for sent-free, and the wall
-       *  marker. Still color-matches the ring so the state is
-       *  legible at the smallest grid sizes. */}
+      {/* State corner (pillText): BOUGHT / SENT / WALL, colour-matched to the ring
+       *  so the state is legible at the smallest grid sizes; truncated clear of ⓘ. */}
       {/* With a Fan in scope the pill opens "Media details" at
        *  the price history. */}
       {status && (
@@ -414,7 +411,7 @@ export function VaultPickerTile({
             ? { ...cardAction(() => onDetails({ media: m, atHistory: true })), title: "Price history" }
             : { "aria-hidden": true })}
           className={cn(
-            "absolute top-1 left-1 px-1.5 h-4 rounded-full text-[9px] font-bold leading-4 shadow",
+            "absolute top-1 left-1 max-w-[calc(100%-2rem)] truncate px-1.5 h-4 rounded-full text-[9px] font-bold leading-4 shadow",
             STATUS_DOT_CLASS[status],
             // Yellow needs dark text for legibility; the
             // rest are bright-on-dark.

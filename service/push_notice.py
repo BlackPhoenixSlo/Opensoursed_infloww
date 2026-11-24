@@ -37,6 +37,7 @@ class Notice:
     body: str
     href: str | None
     raw_type: str = ""          # Arrival.rawType: the payload's `type` (the app maps it with mapOfTypeToKey)
+    fan_id: Any = None          # the Fan it names (push_send's Split Inbox filter); never in the payload
 
     @property
     def tag(self) -> str:
@@ -193,7 +194,7 @@ def _notice(aid: str, nid: str, type_key: str | None, raw_type: str, user: Mappi
             text: str, href: str | None) -> Notice:
     title = _js_str(_first(user.get("name"), user.get("username"), BRAND_NAME))
     body = _js_str(_first(text, raw_type, "New activity"))
-    return Notice(nid, aid, type_key, title, _cap(body), href, raw_type)
+    return Notice(nid, aid, type_key, title, _cap(body), href, raw_type, user.get("id"))
 
 
 # ── the three lanes ──
