@@ -19,6 +19,15 @@ NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null |
 JOBS="${RUN_TESTS_JOBS:-$(( NCPU / 2 > 0 ? NCPU / 2 : 1 ))}"
 fail=0
 
+echo "──────── Comment budget ────────"
+CPY="$PY"; [ -x "$CPY" ] || CPY=python3
+if [ -f "$ROOT/scripts/comment-budget.json" ]; then
+  "$CPY" "$ROOT/scripts/comment_budget.py" --check || fail=1
+  "$CPY" -m pytest -q "$ROOT/scripts/tests/test_comment_gate.py" || fail=1
+else
+  echo "no comment budget in this repo; skipped"
+fi
+
 echo "──────── Backend (service/tests/*.py) ────────"
 if [ ! -x "$PY" ]; then
   echo "✗ venv python not found at $PY"; fail=1

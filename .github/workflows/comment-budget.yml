@@ -1,0 +1,44 @@
+name: Comment budget
+
+on:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: gate
+        run: if [ -f scripts/comment-budget.json ]; then echo "on=1" >> "$GITHUB_OUTPUT"; else echo "gate off in this repo"; fi
+      - if: steps.gate.outputs.on == '1'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - if: steps.gate.outputs.on == '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tools
+        if: steps.gate.outputs.on == '1'
+        run: |
+          TS=$(grep -A2 '^      typescript:$' app/pnpm-lock.yaml | sed -n 's/^ *version: //p' | head -1)
+          test -n "$TS"
+          npm i --no-save --prefix /tmp/ts "typescript@$TS"
+          curl -fsSL -o /usr/local/bin/shfmt https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64
+          chmod +x /usr/local/bin/shfmt
+          pip install -q pytest
+      - name: Check
+        if: steps.gate.outputs.on == '1'
+        env:
+          COMMENT_TOOLS_TS: /tmp/ts/node_modules/typescript
+        run: |
+          python3 scripts/comment_budget.py --check
+          python3 scripts/comment_budget.py --growth "origin/$GITHUB_BASE_REF"
+          python3 -m pytest -q scripts/tests/test_comment_gate.py
+      - name: Equality (prune batches)
+        if: steps.gate.outputs.on == '1' && startsWith(github.head_ref, 'chore/comment-prune-')
+        env:
+          COMMENT_TOOLS_TS: /tmp/ts/node_modules/typescript
+        run: python3 scripts/comment_equality.py "origin/$GITHUB_BASE_REF" HEAD
