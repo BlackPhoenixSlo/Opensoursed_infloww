@@ -1,11 +1,3 @@
-"""A stateful fake OnlyFans for the Keep running proof (promo_preempt_proof.py), loopback only.
-
-Serves what the relay's OFClient calls (OF_API_ORIGIN seam): GET /hash/, GET /api2/v2/users/me,
-GET/POST /api2/v2/promotions. Per Creator (the `User-ID` header): a promo list, newest first,
-where a create ends the old live promo (`end_old`, on by default), settable claims and finishedAt,
-a queue of programmed answers for the next creates, stale counts (list lag), a new promo's first
-count. Every request is logged (time, account, method, path); `gap_s` comes from its own timeline.
-"""
 from __future__ import annotations
 
 import json
@@ -33,11 +25,10 @@ class Promo:
     type: object = "all"
     days: int = 30
     finished_at: datetime | None = None
-    finished: bool = False          # OF's isFinished flag
+    finished: bool = False
     listed: bool = True
 
     def live(self) -> bool:
-        """OF's own flags (a full cap with the flag unflipped still lists live)."""
         return not self.finished and not (self.finished_at and self.finished_at <= utcnow())
 
     def item(self, claims: int | None = None) -> dict:
@@ -52,16 +43,16 @@ class Promo:
 
 @dataclass
 class Acct:
-    promos: list[Promo] = field(default_factory=list)       # newest first
-    next: list[dict] = field(default_factory=list)          # programmed create answers
-    end_old: bool = True            # a create ends the live promo (OF: one at a time)
-    end_old_on_fail: bool = False   # ... even when the create fails
-    finish_on_cap: bool = False     # OF flips isFinished as the last claim lands
+    promos: list[Promo] = field(default_factory=list)
+    next: list[dict] = field(default_factory=list)
+    end_old: bool = True
+    end_old_on_fail: bool = False
+    finish_on_cap: bool = False
     new_starts_at: int = 0
-    stale: dict[int, list[int]] = field(default_factory=dict)   # pid -> counts the next reads show
-    on_read: object = None          # one-shot callable, after the list body is built
+    stale: dict[int, list[int]] = field(default_factory=dict)
+    on_read: object = None
     posts: list[dict] = field(default_factory=list)
-    events: list[tuple[float, int, str]] = field(default_factory=list)   # (wall, pid, start|end)
+    events: list[tuple[float, int, str]] = field(default_factory=list)
 
 
 class FakeOF:
@@ -79,7 +70,6 @@ class FakeOF:
         self.srv.shutdown()
         self.srv.server_close()
 
-    # ── driver side ──────────────────────────────────────────
     def acct(self, aid: str) -> Acct:
         with self.lock:
             return self.accts.setdefault(str(aid), Acct())
@@ -116,7 +106,6 @@ class FakeOF:
                 self.finish(aid, pid)
 
     def claim(self, aid: str) -> int | None:
-        """One subscriber claims the newest promo on offer (flags live, cap not full)."""
         with self.lock:
             p = next((p for p in self.acct(aid).promos
                       if p.live() and p.listed and not (p.cap and p.claims >= p.cap)), None)
@@ -126,7 +115,6 @@ class FakeOF:
             return p.id
 
     def shift(self, aid: str, secs: float) -> None:
-        """Time travel: every OF timestamp of this Creator moves `secs` into the past."""
         d = timedelta(seconds=secs)
         with self.lock:
             for p in self.acct(aid).promos:
@@ -140,7 +128,6 @@ class FakeOF:
                        and r["path"] == path)
 
     def gap_s(self, aid: str) -> float:
-        """Seconds with no promo live between the first start and the last start (OF's view)."""
         with self.lock:
             ev = sorted(self.acct(aid).events)
         starts = [t for t, _, k in ev if k == "start"]
@@ -156,7 +143,6 @@ class FakeOF:
             last = t if not live else None
         return round(gap, 3)
 
-    # ── OF side ──────────────────────────────────────────────
     def _list(self, aid: str, q: dict) -> tuple[int, dict]:
         off, lim = int(q.get("offset", ["0"])[0]), int(q.get("limit", ["10"])[0])
         with self.lock:
@@ -230,7 +216,7 @@ class FakeOF:
                     self.end_headers()
                     self.wfile.write(raw)
                 except OSError:
-                    pass        # the relay hung up (killed, or timed out)
+                    pass
 
             def _do(self, method: str) -> None:
                 u = urlsplit(self.path)

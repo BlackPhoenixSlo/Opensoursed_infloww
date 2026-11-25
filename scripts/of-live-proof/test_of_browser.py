@@ -1,6 +1,3 @@
-"""Ticket 07: the capture browser's pure parts (session read, seed, probe, identity, leak grep, step checks, the
-Critical capture refusal) and its stops before any step, on a synthetic session against a loopback stub (no real
-session, no OnlyFans host: the stub is the fake origin and every other origin is aborted in the route)."""
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,7 +30,6 @@ def _session_dir(tmp_path, local_storage=None):
     return d
 
 
-# ── pure ──
 
 def test_load_session_reads_the_current_session_file(tmp_path):
     s = load_session(_session_dir(tmp_path))
@@ -59,16 +55,15 @@ def test_cookie_rows_live_keep_domain_and_drop_session_expiry_fake_bind_to_the_f
 
 @pytest.mark.parametrize("status, body, want", [
     (200, {"id": CREATOR}, "ok"),
-    (400, {"error": {"code": 301, "message": "Wrong user."}}, "dead"),   # SESSION-PROBE.md, measured 2026-11-20
-    # the Relay's 502 for an OnlyFans error (service/server.py `_proxy`)
+    (400, {"error": {"code": 301, "message": "Wrong user."}}, "dead"),
     (502, {"detail": {"upstream_status": 400, "upstream_body": '{"error":{"code":301,"message":"Wrong user."}}'}},
      "dead"),
     (200, {"id": "42"}, "fail"),
     (500, "boom", "fail"),
-    (200, {"id": CREATOR, "name": "wrong user"}, "ok"),                   # the text alone never marks it dead
+    (200, {"id": CREATOR, "name": "wrong user"}, "ok"),
     (400, {"error": {"code": 302, "message": "Wrong user."}}, "fail"),
     (502, "Wrong user", "fail"),
-    (200, {"id": CREATOR, "code": 301}, "ok"),                            # a 200 is never dead
+    (200, {"id": CREATOR, "code": 301}, "ok"),
 ])
 def test_probe_verdict(status, body, want):
     assert probe_verdict(status, body, CREATOR)[0] == want
@@ -82,7 +77,7 @@ def test_identity_problem_names_another_creator_or_none():
 
 def test_session_secrets_and_leaks_name_the_file_never_the_value(tmp_path):
     secrets = session_secrets(load_session(_session_dir(tmp_path)))
-    assert set(secrets) == {X_BC, COOKIE, STORED}   # the auth_id cookie / user id is the Creator's id: no credential
+    assert set(secrets) == {X_BC, COOKIE, STORED}
     leaks = session_leaks({"wire.jsonl": f'{{"x": "{COOKIE}"}}', "report.md": "clean", "<run output>": X_BC}, secrets)
     assert leaks == ["wire.jsonl: holds a session value", "<run output>: holds a session value"]
     assert not any(v in " ".join(leaks) for v in secrets)
@@ -97,8 +92,8 @@ def _line(cls, verdict="refused"):
     ("sent", "aborted", [_line("unarmed")], False),
     ("sent", 200, [], False),
     ("critical", "aborted", [_line("critical")], True),
-    ("critical", "aborted", [_line("unarmed")], False),        # aborted, but for the wrong class
-    ("unarmed", 200, [_line("allow", "allow")], False),        # left the browser
+    ("critical", "aborted", [_line("unarmed")], False),
+    ("unarmed", 200, [_line("allow", "allow")], False),
     ("capture_abort", "aborted", [_line("capture_abort")], True),
 ])
 def test_fetch_problems(expect, status, lines, ok):
@@ -120,7 +115,6 @@ def test_critical_capture_is_abort_only():
     assert critical_capture_refused(ALL["drill.withdrawal"], abort=True) is None
 
 
-# ── the browser against a loopback stub ──
 
 class _Stub(BaseHTTPRequestHandler):
     me_id = CREATOR
@@ -129,7 +123,7 @@ class _Stub(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         self.rfile.read(int(self.headers.get("content-length") or 0))
         _Stub.hits.append(("POST", self.path))
-        if self.path == "/api2/v2/redir":   # a 307 keeps the method: the POST would be sent again to its target
+        if self.path == "/api2/v2/redir":
             self.send_response(307)
             self.send_header("location", "/api2/v2/target")
             self.send_header("content-length", "0")
@@ -154,7 +148,6 @@ class _Stub(BaseHTTPRequestHandler):
 
 
 class _Guard:
-    """Reads pass, writes are refused unless their path is in `allow`: the Relay's `/__proof/decide` stand-in."""
 
     def __init__(self, allow=()):
         self.intents, self.dones, self.allow = [], [], set(allow)
@@ -189,10 +182,10 @@ def test_browser_seeds_before_load_and_passes_the_identity_check(pw, tmp_path, s
     cb = _browser(pw, tmp_path, stub, guard, probe=lambda: probes.append(1) or (200, {"id": CREATOR}))
     try:
         assert cb.open() == {"seeded": True, "probe": 200, "me": CREATOR}
-        assert cb.page.evaluate("window.__ofmSeedAtLoad") is True          # set before the page's own script ran
+        assert cb.page.evaluate("window.__ofmSeedAtLoad") is True
         assert cb.page.evaluate("localStorage.getItem('someKey')") == STORED
         assert probes == [1] and guard.intents[0][0] == "GET" and guard.intents[0][1].endswith("/api2/v2/users/me")
-        assert cb.send("POST", "/api2/v2/lists", {"name": "oi-proof-x"}) == "aborted"   # refused: aborted
+        assert cb.send("POST", "/api2/v2/lists", {"name": "oi-proof-x"}) == "aborted"
         assert ("POST", "/api2/v2/lists") not in _Stub.hits and cb.exchanges[-1]["aborted"]
         assert all(k.lower() not in ("cookie", "x-bc") for x in cb.exchanges for k in (x.get("headers") or {}))
     finally:
@@ -206,7 +199,7 @@ def test_browser_naming_another_creator_stops_before_any_step(pw, tmp_path, stub
     try:
         with pytest.raises(CaptureBrowserStop, match="named '42'"):
             cb.open()
-        assert [m for m, _ in guard.intents] == ["GET"]   # only the identity read; no step ran
+        assert [m for m, _ in guard.intents] == ["GET"]
     finally:
         cb.close()
 
@@ -218,13 +211,13 @@ def test_wrong_user_probe_marks_the_session_dead_once(pw, tmp_path, stub):
     try:
         with pytest.raises(SessionDead):
             cb.open()
-        assert probes == [1]   # never retried
+        assert probes == [1]
     finally:
         cb.close()
 
 
 def test_fake_mode_aborts_every_other_origin_before_the_guard(pw, tmp_path, stub):
-    other = ThreadingHTTPServer(("127.0.0.1", 0), _Stub)   # another loopback origin, never reached
+    other = ThreadingHTTPServer(("127.0.0.1", 0), _Stub)
     threading.Thread(target=other.serve_forever, daemon=True).start()
     guard = _Guard()
     cb = _browser(pw, tmp_path, stub, guard, probe=lambda: (200, {"id": CREATOR}))
@@ -240,8 +233,6 @@ def test_fake_mode_aborts_every_other_origin_before_the_guard(pw, tmp_path, stub
 
 @pytest.mark.parametrize("allow_target", [False, True], ids=["target-refused", "target-allowed"])
 def test_a_redirect_hop_is_decided_again_before_it_leaves(pw, tmp_path, stub, allow_target):
-    """Review 4: Chromium follows a 30x itself after `continue_` (a 307 re-sends the POST) without the route; here each
-    hop comes back to the guard first, and a refused hop never reaches the server."""
     guard = _Guard(allow={"/api2/v2/redir"} | ({"/api2/v2/target"} if allow_target else set()))
     cb = _browser(pw, tmp_path, stub, guard, probe=lambda: (200, {"id": CREATOR}))
     try:
@@ -255,6 +246,6 @@ def test_a_redirect_hop_is_decided_again_before_it_leaves(pw, tmp_path, stub, al
         else:
             assert status == "aborted" and ("POST", "/api2/v2/target") not in _Stub.hits
         assert ("POST", "/api2/v2/redir") in _Stub.hits and (2, 307, None) in guard.dones
-        assert all("body" not in (x.get("response") or {}) for x in cb.exchanges)   # keys only, never the body
+        assert all("body" not in (x.get("response") or {}) for x in cb.exchanges)
     finally:
         cb.close()

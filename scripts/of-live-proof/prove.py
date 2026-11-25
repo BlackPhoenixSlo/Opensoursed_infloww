@@ -161,9 +161,7 @@ class Stack:
 
     def __init__(self, evidence: Path, fault: str | None = None, app: bool = True, session_src: Path | None = None):
         self.evidence, self.of, self.fake, self.login = evidence, "live" if session_src else "fake", None, None
-        self.account = None   # the Creator `bootstrap` binds; `of_get` names it to the Relay
-        # ticket 97: an app-side fault (`AppFault`) is the app browser's route hook `app_route`, FakeOF runs
-        # unfaulted; each time it fired is kept in `planted` (the fault-fired check)
+        self.account = None
         self.fault, self.planted, self.app_route = fault, [], None
         self.tmp = Path(tempfile.mkdtemp(prefix="ofm-live-proof."))
         self.procs: list[subprocess.Popen] = []
@@ -178,14 +176,14 @@ class Stack:
             raise
 
     def _start(self, fault, app, session_src) -> None:
-        if session_src:   # ticket 09: before the Relay starts, so its registry finds the account dir
+        if session_src:
             live_entry.copy_session(session_src, self.tmp)
         else:
             from fake_layer import FAULTS, AppFault, Fake
             app_side = FAULTS[fault].hook if isinstance(FAULTS.get(fault), AppFault) else None
             self.fake = Fake(seed=1, fault=None if app_side else fault)
             self.app_route = app_side(self.planted) if app_side else None
-            if seed := getattr(FAULTS.get(fault), "seed", None):   # ticket 99: the fault's own FakeOF state
+            if seed := getattr(FAULTS.get(fault), "seed", None):
                 seed(self.fake.of)
             self.fake.start()
         relay_port, app_port, dead_port = _free_ports(3)
@@ -212,15 +210,12 @@ class Stack:
             "HTTP_PROXY": dead, "HTTPS_PROXY": dead, "http_proxy": dead, "https_proxy": dead,
             "NO_PROXY": "127.0.0.1,localhost,::1", "no_proxy": "127.0.0.1,localhost,::1",
             "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1", "TZ": "UTC",
-            # the proofs drive the ofm-not-yet controls: their routes stay 404 unless the switch is on (runtime_switches)
             "OFM_NEW_WRITES_ENABLED": "1",
         })
         if self.fake:
             from fake_layer import CDN_HOST
             env.update(OF_API_ORIGIN=self.fake.origin, OFM_FAKE_CDN_HOST=CDN_HOST)
-        else:   # live: the Relay's OnlyFans calls leave direct (curl_cffi, under the Live guard); net_guard stays on
-            # ASSUMPTION: no proxy means the operator's IP; ADR-0030 (IP change != session loss) is unobserved; ticket 11
-            # decides the live egress
+        else:
             for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
                 env.pop(k)
         self.relay_log, self.next_log = t / "relay.log", t / "next.log"
@@ -235,7 +230,7 @@ class Stack:
             "NODE_OPTIONS": f"--require {ROOT / 'scripts/demo-shots/fetch-guard.cjs'}", "DEMO_SHOTS_TMP": str(t),
         })
         node = shutil.which("node") or "node"
-        if app:   # `capture` drives no app
+        if app:
             self.procs.append(subprocess.Popen(
                 [node, "node_modules/next/dist/bin/next", "dev", "--webpack", "-H", "127.0.0.1", "-p", str(app_port)],
                 env=nenv, cwd=ROOT / "app", stdout=open(self.next_log, "w"), stderr=subprocess.STDOUT,
@@ -262,7 +257,7 @@ class Stack:
         header, cookie or session value passes here; OnlyFans's JSON comes back as it came.
         ASSUMPTION: fake mode reads through the Relay too, never straight to FakeOF (rung 5: the smallest change that
         lets every fake run drive the live code path); overturned if a fake read's extra wire lines break a check."""
-        if not self.account:   # before bootstrap the Relay would fall back to its active account: fail loudly
+        if not self.account:
             raise RuntimeError("of_get before bootstrap: no Creator to read as")
         url = f"{self.relay}/__proof/of-read?" + urlencode({"path": path, "query": urlencode(query)})
         req = urllib.request.Request(url, headers={"X-Account-Id": self.account})
@@ -276,7 +271,7 @@ class Stack:
     def close(self) -> dict:
         try:
             return self._close()
-        finally:   # the temp dir (and a live session copy) goes whatever happened above
+        finally:
             shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _close(self) -> dict:
@@ -297,7 +292,7 @@ class Stack:
         if self.fake:
             self.fake.stop()
         for name in ("relay.log", "next.log", "server-offhost.jsonl"):
-            if (self.tmp / name).exists():   # copied redacted: a log can hold a presigned URL or an S3 error body
+            if (self.tmp / name).exists():
                 (self.evidence / name).write_text(
                     redact_text((self.tmp / name).read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
         restored = []
@@ -310,7 +305,7 @@ class Stack:
                 else:
                     p.write_bytes(data)
                 restored.append(f"app/{f}")
-        shutil.rmtree(self.tmp, ignore_errors=True)   # here too, so the report below sees it gone
+        shutil.rmtree(self.tmp, ignore_errors=True)
         return {"temp_dir": str(self.tmp), "temp_deleted": not self.tmp.exists(), "restored": restored}
 
 
@@ -326,7 +321,7 @@ def _relay_client(stack: Stack, ab: AppBrowser):
         if data is not None:
             headers["Content-Type"] = "application/json"
         payload = json.dumps(data).encode() if data is not None else None
-        if form is not None:   # ticket 67: a multipart body, (content type, bytes) as undo_driver.multipart makes it
+        if form is not None:
             headers["Content-Type"], payload = form
         r = urllib.request.Request(stack.relay + route, method=method, headers=headers, data=payload)
         try:
@@ -338,8 +333,7 @@ def _relay_client(stack: Stack, ab: AppBrowser):
     return call
 
 
-# ticket 67: the "file" trigger step's picture, a synthetic grey 1280x720 PNG (never a real image). Every chunk's CRC
-# must hold: OnlyFans's convert answers 400 "Image is corrupted" otherwise (live 2026-11-21, the old hand-typed 1x1).
+# OnlyFans convert answers 400 "Image is corrupted" unless every PNG chunk CRC is valid
 def _grey_png(w: int, h: int) -> bytes:
     import struct
     import zlib
@@ -384,7 +378,7 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
     req = ab.ctx.request
     call = _relay_client(stack, ab)
     res = {"proof": proof.id, "problems": [], "screens": []}
-    t0 = time.time()   # ticket 98: the proof's own window (`res["t"]`) for harness_checks' read-first check
+    t0 = time.time()
     marker = f"oi-proof-{run_id}"
     shots = evidence / proof.id
     shots.mkdir(exist_ok=True)
@@ -402,15 +396,12 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
             raise RuntimeError(f"/__proof/wire answered {status}")
         return json.loads(body)["wire"]
 
-    # ASSUMPTION (ticket 100): a fake run declares its quiet hour as the hour from the run's start, so a fan-visible
-    # publish can pass against FakeOF (rung 5: fake mode has no owner to declare one); a live run sends none, and the
-    # Relay refuses one armed in any other mode (relay_live `arm`).
     quiet = datetime.strptime(run_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).isoformat()
     r = req.post(f"{stack.relay}/__proof/arm", data={"proof": proof.id, "of": stack.of, "proof_fan": proof_fan,
                                                      "capture_abort": capture_abort, "lockout": lockout,
                                                      **({"quiet_hour": quiet} if stack.of == "fake" else {}),
-                                                     "cotag_partner": cotag_partner,   # ticket 98: the guard's too
-                                                     "marker": marker})   # round 2 #22: payloads bind to this run's
+                                                     "cotag_partner": cotag_partner,
+                                                     "marker": marker})
     if not r.ok:
         res["problems"].append(f"arm failed: {r.status} {r.text()[:200]}")
         res["state"] = "FAILED"
@@ -422,10 +413,10 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
                 if x["row"] not in rows_before and x["proof"] == proof.id]
 
     before = after = after_undo = effect = None
-    keys = {}   # ticket 131: the undo keys registered with the Relay (`register_keys`), shared by the proof's rows
-    kept = {}   # ticket 67: the pictures an undo puts back, by undo index (undo_driver.keep)
+    keys = {}
+    kept = {}
     lock, stop, done, step_now = threading.RLock(), threading.Event(), set(), ["start"]
-    sent = {}   # (Relay method, route) -> its reversal record: an undo request several rows share goes out once
+    sent = {}
 
     def find_lost(row):
         """Story 53: a write counted as sent, never retried, its id found by the proof's own finder in the after-write
@@ -446,7 +437,7 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
         text = text.decode("utf-8", "replace") if isinstance(text, bytes) else str(text or "")
         why = f"the Relay refused found id {found}: {status} {text[:200]}"
         res["problems"].append(f"row {row['row']}: {why}")
-        return {**row, "found_refused": why}   # named by check_undo_log's owner action
+        return {**row, "found_refused": why}
 
     def after_write():
         """The after-write read, taken once (with the declared effect on it)."""
@@ -463,20 +454,19 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
         the main thread or the timer (one row)."""
         nonlocal after_undo
         rows = list(rows)
-        if not rows:   # nothing written: nothing to undo (an undo sequence is never sent for no row)
+        if not rows:
             return
-        # ticket 96: an undo sequence's rows close on the after-write read too, so a step that raised still gets one
         if (forced or proof.undo_steps is not None) and proof.arm:
             after_write()
         for i, row in enumerate(rows):
             if row.get("of_id") is None:
                 res["reply_lost"] = res.get("reply_lost") or str(row.get("write_status") or "").startswith("reply lost")
-                if needs_row_id(proof, row):   # an upload row is reversed by the hide keyed on the post: no id to find
+                if needs_row_id(proof, row):
                     rows[i] = find_lost(row)
         for row in rows:
             if undo_driver.is_key_source(proof, row):
                 undo_driver.register_keys(proof, row, before, after_write, call, res["problems"], keys, creator)
-        done.update(r["row"] for r in rows)   # before the undo: an attempted undo is never retried (story 53's rule)
+        done.update(r["row"] for r in rows)
         try:
             closed = undo_driver.settle_rows(proof, rows, call, wire, read, creator=creator, before=before, after=after,
                                              effect=effect, keys=keys, sent=sent, res=res, fan=proof_fan, kept=kept,
@@ -491,7 +481,7 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
         for c in closed if forced else ():
             c["forced"] = forced
             res["forced"] = [*res.get("forced", []), f"row {c['row']}: {forced}"]
-            append_jsonl(evidence / "undo-log.jsonl", c)   # closed now, not at disarm: the proof goes on
+            append_jsonl(evidence / "undo-log.jsonl", c)
 
     def watch():
         """Story 10's timer: each pending row of this proof with an undo deadline is settled once it is due."""
@@ -520,7 +510,7 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
         with lock:
             after_write()
             settle(undo_order(proof, [r for r in mine() if r["row"] not in done]))
-            after = effect = None   # the next phase takes its own after-write read and registers its own keys
+            after = effect = None
             keys.clear()
             sent.clear()
 
@@ -531,27 +521,23 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
     timer = threading.Thread(target=watch, name=f"deadline-{proof.id}", daemon=True)
     if proof.arm:
         timer.start()
-    # relay-only triggers (the drills) and capture-browser steps open no app page; Proof rejects a mix of families
     ui = step_family(proof.trigger[0]) == "ui"
     shown, offhost0, images, dom = proof.page, len(ab.offhost()), [], []
-    # page: closed in `finally`: an open page keeps its event stream, and six fill the per-host limit
     page = seq0 = park_window = None
     aborted_seqs, h0 = set(), len(cb.hand_offs) if cb else 0
-    reupload = any(w.relay_upload for w in proof.undo)   # ticket 67
+    reupload = any(w.relay_upload for w in proof.undo)
     try:
-        seq_start = max((e["seq"] for e in wire()), default=0)   # a Park checks nothing left after this (park_problems)
-        # ticket 61: text waits read from OnlyFans (Expect), resolved and guarded OF-side before the page opens (Park)
+        seq_start = max((e["seq"] for e in wire()), default=0)
         wants = resolve_expects(expect_waits(proof), stack.of_get)
         if wants:
             res["wants"] = {str(k): v for k, v in wants.items()}
         before = read("before")
         why = proof.precheck(before) if proof.precheck else None
-        if why:   # ticket 96: refused on the before read; no page opens, nothing is written
+        if why:
             raise _Parked(why)
-        if proof.ready and (why := proof.ready(before)):   # ticket 60: OnlyFans's side is not set for the trigger
+        if proof.ready and (why := proof.ready(before)):
             raise Park(why)
-        kept = undo_driver.keep(proof, before, call, creator, shots)   # ticket 67: before any write, or not at all
-        # the window opens before the first page load: what the page sends while it loads is the proof's too
+        kept = undo_driver.keep(proof, before, call, creator, shots)
         seq0 = max((e["seq"] for e in wire()), default=0)
         ab.responses, ab.errors, ab.writes = [], [], []
         if ui:
@@ -561,10 +547,10 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
             if res["scope"] != f"model:{creator}":
                 res["problems"].append(f"not in Single-Creator scope: chatterly:scope is {res['scope']!r}")
             fr = _mirror_frame(page, proof.page)
-            if proof.trigger[0][0] != "call":   # a ("call", fn) step waits for its own page state (ticket 100)
+            if proof.trigger[0][0] != "call":
                 fr.locator(proof.trigger[0][1]).first.wait_for(state="visible", timeout=60_000)
             try:
-                page.wait_for_load_state("networkidle", timeout=30_000)   # the page's own reads land before the shot
+                page.wait_for_load_state("networkidle", timeout=30_000)
             except Exception:  # noqa: BLE001  (an open event stream can keep the network busy; the shot still counts)
                 pass
             page.screenshot(path=str(shots / "trigger.png"))
@@ -572,7 +558,7 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
         step_errors = []
         for i, step in enumerate(proof.trigger):
             step_now[0] = " ".join(map(str, step))
-            if step[0] == "relay":   # an existing Relay route, called as the scoped Creator
+            if step[0] == "relay":
                 _, method, route, body = step
                 r = req.fetch(f"{stack.relay}{route}", method=method, headers={"X-Account-Id": creator},
                               data=body(before) if callable(body) else body)
@@ -580,26 +566,26 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
                 if r.status >= 400:
                     step_errors.append((method, route, r.status))
                 continue
-            if step_family(step) == "browser":   # a fetch or an OAuth hand-off in the capture browser
+            if step_family(step) == "browser":
                 aborted_seqs |= capture_cmd.play(step, cb, before, marker, wire, res)
                 continue
-            if step[0] == "wait":   # UI: hold the proof on this step for N seconds
+            if step[0] == "wait":
                 page.wait_for_timeout(step[1] * 1000)
                 continue
-            if step[0] == "text":   # UI: wait for a text, as `settled` does (a note that fades before the end)
+            if step[0] == "text":
                 _wait_text(fr, step[1], wants.get(i, step[2]), marker, proof_fan)
                 continue
-            if step[0] == "goto":   # UI: another Mirror page in the same tab (Phase 6: New post's vault dialog)
-                shown = goto_target(fill_text(step[1], marker, proof_fan), mine)   # ticket 33: {fan}
+            if step[0] == "goto":
+                shown = goto_target(fill_text(step[1], marker, proof_fan), mine)
                 page.goto(f"{stack.app}/of-manager/{shown.replace('/index', '')}", wait_until="load", timeout=180_000)
                 fr = _mirror_frame(page, shown.split("?", 1)[0])
                 continue
-            if step[0] == "frame":   # UI: the Mirror page a click navigated the tab to (tickets 34, 96, 131)
+            if step[0] == "frame":
                 shown = step[1]
                 fr = _mirror_frame(page, shown)
                 fr.wait_for_load_state("load", timeout=60_000)
                 continue
-            if step[0] == "call":   # ticket 100: the proof's own steps (Relay calls, reads, clicks) on `ctx`
+            if step[0] == "call":
                 problems = step[1](_call_ctx(page, fr, shown, stack, call, creator, marker, proof_fan, shots, res,
                                              proof.id, extra={"settle": settle_now,
                                                               "fan_visible_spent": fan_visible_spent,
@@ -608,17 +594,16 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
                 if problems:
                     break
                 continue
-            if step[0] == "images":   # UI: every matching <img> once loaded or failed, for the proof's check
+            if step[0] == "images":
                 images.append({"page": shown, "tiles": collect_tiles(fr, step[1])})
                 continue
-            if step[0] == "dom":   # UI: the shown items under a container, for the proof's check (tickets 95, 96)
+            if step[0] == "dom":
                 dom.append(_dom_snapshot(page, fr, shown, *step[1:]))
                 continue
-            # ticket 96
-            if step[0] == "drag":   # UI: pointer drag of one element onto another (a drag handle)
+            if step[0] == "drag":
                 fr.locator(step[1]).first.drag_to(fr.locator(step[2]).first, timeout=30_000)
                 continue
-            if step[0] == "gone":   # UI: wait until no element matches (or the frame went with it)
+            if step[0] == "gone":
                 try:
                     fr.locator(step[1]).first.wait_for(state="detached", timeout=30_000)
                 except Exception:  # noqa: BLE001
@@ -630,13 +615,13 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
                 loc.click(timeout=30_000)
             elif step[0] == "fill":
                 loc.fill(fill_text(step[2], marker, proof_fan), timeout=30_000)
-            elif step[0] == "accept":   # a click whose confirm() holds step[2] is accepted (ticket 34)
+            elif step[0] == "accept":
                 click_confirm(page, loc, step[2])
-            elif step[0] == "press":   # a key on the control (ticket 61: one behind an open modal takes no click)
+            elif step[0] == "press":
                 loc.press(step[2], timeout=30_000)
-            elif step[0] == "select":   # ticket 69: a native <select> (Social media's Button) set to the option's value
+            elif step[0] == "select":
                 loc.select_option(fill_text(step[2], marker, proof_fan), timeout=30_000)
-            elif step[0] == "file":   # ticket 67: the control opens a file picker; the synthetic grey PNG is chosen
+            elif step[0] == "file":
                 _pick_file(page, loc, step[2])
             else:
                 raise ValueError(f"unknown trigger step {step!r}")
@@ -645,14 +630,11 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
         if proof.settled:
             kind, sel, want, *landed = proof.settled
             assert kind == "text" and len(landed) <= 1, proof.settled
-            if landed:   # ticket 61: the trigger led to another mirror page (a State page's link); it settles there
+            if landed:
                 fr = _mirror_frame(page, landed[0])
             try:
-                _wait_text(fr, sel, wants.get("settled", want), marker, proof_fan)   # `{marker}`: only this run's write
+                _wait_text(fr, sel, wants.get("settled", want), marker, proof_fan)
             except Exception:  # noqa: BLE001
-                # Story 53: an app that got no reply never settles; that symptom is expected only when the Relay logged
-                # the write's reply as lost. The step-9 checks below still run. The shot is named unsettled so a
-                # lost-reply pass is never read as the app confirming the control (live proof needs a settled shot).
                 if not any(str(x.get("write_status") or "").startswith("reply lost") for x in mine()):
                     raise
                 shot = "unsettled.png"
@@ -662,24 +644,23 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
         elif cb is not None and step_family(proof.trigger[0]) == "browser":
             cb.page.screenshot(path=str(shots / "drill.png"))
             res["screens"].append(f"{proof.id}/drill.png")
-        # in-flight wire lines complete (the page's wait also delivers its pending response events)
         page.wait_for_timeout(500) if ui else time.sleep(0.5)
         relay_errors, ab.errors = ab.errors + step_errors, None
         res["app_writes"], ab.writes = ab.writes, None
         responses = ab.responses
         for method, path, account in res["app_writes"]:
-            if account != creator:   # every write the app sends is for the scoped Creator (story 29)
+            if account != creator:
                 res["problems"].append(f"{method} {path} carried X-Account-Id {account!r}, not {creator}")
         window = [e for e in wire() if e["seq"] > seq0 and e["seq"] not in aborted_seqs]
         res["problems"] += wire_problems(proof, window, relay_errors) + expect_problems(proof, window)
-        if proof.check:   # what the browser saw goes to the evidence folder; the report keeps its path
+        if proof.check:
             seen = {"origins": list(ab.allowed), "images": images, "responses": responses,
                     "offhost": ab.offhost()[offhost0:], "dom": dom, "of_read": before,
-                    "wire": window}   # wire: ticket 96
+                    "wire": window}
             shots.mkdir(parents=True, exist_ok=True)
             (shots / "seen.json").write_text(json.dumps(seen, indent=1))
             res["seen"] = f"{proof.id}/seen.json"
-            got = proof.check(seen)   # {problems, parked, record} (ticket 95)
+            got = proof.check(seen)
             res["record"] = got["record"] or {}
             if got["parked"]:
                 res["parked"] = got["parked"]
@@ -687,19 +668,17 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
         if proof.kind == "oauth":
             res["hand_offs"] = cb.hand_offs[h0:] if cb else []
             res["problems"] += hand_off_problems(res["hand_offs"], window)
-        if capture_abort:   # the aborted write left OnlyFans's side as it was
+        if capture_abort:
             after = read("after-write")
             if not reads_equal(before, after):
                 res["problems"].append("capture --abort: OnlyFans's side changed between the before and after reads")
         with lock:
-            # a drill has no effect to read (it passes only refused); taken already when the timer forced the undo; a
-            # proof whose undo uploads a picture again reads after the app's writes landed (finally, `_app_quiet`)
             if proof.arm and proof.refused_as is None and after is None and not reupload:
                 after = read("after-write")
-                effect = bool(proof.effect(before, after))   # judged with the row by verify_undo
-    except _Parked as e:   # tickets 96, 100: parked before any write
+                effect = bool(proof.effect(before, after))
+    except _Parked as e:
         res["parked"], res["read_first"] = str(e), True
-    except Park as e:   # tickets 60, 61: a precondition unmet before the page opened; checked below: nothing sent
+    except Park as e:
         res["parked"] = str(e)
         park_window = [x for x in wire() if x["seq"] > seq_start]
     except Exception as e:  # noqa: BLE001  (a failed step fails the proof; the undo below still runs)
@@ -707,12 +686,12 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
         res["traceback"] = traceback.format_exc()
     finally:
         ab.errors = ab.writes = ab.responses = None
-        if proof.arm and page is not None:   # before the timer stops: a `delete_at_once` deadline still fires meanwhile
+        if proof.arm and page is not None:
             _app_quiet(page, wire, seq0, res)
-        stop.set()   # the timer starts no new undo; one under way finishes first
+        stop.set()
         if timer.is_alive():
             timer.join(timeout=120)
-        if reupload:   # ticket 67: the after-write read (a cover URL the undo's wait skips) after the app's writes
+        if reupload:
             try:
                 with lock:
                     if proof.arm and after is None and mine():
@@ -720,10 +699,9 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
             except Exception as e:  # noqa: BLE001  (no after-write read: the undo is sent, the after-undo read decides)
                 res["problems"].append(f"after-write read: {type(e).__name__}: {e}")
         with lock:
-            # ticket 30: the post's DELETE and hide before the upload rows
             settle(undo_order(proof, [row for row in mine() if row["row"] not in done]))
-        req.post(f"{stack.relay}/__proof/arm", data={"proof": None})   # disarm
-        if kept and ui and res.get("closed"):   # ticket 67: after the disarm, so the fresh page's writes are not this proof's
+        req.post(f"{stack.relay}/__proof/arm", data={"proof": None})
+        if kept and ui and res.get("closed"):
             _after_undo_shot(ab, stack, proof, shots, res)
         for closed in res.get("closed", []):
             if not closed.get("forced"):
@@ -734,13 +712,10 @@ def run_proof(proof, stack: Stack, ab: AppBrowser, creator: str, evidence: Path,
             except Exception:  # noqa: BLE001  (a page the browser already lost is closed enough)
                 pass
     res["undo"] = [c["state"] for c in res.get("closed", [])] or ["none"]
-    if park_window is not None:   # tickets 60, 61: a Park left nothing sent
+    if park_window is not None:
         res["problems"] += park_problems(res["parked"], park_window, res["undo"])
-    # a sent message no unsend took back (ticket 100) stops the run as a FAILED undo does (story 19); a park (tickets
-    # 60, 61, 95, 96): never a pass, only when nothing failed or was written
     res["state"] = ("FAILED" if {"FAILED", NOT_REVERSIBLE_REFUSED} & set(res["undo"]) else "fail" if res["problems"]
                     else "parked" if res.get("parked") and res["undo"] == ["none"] else "pass")
-    # ticket 99: a branch the proof parked after its writes were all undone (the cap spent before a re-run)
     parked = [v for v in ((res.get("record") or {}).get("branches") or {}).values() if str(v).startswith("parked:")]
     if parked and res["state"] == "pass" and set(res["undo"]) <= {"undone", "none"}:
         res["state"], res["parked"] = "parked", "; ".join(parked)
@@ -765,7 +740,7 @@ def bootstrap(stack: Stack, ab: AppBrowser) -> str:
     from FakeOF's signed curl (soak/runner.py `_boot`). Returns its id."""
     req = ab.ctx.request
     user_id, password = live_entry.register_owner(req, stack.relay)
-    stack.login = (live_entry.OWNER, password)   # printed by `serve` only
+    stack.login = (live_entry.OWNER, password)
     if stack.fake is None:
         live_entry.link_account(stack.tmp / "relay.db", user_id)
         stack.account = live_entry.PROOF_CREATOR
@@ -849,14 +824,14 @@ def harness_checks(evidence: Path, hits: list, results: list) -> list:
     every proof the run started, a parked one included."""
     wire = _wire_folded(evidence)
     out = census(list(wire.values()), hits)
-    out += pace_problems(list(wire.values()))   # story 22: forwarded writes at least 5 s apart
+    out += pace_problems(list(wire.values()))
     plain = [h for h in hits if not h["tagged"]]
     for r in results:
         p = ALL[r["proof"]]
-        if p.refused_as is not None:   # a drill: FakeOF received none of its requests (story 39)
+        if p.refused_as is not None:
             out += [f"{p.id}: FakeOF received {h['method']} {h['path']}" for h in plain if undo_driver.arm_hit(p.arm, h)]
-        if r.get("read_first"):   # tickets 96, 100: parked before any write, so FakeOF received none of its writes
-            t0, t1 = r.get("t") or (float("-inf"), float("inf"))   # ticket 98: in its own window (proofs share arms)
+        if r.get("read_first"):
+            t0, t1 = r.get("t") or (float("-inf"), float("inf"))
             out += [f"{p.id}: parked, yet FakeOF received {h['method']} {h['path']}" for h in plain
                     if t0 <= h["t"] <= t1 and (undo_driver.arm_hit(p.arm, h) or undo_driver.arm_hit(p.undo, h))]
         out += [m for c in r.get("closed", []) if (m := undo_driver.row_problem(p, c, r["closed"], plain))]
@@ -951,7 +926,7 @@ def _index_settle(creator: str, log: Path) -> None:
         try:
             index_update(creator, drop=[log])
         except ValueError:
-            pass   # an unreadable index already blocks the next live run (earlier_pending)
+            pass
 
 
 def prove(proof_ids: list[str], fault: str | None = None, proof_fan: str | None = None,
@@ -962,9 +937,7 @@ def prove(proof_ids: list[str], fault: str | None = None, proof_fan: str | None 
     sha = _git("rev-parse", "--short", "HEAD").strip() or "nosha"
     run_id = _utc()
     folder = f"{run_id}-ofm-{of}-{sha}"
-    # ASSUMPTION: a fake run's folder says `fake` where the spec's live folder says `live` (story 33 names the live
-    # run's folder only; rung 5), so a fake run is never quoted as a live one. Overturned by the coordinator.
-    taken, lock_msg = take_lock(expected, folder)   # 80000112 live; FakeOF's Creator fake
+    taken, lock_msg = take_lock(expected, folder)
     if not taken:
         print(f"ofm-live-proof: refused: {lock_msg}", flush=True)
         return 1
@@ -978,7 +951,7 @@ def prove(proof_ids: list[str], fault: str | None = None, proof_fan: str | None 
             for p in pending:
                 print(f"ofm-live-proof: refused: earlier run's Undo log has an unresolved row: {p}", flush=True)
             return 1
-        if of == "live":   # round 2 #23: listed from the start, so a crashed live run still blocks other worktrees
+        if of == "live":
             index_update(expected, add=log)
             listed = True
         return _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, proof_fan, capture,
@@ -1010,7 +983,7 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
     secrets: list = []
     print(f"ofm-live-proof: evidence {rep['folder']}" + (f" (fault {fault})" if fault else ""), flush=True)
     stack = cb = None
-    started = []   # every proof run_proof ran, a parked one included (harness_checks)
+    started = []
     code = 1
     try:
         stack = Stack(evidence, fault, app=not capture and not reverify, session_src=session_src)
@@ -1020,7 +993,7 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
         with sync_playwright() as pw:
             ab = AppBrowser(pw, stack, evidence)
             creator = rep["account"] = bootstrap(stack, ab)
-            secrets = session_secrets(load_session(stack.session_dir(creator)))   # held in memory for the leak check
+            secrets = session_secrets(load_session(stack.session_dir(creator)))
             ab.ctx.add_init_script(f"try {{ localStorage.setItem('chatterly:scope', 'model:{creator}'); }} catch (e) {{}}")
             if not capture and not reverify:
                 stack.wait_app()
@@ -1029,16 +1002,16 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
             for why in rep["preflight"]:
                 print(f"ofm-live-proof: refused before any proof: preflight: {why}", flush=True)
             proofs = order([ALL[i] for i in proof_ids if i in ALL], canon=ORDER)
-            if not rep["preflight"]:   # parked and refused first: the capture browser opens for startable proofs only
+            if not rep["preflight"]:
                 proofs = live_entry.startable(proofs, [x for x in proof_ids if x in PENDING], of, proof_fan, rep,
                                               capture=capture)
-            if capture_cmd.opens_capture_browser(capture, proofs, rep["preflight"]):   # on demand only (D27)
+            if capture_cmd.opens_capture_browser(capture, proofs, rep["preflight"]):
                 cb = capture_cmd.start(pw, stack.session_dir(creator), _relay_client(stack, ab), creator, evidence, rep,
                                        fake_origin=fake.origin if fake else None,
                                        fake_sign=stack.fake_sign if fake else None, launch_args=LAUNCH_ARGS)
             if serve and not rep["preflight"]:
                 live_entry.serve_wait(stack.app, stack.relay, stack.login)
-            if reverify and not rep["preflight"]:   # read only: one OnlyFans read and one /img GET, nothing armed
+            if reverify and not rep["preflight"]:
                 cover = ALL["settings--profile-cover-avatar"]
                 rep["reverify"] = undo_driver.reverify(cover, reverify, lambda: cover.of_read(stack.of_get, None),
                                                        _relay_client(stack, ab), creator, out=evidence)
@@ -1050,7 +1023,7 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
                 for i, p in enumerate(proofs):
                     print(f"ofm-live-proof: {'capture ' if capture else ''}{p.id}"
                           + (" --abort" if capture == "abort" else "") + " ...", flush=True)
-                    if capture:   # one proof (main)
+                    if capture:
                         r = capture_cmd.run_capture(p, lambda q, abort: run_proof(
                             q, stack, ab, creator, evidence, run_id, proof_fan, cb=cb, capture_abort=abort,
                             lockout=lockout, cotag_partner=cotag_partner),
@@ -1058,8 +1031,8 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
                     else:
                         r = run_proof(p, stack, ab, creator, evidence, run_id, proof_fan, cb=cb, lockout=lockout,
                                       cotag_partner=cotag_partner)
-                    started.append(r)   # harness_checks: every proof that ran, a parked one included
-                    if r["state"] == "parked":   # tickets 60, 61, 95, 96, 99: found at run time, reported parked
+                    started.append(r)
+                    if r["state"] == "parked":
                         rep["parked"].append({"proof": p.id, "reason": r["parked"], "screens": r["screens"],
                                               **({"read_first": True} if r.get("read_first") else {})})
                         print(f"ofm-live-proof: {p.id}: {r['parked']}", flush=True)
@@ -1073,7 +1046,7 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
                     for f in r.get("forced", []):
                         print(f"ofm-live-proof: {p.id}: forced undo: {f}", flush=True)
                     if r["state"] == "FAILED":
-                        rep["not_run"] = [q.id for q in proofs[i + 1:]]   # story 19: a failed undo stops the run
+                        rep["not_run"] = [q.id for q in proofs[i + 1:]]
                         for q in rep["not_run"]:
                             print(f"ofm-live-proof: {q}: not run (an earlier undo FAILED)", flush=True)
                         break
@@ -1085,9 +1058,9 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
             try:
                 ab.browser.close()
             except Exception:  # noqa: BLE001
-                if not serve:   # a terminal's Ctrl-C reaches Playwright's driver too: the browser is already gone
+                if not serve:
                     raise
-    except KeyboardInterrupt:   # SIGINT, or SIGTERM via `_interrupt`, before serve's wait or during a proof
+    except KeyboardInterrupt:
         rep["error"] = "interrupted"
         print("ofm-live-proof: interrupted; tearing down", file=sys.stderr, flush=True)
     except Exception as e:  # noqa: BLE001
@@ -1095,11 +1068,11 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
         rep["traceback"] = traceback.format_exc()
         print(rep["traceback"], file=sys.stderr)
     finally:
-        sigs = {s: signal.signal(s, signal.SIG_IGN) for s in (signal.SIGINT, signal.SIGTERM)}   # teardown runs whole
+        sigs = {s: signal.signal(s, signal.SIG_IGN) for s in (signal.SIGINT, signal.SIGTERM)}
         try:
-            if stack is not None:   # first: the temp dir and session copy go even if what follows raises
+            if stack is not None:
                 rep["teardown"] = stack.close()
-            capture_cmd.finish(cb, evidence, rep)   # a run that raised still keeps the capture browser's exchanges
+            capture_cmd.finish(cb, evidence, rep)
             if stack is not None and stack.fake:
                 hits = stack.fake.recorder.snapshot()
                 with open(evidence / "fake-hits.jsonl", "w") as f:
@@ -1108,13 +1081,13 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
                 if "error" not in rep:
                     rep["harness"] = harness_checks(evidence, hits, started)
                 from fake_layer import STATES, start_state_problems
-                if fault in STATES:   # ticket 60: a start state faults no request; its proof must park instead
+                if fault in STATES:
                     rep["harness"] += start_state_problems(fault, rep["parked"])
-                elif fault and not any(h.get("fault") for h in hits) and not stack.planted:   # ticket 97: app fault
+                elif fault and not any(h.get("fault") for h in hits) and not stack.planted:
                     rep["harness"].append(f"fault {fault} never fired: no proof sent the request it targets")
                 rep["harness"] += [f"fault did not fire as designed: {h['method']} {h['path']}: {h['fault']}"
                                    for h in hits if h.get("fault") and h["fault"] != fault]
-            elif stack is not None and "error" not in rep:   # live: no FakeOF to census; the pacing check still holds
+            elif stack is not None and "error" not in rep:
                 rep["harness"] = pace_problems(list(_wire_folded(evidence).values()))
             rows = read_undo_log(evidence / "undo-log.jsonl")
             md = undo_markdown(rows)
@@ -1124,14 +1097,13 @@ def _prove(proof_ids, fault, sha, run_id, folder, lock_msg, sync_playwright, pro
                 print(f"ofm-live-proof: Undo log: {p}", flush=True)
             print(md, flush=True)
             rep["trees_changed"] = _trees_state() != trees0
-            # one check, over everything the run leaves: the evidence folder, the report about to be written, its output
             rep["exit"] = None
             rep["session_leaks"] = session_leaks({**evidence_texts(evidence), "<run output>": capture_cmd.OUT.text(),
                                                   "report.json": json.dumps(rep, default=str), "report.md": _report_md(rep)},
                                                  secrets)
             for p in rep["session_leaks"]:
                 print(f"ofm-live-proof: session leak: {p}", flush=True)
-            rep["run_ok"] = run_ok(rep, len(proof_ids), bool(secrets))   # accept.py reads it (ticket 77)
+            rep["run_ok"] = run_ok(rep, len(proof_ids), bool(secrets))
             ok = (rep["run_ok"] and all(proof_ok(r) for r in rep["proofs"])
                   and (not reverify or bool(rep.get("reverify", {}).get("ok"))))
             code = 0 if ok else 1
@@ -1151,18 +1123,18 @@ def main(argv=None) -> int:
     ap.add_argument("--of", required=True, choices=("live", "fake"))
     ap.add_argument("--proof", default="tracer.create-list", help="comma-separated proof ids")
     ap.add_argument("--fault", choices=("delete-500", "lost-reply", "cdn-src", "trial-delete-500", "rename-ignored",
-                                        "post-drop-label", "post-drop-expiry", "post-drop-target",   # ticket 35
-                                        "email-off",   # ticket 60
+                                        "post-drop-label", "post-drop-expiry", "post-drop-target",
+                                        "email-off",
                                         live_entry.WRONG_CREATOR,
-                                        "tip-filter", "strip-miss", "highlight-field", "payout-field",   # ticket 95
-                                        "no-stored-order", "sort-restore-500",   # ticket 96
-                                        "audience-list", "audience-second", "unsend-refused",   # ticket 100
+                                        "tip-filter", "strip-miss", "highlight-field", "payout-field",
+                                        "no-stored-order", "sort-restore-500",
+                                        "audience-list", "audience-second", "unsend-refused",
                                         "queue-500-foreign",
-                                        "dup-id-refused", "post-commit-500", "composer-once",   # ticket 97
-                                        "publish-other", "post-lost-hidden", "hidden-refused",   # ticket 99
+                                        "dup-id-refused", "post-commit-500", "composer-once",
+                                        "publish-other", "post-lost-hidden", "hidden-refused",
                                         "publish-lost", "publish-500",
-                                        "unsend-delete-500",   # ofm-not-yet ticket 33
-                                        "cotag-extra"),   # ofm-not-yet ticket 98
+                                        "unsend-delete-500",
+                                        "cotag-extra"),
                     help="fake only: FakeOF answers the tracer's (or a post's, ticket 101) DELETE 500, or applies its create and drops the reply; "
                          "or plants a vault tile src on a CDN host; or the run expects another Creator than FakeOF's; "
                          "trial-delete-500: the trial link's DELETE 500 (ticket 64); rename-ignored: a vault folder "
@@ -1184,20 +1156,17 @@ def main(argv=None) -> int:
                                           "session dir, copied into the run's temp dir and never printed")
     ap.add_argument("--proof-fan", help="the Proof fan message and PPV proofs may reach; fake mode defaults to "
                                          "FakeOF's fan, `none` unsets it (those proofs then park)")
-    # ofm-not-yet ticket 98: the Co-tag proofs' partner is run input only
     ap.add_argument("--cotag-partner", help="the OnlyFans creator id the Co-tag proofs tag; fake mode defaults to "
                                             "FakeOF's taggable creator, `none` unsets it; live never defaults (those "
                                             "proofs then park: owner sheet item 4)")
     ap.add_argument("--abort", action="store_true", help="capture only: record the write and abort it before it "
                                                          "leaves")
-    # ticket 66: the Run's `lockout` (proof_core.Run, rung 4) had no flag; a Lockout control's write still needs its
-    # pinned body, and its proofs still run last (order)
     ap.add_argument("--lockout", action="store_true", help="arm Lockout control writes (tag lockout, pinned body): "
                                                            "Block by country and Block by IP")
     ap.add_argument("--evidence", type=Path, help="reverify only, required there: the earlier run's evidence folder "
                                                   "whose kept cover the served one is compared with")
     a = ap.parse_args(argv)
-    why = live_entry.session_dir_refusal(a.of, a.session_dir)   # before anything starts (story 2)
+    why = live_entry.session_dir_refusal(a.of, a.session_dir)
     if why:
         print(f"ofm-live-proof: refused: {why}", file=sys.stderr)
         return 2
@@ -1215,30 +1184,27 @@ def main(argv=None) -> int:
               f"{a.evidence}", file=sys.stderr)
         return 2
     ids = [] if a.cmd in ("serve", "reverify") else [x for x in a.proof.split(",") if x]
-    unknown = [x for x in ids if x not in ALL and x not in PENDING]   # a PENDING id is parked by the run
+    unknown = [x for x in ids if x not in ALL and x not in PENDING]
     if (not ids and a.cmd not in ("serve", "reverify")) or unknown:
         print(f"ofm-live-proof: unknown proof {unknown or ids!r}; known: {sorted(ALL)}", file=sys.stderr)
         return 2
     why = (capture_cmd.cli_refusal(ALL[ids[0]], len(ids), a.fault, a.abort)
            if a.cmd == "capture" and ids[0] in ALL else None)
-    if why:   # story 26: a Critical control's capture without --abort, before anything starts
+    if why:
         print(f"ofm-live-proof: {why}", file=sys.stderr)
         return 2
-    refused = fake_only_refused([ALL[i] for i in ids if i in ALL], a.of)   # before anything starts (story 39)
+    refused = fake_only_refused([ALL[i] for i in ids if i in ALL], a.of)
     for why in refused:
         print(f"ofm-live-proof: refused: {why}", file=sys.stderr)
     if refused:
         return 2
-    cur = os.getpriority(os.PRIO_PROCESS, 0)   # os.nice(0) raises EPERM on macOS once already niced
+    cur = os.getpriority(os.PRIO_PROCESS, 0)
     if cur < NICE:
-        os.setpriority(os.PRIO_PROCESS, 0, NICE)   # inherited by FakeOF, the Relay, next dev and the browsers
-    # ASSUMPTION: `--proof-fan none` is how a fake run leaves the Proof fan unset (rung 5: fake mode otherwise names
-    # FakeOF's fan, so parking needs an explicit way to be exercised). A live run never defaults it (ticket 09).
+        os.setpriority(os.PRIO_PROCESS, 0, NICE)
     fan = None if a.proof_fan is None or a.proof_fan.strip().lower() in ("", "none") else a.proof_fan.strip()
     if a.proof_fan is None and a.of == "fake":
         from fake_layer import PROOF_FAN
         fan = str(PROOF_FAN)
-    # ofm-not-yet ticket 98: digits only; `none` unsets it in fake mode, as --proof-fan
     partner = None if a.cotag_partner is None or a.cotag_partner.strip().lower() in ("", "none") \
         else a.cotag_partner.strip()
     if partner is not None and not partner.isdigit():
@@ -1247,9 +1213,9 @@ def main(argv=None) -> int:
     if a.cotag_partner is None and a.of == "fake":
         from fake_layer import COTAG_PARTNER
         partner = str(COTAG_PARTNER)
-    expected = live_entry.expected_creator(a.of, a.fault)   # wrong-creator ends here: FakeOF never sees it
+    expected = live_entry.expected_creator(a.of, a.fault)
     fault = None if a.fault == live_entry.WRONG_CREATOR else a.fault
-    signal.signal(signal.SIGTERM, _interrupt)   # SIGTERM tears down like Ctrl-C (temp dir and session copy go)
+    signal.signal(signal.SIGTERM, _interrupt)
     return prove(ids, fault, fan, capture=("abort" if a.abort else "send") if a.cmd == "capture" else None,
                  of=a.of, session_src=Path(a.session_dir) if a.session_dir else None, serve=a.cmd == "serve",
                  expected=expected, lockout=a.lockout, reverify=a.evidence, cotag_partner=partner)

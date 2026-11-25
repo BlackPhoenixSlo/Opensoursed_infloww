@@ -50,11 +50,11 @@ from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
 import account_health
-import accounts as account_registry
 import app_open_warm
 import events
 import of_pacing
 import of_ws
+import platforms
 import relay_host
 import shared_refresher_decide as decide
 import transaction_ingest
@@ -271,7 +271,8 @@ async def tick() -> None:
     global _state
     tracked = events.open_tab_accounts()
     live = set(await transaction_ingest.live_account_ids()) if tracked else set()
-    readable = frozenset(a for a in tracked if a in live and account_registry.get_platform(a) != "fansly")
+    readable = frozenset(a for a in tracked
+                         if a in live and platforms.Lack.SHARED_REFRESH not in platforms.for_account(a).lacks)
     leased = frozenset(tracked & view_lease.leased_ids()) if tracked else frozenset()
     dead = frozenset(tracked & (await account_health.dead_session_map()).keys()) if tracked else frozenset()
     now_ms, prev_live = int(time.time() * 1000), {a: v["live"] for a, v in _state.shown.items()}

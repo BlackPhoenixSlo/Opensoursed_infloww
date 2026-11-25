@@ -1,44 +1,3 @@
-"""New post's "Add media" (app/lib/ofMirrorPost.ts): a file from disk uploads through the Relay and the next Post sends it.
-
-Mocks the login (as post_vault.py) and the relay's POST /api/of/v2/upload and POST /api/of/v2/posts; every unmocked
-/api/** returns [] and any request to a host other than localhost is aborted and fails the check (even one whose path a
-mock matches). The script builds a 1x1 PNG (stdlib zlib/struct) and hands it to the chooser as an in-memory file, because
-Chromium leaves a disk file's bytes out of the request body Playwright reports; the multipart upload body is parsed with
-stdlib email.parser.BytesParser. Checks in the frame, scope `model:1`:
-1. Clicking "Add media" fires a file chooser whose input has accept="image/*,video/*,audio/*" and multiple (OF's
-   composer takes several photos, videos and audio at once); the button
-   carries data-oi-wired.
-2. Every upload is held (its route kept and fulfilled later). With "Synthetic post" typed, Post is disabled while the
-   upload is held; after it is fulfilled with the accepted claim p1, Post is enabled and the strip shows one blob: thumb.
-   A second session holds two picks at once: Post stays disabled after the first is refused
-   ({"ready":false,"send_with":null,"note":"Synthetic refusal"}) while the second is in flight, and is enabled again
-   after the second fails (HTTP 502). A third session holds one upload across a State page round trip (Schedule, then
-   Cancel): back on new-post Post is still disabled, and is enabled once the upload is fulfilled.
-3. The mock receives exactly one POST /api/of/v2/upload with X-Account-Id: 1 and one multipart part named `file`,
-   filename the PNG's name, bytes equal to the PNG.
-4. After the accepted claim p1 the attached-media strip shows one thumb whose src starts with blob: (loaded), and Post
-   sends exactly one POST /api/of/v2/posts with X-Account-Id: 1 and
-   {"text":"Synthetic post","media_files":[{"processId":"p1","host":"h","name":"n"}],"price":0}.
-5. With "Synthetic post" typed and the accepted claim p2 attached, a second pick refused with
-   {"ready":false,"send_with":null,"note":"Synthetic refusal"} shows a red #oi-note containing `Synthetic refusal`; the
-   strip still has exactly one thumb, the editor still holds "Synthetic post", the oi:new-post:1 draft's media_files is
-   still [p2], and no POST /api/of/v2/posts is sent within 1s. A refusal with no note reads `Could not upload: upload
-   not ready`.
-6. An upload answered HTTP 502 shows a red #oi-note starting `Could not upload:` and adds no thumb; picking the same
-   PNG again sends a second POST /api/of/v2/upload with the same bytes. No console error but the 502's own resource line
-   (a rejection left unhandled is a page error, collected with the console errors).
-7. (Retired) No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner
-   2026-11-20, origin/main 77e5df419; phase_check.py's one_creator checks it).
-8. No console errors; no request left localhost.
-9. Dedupe hit: with vault id 42 seeded in the oi:new-post:1 draft before load, an upload answered
-   {"ready":true,"deduped":true,"vault_id":42,"send_with":[42]} is appended as returned: Post sends media_files [42, 42].
-10. After an accepted upload (claim p1), Schedule then Cancel and back on new-post: the strip shows one blob: thumb,
-    loaded, and Post sends the claim in media_files.
-11. After an accepted upload (claim p1) and a full reload (its blob: URL dead), the strip holds one 64px square in OF's
-    grey (#8a96a3) with no visible <img> whose naturalWidth is 0, and the draft's media_files is still [p1].
-Prints one {"check","want","got"} line per check. Screenshots: /tmp/of-mirror-shots/inapp-post-upload*.png. Exit 1 on a
-failed check.
-"""
 import base64, json, os, struct, sys, zlib
 from email.parser import BytesParser
 from email.policy import HTTP
@@ -65,11 +24,8 @@ def png_1x1():
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"\x00\x00\xaf\xf0")) + chunk(b"IEND", b"")
 PIXEL=png_1x1()
 PNG={"name":"synthetic.png","mimeType":"image/png","buffer":PIXEL}
-# The composer's thumbs: [src starts with blob:, loaded with a size] per picture
 DRAFT_MEDIA="JSON.parse(sessionStorage.getItem('oi:new-post:1')).media_files"
-# The shared note: [text, red]
 NOTE="(() => { const e = document.getElementById('oi-note'); return e && [e.textContent, e.style.color === 'rgb(255, 69, 69)']; })()"
-# The strip's squares after their pictures settled: [width, height, background, visible <img>s with naturalWidth 0]
 SQUARES="[...document.querySelectorAll('#oi-post-thumbs > .b-photos__item')].map(e => { const r = e.getBoundingClientRect(); return [r.width, r.height, getComputedStyle(e).backgroundColor, [...e.querySelectorAll('img')].filter(i => i.offsetParent !== null && i.complete && i.naturalWidth === 0).length]; })"
 THUMBS="[...document.querySelectorAll('#oi-post-thumbs img.b-photos__item__img')].map(e => [e.getAttribute('src').startsWith('blob:'), e.complete && e.naturalWidth > 0])"
 failures=[]
@@ -77,7 +33,6 @@ def check(label, got, want):
     print(json.dumps({"check":label,"want":want,"got":got}))
     if got!=want: failures.append(f"{label}: got {got!r}, expected {want!r}")
 def parts(content_type, body):
-    """The multipart body's parts as [name, filename, bytes as hex]."""
     msg=BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body)
     return [[p.get_param("name", header="content-disposition"), p.get_filename(), p.get_payload(decode=True).hex()] for p in msg.iter_parts()]
 def session(b, scope_js):
@@ -94,7 +49,6 @@ def session(b, scope_js):
     uploads=[]; held=[]; posts=[]
     def mock(route):
         req=route.request; u=req.url; path=urlparse(u).path
-        # Page routes win over the context's: a foreign URL matching a mock pattern still fails the check.
         if foreign(u): return outside(route)
         if req.method=="POST" and path==UPLOAD:
             uploads.append((req.headers.get("x-account-id"), parts(req.headers.get("content-type",""), req.post_data_buffer or b"")))
@@ -103,18 +57,18 @@ def session(b, scope_js):
             posts.append((req.post_data_json, req.headers.get("x-account-id")))
             return route.fulfill(status=200, content_type="application/json", body=json.dumps({"id":1}))
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
+    # Page routes win over the context's: a foreign URL matching a mock pattern still fails the check.
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     pg.on("pageerror", lambda e: errs.append(f"uncaught: {e}"))
     return pg, uploads, held, posts, errs
 def answer(route, reply):
-    """Fulfil a held upload: a dict as JSON 200, an int as that HTTP status."""
     if isinstance(reply, int): route.fulfill(status=reply, content_type="application/json", body=json.dumps({"detail":"Synthetic relay error"}))
     else: route.fulfill(status=200, content_type="application/json", body=json.dumps(reply))
 def frame(pg, page="index"):
@@ -131,7 +85,6 @@ def open_new_post(pg):
     if card.count(): card.first.click(); pg.wait_for_timeout(2000)
     return frame(pg)
 def pick(pg, fr, timeout=5000):
-    """Click Add media and give the chooser the PNG; returns the chooser, or None when none fired."""
     try:
         with pg.expect_file_chooser(timeout=timeout) as fc: fr.locator(ADD_MEDIA).click()
     except PlaywrightTimeout:
@@ -151,7 +104,6 @@ def wait_for(pg, fn, want):
 with sync_playwright() as p:
     b=p.chromium.launch()
 
-    # Single Creator: pick the PNG, it uploads, the next Post sends its claim.
     pg, uploads, held, posts, errs=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post(pg)
     if fr:
@@ -184,7 +136,6 @@ with sync_playwright() as p:
     check("8: no console errors", errs, [])
     pg.context.close()
 
-    # Single Creator: two picks in flight; Post comes back by Phase 0's rule only when both settled (refused, failed).
     pg, uploads, held, posts, errs=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post(pg)
     if fr:
@@ -201,7 +152,6 @@ with sync_playwright() as p:
         check("2: a refused or failed upload attaches nothing", fr.evaluate(THUMBS), [])
     pg.context.close()
 
-    # Single Creator: an upload still in flight after a State page round trip keeps Post disabled until it settles.
     pg, uploads, held, posts, errs=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post(pg)
     if fr:
@@ -220,7 +170,6 @@ with sync_playwright() as p:
         check("2: Post is enabled once the upload settled after the round trip", wait_for(pg, lambda: fr.locator(POST).is_disabled(), False), False)
         check("2: the visible composer shows the thumb accepted after the round trip", wait_for(pg, lambda: fr.evaluate(THUMBS), [[True, True]]), [[True, True]])
     pg.context.close()
-    # Single Creator: a refused upload leaves the text, the attached claim p2 and the draft alone and sends no post.
     pg, uploads, held, posts, errs=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post(pg)
     if fr:
@@ -251,7 +200,6 @@ with sync_playwright() as p:
     check("8: no console errors after a refusal", errs, [])
     pg.context.close()
 
-    # Single Creator: a failed upload (Relay 502) attaches nothing, and the same file can be picked again.
     pg, uploads, held, posts, errs=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post(pg)
     if fr:
@@ -272,7 +220,6 @@ with sync_playwright() as p:
     print("failed upload console errors:", [e[:160] for e in errs][:8])
     check("8: no console error after a failed upload but the 502's resource line", [e for e in errs if not e.startswith("Failed to load resource")], [])
     pg.context.close()
-    # Single Creator: a dedupe hit's vault id is appended as returned, even when the draft already holds it.
     seed={"text":"","tagged_users":[],"media_files":[42],"thumbs":["data:image/png;base64,"+base64.b64encode(PIXEL).decode()]}
     pg, uploads, held, posts, errs=session(b, "localStorage.setItem('chatterly:scope','model:1');"
         f"if (!sessionStorage.getItem('oi:new-post:1')) sessionStorage.setItem('oi:new-post:1', {json.dumps(json.dumps(seed))})")
@@ -293,7 +240,6 @@ with sync_playwright() as p:
     check("8: no console errors after a dedupe hit", errs, [])
     pg.context.close()
 
-    # Single Creator: an accepted upload stays attached, thumb and all, across a State page round trip.
     pg, uploads, held, posts, errs=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post(pg)
     if fr:
@@ -320,7 +266,6 @@ with sync_playwright() as p:
     check("8: no console errors after a State page round trip", errs, [])
     pg.context.close()
 
-    # Single Creator: after a full reload the accepted upload's blob: URL is dead; its thumb is a grey square, its media stays.
     pg, uploads, held, posts, errs=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post(pg)
     if fr:
@@ -336,7 +281,6 @@ with sync_playwright() as p:
               wait_for(pg, lambda: fr.evaluate(SQUARES), [[64, 64, "rgb(138, 150, 163)", 0]]), [[64, 64, "rgb(138, 150, 163)", 0]])
         check("11: the claim is still in the draft's media_files", pg.evaluate(DRAFT_MEDIA), [CLAIM])
         pg.screenshot(path=f"{SHOTS}/inapp-post-upload-reloaded.png")
-    # The dead blob: URL's own load failure is Chromium's resource line, not the app's.
     print("reload console errors:", [e[:160] for e in errs][:8])
     check("8: no console error after a reload but a dead blob: resource line", [e for e in errs if not e.startswith("Failed to load resource")], [])
     pg.context.close()

@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# run.sh — Bombadil UI exploration against a throwaway seeded stack (see README.md).
 #
-#   scripts/ui-explore/run.sh [--time-limit=2m] [--viewport=desktop|phone] [--exit-on-violation]
-#   scripts/ui-explore/run.sh --reproduce=.scratch/ui-explore/<run-id>/trace.bin   (same viewport)
-#   scripts/ui-explore/run.sh --shrink=.scratch/ui-explore/<run-id>/trace.bin [--time-limit=10m]
 #
-# Stack: scripts/demo-shots/run.sh serve (temp-DB relay + next dev, loopback guards), seeded with
-# the demo agency (seed_session.py), behind shim.py (OnlyFans fixtures). Output: .scratch/ui-explore/<run-id>/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -50,7 +44,6 @@ OUT="$ROOT/.scratch/ui-explore/$RUN_ID"
 mkdir -p "$OUT"
 PIDS=()
 ACTIVE="" WATCHDOG=""
-# Bombadil launches Chrome in a separate process group.
 track_chrome() {
   local pid started pgid current
   [ -f "$OUT/chrome.pids" ] || return 0
@@ -71,10 +64,7 @@ cleanup() {
   rm -f "$OUT/session"
   if [ -n "$WATCHDOG" ]; then kill -TERM -- "-$WATCHDOG" 2>/dev/null || true; fi
   if [ -n "$ACTIVE" ]; then PIDS=("$ACTIVE" ${PIDS[@]+"${PIDS[@]}"}); fi
-  # Keep the relay/next logs for triage; demo-shots removes its temp dir on exit.
-  # (gone if next/relay died: demo-shots then already cleaned up; must not abort the kills below)
   [ -n "${STACK_TMP:-}" ] && cp "$STACK_TMP/relay.log" "$STACK_TMP/next.log" "$OUT/" 2>/dev/null || true
-  # Only the process groups started here; demo-shots' own trap then stops next/relay and removes its temp dir.
   for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill -TERM -- "-$pid" 2>/dev/null || true; done
   track_chrome
   for _ in $(seq 1 100); do
@@ -136,7 +126,6 @@ if ! test -x "$HERE/node_modules/.bin/bombadil"; then
 fi
 BOMBADIL="$HERE/node_modules/.bin/bombadil"
 
-# Same dataset anchor for seed and shim; a reproduction reuses the original run's.
 if [ -n "$REPRO" ] && [ -f "$(dirname "$REPRO")/anchor" ]; then
   DEMO_SHOTS_NOW="$(cat "$(dirname "$REPRO")/anchor")"
 else
@@ -145,7 +134,7 @@ fi
 export DEMO_SHOTS_NOW
 echo "$DEMO_SHOTS_NOW" >"$OUT/anchor"
 
-set -m  # own process group per job
+set -m
 nice -n 10 "$ROOT/scripts/demo-shots/run.sh" serve >"$OUT/stack.log" 2>&1 &
 PIDS+=($!); disown $!
 set +m
@@ -168,7 +157,7 @@ SHIM="http://127.0.0.1:$SHIM_PORT"
 set -m
 UI_EXPLORE_NEXT="$APP" UI_EXPLORE_PORT="$SHIM_PORT" UI_EXPLORE_OUT="$OUT" DEMO_SHOTS_TMP="$STACK_TMP" \
   nice -n 10 "$PY" "$HERE/shim.py" >"$OUT/shim.log" 2>&1 &
-PIDS=($! "${PIDS[@]}"); disown $!  # stopped before the stack it forwards to
+PIDS=($! "${PIDS[@]}"); disown $!
 set +m
 SHIM_READY=0
 for _ in $(seq 1 30); do
@@ -179,7 +168,6 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 [ "$SHIM_READY" = 1 ] || { echo "ui-explore: shim not ready; see $OUT/shim.log" >&2; exit 4; }
-# Chrome resolves no name but loopback: nothing the page asks for can leave the machine.
 RESOLVER="--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"
 CHROME_BIN="$("$PY" -c 'from playwright.sync_api import sync_playwright
 with sync_playwright() as p: print(p.chromium.executable_path)')"
@@ -190,8 +178,6 @@ exec "$CHROME_BIN" "$RESOLVER" --disable-breakpad --disable-crash-reporter "\$@"
 EOF
 chmod +x "$OUT/chrome.sh"
 
-# next dev compiles the page and its client chunks on first load. Load it once in a browser so
-# Bombadil (stops after 60 s without an event) and replays (act at once) meet a hydrated app.
 bounded 200 "$PY" "$HERE/warm.py" "$SHIM" "$COOKIE" "$RESOLVER" "$W" "$H" ||
   echo "ui-explore: warm-up load failed (continuing)" >&2
 

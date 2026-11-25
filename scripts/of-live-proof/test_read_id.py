@@ -1,7 +1,3 @@
-"""Ticket 131: `/__proof/read-id` (proof_core `add_read_id`) registers an undo id of one declared kind, read off a post
-this proof created, and `read_keys_for` gives a row its own ids from a proof's undo-key read (moved from
-test_proof_core: file size).
-"""
 from datetime import datetime, timezone
 
 import pytest
@@ -15,13 +11,11 @@ def P(arm=(), undo=(), tags=(), id="p.x"):
 
 
 TRACER = P(arm=[Write("POST", "/api2/v2/lists")], undo=[Write("DELETE", "/api2/v2/lists/{id}")], id="tracer.create-list")
-# ticket 30: an upload (arm 0) then a post (arm 1); the post's DELETE reverses arm 1, the hide arms 0 and 1.
 HIDE = Write("PUT", "/api2/v2/vault/media/hidden", body_must={"mediaIds": ["{media}"]}, relay_method="POST",
              relay="/admin/vault-ai/items/{media}/hide", relay_body={"account_id": "{account}"}, reverses=(0, 1))
 RECORD = P(arm=[Write("POST", "/api2/v2/upload/signed/create"), Write("POST", "/api2/v2/posts")],
            undo=[Write("DELETE", "/api2/v2/posts/{id}", relay="/api/of/v2/posts/{id}", reverses=(1,)), HIDE],
            tags={"post"}, id="p2.record")
-# post 9 created by the post arm (1), upload id 55 by the upload arm (0)
 POSTED = Run(proof=RECORD, spent={("arm", 1): 1}, created=frozenset({"9", "55"}),
              created_by={0: frozenset({"55"}), 1: frozenset({"9"})})
 
@@ -50,7 +44,6 @@ def test_read_id_refused(run, key, of_id, source, why):
         add_read_id(run, key, of_id, source)
 
 
-# ticket 131: a proof's undo-key read gives {source id: {name: id}}; the row whose OnlyFans id is the source takes its own.
 READ = {"9": {"media": 77}, "10": {"media": "78"}}
 
 

@@ -43,22 +43,20 @@ BULLET = re.compile(r"^([-*]|\d+[.)]) ")
 TICKS = re.compile(r"`([^`\n]+)`")
 CODE = ("tsx", "ts", "jsx", "js", "cjs", "mjs", "py", "sh")
 EXT = "|".join(CODE)
-CODE_SPEC = [f"*.{e}" for e in CODE] + [":!slop/evidence", ":!docs/open-findings-triage*.md"]  # git grep: code only
+CODE_SPEC = [f"*.{e}" for e in CODE] + [":!slop/evidence", ":!docs/open-findings-triage*.md"]
 PATH = re.compile(rf"^([\w.@/-]+\.(?:{EXT}|md|json|sql|css|ya?ml|toml|html))(?::\d+(?:-\d+)?)?$")
 BARE = re.compile(rf"(?<![\w/.-])([\w./-]+\.(?:{EXT}))\b")
 SYMBOL = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\(\))?$")
 PROPOSAL = re.compile(r"\b(a|an|one|new|own|shared|e\.g\.|follow-up:?|renamed? to|needs|no|would|could|become)\W*$", re.I)
 LABEL = r"[A-Z]{1,2}-?\d+[a-z]?"
 DECISION = re.compile(r"\b(Q(?:10|[1-9])|O[1-4])\b")
-# POSIX ERE (git grep -E) + Python re; name = last word; `export`/`async` prefixes need no pattern
 DEF = r"(def|class|function|const|let|type|interface) +[A-Za-z_][A-Za-z0-9_]*"
 COMMON = {"return", "import", "default", "string", "number", "object", "boolean",
           "undefined", "function", "promise", "status", "false", "true"}
-W09_18 = r"^rwl/W(09|1[0-8])-"     # --counts reference split inside the --prs range
-HEADS = r"^rwl/W(19|2[0-3])-"      # default --heads (selected beyond --prs) and --fix-heads
+W09_18 = r"^rwl/W(09|1[0-8])-"
+HEADS = r"^rwl/W(19|2[0-3])-"
 
 
-# ---------- parsing (pure) ----------
 def _walk(body):
     """Yield (line, in_section) with the section rule applied."""
     inside = False
@@ -87,7 +85,7 @@ def bullets(body):
 
 
 def strip_md(s):
-    s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", BULLET.sub("", s.strip(), count=1))  # [text](url) -> text
+    s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", BULLET.sub("", s.strip(), count=1))
     return re.sub(r"\s+", " ", s.replace("**", "").replace("`", "")).strip()
 
 
@@ -102,7 +100,7 @@ def jaccard(a, b):
 
 def dedupe(rows):
     """rows earliest-first; returns new rows with 'dups' and merged status (inputs untouched)."""
-    kept = []  # (normalised text, row copy)
+    kept = []
     for r in rows:
         norm = normalise(r["text"])
         k = next((row for kn, row in kept if r["tags"] and row["tags"] == r["tags"] and jaccard(kn, norm) >= 0.8), None)
@@ -119,7 +117,7 @@ def is_distinctive(sym):
             and ("_" in sym.strip("_") or re.search(r"[a-z][A-Z]", sym) is not None))
 
 
-def norm_label(s):  # P-1 == P1
+def norm_label(s):
     return s.replace("-", "")
 
 
@@ -151,9 +149,9 @@ def fixed_by(pr, n, text, cites):
 
 
 class Index(NamedTuple):
-    files: set     # tracked files
-    by_base: dict  # basename -> files
-    defs: dict     # defined name -> files
+    files: set
+    by_base: dict
+    defs: dict
 
 
 def make_index(files, grep_out):
@@ -202,13 +200,12 @@ def tag_and_gone(full_text, seen, idx):
               and (mod is None or hits[0].rsplit("/", 1)[-1].split(".")[0] == mod))
         rs.append((hits[0] if ok else None, dist and not hits and v not in seen and not proposed,
                    dist and (bool(hits) or v in seen)))
-    rs += [(resolve_path(v, idx)[0], False, False)  # un-backticked code paths: tags only
+    rs += [(resolve_path(v, idx)[0], False, False)
            for v in BARE.findall(TICKS.sub(" ", full_text))]
     tags = frozenset(t for t, _, _ in rs if t)
     return tags, any(m for _, m, _ in rs) and not any(a for _, _, a in rs) and not tags
 
 
-# ---------- git / gh ----------
 def git(*args):
     """git in the repo root (any cwd); rc 1 from grep = no match, anything else non-zero = error."""
     r = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
@@ -238,10 +235,9 @@ def load(json_file, lo):
             raise SystemExit(f"gh returned {len(prs)} PRs = --limit {LIMIT}: list may be truncated; raise LIMIT")
     if lo is not None and (not prs or min(p["number"] for p in prs) > lo):
         raise SystemExit(f"PR list does not reach #{lo}: truncated")
-    return [p for p in prs if p.get("state") != "CLOSED"]  # gh: OPEN / MERGED / CLOSED (= not merged)
+    return [p for p in prs if p.get("state") != "CLOSED"]
 
 
-# ---------- pipeline ----------
 def build(prs, lo, hi, heads, fix_heads):
     idx = make_index(set(git("ls-files").splitlines()) - {""}, git("grep", "-IowE", DEF, "HEAD", "--", *CODE_SPEC))
     sel = [(p, bullets(p["body"])) for p in sorted(prs, key=lambda p: p["number"])
@@ -284,7 +280,6 @@ def print_tsv(kept):
         print("\t".join(re.sub(r"[\t\r\n]+", " ", str(c)) for c in cells))
 
 
-# ---------- selftest (no gh/git) ----------
 def selftest():
     cases = [("## heading", "## Open findings\n- a\n- b\n  - nested\n  cont\n", 2),
              ("bold heading", "**Open findings**\n- a\n* b\n", 2), ("no section", "## Fixes\n- a\n", 0),
@@ -323,7 +318,7 @@ def selftest():
         "proposed sym": tg("a `run_job`") == (set(), False) and tg("a `missing_helper`") == (set(), False),
         "gone": (tg("drop `missing_helper` in `gone.py`") == (set(), True)
                  and tg("`missing_helper`", {"missing_helper"}) == (set(), False)
-                 and tg("`dup_sym` drops `missing_helper`") == (set(), False)),  # ambiguous def = alive
+                 and tg("`dup_sym` drops `missing_helper`") == (set(), False)),
         "bare path": tg("`missing_helper` near service/a_mod.py") == ({"service/a_mod.py"}, False),
     }
     fails += [name for name, ok in checks.items() if not ok]

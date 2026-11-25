@@ -1,9 +1,3 @@
-"""service/automations/funnel_run_decide.py — reply_mass_funnel.run()'s tick tally
-and the stats dict it returns (automation_runs.stats_json). The fan's status machine
-is funnel_decide.decide; every effect it asks run() to perform is counted in `fx`.
-
-No I/O, so it loads and tests without a DB (tests/test_funnel_decide.py).
-"""
 from __future__ import annotations
 
 from collections import Counter
@@ -15,15 +9,14 @@ from . import funnel_decide as fd
 @dataclass
 class Tally:
     discovered: int = 0
-    discovery_skipped: int = 0   # anchors past the window — walking only, not scanning
-    advanced: int = 0            # states that sent a step this tick
+    discovery_skipped: int = 0
+    advanced: int = 0
     skipped_locked: int = 0
     skipped_cooldown: int = 0
     audience_skipped: int = 0
     errors: int = 0
     cap_hit: bool = False
-    key_error: dict | None = None  # missing/rejected key: generated steps stop, static ones send
-    # every funnel_decide effect performed, by value (waiting / completed / ...)
+    key_error: dict | None = None
     fx: Counter = field(default_factory=Counter)
 
 

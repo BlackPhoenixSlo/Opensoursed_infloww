@@ -1,7 +1,3 @@
-"""ofm-not-yet ticket 35: New post's labels, expiration and target proof (proofs/phase2.py
-p2.post-labels-expiry-target), FakeOF's posts surface (soak/fake_of/posts.py) and the planted post-drop-* faults
-(fake_layer.py): a 2xx that drops a field fails the read-back.
-"""
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -41,9 +37,7 @@ def _read(call):
 
 
 def _body(label="3101"):
-    """OF's body for the post the trigger makes (service/of_sends.py `_post_body`: posted_at, expire_days,
-    fund_raising_target with the default presets, label_ids)."""
-    at = (datetime.now(timezone.utc) + timedelta(days=31)).replace(microsecond=0).isoformat()   # ≤ next month's 1st
+    at = (datetime.now(timezone.utc) + timedelta(days=31)).replace(microsecond=0).isoformat()
     return {"text": MARK, "mediaFiles": [], "price": 0, "isScheduled": 1, "scheduledDate": at,
             "expireDays": phase2.EXTRAS_DAYS, "fundRaisingTargetAmount": phase2.EXTRAS_TARGET,
             "fundRaisingTipsPresets": [5], "labelIds": [int(label)]}
@@ -63,9 +57,8 @@ def test_fake_post_is_read_back_with_its_label_expiry_and_target_and_deleted():
     rows = call("GET", "/api2/v2/schedules?" + urlencode({"filter[publishDate]": "2000-01-01",
                                                            "filter[publishDateEnd]": "2100-01-01",
                                                            "filter[timeZone]": "UTC"})).json()["list"]
-    row = rows[0]   # a queue row: its own id is not the post's
+    row = rows[0]
     assert row["entity"]["id"] == post["id"] != row["id"]
-    # ticket 136: a dated post is not on OF's saved-for-later list, so a reader still on it would see `posts: []`
     assert call("GET", "/api2/v2/schedules/later/post").json()["list"] == []
     assert phase2.post_extras_held(before, after)
     assert phase2.find_marked_post(before["posts"], after["posts"], MARK) == str(post["id"])
@@ -92,8 +85,7 @@ def test_drop_fault_answers_200_and_the_read_back_fails(fault):
     assert r.status_code == 200 and r.json()["id"]
     after = _read(call)
     assert len(after["posts"]) == 1
-    assert not phase2.post_extras_held(before, after)   # the dropped field fails the proof
-    # every other field still landed: only the planted one is missing
+    assert not phase2.post_extras_held(before, after)
     _, _, ids, days, target = after["posts"][0]
     assert (ids == [], days is None, target is None) == tuple(f == fault for f in
                                                               ("post-drop-label", "post-drop-expiry", "post-drop-target"))
@@ -117,15 +109,15 @@ def _after(ids=("3101",), days=7, target=25.0, text=MARK, labels=(("3101", "Labe
 
 @pytest.mark.parametrize("after,held", [
     (_after(), True),
-    (_after(ids=()), False),                       # labels dropped
-    (_after(ids=("3102",)), False),                # not the dialog's first row
-    (_after(ids=("3101", "3102")), False),         # one more than was ticked
-    (_after(days=None), False),                    # expiry dropped
+    (_after(ids=()), False),
+    (_after(ids=("3102",)), False),
+    (_after(ids=("3101", "3102")), False),
+    (_after(days=None), False),
     (_after(days=3), False),
-    (_after(target=None), False),                  # target dropped
+    (_after(target=None), False),
     (_after(target=10.0), False),
-    (_after(text="someone else's"), False),        # not the run's post
-    (_after(labels=()), False),                    # no label to have ticked
+    (_after(text="someone else's"), False),
+    (_after(labels=()), False),
 ])
 def test_effect_table(after, held):
     before = {"labels": after["labels"], "posts": []}
@@ -141,8 +133,6 @@ def test_effect_needs_exactly_one_new_post():
 
 
 def _queue(*posts):
-    """OF's `GET /schedules` answer (app/lib/__fixtures__/of/queue-schedules-2026-11.json): queue rows, each post in
-    `entity`, no `hasMore`."""
     return {"list": [{"id": 700 + i, "type": "post", "entity": p} for i, p in enumerate(posts)], "syncInProcess": False}
 
 
@@ -165,5 +155,5 @@ def test_a_bare_post_row_raises():
 
 
 def test_the_proof_starts_live_with_the_reader_and_runs_fake():
-    assert live_refusal(PROOF, "live", None) is None   # ticket 11: the live reader is built
+    assert live_refusal(PROOF, "live", None) is None
     assert live_refusal(PROOF, "fake", None) is None

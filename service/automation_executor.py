@@ -67,7 +67,8 @@ from db.models import (
 from of_client import OUTBOUND_TEXT_GUARD, OFClient, proxy_refused
 import client_pool  # the relay's one OFClient pool (fd discipline lives there)
 import of_call_counter
-import accounts as account_registry  # platform lookup (OF vs Fansly) for _make_client
+import accounts as account_registry  # noqa: F401  (automations.auto_follow reads ax.account_registry)
+import platforms
 from automation_registry import (get_automation, canonical_kind,
                                  kind_family, load_automation_plugins,
                                  failed_plugins)
@@ -692,16 +693,11 @@ def _make_client(account_id: str) -> OFClient:
     Clients are pinned per account — see service/client_pool.py for why (an
     OFClient per call was an fd per call, and it took the relay to EMFILE).
 
-    Platform branch: mirrors server._load_client. A Fansly account gets the
-    OF-shaped shim; without this the executor built an OFClient for an account
-    that has no OF session, so every automation on a Fansly account — including
-    the `scheduled_send` that fires a chatter's deferred DM — died on
-    FileNotFoundError, retried, and left the ghost bubble reading "sending now…"
-    forever. The two lanes must resolve a client the same way or the HTTP routes
-    work while the executor silently does not."""
-    if account_registry.get_platform(account_id) == "fansly":
-        import fansly_backend
-        return fansly_backend.get_client(account_id)
+    Resolves exactly as server._load_client does, or the HTTP routes work while
+    the executor silently does not."""
+    backend = platforms.for_account(account_id).backend
+    if backend is not None:
+        return backend.get_client(account_id)
     return client_pool.get(account_id)
 
 

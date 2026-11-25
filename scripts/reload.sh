@@ -1,25 +1,8 @@
 #!/usr/bin/env bash
-# Reload BOTH dev servers — the FastAPI relay (uvicorn :8787) AND the Next
-# dev server (:3001) — without tearing down their supervisors.
 #
-# Why this exists: the relay runs WITHOUT uvicorn --reload (the supervisor
-# wraps a plain `uvicorn service.server:app`), so edits to server.py /
-# of_client.py / any service/*.py are NOT picked up until the uvicorn child
-# is restarted. Next hot-reloads most code on its own, but next.config.ts
-# changes (and wedged fast-refresh) need a real restart too.
 #
-# How it works: both supervisors (uvicorn-supervisor.sh / next-supervisor.sh)
-# run a `while true` loop that relaunches their child the instant it dies. So
-# we just kill the PORT LISTENER (the child) — NOT the supervisor — and the
-# supervisor reaps + relaunches it in ~2s with the new code.
 #
-# Usage:
-#   ./scripts/reload.sh              # bounce relay + next   (default)
-#   ./scripts/reload.sh --relay      # bounce ONLY the relay (:8787)
-#   ./scripts/reload.sh --next       # bounce ONLY next      (:3001)
-#   ./scripts/reload.sh --no-wait    # don't wait for them to come back
 #
-# Run ./scripts/start.sh first if the supervisors aren't up yet.
 
 set -u
 cd "$(dirname "$0")/.."
@@ -41,12 +24,10 @@ for arg in "$@"; do
   esac
 done
 
-# Kill whatever is listening on $1 (a port). SIGTERM first so uvicorn
-# checkpoints SQLite (WAL → main) and drains in-flight requests; escalate to
-# SIGKILL only if it's still bound after 6s. The supervisor relaunches it.
 bounce() {
   local port="$1" label="$2"
   local pids
+  # Kill the port listener, not the supervisor: it relaunches the child with the new code.
   pids="$(lsof -ti tcp:"$port" 2>/dev/null || true)"
   if [[ -z "$pids" ]]; then
     echo "[reload] nothing on :$port ($label) — supervisor down? run ./scripts/start.sh"
@@ -63,7 +44,6 @@ bounce() {
   return 0
 }
 
-# Poll a URL until it answers (the supervisor's relaunch + boot time).
 wait_up() {
   local url="$1" label="$2" tries="${3:-30}"
   for i in $(seq 1 "$tries"); do
@@ -83,7 +63,6 @@ wait_up() {
 if [[ "$do_wait" == "true" ]]; then
   echo "[reload] waiting for services to come back…"
   [[ "$do_relay" == "true" ]] && wait_up "http://${HOST}:${RELAY_PORT}/health" "relay" 30 || true
-  # Next's first compile after restart can be slow — give it longer.
   [[ "$do_next" == "true" ]] && wait_up "http://${HOST}:${NEXT_PORT}/" "next" 60 || true
 fi
 

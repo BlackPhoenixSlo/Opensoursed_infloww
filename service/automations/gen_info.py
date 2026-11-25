@@ -1,53 +1,3 @@
-"""service/automations/gen_info.py — Automation 02: fan-profile generation.
-
-Spec: library/one_section_of_automations/02_gen_info.md (network-rewrite mapping at
-the bottom — the DOM/JSON-file world is replaced by DB reads + llm_client).
-
-What it does, per tick (`run(account_id, payload, *, run_id)`):
-
-  1. Read the account's fans + their messages from OUR DB (no OF traffic; the WS
-     pump + scrape_chats already filled `messages`/`fans`). of_client is never
-     touched here — gen_info is pure backend.
-  2. Qualify a fan: ≥ 7 fan messages OR ≥ $1 lifetime spend (legacy gate ported
-     to cents). `payload.force_ids` bypasses the gate (process_old_fans path).
-  2b. Auto-scrape guard: a PAYING fan with thin LOCAL history (we never deep-
-     scraped them — the WS pump only sees live traffic) is deferred this pass and
-     a one-fan `scrape_chats` is enqueued, so the next pass profiles on the real
-     transcript instead of emitting "<name>/Whale" with no facts. See the
-     `_THIN_HISTORY_*` knobs + `_enqueue_thin_fan_scrapes`.
-  3. Re-run gate: skip a fan whose `fan_profiles` row is still fresh — only
-     regenerate when their message count has grown ≥ 22% since the last gen
-     (legacy 1.22× factor). `force_ids` bypasses this too.
-  4. For each qualifying fan call `llm_client.chat(... response_format=
-     json_object ...)` — which writes the `grok_calls` audit row itself (pending
-     → done/error) and enforces the per-account/provider daily soft-cap — and
-     parse the structured profile.
-  5. Persist: upsert the `fan_profiles` row (nickname / short_bio /
-     bullet_points / original_name + the generating grok_calls id) AND write the
-     AI-extracted facts back onto the `fans` row (real_name / age / location /
-     hobbies / occupation / … + grok_facts_updated_at).
-  6. Push the fan's info to the drawer's tabs on OF (`_sync_of_fan_info`): the
-     structured nickname (displayName) and the fact-sheet Fan notes (notice).
-
-No Q&A: gen_info no longer asks for or writes the Q1-3 / Tease1-3 opener lines.
-Lines already stored stay on the row untouched; nothing refills them.
-
-Split: the pure rules (selection, prompt, nickname guard, facts/events/language
-decisions → `plan_persist`) live in gen_info_plan.py; this module does the IO.
-
-Concurrency: fans are processed with a bounded `asyncio.Semaphore` (cap 5, the
-legacy ThreadPoolExecutor width). Each fan's DB write uses its OWN AsyncSession —
-never a shared one across gather() branches (the SQLAlchemy parallel-session
-footgun). The daily-spend cap is serialized inside llm_client's atomic reserve,
-so gen_info does NOT need the executor's account_spend_lock.
-
-Scheduling: this self-registers via `@register("gen_info")` on import (the
-executor auto-imports `service/automations/*`). To run it periodically, insert an
-`automation_rules` row with `kind="gen_info"` and
-`trigger_json={"every_seconds": N}`; the executor's generic `_materialize_due_rules`
-turns it into a `scheduled_jobs` row each cycle (after scrape_chats has refreshed
-the messages). NO edit to automation_executor.py.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -73,29 +23,16 @@ from . import gen_info_plan
 
 log = logging.getLogger("of-relay.automation.gen_info")
 
-# ── Knobs (ported from 02_gen_info.md) ───────────────────────────────
 _PURPOSE = "gen_info"
-_MAX_CONCURRENCY = 4             # background fan-out cap (≤4 — never block proxy/LLM)
-_DEFAULT_FAN_LIMIT = 200         # sweep ceiling when no force_ids
+_MAX_CONCURRENCY = 4
+_DEFAULT_FAN_LIMIT = 200
 
-# Auto-scrape guard. A PAYING fan with thin LOCAL history is almost always a fan we
-# never deep-scraped: the WS pump only captures live traffic, so a whale who chatted
-# before we connected looks empty in our DB and profiles as "<name>/Whale" with no
-# facts (the Alex Nielsen case — 1 inbound msg locally, 200 on OF). When a candidate
-# has < _THIN_HISTORY_MSG_FLOOR inbound messages AND > _THIN_HISTORY_MIN_SPEND_CENTS
-# lifetime spend, enqueue a one-fan scrape_chats and DEFER profiling them this pass —
-# don't burn an LLM call on near-empty input; the NEXT pass profiles on the real
-# transcript. Gated on scrape_history so we never loop: a fan deep-scraped within
-# _SCRAPE_REFRESH_AGE is left alone (if it's STILL thin after a scrape, OF genuinely
-# has little, so we profile it honestly with what we have). Forced ids are never
-# auto-scraped — an explicit force means "profile now with whatever is here".
-_THIN_HISTORY_MSG_FLOOR = 30          # < this many inbound msgs locally = thin
-_THIN_HISTORY_MIN_SPEND_CENTS = 100   # > $1 lifetime spend → a paying fan worth scraping
+# a paying fan with thin local history was never deep-scraped (WS pump only sees live traffic): scrape and defer profiling instead of burning an LLM call on empty input
+_THIN_HISTORY_MSG_FLOOR = 30
+_THIN_HISTORY_MIN_SPEND_CENTS = 100
 _SCRAPE_REFRESH_AGE = timedelta(days=7)
-_AUTOSCRAPE_BATCH_MAX = 25            # cap scrapes enqueued per pass (highest-spend first)
+_AUTOSCRAPE_BATCH_MAX = 25
 
-# The structured fields Grok must return. Profile fields land in fan_profiles;
-# fact fields are written back onto the fans row.
 _SYSTEM_PROMPT = (
     "You build a concise CRM profile of an OnlyFans fan from their chat history "
     "with the creator. You may be given KNOWN INFO already confirmed about him — "
@@ -129,8 +66,6 @@ _SYSTEM_PROMPT = (
     '  "fetishes": comma-separated kinks he mentioned ("" if none),\n'
     '  "recent_events": a JSON array of short strings — things happening in his life '
     "lately (trip, new job, breakup, birthday, holiday); [] if none.\n"
-    # ── Richer facts (appended at the END so the stable prompt prefix — and its
-    #    DeepSeek cache — is untouched). Same never-guess discipline. ──
     '  "employer": the company/place he works (ONLY if named; ""),\n'
     '  "partner_name": his partner\'s name (ONLY if he named one; ""),\n'
     '  "relationship_stage": where things stand with YOU the creator (e.g. new/regular/'
@@ -150,8 +85,6 @@ _SYSTEM_PROMPT = (
     "country, don't invent hobbies or a job he never mentioned).\n"
 )
 
-# ── Pure half lives in gen_info_plan; the old private names that other modules /
-#    tests still import are kept as aliases. IO code below reads `gen_info_plan.X`.
 _MIN_NEW_MSGS = gen_info_plan.MIN_NEW_MSGS
 _CADENCE_PAYING = gen_info_plan.CADENCE_PAYING
 _CADENCE_MIDDLE = gen_info_plan.CADENCE_MIDDLE
@@ -170,10 +103,6 @@ _build_user_prompt = gen_info_plan.build_user_prompt
 
 async def fan_cadence_knobs(s, account_id: str, fan_id: int, now: datetime,
                             *, lifetime_spend_cents: int | None = None) -> tuple:
-    """(fresh_after, volume_cap) for one fan, classified from the DB on an open
-    session `s` — the per-fan analogue of the batch tier computation the sweep does
-    inline. Reads lifetime spend + subscribed_at off the fans row and sums CLEARED
-    spend in the last gen_info_plan.RECENT_SPEND_WINDOW. Used by welcome_chatter_for_info's refresh hook."""
     fan_id = int(fan_id)
     if lifetime_spend_cents is None:
         frow = (await s.execute(
@@ -200,12 +129,6 @@ async def fan_cadence_knobs(s, account_id: str, fan_id: int, now: datetime,
 async def _gather_candidates(
     account_id: str, force_ids: set[int], limit: int, now: datetime
 ) -> list[gen_info_plan.Candidate]:
-    """One pass over the account's messages → per-fan counts + trimmed history.
-
-    Spend is summed from PURCHASED outbound PPV/tips (legacy `sender==Model and
-    is_paid`). Fan-message count is inbound messages. The fan's display name +
-    subscribed_at + recent cleared spend are lifted for the cadence tiering. Returns
-    candidates that pass the qualification gate (or are forced)."""
     counts: dict[int, gen_info_plan.Candidate] = {}
     async with get_session() as s:
         rows = (
@@ -229,19 +152,12 @@ async def _gather_candidates(
                 c = counts[fan_id] = gen_info_plan.Candidate(int(fan_id))
             c.total_msg_n += 1
             text = gen_info_plan.strip_html(body)[:gen_info_plan.MSG_CLIP]
-            # Count only substantive inbound (matches welcome_chatter_for_info): emoji-only
-            # reactions don't inflate fan_msg_n, so message_count_at_gen and the
-            # welcome_chatter_for_info staleness baseline stay on ONE scale (no suppressed/false
-            # refreshes for emoji-heavy fans).
             if direction == "in" and is_substantive_msg(text):
                 c.fan_msg_n += 1
             if direction == "out" and is_paid and (price_cents or 0) > 0:
                 c.spend_cents += int(price_cents or 0)
             c.messages.append((direction, text))
 
-        # Lift display name + username + prior extracted facts (ground truth, W2h)
-        # + subscribed_at (tiering) onto the fans we care about — ONE DB read, no OF
-        # call (proxy-safe). A fan with no fans row keeps the Candidate defaults.
         if counts:
             frows = (await s.execute(
                 select(
@@ -287,10 +203,6 @@ async def _gather_candidates(
                 c.is_muted = c.known["is_muted"]
                 c.subscribed_at = r.subscribed_at
 
-        # Lifetime spend from the transactions ledger (cleared, fan-attributed) is
-        # more accurate than the message-derived PPV/tips sum, so take the HIGHER of
-        # the two — a fan's true spend is at least whatever either source shows
-        # ("usually the higher wins"). Same session, sequential read (not gather()).
         if counts:
             txrows = (await s.execute(
                 select(Transaction.fan_id, func.sum(Transaction.amount_cents))
@@ -305,7 +217,6 @@ async def _gather_candidates(
                 if c is not None:
                     c.spend_cents = max(c.spend_cents, int(total or 0))
 
-        # Recent cleared spend (last gen_info_plan.RECENT_SPEND_WINDOW) → the "paying" cadence tier.
         if counts:
             txrecent = (await s.execute(
                 select(Transaction.fan_id, func.sum(Transaction.amount_cents))
@@ -330,21 +241,10 @@ async def _persist(
     account_id: str, c: gen_info_plan.Candidate, plan: gen_info_plan.PersistPlan,
     now: datetime, *, client=None
 ) -> None:
-    """Write one fan's `plan` (from gen_info_plan.plan_persist): upsert fan_profiles +
-    the extracted facts onto the fans row, in ONE fresh session (never shared across
-    gather branches). When `client` is given, also (re)assert the structured OF
-    nickname so the chat-header name stays in sync — see _sync_of_fan_info.
-
-    The race-safe rules stay SQL here, comparing against the row AS STORED:
-    keep-if-empty (`gen_info_plan.PROFILE_KEEP_IF_EMPTY`) and the operator language
-    pin (`gen_info_plan.MANUAL_LANGUAGE_SOURCES`)."""
     nickname = plan.profile_set["nickname"]
     fact_update: dict[str, Any] = {**plan.fan_set, **plan.facts, **plan.events}
 
     async with get_session() as s:
-        # FIX-2: for the content columns, KEEP the stored value when the LLM returned
-        # an empty/NULL one — a sparse (~7%) response must not wipe a fan's nickname /
-        # bio. Metadata columns (counts, timestamps, call id) always take the new value.
         prof_stmt = sqlite_insert(FanProfile).values(
             account_id=str(account_id), fan_id=int(c.fan_id), **plan.profile_set)
         prof_set: dict[str, Any] = {}
@@ -363,14 +263,8 @@ async def _persist(
                 index_elements=["account_id", "fan_id"], set_=prof_set
             )
         )
-        # The fans row exists (scrape/WS created it); guard anyway with an upsert
-        # carrying identity-safe defaults so gen_info never fails on a stray fan.
         fans_upd: dict[str, Any] = dict(fact_update)
         if plan.write_lang:
-            # FIX-3, per-column: keep the operator's pin when language_source is an
-            # operator-pinned source (MANUAL_LANGUAGE_SOURCES); otherwise record the AI
-            # observation. Bare `Fan.language*` = the EXISTING row's value in an ON
-            # CONFLICT DO UPDATE set_.
             manual = Fan.language_source.in_(gen_info_plan.MANUAL_LANGUAGE_SOURCES)
             fans_upd["language"] = case((manual, Fan.language), else_=plan.write_lang)
             fans_upd["language_source"] = case((manual, Fan.language_source), else_="ai")
@@ -396,27 +290,6 @@ async def _sync_of_fan_info(
     client, account_id: str, c: gen_info_plan.Candidate, fact_update: dict[str, Any], *,
     short_bio: str = "",
 ) -> None:
-    """Push the fan's info to the two drawer fields OF stores, after a profile regen:
-
-      • Nickname   — OF `displayName`, the structured Name/City,Country/Age/Job,
-                     built by the SAME canonical builder the senders use.
-      • Fan notes  — OF `notice`, the 200-char fact sheet (Recent / Intr / Job / Rel /
-                     Kinks, then the short bio), the same `build_facts_note` text
-                     apply_profiles and welcome_chatter_for_info write.
-
-    Both go through `push_nick_and_notes` (separate PUT /subscriptions/{id} calls, so
-    a non-subscriber's note 404 can't sink the nickname; it mirrors what stuck into
-    fans.custom_nickname / fans.notes). The drawer's other Profile cells (Location,
-    Language) read the fans columns `_persist` just wrote, so they need no push.
-
-    The nickname is re-pushed on every regen of a STRUCTURED nickname (>= 2 segments)
-    so drift is corrected; bare-name-only nicknames are skipped (OF already falls back
-    to the profile name). The note is pushed only when the stored note is empty or is
-    the one gen_info last wrote (`fans.applied_notes`), so a note a chatter typed in
-    the drawer is never overwritten. Best-effort — never breaks the gen_info run.
-
-    `fact_update` carries the freshly-written column values; we overlay them on
-    `c.known` so both reflect facts found THIS run."""
     def _val(col: str) -> str:
         v = fact_update.get(col)
         if isinstance(v, str) and v.strip():
@@ -438,16 +311,15 @@ async def _sync_of_fan_info(
         of_display_name=str(c.known.get("of_display_name") or "").strip(),
     )
     nick = build_structured_nickname(ftmp)
-    # Only push a genuinely STRUCTURED name (has at least one fact beyond the name).
     if not nick or "/" not in nick:
         nick = ""
-    # 200 pinned EXPLICITLY, as welcome_chatter_for_info does: this PUTs to OnlyFans.
+    # 200 pinned explicitly: this PUTs to OnlyFans
     notes = build_facts_note(facts_from_fan(ftmp), max_len=200, short_bio=short_bio)
     current = str(c.known.get("notes") or "").strip()
     if notes and current and current != str(c.known.get("applied_notes") or "").strip():
-        notes = ""                         # a chatter's own note: leave it alone
+        notes = ""
     if notes and notes == current:
-        notes = ""                         # already on OF — skip the PUT
+        notes = ""
     if not nick and not notes:
         return
     try:
@@ -458,7 +330,6 @@ async def _sync_of_fan_info(
                   account_id, c.fan_id, exc_info=True)
         return
     if note_ok:
-        # Remember the note as OURS, so the next regen may replace it.
         now = datetime.utcnow()
         async with get_session() as s:
             await s.execute(
@@ -472,13 +343,10 @@ async def _sync_of_fan_info(
             )
 
 
-# ── Re-run gate ──────────────────────────────────────────────────────
 
 async def _existing_profiles(
     account_id: str, fan_ids: list[int]
 ) -> dict[int, tuple[int, datetime | None]]:
-    """(message_count_at_gen, last_generated_at) of existing fan_profiles rows —
-    feeds the re-run gate (`profile_is_stale`)."""
     if not fan_ids:
         return {}
     async with get_session() as s:
@@ -497,19 +365,10 @@ async def _existing_profiles(
     return {int(fid): (int(cnt or 0), gen_at) for fid, cnt, gen_at in rows}
 
 
-# ── The automation entry point ───────────────────────────────────────
 
 async def _enqueue_thin_fan_scrapes(
     account_id: str, candidates: list[gen_info_plan.Candidate], force_ids: set[int], now: datetime
 ) -> set[int]:
-    """Prevent "<name>/Whale with no facts": find PAYING fans with thin LOCAL history
-    that we've never (recently) deep-scraped, enqueue a one-shot `scrape_chats` for
-    them, and return their fan_ids so run() DEFERS profiling them this pass. See the
-    _THIN_HISTORY_* / _SCRAPE_REFRESH_AGE knobs. Returns only the fans actually
-    enqueued — a thin fan already scraped within the cooldown is left to profile
-    normally (OF genuinely has little for them).
-
-    Deferred rows use the same cooldown as completed scrapes."""
     thin = [
         c for c in candidates
         if c.fan_id not in force_ids
@@ -519,8 +378,6 @@ async def _enqueue_thin_fan_scrapes(
     if not thin:
         return set()
 
-    # Don't re-enqueue a fan we just scraped — a thin fan stays thin until the scrape
-    # lands, and scrape jobs, while idempotent (ScrapeHistory fast-skip), aren't free.
     fresh_cutoff = now - _SCRAPE_REFRESH_AGE
     async with get_session() as s:
         rows = (await s.execute(
@@ -532,8 +389,6 @@ async def _enqueue_thin_fan_scrapes(
         )).all()
     hist = {int(fid): at for fid, at, _held in rows}
     held_back = {int(fid) for fid, _at, held in rows if held is not None}
-    # `thin` preserves the candidate order (spend desc), so the highest-value fans are
-    # scraped first; the rest get picked up on later passes — keeps any one job bounded.
     to_scrape = [
         c.fan_id for c in thin
         if (at := hist.get(c.fan_id)) is None or at < fresh_cutoff
@@ -541,8 +396,8 @@ async def _enqueue_thin_fan_scrapes(
     if not to_scrape:
         return set()
 
-    import automation_executor as ax  # lazy: avoid an import cycle at module load
-    import webhook_dispatch  # lazy: same
+    import automation_executor as ax
+    import webhook_dispatch
     queued: set[int] = set()
     plain: list[int] = []
     for fid in to_scrape:
@@ -579,23 +434,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     refill_ids = coerce_ids(payload.get("refill_ids"))
     limit = int(payload.get("limit") or _DEFAULT_FAN_LIMIT)
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
-    provider = llm_client.MODELS[model].provider  # no key → skip the run, as autoreply does
+    provider = llm_client.MODELS[model].provider
     if not await llm_client.llm_key_available(account_id, provider, _PURPOSE):
         return {"no_llm_key": provider, "candidates": 0, "generated": 0}
 
     now = datetime.utcnow()
     candidates = await _gather_candidates(account_id, force_ids, limit, now)
-    # Refill path: narrow to just the requested ids; they still go through the gated
-    # stale check below (NOT forced) so a refill with no new messages no-ops instead
-    # of burning an LLM call.
     if refill_ids:
         candidates = [c for c in candidates if c.fan_id in refill_ids]
 
-    # Prevention: paying fans with thin local history get a deep-scrape enqueued and
-    # are deferred from this pass (profiled next pass on the real transcript).
     deferred = await _enqueue_thin_fan_scrapes(account_id, candidates, force_ids, now)
-    # Re-run gate (skipped for forced ids): needs >= _MIN_NEW_MSGS new inbound msgs,
-    # then regenerates on the fan's spend-tiered time window or new-message volume cap.
     prior = await _existing_profiles(account_id, [c.fan_id for c in candidates])
     todo: list[gen_info_plan.Candidate] = []
     skipped_fresh = 0
@@ -619,15 +467,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     generated = 0
     capped = 0
     failed = 0
-    key_error = None  # a rejected key ends the pass: no call per remaining fan
+    key_error = None
 
-    # OF client for the nickname + Fan notes push (best-effort). gen_info is
-    # otherwise OF-free; build it once and only when there's work, so a sweep that
-    # regenerates nothing never touches OF.
     of_client = None
     if todo:
         try:
-            import automation_executor as ax  # lazy: avoid an import cycle at load
+            import automation_executor as ax
             of_client = await asyncio.to_thread(ax._make_client, account_id)
         except Exception:
             log.debug("gen_info of-client init failed account=%s", account_id,

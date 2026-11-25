@@ -1,55 +1,3 @@
-"""service/automations/send_followup.py — Automation A07: send_followup.
-
-Spec: library/one_section_of_automations/07_send_followup.md.
-
-Drip re-engagement for fans who've gone quiet. Per fan, a small state machine
-tracks "silence started at" and sends up to three Grok-generated nudges at
-silence thresholds **26 h → 64 h → 120 h** (≥18 h minimum gap between sends).
-Each nudge can attach a time-of-day-selected image from the `bot` vault folder.
-If the fan replies mid-sequence → `reply_cooldown` (26 h pause); a reply after
-all three nudges → `restart_cooldown` (72 h) then the cycle resets.
-
-This is the NETWORK-REWRITE of the DOM-era script (07 §"Network-rewrite
-mapping"): the sidebar/chat scraping is replaced by DB reads — the WS pump +
-scrape_chats already fill `messages`/`fans` — and the vault DOM clicks are
-replaced by `of_client.vault_lists`/`vault_media`. The state machine is purely
-client-side and carried over unchanged; it is ONE pure transition,
-`send_followup_decide.decide(entry, event, thresholds) -> (entry', effects)`, and
-run() below is only its I/O shell (load, decide, perform the effects in order).
-
-It mirrors the scrape_chats reference + send_welcome:
-  • of_client ONLY (no DOM), built via the executor's `_make_client` seam so
-    tests inject a fake with no network. Reads come from OUR DB.
-  • its OWN AsyncSession per read/write (`get_session()`); never a shared
-    session across branches.
-  • llm_client.chat() generates each nudge — that call writes the `grok_calls`
-    audit row AND enforces the per-account daily cost cap atomically.
-  • the existing optimistic send path: `of_client.send_message` →
-    `attribution.write_outbound_attribution(emit_live=True)`. The WS pump skips
-    outbound, so this is the only producer of the outbound `messages` row.
-  • per-(account, fan) send-lease so A05/A06/A09/A11 can't double-message the
-    same fan in an overlapping cycle.
-  • `followup_state` is the durable cursor — a restart resumes from it.
-
-Eligibility (07 §Core algorithm step 2): fan `lifetime_spend_cents >= 100`
-($1 lifetime spend) AND (`total_likes` is NULL or ≥ 1) AND not blacklisted.
-
-Scheduling: SCHEDULED via an `automation_rules` row with
-`trigger_json = {"every_seconds": 3300}` (55 min); the executor materializes a
-job each cycle. NO edit to automation_executor.py.
-
-Send once (send_marker_decide): the marker (`sending_at`, {"step": n}) is upserted
-after the DM-rate turn, right before the send; the Sent save clears it; a
-may-have-sent raise → `unconfirmed_at`, never auto-resent (decide holds a marked
-entry); surely not → cleared. Each non-dry tick first settles UNCONFIRMED rows
-whose nudge landed (`settle_landed`); the user retries the rest.
-
-Payload knobs (all optional): `model` (LLM override), `dry_run` (generate but
-don't send / advance), `with_image` (attach bot-folder vault image, default
-True), `limit` (eligible-fan sweep ceiling).
-
-Returns a stats dict → automation_runs.stats_json.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -62,19 +10,19 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
+import automation_executor as ax
 import dm_rate
 from isotime import parse_iso
-import llm_client                  # call .chat at runtime so tests can patch it
-import of_write                    # _may_have_sent, read at call time
+import llm_client
+import of_write
 import run_slot
 from ._markers import strip_asides
 from ._model_wait import freed_chat
-from . import rhythm  # tz_hours_for — THE clock (fixed offset first, zone as fallback)
-from . import _voice  # whose voice this account writes in (NULL → 'her')
-from . import send_marker_decide as smd  # the send-once marker's rules (pure)
-from . import send_marker_store as smst  # ...and its SQL (looked up per call)
-from .send_followup_decide import (  # the drip's phase machine (pure)
+from . import rhythm
+from . import _voice
+from . import send_marker_decide as smd
+from . import send_marker_store as smst
+from .send_followup_decide import (
     _STEP_THRESHOLDS_H, Complete, Cooldown, Effect, Entry, Resume, Save, Seen, Send, Sent, Tick,
     Wait, _resolve_step_thresholds, decide,
 )
@@ -100,27 +48,15 @@ from llm_client import LLMCapExceeded
 
 log = logging.getLogger("of-relay.automation.send_followup")
 
-_DEFAULT_MODEL = "deepseek-v4-flash"  # unused (resolve_model → _common.DEFAULT_MODEL); kept in sync
+_DEFAULT_MODEL = "deepseek-v4-flash"
 _PURPOSE = "followup"
-_TEMPERATURE = 0.9                 # matches the spec's Grok call
+_TEMPERATURE = 0.9
 
-_ELIGIBLE_MIN_SPEND_CENTS = 100    # ≥ $1 lifetime spend
-_DEFAULT_FAN_LIMIT = 200           # eligible-fan sweep ceiling per tick
+_ELIGIBLE_MIN_SPEND_CENTS = 100  # ≥ $1 lifetime spend
+_DEFAULT_FAN_LIMIT = 200
 
-# The drip's thresholds, cap, gap and cooldowns live with its phase machine in
-# send_followup_decide (decide() is the only place they are read); the step
-# thresholds are imported above for preview_compose.
-# Cross-automation contact guard window: skip a due step when ANY sender
-# touched the fan this recently. Nudges stamp only NudgeState (no messages
-# row), so the messages-table reads above can't see them — the shared
-# `contact_guard_excludes` can. absent → 12h, explicit 0 = off.
 _GUARD_DEFAULT_H = 12
 
-# Per-step nudge instruction handed to the LLM as the user turn. Each escalates
-# the re-engagement warmth without ever guilt-tripping the fan.
-# Ported verbatim-in-spirit from V1 send_followup.build_followup_prompt's
-# step_instructions: the "questions&teases" voice, step-2 references ONE real
-# profile detail, step-3 has a hint of FOMO. 1-3 lines, real emojis, no markdown.
 _STEP_USER_INSTRUCTIONS = {
     1: ("Write a short, light, flirty message: a casual question-and-tease OR a "
         "simple personal question based on their profile. Keep it 1-3 lines, "
@@ -138,12 +74,8 @@ _STEP_USER_INSTRUCTIONS = {
 }
 
 
-# ── Prompt-shaping helpers (ports of the spec's pure helpers) ─────────
 
 def _model_hour(utc_offset: float | int | None) -> int:
-    """Current hour in the model's timezone (utcnow + offset hours). Accepts
-    fractional hours — _load_ai_config resolves IANA zones and e.g. Kolkata
-    is +5:30."""
     try:
         off = float(utc_offset)
     except (TypeError, ValueError):
@@ -152,9 +84,6 @@ def _model_hour(utc_offset: float | int | None) -> int:
 
 
 def _model_clock(utc_offset: float | int | None) -> str:
-    """Full local wall-clock for the account's timezone, e.g.
-    'Friday, June 05 — 02:30 PM' (V1's now_str). Gives the AI a concrete
-    sense of what time it is for the creator, not just a coarse bucket."""
     try:
         off = float(utc_offset)
     except (TypeError, ValueError):
@@ -164,8 +93,6 @@ def _model_clock(utc_offset: float | int | None) -> str:
 
 
 def _time_activity(hour: int, acts: dict) -> tuple[str, str]:
-    """6-bucket time-of-day → (label, activity-string). Same mapping as
-    send_welcome / send_welcome_plusIMG. Missing slots fall back to ''."""
     if 5 <= hour < 9:
         return ("morning", acts.get("morning_1", ""))
     if 9 <= hour < 12:
@@ -180,8 +107,6 @@ def _time_activity(hour: int, acts: dict) -> tuple[str, str]:
 
 
 def _photo_index(hour: int) -> int:
-    """5-9→0, 9-12→1, 12-15→2, 15-18→3, 18-21→4, else 5 (same as
-    send_welcome_plusIMG — selects which bot-folder image to attach)."""
     if 5 <= hour < 9:
         return 0
     if 9 <= hour < 12:
@@ -195,19 +120,14 @@ def _photo_index(hour: int) -> int:
     return 5
 
 
-# The 6 time-of-day slot keys, ordered by _photo_index, matching time_activities.
 _SLOT_KEYS = ("morning_1", "morning_2", "afternoon_1", "afternoon_2", "evening", "night")
 
 
 def _slot_key(hour: int) -> str:
-    """Slot name for the hour — same 6 buckets as _photo_index."""
     return _SLOT_KEYS[_photo_index(hour)]
 
 
 def _slot_image_id(cfg: dict, hour: int) -> int | None:
-    """Configured per-slot vault image id for the current time of day, or None.
-    `cfg['time_images']` is {slot_key: media_id}; takes precedence over the legacy
-    folder picker (mirrors send_welcome)."""
     imgs = cfg.get("time_images") or {}
     val = imgs.get(_slot_key(hour))
     try:
@@ -218,10 +138,6 @@ def _slot_image_id(cfg: dict, hour: int) -> int | None:
 
 def _compose_system(cfg: dict, tod: str, activity: str, clock: str,
                     fan_name: str, fan_bio: str) -> str:
-    # The FaceTime refusal is voice-varying: the female one names the fan "babe"
-    # and "hun", which from a male creator reads as a woman typing. cfg carries
-    # the resolved bundle (see _load_ai_config); absent → the female lane, which
-    # is what every account that has ever run this engine gets.
     v = cfg.get("_voice") or _voice.HER
     persona = (cfg.get("persona")
                or "You are a warm, flirty OnlyFans creator re-engaging a fan "
@@ -251,21 +167,11 @@ def _compose_system(cfg: dict, tod: str, activity: str, clock: str,
         "surrounding quotes, no preamble."
     )
     parts.append(v.live_proof)
-    # This engine carries no humanizer, so the emoji vocabulary that rides inside
-    # it never reached here — the instruction above asks for "real emojis" and
-    # names none, which lets the model default to the female set. Hers is "", so
-    # the female prompt is byte-identical; his gains the one rule he was missing.
     return "\n\n".join(parts) + v.emoji_vocab
 
 
 def _compose_user(step: int, fan_name: str, silence_hours: float,
                   fan_address: str = "babe") -> str:
-    """Per-fan user turn: personalises the step instruction with the fan's
-    first name and the actual hours of silence (V1 injected both; V2 had a
-    static template). Keeps each nudge AI-generated per fan, not a template."""
-    # A male creator calling a straight male fan "babe" is the same
-    # wrong-register tell as the refusal above — fall back to something the
-    # male lane can say. (The female lane keeps "babe" byte-for-byte.)
     name = (fan_name or "").strip() or fan_address
     header = (f"Fan first name: {name}\n"
               f"Hours of silence: ~{silence_hours:.0f}h\n"
@@ -273,7 +179,6 @@ def _compose_user(step: int, fan_name: str, silence_hours: float,
     return header + _STEP_USER_INSTRUCTIONS[step]
 
 
-# ── DB seams (own session each — house pattern) ───────────────────────
 
 async def _load_ai_config(account_id: str) -> dict:
     async with get_session() as s:
@@ -292,16 +197,6 @@ async def _load_ai_config(account_id: str) -> dict:
                 imgs = json.loads(cfg.time_images_json) or {}
             except Exception:
                 imgs = {}
-        # Her local offset in HOURS through the ONE clock helper — the fixed
-        # `utc_offset` column decides, a legacy IANA zone is the fallback, no clock
-        # is 0.0 (UTC). This used to spell the minutes→hours conversion and the
-        # no-clock default out by hand, in four files, which is how the two columns
-        # ended up being weighed differently in different places.
-        #
-        # `tz_hours`, NOT `utc_offset`: this is the RESOLVED answer, and naming it
-        # after the column made one key mean two things — the column in the Brain
-        # panel's draft, the resolution here. send_welcome's preview merged the two
-        # and previewed an account 3h from what it sent.
         return {
             "persona": cfg.persona,
             "tz_hours": rhythm.tz_hours_for(getattr(cfg, "timezone", None),
@@ -310,10 +205,6 @@ async def _load_ai_config(account_id: str) -> dict:
             "time_activities": acts,
             "time_images": imgs,
             "model": cfg.model,
-            # The voice bundle rides on cfg because BOTH _compose_system call
-            # sites already receive it, and it is resolved off the row this
-            # function already holds — no second query. NULL voice → the female
-            # bundle → byte-identical to what this engine has always sent.
             "_voice": _voice.blocks(getattr(cfg, "voice", None)),
         }
 
@@ -327,9 +218,6 @@ async def _load_blacklist() -> set[int]:
 
 
 async def _load_skip_list(account_id: str) -> set[int]:
-    """Per-account skip_list — fans we've stopped auto-messaging (incl. ones OF
-    rejected as unreachable). send_followup must honor it like welcome_chatter_for_info does,
-    or it re-tries deleted/expired fans every cycle."""
     async with get_session() as s:
         rows = (await s.execute(
             select(SkipList.fan_id).where(SkipList.account_id == str(account_id)))).all()
@@ -337,13 +225,6 @@ async def _load_skip_list(account_id: str) -> set[int]:
 
 
 async def _load_eligible_fans(account_id: str, limit: int) -> list[dict]:
-    """Fans with ≥$1 lifetime spend AND (total_likes NULL or ≥1). Ordered by
-    spend desc so a bounded sweep favors the most valuable fans.
-
-    NB: a quarantined / rested fan (`automation_paused_until` in the future) is NOT
-    filtered here — the per-fan `fan_on_cooldown` check in the run loop already
-    skips it before any LLM call, so the undeliverable-quarantine pause is honoured
-    there (same column the W3 cooldown uses)."""
     async with get_session() as s:
         rows = (await s.execute(
             select(Fan.fan_id, Fan.of_display_name, Fan.real_name,
@@ -357,12 +238,6 @@ async def _load_eligible_fans(account_id: str, limit: int) -> list[dict]:
             .order_by(Fan.lifetime_spend_cents.desc())
             .limit(limit)
         )).all()
-    # resolve_fan_name walks real_name → curated custom_nickname ('John/City/Tag' →
-    # 'John') → generated_nickname → of_display_name, instead of emitting a literal
-    # 'Babe' downstream. of_username is intentionally dropped (handles aren't names).
-    # home_country/home_city ride along because they are what the resolver checks a
-    # candidate against — without them 'Millbrook' passes as his name. Empty '' here →
-    # _compose_user's soft 'babe' fallback as before.
     return [
         {"fan_id": int(r.fan_id), "name": resolve_fan_name(r)}
         for r in rows
@@ -372,8 +247,6 @@ async def _load_eligible_fans(account_id: str, limit: int) -> list[dict]:
 async def _load_last_message_times(
     account_id: str, fan_ids: list[int]
 ) -> dict[int, dict[str, datetime | None]]:
-    """Per fan: {'in': latest inbound created_at, 'out': latest outbound}. Two
-    grouped MAX() queries instead of N per-fan round trips."""
     out: dict[int, dict[str, datetime | None]] = {
         fid: {"in": None, "out": None} for fid in fan_ids
     }
@@ -409,9 +282,6 @@ def _fan_message_times_stmt(account_id: str, fan_id: int):
 async def _load_fan_message_times(
     account_id: str, fan_id: int
 ) -> dict[str, datetime | None]:
-    """One fan's {'in','out'} latest times. Not _load_last_message_times with
-    one id: for a single-id IN, SQLite picks ix_messages_dir_created and scans
-    the creator's whole inbox; two scalar MAX() subqueries seek ix_messages_chat_seq."""
     async with get_session() as s:
         last_in, last_out = (await s.execute(
             _fan_message_times_stmt(account_id, fan_id))).one()
@@ -427,8 +297,6 @@ async def _load_state(account_id: str) -> dict[int, Entry]:
 
 
 async def _load_bios(account_id: str, fan_ids: list[int]) -> dict[int, str]:
-    """Per fan: bullet_points + short_bio joined (V1 fed BOTH into the system
-    prompt). Either may be empty; we keep whatever is present."""
     if not fan_ids:
         return {}
     async with get_session() as s:
@@ -447,7 +315,6 @@ async def _load_bios(account_id: str, fan_ids: list[int]) -> dict[int, str]:
 
 
 def _entry_values(e: Entry, now: datetime) -> dict:
-    """The followup_state columns of one entry (its send-once marker too)."""
     return dict(
         phase=e.phase,
         cycle=e.cycle,
@@ -464,7 +331,6 @@ def _entry_values(e: Entry, now: datetime) -> dict:
 
 
 async def _save_entry(account_id: str, fan_id: int, e: Entry, now: datetime) -> None:
-    """Upsert one followup_state row from the in-memory entry."""
     update = _entry_values(e, now)
     async with get_session() as s:
         await s.execute(
@@ -476,7 +342,6 @@ async def _save_entry(account_id: str, fan_id: int, e: Entry, now: datetime) -> 
         )
 
 
-# ── Send-once marker (send_marker_decide / send_marker_store) ─────────
 
 def _keys(account_id: str, fan_id: int) -> dict:
     return {"account_id": str(account_id), "fan_id": int(fan_id)}
@@ -484,13 +349,10 @@ def _keys(account_id: str, fan_id: int) -> dict:
 
 async def _replay_landed(account_id: str, r: FollowupState, now: datetime, *,
                          confirmed: bool = False) -> bool:
-    """One UNCONFIRMED row: his nudge landed ('followup' messages row, or the user
-    `confirmed` it did) → saved Sent(step, sending_at), marker cleared, nothing
-    re-sent; else a miss. True iff it cleared the marker."""
     e = Entry.from_row(r)
     step = (e.sending_ctx or {}).get("step")
     if step not in _STEP_THRESHOLDS_H:
-        return False  # nothing to replay: stays listed for the user's Retry
+        return False
     if not confirmed and not await smst.landed(
             account_id, r.fan_id, smd.lookup_since(e.sending_at), _PURPOSE):
         return False
@@ -500,17 +362,13 @@ async def _replay_landed(account_id: str, r: FollowupState, now: datetime, *,
 
 
 async def settle_landed(account_id: str, boot_ts: datetime, now: datetime) -> None:
-    """Settle the account's UNCONFIRMED rows whose nudge landed (IN_FLIGHT ones may
-    still be writing: untouched). Idempotent; one bad row never stops the tick."""
     await smst.settle(
         await smst.marked_rows(FollowupState, FollowupState.account_id == str(account_id)),
         lambda r: _replay_landed(account_id, r, now), boot_ts, now)
 
 
-# The unconfirmed-sends API's entries (it guards, then calls these).
 
 async def marked_sends(account_id: str) -> list[dict]:
-    """The account's marked rows: fan, the step his marker names, the marker."""
     out = []
     for r in await smst.marked_rows(FollowupState, FollowupState.account_id == str(account_id)):
         step = (Entry.from_row(r).sending_ctx or {}).get("step")
@@ -521,14 +379,11 @@ async def marked_sends(account_id: str) -> list[dict]:
 
 
 async def read_marker(account_id: str, fan_id: int, mass_run_id: int | None = None):
-    """(sending_at, unconfirmed_at) of his row, None when there is none."""
     return await smst.read(FollowupState, _keys(account_id, fan_id))
 
 
 async def retry_clear(account_id: str, fan_id: int, mass_run_id: int | None,
                       sending_at: datetime, now: datetime) -> bool:
-    """The user's Retry: marker off (the next tick nudges him once), only while the
-    row still carries `sending_at`."""
     return await smst.clear(FollowupState, _keys(account_id, fan_id), if_sending_at=sending_at,
                             updated_at=now)
 
@@ -536,10 +391,6 @@ async def retry_clear(account_id: str, fan_id: int, mass_run_id: int | None,
 async def dismiss_sent(account_id: str, fan_id: int, mass_run_id: int | None,
                        sending_at: datetime, now: datetime,
                        hint_message_id: int | None = None) -> bool:
-    """The user's "It went through": his nudge saved as Sent exactly as a confirmed
-    landing (`_replay_landed`), marker cleared, never re-sent; only while the row
-    still carries `sending_at`. False: it changed, or it cannot be replayed.
-    `hint_message_id` (the untagged row the user saw as this nudge) gets its tag."""
     rows = await smst.marked_rows(FollowupState, FollowupState.account_id == str(account_id),
                                   FollowupState.fan_id == int(fan_id),
                                   FollowupState.sending_at == sending_at)
@@ -553,8 +404,6 @@ async def dismiss_sent(account_id: str, fan_id: int, mass_run_id: int | None,
 
 async def attempt_saved(account_id: str, fan_id: int, mass_run_id: int | None,
                         since: datetime) -> bool:
-    """Was the attempt marked at `since` saved as sent? Its replay stores the
-    nudge at the mark (messages_sent); a Retry's clear stores nothing."""
     async with get_session() as s:
         r = await s.get(FollowupState, (str(account_id), int(fan_id)))
     try:
@@ -564,19 +413,12 @@ async def attempt_saved(account_id: str, fan_id: int, mass_run_id: int | None,
     return any(parse_iso(str(v)) == since for v in (sent.values() if isinstance(sent, dict) else ()))
 
 
-# ── Vault image (network-rewrite of the DOM "bot" folder click) ───────
 
-# Folders to source the followup image from, in priority order. Legacy "bot" (V1)
-# first so existing accounts are unchanged; fall back to a welcome folder so images
-# still attach on accounts with no "bot" folder. We do NOT fall through to arbitrary
-# folders (Streams/Posts would DM the wrong media). Mirrors send_welcome.
+# Never fall through to arbitrary folders (Streams/Posts would DM the wrong media).
 _IMAGE_FOLDER_NAMES = ("bot", "welcome script", "welcome")
 
 
 def _bot_folder_media_id(client, hour: int) -> int | None:
-    """Pick a time-of-day vault photo (id at _photo_index(hour), clamped) from the
-    first folder in `_IMAGE_FOLDER_NAMES` that exists and has photos. Best-effort:
-    any failure / no named folder with photos → None (send text)."""
     try:
         lists = client.vault_lists(view="main", limit=100)
     except Exception:
@@ -609,23 +451,13 @@ def _bot_folder_media_id(client, hour: int) -> int | None:
     return None
 
 
-# ── Compose-only preview (no send, no state write) ────────────────────
 
 async def preview_compose(
     account_id: str, *, fan_id: int | None = None, test_name: str | None = None,
     step: int | None = None, model: str | None = None,
 ) -> dict:
-    """Compose the follow-up nudge a real run WOULD send for one fan — the text +
-    the chosen time-of-day image id — WITHOUT sending and WITHOUT any state write.
-    Powers the Brain panel's "Preview" button (same shape as send_welcome's:
-    {text, image, name, slot, step}). Unlike welcome there is no deterministic
-    local template, so this makes ONE LLM call (the daily cost cap still applies).
-
-    `step` (1–3, default 1) picks which escalation to preview; the representative
-    silence is that step's threshold. Fan name/bio come from the DB when `fan_id`
-    is given (overridable with `test_name`), else a generic 'babe' stand-in."""
     cfg = await _load_ai_config(account_id)
-    strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
+    strip_emoji_on = await load_strip_emojis(account_id)
     hour = _model_hour(cfg.get("tz_hours"))
     tod, activity = _time_activity(hour, cfg.get("time_activities") or {})
     clock = _model_clock(cfg.get("tz_hours"))
@@ -652,7 +484,6 @@ async def preview_compose(
     if not name:
         name = "babe"
 
-    # Representative silence = the step's silence threshold (what triggers it).
     silence_hours = float(_STEP_THRESHOLDS_H[step])
     model = model or await resolve_model(account_id, _PURPOSE, None)
     res = await llm_client.chat(
@@ -676,7 +507,6 @@ async def preview_compose(
             "name": name, "slot": _slot_key(hour), "step": step}
 
 
-# ── The automation ───────────────────────────────────────────────────
 
 @register("send_followup")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
@@ -686,7 +516,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     limit = int(payload.get("limit") or _DEFAULT_FAN_LIMIT)
 
     cfg = await _load_ai_config(account_id)
-    strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
+    strip_emoji_on = await load_strip_emojis(account_id)
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
     thresholds = _resolve_step_thresholds(payload)
     hour = _model_hour(cfg.get("tz_hours"))
@@ -699,10 +529,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         await settle_landed(account_id, smd.BOOT_TS, now)
     state = await _load_state(account_id)
 
-    fx: Counter = Counter()  # every effect performed, by value (the run's stats read it)
+    fx: Counter = Counter()
 
     async def _perform(fid: int, e: Entry, effects: list[Effect]) -> Send | None:
-        """Carry out decide()'s effects in order; hand back a Send if one is due."""
         fx.update(effects)
         due = None
         for eff in effects:
@@ -714,23 +543,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 due = eff
         return due
 
-    # ── 1) Time-only transitions (no client): expired cooldowns resume ───
     for fid, e in list(state.items()):
         await _perform(fid, *decide(e, Tick(now), thresholds))
 
-    # No key → stop before any candidate work (the transitions above need none).
     provider = llm_client.MODELS[model].provider
     if not await llm_client.llm_key_available(account_id, provider, _PURPOSE):
         return {"no_llm_key": provider, "transitioned": fx[Resume()], "followups_sent": 0}
 
-    # ── 2) Eligibility (no client) ───────────────────────────────────────
     blacklist = await _load_blacklist()
     skip_ids = await _load_skip_list(account_id)
     eligible = [f for f in await _load_eligible_fans(account_id, limit)
                 if f["fan_id"] not in blacklist and f["fan_id"] not in skip_ids]
 
-    # Include-only audience — before any LLM spend. (The SQL `limit` above runs
-    # first, so a narrow fence can thin a tick; the next tick picks up the rest.)
     import audience_include as _audiences
     audience_stats: dict = {}
     _kept = set(await _audiences.filter_candidates(
@@ -739,13 +563,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     eligible = [f for f in eligible if f["fan_id"] in _kept]
     eligible_ids = [f["fan_id"] for f in eligible]
 
-    # ── 3) DB reads that replace the DOM scrape ──────────────────────────
     msg_times = await _load_last_message_times(account_id, eligible_ids)
     bios = await _load_bios(account_id, eligible_ids)
 
-    # Cross-automation contact guard (one account-wide set per run): a fan a
-    # blast/nudge/chatter touched inside the window must not also get a drip
-    # step this tick. Outbound-only — inbound replies already flip the phase.
+    # Nudges stamp only NudgeState, not messages, so the messages-table reads miss them; the contact guard sees them.
     guard_h = resolve_window_hours(payload.get("exclude_replied_hours"), _GUARD_DEFAULT_H)
     guard_ids: set[int] = set()
     if guard_h > 0:
@@ -757,17 +578,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_cooldown = 0
     errors = 0
     cap_hit = False
-    key_error = None  # a rejected key stops the run: one call, not one per fan
+    key_error = None
     image_attached = 0
     first_error: str | None = None
 
     def _note_error(what: str) -> None:
-        """Count an error AND keep the FIRST one's text for the run stats.
-
-        A bare count is not a diagnosis: this automation reported "errors: 6"
-        every hour for days while 39 fans went un-nudged, and the actual cause (a
-        vault id OF refused) could only be recovered by grepping container logs
-        on the box. The run row should name its own failure."""
         nonlocal errors, first_error
         errors += 1
         if first_error is None:
@@ -781,18 +596,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         due = await _perform(fid, e, effects)
         if due is None:
             continue
-        # Another automation messaged this fan recently → rest it (W3 cooldown).
         if await ax.fan_on_cooldown(account_id, fid):
             skipped_cooldown += 1
             continue
-        # One bot message per fan per cycle — don't race A05/A06/A09/A11.
+        # One bot message per fan per cycle: don't race the other senders.
         if not await ax.acquire_fan_lease(account_id, fid, "send_followup"):
             skipped_locked += 1
             continue
         sent_ok = False
         try:
             try:
-                # Off the run slot while the model answers (no OF call, no lock held).
                 res = await freed_chat(
                     budget_s=rhythm.INLINE_MAX_S,
                     model=model,
@@ -810,7 +623,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     temperature=_TEMPERATURE,
                 )
             except run_slot.SlotLost:
-                raise           # not this fan's failure: send no more (the lease goes back)
+                raise
             except LLMCapExceeded:
                 cap_hit = True
                 log.warning("send_followup daily LLM cap reached account=%s — stopping",
@@ -829,19 +642,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if strip_emoji_on:
                 text = strip_emojis(text)
             if not text:
-                # Was a SILENT counter bump. An empty draft is a real failure —
-                # the model returned nothing, or the emoji/word filters ate the
-                # whole line — and it looked identical to a send error in stats.
                 _note_error("empty draft after filters")
                 log.warning("send_followup empty draft account=%s fan=%s "
                             "(model returned nothing, or filters stripped it all)",
                             account_id, fid)
                 continue
 
-            # msg_times is one snapshot from before the loop, and the loop plus
-            # the generate above take minutes on a big account. Re-read his
-            # times now: a fan who wrote back meanwhile goes to reply_cooldown
-            # instead of getting a nudge on top of his reply.
+            # msg_times predates the loop and the generate takes minutes: re-read so a fan who just wrote goes to reply_cooldown.
             fresh = await _load_fan_message_times(account_id, fid)
             e, effects = decide(e, Seen(now, fresh["in"], fresh["out"], fid in guard_ids),
                                 thresholds)
@@ -850,11 +657,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 continue
 
             if dry_run:
-                sent += 1  # would-send; don't advance state on a dry run
+                sent += 1
                 continue
 
-            # Optional time-of-day vault image. Prefer the account's configured
-            # per-slot image id (time_images); fall back to the legacy folder picker.
             media_files: list[int] = []
             if with_image:
                 mid = _slot_image_id(cfg, hour)
@@ -866,41 +671,27 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             client = await asyncio.to_thread(ax._make_client, account_id)
             try:
-                # The DM-rate turn first (its wait stays outside the marker; the
-                # send's own turn then passes at once), then the send-once
-                # marker — an upsert, so a first-cycle fan with no row is marked
-                # too — committed before OF can take anything.
+                # The send-once marker is committed before OF can take anything; the DM-rate wait stays outside it.
                 await dm_rate.turn(account_id)
                 e = replace(e, sending_at=datetime.utcnow(), sending_ctx={"step": due.step})
                 await _save_entry(account_id, fid, e, now)
             except Exception as exc:
-                _note_error(f"mark: {exc}")   # nothing reached OF: no probe, no marker
+                _note_error(f"mark: {exc}")
                 log.warning("send_followup mark failed account=%s fan=%s",
                             account_id, fid, exc_info=True)
                 continue
             try:
-                # A refused ATTACHMENT falls back to text-only in here. One dead
-                # vault id used to strand the whole automation: state advances
-                # only on a returned send, so the same fans stayed eligible and
-                # were regenerated every tick forever.
                 outcome = await send_dropping_bad_media(
                     client, fid, text, media_files, log=log,
                     send_purpose="gated")
                 result = outcome.result
             except Exception as exc:
                 _note_error(f"send: {exc}")
-                # A known permanent marker → skip_list and done. Otherwise the send
-                # raised something we don't recognise — but a lapsed-sub fan raises
-                # on EVERY send, and followup only advances state on a returned
-                # send, so it re-fires the same nudge every tick forever (the
-                # paying-but-lapsed loop). Probe WHY and quarantine the undeliverable
-                # ones (1-week rest); a genuine transient just retries next tick.
                 unreachable = await skip_unreachable_fan(account_id, fid, exc, log=log)
                 if not unreachable:
+                    # A lapsed-sub fan raises on every send and state advances only on a returned send, so without this probe the same nudge re-fires every tick.
                     await quarantine_if_undeliverable(client, account_id, fid)
-                # Send once: may have sent → unconfirmed, never re-sent by a tick
-                # (the user retries); surely not (or OF refused the fan) → the
-                # marker goes. Either write only while this attempt's mark stands.
+                # Send once: may have sent -> unconfirmed, never re-sent by a tick; surely not -> the marker goes. Write only while this attempt's mark stands.
                 keys = _keys(account_id, fid)
                 match smd.failure_outcome(0, 0, True, of_write._may_have_sent(exc),
                                           unreachable=unreachable):
@@ -915,19 +706,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if outcome.media_landed:
                 image_attached += 1
 
-            # Optimistic send path: persist the outbound row, then advance state.
             msg_id = result.get("id") if isinstance(result, dict) else None
             if msg_id:
                 await write_outbound_attribution(
                     account_id=account_id,
                     fan_id=int(fid),
                     message_id=int(msg_id),
-                    sent_by_employee_id=None,  # → system Automation employee
-                    automation_kind=_PURPOSE,  # followup
+                    sent_by_employee_id=None,
+                    automation_kind=_PURPOSE,
                     body=str(result.get("text") or text),
                     price_cents=0,
                     created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
-                    emit_live=True,  # WORKER→SSE bridge
+                    emit_live=True,
                 )
 
             e, effects = decide(e, Sent(due.step, now), thresholds)
@@ -935,8 +725,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             sent += 1
             sent_ok = True
         finally:
-            # W3: keep the lease (let it expire) + rest the fan on a confirmed
-            # send; release it only when nothing went out.
+            # Keep the lease (let it expire) and rest the fan on a confirmed send; release only when nothing went out.
             if sent_ok:
                 try:
                     await ax.start_fan_cooldown(account_id, fid)
@@ -951,18 +740,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         **audience_stats,
         "transitioned": fx[Resume()],
         "followups_sent": sent,
-        # A dry run's `sent` counts would-sends; nothing was saved for them.
         "state_advanced": (fx[Cooldown("reply")] + fx[Cooldown("restart")]
                            + (0 if dry_run else sent)),
-        "skipped_unread": fx[Cooldown("reply")],  # his reply is left for a human
+        "skipped_unread": fx[Cooldown("reply")],
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "skipped_guard": fx[Wait()],
-        "completed": fx[Complete()],  # retired by the 7-day silence cap
+        "completed": fx[Complete()],
         "image_attached": image_attached,
         "errors": errors,
-        # Names the FIRST failure of the run. Without it "errors: N" is a number
-        # with no cause attached, and the only way to read it is docker logs.
         "first_error": first_error,
         "cap_hit": cap_hit,
         "dry_run": dry_run,

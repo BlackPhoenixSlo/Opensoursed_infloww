@@ -1101,3 +1101,79 @@ _Avoid_: Badge reads switch, per-user flag, header flag, kill switch on its own
 
 - **badge_drift** (the Watch check for counter vs Unread list mismatch over 30 s, reads per Creator-hour, Grey circles over 10 min, counter drops after an un-peeked first-page GET): `scripts/proxy-health/watch.py`
 - **Attribution gate** (single-flight per Creator, 5 s gap, no hourly cap, honours the 429 exit hold): ADR-0051
+
+### Platforms
+
+**Platform**:
+A creator site whose Creators Inflowwww runs, OnlyFans or Fansly today, named by one lower-case key. A Creator has exactly one; a missing or unknown key reads as OnlyFans.
+_Avoid_: site, network, provider, backend; surface (`docs/platforms.md`'s web, phone and desktop)
+ASSUMPTION: "Platform" over the plan's "site" because Infloww's own sidebar says platform (`app/components/shell/PlatformSwitcher.tsx`) and the code already has `PLATFORMS` (rung 3); `docs/platforms.md` keeps its older surface meaning until renamed; overturned if the owner wants "site".
+
+**Platform registry**:
+The Relay's list of Platforms, one entry each (`service/platforms.py`), which every per-Platform branch in `service/` asks instead of comparing a Platform's key. A new Platform is one entry and one Backend module for Relay dispatch (ADR-0053).
+_Avoid_: platform map, adapter registry, `is_fansly`
+
+**Backend module**:
+The module a registry entry names to give the Relay its Platform's client, Live connection, revenue tick, send check and API error. OnlyFans has none: its empty slot is the default path, today's code.
+_Avoid_: adapter, driver, backend on its own (that is the Relay)
+
+**Shim**:
+A Platform's client that answers the OnlyFans client's methods, in OnlyFans's response shape, from that Platform's own API (`fansly/fansly_shim.py`). One whole Shim per Platform, never split into shared parts.
+_Avoid_: adapter, translator, wrapper, client (OnlyFans's own)
+
+**Lacks flag**:
+A named Relay policy a registry entry opts out of because its Platform cannot meet it, one flag per observed policy (`FOCUS`, `REFERRALS`, `SERVER_SCHEDULE`, …). Free follow is the one positive opt-in.
+_Avoid_: feature flag, Setting flag, Knob, Capability (the app's)
+
+**Capability**:
+Something a Creator's Platform can do that one or more app controls need (`pin_message`, `restrict`, `mass_message`, …). A Platform without it lists it in the Platform table's `lacks`.
+_Avoid_: feature, permission (an Employee role's), Lacks flag (the Relay's)
+
+**Platform table**:
+The app's static `PLATFORMS` list (key, label, lacks) in `app/lib/platform.ts`, read through `can` and `useCan` and held to each Shim by the Drift test (ADR-0054).
+_Avoid_: capability catalog, platform config, Platform registry (the Relay's)
+
+**Unsupported method**:
+A Shim method its Platform has no equivalent for, settled for good; the Shim marks it and returns or raises nothing that reads as success.
+_Avoid_: stub, todo, not implemented, Not-yet control (the OF Manager's)
+
+**Blocked method**:
+A Shim method its Platform probably has but no Capture session has recorded yet; it raises a typed error until one does.
+_Avoid_: Unsupported method (settled for good), stub, pending
+
+**Side-effect gate**:
+The check that stops a caller of an Unsupported or Blocked method before it sends, claims or writes local state. Hiding a control is never the only guard (ADR-0056).
+_Avoid_: fake success, skip-as-sent, soft fail, hiding
+
+**Banking set**:
+A Platform's money codes whose rows the revenue lane writes as transactions, each with the one price key it was observed carrying; Fansly's is `{2007}` from `accountMediaPrice`. A code joins only after a Proof purchase (ADR-0055).
+_Avoid_: purchase types, money codes, Unlock set
+
+**Unlock set**:
+The Fansly notification codes that mark a chat purchase for unlock chips and the Buys & tips rail (2007, 2008, 32007). Being in it banks nothing.
+_Avoid_: purchase set, Banking set
+
+**Proof purchase**:
+A real purchase the owner makes on a Platform from his fan account to his creator account (chat PPV, paid sub, chat tip), recorded creator side before and after, so its code can join the Banking set.
+_Avoid_: test purchase, Live proof (the OF Manager's), Request capture
+
+**Capture session**:
+One sitting in which the owner's creator and fan accounts on a Platform, in two Chrome profiles, take free actions in the owner's order while every request and frame is recorded into that Platform's recipes doc. It turns Blocked methods into built or Unsupported ones.
+_Avoid_: Request capture (one OnlyFans control's request), HAR, sniff, capture run
+
+**Capability test**:
+The contract test that holds every registered Backend module's Shim against every client call in `service/` and fails on a reachable method that is missing and not marked Unsupported or Blocked. It runs from `scripts/run-tests.sh`.
+_Avoid_: parity test, shim test, coverage test, Drift test
+
+**Drift test**:
+The Relay-side test that reads the Platform table and fails unless each Capability is in a Platform's `lacks` exactly when every Shim method it maps to is missing or marked.
+_Avoid_: sync test, snapshot test, Capability test (Shim against callers)
+
+**Combined Messages Pro**:
+Messages Pro (Pop-out window, phone, Deep link) listing every Platform's Creators together, each Creator's Platform read from the Creator, while every other surface follows the Platform switch. A send never mixes Platforms (ADR-0057).
+_Avoid_: combined window, unified inbox, mixed inbox, all-platforms mode
+
+- **Platform switch** (the sidebar's Platform picker; avoid: platform selector, Platform switches, the per-browser Preferences toggles): `app/components/shell/PlatformSwitcher.tsx`
+- **Platform badge** (`PlatformLogo` beside a non-OnlyFans Creator's name on Creator tabs, pickers and the composer; never on Fan rows): ADR-0057
+- **Seen-code counter** (per-tick count of unbanked codes actually seen, not a static list): `service/fansly_revenue.py`
+- **Platform recipe** (the 11 steps a new Platform takes, owner's action order, Trap list of fields whose names lie): the recipe doc beside `docs/platforms.md`

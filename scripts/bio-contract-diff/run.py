@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""Contract diff: ofl.ink v2 (node app + PocketBase) vs the standalone bio app, both seeded from fixture.json.
-
-Delete this tool after the PR3 rollback window.
-
-Not CI: needs node, ~/oflinkv2 (its app/node_modules) and the PocketBase binary. Everything runs on loopback, on temp
-dirs, at nice 10, and is stopped at exit. Never a live host.
-
-  ./venv/bin/python scripts/bio-contract-diff/run.py --pb PATH [--out DIR]
-      [--v2 ~/oflinkv2]
-
-Compares status, Content-Type, Cache-Control, presence of Location / Access-Control-*, body bytes (ignores date,
-server, connection, keep-alive, content-length, transfer-encoding, vary), then PocketBase's dailyStats against
-bio_daily. Writes <out>/report.txt and <out>/cases.jsonl. Exit 0 iff every diff is a case marked legit (PR1 spec §5)
-and the counts agree. The reviewed escape-card asset bytes map to v2 for comparison; any drift fails.
-"""
 from __future__ import annotations
 
 import argparse
@@ -74,7 +59,6 @@ def _wait(url: str, what: str, timeout: float = 60) -> None:
 
 
 def v2_view(v2: Path):
-    """Map only pinned PR-E assets and pages built from the pinned index to v2 bytes."""
     ours = {n: (PUBLIC / n).read_bytes() for n in ("index.html", "script.js", "style.css")}
     theirs = {n: (v2 / "app/public" / n).read_bytes() for n in ours}
     pinned = {n: (hashlib.sha256(ours[n]).hexdigest(), hashlib.sha256(theirs[n]).hexdigest())
@@ -100,7 +84,6 @@ def v2_view(v2: Path):
 
 
 def send(port: int, case: dict, ip: str | None, avatar: str, view=None) -> dict:
-    """One raw HTTP/1.1 request; normalize only pinned reviewed asset bodies."""
     target = case["target"].replace(b"{avatar}", avatar.encode())
     lines = [case["method"].encode() + b" " + target + b" HTTP/1.1"]
     if case["host"] is not None:
@@ -141,7 +124,6 @@ def _same(a: dict, b: dict) -> list[str]:
 
 
 def seed_pb(pb: str, fx: dict) -> str:
-    """Fixture into PocketBase over its REST API as the superuser; returns the avatar's stored file name."""
     tok = httpx.post(f"{pb}/api/collections/_superusers/auth-with-password",
                      json={"identity": EMAIL, "password": PASSWORD}).raise_for_status().json()["token"]
     h = {"Authorization": tok}
@@ -224,8 +206,6 @@ def main() -> int:
             _wait(f"http://127.0.0.1:{p_pb}/api/health", "PocketBase")
 
             stack = Stack(ui=False, fault=None, logdir=out, sidecars={"bio": ("slop/lib/bio.py", "BIO_PORT", "/internal/healthz")})
-            # EDGE_PROXIES = the cases' X-Forwarded-For range (10.9.x.y): ours believes CF-IPCountry/X-Country only
-            # from an edge hop (client_addr.from_edge); v2 always does.
             stack.relay_env[0].update(BIO_PRIMARY_HOSTS="localhost,ofl.test", BIO_REVEAL_LIMIT_PER_MINUTE=str(LIMIT),
                                       BIO_ESCAPE_TAP="1", EDGE_PROXIES="10.9.0.0/16")
             stack.__enter__()
@@ -251,7 +231,7 @@ def main() -> int:
                 a, b = send(p_v2, c, ip, avatar), send(p_bio, c, ip, avatar, view)
                 rows.append({"case": c["name"], "legit": c["legit"], "extra_count": c.get("extra_count"),
                              "diff": _same(a, b), "v2": a, "ours": b})
-            if datetime.now().second >= 50:   # every burst inside one guard minute
+            if datetime.now().second >= 50:
                 time.sleep(61 - datetime.now().second)
             for j, c in enumerate(bursts):
                 ip = ip_of.get(c.get("same_ip_as")) or f"10.9.250.{j + 1}"
@@ -262,11 +242,9 @@ def main() -> int:
                     rows.append({"case": f"{c['name']} #{k + 1}", "legit": c["legit"], "diff": _same(a, b),
                                  "v2": a, "ours": b})
 
-            # SIGTERM exercises the bio lifespan flush before count reconciliation.
             bio_proc = stack.sidecar_procs["bio"]
             os.killpg(bio_proc.pid, signal.SIGTERM)
             bio_proc.wait(timeout=45)
-            # counts: v2's events (dailyStats) vs bio_daily, minus legit no-XFF events
             pb = f"http://127.0.0.1:{p_pb}"
             tok = httpx.post(f"{pb}/api/collections/_superusers/auth-with-password",
                              json={"identity": EMAIL, "password": PASSWORD}).json()["token"]

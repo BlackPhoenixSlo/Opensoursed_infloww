@@ -1,29 +1,3 @@
-"""automations/full_ai_owned.py — what a live Fan owns, was sent and spent, across every lane
-(phase 05, ticket 87).
-
-Pure over `rows` (the Fan's `ai_decisions` rows of the Turn's Mode, oldest first); the folds are
-`full_ai_test`'s, unchanged. One loader, `load_sold`, reads the other lanes.
-
-  owned_live(rows, cross)          owned_of(rows) | cross (`ownership.owned_or_seen_media`); a Free item
-                                   counts once on OF (`offer_message_id`), not on a never-confirmed row
-  reserved_of(rows)                media of every attempted, unresolved priced Offer (`attempted`: may
-                                   be on OF, any age): never offered again until settle links it
-  sent_live(rows, vault_media)     sent_media_of(rows) | every `vault_sends.media_id` of the Fan
-  purchases_live(paid_msgs, txs)   ns(kind, amount_cents, occurred_at), oldest first: paid outbound
-                                   priced messages (`ppv_message`, any lane) + `tip` / `ppv_post`
-                                   transactions cleared or pending (the ledger's `ppv_message` rows
-                                   are skipped: the paid message already counts it, seconds fresh)
-  open_offer_live(rows, now)       open_offer_of(rows) unless older than OFFER_OPEN_S, or priced
-                                   with no `offer_message_id` (never confirmed on OF)
-  unconfirmed_of(rows, now, but)   newest priced row, id NULL, outcome NULL, <= UNCONFIRMED_S old,
-                                   not row `but`
-  offer_still_valid(...)           the last look: None | "owned" | "unconfirmed" (reserved media, or
-                                   any priced Offer still unconfirmed)
-  load_sold(account, fan) -> Sold  the one loader
-
-A Free item is Owned for Full AI only (`owned_of`, price 0); nothing here stamps `vault_sends`
-(spec ASSUMPTION: Free item Owned is lane-local).
-"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -39,17 +13,17 @@ from automations.full_ai_test import _media, _offers, open_offer_of, owned_of, s
 from db.engine import get_session
 from db.models import Message, Transaction, VaultSend
 
-OFFER_OPEN_S = 86400                                   # the probe's Pending-offer bound (ticket 07:86)
-UNCONFIRMED_S = send_marker_decide.IN_FLIGHT_MAX_S     # 900
+OFFER_OPEN_S = 86400
+UNCONFIRMED_S = send_marker_decide.IN_FLIGHT_MAX_S
 TX_KINDS = ("tip", "ppv_post")
 TX_STATUSES = ("cleared", "pending")
 
 
 class Sold(NamedTuple):
-    cross: set[int]          # ownership.owned_or_seen_media: bought in any lane
-    vault_media: set[int]    # every vault_sends.media_id of the Fan, bought or not
-    paid_msgs: list          # paid outbound priced messages (message_id, price_cents, purchased_at, created_at)
-    txs: list                # tip / ppv_post transactions cleared or pending (kind, amount_cents, occurred_at, status)
+    cross: set[int]
+    vault_media: set[int]
+    paid_msgs: list
+    txs: list
 
 
 def owned_live(rows, cross: set[int]) -> set[int]:
@@ -65,6 +39,7 @@ def sent_live(rows, vault_media: set[int]) -> set[int]:
     return sent_media_of(rows) | set(vault_media)
 
 
+# Ledger `ppv_message` rows are skipped (TX_KINDS): the paid message already counts it and is fresher by seconds.
 def purchases_live(paid_msgs, txs) -> list[SimpleNamespace]:
     out = [SimpleNamespace(kind="ppv_message", amount_cents=int(m.price_cents),
                            occurred_at=m.purchased_at or m.created_at)
@@ -94,8 +69,6 @@ def unconfirmed_of(rows, now: datetime, but: int | None):
 
 
 def offer_still_valid(ppv: dict, owned_now: set[int], rows_now, now: datetime, row_id) -> str | None:
-    """`ppv` = the bubble's `{ref, price_cents, media, previews}`. Zero-owned: any locked or
-    preview id in `owned_now` drops it (raw ids). The unconfirmed rule binds priced bubbles only."""
     ids = {int(x) for x in (ppv.get("media") or [])} | {int(x) for x in (ppv.get("previews") or [])}
     if ids & set(owned_now):
         return "owned"

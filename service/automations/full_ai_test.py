@@ -1,47 +1,3 @@
-"""automations/full_ai_test.py — Full AI Chat's Test transport (Mode `test`).
-
-The owner chats as a Fan on the Full AI Chat page; each side (checkpoint / draft) of a pair is
-one session whose only store is its own Decision rows (`mode='test'`, `trigger_kind='test'`,
-`trigger_key='test:<session>:<n>'`, the pair's negative Fan id). His line comes from the request,
-her bubbles land on the row (`reply_json.parts`). There is no Fan row, message, transaction,
-vault send, lease, DM rate or OF call: Test chat is off-site by design.
-
-  test_fan_id(pair)            negative int from sha256 of the pair: never an OF fan id
-  session_key(pair, side)      "<pair>-L" (checkpoint) | "<pair>-R" (draft)
-  test_thread(rows)            pure: the session's rows as plain message rows; a PPV bubble is her
-                               priced row (price, media count, paid flag, purchase time) (03b)
-  owned_of / sent_media_of / bought_of / purchases_of / open_offer_of / offer_line / pending_offer_text
-                               pure session folds (03b): what he owns, was sent, bought; the open
-                               Offer and its Pending offer line (a Pending tease's text first)
-  pending_tease_of(rows, now, ttl_s=900)   pure: the Pending tease row (newest sent row a test
-                               tease, at most 15 min old, no outcome since), else None (03b)
-  teased_of(row)               pure: a tease row's Pick as `TurnFacts.tease` holds it (03b)
-  spacing_of(rows, now, free=False)   pure: the Spacing counts of the Sitting (03d, `sell_spacing`);
-                               `free` (`chat_tease`): a free Chat tease photo ends the line count too
-  is_tease(row)                pure: a Chat tease row (row chat_tease, or tease-priced)
-  teases_sent_of / chat_tease_of   pure: the Chat tease rows in words and the two Router state
-                               keys (`chat_tease`)
-  likes_of(fan_info)           pure: the `he_likes` state value from the fold (`he_likes`)
-  session_rows(account, pair, side=None) / session_row(row)   the session read and its row shape
-  fetch(account, pair, side, text, config, photo=None) -> TurnFacts
-                               `photo`: his attached image as the photo route described it once
-                               for both sides (`{desc, thumb, outcome, model, ms}`); his line is a
-                               media row with that `image_desc`, read per the side's
-                               `describe_fan_photos`; it rides the row as `reply_json.fan_photo`
-  hold(config, anchor_key)     no-op returning wait_s, drawn per `session:n`; never sleeps
-  send(row, parts, pick=None)  her bubbles onto the row's values, status `sent`; a Pick lands on
-                               the row's Offer columns, its kind by Route (offer | tease | free),
-                               and rides the last text bubble as its PPV unless a tease (03b)
-  offer_of(row)                the Offer a row (dict or AiDecision) carries, else None
-  expect_n(facts, n)           Conflict(None) unless `n` is the Turn number `fetch` found
-  record(row)                  INSERT when n == 1 + the session's row count, in one transaction
-  IO                           `full_ai_turn.TurnIO("test", hold, send + the gif part, record)`
-  settle(account, pair, side, row_id, outcome)   fake Buy / Decline: one guarded UPDATE of that
-                               row's `outcome`, `outcome_at`, `join_src='test'`; `Unsettled` otherwise
-
-Sends nothing: no direct import of an OF client, executor, lease, DM rate or OF write module (AST
-scan + runtime send traps in test_full_ai_test_chat.py; shared helpers load them transitively).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -67,20 +23,14 @@ from isotime import iso_z
 
 MODE = "test"
 TRIGGER_KIND = "test"
-JOIN_SRC = "test"                   # the Offer outcome's source: the owner's fake Buy / Decline
-# The Pending tease window (spec 03b R10 default, flagged; CONTEXT › Pending tease: 15 minutes).
+JOIN_SRC = "test"
 TEASE_TTL_S = 900
 SIDES = {"checkpoint": "L", "draft": "R"}
-# "0-15-60": most replies near 15 min, none past an hour (spec › Config v1 `reply_speed`).
 _SPEEDS = {"0-2m": lambda r: r.uniform(0, 120), "0-15-60": lambda r: r.triangular(0, 3600, 900)}
-# One settle at a time per account (process-local): the `already_owned` read and the UPDATE are two
-# statements, so two Buys of one piece (an Offer and its haggle re-offer) at once both passed it.
 _SETTLE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 class Conflict(Exception):
-    """The Turn number is not the session's next one, or the Turn already has its row
-    (`row_id`, None when there is none)."""
 
     def __init__(self, row_id: int | None):
         super().__init__(row_id)
@@ -104,8 +54,6 @@ def trigger_key(session: str, n: int) -> str:
 
 
 def _line(direction: str, text: str, at: datetime, mid: int, photo: dict | None = None) -> SimpleNamespace:
-    """A plain message row with every attribute `_router_jev` reads; unpriced. With his `photo`
-    it is a media row carrying the photo's description as `image_desc`."""
     return SimpleNamespace(direction=direction, body=text, created_at=at, message_id=mid,
                            automation_kind=None, media_count=1 if photo else 0, raw_json=None,
                            price_cents=None, is_paid=False, purchased_at=None,
@@ -113,8 +61,6 @@ def _line(direction: str, text: str, at: datetime, mid: int, photo: dict | None 
 
 
 def _priced(line: SimpleNamespace, r) -> SimpleNamespace:
-    """`line` as her PPV message: the row's Offer price, its locked media count, paid when the
-    row's outcome is `bought` (purchased at `outcome_at`), as a DB message reads after a purchase."""
     bought = r.outcome == "bought"
     line.price_cents = r.offer_price_cents
     line.media_count = len(_loads(r.offer_media_json).get("locked") or [])
@@ -127,15 +73,11 @@ def _loads(raw: str | None) -> dict:
 
 
 def _his_line(r) -> str | None:
-    """His line of a test row: the last of `jev_json.state.fan_new_messages` (earlier ones belong
-    to rows before it)."""
     his = (_loads(r.jev_json).get("state") or {}).get("fan_new_messages") or []
     return his[-1] if his else None
 
 
 def _test_photo(reply: dict) -> dict | None:
-    """`reply_json.fan_photo` when it is his Test chat photo (`text`, `desc`). A live row keeps
-    `full_ai_photo.describe_turn`'s outcome there (`outcome`, `model`, `ms`): not a photo line."""
     photo = reply.get("fan_photo")
     return photo if photo and "text" in photo else None
 
@@ -145,11 +87,6 @@ def _n(trigger_key: str) -> int:
 
 
 def test_thread(rows) -> list[SimpleNamespace]:
-    """The session's rows (oldest first) as plain chat rows: his line (the last of the row's
-    `jev_json.state.fan_new_messages`; earlier ones belong to rows before it) then her bubbles
-    (`reply_json.parts` with text, and each gif part as a GIF-only dm); the bubble carrying a
-    `ppv` is her priced message (`_priced`), so the Router's `_ppv` note reads as on a DB thread.
-    Pure."""
     out: list[SimpleNamespace] = []
     for r in rows:
         photo = _test_photo(_loads(r.reply_json))
@@ -161,15 +98,12 @@ def test_thread(rows) -> list[SimpleNamespace]:
                 line = _line("out", p["text"], r.created_at, len(out) + 1)
                 out.append(_priced(line, r) if p.get("ppv") and r.offer_price_cents else line)
             elif p.get("gif"):
-                # Her gif as OF stores a GIF-only dm (`of_shapes.giphy_dm_id`): `line_text` reads
-                # `GIF_ONLY`, so the next Turn sees she answered (rwl fa3 S5).
                 line = _line("out", "", r.created_at, len(out) + 1)
                 line.raw_json = json.dumps({"giphyId": p["gif"], "media": []})
                 out.append(line)
     return out
 
 
-# ── Session folds (03b): pure, over one session's rows oldest first ──
 
 def _offers(rows) -> list:
     return [r for r in rows if r.offer_item_ref and r.offer_price_cents is not None]
@@ -181,20 +115,15 @@ def _media(r, *keys: str) -> set[int]:
 
 
 def owned_of(rows) -> set[int]:
-    """Owned media: the locked media of every bought Offer and every Free item (price 0). Raw
-    ids: the Sell executor expands them through dupe groups (`full_ai_sell.pool`)."""
     return {x for r in _offers(rows) if r.outcome == "bought" or r.offer_price_cents == 0
             for x in _media(r, "locked")}
 
 
 def sent_media_of(rows) -> set[int]:
-    """Every media id an Offer showed him: locked, previews and Free items."""
     return {x for r in _offers(rows) for x in _media(r, "locked", "previews")}
 
 
 def bought_of(rows) -> list[SimpleNamespace]:
-    """His purchases, oldest first, shaped as the `PURCHASE_KINDS` rows `last_purchase` and the
-    spend line read: a bought Offer is a `ppv_message` of its price at `outcome_at`."""
     return sorted((SimpleNamespace(kind="ppv_message", amount_cents=r.offer_price_cents,
                                    occurred_at=r.outcome_at)
                    for r in _offers(rows) if r.outcome == "bought"),
@@ -202,11 +131,6 @@ def bought_of(rows) -> list[SimpleNamespace]:
 
 
 def purchases_of(rows) -> list[str]:
-    """The sext scene's `purchases` Jev state (config `sext_scene`): every settled priced Offer
-    (bought or declined), in words with its anchor description (`offer_item_ref` `desc`, written by
-    `send` with the flag; none on older rows). Ordered by `outcome_at`, row order breaking ties
-    (03d): an older Offer stays settleable after a newer one, so the last line is his newest
-    purchase, as `bought_of` reads it."""
     out = []
     settled = [r for r in _offers(rows)
                if r.outcome in ("bought", "declined") and r.offer_price_cents]
@@ -221,16 +145,13 @@ def purchases_of(rows) -> list[str]:
     return out
 
 
-# A Sitting ends at a gap of more than this between two rows, `now` included (spec 03d › Contracts).
 SITTING_GAP_S = 120 * 60
 UNASKED_ROWS = ("offer_moment", "scene_offer", "chat_tease")
-TEASE_ROW = "chat_tease"            # Chat tease's Route table row (config `chat_tease`)
+TEASE_ROW = "chat_tease"
 NO_TEASES = "none yet"
 
 
 def is_tease(r) -> bool:
-    """A Chat tease row: Route row chat_tease, or any row whose tease price Jev priced its Pick
-    (`reply_json.chat_tease.cents` not None: a not-hot offer_moment is a Chat tease too). Pure."""
     if r.route_row == TEASE_ROW:
         return True
     return (_loads(getattr(r, "reply_json", None)).get("chat_tease") or {}).get("cents") is not None
@@ -240,15 +161,11 @@ NO_LIKES = "nothing stored yet"
 
 
 def likes_of(fan_info: dict) -> str:
-    """He likes (config `he_likes`): the fold's `fetishes` as the Router's `he_likes` state value,
-    stripped and at most 200 chars, else `NO_LIKES`. Pure."""
     v = fan_info.get("fetishes")
     return (v.strip()[:200] if isinstance(v, str) else "") or NO_LIKES
 
 
 def _sitting(rows, now: datetime) -> list:
-    """The Sitting: the rows after the last gap of more than `SITTING_GAP_S` between consecutive
-    points, `now` the last point. Pure."""
     points = [r.created_at for r in rows] + [now]
     start = next((i for i in range(len(rows), 0, -1)
                   if (points[i] - points[i - 1]).total_seconds() > SITTING_GAP_S), 0)
@@ -256,45 +173,33 @@ def _sitting(rows, now: datetime) -> list:
 
 
 DARED_ROWS = 3
-_READ_OUTCOMES = ("described", "cached")    # `full_ai_photo.describe_turn`: his picture was read
+_READ_OUTCOMES = ("described", "cached")
 
 
 def dare_due_of(rows, now: datetime | None = None) -> bool:
-    """Her dare is due this Turn (two steps, owner 2026-11-15): her newest reply was an open joke
-    (`_joke`) in this Sitting (`_sitting` at `now`, default utcnow), and none of the `DARED_ROWS`
-    rows before it was (she dares once). Read off the rows (oldest first), so no pending-dare
-    state (D32)."""
     return (bool(rows) and _joke(rows[-1]) and bool(_sitting(rows, now or datetime.utcnow()))
             and not any(_joke(r) for r in rows[-1 - DARED_ROWS:-1]))
 
 
 def dared_of(rows) -> bool:
-    """Her dare stands: one of her newest `DARED_ROWS` replies carried it, a sent reply on a Turn
-    her dare was due (`dare_due_of` at its time) whose beat dares (`_dare_beat`: ai_dare with his
-    picture unread, chat / sext with no picture). Read off the rows, so no pending-dare state (D32)."""
     return any(_carried(rows[j]) and dare_due_of(rows[:j], rows[j].created_at)
                for j in range(max(1, len(rows) - DARED_ROWS), len(rows)))
 
 
 def looks_of(rows, now: datetime | None = None) -> bool:
-    """She looks at his picture whatever `describe_fan_photos` says: her dare stands or is due."""
     return dared_of(rows) or dare_due_of(rows, now)
 
 
 def _photo_read(r) -> bool:
-    """The row's Turn read his picture: a Test chat photo's `read`, a live row's describe outcome."""
     p = _loads(r.reply_json).get("fan_photo") or {}
     return bool(p.get("read")) if "text" in p else p.get("outcome") in _READ_OUTCOMES
 
 
 def _joke(r) -> bool:
-    """A sent ai_dare reply that left the bot check open: the joke, not DARE_RATE on a read picture."""
     return r.route == "ai_dare" and r.status == "sent" and not _photo_read(r)
 
 
 def _carried(r) -> bool:
-    """A sent reply whose beat carried the dare when it was due (`full_ai_writers._dare_beat`). An
-    Offer-details answer has no dare beat (spec offer-details C)."""
     if r.status != "sent" or r.route_row == "offer_details":
         return False
     if r.route == "ai_dare":
@@ -303,19 +208,10 @@ def _carried(r) -> bool:
 
 
 def _his_lines(rows) -> int:
-    """His "in" lines of `test_thread(rows)` (one per row: a carried line once, a photo one line)."""
     return sum(m.direction == "in" for m in test_thread(rows))
 
 
 def spacing_of(rows, now: datetime, free: bool = False) -> dict:
-    """Spacing (03d, config `sell_spacing`): the three `router.SPACING_STATE_KEYS` from the session's
-    rows (oldest first) and `now` (his line). The Sitting is `_sitting`'s. A Piece is a Sitting row
-    with an item ref and a price above 0 (not a Free item, a tease row or a failed / dropped row);
-    Unasked when its `route_row` is an `UNASKED_ROWS` one. His lines since the last Piece are the
-    "in" lines of `test_thread` after it (one per row: a carried line once, a photo one line) plus
-    this Turn's; with no Piece in the Sitting, "no piece yet". `free` (config `chat_tease`): a free
-    Chat tease photo (`is_tease`, price 0) also ends the line count, as her last piece; the
-    two piece counts stay priced Pieces. Pure."""
     sitting = _sitting(rows, now)
     priced = {id(r) for r in _offers(sitting) if r.offer_price_cents > 0}
     pieces = [i for i, r in enumerate(sitting) if id(r) in priced]
@@ -333,12 +229,6 @@ _TEASE_OUTCOME = {"bought": "he bought it", "declined": "he said no", None: "he 
 
 
 def teases_sent_of(rows) -> list[str] | str:
-    """Chat tease (config `chat_tease`): the session's Chat tease rows (`is_tease`) that sent a photo, oldest
-    first, in words with the outcome: "free photo", "$10 photo set, he bought it", "$3 photo, he
-    said no" (a Decline), "..., he did not buy it" (no outcome); none -> `NO_TEASES`. Facts only:
-    Jev reads them for the moment (`chat_tease`) and the price (`_price_jev.ask_tease`). Pure.
-    ASSUMPTION: the whole session counts, not the Sitting. Overturned if the owner wants it per
-    Sitting."""
     out = []
     for r in _offers(rows):
         if not is_tease(r):
@@ -352,18 +242,10 @@ def teases_sent_of(rows) -> list[str] | str:
 
 
 def chat_tease_of(rows, now: datetime) -> dict:
-    """Chat tease (config `chat_tease`): the two `router.TEASE_STATE_KEYS`: his lines this Sitting
-    (`_sitting`'s rows, this Turn's line included) and `teases_sent_of`. Pure."""
     return dict(zip(router.TEASE_STATE_KEYS, (_his_lines(_sitting(rows, now)) + 1, teases_sent_of(rows))))
 
 
 def open_offers_of(rows) -> list:
-    """Every Open Offer, oldest first: a priced Offer with no outcome. Never open again: an Offer a haggle row
-    re-offered (ticket 47; its row id is the haggle row's item ref `over`, written by `send`), same
-    piece or a re-pick, settled or not; and an Offer whose locked media he already owns (`owned_of`).
-    ASSUMPTION: a superseded Offer stays unsettled and still settleable (`settle`: any unsettled
-    priced Offer of the session); the spec is silent. Overturned if a re-offer should settle or
-    void the Offer it replaces."""
     over = {_loads(r.offer_item_ref).get("over") for r in _offers(rows)}
     owned = owned_of(rows)
     return [r for r in _offers(rows) if r.offer_price_cents > 0 and r.outcome is None
@@ -371,25 +253,17 @@ def open_offers_of(rows) -> list:
 
 
 def open_offer_of(rows):
-    """The newest Open Offer (`open_offers_of`'s last), else None."""
     opened = open_offers_of(rows)
     return opened[-1] if opened else None
 
 
 def offer_line(r) -> SimpleNamespace | None:
-    """Offer row `r` as the Pending offer message: the bubble its PPV rode, priced (`_priced`)."""
     if r is None:
         return None
     return next((m for m in reversed(test_thread([r])) if m.price_cents), None)
 
 
 def pending_tease_of(rows, now: datetime, ttl_s: float = TEASE_TTL_S):
-    """The Pending tease (CONTEXT; ticket 07 r3 shape), else None: the newest `sent` row is a Full
-    AI (test or live, `full`) tease carrying its Pick (`offer_item_ref` kind `tease`, price NULL), created at most `ttl_s`
-    before `now` (his reply), with no Offer outcome (a purchase or a decline) set since. "No other
-    outbound since" is the newest-sent-row rule: a test session's sent rows are its only outbound;
-    a failed / no_send row sent nothing, so it never ends the tease (story 38). An Offer-details
-    answer (row `offer_details`, spec offer-details C) is transparent: never the newest sent row."""
     r = next((x for x in reversed(rows) if x.status == "sent" and x.route_row != "offer_details"), None)
     if r is None:
         return None
@@ -404,16 +278,11 @@ def pending_tease_of(rows, now: datetime, ttl_s: float = TEASE_TTL_S):
 
 
 def tease_bubble_ids(rows, tease) -> set:
-    """The OF message ids live `_folds` reads as tease `tease`'s bubbles: its row's parts and those of
-    each Offer-details answer that held it (`reply_json.held_tease`, spec offer-details C). Pure."""
     held = [r for r in rows if r.route_row == "offer_details" and _loads(r.reply_json).get("held_tease") == tease.id]
     return {p.get("message_id") for r in (tease, *held) for p in _loads(r.reply_json).get("parts") or []}
 
 
 def teased_of(r) -> Teased | None:
-    """Row `r`'s Pick as the Turn reads it (`TurnFacts.tease`, a tease row; `TurnFacts.offer_piece`,
-    the open Offer): its item ref's `subject` and `format`, its `locked` and `previews` media and
-    its `offer_list_cents` and row id; None for None."""
     if r is None:
         return None
     ref = _loads(r.offer_item_ref)
@@ -422,9 +291,6 @@ def teased_of(r) -> Teased | None:
 
 
 def pending_offer_text(rows, now: datetime) -> str:
-    """The Pending offer as the Router states it, the ONE source for the Jev state (`fetch`) and
-    the tests: the Pending tease's text (her bubbles on the tease row, space-joined), else the
-    open Offer's price and caption (`_router_jev.pending_offer`), else "none". `now` = his reply."""
     tease = pending_tease_of(rows, now)
     if tease is not None:
         return " ".join(p["text"] for p in _loads(tease.reply_json).get("parts") or [] if p.get("text"))
@@ -432,14 +298,12 @@ def pending_offer_text(rows, now: datetime) -> str:
 
 
 def _in_sessions(account_id: str, fan_id: int, prefixes) -> tuple:
-    """The one definition of a session's rows: account, test Fan, Mode, trigger kind, key prefix."""
     return (AiDecision.account_id == str(account_id), AiDecision.fan_id == fan_id,
             AiDecision.mode == MODE, AiDecision.trigger_kind == TRIGGER_KIND,
             or_(*(AiDecision.trigger_key.startswith(p, autoescape=True) for p in prefixes)))
 
 
 async def session_rows(account_id: str, pair: str, side: str | None = None) -> list[AiDecision]:
-    """The pair's rows under `account_id` (one side, or both), oldest first."""
     prefixes = [_prefix(session_key(pair, x)) for x in ([side] if side else SIDES)]
     async with get_session() as s:
         return list((await s.execute(select(AiDecision).where(
@@ -447,9 +311,8 @@ async def session_rows(account_id: str, pair: str, side: str | None = None) -> l
 
 
 def session_row(r: AiDecision) -> dict:
-    """One row as the session read returns it."""
     reply = _loads(r.reply_json)
-    caption = {"caption": reply["caption"]} if reply.get("caption") else {}   # caption_writer "caption"
+    caption = {"caption": reply["caption"]} if reply.get("caption") else {}
     photo = _test_photo(reply)
     return {"row_id": r.id, "side": reply.get("side"), "n": _n(r.trigger_key),
             "text": photo["text"] if photo else _his_line(r), "photo": photo,
@@ -457,19 +320,12 @@ def session_row(r: AiDecision) -> dict:
             "route_row": r.route_row, "writer": r.writer_model, "attempts": reply.get("attempts") or [],
             "wait_s": reply.get("wait_s"), "status": r.status, "fan_info": reply.get("fan_info") or {},
             "offer": offer_of(r), "created_at": iso_z(r.created_at), **caption,
-            # sext scene (config `sext_scene`): the saved scene and the price Jev; a chain drop's reason;
-            # the Heat check (spec 06); the owner's Quote-reply mark (offer-details B); when set
             **{k: reply[k] for k in ("scene", "price", "dropped_reason", "heat_check", "reply_to_n")
                if reply.get(k)}}
 
 
 async def fetch(account: str, pair: str, side: str, text: str, config: dict, photo: dict | None = None,
                 *, reply_to_n: int | None = None):
-    """The Turn of his line `text` on the session's next Turn number: his run (with any line
-    left unanswered before it), the `THREAD_LINES` before it, and the session fold (`fan_info`,
-    `asked`, `typo_state` from the newest row's `reply_json`; his last purchase, the Pending offer,
-    the Pending tease's Pick, the open Offer's piece, Owned and sent media and the bought list from the Offer columns,
-    this session's rows only), and the Offer ask (`reply_to_n`: the owner's Quote-reply mark)."""
     from automations.full_ai_offer_details import session_ask
     from automations.full_ai_turn import TurnFacts
     rows = await session_rows(account, pair, side)
@@ -481,20 +337,19 @@ async def fetch(account: str, pair: str, side: str, text: str, config: dict, pho
     open_offer = open_offer_of(rows)
     spent, offer = bought_of(rows), offer_line(open_offer)
     bought = spent[-1] if spent else None
-    # The one `pending_offer` source: a Pending tease first.
     dared, due = dared_of(rows), dare_due_of(rows, now)
-    on = dared or due or bool(config[PHOTOS_KEY])    # her dare promised to look; a bot check too
+    on = dared or due or bool(config[PHOTOS_KEY])
     st, _ = build_state(turn, thread_rows, bought, offer, pending=pending_offer_text(rows, now), photos=on)
     fold = _loads(rows[-1].reply_json) if rows else {}
     scene = saved_scene(rows, now, SITTING_GAP_S)
-    if config.get("sext_scene"):        # test + live (this module); never in build_state / Shadow
+    if config.get("sext_scene"):
         st = {**st, "purchases": purchases_of(rows), "scene": scene_words(scene)}
     tease = bool(config.get("chat_tease"))
-    if config.get("sell_spacing") or tease:   # 03d Spacing: test + live, never in build_state / Shadow
+    if config.get("sell_spacing") or tease:
         st = {**st, **spacing_of(rows, now, free=tease)}
-    if tease:                           # Chat tease: test + live, never in build_state / Shadow
+    if tease:
         st = {**st, **chat_tease_of(rows, now)}
-    if config.get("he_likes"):          # He likes: test + live, every Turn, never in build_state / Shadow
+    if config.get("he_likes"):
         st = {**st, "he_likes": likes_of(fold.get("fan_info") or {})}
     session = session_key(pair, side)
     return TurnFacts(
@@ -512,42 +367,23 @@ async def fetch(account: str, pair: str, side: str, text: str, config: dict, pho
 
 
 def expect_n(facts, n: int) -> None:
-    """The client's Turn number must be the one `fetch` found (1 + the session's row count)."""
     if _n(facts.anchor_key) != n:
         raise Conflict(None)
 
 
 def hold(config: dict, anchor_key: str) -> float:
-    """The reply wait the page shows, drawn from the side's reply speed seeded by `session:n`
-    (replayable). Test never holds: the server never sleeps."""
     seed = anchor_key.removeprefix("test:")
     return round(_SPEEDS[config["reply_speed"]](random.Random(seed)), 1)
 
 
 def send(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | None = None,
          desc: str | None = None) -> None:
-    """Her bubbles onto the row about to be recorded; the row's `mode='test'` marks it a test row.
-    A `pick` (`full_ai_sell.Pick`) lands on the row's Offer columns (0120): price, list, media,
-    item ref with its kind by Route (ADR-0034: tease -> `tease`, price NULL; make_right -> `free`,
-    price 0; a price-0 sell_now Pick, Chat tease's free photo -> `free`; else `offer`); `over` (a haggle row: the open Offer's row id it re-offers, ticket 47)
-    joins the item ref, so `open_offer_of` never opens that Offer again; `desc` (the sext scene:
-    the anchor's description, <= 120 chars) joins it for `purchases_of`;
-    `offer_message_id`, `outcome`, `outcome_at`, `join_src` stay NULL (no send, no settle yet).
-    `offer_media_json` = {locked, previews, items}: `items` is the Pick's `facts["media"]` (each locked
-    then preview item's {id, kind, seconds}), the PPV bubble's kind and length line (`[]` when absent).
-    Unless a tease, it rides the last bubble as `ppv: {ref, price_cents, media, previews}`.
-    One call, one Pick: at most one Offer per row. A make_right row never carries a priced Offer
-    (raises).
-    ASSUMPTION: a tease sends no media (spec 03b: no PPV, no `>>OFFER`; nothing says a preview
-    rides it); its media is stored only so the next Turn can re-validate the teased piece.
-    Overturned if the owner wants the tease to show a free preview."""
     reply = row["reply_json"]
     reply["parts"] = [{"text": p} for p in parts]
     if pick is not None and reply["parts"]:
         if row["route"] == "make_right" and pick.price_cents:
             raise AssertionError("make_right row with a priced Offer")
         tease = row["route"] == "tease"
-        # A price-0 Pick on sell_now is a free Chat tease photo: unlocked, as make_right's Free item.
         kind = "tease" if tease else "free" if row["route"] == "make_right" or not pick.price_cents else "offer"
         if not tease:
             reply["parts"][-1]["ppv"] = {"ref": pick.ref, "price_cents": pick.price_cents,
@@ -564,10 +400,6 @@ def send(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | N
 
 
 def offer_of(r) -> dict | None:
-    """The Offer a row carries (the row dict before or the AiDecision after its INSERT), as the
-    turn response and the session read return it; None on a row with none.
-    `refusal` is None on an Offer (a Refusal row has no Offer; its reason is `reply_json.refusal`).
-    `items`: each media's {id, kind, seconds} (`send`), `[]` on a row stored before it."""
     get = r.get if isinstance(r, dict) else (lambda k: getattr(r, k))
     if not get("offer_item_ref"):
         return None
@@ -578,8 +410,6 @@ def offer_of(r) -> dict | None:
 
 
 class Unsettled(Exception):
-    """A settle that changed nothing, and why: `not_this_session` (404), `already_settled` (409,
-    `outcome` the stored one), `not_a_priced_offer` (422) or `already_owned` (422)."""
 
     def __init__(self, reason: str, outcome: str | None = None):
         super().__init__(reason)
@@ -588,12 +418,6 @@ class Unsettled(Exception):
 
 async def settle(account: str, pair: str, side: str, row_id: int,
                  outcome: Literal["bought", "declined"]) -> None:
-    """Fake Buy / Decline on one of the session's rows: one UPDATE of `outcome`, `outcome_at`,
-    `join_src='test'`, guarded by "a priced test Offer of this session with no outcome yet"
-    (atomic, so a double click settles once). Any unsettled priced Offer of the session may be
-    settled, not only the newest; a Buy of media he already owns in this session (the other row of
-    a haggle chain, bought) is refused, so one piece is never paid for twice, also when both Buys
-    land at once (`_SETTLE_LOCKS`). Writes that row's three columns only. Raises `Unsettled`."""
     async with _SETTLE_LOCKS.setdefault(str(account), asyncio.Lock()):
         await _settle(account, pair, side, row_id, outcome)
 
@@ -624,8 +448,6 @@ async def _settle(account: str, pair: str, side: str, row_id: int,
 
 
 async def record(row: dict) -> int:
-    """INSERT the Turn's row when its Turn number is 1 + the session's row count, in one
-    transaction. Raises `Conflict` otherwise, or on a replay that hits `uq_ai_decisions_turn`."""
     key = row["trigger_key"]
     prefix, n = key.rsplit(":", 1)[0] + ":", _n(key)
     values = dict(row, reply_json=json.dumps(row["reply_json"], ensure_ascii=False),
@@ -653,15 +475,12 @@ async def _existing(s, row: dict) -> int | None:
 
 async def _send_io(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | None = None,
                    desc: str | None = None, gif: dict | None = None) -> None:
-    """`TurnIO.send`: `send`, then the gif part rides the row (nothing leaves the server)."""
     send(row, parts, pick, over=over, desc=desc)
     if gif:
         row["reply_json"]["parts"].append(gif)
 
 
 def __getattr__(name: str):
-    """`IO`, the Test chat's `full_ai_turn.TurnIO`, built on first read: full_ai_turn imports
-    this module, so the type is not importable at this module's import time."""
     if name == "IO":
         from automations.full_ai_turn import TurnIO
         io = globals()["IO"] = TurnIO(TRIGGER_KIND, hold, _send_io, record)

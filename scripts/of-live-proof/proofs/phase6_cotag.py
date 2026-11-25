@@ -1,6 +1,3 @@
-"""Phase 6's Co-tag proofs (ofm-not-yet ticket 98): new-post--cotag-scheduled and new-post--cotag-immediate, assembled
-into `PROOFS` by phase6.py (its docstring lists the trigger steps). Moved out of phase6_writes.py (file size); it reuses
-that module's New post and queue helpers."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -11,50 +8,23 @@ from proof_core import Proof, Write
 from proofs.phase6_writes import (MARKER, POST_BUTTON, POST_SCHEDULE_LEAD, POSTS_PATH, QUEUE_SEND_NOW, SCHEDULED_TOAST,
                                   _json, _wire, draft_text, schedules)
 
-# ── new-post--cotag-scheduled, new-post--cotag-immediate (ofm-not-yet ticket 98) ──
-#
-# Each proof writes one free post from New post with the run's marker as its text, no media (so no media-level
-# auto-tag can join, service/of_sends.py `_apply_cotags`) and one Co-tag: the partner the run's input names
-# (prove.py `--cotag-partner`, ctx["cotag_partner"]), never one picked from the taggable list. The draft is seeded,
-# the tag dialog (new-post/state-tag-people) reopened, the partner's row checked there (the draft's `tagged_users`
-# must then be [partner]), then Post on new-post/index. Scheduled (post C): POST_SCHEDULE_LEAD ahead, it must show in
-# GET /schedules at the seeded time with its tag, and is deleted before it fires. Immediate: no date, tagged
-# delete_at_once (fan-visible: the quiet hour, the effort's cap), it must show on the profile with its tag and is
-# deleted at once. The outbound POST /posts on the wire must carry `rfTag` == `userTags` == [partner], no
-# `rfGuest`/`rfPartner` entry and no media (cotag_wire_problems). A create answered non-2xx or with its reply lost is
-# never retried: the marker read records whether OnlyFans made it anyway (`ambiguous_failure`), the proof fails, and
-# the run's after-write read finds it by its marker (find_cotag, `/__proof/found`, the Relay's strict read-back) and
-# deletes it. No partner named: both park before any write. Live: the immediate one parks (coordinator ruling,
-# 2026-11-21: a fan-visible tagged post waits on ticket 104's attended run).
-# Carrier: `rfTag`, with `rfGuest`/`rfPartner` empty, is measured in OnlyFans's JS (of_sends.py:23-27,
-# new-post-create-body.json `ofKeys`); `userTags` is the Relay's legacy extra (of_client.py `_write_tag_block`), asserted
-# because the Relay sends it, not because OnlyFans reads it. Not yet seen accepted live. The guard refuses any other
-# Co-tag before it leaves (proof_core `cotag_refusal`), and a post outside the proof's payload (`cotag_payload`:
-# the exact draft text, the draft's schedule, the partner's tag, no media); the wire assertion is the after-check.
-# ASSUMPTION: OnlyFans's post read names its Co-tags `rfTag`, as ids (soak/fake_of/posts.py, rung 5: no tagged post's
-# read is captured); overturned by the first live read of a tagged post, which then fixes `_tags_of`.
-# Open unknown (recorded per create): whether OnlyFans validates Co-tags at create or only at publish. If only at
-# publish, post C's queue acceptance proves less than it claims (the ticket's ASSUMPTION) and C becomes an immediate
-# post deleted at once.
 
 COTAG_SCHEDULED_ID = "new-post--cotag-scheduled"
 COTAG_IMMEDIATE_ID = "new-post--cotag-immediate"
-COTAG_SCHEDULED, COTAG_IMMEDIATE = "cotag-scheduled", "cotag-immediate"   # each draft text's suffix
+COTAG_SCHEDULED, COTAG_IMMEDIATE = "cotag-scheduled", "cotag-immediate"
 COTAG_PAGE = "new-post/state-tag-people"
-COTAG_ROW = "label.b-rows-lists__item[data-oi-user='{id}']"   # ofMirrorPostTags applyTagRows
-POSTED_TOAST = "Your post has been published"   # ofMirrorPost POSTED_TOAST
+COTAG_ROW = "label.b-rows-lists__item[data-oi-user='{id}']"
+POSTED_TOAST = "Your post has been published"
 COTAG_UNNAMED = "Co-tag partner not named (owner sheet item 4)"
 COTAG_LIVE_PARK = ("parked — the immediate Co-tag post runs in fake mode only (coordinator ruling 2026-11-21): a live "
                    "fan-visible tagged post waits on ticket 104's attended run (cap 1, neutral text, no media)")
 TICKET_06 = ("ticket 06's frequency question stays open: two sends cannot measure how often OnlyFans makes a post "
              "the Relay reported as failed")
 TAG_VALIDATION = "open: whether OnlyFans validates Co-tags at create or only at publish (FakeOF stores them unchecked)"
-_DRAFT_JS = "(localStorage.getItem('chatterly:scope') || '').replace(/^model:/, '')"   # the draft key's Creator id
+_DRAFT_JS = "(localStorage.getItem('chatterly:scope') || '').replace(/^model:/, '')"
 
 
 def _tags_of(entity) -> str:
-    """A post read's Co-tags (`rfTag`, ids or {id} items; ASSUMPTION above) as sorted ids joined by commas ("" none):
-    a string, so a read row stays hashable (`_new`)."""
     tags = entity.get("rfTag") if isinstance(entity, dict) else None
     out = []
     for t in tags if isinstance(tags, list) else []:
@@ -65,8 +35,6 @@ def _tags_of(entity) -> str:
 
 
 def _queue_rows(get, only: str | None = None) -> list:
-    """Today's and tomorrow's (UTC) scheduled posts as [schedule id, post id, text, publish time, tags], each post's
-    own read; `only`: that post id's row alone, the other posts not read (follow-up #19: the settle's poll)."""
     queue = []
     for i in schedules(get, datetime.now(timezone.utc)):
         pid = (i.get("entity") or {}).get("id")
@@ -79,7 +47,6 @@ def _queue_rows(get, only: str | None = None) -> list:
 
 
 def _profile_rows(get) -> list:
-    """The profile's latest published posts as [post id, text, tags]."""
     uid = get("/api2/v2/users/me", {}).get("id")
     got = get(f"/api2/v2/users/{uid}/posts", {"limit": 10})
     rows = got.get("list") if isinstance(got, dict) else got
@@ -88,13 +55,10 @@ def _profile_rows(get) -> list:
 
 
 def read_cotag(get, fan) -> dict:
-    """OnlyFans's side: today's and tomorrow's (UTC) scheduled posts as [schedule id, post id, text, publish time,
-    tags] (each post's own read) and the profile's published posts as [post id, text, tags]."""
     return {"queue": sorted(_queue_rows(get), key=str), "profile": sorted(_profile_rows(get), key=str)}
 
 
 def _cotag_posts(read) -> list:
-    """(post id, text, tags) of every scheduled and published post in a read (`read_cotag`)."""
     read = read or {}
     return [(r[1], r[2], r[4]) for r in read.get("queue") or []] + [tuple(r) for r in read.get("profile") or []]
 
@@ -105,13 +69,10 @@ def _new_cotag(before, after) -> list:
 
 
 def cotag_effect(before, after) -> bool:
-    """The declared effect: a marked post new in the queue or on the profile."""
     return any(MARKER in p[1] for p in _new_cotag(before, after))
 
 
 def find_cotag(suffix: str):
-    """Story 53's finder (Proof.find): the one new post, scheduled or published, whose text is exactly this proof's
-    draft text; None when there is none or several (the row closes FAILED, the post named for the owner)."""
     def find(before, after, marker):
         want = draft_text(marker, suffix)
         new = [p[0] for p in _new_cotag(before, after) if p[1] == want]
@@ -120,23 +81,18 @@ def find_cotag(suffix: str):
 
 
 def cotag_wire_problems(body, partner) -> list:
-    """Story 4: why an outbound POST /posts body is not tagged with `partner` and nothing else: the guard's own rule
-    (proof_core.cotag_problems), plus that it carries a Co-tag at all and no media."""
     if isinstance(body, dict) and not proof_core.cotag_tagged(body):
         return ["the outbound post carries no Co-tag at all"]
-    out = [f"outbound: {p}" for p in proof_core.cotag_problems(body, partner)]   # the guard's own rule
+    out = [f"outbound: {p}" for p in proof_core.cotag_problems(body, partner)]
     if isinstance(body, dict) and body.get("mediaFiles"):
         out.append(f"the outbound post carries media {body['mediaFiles']!r} (a media-level auto-tag can join)")
     return out
 
 
-SCHEDULE_SLACK = timedelta(minutes=1)   # clock skew between the draft's own clock and the Relay's
+SCHEDULE_SLACK = timedelta(minutes=1)
 
 
 def _schedule_problem(body: dict, scheduled: bool, at) -> str | None:
-    """W30 W1: the immediate post carries no schedule; post C's date lies where its draft put it (POST_SCHEDULE_LEAD
-    after the draft, so POST_LEAD..POST_SCHEDULE_LEAD after the send, SCHEDULE_SLACK added): today's or tomorrow's
-    queue, the one read_cotag (the lost reply's finder) reads."""
     when = body.get("scheduledDate")
     if not scheduled:
         return f"the immediate post carries a schedule ({str(when)[:40]})" if body.get("isScheduled") or when else None
@@ -153,13 +109,9 @@ def _schedule_problem(body: dict, scheduled: bool, at) -> str | None:
 
 
 def cotag_payload(suffix: str):
-    """Each Co-tag proof's declared payload (Write.payload, the guard's class 4): the text exactly the proof's draft
-    text (`draft_text`, the run's marker and `suffix`: what find_cotag recovers a lost reply by; W30 W1), its schedule
-    as the draft set it (`_schedule_problem`), tagged with the run's named partner alone, no media
-    (cotag_wire_problems); else the first reason why not."""
     def payload(body, run, at=None) -> str | None:
         if isinstance(body, dict):
-            if why := proof_core.marker_problem(body.get("text"), run):   # round 2 #22
+            if why := proof_core.marker_problem(body.get("text"), run):
                 return f"the post: {why}"
             if body.get("text") != draft_text(run.marker, suffix):
                 return f"the post's text {str(body.get('text'))[:80]!r} is not the draft's {suffix!r} text"
@@ -170,11 +122,6 @@ def cotag_payload(suffix: str):
 
 
 def cotag_cap_refusal(spent, proof, of: str) -> str | None:
-    """Why the immediate Co-tag post does not take a fan-visible attempt, or None: the guard's own rule
-    (proof_core.fan_visible_refusal), or the effort's last slot, kept for Send now (the spec's proof order runs it
-    last) unless Send now already spent its own.
-    ASSUMPTION (rung 4): Send now outranks the immediate Co-tag for the effort's last fan-visible slot (ticket 104 plans
-    Publish now first and parks both others live); overturned by the coordinator, after which the guard's rule alone."""
     spent = list(spent)
     if why := proof_core.fan_visible_refusal(spent, proof, of):
         return why
@@ -185,9 +132,6 @@ def cotag_cap_refusal(spent, proof, of: str) -> str | None:
 
 
 def _cotag_draft(ctx, suffix: str, at: str | None) -> list:
-    """The draft (marker text, no media, no tags; `at` its schedule, None immediate), the tag dialog reopened, the
-    partner's row checked; the draft must then name the partner alone. Parks, before any write, when the partner is
-    not on the Creator's taggable list."""
     rec, page = ctx["record"], ctx["page"]
     partner = int(ctx["cotag_partner"])
     rec.update(partner=partner, tag_validation=TAG_VALIDATION)
@@ -222,15 +166,12 @@ def _cotag_unnamed(ctx) -> None:
 
 
 def cotag_scheduled_draft(ctx) -> list:
-    """Post C's step 0: parked with no partner; the draft Scheduled POST_SCHEDULE_LEAD ahead, the partner tagged."""
     _cotag_unnamed(ctx)
     at = (datetime.now(timezone.utc) + POST_SCHEDULE_LEAD).replace(microsecond=0).isoformat()
     return _cotag_draft(ctx, COTAG_SCHEDULED, at)
 
 
 def cotag_immediate_draft(ctx) -> list:
-    """The immediate post's step 0: parked with no partner, live (ruling), or on the fan-visible cap; the draft with
-    no date, the partner tagged."""
     _cotag_unnamed(ctx)
     if ctx["of"] != "fake":
         ctx["park"](COTAG_LIVE_PARK)
@@ -240,9 +181,6 @@ def cotag_immediate_draft(ctx) -> list:
 
 
 def _cotag_post(ctx, suffix: str, toast: str) -> tuple:
-    """Post, once -> (problems, the new post's id; None when the create was not answered 2xx). The one outbound
-    POST /posts must be allowed and tagged with the partner alone. A non-2xx answer is never retried: the marker read
-    records whether OnlyFans made the post anyway (story 5)."""
     rec, page, fr = ctx["record"], ctx["page"], ctx["frame"]
     partner, want = int(ctx["cotag_partner"]), draft_text(ctx["marker"], suffix)
     before = read_cotag(ctx["of_get"], None)
@@ -264,8 +202,6 @@ def _cotag_post(ctx, suffix: str, toast: str) -> tuple:
     for e in lines:
         out += cotag_wire_problems(e.get("body"), partner)
     if not 200 <= status < 300:
-        # Story 5: never retried. Whether OnlyFans made it anyway is read by its marker; the run's after-write read
-        # finds it the same way (find_cotag, /__proof/found) and deletes it.
         made = [p[0] for p in _new_cotag(before, read_cotag(ctx["of_get"], None)) if p[1] == want]
         wire = lines[0].get("status") if lines else None
         rec["ambiguous_failure"] = {"app_status": status, "wire_status": wire, "found_by_marker": made}
@@ -284,8 +220,6 @@ def _cotag_post(ctx, suffix: str, toast: str) -> tuple:
 
 
 def _cotag_shown(ctx, pid: str, key: str, want: str):
-    """The post's row in read_cotag's `key` ("queue" | "profile"), polled 10 s; None when it never shows. Each poll
-    reads only `key`'s side, the queue's only post `pid` (two reads, however many posts are scheduled)."""
     at, get = (1 if key == "queue" else 0), ctx["of_get"]
     for _ in range(20):
         rows = _queue_rows(get, pid) if key == "queue" else _profile_rows(get)
@@ -297,7 +231,6 @@ def _cotag_shown(ctx, pid: str, key: str, want: str):
 
 
 def cotag_scheduled_post(ctx) -> list:
-    """Post C's step 1: Post; the queue shows C at the seeded time, tagged with the partner alone."""
     rec, partner = ctx["record"], str(ctx["cotag_partner"])
     out, pid = _cotag_post(ctx, COTAG_SCHEDULED, SCHEDULED_TOAST)
     if pid is None:
@@ -320,8 +253,6 @@ def cotag_scheduled_post(ctx) -> list:
 
 
 def cotag_immediate_post(ctx) -> list:
-    """The immediate post's step 1: Post; the profile shows it tagged with the partner alone (then deleted at once:
-    the driver's settle, or its deadline timer)."""
     rec, partner = ctx["record"], str(ctx["cotag_partner"])
     out, pid = _cotag_post(ctx, COTAG_IMMEDIATE, POSTED_TOAST)
     if pid is None:
@@ -367,5 +298,4 @@ NEW_POST_COTAG_IMMEDIATE = Proof(
 )
 
 
-# this module's own proofs (test_proof_list walks every proofs/*.py's PROOFS); phase6.py's PROOFS is the run's list
 PROOFS = (NEW_POST_COTAG_SCHEDULED, NEW_POST_COTAG_IMMEDIATE)

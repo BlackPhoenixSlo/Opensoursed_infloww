@@ -1,33 +1,3 @@
-"""Single-Creator scope: the queue rows' More menu writes through the relay (app/lib/ofMirrorQueue.ts).
-
-Mocks the login (as feeds.py), the Creator list (account 1), GET /api/of/v2/schedules with SYNTHETIC wrapped schedule
-items (a post with media ready, a message) and the three row writes (PUT /api/of/v2/schedules/<id>/publish,
-DELETE /api/of/v2/posts/<id>, DELETE /api/of/v2/messages/queue/<id>), recording every relay call; any request to a
-host other than localhost is aborted and fails the check. The mocked /schedules answers only the items in its
-publish_date..publish_date_end. Scope `model:1`, browser time zone Europe/Ljubljana, the clock fixed at 2026-10-12 12:00,
-on `queue/state-list-view`:
-1. The post row's More opens OF's menu: Pin to your profile, Edit post, Post now, Delete post; the message row's:
-   Edit message, Message now, Delete message. The right column lists today's (Oct 12) post.
-2. Edit post and Edit message are enabled (no tooltip).
-3. Post now with the confirm dismissed sends nothing; accepted, it sends exactly PUT /api/of/v2/schedules/901/publish
-   (the schedule id) with X-Account-Id: 1, and the queue is asked for again.
-4. Delete post with the confirm dismissed sends nothing; Delete message with it accepted sends exactly
-   DELETE /api/of/v2/messages/queue/22 (the message id).
-5. Month navigation on `queue` (the calendar): its days marked with OF's event bars and counts, nothing under it; the
-   back arrow is greyed out on today's month; next_month shows "November 2026", asks /schedules for exactly
-   publish_date=2026-11-01, publish_date_end=2026-11-30 and marks only the November post's day; prev_month brings
-   October's two days back; a click on Oct 14 shows "October 14, 2026" in the right column with that day's message; the
-   Messages tab leaves only the message's day, Posts with it both; nothing is sent.
-6. Add to queue: the header's "+" opens OF's modal (Add to queue; Scheduled / Save for later; date, time and types),
-   its Post opens New post with the picked moment on the draft; a saved-for-later page's "+" opens it on Save for later.
-7. Edit post reads GET /api/of/v2/posts/11 (mocked) and opens New post filled ("Editing a scheduled post"); Post sends
-   exactly PUT /api/of/v2/queue/posts/11 with the post's text and date, no POST. Edit message reads GET
-   /api/of/v2/messages/queue/22 (mocked, with recipients and lists) and opens New message filled; Send sends exactly
-   PUT /api/of/v2/messages/queue/22 with its text, lists, recipients and date.
-8. No console errors.
-Prints one {"check","want","got"} line per check. Screenshots: /tmp/of-mirror-shots/inapp-queue-menu.png,
-inapp-queue-november.png. Exit 1 on a failed check.
-"""
 import json, os, sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -40,7 +10,6 @@ user={"user_id":"u1","username":"tester","is_admin":False}
 ACCOUNTS={"accounts":[{"id":"1","nickname":"Model One","has_session":True}],"active_account_id":None}
 NOT_YET="Not available in Inflowwww yet"
 TZ="Europe/Ljubljana"
-# The calendar's event bars: "<day> <type> <count>" per bar (OF names a bar by its count).
 BARS="[...document.querySelectorAll('.v-calendar-monthly .v-event[data-oi-data]')].map(b => `${b.dataset.date} ${['post','chat','stream'].find(c => b.classList.contains(c))} ${b.textContent}`)"
 OCT_BARS=["2026-10-12 post 1","2026-10-14 chat 1"]
 NOW=datetime(2026,10,12,12,0,tzinfo=ZoneInfo(TZ))
@@ -49,13 +18,11 @@ SCHEDULES=[{"id":901,"type":"post","publishDateTime":"2026-10-12T09:05:00","enti
            {"id":905,"type":"post","publishDateTime":"2026-11-03T10:00:00","entity":{"id":15,"text":"November post"}}]
 WRITES={("PUT","/api/of/v2/schedules/901/publish"),("DELETE","/api/of/v2/posts/11"),("DELETE","/api/of/v2/messages/queue/22"),
         ("PUT","/api/of/v2/queue/posts/11"),("PUT","/api/of/v2/messages/queue/22")}
-# What Edit reads: the post (OF's GET /posts/{id}) and the queued message (GET /messages/queue/{id}?format=scheduled).
 EDIT_READS={"/api/of/v2/posts/11":{"id":11,"rawText":"Alpha post","text":"<p>Alpha post</p>","postedAt":"2026-10-20T10:00:00+02:00","canEditSchedule":True},
             "/api/of/v2/messages/queue/22":{"id":22,"text":"<p>Alpha message</p>","scheduledAt":"2026-10-21T18:30:00+02:00","userIds":[501],"userLists":["fans"],"excludedLists":[]}}
 bodies={}
 MENU="[...document.querySelectorAll('#oi-queue-menu button')].map(b => [b.getAttribute('at-attr'), b.textContent.trim()])"
 NOTE="document.getElementById('oi-note')?.textContent ?? null"
-# The rows outside the right column, and in it: their text.
 MAIN="[...document.querySelectorAll('.b-agenda__area-events__item')].filter(e => e.checkVisibility() && !e.closest('.l-wrapper__sidebar')).map(e => e.querySelector('.b-agenda__area-events__item-inward').textContent)"
 SIDE="[...document.querySelectorAll('.l-wrapper__sidebar .b-agenda__area-events__item')].filter(e => e.checkVisibility()).map(e => e.querySelector('.b-agenda__area-events__item-inward').textContent)"
 HEADER="[...document.querySelectorAll('.b-queue-header__date')].map(e => e.textContent.trim())"
@@ -94,7 +61,7 @@ with sync_playwright() as p:
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**","**/img?**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     pg.on("pageerror", lambda e: errs.append(f"uncaught: {e}"))
     answer={"accept":False}
@@ -133,7 +100,6 @@ with sync_playwright() as p:
         answer["accept"]=True
         more.nth(1).click(); fr.locator("#oi-queue-menu [at-attr=delete_message]").click(); pg.wait_for_timeout(1000)
         check("Delete message, confirmed: exactly DELETE of the message id", writes()[1:], [["DELETE","/api/of/v2/messages/queue/22","1"]])
-    # 6. Add to queue.
     def frame_of(page, ready="document.readyState==='complete'"):
         for _ in range(80):
             fs=[f for f in pg.frames if f.url.endswith(f"/of-mirror/pages/{page}.html")]
@@ -167,7 +133,6 @@ with sync_playwright() as p:
         pg.wait_for_timeout(800)
         fr.locator("[data-oi-add]").first.click(); pg.wait_for_timeout(300)
         check("saved for later's +: the modal on Save for later", fr.evaluate(MODAL), ["Add to queue", [["Scheduled",False],["Save for Later",True]], ["Post","Mass message"]])
-    # 7. Edit post and Edit message: the composer filled from the item; saving sends PUT to the same item.
     answer["accept"]=True
     pg.evaluate("sessionStorage.clear()")
     pg.goto(f"{BASE}/of-manager/queue/state-list-view", wait_until="load", timeout=90000)
@@ -196,7 +161,6 @@ with sync_playwright() as p:
             check("Edit message: Send sends exactly PUT /messages/queue/22", [c for c in calls[n:] if c[0]!="GET"], [["PUT","/api/of/v2/messages/queue/22","1"]])
             check("Edit message: its body", bodies.get(("PUT","/api/of/v2/messages/queue/22")), {"text":"Alpha message","user_lists":["fans"],"user_ids":[501],"scheduled_date":"2026-10-21T18:30:00+02:00"})
     answer["accept"]=False
-    # 5. Month navigation on the calendar.
     sent=len([c for c in calls if c[0]!="GET"])
     pg.goto(f"{BASE}/of-manager/queue", wait_until="load", timeout=90000); pg.wait_for_timeout(1500)
     fr=None

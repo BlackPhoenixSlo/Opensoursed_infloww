@@ -1,30 +1,3 @@
-"""proof_list: the command line every Phase's proofs file runs (`proofs/phase<N>.py`), over that Phase's `PROOFS`.
-
-    --ids                        print the comma-joined proof ids (for `run.sh --of fake --proof "$(...)"`)
-    --check-records <dir>        exit 1 unless every proof has exactly one capture record in <dir> whose
-                                 `proof.verdict` is `pass`, or `parked` with a non-empty `reason`, and whose
-                                 `branches` verdicts are each `pass` or `parked: <reason>`, and which carries
-                                 each of the proof's `hosts` as a `facts.<name>_host` (ticket 53)
-    --check-sweep <sweep> <dir>  exit 1 if a proof whose record shows `kind: live, verdict: pass` is still in the
-                                 sweep's `ny` for its page, or a proof without that pass is missing from it (D1: the
-                                 Not-yet title drops on a Live-proof pass and only then), or its page is not swept;
-                                 a proof tagged `never-titled` (never had the title): each of its sweep labels (its
-                                 `control` split on `NEVER_TITLED_SEP`) absent from `ny`, always, and on its page's
-                                 Mirror HTML (`on_mirror_page`)
-    --overlay <sweep>            with --check-sweep, repeatable: each overlay's pages replace the sweep's (`overlaid`;
-                                 a re-swept page set over a frozen dated file, ticket 10's phase1-v2 precedent)
-
-The sweep is `dead.py --sweep-out`'s file, [[page, {"ny", "dis", "ro"}]]. Exit 2 when <dir> is missing (a mistyped
-path never reads as clean, as capture_record.py check-records). docs/spec/ofm-not-yet/phase-02-content-chat-writes.md
-(Interfaces, `proofs/phase2.py`).
-
-A proof's record is the one whose `label` is the proof's `control` and whose `pages` hold the proof's `page`
-(`record_of`; the Mirror check's check 1, scripts/of-mirror-check/phase_check.py, finds it the same way, and reads the
-Live-proof pass with `live_passed`, so check 1 and --check-sweep never disagree on a control's title).
-ASSUMPTION: records are matched by label and page, not by a record id on the Proof (rung 5: Phase 0's Proof shape
-stays as is, and both carry the sweep's page and label); overturned if two controls on one page share a label, which
-then needs a record id field on Proof.
-"""
 from __future__ import annotations
 
 import argparse
@@ -38,14 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capture_record import _proof_problems  # noqa: E402
 from proof_core import NEVER_TITLED, NEVER_TITLED_SEP  # noqa: E402
 
-MIRROR_PAGES = Path(__file__).resolve().parents[2] / "app" / "public" / "of-mirror" / "pages"   # /of-mirror/pages/<page>.html
+MIRROR_PAGES = Path(__file__).resolve().parents[2] / "app" / "public" / "of-mirror" / "pages"
 
 
 def on_mirror_page(page: str, label: str) -> bool:
-    """Whether `page`'s Mirror HTML has a control the sweep would label `label`: an `aria-label` or `placeholder` of it,
-    or an element whose whole text it is (sweep_diff.LABEL_JS, read statically: a made-up label is never there).
-    ASSUMPTION: matching the static file is enough (rung 5: the binders do not rename these controls); overturned by a
-    label that only a binder writes, which then needs dead.py's live sweep."""
     try:
         doc = (MIRROR_PAGES / f"{page.partition('?')[0]}.html").read_text()
     except OSError:
@@ -55,7 +24,6 @@ def on_mirror_page(page: str, label: str) -> bool:
 
 
 def load_records(folder: Path) -> tuple[list, list]:
-    """(records, problem lines) for every *.json directly in `folder`."""
     recs, bad = [], []
     for f in sorted(folder.glob("*.json")):
         try:
@@ -69,7 +37,6 @@ def load_records(folder: Path) -> tuple[list, list]:
 
 
 def record_of(proof, recs) -> tuple[str | None, dict | None, str | None]:
-    """(file, record, problem): the proof's one capture record, else a problem."""
     mine = [(n, r) for n, r in recs if r.get("label") == proof.control and proof.page in (r.get("pages") or [])]
     if not mine:
         return None, None, f"{proof.id}: no capture record for {proof.page} {proof.control!r}"
@@ -104,15 +71,12 @@ def check_records(proofs, folder: Path) -> list:
 
 
 def record_hosts(rec: dict) -> set:
-    """The hosts a capture record names (ticket 53): every string `facts.<name>_host`."""
     facts = rec.get("facts")
     return {v for k, v in facts.items() if str(k).endswith("_host") and isinstance(v, str)} \
         if isinstance(facts, dict) else set()
 
 
 def overlaid(base: list, *overlays: list) -> list:
-    """`base` (a sweep, [[page, found]]) with each page an overlay also holds replaced by the overlay's, in base's order;
-    an overlay's other pages are dropped (as Phase 0's Acceptance builds its ny baseline from the phase1-v2 overlay)."""
     out = [list(x) for x in base]
     for ov in overlays:
         by = dict(ov)
@@ -129,7 +93,7 @@ def check_sweep(proofs, sweep: list, folder: Path) -> list:
             continue
         passed = live_passed(record_of(proof, recs)[1])
         titled = proof.control in ny[proof.page]
-        if NEVER_TITLED in proof.tags:   # Wired before this effort: D1 has no title to drop, pass or not
+        if NEVER_TITLED in proof.tags:
             for label in proof.control.split(NEVER_TITLED_SEP):
                 if label in ny[proof.page]:
                     out.append(f"{proof.id}: tagged never-titled but {proof.page} {label!r} still titled")

@@ -1,16 +1,3 @@
-"""The screens capture.py shoots: slug (the web/public/img/<slug>*.webp name), route,
-what must be on screen before the shot, and any clicks that put the page in state.
-
-Keys: slug, path (or desktop_path / phone_path; a string, or callable(dataset) -> string),
-wait / desktop_wait / phone_wait (texts that must be visible; "placeholder=<text>" for an input's hint), forbid (texts that must not
-be visible; default "$0.00", "No creators" and "Loading…", a chart still waiting on its read), act / desktop_act / phone_act
-(callable(page, kind)), pre_wait (texts to wait for before act), skip (("desktop",) or
-("phone",)), anon (signed out), session ("manager": signed in as the manager, who has Shifts), pause (ms),
-frame_wait (texts inside the page's iframe), desktop_viewport (CSS size; the shot stays 2560 px wide), min_bubbles / desktop_min_bubbles (Messages Pro bubbles wholly in view),
-key (text, or "css=<selector>", of the figure the combo's phone must not cover: a text's first visible match, a
-selector's last), prices (the screen shows unit prices or averages, LTV, ARPU, avg spend, CPC, which keep their cents as
-Infloww prints them, so a non-round "$19.99" is allowed; every other cents figure fails the money check).
-"""
 from __future__ import annotations
 
 from dataset import STUDIO
@@ -23,7 +10,6 @@ def gross(page, kind):
 
 
 def scroll_to(selector: str, gap: int = 12):
-    """An act: scroll the page so the element's top sits `gap` px under the sticky top bar."""
     def act(page, kind):
         page.locator(selector).first.evaluate("""(el, gap) => {
             el.scrollIntoView({block: 'start'});
@@ -39,7 +25,6 @@ def scroll_to(selector: str, gap: int = 12):
 
 
 def gross_table(page, kind):
-    """Creator statistics at gross: with "Show net earnings" on (the default) every per-kind money column reads "-"."""
     sw = page.get_by_role("switch", name="Show net earnings").first
     if sw.get_attribute("aria-checked") == "true":
         sw.click()
@@ -60,8 +45,6 @@ def thread(d) -> str:
 
 
 def unpin(page, kind):
-    """A real wheel over the thread ends Messages Pro's auto-pin ("Jumping to latest..."). Its 5s backstop timer is
-    cleared whenever the message list refetches inside those 5s, so without a user gesture the chip can stay."""
     page.get_by_text("Unlocked it. Worth every cent", exact=True).filter(visible=True).first.hover()
     page.mouse.wheel(0, 400)
     page.get_by_text("Jumping to latest", exact=False).wait_for(state="hidden", timeout=10_000)
@@ -78,8 +61,8 @@ def of_home(d) -> str:
 
 
 THREAD = ["Worth every cent", "$50.00 tip", "made my whole day", "Can't wait for the next set"]
-WIDE = {"width": 1600, "height": 1000}  # Messages Pro desktop: 9+ bubbles need a taller thread; still 2560x1600 px
-LAST_BUBBLE = "css=[data-msg-id]"  # the thread's last bubble (key: its last visible match)
+WIDE = {"width": 1600, "height": 1000}
+LAST_BUBBLE = "css=[data-msg-id]"
 KPIS = 'section:has(> header > h2:text-is("Per-model KPIs"))'
 CREATOR_TABLE = '[role="table"][aria-label="Creator statistics"]'
 NO_JUMP = ["$0.00", "No creators", "Loading…", "Jumping to latest"]

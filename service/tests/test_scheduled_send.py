@@ -278,12 +278,12 @@ def case_fansly_account_fires_through_the_shim():
 
     So this case deliberately does NOT patch `_make_client` — the platform
     branch inside it is the thing under test. It stubs the two seams that
-    branch consults: the account registry's platform, and fansly_backend's
-    client pool.
+    branch consults: the account registry's platform, and the Fansly registry
+    entry's Backend module client pool.
     """
     import asyncio
-    import sys
-    import types
+
+    import platforms
 
     asyncio.run(_seed())
     fid = 4444
@@ -304,17 +304,15 @@ def case_fansly_account_fires_through_the_shim():
                     "createdAt": "2026-06-13T15:38:00+00:00"}
 
     shim = FakeShim()
-    fake_backend = types.ModuleType("fansly_backend")
-    fake_backend.get_client = lambda account_id: shim          # type: ignore[attr-defined]
-    fake_backend.drop = lambda account_id=None: None           # type: ignore[attr-defined]
+    backend = platforms.FANSLY.backend
+    real_get_client = backend.get_client
 
     prev_make_client = ax._make_client
     real_get_platform = ax.account_registry.get_platform
-    real_module = sys.modules.get("fansly_backend")
     ax._make_client = _REAL_MAKE_CLIENT   # type: ignore[attr-defined]
     ax.account_registry.get_platform = (                       # type: ignore[attr-defined]
         lambda a: "fansly" if a == OWN_ID else "onlyfans")
-    sys.modules["fansly_backend"] = fake_backend
+    backend.get_client = lambda account_id: shim
     try:
         asyncio.run(_enqueue_due({
             "fan_id": fid, "text": "want to see the rest?",
@@ -341,10 +339,7 @@ def case_fansly_account_fires_through_the_shim():
         # phantom Fansly account to every case added after this one.
         ax._make_client = prev_make_client                      # type: ignore[attr-defined]
         ax.account_registry.get_platform = real_get_platform    # type: ignore[attr-defined]
-        if real_module is None:
-            sys.modules.pop("fansly_backend", None)
-        else:
-            sys.modules["fansly_backend"] = real_module
+        backend.get_client = real_get_client
 
 
 class RaisingOF(FakeOF):

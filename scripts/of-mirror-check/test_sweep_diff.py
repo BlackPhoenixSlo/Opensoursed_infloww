@@ -1,8 +1,3 @@
-"""Seam 2: the Not-yet sweep diff (sweep_diff.py), as table tests.
-
-Expected values come from the spec (docs/spec/ofm-not-yet/phase-00-live-capture-proof-harness.md, stories 46-48 and
-seam 3) and ticket 02, against the committed 2026-11-20 Not-yet sweep and edited copies of it.
-"""
 import copy
 import json
 import subprocess
@@ -21,7 +16,6 @@ def page(sweep, name):
 
 
 def with_ro(sweep, ro):
-    """The new shape: every page carries `ro` (empty unless named)."""
     out = copy.deepcopy(sweep)
     for p, v in out:
         v["ro"] = list(ro.get(p, []))
@@ -29,7 +23,6 @@ def with_ro(sweep, ro):
 
 
 def log(counts, scope="model:1"):
-    """dead.py's printed lines: a check line, one per-page line per page, the pass line."""
     lines = ['{"check": "model:1: pages swept", "want": true, "got": true}']
     lines += [json.dumps({"scope": scope, "page": p, "controls": 9, "links": 0, "wired": 0, "readonly": n}) for p, n in counts.items()]
     lines.append(json.dumps({"scope": scope, "pages": len(counts), "controls": 9, "links": 0, "wired": 0, "readonly": sum(counts.values())}))
@@ -40,7 +33,6 @@ def test_old_file_diffs_against_new_shape_all_kept():
     new = with_ro(OLD, {"collections/index": ["New list"]})
     diff = sweep_diff(OLD, new)
     assert all(not d["removed"] and not d["added"] for d in diff.values())
-    # collections/index's four Not-yet title controls (the committed file) are kept; its ro is not compared (old has none).
     assert [k for k in diff["collections"]["kept"] if k[0] == "collections/index"] == [
         ["collections/index", "ny", "Search"], ["collections/index", "ny", "Sort"],
         ["collections/index", "ny", "Pin to home"], ["collections/index", "ny", "Posts"]]
@@ -68,7 +60,6 @@ def test_ro_diffed_when_both_files_list_it():
 
 
 def test_ro_repeats_count():
-    # ro keeps one entry per click (its length is the printed readonly count), so a second "More" leaving is a removal.
     old = with_ro(OLD, {"queue/index": ["More", "More"]})
     new = with_ro(OLD, {"queue/index": ["More"]})
     assert sweep_diff(old, new)["queue"]["removed"] == [["queue/index", "ro", "More"]]
@@ -108,7 +99,6 @@ def test_expect_ro_counts():
     new = with_ro(OLD[:3], {"home/index": ["More", "Add to story"], "home/state-avatar-menu": ["More"]})
     good = {"home/index": 2, "home/state-avatar-menu": 1, "home/state-expiration": 0}
     assert ro_counts(new, log(good)) == []
-    # The All-Creators pass prints its own lines; only the Single-Creator ones count.
     assert ro_counts(new, log(good) + log({"home/index": 5}, scope="all creators")) == []
     wrong = ro_counts(new, log({**good, "home/index": 3}))
     assert len(wrong) == 1 and "home/index" in wrong[0]
@@ -150,12 +140,10 @@ def test_cli_fails_on_edited_copy(tmp_path):
     (tmp_path / "dead.log").write_text("\n".join(log(counts)))
     r = run_cli("--expect-ro-counts", tmp_path / "dead.log", SWEEP, tmp_path / "new.json")
     assert r.returncode == 1 and "collections/index" in r.stdout
-    # Without an expect flag the diff only reports.
     assert run_cli(SWEEP, tmp_path / "new.json").returncode == 0
 
 
 def test_dates_compare_as_date_placeholder():
-    # The 2026-11-20 file holds the run day literally; a later sweep writes "{date}" (dead.py's label), or another day.
     for label in ["From {date} To {date}", "From Dec 3, 2026 To Dec 3, 2026"]:
         new = with_ro(OLD, {})
         page(new, "statements/stats/earnings")["ny"] = [label]

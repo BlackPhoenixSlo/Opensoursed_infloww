@@ -89,6 +89,7 @@ import account_health
 import accounts as account_registry
 import client_pool
 import of_stats_parse
+import platforms
 import tx_rollup
 from cadence import boot_grace
 from db.engine import get_session
@@ -335,7 +336,7 @@ async def tick(*, now: datetime | None = None, pause_s: float = _CALL_PAUSE_S) -
     done: dict[str, int] = {}
     for meta in account_registry.list_accounts():
         aid = meta.get("id")
-        if not aid or not meta.get("has_session") or account_registry.get_platform(aid) == "fansly":
+        if not aid or not meta.get("has_session") or platforms.for_account(aid) is not platforms.ONLYFANS:
             continue
         try:
             await sample_roster(aid, now=now)

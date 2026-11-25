@@ -1,8 +1,5 @@
-"""Re-export shim: new code should import from the leaf modules (_knobs, _send_failure, ...)."""
 from __future__ import annotations
 
-# Explicit re-export shim: every helper lives in a leaf module below. Leaves import
-# each other, never this file. Patch a module global on its LEAF, not here.
 import asyncio  # noqa: F401  (test_pacing patches _common.asyncio.sleep — the global module)
 
 from ._knobs import (  # noqa: F401
@@ -74,9 +71,6 @@ from ._intent import (  # noqa: F401
     norm_text, thread_heat,
 )
 
-# The fan-NAME cluster lives in names.py now (one concern, one file). Re-exported
-# here because nine modules already import it from _common — names.py is the
-# canonical home; this line is the bridge, not an abstraction.
 from .names import (  # noqa: F401  (re-export)
     SPEND_TIERS, build_structured_nickname, is_greetable_name, is_place_word,
     name_token, resolve_fan_name,

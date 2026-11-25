@@ -1,10 +1,3 @@
-"""Ticket 09: the live entry (session dir refusal, copy, account link), the preflight's verdicts and serve's wait, on
-synthetic sessions and stubs only: no live stack ever starts here (subprocess.Popen is stubbed wherever a live Stack
-is built), no OnlyFans host, no real session.
-
-The fake-mode end-to-end runs (serve up -> SIGINT -> teardown; the wrong-Creator refusal) start next dev and the
-Relay, so they are opt-in: `OFM_E2E=1 ./venv/bin/python -m pytest -q scripts/of-live-proof/test_live_entry.py`.
-"""
 import dataclasses
 import json
 import os
@@ -42,7 +35,6 @@ def _session_dir(root: Path, meta=False) -> Path:
     return d
 
 
-# ── the refusal before anything starts ──
 
 @pytest.mark.parametrize("of, make, want", [
     ("live", None, "--session-dir is required"),
@@ -93,12 +85,10 @@ def test_live_never_defaults_the_proof_fan(monkeypatch, tmp_path):
     assert prove.main(["--of", "live", "--session-dir", str(sess)]) == 0
     assert got == {"fan": None, "capture": None, "of": "live", "session_src": sess, "serve": False,
                    "expected": PROOF_CREATOR, "lockout": False, "reverify": None,
-                   "cotag_partner": None}   # ticket 98: live never defaults the Co-tag partner either
+                   "cotag_partner": None}
 
 
 def test_reverify_needs_an_evidence_folder_and_runs_no_proof(monkeypatch, capsys, tmp_path):
-    """Ticket 67 follow-up: `reverify --evidence <folder>` re-reads the served cover against that folder's kept one
-    (no proof, no write); without a folder that holds the kept picture it is refused before anything starts."""
     got = {}
     monkeypatch.setattr(prove, "prove", lambda ids, fault, fan, **k: got.update(ids=ids, **k) or 0)
     monkeypatch.setattr(prove.signal, "signal", lambda *a: None)
@@ -113,7 +103,7 @@ def test_reverify_needs_an_evidence_folder_and_runs_no_proof(monkeypatch, capsys
     (ev / "settings--profile-cover-avatar" / "undo-3-before.jpg").write_bytes(b"\xff\xd8\xff")
     assert prove.main(["--of", "live", "--session-dir", str(sess), "reverify", "--evidence", str(ev)]) == 0
     assert got["ids"] == [] and got["reverify"] == ev and got["serve"] is False and got["capture"] is None
-    assert prove.main(["--of", "live", "--session-dir", str(sess), "--evidence", str(ev)]) == 2   # prove: refused
+    assert prove.main(["--of", "live", "--session-dir", str(sess), "--evidence", str(ev)]) == 2
 
 
 def test_main_resolves_wrong_creator_once_and_fakeof_never_sees_it(monkeypatch):
@@ -149,14 +139,13 @@ def test_expected_creator():
     assert expected_creator("fake", "wrong-creator") not in (creator_id(1), PROOF_CREATOR)
 
 
-# ── the session copy and the account link ──
 
 def test_copy_session_lands_in_the_temp_dir_and_prints_nothing(tmp_path, capsys):
     src = _session_dir(tmp_path / "src")
     before = {p.name: p.read_bytes() for p in src.iterdir()}
     dst = copy_session(src, tmp_path / "run")
     assert dst == tmp_path / "run" / "sessions" / "accounts" / PROOF_CREATOR
-    assert {p.name: p.read_bytes() for p in src.iterdir()} == before   # the original is never written
+    assert {p.name: p.read_bytes() for p in src.iterdir()} == before
     assert all((dst / n).read_bytes() == b for n, b in before.items())
     assert json.loads((dst / "meta.json").read_text())["id"] == PROOF_CREATOR
     assert json.loads((tmp_path / "run" / "sessions" / "active.json").read_text()) == {
@@ -188,8 +177,6 @@ def test_link_account_writes_the_row_and_owner_link_once(tmp_path):
 
 
 def test_a_live_stack_that_fails_to_start_deletes_its_temp_dir_and_session_copy(tmp_path, monkeypatch, capsys):
-    """Stubbed processes: nothing starts. The Relay env carries no FakeOF origin and no dead proxy; the failed start
-    still removes the temp dir with the session copy in it."""
     run_tmp = tmp_path / "run"
     seen = {}
 
@@ -229,7 +216,6 @@ def test_a_live_stack_that_fails_to_start_deletes_its_temp_dir_and_session_copy(
 
 
 def test_stack_close_deletes_the_temp_dir_even_when_teardown_is_interrupted(tmp_path, monkeypatch):
-    """A second SIGINT/SIGTERM (KeyboardInterrupt) during the 10 s wait still takes the temp dir and session copy."""
     st = prove.Stack.__new__(prove.Stack)
     st.tmp = tmp_path / "run"
     (st.tmp / "sessions" / "accounts" / PROOF_CREATOR).mkdir(parents=True)
@@ -243,7 +229,6 @@ def test_stack_close_deletes_the_temp_dir_even_when_teardown_is_interrupted(tmp_
     assert not st.tmp.exists()
 
 
-# ── live proofs fail closed (stories 9, 13, 28, 56); ticket 11's live reader lets reading and writing proofs start ──
 
 def _proof(id, kind="live", tags=(), arm=True, of_read=None, browser=False):
     from proof_core import Proof, Write
@@ -268,8 +253,8 @@ LIVE_PROOFS["p.mnotrig"] = dataclasses.replace(LIVE_PROOFS["p.mocked"], id="p.mn
     ("p.stream", "live", ("parked", "stream start: needs the owner's stream go; no owner-go run path yet (ticket 126)")),
     ("p.irrev", "live", ("parked", "irreversible: needs the owner's go naming this proof; no owner-go run path yet "
                                    "(ticket 126)")),
-    ("p.write", "live", None), ("p.read", "live", None),   # ticket 11: Stack.of_get reads through the Relay live
-    ("p.bwrite", "live", ("refused", live_entry.LIVE_BROWSER_STEPS)),   # its fetch step is fake-only
+    ("p.write", "live", None), ("p.read", "live", None),
+    ("p.bwrite", "live", ("refused", live_entry.LIVE_BROWSER_STEPS)),
     ("p.bread", "live", None), ("p.bwrite", "fake", None),
     ("p.ui", "live", None),
     ("p.write", "fake", None), ("p.mocked", "fake", None), ("p.read", "fake", None),
@@ -281,7 +266,7 @@ def test_live_refusal(pid, of, want):
 
 
 @pytest.mark.parametrize("pid, of, want", [
-    ("p.write", "live", ("refused", live_entry.LIVE_BROWSER_STEPS)),   # live capture steps are not written yet
+    ("p.write", "live", ("refused", live_entry.LIVE_BROWSER_STEPS)),
     ("p.read", "live", ("refused", live_entry.LIVE_BROWSER_STEPS)),
     ("p.ui", "live", None), ("p.write", "fake", None),
     ("p.mocked", "live", ("parked", "mocked: not run live")),
@@ -291,7 +276,6 @@ def test_live_refusal_of_a_capture(pid, of, want):
 
 
 class _NoStack:
-    """A stand-in live Stack: nothing starts; close() reports the temp dir gone."""
     fake, of, relay, app, login = None, "live", "http://127.0.0.1:1", "http://127.0.0.1:2", ("ofmproof", "pw")
 
     def __init__(self, evidence, fault=None, app=True, session_src=None):
@@ -344,18 +328,15 @@ def test_a_live_run_parks_or_refuses_and_nothing_arms(monkeypatch, tmp_path):
     assert armed == []
     assert [p["proof"] for p in rep["parked"]] == ["p.mocked", "p.stream", "p.irrev"]
     assert rep["refused"] == [{"proof": "p.bwrite", "reason": live_entry.LIVE_BROWSER_STEPS}]
-    assert code == 1 and rep["exit"] == 1   # a refused proof is never a PASS
+    assert code == 1 and rep["exit"] == 1
 
 
 def test_a_live_run_starts_reading_and_writing_proofs(monkeypatch, tmp_path):
-    """Ticket 11: with the live reader built, a proof that writes or reads OnlyFans arms under --of live."""
     run, armed = _stub_live_run(monkeypatch, tmp_path)
     _, rep = run(["p.write", "p.read"])
-    # ofm-not-yet ticket 101: the read runs first, whatever the given order
     assert armed == ["p.read", "p.write"] and rep["refused"] == [] and rep["parked"] == []
 
 
-# ── the live reader (ticket 11): Stack.of_get is a GET through the run's Relay, the same path in both modes ──
 
 class _Reply:
     def __init__(self, body):
@@ -388,7 +369,7 @@ def test_of_get_reads_through_the_relay_in_both_modes(monkeypatch, fake):
     assert (u.netloc, u.path, req.get_method()) == ("127.0.0.1:1", "/__proof/of-read", "GET")
     assert parse_qs(u.query) == {"path": ["/api2/v2/lists"], "query": ["offset=0&limit=50"]}
     assert req.get_header("X-account-id") == PROOF_CREATOR
-    assert [k.lower() for k in req.headers] == ["x-account-id"]   # no signing here: the Relay signs
+    assert [k.lower() for k in req.headers] == ["x-account-id"]
 
 
 def test_of_get_names_the_relays_refusal(monkeypatch):
@@ -406,16 +387,15 @@ def test_of_get_names_the_relays_refusal(monkeypatch):
     (["p.write"], "send"), (["p.write"], "abort"), (["p.bwrite"], None), (["p.mocked"], "send"),
 ], ids=["capture send, armed", "capture --abort, armed", "prove, browser-step armed", "capture, mocked"])
 def test_a_live_capture_browser_never_opens_for_a_refused_proof(monkeypatch, tmp_path, ids, capture):
-    """D26/D27: refused first, so Chromium is never signed in to OnlyFans for a proof that then refuses."""
     run, armed = _stub_live_run(monkeypatch, tmp_path)
     _, rep = run(ids, capture)
-    assert armed == [] and len(rep["refused"]) + len(rep["parked"]) == 1   # capture_cmd.start never called
+    assert armed == [] and len(rep["refused"]) + len(rep["parked"]) == 1
 
 
 def test_a_live_browser_step_proof_that_may_start_opens_it(monkeypatch, tmp_path):
     run, armed = _stub_live_run(monkeypatch, tmp_path)
     run(["p.write", "p.bread"])
-    assert armed == ["capture browser", "p.bread", "p.write"]   # ticket 11: p.write starts live too; 101: read first
+    assert armed == ["capture browser", "p.bread", "p.write"]
 
 
 def test_an_interrupt_before_serve_waits_is_not_a_pass(monkeypatch, tmp_path):
@@ -427,10 +407,9 @@ def test_an_interrupt_before_serve_waits_is_not_a_pass(monkeypatch, tmp_path):
     before = signal.getsignal(signal.SIGINT)
     code, rep = run([])
     assert (code, rep["error"], armed) == (1, "interrupted", [])
-    assert signal.getsignal(signal.SIGINT) is before   # the teardown's SIG_IGN is undone
+    assert signal.getsignal(signal.SIGINT) is before
 
 
-# ── the preflight ──
 
 URLS = ["http://127.0.0.1:1", "http://127.0.0.1:2"]
 ME = (200, {"id": int(PROOF_CREATOR)})
@@ -456,22 +435,19 @@ def test_preflight_problems(urls, ids, identity, lock, want):
 
 
 @pytest.mark.parametrize("capture, ids, refused, want", [
-    (None, ["tracer.create-list"], [], False),        # live prove/serve with no browser steps: never by default
-    (None, [], [], False),                            # serve
+    (None, ["tracer.create-list"], [], False),
+    (None, [], [], False),
     (None, ["tracer.create-list", "drill.browser"], [], True),
     ("tracer.create-list", ["tracer.create-list"], [], True),
     (None, ["drill.browser"], ["session dead"], False),
-    ("send", [], [], False),                          # capture whose one proof was parked or refused
+    ("send", [], [], False),
 ], ids=["no browser steps", "serve", "a browser-step proof", "capture", "preflight refused", "capture, none startable"])
 def test_capture_browser_opens_on_demand_only(capture, ids, refused, want):
-    """D27: whether it opens never depends on the mode; prove.py opens it only when this says so."""
     from proofs import ALL
     assert capture_cmd.opens_capture_browser(capture, [ALL[i] for i in ids], refused) is want
 
 
 def test_every_proof_defined_in_proofs_reads_with_get_and_fan():
-    """prove.run_proof calls `proof.of_read(get, fan)`; no reader may take one argument. Walks every Proof object the
-    proofs/*.py modules build at import (gc), not only `proofs.ALL`: a parked or unlisted proof counts too."""
     import gc
     import importlib
     import inspect
@@ -480,7 +456,7 @@ def test_every_proof_defined_in_proofs_reads_with_get_and_fan():
     for m in mods:
         importlib.import_module(f"proofs.{m}")
     found = [o for o in gc.get_objects() if isinstance(o, Proof)]
-    assert "settings--fully-private" in {p.id for p in found}   # parked, not in ALL
+    assert "settings--fully-private" in {p.id for p in found}
     bad = sorted({p.id for p in found if p.of_read is not None and len(inspect.signature(p.of_read).parameters) != 2})
     assert bad == []
 
@@ -505,12 +481,11 @@ def test_preflight_reads_the_relay_accounts_and_the_uncached_identity():
 
     got = live_entry.preflight(Req(), "http://127.0.0.1:5", URLS, "6", True)
     assert calls == [("http://127.0.0.1:5/admin/accounts", None),
-                     ("http://127.0.0.1:5/__proof/session", {"X-Account-Id": "7"})]   # the stack's own Creator
+                     ("http://127.0.0.1:5/__proof/session", {"X-Account-Id": "7"})]
     assert got == ["expected one Creator 6, the Relay has ['7']",
                    "Relay identity read (/__proof/session): session probe named 8, not the run's Creator 6"]
 
 
-# ── serve's wait ──
 
 def test_serve_wait_prints_the_urls_and_returns_on_interrupt(monkeypatch, capsys):
     def sleep(_):
@@ -519,10 +494,9 @@ def test_serve_wait_prints_the_urls_and_returns_on_interrupt(monkeypatch, capsys
     serve_wait("http://127.0.0.1:1", "http://127.0.0.1:2", ("ofmproof", "pw"), sleep=sleep)
     out = capsys.readouterr().out
     assert "serve: app http://127.0.0.1:1" in out and "serve: relay http://127.0.0.1:2" in out
-    assert "interrupted; tearing down" in out   # the signals are ignored by prove.py's teardown, not here
+    assert "interrupted; tearing down" in out
 
 
-# ── fake-mode end to end (opt-in: next dev + the Relay) ──
 
 e2e = pytest.mark.skipif(os.environ.get("OFM_E2E") != "1", reason="starts the fake stack; set OFM_E2E=1")
 _DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -538,7 +512,6 @@ def _evidence(out: str) -> Path:
 
 
 def _serve_up() -> tuple:
-    """`serve --of fake` up; another lane's run holding FakeOF's Creator lock is waited out (up to 10 min)."""
     end = time.time() + 600
     while time.time() < end:
         p, lines = _run("--of", "fake", "serve"), []
@@ -588,8 +561,6 @@ def test_fake_stack_naming_another_creator_is_refused_before_any_proof():
 
 
 def test_a_proof_parked_at_run_time_is_reported_parked_and_the_run_still_passes(monkeypatch, tmp_path):
-    """Tickets 60, 61: run_proof's `parked` state (a precondition found unmet before the trigger) lands in rep's
-    `parked` with its reason, never in `proofs`, and a run with nothing else wrong exits 0."""
     run, armed = _stub_live_run(monkeypatch, tmp_path)
     monkeypatch.setattr(prove, "run_proof", lambda p, *a, **k: {
         "proof": p.id, "state": "parked", "parked": "parked — needs X", "problems": [], "undo": ["none"],
@@ -600,9 +571,6 @@ def test_a_proof_parked_at_run_time_is_reported_parked_and_the_run_still_passes(
 
 
 def _park_run(monkeypatch, tmp_path, proof, replies, app_reads=False, wire=None, page=None):
-    """run_proof on stubs: the Relay's wire log (`wire`), the driver's of_get answering `replies[path]` (or
-    `replies[path](query)`; each read logged as the driver's, or the app's with `app_reads`), and an app browser whose
-    new_page fails the test, or opens `page`."""
     from types import SimpleNamespace
     wire = [] if wire is None else wire
 
@@ -623,7 +591,7 @@ def _park_run(monkeypatch, tmp_path, proof, replies, app_reads=False, wire=None,
     (tmp_path / "undo-log.jsonl").touch()
     stack = SimpleNamespace(relay="http://relay.invalid", app="http://app.invalid", of="fake", of_get=of_get)
     ab = SimpleNamespace(ctx=Ctx(), offhost=lambda: [], errors=None, writes=None, responses=None)
-    return prove.run_proof(proof, stack, ab, "1", tmp_path, "20261121T000000Z")   # a run id is its start stamp
+    return prove.run_proof(proof, stack, ab, "1", tmp_path, "20261121T000000Z")
 
 
 def _t61_proof():
@@ -636,7 +604,6 @@ def _t61_proof():
 
 
 def test_run_proof_parks_an_expect_before_the_page_opens_and_sends_nothing(monkeypatch, tmp_path):
-    """Ticket 61: the OnlyFans-side guard parks before the page opens; nothing but the driver's reads left."""
     res = _park_run(monkeypatch, tmp_path, _t61_proof(), {"/api2/v2/c": {"list": [{"n": "Only"}]}})
     assert res["state"] == "parked" and "read 1 row(s)" in res["parked"] and res["undo"] == ["none"]
     assert res["screens"] == [] and res["problems"] == []
@@ -652,7 +619,6 @@ def test_run_proof_parks_on_ready_before_the_page_opens(monkeypatch, tmp_path):
 
 
 def test_run_proof_fails_frequency_when_its_read_lacks_the_master_switch(monkeypatch, tmp_path):
-    """Ticket 60: a shape change (no isEmailNotificationsEnabled) fails the proof, never a green park."""
     from proofs.phase3 import FREQUENCY
     groups = [{"items": [{"code": "new_likes_digest", "isEnabled": False, "value": 0}]}]
     res = _park_run(monkeypatch, tmp_path, FREQUENCY, {"/api2/v2/users/settings/notifications/email": groups,
@@ -671,12 +637,10 @@ def test_run_proof_fails_a_park_after_anything_but_the_drivers_reads_left(monkey
     ("limit=10&field=name&sort=desc", []),
 ])
 def test_run_proof_checks_that_the_sort_reached_onlyfans(monkeypatch, tmp_path, sorted_query, problems):
-    """Ticket 61: run_proof adds expect_problems beside wire_problems: a read proof, not parked, whose app reloads
-    only unsorted (a client-side sort shows the right first row) fails; the same click sending the sort passes."""
     from types import SimpleNamespace
     wire = []
 
-    def app_get(query):   # the page's own Relay read, as the wire logs it
+    def app_get(query):
         wire.append({"seq": len(wire) + 1, "origin": "app", "method": "GET", "path": "/api2/v2/c", "query": query,
                      "verdict": "read"})
     page = SimpleNamespace(goto=lambda *a, **k: app_get("limit=10"), evaluate=lambda js: "model:1",

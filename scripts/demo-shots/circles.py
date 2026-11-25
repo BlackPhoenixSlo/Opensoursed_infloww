@@ -1,5 +1,3 @@
-"""Fixtures hold no restricted registry, so `excluded_from_badges` decides on the row alone; no Unread set is held, so
-`owe_reply` is the Relay's `amber_count` with that guard passing."""
 from __future__ import annotations
 
 import sys

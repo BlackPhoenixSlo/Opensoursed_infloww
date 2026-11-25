@@ -1,4 +1,3 @@
-"""Fixtures shared by the Rollout driver tests (3a and 3b): the fake relay server and fast polling."""
 from __future__ import annotations
 
 import json

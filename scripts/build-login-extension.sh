@@ -1,41 +1,17 @@
 #!/usr/bin/env bash
-# Build — or VERIFY — the shipped login-capture extension zip from source.
 #
-# WHY THIS EXISTS
 #
-# `infloww-rea-login-capture-<version>.zip` is a tracked binary. Four of them sit at
-# the repo root and there are 25 zip blobs across history: every rebuild adds an
-# incompressible object no diff can review, and whether the zip matches the
-# source it claims to be built from is a question nobody can answer by reading a
-# pull request. Today it does match (12/12 entries, verified) — but by
-# DISCIPLINE, not by construction, and discipline is exactly what is missing on
-# the day the shipped extension quietly stops being the reviewed one.
 #
-#   ./scripts/build-login-extension.sh --check   # does the tracked zip match source?
-#   ./scripts/build-login-extension.sh           # rebuild it from source
 #
-# `--check` is the one to wire into CI (and it is what a pre-commit hook should
-# run). It compares the CONTENT of every entry, not the archive bytes: zip
-# embeds mtimes, so two archives of identical files differ byte-for-byte and a
-# checksum comparison would be permanently red.
 #
-# THE REAL FIX, which this script only makes possible: stop tracking the zips,
-# and publish one built by CI from a tagged commit. That is a `git rm --cached`
-# plus a `.gitignore` line plus a release job, and it is a human's call because
-# it changes what a `git clone` hands you.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SRC=loginExtensionMulti
-# The manifest is the single source of truth for the version, so the zip cannot
-# be named after a version the extension does not report.
 VERSION=$(python3 -c 'import json,sys; print(json.load(open("'"$SRC"'/manifest.json"))["version"])')
 ZIP="infloww-rea-login-capture-${VERSION}.zip"
 
-# Exactly what ships. Named explicitly rather than globbed: a stray file in the
-# source folder (a scratch note, an editor backup) must not silently become part
-# of a published extension.
 FILES=(
   popup.js popup.html background.js bridge.js interceptor.js
   fansly_bridge.js fansly_interceptor.js manifest.json
@@ -46,12 +22,6 @@ for f in "${FILES[@]}"; do
   [[ -f "$SRC/$f" ]] || { echo "missing source file: $SRC/$f" >&2; exit 2; }
 done
 
-# …and every path the MANIFEST names is in FILES. `FILES` hand-restates the
-# manifest's own file list, so the two can drift in the one direction that is
-# silent: a content script added to `manifest.json` and not to `FILES` is left
-# out of the zip, the shipped extension is broken on that site, and `--check`
-# calls the zip a clean match because it only ever compares the list to itself.
-# This asks the manifest instead.
 missing_from_files=$(SRC="$SRC" python3 - "${FILES[@]}" <<'PY'
 import json, os, sys
 m = json.load(open(os.path.join(os.environ["SRC"], "manifest.json")))
@@ -82,10 +52,7 @@ if [[ -n "$missing_from_files" ]]; then
   exit 2
 fi
 
-# Arg handling BEFORE anything destructive. `--check` is read-only; the no-arg
-# path deletes and rebuilds the tracked zip. An unknown flag used to fall
-# through to that rebuild — so a typo'd `--dry-run` or `--verify` REBUILT the
-# artifact it was asked to inspect.
+# Validate args before anything destructive: an unknown flag used to fall through to the rebuild.
 MODE=build
 case "$#" in
   0) ;;
@@ -110,8 +77,6 @@ if [[ "$MODE" == "check" ]]; then
       echo "DIFFERS from source: $f"; rc=1
     fi
   done
-  # …and nothing the source does not have. An extra file in a published zip is
-  # the half nobody thinks to look for.
   while IFS= read -r got; do
     printf '%s\n' "${FILES[@]}" | grep -qxF "$got" || { echo "EXTRA in $ZIP: $got"; rc=1; }
   done < <(cd "$tmp" && find . -type f | sed 's|^\./||')

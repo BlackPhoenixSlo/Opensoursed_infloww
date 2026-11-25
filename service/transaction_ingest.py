@@ -67,9 +67,8 @@ from cadence import boot_grace
 import client_pool
 from db import of_writer, write_telemetry
 from db.engine import get_session
-import fansly_backend
 import of_pacing
-import fansly_revenue
+import platforms
 from db.models import (
     AutomationRule,
     Fan,
@@ -1346,7 +1345,8 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
     # creator-visible money signal is the purchases notification feed — so it
     # gets its own lane rather than a Fansly `if` in each of those steps. Both
     # lanes write the same `transactions` rows and return the same tick shape.
-    if fansly_backend.is_fansly(account_id):
+    backend = platforms.for_account(account_id).backend
+    if backend is not None:
         t0 = time.monotonic()
         # Under the SAME per-account lock the OF path uses. The Fansly writer
         # dedups by SELECTing known provider ids and then inserting, which is
@@ -1358,7 +1358,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
         # IntegrityError mid-tick, not as clean dedup.) This is the same
         # reasoning run_fast_tick documents for the OF lane.
         async with _tick_locks[account_id]:
-            r = await fansly_revenue.run_one_tick(account_id)
+            r = await backend.revenue_tick(account_id)
         # The seam is where the translation to OF's tick dict belongs: `pages`
         # and `rows_patched` are OF-ledger concepts the Fansly lane has no
         # honest value for, and the clock is held here.

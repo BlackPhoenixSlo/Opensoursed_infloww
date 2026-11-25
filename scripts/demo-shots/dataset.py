@@ -1,17 +1,3 @@
-"""Synthetic demo agency for the marketing screenshots (scripts/demo-shots/).
-
-`build(now)` returns one deterministic dataset (fixed seed) for a studio named
-"Northstar Studio": 20 Creators whose month-to-date sales sum to about
-$1,000,000 (skewed, top about $180k, bottom about $8k), 12 Employees (the owner,
-2 managers, 9 chatters), a shared pool of fans, sales over the last ~35 days,
-chat traffic, shifts, scripts, vault folders, auto posts, tracking links, S4S
-partners. Every name is invented; every picture is a local file under assets/.
-
-Times are relative to `now`: `$DEMO_SHOTS_NOW` (ISO 8601, UTC) when set, else the
-latest 22:40 UTC that has passed, so "today" is nearly over and the period
-comparisons are not dragged down by a day that has just begun. capture.py sets
-the browser's clock to the same `now`. Same seed, same `now` -> same dataset.
-"""
 from __future__ import annotations
 
 import math
@@ -25,10 +11,10 @@ SEED = 20261023
 STUDIO = "Northstar Studio"
 OWNER_USERNAME = "northstar"
 OWNER_NAME = "Alex Morgan"
-MONTH_TARGET_CENTS = 100_000_000          # $1,000,000.00 month to date
+MONTH_TARGET_CENTS = 100_000_000
 TOP_CENTS, BOTTOM_CENTS = 18_000_000, 800_000
-HISTORY_DAYS = 35                          # sales and chats this far back
-ASSET_ORIGIN = "https://demo-assets.invalid"   # fulfilled from assets/ by the capture router
+HISTORY_DAYS = 35
+ASSET_ORIGIN = "https://demo-assets.invalid"
 
 
 def asset(path: str) -> str:
@@ -48,7 +34,6 @@ CREATOR_COLORS = ["#e8618c", "#8b5cf6", "#4f7cff", "#14b8a6", "#f59e0b", "#ef444
                   "#6366f1", "#0ea5e9", "#f97316", "#a855f7", "#22c55e", "#e11d48", "#06b6d4", "#d946ef",
                   "#84cc16", "#3b82f6", "#f43f5e", "#64748b"]
 
-# (display name, role id, colour). The owner is the registered user; the rest are chatter logins.
 EMPLOYEES = [
     (OWNER_NAME, "owner", "#4f7cff"),
     ("Jordan Lee", "manager", "#8b5cf6"), ("Priya Shah", "manager", "#ec4899"),
@@ -58,8 +43,7 @@ EMPLOYEES = [
     ("Liam Walsh", "chatter", "#f97316"), ("Ana Petrova", "chatter", "#6366f1"),
     ("Kai Nakamura", "chatter", "#22c55e"),
 ]
-MANAGER = 1  # Jordan Lee: the dashboard hero signs in as this manager, whose "My shifts" lists the evening shift
-# Three daily shift slots (UTC hours [start, end)); every Creator is covered by one chatter per slot.
+MANAGER = 1
 SLOTS = [("Morning", 6, 14), ("Evening", 14, 22), ("Night", 22, 30)]
 
 FAN_FIRST = ["Mike", "Chris", "Dan", "Jason", "Ryan", "Matt", "Kevin", "Brian", "Josh", "Tyler", "Nick", "Eric",
@@ -118,7 +102,7 @@ S4S_PARTNERS = [("Bella Vaughn", "bellavaughn"), ("Rosie Lane", "rosielane"), ("
 
 KIND_COUNT_WEIGHTS = {"subscription": 13, "rebill": 15, "ppv_message": 37, "custom": 1, "ppv_post": 8, "tip": 20,
                       "tip_post": 3, "ppv_stream": 1.5, "tip_stream": 1.5}
-PRICES = {  # dollars, weights
+PRICES = {
     "ppv_message": ([10, 15, 20, 25, 30, 35, 40, 50, 60, 75, 100, 150], [6, 10, 12, 12, 10, 9, 8, 8, 5, 4, 3, 1]),
     "custom": ([100, 150, 200, 250, 300, 400], [4, 4, 3, 2, 2, 1]),
     "ppv_post": ([5, 10, 15, 20, 25], [3, 5, 4, 2, 1]),
@@ -128,7 +112,6 @@ PRICES = {  # dollars, weights
     "tip_stream": ([5, 10, 20, 50], [4, 4, 2, 1]),
 }
 SUB_PRICES = [999, 1299, 1499, 1999]
-# Hour-of-day activity (UTC), evening heavy.
 HOUR_W = [5, 4, 3, 2, 2, 2, 2, 3, 3, 4, 4, 5, 5, 5, 6, 6, 7, 8, 9, 10, 10, 9, 8, 6]
 
 
@@ -138,10 +121,10 @@ class Dataset:
     month_start: datetime
     creators: list[dict[str, Any]] = field(default_factory=list)
     employees: list[dict[str, Any]] = field(default_factory=list)
-    coverage: dict[tuple[str, int], int] = field(default_factory=dict)   # (account_id, slot) -> employee index
-    fans: dict[int, dict[str, Any]] = field(default_factory=dict)        # fan_id -> fan
-    creator_fans: dict[str, list[int]] = field(default_factory=dict)      # account_id -> fan ids
-    subs: list[dict[str, Any]] = field(default_factory=list)              # (account, fan) subscription facts
+    coverage: dict[tuple[str, int], int] = field(default_factory=dict)
+    fans: dict[int, dict[str, Any]] = field(default_factory=dict)
+    creator_fans: dict[str, list[int]] = field(default_factory=dict)
+    subs: list[dict[str, Any]] = field(default_factory=list)
     transactions: list[dict[str, Any]] = field(default_factory=list)
     messages: list[dict[str, Any]] = field(default_factory=list)
     clock_events: list[dict[str, Any]] = field(default_factory=list)
@@ -152,14 +135,13 @@ class Dataset:
     tracking_links: list[dict[str, Any]] = field(default_factory=list)
     s4s_partners: list[dict[str, Any]] = field(default_factory=list)
     referrals: dict[str, int] = field(default_factory=dict)
-    thread: dict[str, Any] = field(default_factory=dict)                  # the open Messages Pro thread
+    thread: dict[str, Any] = field(default_factory=dict)
 
     def creator(self, account_id: str) -> dict[str, Any]:
         return next(c for c in self.creators if c["id"] == account_id)
 
 
 def ts(dt: datetime) -> str:
-    """SQLAlchemy's SQLite DateTime storage (naive UTC, microseconds)."""
     return dt.astimezone(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
@@ -169,10 +151,9 @@ def iso(dt: datetime) -> str:
 
 def _targets(rng: random.Random, month: int = MONTH_TARGET_CENTS, top: int = TOP_CENTS,
              bottom: int = BOTTOM_CENTS) -> list[int]:
-    """20 month-to-date targets, top `top`, bottom `bottom`, summing to `month`."""
     n = len(CREATOR_NAMES)
     lo, hi = 0.5, 12.0
-    for _ in range(60):  # bisect the curve exponent so the sum lands on the target
+    for _ in range(60):
         p = (lo + hi) / 2
         vals = [bottom + (top - bottom) * ((n - 1 - i) / (n - 1)) ** p for i in range(n)]
         if sum(vals) > month:
@@ -188,7 +169,6 @@ def _targets(rng: random.Random, month: int = MONTH_TARGET_CENTS, top: int = TOP
 
 
 def default_now() -> datetime:
-    """`$DEMO_SHOTS_NOW`, else the latest 22:40 UTC that has passed."""
     if os.environ.get("DEMO_SHOTS_NOW"):
         return datetime.fromisoformat(os.environ["DEMO_SHOTS_NOW"].replace("Z", "+00:00")).astimezone(timezone.utc)
     real = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -197,7 +177,6 @@ def default_now() -> datetime:
 
 
 def _scaled(cents: int, scale: float, floor: int, sub: bool) -> int:
-    """A price times `scale`: whole dollars (subs end in .99), at least `floor` cents. scale 1.0: unchanged."""
     if scale == 1.0:
         return cents
     if sub:
@@ -207,9 +186,6 @@ def _scaled(cents: int, scale: float, floor: int, sub: bool) -> int:
 
 def build(now: datetime | None = None, *, month_target_cents: int | None = None,
           price_scale: float = 1.0) -> Dataset:
-    """`month_target_cents` (default MONTH_TARGET_CENTS): the month-to-date total; the top and
-    bottom Creator scale with it. `price_scale` (default 1.0): every sale price times this, so the
-    same total takes more (smaller) sales. The defaults are the site shots' dataset, unchanged."""
     month = MONTH_TARGET_CENTS if month_target_cents is None else int(month_target_cents)
     top = round(TOP_CENTS * month / MONTH_TARGET_CENTS)
     bottom = round(BOTTOM_CENTS * month / MONTH_TARGET_CENTS)
@@ -218,7 +194,6 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
     month_start = now.replace(day=1, hour=0, minute=0, second=0)
     d = Dataset(now=now, month_start=month_start)
 
-    # ── Creators ─────────────────────────────────────────────────────────────
     targets = _targets(rng, month, top, bottom)
     ids = sorted(rng.sample(range(180_000_000, 420_000_000), len(CREATOR_NAMES)))
     rng.shuffle(ids)
@@ -233,7 +208,6 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
             "likes": rng.randint(40_000, 900_000),
         })
 
-    # ── Employees and coverage ───────────────────────────────────────────────
     for i, (name, role, color) in enumerate(EMPLOYEES):
         first = name.split()[0].lower()
         d.employees.append({"index": i, "name": name, "role": role, "color": color,
@@ -245,12 +219,10 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
     assert d.employees[MANAGER]["role"] == "manager"
     for ci, c in enumerate(d.creators):
         for s in range(len(SLOTS)):
-            # 9 chatters x 3 slots = 27 seats across 60 creator-slots; heavier creators get dedicated seats.
             d.coverage[(c["id"], s)] = chatters[(ci + 3 * s) % len(chatters)]
-    for ci, c in enumerate(d.creators[:4]):  # managers also chat the top creators in the evening
+    for ci, c in enumerate(d.creators[:4]):
         d.coverage[(c["id"], 1)] = managers[ci % 2] if ci >= 2 else d.coverage[(c["id"], 1)]
 
-    # ── Fans ─────────────────────────────────────────────────────────────────
     pool_size = 2600
     used: set[str] = set()
     pool: list[int] = []
@@ -278,7 +250,6 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
             d.subs.append({"account_id": c["id"], "fan_id": fid, "subscribed_at": sub_at, "expires_at": expires,
                            "status": "active" if active else "expired"})
 
-    # ── Sales and the PPV messages that earned them ──────────────────────────
     hist_start = now - timedelta(days=HISTORY_DAYS)
     mtd_days = max((now - month_start).total_seconds() / 86400, 0.5)
     msg_id = 7_000_000_000
@@ -288,7 +259,7 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
         span = (end - start).total_seconds()
         for _ in range(20):
             t = start + timedelta(seconds=rng.random() * span)
-            growth = 0.7 + 0.3 * (t - hist_start) / (now - hist_start)  # a studio that is growing
+            growth = 0.7 + 0.3 * (t - hist_start) / (now - hist_start)
             if rng.random() * max(HOUR_W) <= HOUR_W[t.hour] * growth:
                 return t
         return t
@@ -300,7 +271,6 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
     kinds, kweights = zip(*KIND_COUNT_WEIGHTS.items())
     for c in d.creators:
         fans = d.creator_fans[c["id"]]
-        # Pareto spend weights: a handful of whales, a long tail.
         fw = [rng.paretovariate(1.3) for _ in fans]
         rate = c["target_cents"] / mtd_days
         for (start, end, goal) in ((month_start, now, c["target_cents"]),
@@ -332,7 +302,6 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
                 d.transactions.append(tx)
                 total += cents
 
-    # ── Chat traffic (hand-written sends, fan replies, unpaid PPVs) ──────────
     for c in d.creators:
         fans = d.creator_fans[c["id"]][:400]
         per_day = int(30 + 220 * (c["target_cents"] / top))
@@ -357,7 +326,6 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
                                        "media_count": rng.randint(1, 4) if priced else 0})
             day += timedelta(days=1)
 
-    # ── Clock events: closed shifts for the history, the current slot still open ──
     day0 = (now - timedelta(days=14)).replace(hour=0, minute=0, second=0)
     seats: dict[tuple[int, int], list[str]] = {}
     for (aid, s), e in d.coverage.items():
@@ -373,7 +341,6 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
                                    "out": None if is_open else end, "last_seen": now - timedelta(seconds=40)
                                    if is_open else end})
 
-    # ── Scripts, vault, posts, links, S4S, referrals ─────────────────────────
     for k, (title, text) in enumerate(SCRIPT_TITLES):
         d.scripts.append({"title": title, "text": text, "price_cents": [0, 0, 1500, 0, 0, 2500, 0, 0, 0, 0, 3500, 0, 2000,
                                                                        1000][k], "tags": [["welcome"], ["opener"],
@@ -413,8 +380,6 @@ def build(now: datetime | None = None, *, month_target_cents: int | None = None,
 
 
 def _thread(d: Dataset, rng: random.Random) -> dict[str, Any]:
-    """The Messages Pro conversation that is open in the shots: the top Creator and her biggest fan,
-    with text, an image, a paid PPV and a tip."""
     c = d.creators[0]
     spend: dict[int, int] = {}
     for t in d.transactions:
@@ -422,9 +387,6 @@ def _thread(d: Dataset, rng: random.Random) -> dict[str, Any]:
             spend[t["fan_id"]] = spend.get(t["fan_id"], 0) + t["amount_cents"]
     whale = max(spend, key=spend.get)
     now = d.now
-    # (minutes ago, from_fan, text, extra). Lines a few seconds apart share a minute, so the app draws them as
-    # one run with one timestamp, and the desktop viewport holds 9+ bubbles: short lines from both sides, the
-    # photo, the paid PPV and the tip. The fan has the last word (left side, clear of the combo's phone).
     lines = [
         (63, True, "Good morning! Just landed in Miami, the weather is unreal", {}),
         (58, False, "Omg jealous!! Have the best trip", {}),

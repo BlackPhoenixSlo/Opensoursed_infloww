@@ -1,22 +1,8 @@
 #!/usr/bin/env bash
-# Read the per-account OF priority lane and answer ONE question: is that lane
-# actually a queue? Print it as a verdict, not a metrics dump.
 #
-# This exists because the observe-first half of P5 shipped as a raw admin JSON
-# endpoint behind a sign-in — data nobody can read is not observability.
 #
-# Usage:
-#   ./scripts/lane-stats.sh              # human summary + verdict
-#   ./scripts/lane-stats.sh --json       # raw endpoint JSON, nothing else
 #
-# Environment:
-#   RELAY       relay base URL          (default http://127.0.0.1:8797)
-#   LANE_USER   username to sign in as  (prompted if unset)
-#   LANE_PASS   password                (prompted if unset, never echoed)
-#   SHARE_TOKEN appended as ?t= when the share-token gate is enabled
 #
-# Any signed-in user works — this route carries no account id, so it never
-# reaches the per-account ownership check.
 set -euo pipefail
 
 RELAY="${RELAY:-http://127.0.0.1:8797}"

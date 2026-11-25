@@ -1,22 +1,7 @@
 #!/usr/bin/env bash
-# ui-shots.sh — render Messages Pro to PNGs from a throwaway localhost stack.
 #
-#   scripts/ui-shots.sh                         real run; exit 0 only if every gated shot passes
-#   UI_SHOTS_KEYBOARD=1 scripts/ui-shots.sh     phone keyboard regression only
-#   UI_SHOTS_SELFTEST=1 scripts/ui-shots.sh     self-test; injects faults, MUST exit non-zero
-#   UI_SHOTS_SWEEP=1 scripts/ui-shots.sh        overflow sweep only: 4 sizes x (app, Pop-out window),
-#                                               writes messages-pro-sweep.json (Phase 6 ticket 109)
 #
-# Starts a temp-DB relay and `next dev` on free 127.0.0.1 ports, registers a
-# throwaway owner, serves fixture Fans from the browser router, screenshots each
-# shot into docs/screenshots/ and writes docs/screenshots/messages-pro-report.json.
-# Nothing leaves the machine: the browser aborts off-host requests and WebSockets,
-# the relay refuses non-loopback lookups and sockets, and Next's fetch and
-# http(s).request refuse non-loopback hosts. Never installs anything. See docs/ui-shots.md.
 #
-# Exit codes: 0 pass · 1 a gate failed (see the report) · 2 usage
-#             3 prerequisite missing or unsafe (venv, Chromium, legacy secret store)
-#             4 the stack did not start
 set -euo pipefail
 
 if [ "$#" -ne 0 ]; then
@@ -27,12 +12,10 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$ROOT/venv/bin/python"
 OUT="$ROOT/docs/screenshots"
-# Every output the harness owns; all are deleted at start so nothing stale can pass.
 OUTPUTS=(messages-pro-desktop messages-pro-popout messages-pro-insights messages-pro-phone-list
          messages-pro-phone-thread messages-pro-composer-ppv unread-badge-trigger unread-badge-settled
          live-mark-on live-mark-cleared live-mark-dead data-age-fresh data-age-stale)
 REPORT_NAME=messages-pro-report.json
-# The sweep (UI_SHOTS_SWEEP=1) owns only its own outputs and leaves the default run's alone.
 if [ "${UI_SHOTS_SWEEP:-}" = 1 ]; then
   OUTPUTS=(messages-pro-1280 messages-pro-768)
   REPORT_NAME=messages-pro-sweep.json
@@ -43,7 +26,6 @@ if [ "${UI_SHOTS_KEYBOARD:-}" = 1 ]; then
   REPORT_NAME=messages-pro-keyboard-report.json
 fi
 
-# Before anything under docs/screenshots/ is written or deleted: a git worktree has no venv.
 if ! test -x "$PY"; then
   echo "ui-shots: $PY not found. The harness needs the main checkout's relay venv (uvicorn, FastAPI, Playwright); in a git worktree, link it first: see Worktrees in docs/ui-shots.md." >&2
   exit 3
@@ -54,9 +36,7 @@ mkdir -p "$OUT"
 for name in "${OUTPUTS[@]}"; do rm -f "$OUT/$name.png"; done
 rm -f "$OUT/$REPORT_NAME"
 
-# Importing service/secrets_store.py runs _adopt_legacy_file() (secrets_store.py:177-197,440):
-# when service/secrets.json exists and service/secrets/secrets.json does not, it reads the
-# first and writes the second, before any redirect can run. Refuse to start in that state.
+# Importing secrets_store copies the legacy secrets.json before any redirect can run.
 if [ -f "$ROOT/service/secrets.json" ] && [ ! -e "$ROOT/service/secrets/secrets.json" ]; then
   echo "ui-shots: service/secrets.json exists and service/secrets/secrets.json does not." >&2
   echo "ui-shots: starting the relay would copy your stored keys before the harness can redirect" >&2
@@ -94,15 +74,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/ui-shots.XXXXXX")"
-# `next dev` rewrites these two when it sees a new distDir; the trap puts them back.
 cp "$ROOT/app/tsconfig.json" "$TMP/tsconfig.json.orig"
 cp "$ROOT/app/next-env.d.ts" "$TMP/next-env.d.ts.orig"
 
-# ── Embedded programs ───────────────────────────────────────────────────────
 
-# Relay launcher. Order matters: network guards and the dotenv no-ops first, then the
-# secret store redirected, then the house safe runner's patches, then serve on loopback
-# under the stdlib asyncio loop (uvloop connects through libuv, past socket.connect).
 cat >"$TMP/relay.py" <<'PY'
 import ipaddress, json, os, socket, sys
 from pathlib import Path
@@ -217,8 +192,6 @@ uvicorn.run(_run_ui_safe.server.app, host="127.0.0.1", port=int(os.environ["UI_S
             loop="asyncio", log_level="warning")
 PY
 
-# Next preload: global fetch and http(s).request/get refuse non-loopback hosts (npm
-# version check, next/font's Google Fonts download, etc.) and log each refusal.
 cat >"$TMP/fetch-guard.cjs" <<'JS'
 const fs = require("fs");
 const path = require("path");
@@ -271,7 +244,6 @@ for (const [mod, proto] of [[http, "http:"], [https, "https:"]]) {
 }
 JS
 
-# Browser driver: login, fixtures, shots, report.
 cat >"$TMP/driver.py" <<'PY'
 import json, os, re, sys, time
 from datetime import datetime, timedelta, timezone
@@ -2290,10 +2262,8 @@ except KeyboardInterrupt:
     sys.exit(130)
 PY
 
-# ── Preflight: the browser must already be cached ───────────────────────────
 UI_SHOTS_ROOT="$ROOT" "$PY" "$TMP/driver.py" preflight
 
-# ── Start the stack ─────────────────────────────────────────────────────────
 read -r RELAY_PORT APP_PORT CLOSED_PORT < <("$PY" -c '
 import socket
 ss = [socket.socket() for _ in range(3)]
@@ -2302,9 +2272,9 @@ print(*[s.getsockname()[1] for s in ss])
 for s in ss: s.close()')
 RELAY="http://127.0.0.1:$RELAY_PORT"
 APP="http://127.0.0.1:$APP_PORT"
-DEAD_PROXY="http://127.0.0.1:$CLOSED_PORT"   # nothing listens: proxied calls are refused
+DEAD_PROXY="http://127.0.0.1:$CLOSED_PORT"
 
-set -m  # each background job gets its own process group, so the trap can stop its children too
+set -m
 
 env -u OPENINFLOWW_LEGACY_AUTOMATIONS \
   DATABASE_URL="sqlite+aiosqlite:///$TMP/relay.db" CHATTERLY_DB_URL="sqlite:///$TMP/relay.db" \
@@ -2325,7 +2295,7 @@ PIDS+=($!); disown $!
 
 set +m
 
-wait_for() {  # name url timeout-seconds pid log
+wait_for() {
   local i
   for i in $(seq 1 "$3"); do
     if curl --noproxy '*' -s -o /dev/null --max-time 60 "$2"; then return 0; fi

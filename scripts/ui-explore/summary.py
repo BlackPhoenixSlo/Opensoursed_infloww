@@ -1,8 +1,3 @@
-"""Summarise a Bombadil trace: per violated property, how many states, the first one (index, URL,
-action, snapshot values) and its screenshot in <out>/violations/. Writes <out>/summary.json.
-
-    summary.py <bombadil> <out-dir>
-"""
 from __future__ import annotations
 
 import json

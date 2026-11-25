@@ -1,44 +1,10 @@
-"""
-service/automations/scheduled_send.py — one-shot deferred human send.
-
-NOT a recurring automation. This is the server-side replacement for the old
-in-browser `setTimeout` local-wait path (≤15 min scheduled DMs): a chatter
-schedules a message, the relay enqueues ONE `scheduled_jobs` row with
-`run_at = fireAt` + the scheduling chatter's `sent_by_employee_id` in the
-payload, and the executor fires it at that time. Because it lives in the DB:
-
-  • it survives the chatter's tab reload / close (the timer no longer lives in
-    one browser),
-  • every chatter on the account sees it (the list endpoint reads the same
-    rows) and any of them can cancel it before it fires,
-  • the delivered bubble is attributed to the chatter who SCHEDULED it
-    (`sent_by_employee_id` from the payload), not to "Automation" — so the
-    "Sent by X" label is correct no matter who is viewing.
-
-We fire it ourselves (not OF's native /messages/queue) precisely so the
-near-term timing OF's queue is unreliable about (the original "OF lags or
-rejects too-near times" note) is a non-issue: the supervisor's 30 s tick is the
-only latency, and we control it.
-
-Mirrors the scrape_chats reference + send_followup: of_client ONLY (no DOM),
-built via the executor's `_make_client` seam (tests inject a fake), OF write
-spaced through `of_write_paced`, and the outbound row persisted via
-`attribution.write_outbound_attribution` (the WS pump skips outbound, so this is
-the only producer of the row). Unlike the automations it does NOT acquire a
-fan-lease — a human-intended message always sends — but it DOES set the same
-post-send cooldown a manual 1:1 send does, so it yields the automations after.
-
-Payload (set by POST /api/of/v2/scheduled-sends): `fan_id` (required), `text`,
-`price`, `locked_text`, `media_files` (vault ids or fresh-upload claim dicts),
-`previews`, `tagged_users`, `giphy_id`, `sent_by_employee_id`.
-"""
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime
 
-import automation_executor as ax  # _make_client / of_write_paced / _parse_iso / cooldown seams
+import automation_executor as ax
 from attribution import write_outbound_attribution
 from automation_registry import register
 
@@ -54,7 +20,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     media_files = payload.get("media_files") or []
     giphy_id = payload.get("giphy_id")
 
-    # Nothing to deliver → no-op (the job still completes, never re-fires).
     if not fan_id or (not text.strip() and not media_files and not giphy_id):
         log.info("scheduled_send empty account=%s fan=%s — skip", account_id, fan_id)
         return {"status": "skipped", "reason": "empty", "fan_id": fan_id}
@@ -65,11 +30,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     tagged_users = payload.get("tagged_users") or []
     employee_id = payload.get("sent_by_employee_id")
 
-    # Include-only audience at-fire recheck. The creation route stamps every
-    # human-scheduled send `send_purpose: "manual"`, which bypasses (a human
-    # send always fires); anything automation-enqueued into this kind without
-    # the stamp is re-checked against the fence at FIRE time — that is what
-    # catches dead-session backlogs and mode flips between enqueue and fire.
+    # Human sends are stamped "manual" and bypass the fence; anything else enqueued into this kind is re-checked at fire time.
     import audience_include as _audiences
     allowed, why = await _audiences.check_at_fire(
         account_id, fan_id, kind=_KIND, payload=payload)
@@ -91,41 +52,32 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             previews=previews,
             tagged_users=tagged_users,
             giphy_id=giphy_id,
-            # The flag keys on who COMPOSED, not who fired. A `manual` stamp is
-            # the chat composer's ≤15-min deferral — the same human at the same
-            # tag picker as the immediate send (server.py of_send_message) and
-            # the >15-min OF-queue send, both of which pass False. Leaving the
-            # default True here made those three disagree the moment the co-tag
-            # started landing (`rfTag`): the deferred one named a co-performer
-            # the operator never picked, while the other two did not. Derived
-            # rather than hardcoded so a job enqueued WITHOUT that stamp — an
-            # automation, via automation_rules_api — still gets the auto tag.
+            # Keys on who composed, not who fired: a deferred composer send must not name a co-performer the operator never picked.
             auto_tag=(purpose != "manual"),
         ),
         send_purpose=purpose,
-        dm=True,     # the composer's deferral is an operator's run: it never waits (dm_rate)
+        # An operator run: never waits on the DM rate.
+        dm=True,
     )
 
     msg_id = result.get("id") if isinstance(result, dict) else None
     if msg_id:
-        # _to_cents lives in event_transcoder alongside _parse_iso; import here
-        # so this plugin's module import stays cheap.
+        # local import keeps this plugin's module import cheap
         from event_transcoder import _to_cents
 
         await write_outbound_attribution(
             account_id=account_id,
             fan_id=int(fan_id),
             message_id=int(msg_id),
-            sent_by_employee_id=employee_id,   # the chatter who scheduled it
+            sent_by_employee_id=employee_id,
             body=str(result.get("text") or text),
             price_cents=_to_cents(price),
             created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
-            automation_kind=None,              # human send, just deferred — not an automation
-            emit_live=True,                    # surface live to every open chat (no optimistic row exists)
+            automation_kind=None,
+            emit_live=True,
         )
-        # Match a manual 1:1 send: rest the fan so automations yield after a
-        # human (deferred) touch. Best-effort — a cooldown miss never fails the send.
         try:
+            # No fan lease (a human send always fires), but rest the fan like a manual send so automations yield; best-effort.
             await ax.start_fan_cooldown(account_id, int(fan_id))
         except Exception:
             log.warning("scheduled_send cooldown set failed account=%s fan=%s",

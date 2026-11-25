@@ -1,8 +1,3 @@
-"""Ticket 96: vault--customize-order-save. Its recoverability check, effect, restore steps and judge
-(proofs/phase6.py), the Live guard on its one path (arm, then two undo calls), FakeOF's folder sort
-(soak/fake_of/vault.py), the two planted faults (fake_layer.py), the driver's undo of the restore sequence and its
-harness checks, and a proof parked on its before read.
-"""
 import asyncio
 import json
 from datetime import datetime, timezone
@@ -81,7 +76,6 @@ def test_restore_steps_custom_order_then_sort_each_with_its_confirm():
 
 
 class _Relay:
-    """A stub Relay for the sort restore: each Relay call answered from `statuses`, logged as the wire log would."""
 
     def __init__(self, statuses):
         self.statuses, self.calls, self.lines = list(statuses), [], []
@@ -112,7 +106,6 @@ def test_settle_sends_the_restore_steps_with_the_account_and_stops_on_a_refusal(
     assert [d for _, _, d, _ in w.calls] == [{"account_id": "acct", "custom_order": [3, 1, 2]},
                                              {"account_id": "acct", "sort": "custom", "order": "desc"}][:sent]
     assert c["state"] == state and len(c["reversals"]) == sent
-    # each step confirmed by its own fresh read before the next; then the one after-undo read
     assert reads == [f"after-undo-step-{n}" for n in range(1, (sent if state == "undone" else 0) + 1)] + ["after-undo"]
     if problem:
         assert any(problem % phase6.SORT_ROUTE in p for p in res["problems"]), res["problems"]
@@ -156,7 +149,6 @@ def test_customize_order_check(seen, want):
     assert len(got) == len(want) and all(w in g for w, g in zip(want, got)), got
 
 
-# ── the Live guard on its one path ──
 
 def _decide(body, run):
     return decide(Request("POST", "onlyfans.com", phase6.SORT_PATH, body, datetime.now(timezone.utc)), run)
@@ -179,7 +171,6 @@ def test_guard_refuses_the_sort_with_no_proof_armed():
     assert v.kind == "refused" and v.cls == "unarmed"
 
 
-# ── FakeOF's folder sort ──
 
 class _Fake:
     def __init__(self):
@@ -236,7 +227,6 @@ def test_fake_sort_takes_the_two_relay_bodies_and_refuses_others():
     assert [x[2] for x in fake.logged if x[1].endswith("/sort")] == [200, 200] + [400] * len(bad)
 
 
-# ── the planted faults ──
 
 def _call(rec, method, path, body=None, tagged=False):
     raw = json.dumps(body).encode() if body is not None else b""
@@ -257,7 +247,6 @@ def _call(rec, method, path, body=None, tagged=False):
 
 
 async def _app_lists(scope, receive, send):
-    """FakeOF's folder read stood in for: a stored custom order (the default reversed), with its sort and order."""
     body = json.dumps({"sort": "custom", "order": "desc", "hasMore": False,
                        "list": vault._rows(render._tpl("vault-lists.json"))[::-1]}).encode()
     await send({"type": "http.response.start", "status": 200,
@@ -289,7 +278,6 @@ def test_sort_restore_500_lets_the_save_through_then_answers_500():
     assert [h.get("fault") for h in rec.hits] == [None, "sort-restore-500", "sort-restore-500"]
 
 
-# ── the driver: the restore sequence's harness checks ──
 
 def _hit(method, path, t, status=200, tagged=False):
     return {"t": t, "method": method, "path": path, "query": "", "body": None, "tagged": tagged, "status": status}

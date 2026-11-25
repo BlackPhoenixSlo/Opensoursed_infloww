@@ -1,23 +1,3 @@
-"""automations/full_ai_catchup.py — Full AI Chat's waiting-chats catch-up (owner 2026-11-15).
-
-Fans may already wait when a Creator goes Live (unread chats he wrote last, never seen on the
-socket: written before Live, or during a disconnect / deploy). Per Creator in Live a process-local
-loop runs a pass at Live (PUT /admin/full-ai/mode `start`), or `BOOT_DELAY_S` after relay start
-(`boot`: a deploy's reads not all at once with the socket connects), then +5 min, +15 min, then every
-15 min; a socket drop restarts that schedule `RECONNECT_DELAY_S` after the reconnect (`reconnected`:
-OF replays nothing): the checkpoint's `catchup_minutes` (`schedule`; read before each wait, so a saved change bites
-at the next wait without a restart; an unreadable or invalid one runs the defaults). Off (`stop`) or a
-rule no longer live ends it. A pass (`run_pass`): OF's top `CHATS` chats, most recent first
-(`chats_page`, paced as a background walk) -> the chats whose last message is the Fan's and at most `MAX_AGE_S` old
-(`waiting`, pure) -> those Full AI claims (`full_ai_owner_io.claimed_ids`) -> their last message
-saved as the inbox saves it (`messages.reconcile_chats_from_of`, insert-only) and, when it was not
-in `messages`, a one-Fan scrape (`webhook_dispatch.enqueue_fan_scrape`) -> the sweep's checks over
-just them (`full_ai_live.catchup_queue`: no row on the Turn key, no pending job, no cooldown, a
-clear pre-look) -> one Turn each. Sends nothing.
-
-The OF client comes from `full_ai_live.catchup_client` (the only Full AI module naming the client
-factory, test_full_ai_live.py's AST scan).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -29,35 +9,32 @@ from isotime import parse_iso
 
 log = logging.getLogger("of-relay.automation.full_ai_catchup")
 
-CHATS = 40                      # OF's most recent chats a pass reads (and the most Turns it queues; owner 2026-11-15: 200 was too many)
-MAX_AGE_S = 7 * 86400           # an older waiting DM is left to humans (owner to confirm)
-SCRAPE_GRACE_S = 60             # a DM only just saved: its Turn waits this long for the chat's scrape (then waits while
-                                # the scrape is still queued: full_ai_live._scrape_pending)
-SOURCE = "full_ai_catchup"      # the one-Fan scrape's source and the walk's kind
-BOOT_DELAY_S = 60               # relay start: the first pass waits this long (Mode -> Live: at once)
-RECONNECT_DELAY_S = 10          # socket back after a drop: the first pass waits this long (a flapping socket: one pass)
+# Most recent chats a pass reads and the most Turns it queues; 200 was too many.
+CHATS = 40
+MAX_AGE_S = 7 * 86400
+SCRAPE_GRACE_S = 60
+SOURCE = "full_ai_catchup"
+BOOT_DELAY_S = 60
+RECONNECT_DELAY_S = 10
 
-_sleep = asyncio.sleep          # tests swap it
+_sleep = asyncio.sleep
 _tasks: dict[str, asyncio.Task] = {}
 
 
-Schedule = tuple[tuple[int, ...], int]     # (pass offsets in s from the loop's start, then every s)
+Schedule = tuple[tuple[int, ...], int]
 
 
 def schedule(cfg: dict | None) -> Schedule:
-    """A side's `catchup_minutes` in seconds; missing or invalid (`full_ai_config.catchup_error`) = DEFAULTS'.
-    Pure."""
     cm = (cfg or {}).get("catchup_minutes")
     if full_ai_config.catchup_error(cm) is not None:
         cm = full_ai_config.DEFAULTS["catchup_minutes"]
     return tuple(60 * m for m in cm["after_live"]), 60 * cm["then_every"]
 
 
-DEFAULT_SCHEDULE: Schedule = schedule(None)   # 0, +5, +15 min, then every 15 min
+DEFAULT_SCHEDULE: Schedule = schedule(None)
 
 
 def offset_s(step: int, sched: Schedule = DEFAULT_SCHEDULE) -> int:
-    """Seconds from the loop's start to pass `step`."""
     first, every = sched
     if step < len(first):
         return first[step]
@@ -65,12 +42,10 @@ def offset_s(step: int, sched: Schedule = DEFAULT_SCHEDULE) -> int:
 
 
 def gap_s(step: int, sched: Schedule = DEFAULT_SCHEDULE) -> int:
-    """The wait after pass `step`."""
     return offset_s(step + 1, sched) - offset_s(step, sched)
 
 
 async def _schedule(account_id: str) -> Schedule:
-    """The Creator's checkpoint schedule (what live runs on); a failed read runs the defaults."""
     from automations import full_ai_turn
     try:
         return schedule((await full_ai_turn.stored_config(account_id))["checkpoint"])
@@ -80,8 +55,6 @@ async def _schedule(account_id: str) -> Schedule:
 
 
 def waiting(rows: list[dict], account_id: str, now: datetime) -> list[dict]:
-    """OF chat items (of the first `CHATS`) whose last message is the Fan's own and at most
-    `MAX_AGE_S` old, one per Fan, in OF's order."""
     out, seen = [], set()
     for ch in rows[:CHATS]:
         fan = (ch.get("withUser") or {}).get("id")
@@ -100,8 +73,6 @@ def waiting(rows: list[dict], account_id: str, now: datetime) -> list[dict]:
 
 
 async def run_pass(account_id: str) -> dict | None:
-    """One catch-up pass; None when the Creator is not Live (the loop ends). Stats: `chats` read,
-    `waiting`, `claimed`, `saved` (DMs not in `messages` before), the sweep's `swept` / `queued`."""
     import account_health
     import chats_page
     import messages
@@ -116,10 +87,9 @@ async def run_pass(account_id: str) -> dict | None:
     aid, now = str(account_id), datetime.utcnow()
     if await full_ai_live.live_rule(aid) is None:
         return None
+    # Skip, not None: the loop keeps its schedule and resumes once the Creator is healthy; the dispatcher would never run its jobs.
     if runtime_switches.on(full_ai_owner_io.OFF_SWITCH):
         return {"skipped": "off_switch"}
-    # The dispatcher's gate (automation_executor.run_once): its jobs would never run, so no OF read.
-    # A skip, not None: the loop keeps its schedule and resumes once the Creator is healthy.
     if await account_health.is_deactivated(aid):
         return {"skipped": "account_deactivated"}
     if await account_health.is_session_dead(aid):
@@ -151,7 +121,7 @@ async def run_pass(account_id: str) -> dict | None:
 async def _loop(account_id: str, delay_s: float = 0) -> None:
     if delay_s:
         await _sleep(delay_s)
-    if first := offset_s(0, await _schedule(account_id)):   # after_live not starting at 0
+    if first := offset_s(0, await _schedule(account_id)):
         await _sleep(first)
     step = 0
     while True:
@@ -167,7 +137,6 @@ async def _loop(account_id: str, delay_s: float = 0) -> None:
 
 
 def start(account_id: str, delay_s: float = 0) -> asyncio.Task:
-    """(Re)start the Creator's schedule: after `delay_s` (0: at once), passes on `catchup_minutes` (`schedule`; default 0/5/15, then every 15)."""
     aid = str(account_id)
     stop(aid)
     task = asyncio.get_running_loop().create_task(_loop(aid, delay_s), name=f"full-ai-catchup:{aid}")
@@ -177,21 +146,17 @@ def start(account_id: str, delay_s: float = 0) -> asyncio.Task:
 
 
 def reconnected(account_id: str) -> None:
-    """The Creator's OF socket is open again after a drop (DMs sent meanwhile never arrive on it):
-    a Creator with a running schedule restarts it, first pass in `RECONNECT_DELAY_S`. No I/O."""
     if str(account_id) in _tasks:
         start(account_id, RECONNECT_DELAY_S)
 
 
 def stop(account_id: str) -> None:
-    """Mode Off: the Creator's schedule ends (a pass in flight is cancelled)."""
     task = _tasks.pop(str(account_id), None)
     if task is not None:
         task.cancel()
 
 
 async def boot() -> None:
-    """Relay start: every Creator already Live starts its schedule, first pass in `BOOT_DELAY_S`."""
     from automations import full_ai_live
     for aid in sorted(await full_ai_live.live_accounts()):
         start(aid, BOOT_DELAY_S)

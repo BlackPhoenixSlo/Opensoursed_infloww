@@ -1,8 +1,3 @@
-"""Ticket 100: the Send now proof (proofs/phase6.py `QUEUE_SEND_NOW`): the Live guard on its writes, its pure
-helpers, FakeOF's message queue (soak/fake_of/queue.py) with the planted faults (fake_layer), the driver's undo
-fallback chain (undo_driver `settle_rows`, ticket 131's registration through `/__proof/read-id`), and every proof's
-post and queue writes judged fan-visible unless scheduled far enough ahead (moved from test_proof_core: file size).
-"""
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -39,7 +34,6 @@ def queue_body(**kw):
 ARMED = dict(proof=QUEUE_SEND_NOW, proof_fan=FAN, quiet_hour=QUIET)
 
 
-# ── the Live guard ──
 
 @pytest.mark.parametrize("why, request_, run, kind", [
     ("queue to the Proof fan alone", R("POST", "/api2/v2/messages/queue", queue_body()), Run(**ARMED), "allow"),
@@ -82,7 +76,6 @@ def test_guard_counts_the_publish_fan_visible_and_not_the_scheduled_queue():
     assert not decide(R("POST", "/api2/v2/messages/queue", queue_body()), Run(**ARMED)).fan_visible
 
 
-# ── the proof's pure helpers ──
 
 @pytest.mark.parametrize("audience, bad", [
     ({"userIds": ["555"], "userLists": []}, None),
@@ -120,7 +113,6 @@ def test_read_fan_and_queue_keeps_chat_items_only():
     assert read_fan_and_queue(get, None)["chat"] == []
 
 
-# ── FakeOF's queue and the planted faults ──
 
 @pytest.fixture
 def fake():
@@ -156,7 +148,7 @@ def test_fake_queue_publish_then_unsend(fake):
     status, item = _queue(req, fan)
     assert status == 200 and item["userIds"] == [str(fan)] and "userLists" not in item
     qid = item["id"]
-    assert not any("oi-proof-t" in str(m["text"]) for m in _chat(req, fan))   # scheduled: reaches no Fan yet
+    assert not any("oi-proof-t" in str(m["text"]) for m in _chat(req, fan))
     assert req("GET", f"/api2/v2/messages/queue/{qid}?format=scheduled")[1]["userIds"] == [str(fan)]
     rows = req("GET", "/api2/v2/schedules?limit=50")[1]["list"]
     assert [(r["id"], r["entity"]["queueId"]) for r in rows] == [(ids.schedule_id(1), qid)]
@@ -188,15 +180,12 @@ def test_audience_faults_plant_into_the_item_read_only(fake, fault, field, plant
     of, req = fake(fault)
     fan = ids.fan_id(1)
     status, item = _queue(req, fan)
-    assert status == 200 and item["userIds"] == [str(fan)]   # the POST answer is untouched
+    assert status == 200 and item["userIds"] == [str(fan)]
     assert req("GET", f"/api2/v2/messages/queue/{item['id']}")[1][field] == planted
-    # the driver's own tagged read (send_now reads the audience with of_get) sees the fault too
     assert req("GET", f"/api2/v2/messages/queue/{item['id']}?format=scheduled", tagged=True)[1][field] == planted
 
 
 def test_queue_500_foreign_queues_another_users_item_not_ours(fake):
-    """queue-500-foreign (review 1): the queue write answered 500 unapplied while another user's item lands in the
-    queue; the one new queued item is the foreign one, whose own read shows its text, never the run's."""
     of, req = fake("queue-500-foreign")
     before = req("GET", "/api2/v2/schedules?limit=50")[1]["list"]
     status, _ = _queue(req, ids.fan_id(1))
@@ -209,10 +198,9 @@ def test_queue_500_foreign_queues_another_users_item_not_ours(fake):
     assert item["userIds"] == [str(ids.fan_id(2))]
 
 
-# ── send_now before the click: the midnight park, the driver's own audience and schedule reads ──
 
 def test_queue_when_parks_across_utc_midnight():
-    assert QUEUE_LEAD > proof_core.POST_LEAD   # the guard refuses a queue write under POST_LEAD ahead
+    assert QUEUE_LEAD > proof_core.POST_LEAD
     noon = datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc)
     assert queue_when(noon) == noon + QUEUE_LEAD
     late = datetime(2026, 11, 21, 23, 59, tzinfo=timezone.utc) - QUEUE_LEAD
@@ -248,7 +236,7 @@ def test_send_now_parks_unqueued_when_the_lead_crosses_midnight(monkeypatch):
     calls, ctx = _send_ctx(lambda path, q: pytest.fail("no read"))
     with pytest.raises(_Stop, match="crosses UTC midnight"):
         send_now(ctx)
-    assert [c[0] for c in calls] == ["park"]   # nothing queued
+    assert [c[0] for c in calls] == ["park"]
 
 
 def test_send_now_reads_the_audience_itself_and_stops_on_a_list():
@@ -261,7 +249,7 @@ def test_send_now_reads_the_audience_itself_and_stops_on_a_list():
     out = send_now(ctx)
     assert len(out) == 1 and "lists ['fans']" in out[0] and "Send now not clicked" in out[0]
     assert reads == [("/api2/v2/messages/queue/3", {"format": "scheduled"})]
-    assert [c[0] for c in calls] == ["POST"]   # no app-side read, no registration
+    assert [c[0] for c in calls] == ["POST"]
 
 
 def _schedules_get(path, q):
@@ -274,7 +262,7 @@ def _schedules_get(path, q):
 def test_send_now_stops_unclicked_when_the_relay_refuses_the_schedule():
     calls, ctx = _send_ctx(_schedules_get)
     ctx["read_id"] = lambda key, of_id, source: ["the Relay refused read id schedule=9: 409"]
-    assert send_now(ctx) == ["the Relay refused read id schedule=9: 409"]   # no reload, no click
+    assert send_now(ctx) == ["the Relay refused read id schedule=9: 409"]
 
 
 def test_send_now_registers_the_schedule_item_its_own_read_found():
@@ -288,19 +276,16 @@ def test_unsend_refused_only_after_release(fake):
     of, req = fake("unsend-refused")
     fan = ids.fan_id(1)
     first = _queue(req, fan)[1]["id"]
-    assert req("DELETE", f"/api2/v2/messages/queue/{first}")[0] == 200   # waiting: canceled as usual
+    assert req("DELETE", f"/api2/v2/messages/queue/{first}")[0] == 200
     qid = _queue(req, fan)[1]["id"]
     req("PUT", f"/api2/v2/schedules/{ids.schedule_id(2)}/publish")
     status, body = req("DELETE", f"/api2/v2/messages/queue/{qid}")
     assert status == 400 and "unsend refused" in body["error"]["message"]
-    assert any(m["text"] == "oi-proof-t" for m in _chat(req, fan))   # nothing unsent
+    assert any(m["text"] == "oi-proof-t" for m in _chat(req, fan))
 
 
-# ── the driver's undo fallback chain ──
 
 class Wire:
-    """A stub Relay: each reversal answers from `statuses` by OnlyFans path prefix, logged as the wire log would;
-    `/__proof/read-id` answers `read_id_status`."""
 
     def __init__(self, statuses, read_id_status=200):
         self.statuses, self.lines, self.calls, self.read_id_status = statuses, [], [], read_id_status
@@ -354,10 +339,10 @@ def test_undo_falls_back_to_the_chat_unsend_and_the_publish_row_reuses_it():
     assert [x["state"] for x in (a, b)] == ["undone", "undone"] and res["problems"] == []
     assert [t["status"] for t in a["attempts"]] == [400, 200]
     assert [r["path"] for r in a["reversals"]] == [f"/api2/v2/messages/{MID}"]
-    assert _read_ids(w) == [{"row": 1, "key": "message", "of_id": MID, "source": QID}]   # once: B reuses it
+    assert _read_ids(w) == [{"row": 1, "key": "message", "of_id": MID, "source": QID}]
     assert ("DELETE", f"/api/of/v2/messages/{MID}", {"withUserId": 555}) in w.calls
     assert b["reversals"] == a["reversals"] and b["keys"] == a["keys"] == {"message": MID}
-    assert len([c for c in w.calls if c[0] == "DELETE"]) == 2   # the reuse sent no second unsend
+    assert len([c for c in w.calls if c[0] == "DELETE"]) == 2
 
 
 def test_undo_refused_to_the_end_is_not_reversible_with_its_reason():
@@ -394,10 +379,8 @@ def test_a_fallback_chain_and_an_undo_sequence_are_exclusive():
         replace(QUEUE_SEND_NOW, undo_steps=lambda before: [])
 
 
-# ── every proof's post and queue write is fan-visible unless scheduled at least POST_LEAD ahead ──
 
 def _structural_bodies(api: str, at: datetime) -> dict:
-    """Immediate, near- and far-scheduled bodies for a post or queue write."""
     def date(minutes):
         return (at + timedelta(minutes=minutes)).isoformat()
     lead = int(POST_LEAD.total_seconds() // 60)
@@ -413,9 +396,8 @@ def _structural_bodies(api: str, at: datetime) -> dict:
             "far": {**base, "scheduledDate": date(lead + 15)}}
 
 
-# Every proof whose post or queue write the guard may let through as fan-visible: the effort's two (Q15) at most.
 FAN_VISIBLE_PROOFS = {"queue--send-message-right-now", "queue--publish-now"}
-FAN_VISIBLE_PROOFS |= {"new-post--cotag-immediate"}   # ticket 98
+FAN_VISIBLE_PROOFS |= {"new-post--cotag-immediate"}
 
 
 def test_every_proofs_post_and_queue_write_is_fan_visible_unless_far_scheduled():
@@ -431,9 +413,8 @@ def test_every_proofs_post_and_queue_write_is_fan_visible_unless_far_scheduled()
                 continue
             path = re.sub(r"\{[^/{}]+\}", "77", w.path)
             for name, body in _structural_bodies(api, AT).items():
-                # a Co-tag proof's post carries its declared tag (Write.payload, follow-up #5)
                 tag = {"rfTag": [2001], "userTags": [2001]} if p.may_tag else {}
-                if p.may_tag:   # ... and its exact draft text (W30 W1)
+                if p.may_tag:
                     tag["text"] = f"oi-proof-x {'cotag-scheduled' if 'scheduled' in p.id else 'cotag-immediate'}"
                 body = {**dict(w.body_must or {}), **body, **tag}
                 for of in ("live", "fake"):
@@ -449,7 +430,6 @@ def test_every_proofs_post_and_queue_write_is_fan_visible_unless_far_scheduled()
     assert can == FAN_VISIBLE_PROOFS
 
 
-# ── the guard's queue dates and the upload's convert host (moved from test_proof_core: file size) ──
 
 def _queue_edit():
     return proof_core.Proof(id="p.x", phase=0, page="collections/index", control="x", kind="live",
@@ -467,11 +447,8 @@ def _at(minutes):
     (R("POST", "/api2/v2/messages/queue", {**_at(35), "scheduledDate": "x"}), Run(**ARMED), "refused", "mass_message"),
     (R("PUT", "/api2/v2/messages/queue/88", _at(10)),
      Run(proof=_queue_edit(), proof_fan=FAN, created=frozenset({"88"})), "refused", "mass_message"),
-    # the upload convert host, captured live (ticket 53: p2.record-video's /file/upload passed through it), is an
-    # onlyfans.com subdomain like any other: unarmed writes refused as such, reads read
     (Request("POST", "convert.onlyfans.com", "/file/upload", None, AT), Run(), "refused", "unarmed"),
     (Request("GET", "convert.onlyfans.com", "/x", None, AT), Run(), "read", "read"),
-    # fake mode: relay_live sends it to FakeOF (`_to_fake`, ticket 131), which answers the claim
     (Request("GET", "convert.onlyfans.com", "/x", None, AT), Run(of="fake"), "read", "read"),
 ], ids=["queue scheduled under POST_LEAD ahead", "queue scheduled in the past", "queue date unreadable",
         "queue edit to under POST_LEAD ahead", "convert host, write unarmed", "convert host, read",

@@ -37,7 +37,7 @@ def _epoch(s: str | None) -> float | None:
     except ValueError:
         return None
     if d.tzinfo is None:
-        d = d.replace(tzinfo=timezone.utc)  # the relay stores naive UTC
+        d = d.replace(tzinfo=timezone.utc)
     return d.timestamp()
 
 
@@ -78,7 +78,7 @@ def scan(con: sqlite3.Connection, clock: str, since: float | None, account: str 
         args.append(account)
     for aid, received, created, from_id in con.execute(q, args):
         if from_id is not None and str(from_id) == str(aid):
-            continue  # an outbound echo
+            continue
         t = _epoch(created if clock == "created" else received)
         if t is None or (since is not None and t < since):
             continue

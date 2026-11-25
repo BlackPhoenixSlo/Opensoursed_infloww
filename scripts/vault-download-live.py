@@ -52,12 +52,10 @@ _LOG = re.compile(r"vault_download account=(\S+) media=(\d+) status=(\S+) bytes=
 _RESIGN = re.compile(r"cdn_resign account=(\S+) media=(\d+) (\S+)")
 TOURS_SEEN = ("localStorage.setItem('vaultProOnboarding', JSON.stringify({batchUploadEntry: '1', "
               "uploadPageStep: '1', batchEdit: '1', uploadBtn: '1'}));")
-# Declared bypass (docstring): the picker -> the OPFS root's subfolder `__vdPickRoot`.
 PICKER_JS = """window.showDirectoryPicker = async () => {
   const root = await navigator.storage.getDirectory();
   return root.getDirectoryHandle(window.__vdPickRoot || "root", { create: true });
 };"""
-# Every file under OPFS/<phase>/ as [relative path, size].
 LIST_JS = """async (phase) => {
   const out = [];
   const walk = async (d, pre) => { for await (const [n, h] of d.entries()) {
@@ -65,8 +63,6 @@ LIST_JS = """async (phase) => {
   const root = await navigator.storage.getDirectory();
   await walk(await root.getDirectoryHandle(phase), "");
   return out; }"""
-# Export one OPFS file to the script's loopback sink (streams the File as a PUT body), then drop it from OPFS
-# (peak disk ~1x vault + one file while exporting).
 EXPORT_JS = """async ([phase, rel, sink]) => {
   let d = await (await navigator.storage.getDirectory()).getDirectoryHandle(phase);
   const parts = rel.split("/"); const name = parts.pop();
@@ -246,7 +242,6 @@ def relay_lines(since: str) -> str:
 
 async def run_mode(args, api, sink, page, mode: str, ev: Path, target: Path, creator: str, mirror: bool) -> dict:
     out: dict = {"mode": mode}
-    # What the UI will save, from the same source it reads.
     if mode == "select":
         first = await api.listing(mirror, limit=40)
         photos = [m for m in first if m.get("type") == "photo" and full_url(m)][:3]
@@ -269,7 +264,6 @@ async def run_mode(args, api, sink, page, mode: str, ev: Path, target: Path, cre
         pc = await precount(api, want, args.pace_cdn)
         free = shutil.disk_usage(target).free
         quota = await page.evaluate("navigator.storage.estimate().then(e => e.quota - e.usage)")
-        # The OPFS stub holds every file (browser profile, same disk) until it is exported: budget 2x.
         need = 2 * pc["bytes"]
         out["precount"] = {**pc, "free_bytes": free, "budget_bytes": need, "opfs_quota_free": quota}
         left = free - need
@@ -283,7 +277,6 @@ async def run_mode(args, api, sink, page, mode: str, ev: Path, target: Path, cre
     ids = {m["id"] for m in want}
     out["want"] = len(ids)
 
-    # Drive it.
     net: list[dict] = []
 
     def on_resp(r) -> None:
@@ -334,7 +327,6 @@ async def run_mode(args, api, sink, page, mode: str, ev: Path, target: Path, cre
     finally:
         page.remove_listener("response", on_resp)
 
-    # Files out of OPFS onto disk.
     dest = target / mode
     shutil.rmtree(dest, ignore_errors=True)
     files = await page.evaluate(LIST_JS, mode)
@@ -344,7 +336,6 @@ async def run_mode(args, api, sink, page, mode: str, ev: Path, target: Path, cre
         await page.evaluate(EXPORT_JS, [mode, rel, sink.url])
     await page.evaluate(CLEAR_JS, mode)
 
-    # Verify.
     logs = relay_lines(since)
     (ev / f"{mode}-relay-log.txt").write_text(logs + "\n")
     (ev / f"{mode}-network.json").write_text(json.dumps(net, indent=1))
@@ -370,7 +361,7 @@ async def run_mode(args, api, sink, page, mode: str, ev: Path, target: Path, cre
         ls = [x for x in (m.get("listStates") or []) if x.get("type") == "custom" and x.get("hasMedia") is not False and x.get("name")]
         lists_names[m["id"]] = safe(folder_name) if folder_name else safe(ls[0]["name"] if ls else "Unfiled")
     on_disk = {str(p.relative_to(dest)): p for p in dest.rglob("*")
-               if p.is_file() and not p.name.startswith(".")}  # not Finder's .DS_Store if dest.exists() else {}
+               if p.is_file() and not p.name.startswith(".")}
     for m in want:
         mid = m["id"]
         hit = next((rel for rel in on_disk if rel.split("/")[-1].split(".")[0] == str(mid)), None)
@@ -446,7 +437,6 @@ async def main() -> int:
 
     host = urlsplit(args.app).hostname
     async with async_playwright() as pw:
-        # On-disk profile under the target: OPFS of an incognito context lives in memory.
         prof = target / ".chromium-profile"
         shutil.rmtree(prof, ignore_errors=True)
         bctx = await pw.chromium.launch_persistent_context(str(prof), headless=not args.headed,

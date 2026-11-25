@@ -1,16 +1,3 @@
-"""Single-model scope: the OF mirror's list pages show the model's real rows (app/lib/ofMirrorData.ts).
-
-Mocks the login (as render.py) and the relay's chats, chat, messages, vault lists, vault media, user lists and list
-users with SYNTHETIC rows (and the relay's /img proxy with a small SVG), sets scope `model:1` (as settings_values.py),
-and checks in the frame: the chats page shows exactly the 3 chats (no `Fan ` text); clicking "Beta Two" opens
-/of-manager/messages/chat?chat=<id> with that header and the 5 messages in order on the right sides, the media
-message's picture loaded through /img in OF's media bubble; the price dialog keeps the header (and the query); the
-vault shows the 2 folders and its grid the 3 media (pictures loaded through /img, the video with OF's play button
-and duration), and a clicked folder (/of-manager/vault?list=<id>) is marked, heads the grid and is asked for with
-`list_id=<id>`; the collections page shows the 2 lists and clicking one shows its title, the lists with it marked,
-and its 2 users.
-Screenshots: /tmp/of-mirror-shots/inapp-data-*.png. Exit 1 on a failed check.
-"""
 import json, os, re, sys
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
@@ -26,11 +13,9 @@ CHATS=[
     {"withUser":fan(102,"Beta Two","betatwo"),"lastMessage":{"id":4,"text":"synthetic four","createdAt":"2026-10-09T10:03:00Z"}},
     {"withUser":fan(103,"Gamma Three","gammathree"),"lastMessage":{"id":12,"text":"synthetic bye","createdAt":"2026-10-08T10:00:00Z"}},
 ]
-# Newest first, as the relay sends them; 102 is the fan, 1 the model.
 MESSAGES=[{"id":i,"text":t,"fromUser":{"id":f},"createdAt":at,"media":[]} for i,f,t,at in [
     (4,1,"synthetic four","2026-10-09T10:03:00Z"),(3,102,"synthetic three","2026-10-09T10:02:00Z"),
     (2,1,"synthetic two","2026-10-09T10:01:00Z"),(1,102,"synthetic one","2026-10-09T10:00:00Z")]]
-# The newest: a fan's photo with a caption (OF's message shape: media[].files.<variant>.url).
 MESSAGES.insert(0, {"id":5,"text":"synthetic five","fromUser":{"id":102},"createdAt":"2026-10-09T10:04:00Z",
     "media":[{"id":51,"type":"photo","width":600,"height":600,"files":{"preview":{"url":"https://cdn.example.invalid/m51.jpg"}}}]})
 WANT_MESSAGES=[["synthetic one",False],["synthetic two",True],["synthetic three",False],["synthetic four",True],["synthetic five",False]]
@@ -55,11 +40,9 @@ SOURCES={
     **{f"/api/of/v2/lists/{k}/users": v for k,v in LIST_USERS.items()},
 }
 PIXEL="<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'><rect width='4' height='4' fill='#00aff0'/></svg>"
-# [src under /img?, loaded with a size] for the shown images matching a selector.
 IMAGES="s => [...document.querySelectorAll(s)].filter(e => e.checkVisibility()).map(e => [e.getAttribute('src').startsWith('/img?'), e.complete && e.naturalWidth > 0])"
-# Text of the elements matching a selector that are shown in the frame's viewport (hidden examples, and rows pushed out of view, excluded).
 SHOWN="s => [...document.querySelectorAll(s)].filter(e => e.checkVisibility() && e.getBoundingClientRect().top < innerHeight).map(e => e.textContent.trim())"
-COLUMN_READS={"/api/of/v2/users/me", "/api/of/v2/users/notifications/count"}  # OfManagerChrome's creator column, one read per creator
+COLUMN_READS={"/api/of/v2/users/me", "/api/of/v2/users/notifications/count"}
 failures=[]
 def check(label, got, want):
     print(json.dumps({"check":label,"got":got,"want":want}))
@@ -75,22 +58,22 @@ with sync_playwright() as p:
         if path=="/api/of/v2/vault/media": media_queries.append(urlparse(u).query)
         if path in SOURCES:
             seen.add(path)
-            if path not in COLUMN_READS: accounts.add(route.request.headers.get("x-account-id"))  # the creator column reads every creator
+            if path not in COLUMN_READS: accounts.add(route.request.headers.get("x-account-id"))
             return route.fulfill(status=200, content_type="application/json", body=json.dumps(SOURCES[path]))
-        if re.fullmatch(r"/admin/fans/[^/]+/[0-9]+/ppv-history", path):  # the open chat's Fan insights (FanDrawer): its Sales
+        if re.fullmatch(r"/admin/fans/[^/]+/[0-9]+/ppv-history", path):
             return route.fulfill(status=200, content_type="application/json", body='{"items":[],"summary":{"max_cents":0,"avg_cents":0}}')
-        if re.fullmatch(r"/api/of/v2/chats/[^/]+/media", path):  # its unsold PPVs
+        if re.fullmatch(r"/api/of/v2/chats/[^/]+/media", path):
             return route.fulfill(status=200, content_type="application/json", body='{"list":[],"hasMore":false}')
-        if m:=re.fullmatch(r"/admin/fans/([^/]+)/([0-9]+)", path):  # its fan record
+        if m:=re.fullmatch(r"/admin/fans/([^/]+)/([0-9]+)", path):
             return route.fulfill(status=200, content_type="application/json", body=json.dumps({"account_id":m[1],"fan_id":int(m[2]),"tags":[],"lifetime_spend_cents":0,"bought_amount":0,"source":"synthetic"}))
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**","**/img?**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     def frame(page):
         for _ in range(60):
@@ -99,7 +82,6 @@ with sync_playwright() as p:
             pg.wait_for_timeout(250)
         failures.append(f"{page}: NO IFRAME (url {pg.url})"); return None
     def settle(fr, sel, n):
-        """Wait until `n` rows matching `sel` are visible (the relay data has landed)."""
         for _ in range(40):
             if len(fr.evaluate(SHOWN, sel))==n: return
             pg.wait_for_timeout(250)
@@ -131,7 +113,7 @@ with sync_playwright() as p:
         check("chat: open row marked", fr.evaluate(SHOWN, ".b-chats__item.current .g-user-name"), ["Beta Two"])
         fr.evaluate("[...document.querySelectorAll('.b-chat__message.m-has-media')].find(e => e.checkVisibility())?.scrollIntoView({block: 'center'})"); pg.wait_for_timeout(800)
         check("chat: the media message's picture, in OF's media bubble, loaded through /img", fr.evaluate(IMAGES, ".b-chat__message.m-has-media .b-chat__message__media img.b-post__media__img"), [[True, True]])
-        # (OF's <img> takes no pointer events: the hit is its media box, which must not be a loading cover)
+        # OF's <img> takes no pointer events: the hit is its media box, which must not be a loading cover.
         check("chat: the picture is on top (no loading cover over it)", fr.evaluate("""(() => { const i = [...document.querySelectorAll('.b-chat__message.m-has-media img.b-post__media__img')].find(e => e.checkVisibility());
           const r = i.getBoundingClientRect(); const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!t && !t.closest('.post_media__loading') && t.closest('.b-chat__message__media') === i.closest('.b-chat__message__media'); })()"""), True)
         check("chat: no Media placeholder text", fr.evaluate(SHOWN, ".b-chat__message__text-holder").count("Media"), 0)

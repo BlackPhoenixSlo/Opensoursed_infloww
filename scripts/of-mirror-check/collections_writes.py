@@ -1,21 +1,3 @@
-"""Collections writes (app/lib/ofMirrorCollections.ts) in the frame, relay mocked: the list page's More menu, a user
-card's Lists menu and the header's + (OF's "Create new list" / "Create new label" dialog) send their relay writes.
-No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
-77e5df419; phase_check.py's one_creator checks it).
-
-Mocks the login (as writes.py) and, with scope `model:acc1`: GET /api/of/v2/lists (two synthetic custom lists with
-OF's flags, Whales 31 and Regulars 32), GET /lists/31/users (two synthetic users), GET /users/alphaone (id 901) and
-POST /lists/users ({"31": [901]}); every other non-GET /api/** is recorded (method, path, X-Account-Id, body) and
-answered {"success": true}. Confirm dialogs are accepted. Checks, on collections/user-lists/list?list=31: More lists
-Rename list, Add users, Clear list, Delete list; Rename (the dialog holding "Whales") sends PATCH /lists/31 {name};
-Add users with "@alphaone" sends POST /lists/users {"31": [901]}; a card's Lists offers "Remove from Whales" and "Add
-to Regulars", which send DELETE /lists/31/users/202 and POST /lists/32/users/202; Clear list sends DELETE
-/lists/31/users; Delete list sends DELETE /lists/31 and lands on /of-manager/collections, which shows the first list's
-users and whose + opens the "Create new list" dialog, whose Save sends POST /lists {name}; Post Labels' + opens
-"Create new label", whose Save sends POST /labels {name}. Every write carries X-Account-Id acc1. Screenshots:
-/tmp/of-mirror-shots/inapp-collections-more.png, inapp-collections-card.png, inapp-collections-create.png,
-inapp-collections-label.png. Exit 1 on a failed check.
-"""
 import json, os, sys
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
@@ -56,13 +38,13 @@ def session(b, scope_js):
         if req.method=="GET" and path in SOURCES:
             return route.fulfill(status=200, content_type="application/json", body=json.dumps(SOURCES[path]))
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     pg.on("dialog", lambda d: d.accept())
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     first=[True]

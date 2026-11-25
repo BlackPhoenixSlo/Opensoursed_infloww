@@ -1,64 +1,3 @@
-"""Phase 3's Mirror check (docs/spec/ofm-not-yet/phase-03-settings-privacy-links.md, Testing Decisions): OF settings,
-privacy and links, relay mocked, on phase_check.py's harness (its docstring: mocks, login, write record, check 1,
-requests, red notes, --captures). Screenshots: /tmp/of-mirror-shots/inapp-settings-privacy-*.png only. Exit 1 on a
-failed check.
-
-    PORT=3091 python3 -I scripts/of-mirror-check/settings_privacy.py [--plant rows.json] [--captures dir]
-    PORT=3091 python3 -I scripts/of-mirror-check/settings_privacy.py --self-test
-
-phase_check runs, unchanged, PROOFS (scripts/of-live-proof/proofs/phase3.py: check 1, found, Wired, Not-yet title by
-its record), REQUESTS and RED_NOTES (Close all sessions' session-lost answer, story 10) in their own Single-Creator
-pass, when any of them holds a row. Phase 3 adds, in a second Single-Creator pass (scope `model:1`, X-Account-Id 1)
-(no All-Creators pass: OF Manager has no All creators, owner 2026-11-20; phase_check.py's one_creator covers a saved
-"all" scope):
-  TITLES        [page, control]: every Phase 3 Not-yet control of docs/of-manager/not-yet-sweep-2026-11-20.json
-                (.scratch/ofm-not-yet/ledger.py's P3 claims). Runtime state only (D18, never the committed HTML): the
-                control is found; with a capture record showing a Live-proof pass it has no Not-yet title, else it
-                still has it (D1). A control's record is found as proof_list.py finds a proof's (at most one).
-  ROWS          {"page", "steps", one outcome, "after"?, "fresh"?, "undo"?, "reads"?}. The outcome is one of
-                  "write": [method, path, body]   exactly that one write, and the last clicked control is Wired;
-                  "handoff": url                   that URL requested and aborted, never loaded, nothing written;
-                  "clipboard": text                the clipboard holds text, nothing written;
-                  "land": path, "get": [path, {query}], "rows": css
-                                                   the top URL lands on path, that Relay GET was sent (dead.py READS'
-                                                   match: each named param with its value), and the landed frame shows
-                                                   at least one `rows` element, and nothing was written. "get":
-                                                   None (ticket 62) names no GET: an opener's modal reads what the
-                                                   page behind it already read, and the app reads it from its cache.
-                  "dom": [js, value]               (ticket 110) a browser-only control: js on the settled frame gives
-                                                   value, and the row sent no request at all (no write, no Relay GET,
-                                                   no hand-off).
-                "after": [js, value] holds on the settled frame and again on a fresh load of "fresh" (default the row's
-                page): the mock served the new value. "undo": {"steps", "write", "after"} then runs on that fresh frame
-                and checks the old value the same two ways. "reads" (GET path -> JSON, tickets 60, 62): served over the
-                pass's to the rows with the same "reads" only, in a session of their own in that pass (the app keeps
-                reads across loads; e.g. a non-adult performer's /users/me). "prep" (ticket 68): phase_check's, a JS
-                expression run in the loaded frame before the steps (e.g. a selection an operator's drag would make).
-  STATEFUL      [method, path regex, read path]: the write's JSON body merged into that mocked read (phase_check's
-                `after` hook, declared as data so a plant can carry one); a list read is a notifications group list, and
-                `{notifications: {<transport>: [{code, value}]}}` sets those items (ticket 60); a read in LIST_READS
-                is a profile list (ticket 69, list_into): a write appends `{id: <next>, **body}` (or LIST_ITEM's item
-                for that read) and answers the full list, a path with an `id` group removes that item; READS: GET
-                path -> JSON.
-                ticket 76: a row's read may instead be a hook of its own, (reads, hit, body) -> None, for a write with
-                no body to merge (Reset stream key's DELETE: the settings read then carries a new key).
-A step is phase_check's (a label clicked, [label, text] typed, "css=<selector>"), or {"open": label or css=, "page":
-<modal or State page>}: the opener is clicked on the page it sits on, the top URL must become that page's and its modal
-(.modal.show) or State menu (.of-state-menu) must show; later steps run there. {"press": label} (tickets 61, 62), or an
-opener with "press": true, focuses the control and presses Enter instead of clicking: a control behind an open modal
-or State menu, which the mouse cannot reach (the modal or backdrop takes the click). A row starting on a modal or State page
-may not click inside that page's open modal or menu: that is reaching it by loading the modal URL. The stream key
-(READS settings `streamingRtmpKey`, synthetic) must never appear in any frame's DOM or field value, checked after every
-load and row; settings/streaming's Stream Key field shows the mask. Hand-off URLs are the only non-localhost requests
-that do not fail the check (each aborted). No console errors in any pass.
-
-  --plant <file>  adds {"proofs", "records": {file name: record}, "requests", "red_notes"} (phase_check's) and
-                  {"titles", "rows", "state" (STATEFUL rows), "reads"} to the tables, to show a check fails.
-  --self-test     runs only planted rows: a missing control, a row reached by its modal URL, a Live-proof pass whose
-                  (found) control kept the Not-yet title, a parked record whose (found) control lost it, two records
-                  for one control, the stream key in the DOM, and a fresh read with no STATEFUL hook each fail; a Wired
-                  toggle row (new value, then the old one after undo), an opener row, and clipboard and land rows pass.
-"""
 import copy, json, os, re, sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -69,23 +8,17 @@ from proof_core import Proof  # noqa: E402
 from proof_list import record_of, live_passed, load_records  # noqa: E402
 from proofs import phase3  # noqa: E402
 NAME="settings-privacy"
-STREAM_KEY="oi-synthetic-stream-key-5c1e"   # synthetic; never a real key
-STREAM_KEY_MASK="•"*16                  # app/lib/ofMirrorSettings.ts STREAM_KEY_MASK
+STREAM_KEY="oi-synthetic-stream-key-5c1e"
+STREAM_KEY_MASK="•"*16
 
-# ticket 57: Phase 3's tables. Control tickets append their rows; empty for real controls until then.
-REQUESTS=[]       # phase_check's {"proof", "steps", "fill"} or {"page", "steps", "want"}
-RED_NOTES=[]      # phase_check's {"page", "steps", "fail": [method, path], "kept", "note"}
+REQUESTS=[]
+RED_NOTES=[]
 ROWS=[]
 STATEFUL=[]
-LIST_READS=set()  # ticket 69: STATEFUL reads that are lists of items with ids (list_into)
-LIST_ITEM={}      # ticket 70: a LIST_READS read whose OF item differs from the write's body: read -> body -> item fields
-# ticket 58: the wired hand-offs (app/lib/ofMirrorHandoffs.ts), each clicked: a popup to its URL, aborted.
-# The table is proofs/phase3.py HANDOFFS (r10 included: Google, X, Connected accounts' field and Connect, Spotify ×4);
-# a "press" row is pressed (More's State page: its backdrop takes the mouse, ticket 61's rule).
+LIST_READS=set()
+LIST_ITEM={}
 _HANDOFFS=[(p, {"press":c} if how=="press" else c, u) for _, _, p, c, u, how in phase3.HANDOFFS]
 ROWS+=[{"page":p, "steps":[c], "handoff":u} for p, c, u in _HANDOFFS]
-# ticket 59: Streaming's Copy buttons (app/lib/ofMirrorStreamCopy.ts, data-oi-stream-copy). Single Creator: each copies its
-# value (the key from READS, never in the DOM: key_scan after the row).
 _COPY=lambda c: f"css=button[data-oi-stream-copy='{c}']"
 ROWS+=[{"page":"settings/streaming", "steps":[_COPY(c)], "clipboard":t} for c, t in (
     ("server","rtmp://synthetic.invalid/live"), ("key",STREAM_KEY),
@@ -93,9 +26,6 @@ ROWS+=[{"page":"settings/streaming", "steps":[_COPY(c)], "clipboard":t} for c, t
 READS={
     "/api/of/v2/users/me/settings": {"isAutoFollowBack":True,"streamingRtmpServer":"rtmp://synthetic.invalid/live","streamingRtmpKey":STREAM_KEY},
 }
-# ticket 60: the Tip switch (users/me), Fully private (security; its row a non-adult performer's /users/me) and the email
-# Update frequency (New Likes Summary at 12 h, so the menu's other choice, 24, is a change). OF's frequency list needs
-# capture (ticket 12 sitting): the menu offers the stored hours and 24 (ofMirrorSettingsWrites frequencyChoices).
 _ME, _SETTINGS, _SECURITY="/api/of/v2/users/me", "/api/of/v2/users/me/settings", "/api/of/v2/users/me/settings/security"
 _NOTIF, _EMAIL="/api/of/v2/users/settings/notifications", "/api/of/v2/users/settings/notifications/email"
 _TIP_SW, _TIP_ON="css=label[for=messageOnlyFromFriends]", "document.getElementById('messageOnlyFromFriends')?.checked ?? null"
@@ -111,8 +41,6 @@ ROWS+=[
      "undo":{"steps":[_TIP_SW],"write":["PATCH",_ME,{"canAcceptMessageOnlyFromFriends":False}],"after":[_TIP_ON, False]}},
     {"page":"settings/security","reads":_PRIV_READS,"steps":[_PRIV_SW],"write":["PATCH",_SECURITY,{"isPrivate":True}],"after":[_PRIV_ON, True],
      "undo":{"steps":[_PRIV_SW],"write":["PATCH",_SECURITY,{"isPrivate":False}],"after":[_PRIV_ON, False]}},
-    # No undo row: once 24 is stored the menu offers 24 alone (the stored hours and 24), so 12 cannot be picked back
-    # until OF's list is captured; the restore is the proof's Relay undo (proofs/phase3.py FREQUENCY, fake pass).
     {"page":"settings/notifications/email","reads":_FREQ_READS,"steps":_FREQ(24),"write":_freq_write(24),"after":[_FREQ_SHOWN, "Every 24 Hours"]},
 ]
 STATEFUL+=[["PATCH", _ME, _SETTINGS], ["PATCH", _SECURITY, _SETTINGS], ["PATCH", _NOTIF, _EMAIL]]
@@ -121,9 +49,6 @@ RED_NOTES+=[
     {"page":"settings/security","reads":_PRIV_READS,"steps":[_PRIV_SW],"fail":["PATCH",_SECURITY],"kept":_PRIV_ON},
     {"page":"settings/notifications/email","reads":_FREQ_READS,"steps":_FREQ(24),"fail":["PATCH",_NOTIF],"kept":_FREQ_SHOWN},
 ]
-# ticket 63: Close all sessions. Cancel sends nothing; Confirm sends its capture record's request (OF's DELETE /sessions,
-# settings-sessions.js); OF's session-lost answer (400 code 301 "Wrong user." behind the Relay's 502) says to re-link,
-# any other failure is the red note.
 _CLOSE="css=#content .b-sessions-list button.g-btn"
 _CLOSE_OK, _CLOSE_CANCEL="css=#ModalConfirm .modal-footer button:last-child", "css=#ModalConfirm .modal-footer button:first-child"
 _WRONG_USER={"detail":{"upstream_status":400,"upstream_body":'{"error":{"code":301,"message":"Wrong user."}}'}}
@@ -137,11 +62,6 @@ RED_NOTES+=[
     {"page":"settings/account/sessions","steps":[_CLOSE, _CLOSE_OK],"fail":["DELETE","/api/of/v2/sessions"],
      "note":"Could not close sessions: synthetic failure"},
 ]
-# ticket 67: Edit profile's cover and avatar (app/lib/ofMirrorProfileImages.ts; capture record settings--profile-cover-avatar).
-# The camera's file picker is stubbed by the row's prep (a synthetic PNG, or a text file the page refuses before any
-# request); Save sends the picture up (multipart: the file and its kind), then PATCH /users/me with the upload's reply as
-# is (the mock answers every write {"success": true}; the Relay answers only a ready convert item). The cover's remove
-# sends {header: ""} (measured), read back: the stored cover (a data: picture, no fetch) is gone on a fresh load.
 _T67_CAMERA="css=.b-profile__header > .b-profile__header__cover__btns button.dropdown-toggle"
 _T67_REMOVE="css=.b-profile__header > .b-profile__header__cover__btns > button"
 _T67_SAVE="css=.g-btn__wrapper button[type='submit']"
@@ -166,12 +86,6 @@ RED_NOTES+=[
      "note":"Could not save: synthetic failure"},
     {"page":"settings/profile","prep":_T67_TXT,"steps":[_T67_CAMERA],"kept":_T67_COVER,"sent":[],"note":"Choose a JPEG, PNG, GIF or WebP image"},
 ]
-# ticket 68: Edit profile's About format button (app/lib/ofMirrorProfileFormat.ts; capture record
-# settings--profile-about-format). The button opens OF's text toolbar over the Bio and sends nothing; Bold on a
-# selection formats it in place and Save carries it as `about` (OF's HTML, measured in its JS). The row's prep selects
-# the Bio's first word as the format button is clicked (as an operator's drag would, before the toolbar opens). Read
-# back: the merged users/me `about` paints the Bio formatted on a fresh load. A failed Save keeps the edit in the Bio
-# (as every profile field's), so its red note row has no "kept".
 _T68_FORMAT="css=.b-input-contenteditable .b-icon-text-container > button"
 _T68_BOLD="css=[data-oi-about-format] [aria-label='Bold']"
 _T68_SELECT=("(() => addEventListener('click', (e) => { if (!e.target.closest?.('.b-input-contenteditable .b-icon-text-container > button')) return;"
@@ -179,17 +93,12 @@ _T68_SELECT=("(() => addEventListener('click', (e) => { if (!e.target.closest?.(
              " r.setStart(t, 0); r.setEnd(t, 7); getSelection().removeAllRanges(); getSelection().addRange(r); }, true))()")
 _T68_BIO="document.querySelector(\"[data-placeholder='Bio']\")?.innerHTML ?? null"
 _T68_HTML="<p><strong>Welcome</strong> to my page.</p>"
-_T68_READS={_ME: {"id":1,"username":"alphaone","name":"Alpha One"}}   # its own session: the merged about stays in it
+_T68_READS={_ME: {"id":1,"username":"alphaone","name":"Alpha One"}}
 _T68_WRITE=["PATCH",_ME,{"about":_T68_HTML}]
 ROWS+=[{"page":"settings/profile","reads":_T68_READS,"prep":_T68_SELECT,"steps":[_T68_FORMAT, _T68_BOLD, _T67_SAVE],
         "write":_T68_WRITE,"after":[_T68_BIO, _T68_HTML]}]
 RED_NOTES+=[{"page":"settings/profile","prep":_T68_SELECT,"steps":[_T68_FORMAT, _T68_BOLD, _T67_SAVE],"fail":["PATCH",_ME],
              "sent":[_T68_WRITE],"note":"Could not save: synthetic failure"}]
-# ticket 69: Social media's Add button and a button's remove (app/lib/ofMirrorProfileLinks.ts; capture record
-# settings--social-media-buttons, measured in OF's JS). The form opens on GET /init's first provider (Instagram, a
-# username provider); its Save sends PUT /users/social/buttons with the record's four keys (OF's form: `link` "" for a
-# username provider), drawn from OF's full-list reply and read back on a fresh load; the remove sends DELETE
-# /users/social/buttons/{id} and takes out only that button.
 _T69="settings/social-media"
 _T69_PATH="/api/of/v2/users/social/buttons"
 _T69_ADD="css=.b-settings__row.g-btn__wrapper > button.g-btn"
@@ -200,7 +109,6 @@ _T69_B1={"id":1,"socialMedia":"instagram","label":"My Insta","link":"https://ins
 _T69_B2={"id":2,"socialMedia":"tiktok","label":"My TikTok","link":"https://tiktok.com/@b","username":"b"}
 _T69_STEPS=[_T69_ADD, ["css=#oi-link-label","Proof button"], ["css=#oi-link-url","oi_proof"], _T69_SAVE]
 _T69_BODY={"socialMedia":"instagram","label":"Proof button","link":"","username":"oi_proof"}
-# OF's GET /init, the Relay's projection (a slice of the 22 providers measured live 2026-11-21, OF's order).
 READS["/api/of/v2/init"]={"socialMediaProviders":[{"socialMedia":"instagram","label":"Instagram","isLink":False,"isShowAt":False},
                                                    {"socialMedia":"amazon","label":"Amazon","isLink":True,"isShowAt":False}]}
 _T69_WRITE=["PUT",_T69_PATH,_T69_BODY]
@@ -219,11 +127,6 @@ RED_NOTES+=[
     {"page":_T69,"reads":{_T69_PATH:[_T69_B1,_T69_B2]},"steps":[_T69_RM % 2],"fail":["DELETE",_T69_PATH+"/2"],"kept":_T69_LABELS,
      "note":"Could not remove: synthetic failure"},
 ]
-# ticket 70: Things I Like's Create link and a link's delete (app/lib/ofMirrorProfileLinks.ts; capture record
-# settings--things-i-like-links, measured in OF's JS). The form's Save sends PUT /users/links {link} (OF's named sites
-# only: `inferred` hosts), drawn from OF's full-list reply and read back on a fresh load; a link's delete sends DELETE
-# /users/links/{id} and takes out only that link. Rows show the link (no label). OF lists each link as
-# {id, sort, url, title, description, image} (measured live 2026-11-21: `url`, no `link` key).
 _T70="settings/links"
 _T70_PATH="/api/of/v2/users/links"
 _T70_ADD="css=.b-settings__things-like__add > button.g-btn"
@@ -250,17 +153,11 @@ RED_NOTES+=[
     {"page":_T70,"reads":{_T70_PATH:[_T70_L1,_T70_L2]},"steps":[_T69_RM % 2],"fail":["DELETE",_T70_PATH+"/2"],"kept":_T69_LABELS,
      "note":"Could not remove: synthetic failure"},
 ]
-# ticket 72: the OBS server dropdown, a display switch (no request, its capture record). After picking OBS Server
-# (mux_direct) the Copy buttons copy that pair; the mux key holds STREAM_KEY, so key_scan catches it in the DOM too.
 _OBS_MUX=["css=label[for=input-677]", "css=#oi-menu [data-oi-value='mux_direct']"]
 _MUX_SERVER, _MUX_KEY="rtmp://mux.synthetic.invalid/live", STREAM_KEY+"-mux"
 READS["/api/of/v2/users/me/settings"]={**READS["/api/of/v2/users/me/settings"], "streamingMuxServer":_MUX_SERVER, "streamingMuxDirectKey":_MUX_KEY}
 ROWS+=[{"page":"settings/streaming", "steps":[*_OBS_MUX, _COPY("server")], "clipboard":_MUX_SERVER},
        {"page":"settings/streaming", "steps":[*_OBS_MUX, _COPY("key")], "clipboard":_MUX_KEY}]
-# ticket 73: Blocked users' Block (POST .../streams/users/{username}/block, no body, its capture record) and each row's
-# remove (Cancel sends nothing; Unblock sends DELETE .../{id}/block). The list read holds one synthetic row (soak
-# world's name; id 101 is no OF id). A failed write is the red note, the list as it was. No-body writes give STATEFUL
-# nothing to merge: the read-back after a block is the fake proof's (settings--streaming-block-username, FakeOF state).
 _BLOCKED, _BLOCK_IN="/api/of/v2/streams/users/blocked", "css=#input-365"
 _BLOCK="css=#content .b-settings__content form button[type=submit]"
 _UNBLOCK="css=[data-oi-blocked-list] button.m-btn-remove"
@@ -278,14 +175,9 @@ RED_NOTES+=[
     {"page":"settings/streaming/blocked","steps":[_UNBLOCK, _CLOSE_OK],"fail":["DELETE","/api/of/v2/streams/users/101/block"],
      "kept":_BLOCKED_N,"note":"Could not unblock: synthetic failure"},
 ]
-# ticket 76: Reset stream key (its capture record, aborted at the sitting: DELETE /streams/obs/key?type=<shown server>,
-# no body; phase_check records the path, so the query is pinned by the vitest and the Relay test). Cancel sends nothing;
-# Confirm sends it, and the settings re-read carries a new key (STATEFUL's own hook): Copy key copies it, the field keeps
-# the mask (key_scan: the new key holds STREAM_KEY, so a leak is caught). A failure is the red note, the mask kept.
 _RESET="css=#content button.g-btn.m-danger.m-flat"
-_NEW_KEY=STREAM_KEY+"-new"   # synthetic
+_NEW_KEY=STREAM_KEY+"-new"
 _KEY_FIELD="[...document.querySelectorAll('#content label.v-label')].filter(l => l.textContent.trim() === 'Stream Key').map(l => document.getElementById(l.htmlFor)?.value)[0] ?? null"
-# The top page reads the clipboard (it has the focus); the frame's Copy key wrote it.
 _COPIED_KEY="(async () => { document.querySelector(\"button[data-oi-stream-copy='key']\").click(); await new Promise(r => setTimeout(r, 300)); return window.top.navigator.clipboard.readText(); })()"
 def _new_stream_key(reads, hit, body):
     reads[_SETTINGS]={**reads.get(_SETTINGS, {}), "streamingRtmpKey": _NEW_KEY}
@@ -294,7 +186,7 @@ ROWS+=[{"page":"settings/streaming","steps":[_RESET, _CLOSE_OK],"write":["DELETE
 REQUESTS+=[{"page":"settings/streaming","steps":[_RESET, _CLOSE_CANCEL],"want":[]}]
 RED_NOTES+=[{"page":"settings/streaming","steps":[_RESET, _CLOSE_OK],"fail":["DELETE","/api/of/v2/streams/obs/key"],"kept":_KEY_FIELD,
              "note":"Could not reset the stream key: synthetic failure"}]
-Z="​"   # the sweep's labels keep OF's zero-width space
+Z="​"  # the sweep's labels keep OF's zero-width space
 TITLES=[[p, c] for p, cs in {
     "profile/index": ["Sign in with spotify"],
     "profile/media": ["Sign in with spotify"],
@@ -307,11 +199,9 @@ TITLES=[[p, c] for p, cs in {
     "settings/links": ["Create link"],
     "settings/messaging": ["[b-checkbox-switcher]","Restricted"],
     "settings/notifications": ["Restricted"],
-    # ticket 60: Update frequency's field ("[INPUT]") is one control with its select (dropped together; digest off, the select carries our reason DIGEST_OFF).
     "settings/notifications/email": [Z+"Update frequencyEvery 24 Hours"],
     "settings/profile": ["[btn.dropdown-toggle]","[g-btn.m-icon]","[g-btn.m-with-round-hover]"],
     "settings/security": ["Restricted accounts","Blocked accounts"],
-    # ticket 66: the picker's box ("Select from available options") is one control with its field (dropped together).
     "settings/security/block_by_country": ["[INPUT]"],
     "settings/security/block_by_country/state-country-picker": [Z+"Select from available options United States of America Unit","[INPUT]"],
     "settings/security/block_by_ip": ["[TEXTAREA]"],
@@ -329,17 +219,9 @@ TITLES=[[p, c] for p, cs in {
     "settings/subscription/trial-links/modal-1": ["Create new free trial link"],
     "settings/subscription/trial-links/state-kebab": ["Create new free trial link","[b-input-radio]"],
 }.items() for c in cs]
-# ticket 59: the stream chat and OBS widgets Copy links, named apart from the server's "Copy link" while bound
-# (ofMirrorStreamCopy LINK_NAMES; no Live proof yet, so titled). Ticket 72: so are the OBS dropdown's Server and Stream
-# Key fields, named apart from the dropdown's "[INPUT]" while bound (FIELD_NAMES).
 TITLES+=[["settings/streaming", c] for c in ("Copy stream chat link", "Copy OBS widgets link", "Stream server address", "Stream key")]
-# ticket 67: the cover's camera ("[btn.dropdown-toggle]") passed Live; the avatar's camera, named apart while bound
-# (ofMirrorProfileImages AVATAR_CAMERA_NAME), has no proof of its own and keeps the title.
 TITLES+=[["settings/profile", "Change avatar"]]
 
-# ticket 61: the tracking links Sort; the Relay sorts (`inferred` field names: the kebab State page's radios and the Reach
-# read's). The mock serves Zeta before Alpha: a client reorder would show. The kebab State page's radios sit in its open
-# menu, reached only by its URL (the base Sort is a runtime menu, no opener), so vitest covers them.
 _T61="settings/subscription/tracking-links"
 _T61_NAMES="[...document.querySelectorAll('[data-oi-row] .b-offer-join__details')].map(e => e.textContent.trim())"
 _T61_PICK="css=#oi-menu [data-oi-value='%s']"
@@ -353,12 +235,6 @@ ROWS+=[{"page":_T61,"steps":["Sort",_T61_PICK % f,"Sort",_T61_PICK % o],"land":u
 ROWS+=[{"page":f"{_T61}/modal-1","steps":[{"press":"Sort"},_T61_PICK % "name"],"land":url_of(_T61),
         "get":["/api/of/v2/campaigns",{"field":"name","sort":"desc"}],"rows":"[data-oi-row]","after":[_T61_NAMES,["Zeta link","Alpha link"]]}]
 
-# ticket 62: the base page's openers behind the link and promotion modals and kebab State pages, each pressed on the
-# page it sits on (the modal or backdrop takes a click), and Claims count behind a promotion modal opening "Offer
-# claimed" (modal-3; the base page has no opener for it). The model may create each (users/me flags, a bundle duration
-# left: the rows' own reads, since a priced performer changes other pages), so no opener is gated; one promotion draws
-# a Claims count. Rows that change page only (a same-page opener proves nothing here; vitest covers its link). The
-# promotion State dropdown pages are left out: loaded alone they open their modal page instead (measured).
 _T62="settings/subscription"
 _T62_READS={"/api/of/v2/users/me": {"id":1,"username":"alphaone","name":"Alpha One","subscribePrice":10,"isPerformer":True,
     "canCreatePromotion":True,"canEarn":True,"canCreateTrial":True,"promotions":[{"id":62001,"price":0,"type":"new",
@@ -379,17 +255,13 @@ ROWS+=[{"page":f"{_T62}/{at}","steps":[{"open":label,"page":f"{_T62}/{to}","pres
            ("promotion-campaign/modal-1",_T62_CLAIMS,"promotion-campaign/modal-3"),
            ("promotion-campaign/modal-2",_T62_CLAIMS,"promotion-campaign/modal-3"))]
 
-# ticket 74: the tracking links "Shared with you" tab and the share hint, on the base page and behind the modal and
-# kebab State page (ticket 62's rule: pressed on the page it sits on). The tab lands on the base page's ?tab=shared and
-# reads GET /campaigns/share-access; the hint opens the share dialog, whose search waits 300 ms (debounced) before the
-# performer row is drawn, so a click back in the search field (no write) stands as the pause before picking it.
 _T74_SHARE="/api/of/v2/campaigns/share-access"
 READS[_T74_SHARE]={"list":[{"id":7491,"campaignCode":91,"campaignName":"Peer link","countSubscribers":4,"countTransitions":12,
     "createdAt":"2026-02-15T00:00:00+00:00","isDeleted":False,"user":{"id":7402,"name":"Synthetic Owner","username":"synthowner"}}],"hasMore":False}
 READS["/api/of/v2/users/performers-search"]=[{"id":7401,"name":"Synthetic Peer","username":"synthpeer"}]
 _T74_HINT="css=[data-oi-row] [data-oi-share]"
 _T74_DIALOG=[["css=#oi-share input","synthpeer"], "css=#oi-share input", "css=#oi-share [data-oi-performer]", "css=#oi-share [data-oi-send]"]
-_T74_WRITE=["POST",_T74_SHARE,{"campaignId":61001,"userId":7401}]   # 61001: READS["/api/of/v2/campaigns"]'s first row
+_T74_WRITE=["POST",_T74_SHARE,{"campaignId":61001,"userId":7401}]
 ROWS+=[{"page":p,"steps":[tab],"land":url_of(_T61),"get":[_T74_SHARE,{}],"rows":"[data-oi-row]"}
        for p, tab in ((_T61,"Shared with you"), (f"{_T61}/modal-1",{"press":"Shared with you"}),
                       (f"{_T61}/state-kebab",{"press":"Shared with you"}))]
@@ -397,13 +269,7 @@ ROWS+=[{"page":_T61,"steps":[_T74_HINT,*_T74_DIALOG],"write":_T74_WRITE}]
 ROWS+=[{"page":p,"steps":[{"open":_T74_HINT,"page":p,"press":True},*_T74_DIALOG],"write":_T74_WRITE}
        for p in (f"{_T61}/modal-1", f"{_T61}/state-kebab")]
 
-# ticket 75: no rows: modal-3's ⋮ keeps its TITLES row (disabled, Not-yet title kept by its parked record
-# settings--promotion-modal3-kebab) until capture-checklist rows 11 and 23 are captured.
 
-# ticket 66: Block by country and Block by IP, Lockout controls on their own Relay routes (never the general security
-# write). Each Save asks a confirm naming what it blocks; the pinned harmless values are the proofs' (Tuvalu,
-# 192.0.2.1 TEST-NET-1). The PUT is merged into the settings read (STATEFUL), so the fresh load shows it; the undo row
-# takes it back off. Cancel and a dismissed confirm send nothing; a 502 leaves the saved list on the page.
 _T66C, _T66I="settings/security/block_by_country", "settings/security/block_by_ip"
 _T66_COUNTRIES, _T66_IPS=_SECURITY+"/blocked-countries", _SECURITY+"/blocked-ips"
 READS["/api/of/v2/countries"]=[{"id":1,"code":"TV","name":"Tuvalu"},{"id":2,"code":"US","name":"United States of America"}]
@@ -430,11 +296,6 @@ RED_NOTES+=[
     {"page":_T66C,"steps":[*_T66_PICK, _CLOSE_OK],"fail":["PUT",_T66_COUNTRIES],"kept":_T66_CHIPS,"note":"Could not save: synthetic failure"},
     {"page":_T66I,"steps":[[_T66_FIELD,"192.0.2.1"], _T66_SAVE_I, _CLOSE_OK],"fail":["PUT",_T66_IPS],"kept":_T66_IPS_SHOWN,"note":"Could not save: synthetic failure"},
 ]
-# ticket 110 (Phase 5, D21: only this ticket): the browser-only controls (app/lib/ofMirrorBrowserOnly.ts),
-# Not-yet title kept (D1). One appended outcome, "dom": [js, value]: the settled frame's js gives value and the row sent
-# no request at all (no write, no Relay GET, no hand-off); outcome()'s "dom" branch. Phone Cancel is a "land" row. Card
-# and wallet hand-offs: row 10 measured 2026-11-21 did not record Add card / Add a payment card / Add funds; parked — needs
-# capture (re-sitting of row 10): no URL, so no handoff row; their titles are checked with the rest below.
 _PW_TYPES="[...document.querySelectorAll('#content form input')].map(e => e.type)"
 _REVEAL2="css=#content .g-input__wrapper[data-vv-as='Confirm new password'] button[aria-label='Reveal password']"
 _MAILTO="[...document.querySelectorAll('#content a')].filter(a => a.textContent.trim() === 'support@onlyfans.com').map(a => a.getAttribute('href'))"
@@ -467,13 +328,12 @@ def page_of(path):
     rest=path[len(M)+1:]
     return rest if "/" in rest else f"{rest}/index"
 def merge_into(read):
-    """A STATEFUL row as phase_check's `after` hook: the write's JSON body merged into `read`."""
-    if callable(read): return read   # ticket 76: the row's own hook (a write with no body to merge)
+    if callable(read): return read
     def hook(reads, hit, body):
-        if read in LIST_READS: return list_into(reads, read, hit, body)   # ticket 69
+        if read in LIST_READS: return list_into(reads, read, hit, body)
         if not isinstance(body, dict): return
         cur=reads.get(read, {})
-        if isinstance(cur, list):   # ticket 60: a notifications group list (GET .../notifications/<transport>?group=1)
+        if isinstance(cur, list):
             for item in [i for items in (body.get("notifications") or {}).values() for i in items]:
                 for x in (x for g in cur for x in g.get("items", []) if x.get("code")==item.get("code")):
                     x.update(value=item["value"] or 0, isEnabled=item["value"] is not False)
@@ -481,14 +341,11 @@ def merge_into(read):
         reads[read]={**cur, **body}
     return hook
 def list_into(reads, read, hit, body):
-    """ticket 69: a profile list read (LIST_READS) as OF keeps it: a path with an `id` group (DELETE .../{id}) removes
-    that item and answers the default success; a write's JSON body is appended as `{id: <next>, **body}` and the full
-    list answers (OF's PUT reply, the capture record's response_shape)."""
     cur=reads.get(read) if isinstance(reads.get(read), list) else []
     if "id" in hit.groupdict():
         reads[read]=[x for x in cur if str(x.get("id"))!=hit["id"]]; return None
     if isinstance(body, dict):
-        item=LIST_ITEM.get(read, lambda b: b)(body)   # ticket 70: OF's item shape, not the body's
+        item=LIST_ITEM.get(read, lambda b: b)(body)
         cur=[*cur, {"id": max((int(x["id"]) for x in cur), default=0)+1, **item}]
     reads[read]=cur
     return cur
@@ -501,7 +358,7 @@ def session(b, scope_js, reads, state, handoffs_ok):
     def handoff(route):
         handoffs.append(route.request.url); route.abort()
     allowed=lambda url: url in handoffs_ok
-    pg.context.route(allowed, handoff); pg.route(allowed, handoff)   # registered last: they run before the harness's
+    pg.context.route(allowed, handoff); pg.route(allowed, handoff)
     return pg, sent, gets, handoffs, errs
 def key_scan(pg, where):
     seen, unread=[], []
@@ -516,7 +373,6 @@ def load(pg, page):
     if fr: key_scan(pg, page)
     return fr
 def frame_of(pg, page, tries=60):
-    """The frame of `page` once loaded, after a click navigated the top URL (no reload of our own)."""
     want=f"/of-mirror/pages/{page}.html"
     for _ in range(tries):
         fr=[f for f in pg.frames if urlparse(f.url).path==want]
@@ -529,7 +385,6 @@ def frame_of(pg, page, tries=60):
 def element(fr, label):
     return fr.query_selector(label[4:]) if label.startswith("css=") else fr.evaluate_handle(FIND, label).as_element()
 def act(pg, fr, page, steps):
-    """The steps, openers included: (frame now, the last clicked control's phase_check STATE, problem or None)."""
     gated=bool(MODALISH.search(page)); last=None
     for step in steps:
         label=(step["open"] if "open" in step else step["press"]) if isinstance(step, dict) else step if isinstance(step, str) else step[0]
@@ -542,7 +397,7 @@ def act(pg, fr, page, steps):
             problem=pc.act(fr, [step])
             if problem: return fr, last, problem
             continue
-        if "open" not in step:   # tickets 61, 62: {"press": label}
+        if "open" not in step:
             last=fr.evaluate(f"(e) => ({STATE})(e)", el)
             try: el.press("Enter", timeout=5000)
             except Exception as e: return fr, last, f"press {label!r}: {str(e).splitlines()[0][:120]}"
@@ -564,14 +419,13 @@ def act(pg, fr, page, steps):
     return fr, last, None
 def poll(pg, fr, js, value):
     got=None
-    for _ in range(30):   # up to 3s: the binder's read-back lands
+    for _ in range(30):
         try: got=fr.evaluate(js)
         except Exception as e: got=f"error: {str(e).splitlines()[0][:80]}"
         if got==value: break
         pg.wait_for_timeout(100)
     return got
 def outcome(pg, fr, row, what, s, n, acct):
-    """The row's one outcome after its steps; returns the frame the row ends on."""
     sent, gets, handoffs=s["sent"], s["gets"], s["handoffs"]
     if "write" in row:
         settle(pg, sent, n["sent"], 1)
@@ -596,11 +450,11 @@ def outcome(pg, fr, row, what, s, n, acct):
         landed=urlparse(pg.url).path
         fr=frame_of(pg, page_of(landed)) if landed.startswith(M+"/") else None
         shown=fr.evaluate("(s) => [...document.querySelectorAll(s)].filter(e => e.checkVisibility()).length", row["rows"]) if fr else 0
-        path, params=row["get"] or (None, {})   # dead.py READS' match: that path, each named param with its value (others free)
+        path, params=row["get"] or (None, {})
         asked=path is None or any(g[0]==path and all(parse_qs(g[1]).get(k)==[v] for k, v in params.items()) for g in gets[n["gets"]:])
         check(f"{what}: lands on {row['land']}, GET {path} {params}, at least one row, nothing written",
               [landed, asked, shown>0, sent[n["sent"]:]], [row["land"], True, True, []])
-    elif "dom" in row:   # ticket 110
+    elif "dom" in row:
         js, value=row["dom"]
         got=poll(pg, fr, js, value)
         settle(pg, sent, n["sent"], 0)
@@ -612,13 +466,13 @@ def outcome(pg, fr, row, what, s, n, acct):
 def run_row(pg, row, what, s, acct, shot):
     fr=load(pg, row["page"])
     if not fr: return
-    if "dom" in row:   # ticket 110: the load's reads settle first (settle's quiet window, until no new GET), so a late
-        for _ in range(5):   # Relay GET of the page itself never counts as the browser-only control's request
+    if "dom" in row:
+        for _ in range(5):
             g=len(s["gets"]); settle(pg, s["gets"], g, 0)
             if len(s["gets"])==g: break
     n={k: len(v) for k, v in s.items()}
     fr.evaluate("document.getElementById('oi-note')?.remove()")
-    if row.get("prep"): fr.evaluate(row["prep"])   # ticket 68: phase_check's prep, on a row
+    if row.get("prep"): fr.evaluate(row["prep"])
     fr, last, problem=act(pg, fr, row["page"], row["steps"])
     check(f"{what}: steps run", problem, None)
     if problem: return
@@ -642,9 +496,6 @@ def run_row(pg, row, what, s, acct, shot):
         fr=load(pg, fresh)
         if fr: check(f"{what}: a fresh read serves the {phase}", poll(pg, fr, js, value), value)
 def by_reads(b, label, scope_js, rows, reads, state, handoffs_ok):
-    """tickets 60, 62: the pass's rows grouped by their own "reads", each group in a session of its own over the pass's
-    reads (the app keeps reads across loads, so one row's reads never reach another's); the group with none first, even
-    when empty. Yields (page, the session's records, [(i, row)], no own reads?)."""
     groups={"{}": []}
     for i, row in enumerate(rows, 1): groups.setdefault(json.dumps(row.get("reads") or {}, sort_keys=True), []).append((i, row))
     for key, mine in groups.items():
@@ -687,15 +538,13 @@ def run(b, t, records, reads, state):
     if t["proofs"] or t["requests"] or t["red_notes"]:
         pc.single(b, NAME, t, records, copy.deepcopy(reads), [(m, rx, merge_into(read)) for m, rx, read in state])
     handoffs_ok={r["handoff"] for r in t["rows"] if "handoff" in r}
-    titles_and_rows(b, t, records, reads, state, handoffs_ok)   # each session starts from a copy of the same reads
+    titles_and_rows(b, t, records, reads, state, handoffs_ok)
 def tables(plant, base=True):
-    """The Phase 3 tables (none with base=False) plus the plant's."""
     own=lambda x: x if base else []
     return {"proofs":[*own(phase3.PROOFS), *(Proof(**{"phase": 3, **p}) for p in plant.get("proofs", []))],
             "requests":[*own(REQUESTS), *plant.get("requests", [])], "red_notes":[*own(RED_NOTES), *plant.get("red_notes", [])],
             "titles":[*own(TITLES), *plant.get("titles", [])], "rows":[*own(ROWS), *plant.get("rows", [])]}
 def self_test(b):
-    """Each planted bad row fails; each planted good row passes."""
     rec=lambda page, control, verdict, reason="": {"label":control,"pages":[page],"proof":{"kind":"live","verdict":verdict,**({"reason":reason} if reason else {})}}
     toggle="css=label[for=setting_isAutoFollowBack]"
     on="document.getElementById('setting_isAutoFollowBack')?.checked ?? null"
@@ -708,7 +557,7 @@ def self_test(b):
     created=["POST","/api/of/v2/campaigns",{"name":"Synthetic link"}]
     lists={"/api/of/v2/campaigns":[{"id":7,"campaignCode":3,"campaignName":"Synthetic link","countSubscribers":2,"countTransitions":9,"createdAt":"2026-04-16T00:00:00+00:00","isDeleted":False}],
            "/api/of/v2/trials":[{"id":8,"trialLinkName":"Synthetic trial","url":"https://onlyfans.com/action/trial/synthetic","subscribeDays":7,"subscribeCounts":10,"claimCounts":3,"clicksCounts":12,"createdAt":"2026-06-11T00:00:00+00:00","isFinished":False}]}
-    cases=[   # (name, plant, a failure line it must give; None: it must pass)
+    cases=[
         ("a missing control fails", {"titles":[["settings/security","No such control"]]}, "'No such control': found"),
         ("a row reached by its modal URL fails", {"rows":[{"page":f"{tab}/modal-1","steps":create[1:],"write":created}]}, "reached by loading the modal URL"),
         ("a Live-proof pass with the Not-yet title still on fails", {"titles":[["settings/security","Blocked accounts"]],
@@ -744,7 +593,7 @@ def main():
         i=args.index("--captures"); captures=args[i+1]; del args[i:i+2]
     mode=args.pop(0) if args and args[0]=="--self-test" else None
     if args: sys.exit(f"settings_privacy.py: unknown arguments {args}")
-    if not os.path.isdir(captures): sys.exit(f"settings_privacy.py: {captures} is not a directory")   # a mistyped path never reads as clean
+    if not os.path.isdir(captures): sys.exit(f"settings_privacy.py: {captures} is not a directory")
     os.makedirs(pc.SHOTS, exist_ok=True)
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:

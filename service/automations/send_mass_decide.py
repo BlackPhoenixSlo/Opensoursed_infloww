@@ -1,20 +1,3 @@
-"""service/automations/send_mass_decide.py — the pure half of the A10 mass broadcast run.
-
-No DB, no OF, no clock: every function maps a payload + rows already read to a
-value. (Named without the sender's module name on purpose: test_audience_coverage
-scans for send-primitive tokens and this file sends nothing.) The A10 sender
-module owns the reads (funnel row, list members, opener media, the
-contact-guard resolution) and the effects (Auto_Exclude sync, mass_runs mint,
-the OF broadcast, per-recipient rows), in that order:
-
-    list_ids_of                      -> which DB lists to read
-    seed(payload, members...)        -> the pre-guard audience handed to resolve_mass_audience
-    plan(payload, funnel, resolved,  -> Plan | Skip   (dedupe, exclusions win, text, media)
-         list_ids, opener_media)
-    audience_filter(_json) / echoed_of -> the mass_runs audience JSON (one writer) / OF's per-fan echo
-    is_dry_run / dry_run_result      -> a `dry_run` payload's answer (O3: never sends,
-                                        returns who a real run would reach)
-"""
 from __future__ import annotations
 
 import json
@@ -25,23 +8,17 @@ from automations._pools import int_list
 
 
 def list_ids_of(payload: dict) -> tuple[list[int], list[int]]:
-    """(list_ids, exclude_list_ids) — our DB list ids whose members to read."""
     return int_list(payload.get("list_ids")), int_list(payload.get("exclude_list_ids"))
 
 
 def seed(payload: dict, list_members: list[int],
          exclude_members: list[int]) -> tuple[list[int], list[int]]:
-    """(included, excluded) before the contact guard: explicit fans + DB-list
-    members, explicit excludes + exclude-list members. Order kept, dups kept
-    (plan dedupes after the guard)."""
     included = int_list(payload.get("included_users") or payload.get("fan_ids"))
     excluded = int_list(payload.get("excluded_users"))
     return included + list(list_members), excluded + list(exclude_members)
 
 
 def opener_media_of(opening_media_ids: str | None) -> list[int]:
-    """A FunnelAccountMedia.opening_media_ids JSON -> its vault media ids;
-    unreadable JSON -> no media. (The opener has no preview slot of its own.)"""
     try:
         return int_list(json.loads(opening_media_ids or "[]"))
     except Exception:
@@ -50,7 +27,6 @@ def opener_media_of(opening_media_ids: str | None) -> list[int]:
 
 @dataclass(frozen=True)
 class Funnel:
-    """The funnel row fields the plan reads."""
     id: int
     opening_message: str | None
 
@@ -64,28 +40,26 @@ class Skip:
 class Plan:
     funnel_id: int | None
     text: str
-    recipients: list[int]          # known fans, deduped, order kept, excludes dropped
+    recipients: list[int]
     excl_set: frozenset[int]
     list_ids: list[int]
-    user_lists: list               # OF list names / ids, passed through
-    excluded_user_lists: list      # OF list names / ids, passed through
+    user_lists: list
+    excluded_user_lists: list
     online_only: bool
     filters: dict | None
-    price: object                  # passed through to OF + _to_cents
+    price: object
     media_files: list[int]
     previews: list[int]
     skipped_answered: list[int]
 
     @property
     def is_list_audience(self) -> bool:
+        # Mass Online: OF resolves the audience server-side, so online_only/filters count with no explicit recipients.
         return bool(self.user_lists or self.online_only or self.filters)
 
 
 def plan(payload: dict, *, funnel: Funnel | None, resolved: dict,
          list_ids: list[int], opener_media: list[int]) -> Plan | Skip:
-    """The broadcast to make, from the payload, the funnel row,
-    resolve_mass_audience's output and the model's opener media (read only for
-    a funnel send with no explicit media) — or why there is none."""
     excl_set = set(resolved["excluded_users"])
     seen: set[int] = set()
     recipients: list[int] = []
@@ -97,8 +71,6 @@ def plan(payload: dict, *, funnel: Funnel | None, resolved: dict,
 
     user_lists = payload.get("user_lists") or []
     excluded_user_lists = payload.get("excluded_user_lists") or []
-    # Mass Online: OF resolves the audience server-side, so online_only/filters
-    # count as an audience even with no explicit recipients/user_lists.
     online_only = bool(payload.get("online_only"))
     filters = payload.get("filters") if isinstance(payload.get("filters"), dict) else None
     text = payload.get("text") or (funnel.opening_message if funnel else None)
@@ -107,8 +79,6 @@ def plan(payload: dict, *, funnel: Funnel | None, resolved: dict,
     if not recipients and not user_lists and not online_only and not filters:
         return Skip("empty_audience")
 
-    # No explicit media but a funnel send → the model's per-account opener media
-    # (vault ids are per-account; the funnel only holds shared text).
     media_files = int_list(payload.get("media_files"))
     if not media_files and funnel is not None:
         media_files = list(opener_media)
@@ -132,16 +102,6 @@ def plan(payload: dict, *, funnel: Funnel | None, resolved: dict,
 def audience_filter_json(*, user_lists, included_users, excluded_users,
                          excluded_user_lists, online, filters, list_ids=(),
                          ref=None, fence: bool = False, auto_exclude=None) -> str:
-    """The one writer of `mass_runs.audience_filter` (this send and the Composer's
-    POST /messages/queue); key order is the stored shape. Readers assume who
-    received the send from it. OF has no per-user exclusion field for a list
-    audience, so every excluded id rides in an OF list: `auto_exclude` names the
-    Auto_Exclude list among `excluded_user_lists` (its members are
-    `excluded_users`). `unresolved_exclude_lists`: the other excluded lists
-    (AUTOFENCE, operator-picked), whose members this row does not record. An
-    explicit-ids send has none: both writers subtract its excluded lists'
-    members from `included_users` before the POST
-    (`audiences.drop_exclude_list_members`)."""
     explicit = bool(included_users) and not (user_lists or online or filters)
     unresolved = [x for x in (excluded_user_lists or [])
                   if not explicit and str(x) != str(auto_exclude)]
@@ -153,7 +113,6 @@ def audience_filter_json(*, user_lists, included_users, excluded_users,
         "ref": str(ref) if ref else None,
         "excluded_user_lists": list(excluded_user_lists or []),
         "fence": bool(fence),
-        # OF resolves an online / filtered audience itself.
         "online": bool(online),
         "filters": bool(filters),
         "auto_exclude_list": auto_exclude,
@@ -162,9 +121,6 @@ def audience_filter_json(*, user_lists, included_users, excluded_users,
 
 
 def audience_filter(p: Plan, *, ref, fence: bool, auto_exclude=None) -> str:
-    """`audience_filter_json` of the post-fence plan: recipients after the
-    include-only intersection, excluded_user_lists with the AUTOFENCE /
-    Auto_Exclude ids."""
     return audience_filter_json(
         user_lists=p.user_lists, included_users=p.recipients,
         excluded_users=sorted(p.excl_set), excluded_user_lists=p.excluded_user_lists,
@@ -173,8 +129,6 @@ def audience_filter(p: Plan, *, ref, fence: bool, auto_exclude=None) -> str:
 
 
 def echoed_of(result) -> list[tuple[int, int]]:
-    """(fan_id, message_id) for each per-fan message OF echoed back, in order;
-    malformed entries dropped."""
     msgs = result.get("messages") if isinstance(result, dict) else None
     if not isinstance(msgs, list):
         return []
@@ -192,18 +146,10 @@ def echoed_of(result) -> list[tuple[int, int]]:
 
 
 def is_dry_run(payload: dict) -> bool:
-    """O3: a `dry_run` payload never sends: no lock, no OF list write, no mint,
-    no rows. It answers who the same payload would reach now."""
     return bool(payload.get("dry_run"))
 
 
 def dry_run_result(p: Plan) -> dict:
-    """A dry run's stats. An explicit audience answers `p.recipients` (plan
-    already dropped the guard / excludes, the include fence intersected it).
-    `would_send` None = an audience nothing here resolves, `reason` says which,
-    never a partial list: a list / online / filtered one (OF resolves it, its
-    rosters are never read) or an explicit one with OF `excluded_user_lists`
-    (OF verifies those on list audiences only; never read here)."""
     reason = None
     if p.is_list_audience:
         reason = "online_or_filtered" if p.online_only or p.filters else "list_audience"

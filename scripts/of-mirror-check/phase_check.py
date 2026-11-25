@@ -1,73 +1,9 @@
-"""phase_check: the shared harness of a Phase's in-app Mirror check (content_writes.py for Phase 2, golive.py for Phase
-4). A Phase file holds only its tables and calls run(); the harness is writes.py's and collections_writes.py's.
-
-Mocks the login (as writes.py, the Single-Creator card "Tim"), /admin/accounts with acc1 and 1, both with a session
-(one_creator's: acc0 with a dead session first), GET /api/of/v2/users/me (synthetic),
-the Phase's `reads` (GET path -> JSON), the OFM_NEW_WRITES_ENABLED probe GET /api/of/ofm-writes answered on (as
-of-live-proof's prove.py runs the Relay; a session's `switch` False: 404, the switch off) and [] for every other GET /api/**. Every non-GET /api/** and /admin/** request is
-recorded as [method, path, X-Account-Id, JSON body] and answered {"success": true}, after the Phase's `after` hooks
-((method, path regex, fn(reads, match, body))) changed `reads`, so the write's read-back shows what it changed; a hook
-that returns a dict or list answers the write with it instead (an upload's claim). A multipart body is recorded as
-{part name: text, or for a file part {"type": its content type, "ext": its file name's extension}} (a recording's
-name carries a timestamp). The Phase's `init` script, when given, runs in every page and frame before its own. Any
-request to a host other than localhost is aborted and fails the check. Prints one {"check","want","got"} line per check;
-exit 1 on a failure. Screenshots: /tmp/of-mirror-shots/inapp-<name>-*.png only.
-
-Tables (plain lists and dicts, so a JSON plant reads like the Phase file's own rows):
-  proofs        the Phase's proof list (scripts/of-live-proof/proofs/phase<N>.py PROOFS), its control list: check 1,
-                runtime state only (D18), Single Creator (scope `model:1`): each proof has exactly one capture record,
-                found as `proof_list.py --check-sweep` finds it (label == control, page in pages); its control (the
-                visible element whose Not-yet sweep label, sweep_diff.LABEL_JS, is `control`) is found and Wired
-                (data-oi-wired on it or a part of it; a checkbox inside a mark; a label whose field has it); with that record's Live-proof pass
-                (proof_list.live_passed) it has no Not-yet title, else it still has it (D1). `views` (ticket 33): {proof
-                id: page with a query} opens that proof's page with the query (a control drawn only on data, e.g. an
-                own bubble's, absent from the bare page). A `never-titled` proof
-                (ticket 35): each label of its joined `control` found, Wired or a State page opener (a link to another
-                /of-manager page, whose Wired controls are there), and untitled whatever the pass. An
-                `ofm_new_writes` proof (proof_core OFM_NEW_WRITES): also, in a pass of its own with
-                OFM_NEW_WRITES_ENABLED off (GET /api/of/ofm-writes answered 404, as the Relay's switch off), its
-                control is found, not Wired and keeps the Not-yet title, and that pass sends nothing; one with a
-                `views` page (a control the app draws from data, which main never drew: ticket 33's own-bubble
-                extras) is opened there and must not be drawn at all, once that page's anchor is drawn: `anchors`
-                {proof id: CSS selector} (default ANCHORS by the page's path: messages/chat, an own bubble), an
-                element main draws there from the same data, so a page that drew nothing never reads as absent;
-                no anchor declared or none drawn within 5 s fails.
-  requests      {"page", "steps", "want": [[method, path, body]] | "proof": id, "fill": {...}}: Single Creator; the
-                steps send exactly `want`, or the proof's capture record's request with `fill` applied, each with
-                X-Account-Id "1"; "page" defaults to the proof's; "after": [js, value] checks the read-back;
-                "opens": "/of-manager/<path>[?query]" checks the steps took the app there (a State page opener).
-  red_notes     {"page", "steps", "fail": [method, path], "status": 502, "note"?, "kept"?: js}: Single Creator; with
-                that write answered `status`, #oi-note shows red (#ff4545), its text `note` when given, and the `kept`
-                expression reads the same before and after (the page stays in its last saved state). "fail" may be
-                left out (the note comes from the page, e.g. a refused camera); "sent": [[method, path, body]] checks
-                exactly those writes went out during the row (with X-Account-Id "1"; [] = nothing sent). "reads"
-                (GET path -> JSON, ticket 60): served for this row only, over the pass's (with_reads). "body" (ticket
-                63): the failed answer's JSON, default {"detail": "synthetic failure"} (e.g. OF's session-lost answer).
-A row's "prep" (requests, red_notes): a JS expression run in the frame before its steps, and before a red_notes row's
-"kept" is read (e.g. a refusing getUserMedia, or a seeded draft).
-A step is a control's label (clicked) or [label, text] (typed into it); a label "css=<selector>" names a field the
-sweep labels only by its tag or classes. A row's "page" may carry a query ("messages/chat/state-price?chat=9001"),
-loaded with it. run()'s `pages` ({page: landmark}, a landmark being a step's label): each page loaded in Single Creator
-whatever the tables hold, its landmark shown (a 404 or blank page fails); with no rows and no `pages`, the pass loads
-home/index. No console errors.
-No All-Creators pass: OF Manager has no All creators (owner 2026-11-20). one_creator instead: with a saved "all" scope
-OF Manager shows one Creator (OneCreator, app/components/of-manager/OfManagerChrome.tsx: the first with a live session),
-unsaved, so home/index (not a stand-in page, app/lib/ofMirrorProfile.ts STAND_IN_SRC) posts as acc1. It runs once:
-run(..., one_creator_pass=True) from golive.py only (the cheapest Phase check).
-
---plant <file.json> adds proofs ({"proofs": [{"id", "page", "control", "kind", "phase"?}]}, phase 2 unless given),
-rows ({"requests", "red_notes", "handoffs"}), capture records ({"records": {file name: record}}, replacing a capture file of that name) and an "init"
-script (run after the Phase's, e.g. to mark a control Wired) to the Phase's, to show a check fails; --captures <dir>
-reads the records from <dir> instead of docs/of-manager/captures.
-"""
 import copy, json, os, re, sys
 from pathlib import Path
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 HERE=os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-# Every import below is stdlib only (the check runs under python3 -I). proof_list/capture_record push of-live-proof to
-# the front of sys.path when imported, so a same-named module in of-mirror-check would be shadowed: keep names distinct.
 sys.path.append(os.path.join(os.path.dirname(HERE), "of-live-proof"))
 from proof_core import fill  # noqa: E402
 from proof_core import Proof  # noqa: E402
@@ -81,17 +17,13 @@ ROOT=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CAPTURES=os.path.join(ROOT,"docs","of-manager","captures")
 LOCAL=("localhost","127.0.0.1")
 NOT_YET="Not available in Inflowwww yet"
-OFM_WRITES="/api/of/ofm-writes"   # app/lib/ofMirrorNewWrites.ts OFM_WRITES_PATH: {"on": true} only with the switch on
-RED="rgb(255, 69, 69)"   # ofMirrorWrites.note(..., error=true): #ff4545
+OFM_WRITES="/api/of/ofm-writes"
+RED="rgb(255, 69, 69)"
 SINGLE, SINGLE_ID="model:1", "1"
-STAND_IN="acc1"           # one_creator: the first mocked account with a live session
+STAND_IN="acc1"
 user={"user_id":"u1","username":"tester","is_admin":False}
 NOTE="document.getElementById('oi-note')?.textContent ?? null"
 NOTE_COLOR="document.getElementById('oi-note')?.style.color ?? null"
-# The control by its Not-yet sweep label (sweep_diff.LABEL_JS, dead.py's own):
-# ASSUMPTION: the first visible match in document order is the control, a real control (button, field, link) before a
-# titled wrapper (rung 5); overturned by a Phase 2 page with two visible controls of one label, which then needs a
-# selector column in its table.
 FIND=r"""(want) => {
   const vis = (e) => { const r = e.getBoundingClientRect(); return e.checkVisibility({ checkVisibilityCSS: true }) && r.width > 0 && r.height > 0; };
   const label = """+LABEL_JS+r""";
@@ -112,11 +44,9 @@ def url_of(page):
     section, _, sub=page.partition("/")
     return f"{M}/{section}" + ("" if sub=="index" else f"/{sub}") + (f"?{query}" if query else "")
 def from_record(rec, values=None):
-    """[method, Relay path, body] of a capture record's request: OF's /api2/v2/<p> is the Relay's /api/of/v2/<p> (spec Contracts)."""
     req=rec["request"]; values=values or {}
     return [req["method"], "/api/of/v2/"+fill(req["path"], values).split("/api2/v2/",1)[1], fill(req.get("body"), values)]
 def multipart(req):
-    """A multipart body as {part name: text | {"type", "ext"}} (stdlib email parser, as post_upload.py), else None."""
     ctype=req.headers.get("content-type") or ""
     if not ctype.startswith("multipart/form-data"): return None
     from email.parser import BytesParser
@@ -129,7 +59,6 @@ def multipart(req):
     return out
 ACCOUNTS=[{"id":"acc1","nickname":"Model One","has_session":True},{"id":"1","nickname":"Model Two","has_session":True}]
 def session(b, scope_js, reads, after, fail, init="", gets=None, switch=True, accounts=ACCOUNTS):
-    # ticket 57: `gets` (a list), when given, records every GET /api/** as dead.py does: (path, query, X-Account-Id).
     ctx=b.new_context(viewport={"width":1440,"height":900})
     ctx.add_init_script(scope_js)
     if init: ctx.add_init_script(init)
@@ -142,16 +71,12 @@ def session(b, scope_js, reads, after, fail, init="", gets=None, switch=True, ac
     def mock(route):
         req=route.request; u=req.url; path=urlparse(u).path
         if foreign(u): return outside(route)
-        if gets is not None and req.method=="GET" and path.startswith("/api/"): gets.append((path, urlparse(u).query, req.headers.get("x-account-id")))  # ticket 57
+        if gets is not None and req.method=="GET" and path.startswith("/api/"): gets.append((path, urlparse(u).query, req.headers.get("x-account-id")))
         if req.method!="GET" and (path.startswith("/api/") or path.startswith("/admin/")):
             body=multipart(req)
             if body is None:
                 try: body=req.post_data_json if req.post_data else None
-                except Exception: body=req.post_data  # not JSON: its raw text
-            # ASSUMPTION: the app's own perf telemetry (POST /admin/perflog/ingest, every page load) is no write and is not
-            # recorded (rung 5); overturned if a Phase 2 control is meant to write under /admin/perflog.
-            # ASSUMPTION (ticket 30): the app's view lease (POST /admin/view-lease, app/lib/viewLease.ts, a heartbeat while a
-            # page stays open) is no write either and is not recorded (rung 5); overturned likewise.
+                except Exception: body=req.post_data
             if not (path.startswith("/admin/perflog/") or path=="/admin/view-lease"): sent.append([req.method, path, req.headers.get("x-account-id"), body])
             if fail.get("route")==[req.method, path]:
                 return route.fulfill(status=fail["status"], content_type="application/json", body=fail.get("body", '{"detail":"synthetic failure"}'))
@@ -160,7 +85,7 @@ def session(b, scope_js, reads, after, fail, init="", gets=None, switch=True, ac
                 if m==req.method and (hit:=re.fullmatch(rx, path)):
                     if isinstance(got:=fn(reads, hit, body), (dict, list)): answer=got
             return route.fulfill(status=200, content_type="application/json", body=json.dumps(answer))
-        if req.method=="GET" and path==OFM_WRITES:   # the switch's probe: on, else the Relay's 404 (switch off)
+        if req.method=="GET" and path==OFM_WRITES:
             return route.fulfill(status=200 if switch else 404, content_type="application/json", body=json.dumps({"on": True} if switch else {"detail": "Not Found"}))
         if req.method=="GET" and path in reads:
             return route.fulfill(status=200, content_type="application/json", body=json.dumps(reads[path]))
@@ -171,20 +96,15 @@ def session(b, scope_js, reads, after, fail, init="", gets=None, switch=True, ac
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     pg.on("dialog", lambda d: d.accept())
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     pg.on("pageerror", lambda e: errs.append(f"uncaught: {e}"))
     return pg, sent, errs
 def drop_cache(pg):
-    """ticket 60: the app's persisted React Query snapshot (IndexedDB `chatterly-rq`, app/lib/rqPersister.ts) deleted
-    from a static same-origin page, the app closed, so the next load fetches its reads instead of restoring them fresh."""
     pg.goto(f"{BASE}/of-mirror/pages/home/index.html", wait_until="load", timeout=90000)
     pg.evaluate("() => new Promise(r => { const q = indexedDB.deleteDatabase('chatterly-rq'); q.onsuccess = q.onerror = q.onblocked = () => r(); })")
 def with_reads(reads, extra, pg=None):
-    """ticket 60: a row's own reads (GET path -> JSON) put over the pass's `reads` (the session's dict); returns the
-    function that puts the pass's back, so a row's state never leaks into the next row. With `pg`, the app's persisted
-    reads are dropped both times (drop_cache): a restored `/users/me` would hide the row's own."""
     saved={k: reads[k] for k in extra if k in reads}
     reads.update(copy.deepcopy(extra))
     if extra and pg: drop_cache(pg)
@@ -195,7 +115,6 @@ def with_reads(reads, extra, pg=None):
         if extra and pg: drop_cache(pg)
     return restore
 def open_page(pg, page):
-    """The page's /of-manager URL loaded (sessionStorage cleared, the "Tim" card picked); its frame once bound, or None."""
     if urlparse(pg.url).hostname in LOCAL: pg.evaluate("sessionStorage.clear()")
     pg.goto(f"{BASE}{url_of(page)}", wait_until="load", timeout=90000)
     want=f"/of-mirror/pages/{page.partition('?')[0]}.html"
@@ -205,23 +124,19 @@ def open_page(pg, page):
         fr=[f for f in pg.frames if urlparse(f.url).path==want]
         try:
             if fr and fr[0].evaluate("document.readyState")=="complete":
-                pg.wait_for_timeout(800)  # the binders run on the frame's load; the mocked reads land
+                pg.wait_for_timeout(800)
                 return fr[0]
         except Exception: pass
         pg.wait_for_timeout(250)
     failures.append(f"{page}: NO IFRAME (url {pg.url})"); return None
 def locate(fr, label):
-    """A step label's element on the frame (FIND, or the "css=" selector's first match), or None."""
     return fr.query_selector(label[4:]) if label.startswith("css=") else fr.evaluate_handle(FIND, label).as_element()
 def landmark(scope, pg, page, label):
     fr=open_page(pg, page)
     check(f"{scope}: {page} shows {label!r}", fr is not None and (el:=locate(fr, label)) is not None and el.is_visible(), True)
 def act(fr, steps):
-    """Each step on the frame: a label clicked, [label, text] typed. None, or the first step that could not run."""
     for step in steps:
         label, text=(step, None) if isinstance(step, str) else step
-        # Up to 5s for the control to be in the DOM, as click/fill wait for a drawn one (Playwright's auto-wait). Home's
-        # recorder no longer waits on a fetch after the click (ofMirrorComposer prefetchRecorder, at bind).
         for _ in range(50):
             if (el:=locate(fr, label)) is not None: break
             fr.page.wait_for_timeout(100)
@@ -233,7 +148,6 @@ def act(fr, steps):
         fr.page.wait_for_timeout(300)
     return None
 def settle(pg, sent, n, want):
-    """Up to 1.5s for the row's writes (1s when it wants none), then the follow-ups' 300ms."""
     for _ in range(15 if want else 10):
         if want and len(sent)>=n+want: break
         pg.wait_for_timeout(100)
@@ -241,29 +155,23 @@ def settle(pg, sent, n, want):
 def shot(pg, name, i, page):
     pg.screenshot(path=f"{SHOTS}/inapp-{name}-{i:02d}-{re.sub(r'[/?=&]', '-', page)}.png")
 def console(label, errs, statuses):
-    # ASSUMPTION: the browser's own "Failed to load resource" line for a status a red-note row planted is that row's
-    # doing, not a page error (rung 5); overturned if a reviewer wants those rows to assert the line instead.
     planted=[e for e in errs if not any(f"status of {s}" in e and e.startswith("Failed to load resource") for s in statuses)]
     check(f"{label}: no console errors", [e[:160] for e in planted][:8], [])
 def single(b, name, t, records, reads, after, init="", pages=None):
-    """records: [(file name, record)], as proof_list reads a captures folder."""
     fail={}
     pg, sent, errs=session(b, f"localStorage.setItem('chatterly:scope','{SINGLE}')", reads, after, fail, init)
     n_shot=0
-    view=lambda p: t["views"].get(p.id, p.page)   # ticket 33
+    view=lambda p: t["views"].get(p.id, p.page)
     for page in dict.fromkeys(view(p) for p in t["proofs"]):
         fr=open_page(pg, page)
         if not fr: continue
         for proof in [p for p in t["proofs"] if view(p)==page]:
             _, rec, problem=record_of(proof, records)
             check(f"{proof.id}: one capture record", problem, None)
-            if NEVER_TITLED in proof.tags:   # ticket 35: each joined label, never titled, pass or not
+            if NEVER_TITLED in proof.tags:
                 for label in proof.control.split(NEVER_TITLED_SEP):
                     found, wired, titled=fr.evaluate(f"(want) => ({STATE})(({FIND})(want))", label)
                     href=fr.evaluate(f"(want) => ({FIND})(want)?.closest('a[href]')?.getAttribute('href') ?? null", label)
-                    # A State page opener (dead.py's kind "link") is not Wired itself: its Wired controls are on the
-                    # page it opens (post.py, and the proof's own trigger steps), so it counts only when it opens one
-                    # of the proof's own ("frame", page) steps. Every other proof keeps the plain Wired check below.
                     opener=href in {url_of(s[1]) for s in proof.trigger if s[0]=="frame"}
                     check(f"{proof.id} {page} {label!r}: found, Wired or a State page opener ({href}), never Not-yet titled",
                           [found, wired or opener, titled], [True, True, False])
@@ -291,23 +199,23 @@ def single(b, name, t, records, reads, after, init="", pages=None):
         check(f"{row['page']} {row['steps']}: sends exactly the capture's request with X-Account-Id {SINGLE_ID}",
               sent[n:], [[m, p, SINGLE_ID, body] for m, p, body in want])
         if row.get("opens"):
-            for _ in range(30):   # up to 3s: the opener's navigation lands
+            for _ in range(30):
                 if (u:=urlparse(pg.url)).path+(f"?{u.query}" if u.query else "")==row["opens"]: break
                 pg.wait_for_timeout(100)
             check(f"{row['page']} {row['steps']}: opens {row['opens']}", u.path+(f"?{u.query}" if u.query else ""), row["opens"])
         if row.get("after"):
             js, value=row["after"]
-            for _ in range(30):   # up to 3s: the binder's read-back request lands
+            for _ in range(30):
                 if (got:=fr.evaluate(js))==value: break
                 pg.wait_for_timeout(100)
             check(f"{row['page']} {row['steps']}: read-back {js}", got, value)
         n_shot+=1; shot(pg, name, n_shot, row["page"])
     for row in t["red_notes"]:
-        restore=with_reads(reads, row.get("reads", {}), pg)   # ticket 60
+        restore=with_reads(reads, row.get("reads", {}), pg)
         fr=open_page(pg, row["page"])
         if not fr: restore(); continue
         if row.get("fail"): fail.update(route=list(row["fail"]), status=row.get("status", 502))
-        if "body" in row: fail["body"]=json.dumps(row["body"])   # ticket 63: e.g. a session-lost answer
+        if "body" in row: fail["body"]=json.dumps(row["body"])
         what=f"{row['page']} {row['steps']} ({row['fail'][0]} {row['fail'][1]} -> {fail['status']})" if row.get("fail") else f"{row['page']} {row['steps']} (no write failed)"
         if row.get("prep"): fr.evaluate(row["prep"])
         kept=fr.evaluate(row["kept"]) if row.get("kept") else None
@@ -329,32 +237,21 @@ def single(b, name, t, records, reads, after, init="", pages=None):
         landmark("single creator", pg, page, label)
         n_shot+=1; shot(pg, name, n_shot, page)
     if not (t["proofs"] or t["requests"] or t["red_notes"] or pages):
-        # ASSUMPTION: with empty tables the pass still loads one page, so the harness and the console check run on
-        # today's pages (rung 5); overturned once the tables hold rows (then their pages are the ones loaded).
         check("single creator: home/index frame loads", open_page(pg, "home/index") is not None, True)
         shot(pg, name, 0, "home/index")
     console("single creator", errs, {r.get("status", 502) for r in t["red_notes"] if r.get("fail")})
     print("single creator relay writes:", sent)
     pg.context.close()
-# switch_off's positive anchor for a `views` proof, by its page's path (run's `anchors` overrides per proof id): an
-# element main draws on that page from the same data (an own bubble, ofMirrorDataChats bubbleClass), so "not drawn" means
-# the switch hid the control, not that the page drew nothing.
 ANCHORS={"messages/chat": ".b-chat__message.m-from-me[data-oi-msg]"}
 ANCHOR_WAIT_MS=5000
 def anchor_of(t, proof):
-    """The CSS selector `proof`'s views page must draw before its control is checked absent, or None."""
     return t["anchors"].get(proof.id) or ANCHORS.get(t["views"][proof.id].partition("?")[0])
 def anchored(fr, sel):
-    """`sel` drawn on the frame within ANCHOR_WAIT_MS (the mocked reads land after load)."""
     for _ in range(ANCHOR_WAIT_MS//100):
         if fr.query_selector(sel) is not None: return True
         fr.page.wait_for_timeout(100)
     return False
 def switch_off(b, name, t, reads, after, init=""):
-    """Single Creator with OFM_NEW_WRITES_ENABLED off: each `ofm_new_writes` proof's control found, not Wired, its
-    Not-yet title kept (main's state), or with a `views` page not drawn at all (main had none, ticket 33); no Relay write.
-    ASSUMPTION: a `views` proof's control is one main never drew (rung 5); overturned by a views proof of a control
-    main drew disabled, which then needs its own flag."""
     gated=[p for p in t["proofs"] if OFM_NEW_WRITES in p.tags]
     if not gated: return
     pg, sent, errs=session(b, f"localStorage.setItem('chatterly:scope','{SINGLE}')", copy.deepcopy(reads), after, {}, init, switch=False)
@@ -374,13 +271,11 @@ def switch_off(b, name, t, reads, after, init=""):
     check("single creator, OFM_NEW_WRITES_ENABLED off: no Relay write", sent, [])
     console("single creator, OFM_NEW_WRITES_ENABLED off", errs, {404})
     pg.context.close()
-# one_creator: acc0 listed first with a dead session, so the stand-in is the first with a live one (acc1), not the first.
 ONE_ACCOUNTS=[{"id":"acc0","nickname":"Model Zero","has_session":True,"session_dead_at":"2026-01-01T00:00:00Z"}, *ACCOUNTS]
-ONE_PAGE="home/index"   # not a stand-in page (STAND_IN_SRC): its Post going out as acc1 is OneCreator's doing
+ONE_PAGE="home/index"
 ONE_STEPS=[["css=[contenteditable][aria-label='Textbox field']", "Synthetic post"], "css=button[at-attr='submit_post']"]
 ONE_WANT=[["POST", "/api/of/v2/posts", STAND_IN, {"text":"Synthetic post","media_files":[],"price":0}]]
 def one_creator(b, name, reads):
-    """A saved "all" scope: OF Manager shows one Creator, the first with a live session (acc1), and never saves it."""
     pg, sent, errs=session(b, "localStorage.setItem('chatterly:scope','all')", reads, [], {}, accounts=ONE_ACCOUNTS)
     fr=open_page(pg, ONE_PAGE)
     if fr:
@@ -404,39 +299,33 @@ def run(name, proofs=(), requests=(), red_notes=(), reads=None, after=(), argv=N
     if args: sys.exit(f"{name}: unknown arguments {args}")
     t={"proofs":[*proofs, *(Proof(**{"phase": 2, **p}) for p in plant.get("proofs", []))], "requests":[*requests, *plant.get("requests", [])],
        "red_notes":[*red_notes, *plant.get("red_notes", [])], "views":dict(views or {}), "anchors":dict(anchors or {}),
-       "handoffs":[*handoffs, *plant.get("handoffs", [])]}   # ticket 42
-    if not os.path.isdir(captures): sys.exit(f"{name}: {captures} is not a directory")   # a mistyped path never reads as clean
+       "handoffs":[*handoffs, *plant.get("handoffs", [])]}
+    if not os.path.isdir(captures): sys.exit(f"{name}: {captures} is not a directory")
     records, bad=load_records(Path(captures))
     check("capture records are valid JSON", bad, [])
-    planted=plant.get("records", {})   # a planted record replaces the capture file of the same name
+    planted=plant.get("records", {})
     records=[r for r in records if r[0] not in planted]+list(planted.items())
     os.makedirs(SHOTS, exist_ok=True)
     reads={"/api/of/v2/users/me": {"id":1,"username":"alphaone","name":"Alpha One"}, **(reads or {})}
     init="\n".join(x for x in (init, plant.get("init", "")) if x)
     with sync_playwright() as p:
         b=p.chromium.launch()
-        single(b, name, t, records, copy.deepcopy(reads), list(after), init, pages)   # each pass starts from the Phase's reads
-        switch_off(b, name, t, copy.deepcopy(reads), list(after), init)   # not single's reads: its rows' hooks changed them
+        single(b, name, t, records, copy.deepcopy(reads), list(after), init, pages)
+        switch_off(b, name, t, copy.deepcopy(reads), list(after), init)
         if one_creator_pass: one_creator(b, name, copy.deepcopy(reads))
-        if t["handoffs"]: handoff_rows(b, name, t["handoffs"], reads, list(after), init)   # ticket 42
+        if t["handoffs"]: handoff_rows(b, name, t["handoffs"], reads, list(after), init)
     if failures:
         print("FAIL:", *failures, sep="\n  "); sys.exit(1)
     print(f"{name} ok")
 
-# ticket 42: hand-off rows (D22, a Report that opens onlyfans.com; settings_privacy.py's check, as a table).
-#   handoffs  {"page", "steps", "handoff": url, "text", "reads"?: {GET path: JSON}}: the steps but the last run; the
-#             last names the hand-off, an <a> with href == url, target _blank, rel noopener noreferrer, data-oi-wired,
-#             title HANDOFF_TITLE, not aria-disabled, its text `text`; clicking it opens a popup to exactly url (recorded
-#             and aborted: no load), sends nothing. Single Creator. Screenshots: the open menu (trigger) and the page
-#             after the click (end state).
-HANDOFF_TITLE="opens onlyfans.com"   # app/lib/ofMirrorHandoffs.ts HANDOFF_TITLE
+HANDOFF_TITLE="opens onlyfans.com"
 HANDOFF_ATTRS="(a) => [a.tagName, a.href, a.target, a.rel, a.hasAttribute('data-oi-wired'), a.title, a.getAttribute('aria-disabled'), a.textContent.trim()]"
 def handoff_rows(b, name, rows, reads, after, init=""):
     scope="single creator"
     r_reads=copy.deepcopy(reads)
     pg, sent, errs=session(b, f"localStorage.setItem('chatterly:scope','{SINGLE}')", r_reads, after, {}, init)
     urls={r["handoff"] for r in rows}; opened=[]
-    def handoff(route):   # registered after session()'s `outside`, so it runs first, for the rows' URLs only
+    def handoff(route):
         opened.append(route.request.url); route.abort()
     pg.context.route(lambda u: u in urls, handoff)
     for i, row in enumerate(rows, 1):
@@ -453,7 +342,7 @@ def handoff_rows(b, name, rows, reads, after, init=""):
         if el:
             try: el.click(timeout=5000)
             except Exception as e: failures.append(f"{what}: click: {str(e).splitlines()[0][:120]}")
-        for _ in range(20):   # up to 2s: the popup's request lands
+        for _ in range(20):
             if len(opened)>h: break
             pg.wait_for_timeout(100)
         pg.wait_for_timeout(300)

@@ -1,20 +1,3 @@
-"""OF's dark mode in the mirror follows our theme (app/lib/ofMirrorTheme.ts).
-
-For each theme (`chatterly:theme` in localStorage, as useTheme persists it) opens home,
-messages/chat, settings/fans and settings/display and checks the frame's <html> has
-`m-mode-dark` exactly when ours is dark, with OF's body background to match, and had it
-already when the parser finished (readyState "interactive") and at DOMContentLoaded, before
-any load event, where only the generator's boot script can have set it (no light first paint;
-recorded by a script a route puts first in each mirror page's <head>);
-then, on display, OF's "Dark mode" switch flips our theme and the frame with it.
-Live first-paint proof, in dark: a CDP screencast (every frame) runs from navigation start until
-the mirror frame has loaded, for each page; every frame after the <iframe> element exists must have
-a mean luminance under 0.4 inside the frame's box (Pillow decodes the PNGs; without it, a canvas
-in a throwaway page does). And over the whole viewport (our dark grey chrome included), for every
-frame from navigation start: each frame's mean luminance must be at most the page's steady state
-(a screenshot once loaded) + 0.1, and under 0.4.
-Screenshots: /tmp/of-mirror-shots/{dark,light}-<page>.png. Exit 1 on a failed check.
-"""
 import base64, io, json, os, sys
 from playwright.sync_api import sync_playwright
 BASE=f"http://localhost:{os.environ.get('PORT','3091')}"
@@ -31,15 +14,11 @@ def mock(route):
     u=route.request.url
     if "/auth/me" in u: body=json.dumps(user)
     elif "/admin/employees" in u: body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]})
-    elif u.split("?")[0].endswith("/admin/accounts"): body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}'  # creators: none shows OfNotHaveModel
+    elif u.split("?")[0].endswith("/admin/accounts"): body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}'
     elif "/chatter/me/accounts" in u: body="[]"
     elif "/chatter/me" in u: body="null"
     else: body="[]"
     route.fulfill(status=200, content_type="application/json", body=body)
-# In every mirror page, first in its <head> (put in by a route on the page's HTML): the <html> class when the parser
-# finishes (readyState "interactive", before DOMContentLoaded and load) and at DOMContentLoaded, on the page's own
-# document. Not an init script: the frame's page reuses the window of its initial about:blank, where alone Playwright
-# runs init scripts, and window listeners added there recorded nothing on home, fans and display (measured 2026-11-21).
 BOOT="""<script>
 document.addEventListener('readystatechange', () => { if (document.readyState === 'interactive') window.__ofInteractiveClass = document.documentElement.className; });
 document.addEventListener('DOMContentLoaded', () => { window.__ofBootClass = document.documentElement.className; });
@@ -47,7 +26,6 @@ document.addEventListener('DOMContentLoaded', () => { window.__ofBootClass = doc
 def inject_boot(route):
     r=route.fetch()
     route.fulfill(status=r.status, content_type=r.headers.get("content-type"), body=r.text().replace("<head>", "<head>"+BOOT, 1))
-# In the app page: when (epoch ms, as the screencast's timestamps) the mirror <iframe> element first exists.
 IFRAME_SEEN="""
 if (window.top === window) new MutationObserver((_, o) => {
   if (!document.querySelector('iframe[src*="/of-mirror/"]')) return;
@@ -55,13 +33,12 @@ if (window.top === window) new MutationObserver((_, o) => {
 }).observe(document, {childList: true, subtree: true});
 """
 LIGHT=0.4
-FLASH=0.1  # full viewport: allowed rise over the loaded page's luminance
+FLASH=0.1
 try:
     from PIL import Image, ImageStat
 except ImportError:
     Image=None
 def luminance(data, box, scratch):
-    """Mean luminance (0-1, Rec. 709 weights on sRGB) of the box (x, y, w, h, in image pixels; None: all) of a base64 PNG."""
     x,y,w,h=box or (0,0,None,None)
     if Image:
         img=Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
@@ -77,7 +54,6 @@ def luminance(data, box, scratch):
       return s / (d.length / 4) / 255;
     }""", [data,x,y,w,h])
 def first_paint(pg, ctx, key, page):
-    """Screencast every frame of a navigation to PATHS[key] until the mirror frame has loaded; check the frame's box stays dark."""
     cdp=ctx.new_cdp_session(pg); frames=[]
     def on_frame(ev):
         frames.append(ev); cdp.send("Page.screencastFrameAck", {"sessionId": ev["sessionId"]})
@@ -123,7 +99,7 @@ with sync_playwright() as p:
         ctx.add_init_script(IFRAME_SEEN)
         pg=ctx.new_page()
         for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-        pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+        pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
         first=True
         for key, page in PAGES.items():
             pg.goto(f"{BASE}{PATHS[key]}", wait_until="load", timeout=90000); pg.wait_for_timeout(3000)
@@ -140,7 +116,6 @@ with sync_playwright() as p:
             check(f"{theme} {key}: m-mode-dark at readyState interactive", "m-mode-dark" in (boot["early"] or "").split(), theme=="dark")
             check(f"{theme} {key}: body background", st["bg"], "rgb(22, 22, 24)" if theme=="dark" else "rgb(255, 255, 255)")
             pg.screenshot(path=f"{SHOTS}/{theme}-{key}.png")
-        # On display (the last page): OF's Dark mode switch sets our theme, and the frame follows.
         if fr:
             check(f"{theme} display: switch shows the theme", fr[0].evaluate("document.getElementById('dark_mode_switcher').checked"), theme=="dark")
             fr[0].locator("label[for='dark_mode_switcher']").click(); pg.wait_for_timeout(1000)
@@ -148,8 +123,7 @@ with sync_playwright() as p:
             check(f"{theme} display: our theme after the switch", pg.evaluate("document.documentElement.getAttribute('data-theme')"), flipped)
             check(f"{theme} display: frame after the switch", fr[0].evaluate(STATE)["dark"], flipped=="dark")
             check(f"{theme} display: no read-only note", fr[0].evaluate("!!document.getElementById('oi-note')"), False)
-        if theme=="dark":  # the init script sets our theme to dark again on every navigation
-            # Reload first: the display switch above left the page light, and the screencast starts on it.
+        if theme=="dark":
             pg.reload(wait_until="load", timeout=90000); pg.wait_for_timeout(2000)
             for key, page in PAGES.items(): first_paint(pg, ctx, key, page)
         ctx.close()

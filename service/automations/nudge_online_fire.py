@@ -1,22 +1,3 @@
-"""service/automations/nudge_online_fire.py — the delayed nudge_online one-shot.
-
-Spec: library/NUDGE_ONLINE_PLAN.md (the `nudge_online_fire` half). The detector
-(nudge_online.py) enqueues ONE of these per qualifying fan with
-`run_at = now + delay + jitter`; this re-validates at fire time and sends.
-
-Lifecycle (every exit clears NudgeState.pending_job_id so the detector can
-schedule the fan again):
-  1. RE-VALIDATE — the fan must still be online recently
-     (NudgeState.last_seen_online_at within `online_recent_minutes`) AND still
-     pass the gate sequence (gate 4 especially: a real convo may have started
-     during the delay). Disqualified → clear pending, no send.
-  2. acquire_fan_lease (the ONLY place nudge takes a lease) → compose → send →
-     write the outbound attribution row → bump NudgeState → release the lease.
-
-Unlike send_welcome, this NEVER calls start_fan_cooldown: nudge is fully async
-and must not freeze welcome_chatter_for_info (decision #5). The lease is held only across the
-send and released immediately after.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -43,7 +24,6 @@ async def _get_state(account_id: str, fan_id: int) -> NudgeState | None:
 
 
 async def _clear_pending(account_id: str, fan_id: int) -> None:
-    """Drop the pending latch so the detector may reschedule this fan. Idempotent."""
     async with get_session() as s:
         await s.execute(
             update(NudgeState)
@@ -54,8 +34,6 @@ async def _clear_pending(account_id: str, fan_id: int) -> None:
 
 
 async def _fan_obj(account_id: str, fan_id: int) -> dict:
-    """Reconstruct the {id, name, username} blob _resolve_welcome_name expects
-    from the local Fan row (the online object isn't carried across the delay)."""
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
     return {
@@ -68,9 +46,6 @@ async def _fan_obj(account_id: str, fan_id: int) -> dict:
 async def _bump_after_send(
     account_id: str, fan_id: int, idx: int, slot: str, now: datetime,
 ) -> None:
-    """Record the send on NudgeState: last_nudged_at/count, rotation index+slot,
-    no-reply streak (reset to 0 if the fan replied since the last nudge, then +1),
-    and CLEAR pending_job_id."""
     async with get_session() as s:
         st = await s.get(NudgeState, (str(account_id), int(fan_id)))
         last_in = (await s.execute(select(func.max(Message.created_at)).where(
@@ -115,15 +90,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         await _clear_pending(account_id, fan_id)
         return {"sent": 0, "skipped": "disabled"}
 
-    # The detector's RULE is the other half of the switch (the Automations /
-    # Ready-made toggle flips only it). A fire queued before it went OFF must
-    # not send. test_force (live driver) fires without a rule on purpose.
+    # A fire queued before the rule went OFF must not send.
     if (not payload.get("test_force")
             and await ax.enabled_rule_id(account_id, "nudge_online") is None):
         await _clear_pending(account_id, fan_id)
         return {"sent": 0, "skipped": "rule_disabled"}
 
-    # 1. RE-VALIDATE: still online recently?
     st = await _get_state(account_id, fan_id)
     recent = timedelta(minutes=cfg.get("online_recent_minutes", 5))
     if (st is None or st.last_seen_online_at is None
@@ -131,15 +103,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         await _clear_pending(account_id, fan_id)
         return {"sent": 0, "skipped": "offline"}
 
-    # …and still passes the gates (gate 4: a convo may have started in the delay).
-    # test_force (live driver) skips the gates but keeps the online re-validate above.
     if not payload.get("test_force"):
         reason = await _gate_skip_reason(account_id, fan_id, cfg, now, at_fire=True)
         if reason:
             await _clear_pending(account_id, fan_id)
             return {"sent": 0, "skipped": reason}
-        # Include-only audience at-fire recheck: the job was enqueued with a
-        # delay, so the fence may have changed since the producer's tick.
         import audience_include as _audiences
         allowed, why = await _audiences.check_at_fire(
             account_id, fan_id, kind="nudge_online_fire", payload=payload)
@@ -147,7 +115,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             await _clear_pending(account_id, fan_id)
             return {"sent": 0, "skipped": f"audience:{why}"}
 
-    # 2. Lease (the only place nudge takes one), send, bump, release.
     if not await ax.acquire_fan_lease(account_id, fan_id, "nudge_online_fire"):
         await _clear_pending(account_id, fan_id)
         return {"sent": 0, "skipped": "locked"}
@@ -159,16 +126,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     try:
         fan_obj = await _fan_obj(account_id, fan_id)
         msgs, slot = await _compose_messages(account_id, fan_id, cfg, fan_obj, st)
-        # Nothing to send (image-only with no image) → skip.
         if not msgs:
             await _clear_pending(account_id, fan_id)
             return {"sent": 0, "skipped": "empty"}
         client = await asyncio.to_thread(ax._make_client, account_id)
         for m in msgs:
             text, media = m["text"], m["media"]
-            # A refused ATTACHMENT still delivers the text. This sender clears
-            # its latch and never retries, so losing the send to one dead vault
-            # id loses the nudge outright.
+            # This sender clears its latch and never retries, so a refused attachment must still deliver the text.
             outcome = await send_dropping_bad_media(client, fan_id, text, media,
                                                     log=log, send_purpose="gated")
             result = outcome.result
@@ -178,7 +142,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     account_id=account_id,
                     fan_id=int(fan_id),
                     message_id=int(msg_id),
-                    sent_by_employee_id=None,  # → system Automation employee
+                    sent_by_employee_id=None,
                     automation_kind="nudge_online",
                     body=str(result.get("text") or text),
                     price_cents=0,
@@ -191,11 +155,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             idx = m.get("idx", idx)
         await _bump_after_send(account_id, fan_id, idx, slot, now)
     except Exception as e:
-        # Clear the latch so the fan isn't wedged "pending" forever; do NOT
-        # re-raise (no retry — a sender re-run risks a double-message; the next
-        # detector tick re-evaluates cleanly).
         await _clear_pending(account_id, fan_id)
         log.warning("nudge_fire_failed account=%s fan=%s", account_id, fan_id, exc_info=True)
+        # Latch cleared above; never re-raise: a sender re-run risks a double message.
         return {"sent": 0, "skipped": "error", "error": repr(e)[:200]}
     finally:
         await ax.release_fan_lease(account_id, fan_id)

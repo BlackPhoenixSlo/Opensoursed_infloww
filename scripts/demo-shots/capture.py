@@ -1,19 +1,3 @@
-"""Capture the marketing-site product shots (run through run.sh, which starts the stack).
-
-    run.sh                       every screen
-    run.sh --only dashboard,login
-    run.sh --keep-png            also keep the raw 2x PNGs in .scratch/demo-shots/png/
-
-Registers a throwaway owner, seeds the demo agency (dataset.py -> seed.py), then
-for every screen opens the route on a 1280x800 and a 390x844 viewport (device
-scale 2), waits for the page's own data to be on screen (and fails the screen if
-a loading skeleton or a forbidden empty figure is still visible), screenshots,
-and writes WebP files into web/public/img/ (see web/public/img/README.md).
-
-Nothing leaves the machine: the router fulfils assets from scripts/demo-shots/assets,
-answers OnlyFans reads from fixtures.py, passes /admin, /auth and /events to the
-temp relay, and aborts every other origin; Chromium resolves no name but localhost.
-"""
 from __future__ import annotations
 
 import argparse
@@ -53,7 +37,6 @@ FONT_HOSTS = ("fonts.googleapis.com", "fonts.gstatic.com")
 ASSET_HOST = urlsplit(dataset.ASSET_ORIGIN).hostname
 PASSWORD = "demo-shots-throwaway"
 
-# Light theme; hide the cursor, the caret and Next's dev indicator.
 INIT_JS = """
 try { localStorage.setItem('chatterly:theme', 'light');
   localStorage.setItem('vaultProOnboarding', JSON.stringify({batchUploadEntry: '1', uploadPageStep: '1'})); } catch (e) {}
@@ -110,7 +93,6 @@ class Router:
         if p == "/img" or p.startswith("/img/"):
             return self._file(route, asset_file((q.get("u") or [""])[0]))
         if p in ("/auth/me", "/chatter/me"):
-            # The trial badge, banner and expired nag all key off created_at; a null hides all three.
             res = route.fetch()
             body = res.json() if res.ok else None
             if isinstance(body, dict):
@@ -136,11 +118,10 @@ class Router:
 
 
 def new_context(browser, router: Router, viewport: dict, state: dict | None, now):
-    # Every shot is 2560 px wide: a wider viewport (screens' desktop_viewport) gets a lower device scale.
     scale = 2 if viewport["width"] <= DESKTOP["width"] else 2 * DESKTOP["width"] / viewport["width"]
     ctx = browser.new_context(viewport=viewport, device_scale_factor=scale, service_workers="block",
                               storage_state=state, timezone_id="UTC", locale="en-US", color_scheme="light")
-    ctx.clock.install(time=now)  # the dataset's `now`; time then runs normally
+    ctx.clock.install(time=now)
     ctx.add_init_script(INIT_JS)
     ctx.route("**/*", router.handle)
     ctx.route_web_socket("**/*", router.ws)
@@ -148,7 +129,6 @@ def new_context(browser, router: Router, viewport: dict, state: dict | None, now
 
 
 def settle(page, screen: dict, kind: str) -> list[str]:
-    """Wait for the screen's data; return the problems still visible (empty = ready)."""
     try:
         page.wait_for_load_state("networkidle", timeout=60_000)
     except Exception:  # noqa: BLE001  (an open stream can keep the network busy; the text checks decide)
@@ -161,7 +141,7 @@ def settle(page, screen: dict, kind: str) -> list[str]:
             loc.wait_for(state="visible", timeout=45_000)
         except Exception:  # noqa: BLE001
             problems.append(f"missing text {text!r}")
-    for text in screen.get("frame_wait", []):  # OF Manager's mirror renders inside an iframe
+    for text in screen.get("frame_wait", []):
         loc = page.frame_locator("iframe").first.get_by_text(text, exact=False).first
         try:
             loc.wait_for(state="visible", timeout=45_000)
@@ -183,8 +163,6 @@ def settle(page, screen: dict, kind: str) -> list[str]:
     if skeletons:
         problems.append(f"{skeletons} loading skeleton(s) visible")
     for bad in screen.get("forbid", ["$0.00", "No creators", "Loading…"]):
-        # Polled for up to 30 s: a read still in flight (a chart's "Loading…") clears by itself; data that is
-        # really missing ("$0.00", "No creators") stays and fails the shot.
         for waited in range(0, 30_001, 500):
             n = page.evaluate("""([t, vp]) => { let n = 0; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
                 while (w.nextNode()) { const el = w.currentNode.parentElement; if (!el || !w.currentNode.data.includes(t)) continue;
@@ -192,13 +170,13 @@ def settle(page, screen: dict, kind: str) -> list[str]:
                     && getComputedStyle(el).visibility !== 'hidden') n++; } return n; }""", [bad, vp])
             if not n:
                 if waited:
-                    page.wait_for_timeout(800)  # let the chart that just got its data draw
+                    page.wait_for_timeout(800)
                 break
             page.wait_for_timeout(500)
         if n:
             problems.append(f"{n} visible {bad!r}")
     want = screen.get(f"{kind}_min_bubbles", screen.get("min_bubbles"))
-    if want:  # Messages Pro bubbles wholly inside the thread's scroll box and the viewport
+    if want:
         n = page.evaluate("""(vp) => [...document.querySelectorAll('[data-msg-id]')].filter(e => {
             let p = e.parentElement;
             while (p && !/(auto|scroll)/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
@@ -245,14 +223,6 @@ FONT_JS = """async () => {
     return {fam, faces, body, probe: !!probe, off, ok: !!fam && faces.includes(fam) && unq(body.split(",")[0]) === fam};
 }"""
 
-# A visible money figure printed off the house formats (lib/format.ts): "$" then a space ("$ 10.00", the bundle's script
-# price), four or more digits with no comma ("$11134.68", "$1338"), or $1,000+ with cents ("$28,507.24"). Aggregates
-# are whole dollars with commas from $1,000 (the dashboard's "$1,005,875"); a unit price under $1,000 keeps its
-# cents ("$9.99"). A fan's or OnlyFans' own text under $1,000 ("I sent you a $50.00 tip") passes.
-# The house money format, as on the dashboard: whole dollars with en-US commas ("$1,005,875", "$86"),
-# or "$11.1k" on the fan-list badge. Cents only on a real non-round unit price or average ("$19.99", an LTV
-# "$86.42"), and only on screens flagged `prices` in screens.py; never "$N.00", "$ 10" or "$11134". Chat bubbles
-# ([data-msg-id]) are what the fan or creator typed ("I sent you a $50.00 tip") and are skipped.
 MONEY_JS = r"""(prices) => {
     const tok = /\$(\s*)([\d,]+)(?:\.(\d+))?([kKmM])?/g;
     const out = [];
@@ -273,11 +243,6 @@ MONEY_JS = r"""(prices) => {
 
 
 def font_problems(page) -> list[str]:
-    """The app font must have rendered: next/font's family for Instrument Sans (app/app/fonts/, --font-ui)
-    has a loaded FontFace and leads body's font-family, and a visible text node that uses it is painted
-    by Chromium in "Instrument Sans" (CSS.getPlatformFontsForNode), not a fallback. Pages styled with
-    the system stack on purpose (the dark /login, `data-look="site"`) have no such node and skip the
-    paint check."""
     f = page.evaluate(FONT_JS)
     if not f["ok"]:
         return [f"font: --font-ui family {f['fam']!r}, loaded faces {f['faces']}, body font-family {f['body'][:100]!r}"]
@@ -319,8 +284,7 @@ def shoot(ctx, screen: dict, kind: str, d: dataset.Dataset) -> tuple[Path | None
         problems += settle(page, screen, kind)
         page.mouse.move(-10, -10)
         key = screen.get("key")
-        if kind == "desktop" and key:  # the figure the combo's phone must not cover (CSS px of the desktop viewport)
-            # A text key is its first visible match (a headline figure), a css key its last (the newest bubble).
+        if kind == "desktop" and key:
             loc = (page.locator(key[4:]).filter(visible=True).last if key.startswith("css=")
                    else page.get_by_text(key, exact=False).filter(visible=True).first)
             box = loc.bounding_box()
@@ -328,7 +292,7 @@ def shoot(ctx, screen: dict, kind: str, d: dataset.Dataset) -> tuple[Path | None
                 json.dumps(box and {**box, "vw": page.viewport_size["width"]}))
             if not box:
                 problems.append(f"key {key!r} has no box")
-        if os.environ.get("DEMO_SHOTS_PROBE"):  # debugging aid: print a JS expression's value per shot
+        if os.environ.get("DEMO_SHOTS_PROBE"):
             print(f"  probe {screen['slug']} {kind}: {page.evaluate(os.environ['DEMO_SHOTS_PROBE'])}")
         path = PNG / f"{screen['slug']}-{kind}.png"
         page.screenshot(path=str(path))
@@ -337,7 +301,6 @@ def shoot(ctx, screen: dict, kind: str, d: dataset.Dataset) -> tuple[Path | None
         page.close()
 
 
-# ── compose and encode ────────────────────────────────────────────────────────
 def magick(*args: str) -> None:
     subprocess.run([MAGICK, *args], check=True)
 
@@ -357,8 +320,6 @@ def page_bg(png: Path) -> str:
 
 
 def phone_spot(desktop: Path, W: int, H: int, pw: int, ph: int, margin: int) -> tuple[int, int]:
-    """Bottom-right, unless the phone would cover the shot's key figure (`<slug>-desktop.key.json`, written by
-    shoot): then lower, bleeding up to 40% of the phone off the bottom edge, then bottom-left."""
     keyf = desktop.with_name(desktop.stem + ".key.json")
     box = json.loads(keyf.read_text()) if keyf.exists() else None
     x, y = W - pw - margin, H - ph - margin
@@ -382,8 +343,6 @@ def phone_spot(desktop: Path, W: int, H: int, pw: int, ph: int, margin: int) -> 
 
 
 def compose(desktop: Path, phone: Path, dst: Path) -> None:
-    """1440x900 @2x: the desktop shot fills the canvas, the phone sits over the bottom-right
-    (~24% of the width) in a 5px dark ring with rounded corners and a soft shadow."""
     W, H, S = 2880, 1800, 2
     pw = int(W * 0.24)
     ph = round(pw * 844 / 390)
@@ -406,7 +365,7 @@ def compose(desktop: Path, phone: Path, dst: Path) -> None:
            "+swap", "-background", "none", "-layers", "merge", "+repage", str(framed))
     x, y = phone_spot(desktop, W, H, pw, ph, margin)
     big = work / f"{dst.stem}-c.png"
-    shadow_pad = 18 * S * 2 - 10 * S  # -shadow grows the canvas by 2*sigma on each side, offset moves it
+    shadow_pad = 18 * S * 2 - 10 * S
     magick("-size", f"{W}x{H}", f"xc:{bg}", str(d2), "-composite", str(framed), "-geometry",
            f"+{x - 18 * S * 2}+{y - 18 * S * 2 + 0 * shadow_pad}", "-composite", "-flatten", str(big))
     webp(big, dst, "1440x900")
@@ -455,7 +414,6 @@ def main() -> int:
         boot.close()
         print(f"demo-shots: seeded in {time.time() - t0:.0f}s ({len(d.transactions)} sales, {len(d.messages)} messages, "
               f"{len(emp)} employees)")
-        # The manager (an Employee login with Shifts) for screens with session "manager": an owner has no shifts.
         mgr = browser.new_context()
         r = mgr.request.post(f"{APP}/chatter/login",
                              data={"username": d.employees[dataset.MANAGER]["username"], "password": PASSWORD})

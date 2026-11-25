@@ -1,28 +1,3 @@
-"""service/automations/_wordfilter.py — the operator's "Block sensitive words" filter.
-
-Its own leaf module for the same reason fan_state, _clock and _funnel_signals are:
-_common.py is 2.4k lines imported by 70 modules, so it is the file every merge
-arbitrates as ONE unit. A `-X theirs` on a conflict anywhere in it takes out every
-unrelated feature filed there too — which is exactly how this feature's wiring got
-dropped once already. A self-contained feature with its own test file
-(tests/test_wordfilter) and several sender consumers is a module, not a section
-of the grab-bag.
-
-The word list is the Agency's Growth > Sensitive words (`sensitive_words`). The
-older per-account banned-words config (`account_ai_config.banned_words_config_json`
-and its `/admin/banned-words` API) is retired: the column is no longer read, and
-the mode is always "block". The "mask" mode stays in the pure scanner.
-
-The whole feature, in the order a sender meets it:
-    load_banned_words(account_id) -> (words, mode)   once per run
-    filter_banned(parts, words, mode)                per turn, at the send chokepoint
-    banned_hit_summary(hits)                         for the log line
-
-`scan_outbound` is the pure single-string scanner underneath; `normalize_banned_config`
-dedupes the list and pins the mode. `sensitive_hits` is the composers' matcher
-(app/lib/sensitiveWords.ts): which listed words a text holds, case-insensitive,
-between boundaries, a phrase across any run of whitespace.
-"""
 from __future__ import annotations
 
 import logging
@@ -36,30 +11,17 @@ from db.models import SensitiveWord, UserAccount
 log = logging.getLogger("of-relay.automation.wordfilter")
 
 
-# SEPARATE from _common.apply_word_restriction (the FIXED OF-restricted-word doubler)
-# and from the promo-spam audience guard (an audience skip, not a text scan): this is
-# a per-account word list an operator edits in Settings, scanned against OUTBOUND text
-# right before send. Two modes:
-#   "block" — a hit ABORTS that send (the caller drops the message + logs the reason);
-#   "mask"  — each hit is replaced by its first char + asterisks ("fuck" → "f***"),
-#             and the send proceeds.
-# WORD-BOUNDARY + case-insensitive ON PURPOSE: an "ass" rule must NOT trip on
-# "class"/"pass" (the exact false-positive that makes a naive substring filter
-# useless). Same \b alternation technique as _common._RESTRICTED_RE.
 BANNED_WORD_MODES = ("block", "mask")
 
 
 def _mask_hit(word: str) -> str:
-    """Mask a matched word: keep the first char, the rest → asterisks ("fuck" → "f***").
-    A single-char match keeps its char and gains one '*' so it is still visibly masked."""
     if not word:
         return word
     return word[0] + "*" * (len(word) - 1) if len(word) > 1 else word + "*"
 
 
+# Whole-word on purpose: an "ass" rule must not trip on "class"/"pass".
 def _compile_banned_re(words):
-    """Boundary-aware, case-insensitive alternation over `words` (longest-first so a
-    phrase matches before a word it contains). None when nothing is usable. Never raises."""
     try:
         clean, seen = [], set()
         for w in words or ():
@@ -78,15 +40,6 @@ def _compile_banned_re(words):
 
 
 def scan_outbound(text, words, mode="block") -> dict:
-    """Scan OUTBOUND `text` against the operator's banned-word list, whole-word and
-    case-insensitive. PURE + NEVER raises — None/empty text or an empty `words` list is
-    a no-op → {"clean_text": <text as str>, "hits": []}.
-
-    mode "mask"  → clean_text has every hit replaced by first-char + asterisks.
-    mode "block" (or any other value) → clean_text is the ORIGINAL text; the caller
-                    inspects `hits` and, if non-empty, ABORTS the send itself.
-    `hits` is the list of the ORIGINAL matched substrings, in order of appearance, so a
-    caller can log exactly what tripped."""
     try:
         s = "" if text is None else str(text)
         rx = _compile_banned_re(words)
@@ -98,33 +51,15 @@ def scan_outbound(text, words, mode="block") -> dict:
         if str(mode).strip().lower() == "mask":
             clean = rx.sub(lambda m: _mask_hit(m.group(0)), s)
         else:
-            clean = s  # block: text unchanged; the caller drops the send on a hit
+            clean = s
         return {"clean_text": clean, "hits": hits}
     except Exception:
-        # Fail OPEN on an unexpected internal error: return the text unscanned rather
-        # than crash a send. The list is a safety net, not a hard runtime dependency.
+        # Fail open: a broken list must not crash a send.
         return {"clean_text": "" if text is None else str(text), "hits": []}
 
 
 def filter_banned(parts, words, mode="block") -> tuple[list[str] | None, list[str]]:
-    """THE outbound banned-word decision, for every sender. One turn's bubbles in →
-    (bubbles_to_send, hits) out, where a None first element means BLOCK — drop the
-    whole turn.
-
-        parts, hits = filter_banned(parts, banned_words, banned_mode)
-        if parts is None: ...drop this send, log `hits`...
-
-    Two rules this settles ONCE, so no sender has to re-derive them (they are exactly
-    the "needs care" questions the per-site hookups used to leave open):
-      • WHOLE-TURN, not per-bubble. A block trips if ANY bubble is dirty — shipping
-        bubble 1 and swallowing bubble 2 would send a half conversation.
-      • CALL IT BEFORE the nonnative/typo layers, so a typo can't smuggle a flagged
-        word past the scan and a mask survives those passes.
-
-    An empty `words` (the overwhelmingly common case) returns `parts` UNCHANGED and no
-    hits — byte-identical to not calling this at all. Never raises: scan_outbound fails
-    open, and an unknown mode falls back to "block" (the stricter default), matching
-    normalize_banned_config."""
+    # Whole turn: one dirty bubble blocks all (a half conversation must not ship); call before the nonnative/typo layers so a typo cannot smuggle a word past.
     parts = list(parts or ())
     if not words:
         return parts, []
@@ -136,21 +71,15 @@ def filter_banned(parts, words, mode="block") -> tuple[list[str] | None, list[st
         hits += r["hits"]
         out.append(r["clean_text"])
     if hits and not masking:
-        return None, hits          # block: caller drops the turn
+        return None, hits
     return out, hits
 
 
 def banned_hit_summary(hits) -> list[str]:
-    """The stable log form of a `filter_banned` hit list: lowercased, deduped, sorted —
-    so every sender's "banned word(s) %r" line reads the same in the logs."""
     return sorted({str(h).lower() for h in hits or ()})
 
 
 def normalize_banned_config(cfg) -> tuple[list[str], str]:
-    """Canonical parse of a banned-words config blob → (words, mode). Dedupe (case-insensitive, first spelling
-    wins), drop blanks, cap length defensively, and pin `mode` to a member of
-    BANNED_WORD_MODES (unknown → "block", the stricter fail-safe default). A
-    non-dict blob normalizes to ([], "block")."""
     if not isinstance(cfg, dict):
         cfg = {}
     words: list[str] = []
@@ -161,7 +90,7 @@ def normalize_banned_config(cfg) -> tuple[list[str], str]:
         if w and k not in seen:
             seen.add(k)
             words.append(w)
-    words = words[:5000]  # sane ceiling; a list this long is already a config smell
+    words = words[:5000]
     mode = str(cfg.get("mode") or "block").strip().lower()
     if mode not in BANNED_WORD_MODES:
         mode = "block"
@@ -169,18 +98,12 @@ def normalize_banned_config(cfg) -> tuple[list[str], str]:
 
 
 async def load_banned_words(account_id: str) -> tuple[list[str], str]:
-    """The words every automation sender refuses for this Creator → (words, "block"):
-    the Agency's Growth > Sensitive words (load_sensitive_words), deduped
-    case-insensitively. No list → ([], "block"), a no-op (nothing scanned)."""
     sensitive = await load_sensitive_words(account_id)
     return normalize_banned_config({"words": sensitive, "mode": "block"})
 
 
 async def load_sensitive_words(account_id: str) -> list[str]:
-    """Growth > Sensitive words for this Creator: the lists of every Agency that
-    holds it in `user_accounts` (the server side of the browser's
-    `/admin/sensitive-words?account_id=` read). Fails open to [] — like
-    scan_outbound, the list is a safety net, not a hard runtime dependency."""
+    # Fails open: the list is a safety net, not a runtime dependency.
     try:
         async with get_session() as s:
             return list((await s.execute(
@@ -194,8 +117,6 @@ async def load_sensitive_words(account_id: str) -> list[str]:
 
 
 class OutboundWordsBlocked(Exception):
-    """An automation send/post held a banned or sensitive word (block mode). The
-    executor records the run as skipped — never as an error to retry."""
 
     def __init__(self, hits):
         self.hits = banned_hit_summary(hits)
@@ -203,13 +124,6 @@ class OutboundWordsBlocked(Exception):
 
 
 class OutboundGuard:
-    """The of_client.OUTBOUND_TEXT_GUARD callable for one run: masks in "mask"
-    mode, raises OutboundWordsBlocked on a hit otherwise — the browser refuses a
-    mass message or Smart Message the same way ("Please check the contents of
-    the messages"). Counts the texts it let through (`passed`, media-only sends
-    included — passed the guard, not confirmed sent) and the ones it blocked;
-    `summary()` and `run_status()` are what the run record keeps, whether the
-    sender let the block abort the run or caught it per fan."""
 
     def __init__(self, words, mode="block"):
         self.words, self.mode = words, mode
@@ -230,24 +144,18 @@ class OutboundGuard:
         return text
 
     def summary(self) -> dict:
-        """The run-stats keys for this run's guard (one set for every path)."""
         return {"texts_passed_guard": self.passed, "texts_blocked": self.blocked,
                 "blocked_hits": list(self.hits)}
 
     def run_status(self) -> str:
-        """`skipped` iff the guard blocked something and let nothing through."""
         return "skipped" if self.blocked and not self.passed else "ok"
 
 
 def outbound_guard(words, mode="block"):
-    """This run's OutboundGuard, or None when there is nothing to scan."""
     return OutboundGuard(words, mode) if words else None
 
 
 def sensitive_hits(text: str, words: list[str]) -> list[str]:
-    """The listed words in `text`, as app/lib/sensitiveWords.ts matches them:
-    case-insensitive, only between boundaries (no letter or digit beside it, so
-    "ass" never trips on "class"), a phrase across any run of whitespace."""
     hits: list[str] = []
     for w in words:
         parts = [re.escape(p) for p in str(w).split()]

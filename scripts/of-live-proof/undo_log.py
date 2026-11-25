@@ -1,9 +1,3 @@
-"""undo_log: the Undo log (ticket 03) and the driver's checks over it, split out of proof_core (file size): its JSONL
-helpers (`append_jsonl`, `read_undo_log`, the only I/O, shared by its two writers, the Relay and the driver), the
-per-row and whole-log checks against the wire log (`verify_undo`, `check_undo_log`, `pending_rows`), the undo Writes
-a row takes and their order (`row_undos`, `undo_order`, `needs_row_id`), fake mode's per-row hits (`row_undo_hits`)
-and the log as Markdown (`undo_markdown`). Pure but for the two file helpers; stdlib only.
-"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -14,9 +8,6 @@ from proof_core import (NOT_REVERSIBLE, NOT_REVERSIBLE_REFUSED, READS, Proof, _a
 
 
 def undo_rows(lines) -> list:
-    """The Undo log's rows from its JSONL lines: each line is a whole-row snapshot, the last one per row wins.
-    ASSUMPTION: the Relay opens a row (`pending`) and the driver closes it, each appending a snapshot, so a crash
-    leaves the last true state on disk (rung 4: append-only); overturned if one writer must own the file."""
     rows = {}
     for line in lines:
         rows[line["row"]] = line
@@ -24,7 +15,6 @@ def undo_rows(lines) -> list:
 
 
 def append_jsonl(path, rec: dict) -> None:
-    """One whole-row snapshot (or wire line), flushed and fsynced before returning: `undo_rows`' crash safety."""
     import json
     import os
     with open(path, "a") as f:
@@ -34,7 +24,6 @@ def append_jsonl(path, rec: dict) -> None:
 
 
 def read_undo_log(path) -> list:
-    """The Undo log file's rows, folded (`undo_rows`); a missing file has none."""
     import json
     from pathlib import Path
     p = Path(path)
@@ -44,7 +33,6 @@ def read_undo_log(path) -> list:
 
 
 def reads_equal(a, b) -> bool:
-    """Two OnlyFans-side reads compared as JSON values (a tuple equals its list; key order is ignored)."""
     import json
     if a is None or b is None:
         return False
@@ -53,14 +41,6 @@ def reads_equal(a, b) -> bool:
 
 
 def verify_undo(wire, undo_entries, same=reads_equal) -> list:
-    """Problems with each Undo log row about to be closed; a row with none closes `undone`, else `FAILED`.
-
-    A row carries `effect` (the proof's declared effect on its before/after-write reads), `reversal` {method, path,
-    seq} (or `reversals`, ticket 30) as sent, and `reads` {before, after_undo}. The reversal's status is taken from the
-    wire log, never from the row: the line `seq` names (the one its own undo caused, ticket 131; None: it caused none)
-    must be a completed `reversal` line of that method and path, and 2xx. The whole-log cases (missing rows, `pending`
-    rows left by a crash) are `check_undo_log`'s. `same(before, after_undo)`: the proof's own comparison (ticket 67,
-    `Proof.same`), else the two reads equal."""
     out = []
     for r in undo_entries:
         n, w, rd = r.get("row"), r.get("write") or {}, r.get("reads") or {}
@@ -83,50 +63,32 @@ def verify_undo(wire, undo_entries, same=reads_equal) -> list:
 
 
 def row_undos(proof: Proof, row) -> list:
-    """The declared undo Writes that reverse this Undo log row, as (index, Write) in declared order (ticket 30): those
-    whose `reverses` names the row's arm index (stamped by the Relay when it opens the row) and every one whose
-    `reverses` is None. A row with no arm stamp gets only the latter; a refused row (`_refused`) none naming `{id}`."""
     arm = row.get("arm")
     return [(i, w) for i, w in enumerate(proof.undo) if (w.reverses is None or (arm is not None and arm in w.reverses))
             and not (_refused(row) and _names_id(w))]
 
 
 def _refused(row) -> bool:
-    """A write OnlyFans refused (ticket 97: B's second post answered 400): a 4xx and no OnlyFans id, so nothing to
-    delete. A 5xx (a Relay 502 included) is not: OnlyFans may have committed before answering, so its row keeps the
-    `{id}` undo and goes to the lost-reply finder (story 53)."""
     s = row.get("write_status")
     return isinstance(s, int) and 400 <= s < 500 and row.get("of_id") is None
 
 
 def _names_id(w) -> bool:
-    """Whether undo Write `w` needs a row's own OnlyFans id: `{id}` in its path, its Relay route or its pinned Relay
-    body (ticket 60: a body function names none)."""
     return ("id" in _template(w.path).groupindex or bool(w.relay) and "id" in _template(w.relay).groupindex
             or "id" in _names(w.relay_body if isinstance(w.relay_body, Mapping) else {}))
 
 
 def undo_order(proof: Proof, rows) -> list:
-    """The rows in the order the driver settles them: by the first undo Write each takes, then open order, so an
-    undo several rows share is sent by the row that declares it with the undos before it (ticket 30: the post's
-    DELETE, then the hide; the upload rows after, the hide not sent again). A row with no undo goes last."""
     def rank(r):
         return min((i for i, _ in row_undos(proof, r)), default=len(proof.undo))
     return sorted(rows, key=lambda r: (rank(r), r.get("row", 0)))
 
 
 def needs_row_id(proof: Proof, row) -> bool:
-    """Whether this row's undo needs its own OnlyFans id (`_names_id`), so a row that has none
-    goes to the proof's lost-reply finder (story 53). An upload row, reversed by the hide keyed on `undo_keys`, does
-    not."""
     return any(_names_id(w) for _, w in row_undos(proof, row))
 
 
 def row_undo_hits(proof: Proof, row, hits) -> list:
-    """Fake mode's check (ticket 131): FakeOF hits of this closed row's own undo Writes (`row_undos`), inside its window
-    (opened <= t <= closed), a path `{id}` equal to the row's OnlyFans id when it has one, and each `{name}` of a pinned
-    body, or of its path when a declared kind, equal to the id the row recorded in `keys[name]` (a hide of another
-    media id, or an earlier proof's identical hide, is not this row's)."""
     opened = datetime.fromisoformat(row["opened"]).timestamp()
     closed = datetime.fromisoformat(row["closed"]).timestamp()
     oid, keys, kinds = row.get("of_id"), row.get("keys") or {}, declared_kinds(proof)
@@ -135,7 +97,7 @@ def row_undo_hits(proof: Proof, row, hits) -> list:
         m = h["method"] == w.method.upper() and _template(_api(w.path)).match(_api(h["path"]))
         if not m or (oid is not None and m.groupdict().get("id", oid) != oid):
             return False
-        if any(str(keys.get(k)) != v for k, v in m.groupdict().items() if k in kinds):   # ticket 100's {message}
+        if any(str(keys.get(k)) != v for k, v in m.groupdict().items() if k in kinds):
             return False
         got = {} if w.body_must is None else _bind(dict(w.body_must), h.get("body"), True)
         return got is not None and all(k in keys and str(keys[k]) == v for k, v in got.items())
@@ -144,7 +106,6 @@ def row_undo_hits(proof: Proof, row, hits) -> list:
 
 
 def _reversals(r) -> list:
-    """A row's reversals as sent, in order: `reversals` (ticket 30, one or more), else the single `reversal`."""
     if r.get("reversals") is not None:
         return list(r["reversals"])
     return [r["reversal"]] if r.get("reversal") else []
@@ -162,7 +123,6 @@ def _row_id(r) -> str:
 
 
 def _left(r):
-    """What the after-undo read still shows beyond the before read, when both are lists: the change left behind."""
     import json
     rd = r.get("reads") or {}
     before, after = rd.get("before"), rd.get("after_undo")
@@ -174,18 +134,11 @@ def _left(r):
 
 
 def pending_rows(rows) -> list:
-    """Every `pending` row (a write recorded before it was forwarded and never closed: a crash, a lost reply) named
-    with the change it may have left (story 52). An earlier run's pending row refuses every new run until the owner
-    clears it by hand: appending `{"row": N, "state": "cleared by hand", ...}` to that undo-log.jsonl (last wins)."""
     return [f"row {r.get('row')} ({r.get('proof')}) pending: {_row_write(r)} ({_row_id(r)}) may be left on the "
             "account; check it, then clear the row by hand" for r in rows if r.get("state") == "pending"]
 
 
 def unresolved_rows(rows) -> list:
-    """Follow-up #6, a live run's gate: every `pending` row (`pending_rows`), and every FAILED or
-    NOT_REVERSIBLE_REFUSED one (an undo that did not take: the item may still be on the account). Each refuses every
-    new live run until the owner clears it by hand, as a pending row: appending `{"row": N, "state": "cleared by
-    hand", ...}` to that undo-log.jsonl (last wins)."""
     return pending_rows(rows) + [
         f"row {r.get('row')} ({r.get('proof')}) {r.get('state')}: {_row_write(r)} ({_row_id(r)}) may be left on the "
         "account; check it, then clear the row by hand"
@@ -193,11 +146,6 @@ def unresolved_rows(rows) -> list:
 
 
 def check_undo_log(wire, rows) -> list:
-    """The whole Undo log against the whole wire log, at the end of a run: [] only when complete.
-
-    `wire`: folded wire lines (last per seq); `rows`: folded Undo log rows (`undo_rows`). Missing: an allowed write
-    with no row (`wire_seq`). Failed: a FAILED row, named with what the after-undo read still shows. Pending: a row
-    never closed. Any other state but `undone` and `not reversible, owner go` is not confirmed undone."""
     out = []
     for r in rows:
         state, n, proof = r.get("state"), r.get("row"), r.get("proof")
@@ -205,7 +153,7 @@ def check_undo_log(wire, rows) -> list:
             continue
         if state == "pending":
             out += pending_rows([r])
-        elif state == "FAILED":   # "left on the account" only for what the after-undo read still shows
+        elif state == "FAILED":
             left, refused = _left(r), (f"; {r['found_refused']}" if r.get("found_refused") else "")
             out.append(f"row {n} ({proof}) FAILED, owner action: "
                        + (f"{_row_write(r)} ({_row_id(r)}) left on the account: {', '.join(left)}" if left else
@@ -228,7 +176,6 @@ def _cell(v) -> str:
 
 
 def undo_markdown(rows) -> str:
-    """The Undo log as one Markdown table, one row per entry, for the PR body unedited."""
     head = ["#", "proof", "write", "narrowed", "OnlyFans id", "reversal", "before", "after write", "after undo",
             "before = after undo", "state", "evidence"]
     out = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]

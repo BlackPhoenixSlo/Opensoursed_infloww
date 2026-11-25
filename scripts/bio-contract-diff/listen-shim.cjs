@@ -1,5 +1,3 @@
-// node -r ./listen-shim.cjs server.js: ofl.ink v2's server.js listens on a hard-coded 3000 on every interface; this moves
-// that one listen to $PORT on 127.0.0.1 (loopback only), so the diff run needs neither port 3000 nor a public bind.
 'use strict';
 const net = require('net');
 

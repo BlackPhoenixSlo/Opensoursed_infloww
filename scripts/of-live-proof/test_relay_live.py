@@ -1,9 +1,3 @@
-"""relay_live's loopback proof routes (`proof_routes`): `/__proof/read-id` (ticket 131's registration, with the lane's
-safety carried in) verified by the Relay's own OnlyFans read per kind, once per (source, kind), only a kind the armed
-proof declares and the Relay can verify, every attempt on the wire log; `/__proof/arm` refusing a quiet hour outside
-fake mode; and the pacing wait looping until the full pace has passed (a sleep that wakes early). The routes are
-mounted on a bare FastAPI app with a stub `of_get`: no Relay, no OnlyFans.
-"""
 import json
 import sys
 from dataclasses import replace
@@ -23,7 +17,6 @@ SEND_NOW, UPLOAD = "queue--send-message-right-now", "new-post--upload"
 
 @pytest.fixture
 def relay(tmp_path, monkeypatch):
-    """relay_live imported afresh against a temp evidence folder (it reads OFM_PROOF_EVIDENCE at import), fake mode."""
     monkeypatch.setenv("OFM_PROOF_EVIDENCE", str(tmp_path))
     monkeypatch.setenv("OF_API_ORIGIN", "http://127.0.0.1:9")
     sys.modules.pop("relay_live", None)
@@ -48,7 +41,6 @@ def _app(relay, answers, reads=None, client=LOOPBACK):
 
 
 def _arm(c, relay, proof, source=None, arm=0):
-    """Arm `proof`; `source` created by arm `arm` and the pending Undo log row it opened (the Relay's own shape)."""
     assert c.post("/__proof/arm", json={"proof": proof, "of": "fake", "proof_fan": FAN}).status_code == 200
     if source is not None:
         relay._run = replace(relay._run, created=frozenset({source}), created_by={arm: frozenset({source})})
@@ -82,9 +74,9 @@ def test_read_id_registers_once_the_relay_read_shows_it(relay):
 
 
 @pytest.mark.parametrize("key, of_id, answers", [
-    ("schedule", SID, {"/api2/v2/schedules": {"list": [{"id": int(SID), "entity": {"id": 1}}]}}),   # another entity
+    ("schedule", SID, {"/api2/v2/schedules": {"list": [{"id": int(SID), "entity": {"id": 1}}]}}),
     ("schedule", SID, {"/api2/v2/schedules": {"list": []}}),
-    ("message", MID, {f"/api2/v2/chats/{FAN}/messages": {"list": [{"id": int(MID), "queueId": 1}]}}),   # another queue
+    ("message", MID, {f"/api2/v2/chats/{FAN}/messages": {"list": [{"id": int(MID), "queueId": 1}]}}),
     ("schedule", SID, {"/api2/v2/schedules": RuntimeError("403 refused")}),
 ], ids=["entity mismatch", "not listed", "queueId mismatch", "read refused"])
 def test_read_id_refuses_what_the_sources_own_read_does_not_show(relay, key, of_id, answers):
@@ -126,8 +118,8 @@ def test_read_id_refuses_a_second_registration_of_the_same_source_and_kind(relay
     r = _reg(c, "schedule", "900050000000009", QID)
     assert r.status_code == 409 and "already" in r.json()["detail"]
     assert relay._run.keys["schedule"] == frozenset({SID})
-    assert _reg(c, "schedule", SID, QID).status_code == 409   # the same id again: still once
-    _arm(c, relay, SEND_NOW, QID)   # re-arming resets the registered set
+    assert _reg(c, "schedule", SID, QID).status_code == 409
+    _arm(c, relay, SEND_NOW, QID)
     assert _reg(c, "schedule", SID, QID).status_code == 200
 
 
@@ -136,7 +128,7 @@ def test_read_id_refuses_an_unknown_or_undeclared_kind(relay):
     _arm(c, relay, SEND_NOW, QID)
     r = _reg(c, "post-media", SID, QID)
     assert r.status_code == 409 and "not a kind" in r.json()["detail"]
-    assert _reg(c, "media", SID, QID).status_code == 409   # a kind another proof declares
+    assert _reg(c, "media", SID, QID).status_code == 409
     _arm(c, relay, "vault--customize-order-save", QID)
     assert _reg(c, "schedule", SID, QID).status_code == 409
     assert relay._run.keys == {} and [x["status"] for x in _lines(relay)] == [409, 409, 409]
@@ -202,26 +194,24 @@ def test_read_id_matches(relay, kind, oid, source, body, want):
     assert relay.read_id_matches(kind, oid, source, body) is want
 
 
-# ── /__proof/arm: the quiet hour is fake mode's only ──
 
 def test_arm_refuses_a_quiet_hour_outside_fake_mode(relay, monkeypatch):
     c = _app(relay, {})
     qh = datetime(2026, 11, 21, 3, 0, tzinfo=timezone.utc).isoformat()
-    assert c.post("/__proof/arm", json={"proof": None, "quiet_hour": qh}).status_code == 200   # a fake Relay
+    assert c.post("/__proof/arm", json={"proof": None, "quiet_hour": qh}).status_code == 200
     assert relay._run.quiet_hour == datetime.fromisoformat(qh)
-    monkeypatch.setattr(relay, "_FAKE", "")   # a live Relay: no FakeOF origin; the body's "of" is never read
+    monkeypatch.setattr(relay, "_FAKE", "")
     for body in ({"proof": None, "quiet_hour": qh}, {"proof": None, "of": "fake", "quiet_hour": qh}):
-        assert c.post("/__proof/arm", json=body).status_code == 400   # refused: the armed run is left as it was
+        assert c.post("/__proof/arm", json=body).status_code == 400
     assert c.post("/__proof/arm", json={"proof": None, "of": "live"}).status_code == 200
 
 
-# ── the pacing wait (story 22) ──
 
 def test_pacing_loops_until_the_full_pace_when_sleep_wakes_early(relay, monkeypatch):
     clock = [datetime(2026, 11, 21, 3, 0, tzinfo=timezone.utc)]
     slept = []
 
-    def sleep(s):   # wakes 0.2 ms early every time, as time.sleep measurably did
+    def sleep(s):
         slept.append(s)
         clock[0] += timedelta(seconds=max(s - 0.0002, 0.0001))
 
@@ -231,11 +221,10 @@ def test_pacing_loops_until_the_full_pace_when_sleep_wakes_early(relay, monkeypa
     relay._last_write = clock[0]
     entry, v, _ = relay._intent("relay", "POST", "https://onlyfans.com/api2/v2/lists", {"name": "oi-proof-x"})
     assert v.kind == "allow", v
-    assert len(slept) >= 2   # the first sleep woke early: the loop slept again
+    assert len(slept) >= 2
     assert datetime.fromisoformat(entry["time"]) - datetime(2026, 11, 21, 3, 0, tzinfo=timezone.utc) >= PACE
 
 
-# ── /__proof/found: a found post id is read back with the row's sent text (ticket 97 review) ──
 
 def _post_row(relay, text="oi-proof-r upload", path="/api2/v2/posts"):
     relay._wire[77] = {"seq": 77, "body": {"text": text, "mediaFiles": [1]}}
@@ -248,7 +237,7 @@ def _post_row(relay, text="oi-proof-r upload", path="/api2/v2/posts"):
     ({"id": 1, "rawText": "an operator's post"}, "/api2/v2/posts", 409),
     ({"id": 1, "rawText": "oi-proof-r upload!"}, "/api2/v2/posts", 409),
     (RuntimeError("404"), "/api2/v2/posts", 409),
-    (None, "/api2/v2/vault/lists/sort", 409),   # a write path with no read-back: refused, never exempted
+    (None, "/api2/v2/vault/lists/sort", 409),
 ], ids=["sent text", "another post", "near miss", "read failed", "no read-back"])
 def test_found_takes_a_post_id_only_when_the_relay_read_shows_the_sent_text(relay, read, path, want):
     reads = []
@@ -261,8 +250,6 @@ def test_found_takes_a_post_id_only_when_the_relay_read_shows_the_sent_text(rela
     assert [p for p, _ in reads] == ([] if path != "/api2/v2/posts" else [f"/api2/v2/posts/{POST}"])
 
 
-# one read-back per create path (review 1): posts, the message queue, fan lists, vault folders, trial links (p6p4,
-# 64's note); any other create path is refused
 _QUEUE_READ = (f"/api2/v2/messages/queue/{QID}", {"format": "scheduled"})
 _FOLDER_READ = (f"/api2/v2/vault/lists/{QID}", {})
 _TRIALS_READ = ("/api2/v2/trials", {"offset": 0, "limit": 100})
@@ -314,14 +301,12 @@ def test_found_reads_back_by_create_path_and_refuses_the_rest(relay, path, sent,
                                     "wire_seq": 77, "write": {"method": "POST", "path": path}})
     r = c.post("/__proof/found", json={"row": 4, "of_id": QID})
     assert r.status_code == want, r.text
-    assert (QID in relay._run.created) is (want == 200)   # a refused id is never registered: no undo can touch it
+    assert (QID in relay._run.created) is (want == 200)
     found = [x for x in relay.read_undo_log(relay.UNDO) if x.get("found_by")]
     assert [x["of_id"] for x in found] == ([QID] if want == 200 else [])
     assert reads == read
 
 
-# Phase 3's list-answer creates (social buttons, Things I Like links, stream blocks): read back on the list the proof
-# itself reads after the write; the id listed once and showing the sent label/link (a block: its path's username)
 _SOCIAL, _LINKS = "/api2/v2/users/social/buttons", "/api2/v2/users/links"
 _BLOCKED_READ = ("/api2/v2/streams/users/blocked", {"limit": 50})
 _BTN = {"id": int(QID), "socialMedia": "instagram", "label": "oi-proof-r", "link": "", "username": "instagram"}
@@ -372,7 +357,6 @@ def test_found_reads_back_phase3_list_creates(relay, path, sent, answers, want, 
 
 
 def test_arm_takes_the_runs_marker_for_the_payload_guards(relay):
-    """Round 2 #22: the arm's `marker` is the Run's, so Write.payload binds to this run's exact marker."""
     c = _app(relay, {})
     assert c.post("/__proof/arm", json={"proof": UPLOAD, "of": "fake", "marker": "oi-proof-r"}).status_code == 200
     assert relay._run.marker == "oi-proof-r"
@@ -380,7 +364,6 @@ def test_arm_takes_the_runs_marker_for_the_payload_guards(relay):
     assert relay._run.marker is None
 
 
-# follow-up #10: the PPV send's lost reply: its found id read back on the Proof fan's thread, the sent marker text exact
 _PPV = "p2.bubble-unsend-ppv"
 _THREAD_READ = (f"/api2/v2/chats/{FAN}/messages", {"limit": 10, "order": "desc"})
 _OWN_PPV = {"id": int(MID), "text": "oi-proof-r ppv", "price": 3}
@@ -408,13 +391,11 @@ def test_found_reads_a_lost_ppv_send_back_on_the_proof_fans_thread(relay, answer
 
 @pytest.mark.parametrize("queue_row, want", [
     ({"proof": SEND_NOW, "of_id": QID}, 200),
-    ({"proof": SEND_NOW, "of_id": "900060000000009"}, 409),   # the found id is another queued item
-    ({"proof": UPLOAD, "of_id": QID}, 409),                   # another proof's queue write
+    ({"proof": SEND_NOW, "of_id": "900060000000009"}, 409),
+    ({"proof": UPLOAD, "of_id": QID}, 409),
     (None, 409),
 ], ids=["own queue write", "another item", "another proof", "no queue write"])
 def test_found_publish_takes_only_the_queue_id_its_own_queue_write_made(relay, queue_row, want):
-    """The publish answers `{success}`: its row takes the queued item's id only when this proof's own queue write
-    created that id (no read: the queue reply's id is the Relay's own)."""
     reads = []
     c = _app(relay, {}, reads)
     _arm(c, relay, SEND_NOW)

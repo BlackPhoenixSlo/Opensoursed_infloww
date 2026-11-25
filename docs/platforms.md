@@ -3,6 +3,8 @@
 One product UI, the Next app in `app/`, talking to one backend, the FastAPI
 relay in `service/`. Every surface below loads that same Next app.
 
+Adding a Platform (a creator site like OnlyFans or Fansly, not a surface below): `docs/platform-recipe.md`.
+
 ## Web
 
 - `docker compose up -d` (`docker-compose.yml`) runs:

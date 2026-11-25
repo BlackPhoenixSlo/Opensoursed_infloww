@@ -1,45 +1,17 @@
-"""Phase 2's Mirror check (docs/spec/ofm-not-yet/phase-02-content-chat-writes.md, Testing Decisions): Home, New post,
-My profile, Messages Basic, Vault, Queue, Collections/Bookmarks and Release forms controls, relay mocked, on
-phase_check.py's harness (its docstring: mocks, table rows, checks, --plant, --captures).
-
-Its control list is the Phase 2 proof list (scripts/of-live-proof/proofs/phase2.py PROOFS: page, control as the Not-yet
-sweep labels it), each control's capture record found as `phase2.py --check-sweep` finds it (check 1, runtime state,
-D18/D1). Each Phase 2 control ticket adds its Proof there and its rows here: REQUESTS (its request with X-Account-Id 1,
-from its proof's capture record), RED_NOTES (a mocked 502 shows the red note and keeps the last saved state, story 38), and READS/AFTER (the mocked reads
-a write changes, so its read-back shows it). Empty until the first Phase 2 control ticket: the check then loads
-home/index and checks no console errors.
-Screenshots: /tmp/of-mirror-shots/inapp-content-writes-*.png. Exit 1 on a failed check.
-
-    PORT=3091 python3 -I scripts/of-mirror-check/content_writes.py [--plant rows.json] [--captures dir]
-"""
 import json, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import phase_check  # noqa: E402  (puts scripts/of-live-proof on the path)
 from proofs import phase2  # noqa: E402
 
-REQUESTS=[]       # {"proof", "steps", "fill"} or {"page", "steps", "want": [[method, path, body]]}
-RED_NOTES=[]      # {"page", "steps", "fail": [method, path], "kept": js, "note": text}
-READS={}          # GET /api/of/v2/<path> -> JSON
-AFTER=[]          # (method, path regex, fn(reads, match, body))
-VIEWS={}          # proof id -> page with a query, for check 1 (phase_check.py docstring)
+REQUESTS=[]
+RED_NOTES=[]
+READS={}
+AFTER=[]
+VIEWS={}
 
-INIT=""           # a script run in every page and frame before its own (phase_check.py docstring)
+INIT=""
 
-# ticket 30
-# Record video and Record voice (Home, its State pages, New post): getUserMedia and MediaRecorder stubbed by the init
-# script (spec Testing Decisions, Mirror check 2): a synthetic stream (a canvas's, a real MediaStream, so video-js can
-# show it) and a recorder whose Blob has the asked type; it records video/mp4 and audio/webm (Chrome's: neither of OF's
-# voice types, audio/mpeg nor audio/ogg), so a video goes up as mp4 and a voice note is re-encoded to WAV on upload
-# (ticket 53v, ofMirrorComposer voiceFile): the voice Blob's bytes are a real 16 kHz WAV (Web Audio decodes by content,
-# whatever the label), so the re-encode runs and the upload is audio/wav .wav. The upload is answered with
-# post_upload.py's claim, so the next Post carries it.
-# ASSUMPTION: a Single-Creator row per control on every Home and New post page whose composer takes a mouse click
-# (index, and the State pages that open in the composer: Format text, poll, quiz); every other State page lays its
-# dialog and backdrop over the composer, so a click there goes to the dialog, as on OF, and vitest (ofMirrorPost.test.ts)
-# covers the binding on those pages. Post's body is vitest's (empty text, the claim, price 0); the refused
-# camera/microphone are red-note rows on home/index and new-post/index only (rung 5); overturned by a reviewer wanting
-# the rows on every page, or by a State page whose composer is reachable.
 RECORD_CLAIM={"processId":"p1","host":"h","name":"n"}
 RECORD_INIT=r"""(() => {
   const stream = () => { const c = document.createElement('canvas'); c.width = c.height = 16; c.getContext('2d').fillRect(0, 0, 16, 16); return c.captureStream(); };
@@ -70,34 +42,15 @@ REQUESTS+=[{"page": page, "steps": _record_steps(label), "want": _record_want(la
            for page in _RECORD_PAGES for label in ("Record video", "Record voice")]
 _REFUSE="void (navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('refused', 'NotAllowedError')))"
 _MEDIA="(p) => JSON.parse(top.sessionStorage.getItem(p) || '{}').media_files || []"
-# The voice panel asks for the microphone on its own record button (OF's order), the video recorder on opening.
 RED_NOTES+=[{"page": page, "steps": [label] + ([_RECORD_BUTTON[label]] if label == "Record voice" else []), "prep": _REFUSE, "sent": [],
              "note": {"Record video": "Allow camera access to record a video message",
                       "Record voice": "Allow microphone access to record a voice message"}[label]}
             for page in ("home/index", "new-post/index") for label in ("Record video", "Record voice")]
-# The 502 rows seed the draft with one earlier media item, so "kept" ([62] before and after, in the log) shows the failure drops nothing.
 _SEED="void top.sessionStorage.setItem('oi:new-post:%s', JSON.stringify({text: '', media_files: [62], thumbs: ['data:image/gif;base64,R0lGODlhAQABAAAAACw=']}))"
 RED_NOTES+=[{"page": page, "steps": _record_steps(label)[:3], "fail": ["POST", "/api/of/v2/upload"], "note": "Could not upload: synthetic failure",
              "prep": _SEED % draft, "kept": f"({_MEDIA})('oi:new-post:{draft}')", "sent": [_record_want(label, False)[0]]}
             for page, draft in (("home/index", "home:1"), ("new-post/index", "1")) for label in ("Record video", "Record voice")]
 AFTER+=[("POST", r"/api/of/v2/upload", lambda reads, m, body: {"ready": True, "deduped": False, "vault_id": None, "send_with": [RECORD_CLAIM]})]
-# ticket 31: the chat list header's More, the chat header's More and each message's More on the messages list, its
-# dropdown and folders dialog, the chat page and every State page over it (gallery draws neither the header's nor a
-# message's More; pinned's header button is its own Unpin all). Where a More is reachable, a mouse click opens the chat
-# page's menu (the generator's State link over the list's and the header's More; the message menu over the thread) and
-# one write item per menu sends what it sends on the chat page: Mark all as read, Restrict and Like. Where a State page's
-# dialog or menu backdrop lies over a More, the row checks what a click there lands on (the backdrop's link back to the
-# base page, or the dialog): no mouse reaches the More, as on OF; dead.py and the proof sweep check it Wired. No item
-# here sends to a fan. Mocks as messages.py's, plus a
-# fan message (11, Like on it) and an unread chat (Mark all as read on).
-# ASSUMPTION: where a State page's dialog or backdrop covers a More (the bubble's on all five chat State pages; the
-# list's on folders, price, schedule, tag-people, vault; the header's on price, schedule, tag-people, vault), criterion 1
-# is met by Wired (dead.py) plus the click landing on OF's backdrop link or dialog (rung 1 the measured cover, rung 3
-# "as on OF"); the bubble's More is enabled at bind (no State link over it, so disabled would be Wired in name only)
-# while the list and header Mores stay disabled under their State link. Overturned if the owner wants those menus
-# reachable over the dialog.
-# ASSUMPTION: Restrict's ?ack=false&hide=false is not checked here (the harness records the path only; chatToolWrites'
-# vitest holds the query, and both pages call that one builder) (rung 3); overturned if the recorder is widened.
 _FAN={"id":9001,"name":"Synthetic Fan","username":"synthfan","canRestrict":True,"subscribedOn":True}
 _ME={"id":1,"username":"alphaone","name":"Alpha One","chatMessagesCount":1}
 _FAN_RECORD={"fan_id":9001,"of_username":"synthfan","of_display_name":"Synthetic Fan","avatar_url":None,"custom_nickname":None,
@@ -127,20 +80,13 @@ _LIKE="#oi-msg-menu [data-oi-msg-action='like']"
 _MSG_ITEMS="[...document.querySelectorAll('#oi-msg-menu [data-oi-msg-action]')].map(i => [i.textContent.trim(), i.getAttribute('aria-disabled') === 'true'])"
 _MENU_ITEMS="[...document.querySelectorAll('.of-state-menu [data-oi-menu]')].filter(i => i.checkVisibility()).map(i => i.textContent.trim().replace(/\\s+/g, ' '))"
 _DROP_ITEMS="[...document.querySelectorAll('[data-oi-chats]')].filter(i => i.checkVisibility()).map(i => i.textContent.trim().replace(/\\s+/g, ' '))"
-# What a mouse click at each More's centre lands on ("reachable": the More itself; else the link's href, or "dialog"),
-# message 11's drawn ⋮ ([tagged for the message menu, disabled]: as the chat page's), and the header tools a mouse
-# reaches (ofMirrorChatTools wires the pencil, star and notes on every State page; a dialog covers them on most).
 _COVER=("(() => { const at = (s) => { const el = [...document.querySelectorAll(s)].find(e => e.checkVisibility()); if (!el) return null;"
         " const r = el.getBoundingClientRect(); const h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
         " return h === el || el.contains(h) ? 'reachable' : h?.closest('a[href]')?.getAttribute('href') ?? (h?.closest('.modal, .vdatetime') ? 'dialog' : h?.className ?? null); };"
         " const b = document.querySelector(\"%s\");"
         " const tools = [...document.querySelectorAll('[data-oi-tool]')].filter(t => t.checkVisibility() && at(`[data-oi-tool='${t.dataset.oiTool}']`) === 'reachable').map(t => t.dataset.oiTool);"
         " return [at(\"%s\"), at(\"%s\"), at(\"%s\"), b && [b.hasAttribute('data-oi-msg-menu'), b.disabled], tools]; })()") % (_MSG_MORE, _LIST_MORE, _HEAD_MORE, _MSG_MORE)
-# The chat page's items, as it shows them (measured on messages/chat?chat=9001; no Pin: message 11 has no canBePinned).
-# ticket 42: Report is a hand-off to the chat's onlyfans.com page now, so enabled (was ["Report", True]; measured 2026-11-21).
 _MSG_WANT=[["Copy message text", False], ["Like", False], ["Reply", False], ["Bookmark", False], ["Hide", False], ["Report", False]]
-# Message 11's menu Like label (the thread draws no like state; the menu reads it) and #oi-note right after its bubble
-# when there is a note.
 _LIKE_STATE=("(() => { const b = document.querySelector(\"%s\"); b?.click(); const l = document.querySelector(\"%s\")?.textContent.trim() ?? null;"
              " b?.click(); const n = document.getElementById('oi-note');"
              " return [l, !n || n.previousElementSibling === document.querySelector(\"[data-oi-msg='11']\")]; })()") % (_MSG_MORE, _LIKE)
@@ -148,25 +94,19 @@ _MARK=["POST","/api/of/v2/chats/mark-as-read",None]
 _RESTRICT=["POST","/api/of/v2/users/9001/restrict",None]
 _LIKED=["POST","/api/of/v2/messages/11/like",None]
 REQUESTS+=[
-    # The list header's More: its State link opens the sort dropdown (with the open chat); on the dropdown it closes it.
     {"page":"messages/index", "steps":[_LIST_LINK], "want":[], "opens":_DROPDOWN},
     {"page":"messages/state-filter-dropdown", "steps":[_LIST_LINK], "want":[], "opens":"/of-manager/messages"},
     *({"page":f"messages/{p}?chat=9001", "steps":[_LIST_LINK], "want":[], "opens":f"{_DROPDOWN}?chat=9001"}
       for p in ("chat","chat/gallery","chat/pinned","chat/state-header-menu")),
-    # The dropdown's items (measured; Unread with tips hides while the Creator has no tipsEnabled), and its write.
     {"page":"messages/state-filter-dropdown?chat=9001", "steps":[], "want":[], "after":[_DROP_ITEMS, ["All","Priority","Unread","Newest First","Oldest First","Mark all as read"]]},
     {"page":"messages/state-filter-dropdown", "steps":["Mark all as read"], "want":[_MARK]},
-    # The chat header's More: its State link opens the chat's menu; on the menu it closes it. The menu's items (measured).
     {"page":"messages/chat?chat=9001", "steps":[_HEAD_LINK], "want":[], "opens":f"{_MENU}?chat=9001"},
     {"page":"messages/chat/state-header-menu?chat=9001", "steps":[_HEAD_LINK], "want":[], "opens":_CHAT},
     {"page":"messages/chat/state-header-menu?chat=9001", "steps":[], "want":[], "after":[_MENU_ITEMS,
      ["Copy link to profile","Rename user","Add to / remove from lists","View user's comments","Hide chat","Mute notifications","Restrict","Block","Report"]]},
     {"page":"messages/chat/state-header-menu?chat=9001", "steps":["Restrict"], "want":[_RESTRICT]},
-    # Each message's More opens the chat page's message menu; Like sends the chat page's like.
     {"page":"messages/chat?chat=9001", "steps":["css="+_MSG_MORE], "want":[], "after":[_MSG_ITEMS, _MSG_WANT]},
     {"page":"messages/chat?chat=9001", "steps":["css="+_MSG_MORE, "css="+_LIKE], "want":[_LIKED]},
-    # Covered: a click at each More lands on the backdrop's link to the base page or in the dialog, and no header tool is
-    # reachable under a dialog (measured); the header menu page's tools are (its own menu page, bound before ticket 31).
     {"page":"messages/state-folders", "steps":[], "want":[], "after":[_COVER, ["/of-manager/messages", None, None, None, []]]},
     {"page":"messages/chat/state-header-menu?chat=9001", "steps":[], "want":[], "after":[_COVER, [f"{_DROPDOWN}?chat=9001", _CHAT, _CHAT, [True, False], ["rename","lists","notes"]]]},
     {"page":"messages/chat/state-price?chat=9001", "steps":[], "want":[], "after":[_COVER, [_CHAT, _CHAT, _CHAT, [True, False], []]]},
@@ -179,18 +119,10 @@ RED_NOTES+=[
      "kept":"location.pathname + location.search", "note":"Could not mark all as read: synthetic failure"},
     {"page":"messages/chat/state-header-menu?chat=9001", "steps":["Restrict"], "fail":_RESTRICT[:2],
      "kept":"document.querySelector(\".of-state-menu [data-oi-menu='restrict']\")?.textContent.trim()"},
-    # Like undone (the menu still says Like), the note under message 11 after the undo's redraw.
     {"page":"messages/chat?chat=9001", "steps":["css="+_MSG_MORE, "css="+_LIKE], "fail":_LIKED[:2],
      "kept":_LIKE_STATE, "note":"Could not like: synthetic failure"},
 ]
 
-# ticket 34: the vault folder page's header More (vault/list?list=<id>, the one header More there, ofMirrorVault
-# bindFolderMore) opens the folder menu: Rename opens the folder's Rename category modal (state-add-list?edit=1, as the
-# action row's RENAME; its Save sends the rename and opens the Vault on the folder) and Delete (confirmed; the harness
-# accepts the confirm) goes back to the bare Vault. The vault list's own routes: POST
-# /admin/vault-ai/of-folders/<id>/rename {account_id, name} and DELETE /admin/vault-ai/of-folders/<id>?account_id=
-# (the recorder keeps the path only; useVaultCache's deleteOfFolder adds the query, its X-Account-Id is checked here).
-# Mocks: one synthetic custom folder (701), no media.
 _FOLDER, _FOLDER_PAGE="701", "vault/list?list=701"
 _RENAME_PAGE=f"vault/state-add-list?list={_FOLDER}&edit=1"
 _FOLDER_MORE="css=.l-main-content.m-r-side [at-attr='list_dropdown'] > button"
@@ -200,7 +132,7 @@ _RENAME=["POST", f"/admin/vault-ai/of-folders/{_FOLDER}/rename"]
 _DELETE=["DELETE", f"/admin/vault-ai/of-folders/{_FOLDER}"]
 READS.update({
     "/api/of/v2/vault/lists": {"list":[{"id":int(_FOLDER),"type":"custom","name":"Synthetic folder","hasMedia":True,"photosCount":1,"videosCount":0}],"hasMore":False},
-    "/api/of/v2/vault/media": {"list":[],"hasMore":False},   # no tile: a tile's picture goes through the Relay's /img
+    "/api/of/v2/vault/media": {"list":[],"hasMore":False},
 })
 REQUESTS+=[
     {"page":_FOLDER_PAGE, "steps":[_FOLDER_MORE, "css=#oi-menu [data-oi-value='rename']"], "want":[], "opens":f"/of-manager/{_RENAME_PAGE}"},
@@ -211,17 +143,6 @@ RED_NOTES+=[
     {"page":_RENAME_PAGE, "steps":_rename_steps("Unsaved folder"), "fail":_RENAME, "kept":"location.pathname + location.search", "note":"Could not rename: synthetic failure"},
     {"page":_FOLDER_PAGE, "steps":_DELETE_STEPS, "fail":_DELETE, "kept":"location.pathname + location.search", "note":"Could not delete: synthetic failure"},
 ]
-# ticket 32: New message's list page (its list menu open, messages/send/state-list-dropdown): the nine composer tools,
-# on the Mass draft (`oi:mass:<accountId>`) only; its Send is never clicked here. Add media's picker is stubbed on that
-# page by the init script (one synthetic PNG); Record as ticket 30's. In place: Add media, Add GIF, Record video and
-# voice, Scheduled messages (the draft's fields after the click). The vault, price and tag buttons open New message's
-# dialogs and Format Text New message with its panel open (`opens`, `?format=1`; a click outside OF's list menu closes
-# it; the landing page's row then applies Bold and reads the draft's html): those
-# dialogs keep their picks on the same Mass draft (vitest, ofMirrorComposer.test.ts), and the summary row shows the list
-# page names such picks (seeded) with its own schedule.
-# ASSUMPTION: the navigating tools' draft effect is checked by `opens` plus the seeded summary row, not by a pick in
-# the dialog (rung 5: the harness's frame detaches on the app's navigation, and the dialogs' picks are vitest's and
-# their own tickets'); overturned by a harness that follows the frame across a navigation, which then adds the picks.
 _LIST="messages/send/state-list-dropdown"
 LIST_PICK_INIT=r"""(() => {
   const click = HTMLInputElement.prototype.click;
@@ -240,7 +161,6 @@ READS["/api/of/v2/giphy/proxy/gifs/trending"]={"data":[{"id":"g1","title":"Wave"
 _DRAFT="(JSON.parse(sessionStorage.getItem('oi:mass:1') || '{}')[%s] ?? null)"
 _PNG_UP=["POST","/api/of/v2/upload",{"file":{"type":"image/png","ext":".png"}}]
 _MASS_SEED="void sessionStorage.setItem('oi:mass:1', JSON.stringify(%s))"
-# New message's editor holds "hi", selected (Bold then formats it).
 _FORMAT_PREP=(r"""(() => { const e = document.querySelector("[contenteditable][aria-label='Textbox field']"); e.innerHTML = '<p>hi</p>'; const r = document.createRange();"""
               r""" r.selectNodeContents(e); const s = getSelection(); s.removeAllRanges(); s.addRange(r); })()""")
 _MASS_ONE={"text":"","user_lists":[],"media_files":[62],"thumbs":[_GIF]}
@@ -254,11 +174,9 @@ REQUESTS+=[
     {"page":_LIST, "steps":["Message price"], "want":[], "opens":"/of-manager/messages/send/state-price"},
     {"page":_LIST, "steps":["Tag other creators"], "want":[], "opens":"/of-manager/messages/send/state-tag-people"},
     {"page":_LIST, "steps":["Format Text"], "want":[], "opens":"/of-manager/messages/send?format=1"},
-    # Where Format Text lands: New message with its Format text panel open; Bold on the selected text reaches the draft.
     {"page":"messages/send?format=1", "prep":_FORMAT_PREP, "steps":["css=[data-oi-format-panel] [aria-label='Bold']"], "want":[],
      "after":["[document.querySelector('[data-oi-format-panel]')?.classList.contains('b-form-editor') ?? null, %s]" % (_DRAFT % "'html'"),
               [True, "<p><strong>hi</strong></p>"]]},
-    # The dialogs' picks (vault media, price, a co-tagged creator) on the draft: the list page's line names them.
     {"page":_LIST, "prep":_MASS_SEED % json.dumps({**_MASS_ONE, "price":5, "tags":[{"id":7,"name":"Co Creator","type":"user"}]}),
      "steps":["Scheduled messages", "Save for Later"], "want":[],
      "after":["document.getElementById('oi-chat-summary')?.textContent ?? null", "1 media · Tagged: Co Creator · Price: $5 · Saved for later · Clear"]},
@@ -269,14 +187,7 @@ RED_NOTES+=[{"page":_LIST, "steps":steps, "fail":["POST","/api/of/v2/upload"], "
                                 *(([label, _RECORD_BUTTON[label], _RECORD_BUTTON[label]], _record_want(label, False)[0])
                                   for label in ("Record video", "Record voice")))]
 
-# ticket 33: my own bubbles' extras on the chat page (ofMirrorBubbleExtras bindBubbleExtras): an own PPV (13,
-# $5, media 62, 90 s left) shows Countdown m:ss ticking, Copy as draft and Unsend PPV; an expired own PPV (14) keeps
-# only Copy as draft. Copy as draft fills the Chat draft (`oi:chat:1:9001`) and sends nothing; Unsend PPV's confirm:
-# Cancel sends nothing, Unsend sends the one message delete (useUnsendMessage, this chat only). The stale click (a
-# button whose window closed since the last draw) is vitest's (ofMirrorMessageMenu.test.ts): a draw each second and on
-# every redraw removes such a button before a mouse reaches it.
 _PPV={"text":"<p>ppv</p>","fromUser":_ME,"price":5,"media":[{"id":62,"type":"photo","canView":True}],"isFree":False}
-# Older than ticket 31's two, so they draw above them: ticket 31's cover rows keep message 11 where they measured it.
 READS["/api/of/v2/chats/9001/messages"]["list"][:0]=[
     {"id":13,"createdAt":"2026-10-10T11:58:00Z","cancelSeconds":90,**_PPV},
     {"id":14,"createdAt":"2026-10-10T11:59:00Z","cancelSeconds":0,**_PPV}]
@@ -284,7 +195,6 @@ _BUBBLE="[data-oi-msg='%s'] [data-oi-bubble='%s']"
 _UNSEND_BTN="css="+_BUBBLE % (13, "unsend-ppv")
 _CONFIRM_BTN="css=#oi-msg-confirm footer button:has-text('%s')"
 _UNSEND=["DELETE","/api/of/v2/messages/13",{"withUserId":9001}]
-# Countdown read twice 1.1 s apart: m:ss both times (90 s window) and changed; the expired bubble's extras.
 _TICK=("(async () => { const c = () => document.querySelector(\"%s\")?.textContent ?? null; const a = c();"
        " await new Promise(r => setTimeout(r, 1100)); const b = c(); return [/^1:[0-5]\\d$/.test(a ?? ''), a !== b, /^1:[0-5]\\d$/.test(b ?? '')]; })()") % (_BUBBLE % (13, "countdown"))
 _EXTRAS="[...document.querySelectorAll(\"[data-oi-msg='%s'] [data-oi-bubble]\")].map(e => e.dataset.oiBubble)"
@@ -295,25 +205,17 @@ REQUESTS+=[
     {"page":"messages/chat?chat=9001", "steps":[], "want":[], "after":["[%s, %s]" % (_EXTRAS % 13, _EXTRAS % 14), [["countdown","copy-draft","unsend-ppv"], ["copy-draft"]]]},
     {"page":"messages/chat?chat=9001", "steps":["css="+_BUBBLE % (13, "copy-draft")], "want":[], "after":[_CHAT_DRAFT, ["ppv", 5, [62], "ppv"]]},
     {"page":"messages/chat?chat=9001", "steps":[_UNSEND_BTN, _CONFIRM_BTN % "Cancel"], "want":[], "after":[_BUBBLE_KEPT, [True, True]]},
-    # Last of the rows on message 13: its AFTER hook drops it from the pass's reads (the refetch shows it gone).
     {"page":"messages/chat?chat=9001", "steps":[_UNSEND_BTN, _CONFIRM_BTN % "Unsend"], "want":[_UNSEND],
      "after":["[!!document.querySelector(\"[data-oi-msg='13']\"), document.getElementById('oi-note')?.textContent ?? null]", [False, "Unsent"]]},
 ]
 def _unsent(reads, m, body):
     t=reads["/api/of/v2/chats/9001/messages"]; t["list"]=[x for x in t["list"] if str(x["id"])!=m[1]]
 AFTER+=[("DELETE", r"/api/of/v2/messages/(\d+)", _unsent)]
-# The refused unsend: the bubble stays (useUnsendMessage restores it), the red note under it; message 13 served again.
-# Check 1 opens the three on chat 9001 (the bare chat page draws no own bubble).
 VIEWS|={i: "messages/chat?chat=9001" for i in ("p2.bubble-countdown", "p2.bubble-copy-draft", "p2.bubble-unsend-ppv")}
 RED_NOTES+=[{"page":"messages/chat?chat=9001", "steps":[_UNSEND_BTN, _CONFIRM_BTN % "Unsend"], "fail":_UNSEND[:2],
              "reads":{"/api/of/v2/chats/9001/messages": READS["/api/of/v2/chats/9001/messages"]},
              "kept":_BUBBLE_KEPT, "note":"Could not unsend: synthetic failure", "sent":[_UNSEND]}]
 
-# ticket 42 (D22): the three Reports hand off to onlyfans.com (app/lib/ofMirrorHandoffs.ts reportHandoffUrl: chat measured, post `inferred`;
-# no Relay route, no capture record, no proof): a new tab to exactly the URL (aborted), zero Relay requests, the label
-# "opens onlyfans.com", trigger and end screenshots (phase_check.handoff_rows, Single Creator). The chat header menu's
-# and fan message 11's menu's on chat 9001; another creator's post on Home, on a feed of one synthetic post (77 by the
-# placeholder @synthcreator, the author inline: not among /users/list's) served for that row only.
 _CHAT_REPORT="https://onlyfans.com/my/chats/chat/9001/"
 _POST_REPORT="https://onlyfans.com/77/synthcreator"
 _THEIRS={"id":77,"text":"<p>theirs</p>","postedAt":"2026-10-10T10:05:00Z","author":{"id":4242,"username":"synthcreator","name":"Synth Creator"},"media":[]}

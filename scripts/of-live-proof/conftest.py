@@ -1,4 +1,3 @@
-"""Shared fixtures for the of-live-proof tests."""
 import os
 
 import pytest
@@ -8,7 +7,7 @@ import pytest
 def pw():
     sync = pytest.importorskip("playwright.sync_api")
     if os.getpriority(os.PRIO_PROCESS, 0) < 10:
-        os.setpriority(os.PRIO_PROCESS, 0, 10)   # heavy processes at nice 10; Chromium inherits it
+        os.setpriority(os.PRIO_PROCESS, 0, 10)
     with sync.sync_playwright() as p:
         try:
             p.chromium.launch().close()

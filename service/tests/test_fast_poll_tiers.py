@@ -44,6 +44,7 @@ import time  # noqa: E402
 import types  # noqa: E402
 from datetime import datetime  # noqa: E402
 
+import platforms  # noqa: E402
 import purchase_poll_decide as decide  # noqa: E402
 import purchase_poll as pp  # noqa: E402
 import transaction_ingest as ti  # noqa: E402
@@ -100,7 +101,7 @@ async def _patched(fake_tick, live=ACCOUNTS, stagger=0.0, concurrency=5):
     real_tick = pp.run_fast_tick
 
     async def _tick(aid):
-        # A Fansly Creator takes the product's own platform seam (run_fast_tick -> fansly_revenue).
+        # A Fansly Creator takes the product's own platform seam (run_fast_tick -> its Backend module's tick).
         return await (real_tick(aid) if aid in FANSLY else fake_tick(aid))
 
     async def _fansly_tick(aid):
@@ -113,10 +114,10 @@ async def _patched(fake_tick, live=ACCOUNTS, stagger=0.0, concurrency=5):
     saved_list, saved_off = ti.account_registry.list_accounts, ti.account_health.deactivated_ids
     saved_dead = ti.account_health.dead_session_map
     ti.account_health.dead_session_map = _dead
-    saved_fansly = ti.fansly_backend.is_fansly, ti.fansly_revenue.run_one_tick
+    saved_for_account = platforms.for_account
+    fansly = dataclasses.replace(platforms.FANSLY, backend=types.SimpleNamespace(revenue_tick=_fansly_tick))
     pp.run_fast_tick, pp.boot_grace, ti._is_paused = _tick, _none, _false
-    ti.fansly_backend.is_fansly = lambda a: a in FANSLY
-    ti.fansly_revenue.run_one_tick = _fansly_tick
+    platforms.for_account = lambda a: fansly if a in FANSLY else saved_for_account(a)
     pp._FAST_POLL_STAGGER_S, pp._FAST_POLL_CONCURRENCY = stagger, concurrency
     ti.account_registry.list_accounts = lambda: [{"id": a, "has_session": True} for a in live]
     ti.account_health.deactivated_ids = _off
@@ -127,7 +128,7 @@ async def _patched(fake_tick, live=ACCOUNTS, stagger=0.0, concurrency=5):
             setattr(m, k, v)
         ti.account_registry.list_accounts, ti.account_health.deactivated_ids = saved_list, saved_off
         ti.account_health.dead_session_map = saved_dead
-        ti.fansly_backend.is_fansly, ti.fansly_revenue.run_one_tick = saved_fansly
+        platforms.for_account = saved_for_account
 
 
 async def _one_cycle(outcomes=None, poll=None, **kw) -> list[str]:

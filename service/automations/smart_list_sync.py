@@ -1,38 +1,3 @@
-"""service/automations/smart_list_sync.py — mirror ACTIVE Smart Lists into real
-OnlyFans user lists (Infloww's Smart lists Beta sync).
-
-Bulk lane (`_BULK_KINDS`): a sync is account-wide and slow by design, so it must
-never hold a sender's run slot. Every OnlyFans write goes through
-`of_write_paced` (the account's shared 11s write slot, so senders interleave).
-
-The discipline of the retired `audience_sync`, per list:
-  1. CLAIM — a conditional UPDATE flips the row to `syncing` (the lock the
-     routes respect: PATCH / DELETE / deactivate 409 while it holds), and the
-     rules are read only after the claim, so they cannot change under us.
-  2. TARGET — resolve the rules locally (smart_lists_api). Lists that read
-     subscription facts refresh the roster snapshot first and sync NOTHING off
-     an unusable one. No stored fans at all → no removals (an empty fan table is
-     a broken input, not an empty segment).
-  3. CRAWL — page the OF list's members COMPLETELY before any removal; a crawl
-     that hits the 20k backstop is a failed sync with no writes. Targets above
-     `_MAX_MEMBERS` are refused so the list stays crawlable next time.
-  4. DIFF + WRITE — adds first (bulk `add_users_to_lists`, ids confirmed off
-     OF's echo), then removals one by one, all under ONE per-run write budget
-     (`_MAX_WRITES_PER_RUN`) shared across lists. Whatever is left waits for
-     the next run (state `pending`), which also bounds how fast a wrong target
-     could ever empty a list.
-
-Every run (the recurring rule, or the coalesced job the routes queue) first
-finishes the account's TOMBSTONES — Smart Lists deleted with "Also delete the
-OnlyFans list", kept in state `deleting` — by deleting the OF list the row
-itself names, then the row; a failed delete keeps the tombstone for the next
-run. Then it syncs every active list. The job payload is ignored, so no job
-can point the worker at an OnlyFans list it did not create.
-
-Assumes ONE executor process (the relay): any row still `syncing` when a run
-starts is a crash leftover, because run_once holds a per-(account, kind) lock
-whichever job (rule or route) started the run.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -50,10 +15,11 @@ from of_client import OFAPIError
 log = logging.getLogger("of-relay.automation.smart_list_sync")
 
 _KIND = "smart_list_sync"
-_SEND_PURPOSE = "not_fan_dm"    # list membership, never a message
-_MAX_WRITES_PER_RUN = 40        # ≈7.5 min of paced writes per run, all lists together
-_ADD_CHUNK = 100                # fan ids per bulk add call
-_MAX_MEMBERS = 19_000           # under the 20k crawl backstop
+_SEND_PURPOSE = "not_fan_dm"
+# Leftover waits for the next run, which also bounds how fast a wrong target could empty a list.
+_MAX_WRITES_PER_RUN = 40  # ≈7.5 min of paced writes per run, all lists together
+_ADD_CHUNK = 100
+_MAX_MEMBERS = 19_000  # under the 20k crawl backstop
 _ROSTER_USABLE = ("crawled", "fresh")
 
 
@@ -76,9 +42,9 @@ async def _save(list_id: int, **values) -> None:
 
 
 async def _claim(list_id: int) -> SmartList | None:
-    """Flip an active, unlocked row to `syncing`; the row as claimed, or None."""
     async with get_session() as s:
         res = await s.execute(
+            # Only one run per (account, kind) is in flight, so a row still syncing now was left by a crash.
             update(SmartList)
             .where(SmartList.id == list_id, SmartList.is_active.is_(True),
                    or_(SmartList.sync_state.is_(None), SmartList.sync_state != "syncing"))
@@ -91,9 +57,6 @@ async def _claim(list_id: int) -> SmartList | None:
 
 
 def _confirmed(resp, of_list_id: int, chunk: list[int]) -> set[int]:
-    """The chunk ids OF echoed back as now in the list. OF answers the bulk add
-    with `{"<listId>": [ids…]}`; any other shape is taken at face value — the
-    next run's full crawl is the real check either way."""
     if not isinstance(resp, dict):
         return set(chunk)
     echoed = resp.get(str(of_list_id), resp.get(of_list_id))
@@ -109,8 +72,6 @@ def _confirmed(resp, of_list_id: int, chunk: list[int]) -> set[int]:
 
 
 class _Run:
-    """Per-run state shared by every list: the client, the write budget, and
-    the roster refresh result (refreshed at most once per run)."""
 
     def __init__(self, account_id: str, client):
         self.account_id = account_id
@@ -124,7 +85,6 @@ class _Run:
 
 
 async def _sync_one(run: _Run, row: SmartList) -> dict:
-    """Sync ONE claimed row. Returns the column values to store with the result."""
     from smart_lists_api import (
         _load_normalised_fans, _rules_of, resolve, uses_subscription_facts,
     )
@@ -138,7 +98,6 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
         if run.roster not in _ROSTER_USABLE:
             return {"sync_state": "error",
                     "sync_error": f"subscriber roster unavailable ({run.roster}) — nothing synced"}
-    # The snapshot counts as fresh only after a usable refresh in this run.
     fans = await _load_normalised_fans(run.account_id, rules,
                                        roster_fresh=run.roster in _ROSTER_USABLE)
     target = set(resolve(rules, fans))
@@ -155,7 +114,7 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
         if not new_id:
             return {"sync_state": "error", "sync_error": "OnlyFans did not return a list id"}
         of_list_id = int(new_id)
-        # Persist at once: the next run must find it, never create a second one.
+        # Persist at once: the next run must find it, never create a second list.
         await _save(row.id, of_list_id=of_list_id, of_list_name=row.name)
         row.of_list_name = row.name
 
@@ -164,7 +123,6 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
             _crawl_list_ids_blocking, run.client, of_list_id)
     except OFAPIError as e:
         if _not_found(e):
-            # Deleted on OnlyFans: forget it, the next run creates a fresh one.
             return {"sync_state": "error", "of_list_id": None, "of_list_name": None,
                     "member_count": None,
                     "sync_error": "the OnlyFans list was deleted there — a new one is "
@@ -173,7 +131,7 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
     if truncated:
         return {"sync_state": "error",
                 "sync_error": "OnlyFans list crawl incomplete (20k backstop) — nothing synced"}
-    # Rename only once the crawl has shown the list still exists on OnlyFans.
+    # Rename only after the crawl has shown the list still exists on OF.
     if row.of_list_name != row.name and run.budget > 0:
         await run.write(lambda: run.client.rename_list(of_list_id, row.name))
         await _save(row.id, of_list_name=row.name)
@@ -230,8 +188,6 @@ async def _sync_one(run: _Run, row: SmartList) -> dict:
 
 
 async def _finish_tombstone(run: _Run, list_id: int, of_list_id: int | None) -> bool:
-    """Delete a tombstone's OnlyFans list, then the tombstone. False (row kept
-    for the next run) when OnlyFans refused or the budget is spent."""
     if of_list_id is not None:
         if run.budget <= 0:
             return False
@@ -253,12 +209,8 @@ async def _finish_tombstone(run: _Run, list_id: int, of_list_id: int | None) -> 
 
 @register(_KIND)
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
-    # The payload is ignored on purpose: every run works from this account's
-    # own rows, so no job can name an OnlyFans list for the worker to delete.
-    from smart_lists_api import DELETING  # lazy: the plugin scan never loads the router
+    from smart_lists_api import DELETING
     async with get_session() as s:
-        # Only one run per (account, kind) is ever in flight, so a row still
-        # `syncing` now was left by a crash — release it.
         await s.execute(
             update(SmartList)
             .where(SmartList.account_id == str(account_id), SmartList.sync_state == "syncing")

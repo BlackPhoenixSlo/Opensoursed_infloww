@@ -1,8 +1,3 @@
-"""Seam 2: `scrub` and `check_record` on planted and committed capture records, and the check-records command.
-
-Expected records come from the spec's Capture record contract (docs/spec/ofm-not-yet/phase-00-live-capture-proof-harness.md,
-Implementation Decisions, Contracts) and ticket 06, written out literally.
-"""
 import copy
 import json
 import subprocess
@@ -123,7 +118,6 @@ GATHERER = {"id": "collections--bookmarks-create-list", "mode": "js", "bundle_bu
     ({**GATHERER, "requests": [{"method": "GET", "path": "/x", "source": {"file": "app.js"}}]}, "symbol"),
     ({**GATHERER, "live_capture": f"pending — {CREATOR} session dead"}, "digit run"),
     ({**GATHERER, "note": f"see {EMAIL}"}, "email"),
-    # a Fan id in each provenance field, or a provenance-looking block off its fixed path, is still caught
     (with_(("of_rev",), FAN), "digit run"),
     ({**GATHERER, "bundle_build": FAN}, "digit run"),
     (with_(("proof", "evidence"), f"slop/evidence/{FAN}"), "digit run"),
@@ -132,10 +126,8 @@ GATHERER = {"id": "collections--bookmarks-create-list", "mode": "js", "bundle_bu
     ({**GATHERER, "requests": [{"source": {"file": FAN, "symbol": "x"}}]}, "digit run"),
     (with_(("request", "body"), {"source": {"evidence": FAN, "file": f"{FAN}.js"}}), "digit run"),
     ({**GATHERER, "hosts": {"janus": {"source": {"file": "83602.js", "offset": 1611956}}}}, "digit run"),
-    # a response anywhere holds status and key names only
     ({**GATHERER, "requests": [{"source": {"file": "app.js", "symbol": "x"},
                                 "response": {"status": 200, "rows": [{"name": "Tom"}]}}]}, "response rows"),
-    # quoted header names (DevTools "Copy as fetch") and bare session cookie pairs
     (with_(("request", "body"), {"note": '"headers":{"cookie":"a","x-bc":"9f"}'}), "header line"),
     (with_(("request", "body"), {"note": "sess=abc123; fp=1"}), "header line"),
 ])
@@ -143,7 +135,7 @@ def test_check_fails_planted_record(rec, problem):
     problems = check_record(rec)
     assert any(problem in p for p in problems), problems
     text = " ".join(problems)
-    assert FAN not in text and CREATOR not in text and EMAIL not in text  # the check never echoes a secret
+    assert FAN not in text and CREATOR not in text and EMAIL not in text
 
 
 @pytest.mark.parametrize("rec", [

@@ -61,7 +61,6 @@ from relay_host import roster_window_max_age_s
 from relay_host import server_module_name
 from relay_host import spawn_bg as _spawn_bg
 from relay_host import stop_account_pump as _stop_account_pump
-from relay_host import sync_and_link_after_bootstrap as _sync_and_link_after_bootstrap
 
 log = logging.getLogger("of-relay")
 
@@ -156,6 +155,8 @@ def bootstrap_session(body: _BootstrapBody = Body(...)) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=f"unknown mode: {body.mode}")
     except session_bootstrap.CurlParseError as e:
         raise HTTPException(status_code=400, detail=f"curl parse error: {e}")
+    except account_registry.PlatformCollision as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -194,11 +195,13 @@ def bootstrap_fansly_session(body: _FanslySessionBody = Body(...)) -> dict[str, 
 
     The Fansly twin of /admin/session/bootstrap's paste-curl mode — but there
     is no curl and no signing to derive: the session is a small JSON blob the
-    extension lifts out of the fansly.com tab. We persist it beside the OF
-    accounts, stamp the meta with platform="fansly" + the creator's display
-    name, then run the SAME sync+ownership-link the OF path runs so the account
-    shows up in the switcher and passes the isolation gate."""
+    extension lifts out of the fansly.com tab. Nothing is written until the
+    token's own `me()` answers as `accountId` (else 400) and the id is no other
+    Platform's Creator (else 409); then the blob lands beside the OF accounts,
+    the meta gets platform="fansly" + the creator's display name, and the same
+    post_bootstrap_hooks the OF path runs evict, reload and restart the pump."""
     import fansly_backend
+    import platforms
 
     account_id = str(body.accountId)
     session = {
@@ -211,8 +214,33 @@ def bootstrap_fansly_session(body: _FanslySessionBody = Body(...)) -> dict[str, 
         "check_key": body.check_key,
     }
 
-    # Write the session into the account dir (next to any OF cousins).
-    adir = account_registry.account_dir(account_id)
+    try:
+        adir = account_registry.account_dir(account_id)
+    except account_registry.NotAnAccountId as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    def _refuse_collision() -> None:
+        try:
+            account_registry.ensure_platform(account_id, platforms.FANSLY.key)
+        except account_registry.PlatformCollision as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+    _refuse_collision()
+    try:
+        me, session = fansly_backend.identify(session)
+    except Exception as e:  # noqa: BLE001 — any failure means the token is not proven
+        why = f"{type(e).__name__}: {e}"
+        if body.token:  # client errors can carry request headers
+            why = why.replace(body.token, "***")
+        log.warning("fansly session for %s not proven: %s", account_id, why)
+        raise HTTPException(status_code=400, detail=f"Fansly did not accept this session: {why}")
+    me_id = str(me.get("id") or "")
+    if me_id != account_id:
+        raise HTTPException(status_code=400, detail=(
+            f"this session signs in as Fansly account {me_id or '(none)'}, not {account_id}"))
+    _refuse_collision()
+
+    name = me.get("name") or me.get("username")
     adir.mkdir(parents=True, exist_ok=True)
     session_file = adir / fansly_backend.SESSION_FILENAME
     session_file.write_text(json.dumps(session, indent=2) + "\n")
@@ -221,27 +249,16 @@ def bootstrap_fansly_session(body: _FanslySessionBody = Body(...)) -> dict[str, 
     except OSError:
         pass
 
-    # Evict any stale cached client, then resolve the creator's display name
-    # off a live me() so the switcher shows a name, not an id.
-    fansly_backend.drop(account_id)
-    name = None
-    try:
-        me = fansly_backend.get_client(account_id).me()
-        name = me.get("name") or me.get("username")
-    except Exception:
-        log.warning("fansly me() failed during setup for %s", account_id, exc_info=True)
-
     account_registry.upsert_account(
         account_id,
-        platform="fansly",
+        platform=platforms.FANSLY.key,
         name=name,
         nickname=body.nickname or name or f"Fansly {account_id}",
     )
     if body.make_active:
         account_registry.set_active_account_id(account_id)
 
-    # Same ownership-link + SQL mirror the OF bootstrap runs.
-    _sync_and_link_after_bootstrap(account_id)
+    post_bootstrap_hooks(account_id)
 
     return {"ok": True, "account_id": account_id, "platform": "fansly", "name": name}
 

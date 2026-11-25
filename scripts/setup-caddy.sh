@@ -1,31 +1,9 @@
 #!/usr/bin/env bash
 #
-# setup-caddy.sh — replace the cloudflared quick tunnel with a real
-# Caddy + Let's Encrypt HTTPS reverse proxy on the VPS.
 #
-# Usage:
-#   ./scripts/setup-caddy.sh root@<vps-ip> <domain>
 #
-# Example:
-#   ./scripts/setup-caddy.sh root@YOUR_VPS_IP chatterly.example.com
 #
-# What it does:
-#   1. Verifies the domain's A record points at the VPS IP (loops every
-#      10s for up to 5 min if DNS hasn't propagated yet).
-#   2. Installs Caddy from its official apt repo (idempotent).
-#   3. Writes /etc/caddy/Caddyfile reverse-proxying <domain> → 127.0.0.1:3001
-#      with WebSocket support, gzip, sensible upload size cap, and a
-#      proper X-Forwarded-* header set so the relay's audit log sees the
-#      real client IP instead of "127.0.0.1".
-#   4. Opens TCP 80 (cert challenge) + 443 (HTTPS) in UFW if active;
-#      no-ops if UFW isn't installed (Hostinger's default).
-#   5. Restarts caddy. Let's Encrypt issues a cert on first boot (~30s).
-#   6. Stops + disables the docker `tunnel` profile so cloudflared stops
-#      eating bandwidth.
-#   7. Prints the new HTTPS URL with the SHARE_TOKEN.
 #
-# Reversible: `docker compose --profile tunnel up -d` brings the
-# cloudflared tunnel back; `systemctl stop caddy` shuts off the new path.
 
 set -euo pipefail
 
@@ -56,7 +34,6 @@ SSH=(ssh -p "$SSH_PORT" -o StrictHostKeyChecking=accept-new "$SSH_TARGET")
 say() { printf '\n\033[36m▸ %s\033[0m\n' "$*"; }
 die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
-# Get the VPS's public IP so we can sanity-check the A record.
 VPS_IP=$("${SSH[@]}" 'curl -sS -4 https://ipinfo.io/ip')
 [[ -n "$VPS_IP" ]] || die "couldn't determine VPS public IP"
 say "VPS public IP: $VPS_IP — checking that $DOMAIN resolves to it"

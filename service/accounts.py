@@ -263,6 +263,11 @@ def set_role(account_id: str, role: str | None) -> dict[str, Any]:
     return upsert_account(account_id, role=role or "")
 
 
+def _has_session(adir: Path) -> bool:
+    import platforms  # call time: platforms imports accounts
+    return any((adir / f).exists() for f in platforms.SESSION_FILES)
+
+
 def list_accounts(include_watchers: bool = False) -> list[dict[str, Any]]:
     """Return all accounts with their meta, sorted by last_used_at desc.
 
@@ -284,12 +289,7 @@ def list_accounts(include_watchers: bool = False) -> list[dict[str, Any]]:
                 continue
         if not include_watchers and meta.get("role") == ROLE_WATCHER:
             continue
-        latest = (adir / "latest.json")
-        # A session exists if the OnlyFans pointer (latest.json) is present, OR
-        # this is a Fansly account whose session blob (fansly_session.json) is.
-        # Without the Fansly branch a freshly-connected Fansly account reads as
-        # "no session" and gets filtered out of the switcher / roster / inbox.
-        meta["has_session"] = latest.exists() or (adir / "fansly_session.json").exists()
+        meta["has_session"] = _has_session(adir)
         # Normalize the additive fields so every row the UI switcher receives
         # carries a platform + name, even accounts that predate them (→ OF).
         meta.setdefault("platform", "onlyfans")
@@ -421,6 +421,30 @@ def get_platform(account_id: str) -> str:
     return meta.get("platform") or "onlyfans"
 
 
+class PlatformCollision(Exception):
+    pass
+
+
+def ensure_platform(account_id: str, key: str) -> None:
+    """Raise PlatformCollision when `account_id` is already another Platform's
+    Creator: its meta's Platform, else (no readable meta) the Platform whose
+    session file is in its directory. Only reads."""
+    import platforms  # call time: platforms imports accounts
+    adir = _account_path(account_id)
+    if adir is None or not adir.is_dir():
+        return
+    meta = load_meta(account_id)
+    if isinstance(meta, dict):
+        held = platforms.get(meta.get("platform"))
+    else:
+        held = next((p for p in platforms.ALL if (adir / p.session_file).exists()), None)
+    wanted = platforms.get(key)
+    if held is not None and held is not wanted:
+        raise PlatformCollision(
+            f"account {account_id} is already a {held.label} Creator; "
+            f"a {wanted.label} session can't be linked to it")
+
+
 def delete_account(account_id: str) -> bool:
     """Remove an account directory entirely. If it was active, clear active.
     Returns True if anything was deleted."""
@@ -464,15 +488,8 @@ def get_active_account_id() -> str | None:
         active = _read_active_unlocked()
     if active and is_watcher(active):
         active = None
-    # Recognize BOTH an OnlyFans session (latest.json) and a Fansly session
-    # (fansly_session.json); otherwise an active Fansly account looks
-    # session-less here and gets flipped to some other account below.
-    if active:
-        of_latest = _account_path(active, "latest.json")
-        fansly = _account_path(active, "fansly_session.json")
-        if (of_latest is not None and of_latest.exists()) or \
-           (fansly is not None and fansly.exists()):
-            return active
+    if active and (d := _account_path(active)) is not None and _has_session(d):
+        return active
 
     # Fallback: most-recently-used account with a session
     candidates = [a for a in list_accounts() if a.get("has_session")]

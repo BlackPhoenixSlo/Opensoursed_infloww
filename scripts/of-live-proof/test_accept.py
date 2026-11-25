@@ -1,6 +1,3 @@
-"""accept.py's parsing (ticket 77): batches of at most N with Lockout proofs last, the evidence folder from run.sh's
-output, and which failed batches retry a proof alone (only a Page.goto timeout or "no Mirror frame", run_ok true).
-Reports planted; prove.py's run_ok verdict on planted reports too."""
 import pytest
 
 import accept
@@ -28,7 +25,7 @@ def test_phase3_list_holds_its_lockout_proofs_last():
     assert all(len(ids) <= 4 for ids, _ in got)
     flags = [lk for _, lk in got]
     assert flags == sorted(flags) and flags[-1] is True
-    assert "settings--trial-create-link" in {i for ids, _ in got for i in ids}   # WIRED_PROOFS join the run
+    assert "settings--trial-create-link" in {i for ids, _ in got for i in ids}
 
 
 def test_evidence_folder_from_output():
@@ -49,7 +46,7 @@ def test_goto_timeout_and_no_mirror_frame_retry_alone():
 
 def test_parked_proof_beside_a_retryable_failure_still_retries():
     timeout = ("b", "fail", "TimeoutError: Page.goto: Timeout 30000ms exceeded.")
-    assert accept.retry_ids(rep(("a", "parked"), timeout)) == ["b"]   # prove's proof_ok: parked is no failure
+    assert accept.retry_ids(rep(("a", "parked"), timeout)) == ["b"]
 
 
 def test_any_other_failure_is_fail_not_retry():
@@ -57,16 +54,16 @@ def test_any_other_failure_is_fail_not_retry():
     assert accept.retry_ids(rep(("a", "fail", "effect did not hold"), timeout)) is None
     assert accept.retry_ids(rep(("b", "fail", "TimeoutError: Page.goto: Timeout", "wire: unarmed write"))) is None
     assert accept.retry_ids(rep(("b", "fail", "TimeoutError: Frame.wait_for_function: Timeout 30000ms"))) is None
-    assert accept.retry_ids(rep(("b", "fail"))) is None   # no problem named
+    assert accept.retry_ids(rep(("b", "fail"))) is None
 
 
 def test_run_ok_false_or_missing_is_fail_even_with_only_retryable_proofs():
     timeout = ("b", "fail", "TimeoutError: Page.goto: Timeout 30000ms exceeded.")
-    assert accept.retry_ids(rep(timeout, run_ok=False)) is None   # a solo retry can never hide this batch
+    assert accept.retry_ids(rep(timeout, run_ok=False)) is None
     assert accept.retry_ids(rep(("a", "pass"), exit=0, run_ok=False)) is None
     r = rep(timeout)
     del r["run_ok"]
-    assert accept.retry_ids(r) is None   # a report without the verdict (older prove.py) is FAIL
+    assert accept.retry_ids(r) is None
 
 
 def test_failed_run_with_every_proof_passing_is_fail():
@@ -82,9 +79,9 @@ def _run_rep(**over):
 
 
 def test_prove_run_ok_is_the_run_verdict_without_proof_states():
-    assert prove.run_ok(_run_rep(), 2, True) is True   # a failing proof leaves the run verdict alone
-    assert prove.run_ok(_run_rep(), 2, False) is False   # no session secrets to scan for
-    assert prove.run_ok(_run_rep(), 3, True) is False   # a proof neither run nor parked
+    assert prove.run_ok(_run_rep(), 2, True) is True
+    assert prove.run_ok(_run_rep(), 2, False) is False
+    assert prove.run_ok(_run_rep(), 3, True) is False
 
 
 @pytest.mark.parametrize("key,val", [

@@ -95,15 +95,13 @@ def evict(account_id: str | None = None, *, only: OFClient | None = None) -> boo
     relay_coalesce.forget(account_id)   # no caller joins a flight on the evicted client
     for client in retired:
         client.close_signed_sessions()
-    # Fansly accounts are pooled in fansly_backend, not here (their client is
-    # the shim, not an OFClient). Invalidation still has ONE home — this
-    # function — so a re-capture or proxy edit can't leave a stale shim behind
-    # for the lane that happens to call the other module. Imported lazily and
-    # guarded: a deployment without the sibling `fansly/` package has no Fansly
-    # pool to drop, and eviction must not fail because of it.
+    # Backend modules pool their own clients; invalidation keeps ONE home here so a
+    # re-capture or proxy edit can't leave a stale Shim behind. Lazy and guarded:
+    # `platforms` imports every Backend module, and eviction must not fail on one.
     try:
-        import fansly_backend
+        import platforms
     except Exception:
         return True
-    fansly_backend.drop(account_id)
+    for backend in platforms.backends():
+        backend.drop(account_id)
     return True

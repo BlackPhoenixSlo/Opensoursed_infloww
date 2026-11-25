@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""Keep running proof (tickets 16 + 26): each scenario boots promo_proof_relay.py (running
-supervisor, temp DB, loopback only) against promo_fake_of.py and drives the product through
-its own routes (PATCH/POST /admin/promotions) and OF toast frames. Expectations (EXPECT) are
-written before any run; a disagreement is a FINDING, never an edited expectation.
-
-"seeded" = time travel: every timestamp of the Creator (DB rows + the fake's promos) moves
-back by N seconds (`shift`), standing in for N seconds passing. The toast gate's in-memory
-monotonic read time cannot move: scenarios that need it wait in real time.
-
-  promo_preempt_proof.py --slice A|B [--only NAME[,NAME]] [--relay-root DIR] --out DIR
-writes DIR/counts.json (one entry per scenario) and DIR/<scenario>/{dump.json,relay*.log}.
-  promo_preempt_proof.py --serve [--port 8797]   seeded Kept campaign for screenshots
-"""
 from __future__ import annotations
 
 import argparse
@@ -50,9 +37,8 @@ def E(slice_, posts, reason, **want):
     return {"slice": slice_, "posts": posts, "reason": reason, "want": want}
 
 
-# ── Expectations: written before running; never edited to make a run pass ───────────
+# Written before running; never edited to make a run pass.
 EXPECT = {
-    # Slice A
     "after-end": E("A", 1, "P0 ends: one After-end re-create; the next backstop finds P1 live",
                    keep_running=True, sources=["auto_ended"]),
     "mn02-unparsed": E("A", 1, "200 with a non-JSON body = unknown; never listed, so 900 s on it is lost: "
@@ -82,13 +68,12 @@ EXPECT = {
     "mn12-takeover": E("A", 1, "create with Keep running + expect_taken_from=C1 moves the tick (notice); a "
                        "stale expectation 409s before any POST", second_status=409, taken_notice=True),
     "mn13": E("A", 1, "preempt off, claims 99: one near_cap re-check (one slot), it re-creates past the cap",
-              recheck_jobs=2, keep_running=True),      # near_cap, then the new promo's first read
+              recheck_jobs=2, keep_running=True),
     "mn14": E("A", 1, "OF flips finished on the last claim; its toast lands under the poke floor: deferred, "
               "fires after the floor (real time)", keep_running=True),
     "fence-unset": E("A", 0, "relay rebooted with PROMO_CREATE_HOST_ID unset: boot notice; run fenced "
                      "before any read", notices_fence_min=1, get_after_unset=0),
     "toast-100": E("A", 1, "100 toasts 1.5 s apart: the gate pokes near the trigger; one re-create"),
-    # Slice B
     "fill-90": E("B", 1, "cap 100, Trusted count 90: one Fill while old claims < cap; OF ends the old at "
                  "the create", sources=["auto_fill"], claims_lt_cap=True, gap_s=0),
     "fill-twice": E("B", 2, "the promo Keep running made itself: its first read (~10 s after the create) "
@@ -119,7 +104,7 @@ EXPECT = {
                      keep_running=True, preempt=False, sources=["auto_fill", "auto_ended"]),
 }
 
-_LIVE: list = []    # every relay started, for cleanup
+_LIVE: list = []
 
 
 def _free_port() -> int:
@@ -129,7 +114,6 @@ def _free_port() -> int:
 
 
 def _now() -> datetime:
-    """Naive UTC, as the DB stores it."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
@@ -222,7 +206,6 @@ class Scenario:
         self.cid: int | None = None
         self.port = 0
 
-    # ── plumbing ──────────────────────────────────────────────
     def relay(self, env: dict | None = None, tag: str = "relay") -> Relay:
         r = Relay(self, env or {}, tag).start()
         self.relays.append(r)
@@ -256,7 +239,6 @@ class Scenario:
         return {r["name"]: r for r in con.execute(f"PRAGMA table_info({table})")}
 
     def insert(self, table: str, row: dict) -> int:
-        """Insert the columns this schema has; NOT NULL ones left out get a neutral value."""
         con = self.db()
         with con:
             cols = self.cols(con, table)
@@ -272,7 +254,6 @@ class Scenario:
         con.close()
         return rid
 
-    # ── world ─────────────────────────────────────────────────
     def start(self, env: dict | None = None) -> None:
         self.relay(env)
         st, d = self.api("POST", "/auth/register", {"username": "proof-owner", "password": PASSWORD})
@@ -367,7 +348,6 @@ class Scenario:
              "promo_keep_state": ("read_at", "recheck_at")}
 
     def shift(self, secs: float) -> None:
-        """Seeded time travel: the Creator's DB timestamps and the fake's promos move `secs` back."""
         self.settle()
         d = timedelta(seconds=secs)
         con = self.db()
@@ -397,7 +377,6 @@ class Scenario:
         self.settle()
 
     def backstop(self) -> None:
-        """Seeded: an hour passes, so the hourly backstop run is due."""
         self.shift(3600)
 
     def toasts(self, n: int, gap: float, claim: bool = True) -> None:
@@ -432,7 +411,6 @@ class Scenario:
             if r.alive():
                 r.hook("POST", "/__proof/env", {"set": set_ or {}, "unset": list(unset)})
 
-    # ── results ───────────────────────────────────────────────
     def dump(self) -> dict:
         con = self.db()
 
@@ -535,7 +513,6 @@ def judge(name: str, c: dict, log: str) -> list[str]:
     return f
 
 
-# ── scenarios ────────────────────────────────────────────────────────────────────────
 def sc_after_end(s):
     s.start()
     p0 = s.fake.add(AID, cap=100, message=MSG)
@@ -608,11 +585,11 @@ def sc_mn07_two_relays(s):
     con = s.db()
     job = dict(con.execute("SELECT * FROM scheduled_jobs WHERE kind='promo_reactivate' ORDER BY id").fetchone())
     con.close()
-    for _ in range(2):  # seeded: one due job per relay (run locks are per process), so both run at once
+    for _ in range(2):
         s.insert("scheduled_jobs", {**{k: v for k, v in job.items() if k != "id"}, "status": "pending",
                                     "attempts": 0, "last_error": None, "run_at": _ts(_now()),
                                     "created_at": _ts(_now())})
-    s.settle()          # wakes both relays together
+    s.settle()
     s.extra["runs_per_relay"] = {r.tag: r.log.read_text().count("kind=promo_reactivate run_id=")
                                  for r in s.relays}
     s.backstop()
@@ -647,9 +624,9 @@ def sc_mn09_trial(s):
         p = s.fake.newest(AID)
         s.fake.set_claims(AID, p.id, 10)
         s.fake.finish(AID, p.id)
-        s.backstop()            # After-end
+        s.backstop()
         if k < 2:
-            s.backstop()        # the new promo read live before it fills
+            s.backstop()
     s.backstop()
 
 
@@ -705,12 +682,12 @@ def sc_mn13(s):
     p0 = s.fake.add(AID, cap=100, message=MSG)
     s.tick(s.campaign(p0), preempt=False)
     s.fake.set_claims(AID, p0, 99)
-    s.backstop()                        # reads 99: near_cap re-check queued (+90 s)
-    s.toasts(1, 0, claim=False)         # a toast OF has not counted yet: poke, under the floor
-    s.shift(61)                         # seeded: floor passes; a second run, slot taken
+    s.backstop()
+    s.toasts(1, 0, claim=False)
+    s.shift(61)
     s.extra["runs_before_cap"] = len([r for r in s.dump()["runs"]])
-    s.fake.set_claims(AID, p0, 100)     # full; OF still lists it live
-    s.shift(91)                         # seeded: the near_cap re-check is due
+    s.fake.set_claims(AID, p0, 100)
+    s.shift(91)
 
 
 def sc_mn14(s):
@@ -719,7 +696,7 @@ def sc_mn14(s):
     p0 = s.fake.add(AID, cap=100, claims=98, message=MSG)
     s.tick(s.campaign(p0), preempt=False)
     t0 = time.time()
-    s.toasts(2, 0.2)                    # 99, 100: OF flips finished on the last
+    s.toasts(2, 0.2)
     s.extra["toast_after_tick_s"] = round(time.time() - t0, 1)
     s.extra["poke_fired_after_s"] = s.wait_for(lambda: s.posts() == 1, 150)
     s.settle()
@@ -746,19 +723,18 @@ def sc_fill_90(s):
     s.start()
     p0 = s.fake.add(AID, cap=100, message=MSG)
     s.tick(s.campaign(p0), preempt=True)
-    s.toasts(90, 0.05)                  # the gate pokes at 89; under the floor: deferred
-    s.shift(61)                         # seeded: the floor passes
+    s.toasts(90, 0.05)
+    s.shift(61)
 
 
 def sc_fill_twice(s):
     sc_fill_90(s)
     first = s.keep_state().get("kept_of_promo_id")
-    # real time: the first read is due ~10 s after the create and folds the new promo in at 0
     s.extra["first_read_after_s"] = s.wait_for(
         lambda: (s.wake() or True) and (k := s.keep_state()).get("kept_of_promo_id") not in (None, first)
         and k.get("first_claims") == 0, 60)
-    s.toasts(90, 0.05)                  # claims on the new promo; the gate pokes at 89
-    s.shift(125)                        # seeded: the poke floor and the 2 min Cooldown pass
+    s.toasts(90, 0.05)
+    s.shift(125)
 
 
 def _seed_skew(s, skew):
@@ -804,7 +780,7 @@ def sc_mn01_nonzero_start(s):
     p0 = s.fake.add(AID, cap=100, message=MSG)
     s.tick(s.campaign(p0), preempt=True)
     s.fake.set_claims(AID, p0, 90)
-    s.backstop()                        # Fill → P1 at 2 claims
+    s.backstop()
     s.backstop()
     s.fake.set_claims(AID, s.fake.newest(AID).id, 92)
     s.backstop()
@@ -818,8 +794,8 @@ def sc_mn04_failed_preempt(s):
     p0 = s.fake.add(AID, cap=100, message=MSG)
     s.tick(s.campaign(p0), preempt=True)
     s.fake.set_claims(AID, p0, 90)
-    s.backstop()                        # Fill → 429; OF ended P0 anyway; recovery re-check
-    s.shift(126)                        # seeded: back-off over, the re-check runs
+    s.backstop()
+    s.shift(126)
     s.backstop()
 
 
@@ -829,7 +805,7 @@ def sc_mn04_no_slot(s):
     cid = s.campaign(p0)
     s.tick(cid, preempt=True)
     now = _now()
-    for m in (20, 10):                  # seeded: two automatic creates this hour (never sent)
+    for m in (20, 10):
         s.insert("promo_create_reservations", {
             "account_id": AID, "campaign_id": cid, "source": "auto_ended", "state": "failed",
             "terms_json": "{}", "error_class": "not_sent", "host_id": HOST, "reconcile_reads": 0,
@@ -848,10 +824,10 @@ def sc_mn08_guessed_end(s):
     p0 = s.fake.add(AID, cap=100, message=MSG)
     cid = s.campaign(p0, finish_days=1, expires_at=_ts(_now() + timedelta(seconds=200)))
     s.tick(cid, preempt=True)
-    s.shift(231)                        # seeded: the expiry re-check; OF still lists it live
+    s.shift(231)
     s.extra["posts_mid"] = s.posts()
     s.fake.finish(AID, p0)
-    s.shift(61)                         # seeded: the expiry retry
+    s.shift(61)
     s.backstop()
 
 
@@ -871,10 +847,10 @@ def sc_switch_off(s):
         p0 = s.fake.add(AID, cap=100, message=MSG)
         s.tick(s.campaign(p0), preempt=True)
         s.toasts(90, 0.05)
-        s.backstop()                    # reads 90, switch off: no Fill
+        s.backstop()
         s.extra["posts_mid"] = s.posts()
         s.extra["wait_mid"] = s.keep_state().get("wait_reason")
-        s.toasts(10, 0.05)              # the gate (trigger = cap) pokes at 99; deferred
+        s.toasts(10, 0.05)
         s.shift(61)
     finally:
         s.env(unset=["PROMO_PREEMPT_ENABLED"])
@@ -886,7 +862,7 @@ def sc_second_live(s):
     p0 = s.fake.add(AID, cap=100, message=MSG)
     s.tick(s.campaign(p0), preempt=True)
     s.fake.set_claims(AID, p0, 90)
-    s.backstop()                        # Fill → P1; P0 stays live
+    s.backstop()
     s.backstop()
     s.backstop()
 
@@ -897,8 +873,8 @@ def sc_preempt_400(s):
     p0 = s.fake.add(AID, cap=100, message=MSG)
     s.tick(s.campaign(p0), preempt=True)
     s.fake.set_claims(AID, p0, 90)
-    s.backstop()                        # Fill → 400
-    s.shift(126)                        # seeded: the recovery re-check; P0 still live
+    s.backstop()
+    s.shift(126)
     s.extra["posts_mid"] = s.posts()
     s.fake.set_claims(AID, p0, 100)
     s.fake.finish(AID, p0)
@@ -909,7 +885,6 @@ SCENARIOS = {n: globals()["sc_" + n.replace("-", "_")] for n in EXPECT}
 
 
 def serve(port: int, root: Path) -> int:
-    """Screenshot stack: fake OF + proof relay, Creator 1000001 with a Kept campaign; Ctrl-C stops."""
     out = Path(tempfile.mkdtemp(prefix="promo-serve-out-", dir="/tmp"))
     s = Scenario("serve", out, root)
     s.port = port

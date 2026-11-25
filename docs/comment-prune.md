@@ -4,7 +4,7 @@ Owner GO 2026-11-24. Goal: comment + docstring lines ≤10% of the start recount
 
 ## Baseline
 
-Recount 2026-11-24 at 672e58bca (`scripts/comment_budget.py --report`): **190,452** lines, 4,126 files. Target ≤ **19,045**.
+Recount 2026-11-24 at 672e58bca (`scripts/comment_budget.py --report`): **190,452** lines, 4,126 files. Target ≤ **19,045**. After tooling fixes the same tree counts 189,905 (`--rebaseline`); target unchanged.
 
 | dir | lines | files |
 |---|---:|---:|
@@ -40,9 +40,9 @@ Recount 2026-11-24 at 672e58bca (`scripts/comment_budget.py --report`): **190,45
 
 | # | scope | files | lines before | after | PR | sha |
 |---|---|---:|---:|---:|---|---|
-| T | tooling | — | — | — | | |
-| B01 | scripts/ (pilot) | 211 | 10,749 | | | |
-| B02 | service/automations | 121 | 16,987 | | | |
+| T | tooling | — | — | — | #1047 | aef290087 |
+| B01 | scripts/ (pilot) | 209 | 10,493 | 77 | #1048 | a6cf32141 |
+| B02 | service/automations | 121 | 16,987 | 935 | | |
 | B03 | service/db, bio_pages, seeds, scripts | 168 | 5,737 | | | |
 | B04 | service/[a-l]*.py | | | | | |
 | B05 | service/[m-z]*.py | | | | | |
@@ -73,15 +73,27 @@ Pinned: files patched by public-sync's strip patches (`.claude/skills/public-syn
 
 | file | reason | batch | swept |
 |---|---|---|---|
+| service/automations/_ppv_readback.py | twin-infloww_crm#7 | B02 | |
+| service/automations/full_ai_ppv.py | twin-infloww_crm#7 | B02 | |
+| service/automations/full_ai_settle.py | twin-infloww_crm#7 | B02 | |
+| service/automations/reply_mass_funnel.py | pinned: test_full_ai_owner_io/test_full_ai_stand_down diff it vs origin/main | B02 | |
+| service/automations/wcfi_decide.py | pinned: test_full_ai_stand_down diffs it vs origin/main | B02 | |
 
 ## Decisions
+
+- 2026-11-25 deploy-all before batch 1: run 20261124T2242Z-aef290087, AE 5cbabe72f, public 120df2c8c, Twin a31224323 (URL 000 = no DNS yet), demo/landing skip.
+- 2026-11-25 B01 pilot: 4 Sonnet workers × ~52 files, 2–3 min each; 75 whys restored (~0.7%), Opus restored 1 more from a keyword sample. Pre-existing on main, not from prune: `scripts/script-fill-rollout/test_w30_sf_repros.py` 2 failed; `test_script_fill_lock_hold.py` and `ScriptsPage.test.tsx` 10k-render time out under full-suite load only.
+- 2026-11-25 Workers write helper scripts under a per-worker name (`/tmp/Bnn-gN-*`); two B01 workers shared `/tmp/ins.py` and duplicated each other's inserts (cleaned, gate green).
+
+- 2026-11-25 Fable on pilot: brief drops the ~1% expectation (service/ 3–5%), Keep list adds locks/never-twice/money/measured OF/read-marking/proxy-session; ~25 files per worker; second restore pass per batch for service/; full run-tests + deploy-all after each of B02–B05, B06+ unattended at owner cadence.
+- 2026-11-25 B02: 2 passes (4 + 5 Sonnet workers), 353 whys restored (~2.1%). Full run: test_agency_notifications fails on main too; test_script_fill_lock_hold load-only. Source-pinning tests found by the full run: two diff files vs origin/main (files left unpruned), one asserts comment text (kept).
 
 - 2026-11-24 TS gate = custom AST walk (JSX whitespace per React rule, empty `{/* */}` dropped) + removeComments printer on non-JSX files; owner suggested printer only — printer alone false-fails JSX comment removal and misses nothing the walk catches.
 - 2026-11-24 Shell gate = `shfmt --to-json` AST equality without positions and comments (heredoc `#` lines are content; `--minify` normalised code like `$(( $a*2 ))`).
 - 2026-11-24 Runtime docstrings kept as code: files using `__doc__`/getdoc/typer/click (all docstrings), modules/classes/functions named in any `X.__doc__`/`getdoc(X)` repo-wide, FastAPI route handlers (`@x.get/post/...`, `add_api_route` endpoints), pydantic/TypedDict model classes incl. aliases and subclasses repo-wide (OpenAPI descriptions). Equality takes the union of base and head context.
 - 2026-11-24 Directives keyed by code position (tokens before them, own-line vs trailing, cookie/shebang line); `{/* */}` between two JSX texts is kept (removal merges React text children).
 - 2026-11-24 Strip-then-restore: `comment_strip.py` removes everything mechanically; Sonnet only restores whys. Proven on whole repo: 3,891 files stripped, gate 3,891 ok, floor 44 lines.
-- 2026-11-24 Fable (pre-design): continue; add full tests per batch + public-sync dry-run in pilot; source-reading tests (~105) and public-sync strip patches invisible to AST equality. Opus: full-tree strip test run done before batch 1; strip-patch targets pinned via `--skip-file`.
+- 2026-11-24 Fable (pre-design): continue; add full tests per batch + public-sync dry-run in pilot; source-reading tests (~105) and public-sync strip patches invisible to AST equality. Opus: full `run-tests.sh` on every batch instead of one full-tree run; strip-patch targets pinned via `--skip-file`.
 - 2026-11-24 `scripts/fu_hillclimb/hillclimb.py` `typo_sha` hashes `inspect.getsource` of typo functions → key changes once (research cache only); accepted.
 - 2026-11-24 CI workflow gates itself on `.claude/REVIEW.md` existing, so it runs only in this repo (Twin/public client PRs would otherwise go red).
 
@@ -89,6 +101,7 @@ Pinned: files patched by public-sync's strip patches (`.claude/skills/public-syn
 
 | file | comment | why |
 |---|---|---|
+| service/automations/_router_jev.py | `asks_offer_details 0.6 measured 2026-11-17` | test_full_ai_offer_details_route asserts the text |
 
 ## Restored after review
 

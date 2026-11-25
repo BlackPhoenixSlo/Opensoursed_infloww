@@ -1,12 +1,3 @@
-"""Rollout driver, describe side (Phase 3a). The fill side (3b) is test_script_fill_rollout_fill.py.
-
-Seam 1: `rollout_decide` tables (spec docs/spec/phase-03-rollout-to-every-creator.md, Testing Decisions).
-Driver: `rollout.py` run in-process (and once as a killed subprocess) against the in-process fake relay of
-fake_relay.py (fixtures in conftest.py), standing in for the slop scenario's real relay until the slop-runner runs
-`script-fill-rollout`.
-
-Run: venv/bin/python -m pytest scripts/script-fill-rollout -q
-"""
 from __future__ import annotations
 
 import os
@@ -27,7 +18,6 @@ from fake_relay import BASE, ITEM_MC_REAL, SESSION, Cr, Fake, journal, kinds, ru
 HERE = Path(__file__).resolve().parent
 
 
-# ── Seam 1: rollout_decide tables ───────────────────────────────────────────
 
 
 @pytest.mark.parametrize("acct,want", [
@@ -37,7 +27,6 @@ HERE = Path(__file__).resolve().parent
     ({**BASE, "has_session": False}, (False, "no_session")),
     ({**BASE, "session_dead_at": "2026-11-20T10:00:00"}, (False, "dead_session")),
     ({**BASE, "is_active": False}, (False, "deactivated")),
-    # first reason wins
     ({**BASE, "platform": "fansly", "has_session": False}, (False, "not_onlyfans")),
     ({**BASE, "session_dead_at": "x", "is_active": False}, (False, "dead_session")),
 ])
@@ -102,9 +91,9 @@ def test_sweep_outcome(name, before, after, progress, cap, want):
     ({"day": "2026-11-20", "spent_millicents": 1000, "cap_millicents": 10000},
      {"day": "2026-11-20", "spent_millicents": 3500}, 2500),
     ({"day": "2026-11-20", "spent_millicents": 9000, "cap_millicents": 10000},
-     {"day": "2026-11-21", "spent_millicents": 1500}, 2500),          # across 00:00 UTC: 1500 + (10000 - 9000)
+     {"day": "2026-11-21", "spent_millicents": 1500}, 2500),
     ({"day": "2026-11-20", "spent_millicents": 10500, "cap_millicents": 10000},
-     {"day": "2026-11-21", "spent_millicents": 700}, 700),            # old day already past its cap
+     {"day": "2026-11-21", "spent_millicents": 700}, 700),
     ({"day": "2026-11-20", "spent_millicents": 3000}, {"day": "2026-11-20", "spent_millicents": 3000}, 0),
 ])
 def test_sweep_spend(cb, ca, want):
@@ -125,7 +114,6 @@ def test_run_spend_over_days():
 
 
 @pytest.mark.parametrize("spent,running,want", [
-    # ceiling 20000 mc, 250 x 20 mc = 5000 per sweep reserved
     (0, 0, True), (15000, 0, True), (15001, 0, False),
     (10000, 1, True), (10001, 1, False),
     (5000, 2, True), (5001, 2, False), (0, 2, True),
@@ -147,7 +135,7 @@ def test_may_sweep(spent, running, want):
      "same_error"),
     ({"stops": [["a", "TimeoutError"], ["b", "ValueError"]]}, None),
     ({"stops": [["a", "TimeoutError"], ["b", None], ["c", "TimeoutError"]]}, None),
-    ({"stops": [["a", "TimeoutError"], ["a", "TimeoutError"]]}, None),    # one Creator twice is not two
+    ({"stops": [["a", "TimeoutError"], ["a", "TimeoutError"]]}, None),
     ({"stops": [["a", "TimeoutError"]]}, None),
     ({"jev": [["a", False], ["b", False]]}, "jev"),
     ({"jev": [["a", False], ["b", True]]}, None),
@@ -157,7 +145,7 @@ def test_pause_reason(window, want):
     assert rd.pause_reason(window) == want
 
 
-@pytest.mark.parametrize("codes,want", [   # W30 F51: sweeps left in flight carry a code; the worst one names the pause
+@pytest.mark.parametrize("codes,want", [
     ({"start_unanswered"}, "start_unanswered"),
     ({"describe_still_running"}, "describe_still_running"),
     ({"recount_unreadable"}, "recount_unreadable"),
@@ -211,7 +199,7 @@ def test_throughput_counts_overlap_once():
     ]
     tp = rd.throughput(lines)
     assert tp["creators"] == {"a": 10.0, "b": 20.0}
-    assert tp["run"] == 20.0          # 300 items over the 15-minute union, not 20 summed minutes
+    assert tp["run"] == 20.0
     lines.append({"kind": "sweep", "creator": "a", "before": 100, "after": 130, "started": 1200, "ended": 1260})
     tp = rd.throughput(lines)
     assert tp["creators"]["a"] == round(130 / 11, 2)
@@ -264,14 +252,12 @@ def test_resume_open_or_defer_never_drops_an_in_flight_sweep(line):
     j = HEAD + [_ln("sweep_start", "a", target=250, before=0), line]
     c = rd.resume(j, now=10.0)["creators"]["a"]
     assert c["state"] == "running" and c["sweep"]["target"] == 250
-    st = rd.resume(j + [_sw("a", 0, 250, "continue")])            # only a sweep line settles it
+    st = rd.resume(j + [_sw("a", 0, 250, "continue")])
     assert st["creators"]["a"]["state"] == "pending" and "sweep" not in st["creators"]["a"]
     assert st["spent_mc"] == 100
 
 
 def test_resume_not_started_closes_the_reservation_without_a_sweep():
-    """The start POST is journaled first (sweep_start); a refused start closes it with `not_started`: pending,
-    no spend, not a zero-progress sweep, and a defer written after it applies (W30 F5)."""
     j = HEAD + [_ln("sweep_start", "a", target=250, before=0),
                 _ln("sweep", "a", before=0, after=0, outcome="not_started", http=429,
                     cap_before={"day": "d", "spent_millicents": 0}, cap_after={"day": "d", "spent_millicents": 0})]
@@ -325,7 +311,6 @@ def test_sanitise_drops_ids_names_sequences_and_long_digit_runs():
     assert "312345678" in full and "alicefans" in full
 
 
-# ── Driver against the fake relay ───────────────────────────────────────────
 
 def test_refuses_non_loopback_without_a_request(tmp_path, monkeypatch):
     def boom(*a, **k):
@@ -354,9 +339,9 @@ def test_journal_read_skips_a_line_cut_by_a_kill(tmp_path):
     j = core.Journal(tmp_path / "j.jsonl", "apply")
     j.write("plan", "100", sequence="S")
     with open(j.path, "ab") as fh:
-        fh.write(b'{"creator": "100", "kind": "apply", "undo": [{"id": 2, "med')   # killed mid-write
+        fh.write(b'{"creator": "100", "kind": "apply", "undo": [{"id": 2, "med')
     assert [ln["kind"] for ln in j.read()] == ["plan"]
-    j.write("readback", "100", sequence="S")              # never glued onto the cut line
+    j.write("readback", "100", sequence="S")
     assert [ln["kind"] for ln in j.read()] == ["plan", "readback"]
     assert len(j.path.read_text().splitlines()) == 3
 
@@ -372,7 +357,7 @@ def test_refuses_non_master_and_missing_session(serve, tmp_path, monkeypatch):
     url = serve(fake)
     fake.is_admin = False
     assert run(url, tmp_path, "measure") == 2
-    assert run(url, tmp_path, "measure", "--owner-session") == 0   # operator vouches: owns every Creator
+    assert run(url, tmp_path, "measure", "--owner-session") == 0
     fake.is_admin = True
     monkeypatch.setenv("SFR_SESSION", "wrong")
     assert run(url, tmp_path, "measure") == 2
@@ -421,7 +406,7 @@ def test_roster_reasons_listed_once_and_journaled_once_per_run(serve, tmp_path, 
     assert run(url, tmp_path, "describe", "--live") == 0
     assert len(kinds(tmp_path, "roster")) == 2
     started = {p[1] for p in fake.posts if p[0].endswith("/describe-all")}
-    assert started == {"100"}   # skipped Creators are never worked
+    assert started == {"100"}
 
 
 def test_measure_records_the_numbers(serve, tmp_path):
@@ -442,7 +427,7 @@ def test_dry_run_of_every_mode_writes_nothing(serve, tmp_path):
     before = {c.id: (c.described, c.spent, c.complete) for c in fake.cr.values()}
     for mode in rollout.MODES:
         assert run(url, tmp_path, mode) in (0, 4), mode
-    assert {p[0] for p in fake.posts} <= {"/admin/saved-replies/fill/plan"}   # read-only: writes nothing
+    assert {p[0] for p in fake.posts} <= {"/admin/saved-replies/fill/plan"}
     assert {c.id: (c.described, c.spent, c.complete) for c in fake.cr.values()} == before
     assert not kinds(tmp_path, "sweep_start") and not kinds(tmp_path, "run_start") and not kinds(tmp_path, "collect")
 
@@ -455,12 +440,11 @@ def test_collect_answers_pause_and_reports_page_capped_mirror(serve, tmp_path):
     url = serve(fake)
     assert run(url, tmp_path, "collect", "--live") == 0
     col = {ln["creator"]: ln for ln in kinds(tmp_path, "collect")}
-    assert set(col) == {"101", "102"}                       # A's mirror is complete: no Collect
+    assert set(col) == {"101", "102"}
     assert col["101"]["pauses"] == 1 and col["101"]["complete"] is True
     assert col["102"]["complete"] is False
     assert [(ln["creator"], ln["reason"]) for ln in kinds(tmp_path, "open")] == [("102", "mirror_incomplete")]
-    assert [p[1] for p in fake.posts if p[0] == "/admin/vault-ai/collect"] == ["101", "102"]   # one each per run
-    # describe then works C on what its mirror holds and leaves it open, not done
+    assert [p[1] for p in fake.posts if p[0] == "/admin/vault-ai/collect"] == ["101", "102"]
     assert run(url, tmp_path, "describe", "--live") == 0
     assert c.described == 400
     assert kinds(tmp_path, "open")[-1] == {**kinds(tmp_path, "open")[-1], "creator": "102",
@@ -482,13 +466,12 @@ def test_three_creators_sweep_in_parallel_in_250_steps(serve, tmp_path):
     assert targets == {"100": [250, 500, 750, 1000], "101": [250, 500, 600], "102": [250, 300]}
     assert [c.described for c in crs] == [1000, 600, 280]
     sweeps = kinds(tmp_path, "sweep")
-    for c in crs:   # the journal's recount is the DB's count
+    for c in crs:
         assert [s for s in sweeps if s["creator"] == c.id][-1]["after"] == c.described
     assert {s["creator"]: s["outcome"] for s in sweeps if s["outcome"] == "done"} == \
         {"100": "done", "101": "done", "102": "done"}
     rs = kinds(tmp_path, "run_start")
     assert len(rs) == 1 and rs[0]["ceiling_mc"] == 3 * 200 * 100 and rs[0]["eligible"] == 3
-    # a re-run finds everything done and starts nothing
     n = len(fake.posts)
     assert run(url, tmp_path, "describe", "--live") == 0
     assert len(fake.posts) == n and len(kinds(tmp_path, "run_start")) == 1
@@ -499,7 +482,7 @@ def test_slots_one_runs_one_at_a_time(serve, tmp_path):
     url = serve(fake)
     assert run(url, tmp_path, "describe", "--live", "--slots", "1") == 0
     assert fake.max_running == 1
-    with pytest.raises(SystemExit) as e:   # usage: argparse's exit 2
+    with pytest.raises(SystemExit) as e:
         run(url, tmp_path, "describe", "--live", "--slots", "4")
     assert e.value.code == 2
 
@@ -509,7 +492,7 @@ def test_stops_jev_not_ready_low_ceiling_and_cap(serve, tmp_path):
     ok = Cr("101", "b", describable=250)
     fake = Fake([jev, ok])
     url = serve(fake)
-    assert run(url, tmp_path, "describe", "--live") == 0          # open does not change the exit code
+    assert run(url, tmp_path, "describe", "--live") == 0
     assert [(o["creator"], o["reason"]) for o in kinds(tmp_path, "open")] == [("100", "jev_not_ready")]
     assert not any(aid == "100" for p, aid, _ in fake.posts)
     assert ok.described == 250
@@ -518,12 +501,12 @@ def test_stops_jev_not_ready_low_ceiling_and_cap(serve, tmp_path):
     url2 = serve(fake2)
     j2 = tmp_path / "low"
     j2.mkdir()
-    assert run(url2, j2, "describe", "--live", "--ceiling-cents", "10") == 3   # 10c < one 250 x 20 mc sweep
+    assert run(url2, j2, "describe", "--live", "--ceiling-cents", "10") == 3
     assert fake2.posts == []
     assert [p["reason"] for p in kinds(j2, "pause")] == ["ceiling"]
 
     capped = Cr("400", "y", spent=100000, cap=100000)
-    mid = Cr("401", "z", describable=600, cap=3000)                 # caps out after 300 items mid-sweep
+    mid = Cr("401", "z", describable=600, cap=3000)
     fake3 = Fake([capped, mid])
     url3 = serve(fake3)
     j3 = tmp_path / "cap"
@@ -533,7 +516,6 @@ def test_stops_jev_not_ready_low_ceiling_and_cap(serve, tmp_path):
     assert set(d) == {"400", "401"}
     assert d["400"]["until"] % 86400 == 0 and d["400"]["until"] > time.time()
     assert not any(aid == "400" and p.endswith("/describe-all") for p, aid, _ in fake3.posts)
-    # same day: deferred Creators are skipped, still exit 4, nothing new starts
     n = len(fake3.posts)
     assert run(url3, j3, "describe", "--live") == 4 and len(fake3.posts) == n
 
@@ -570,18 +552,17 @@ def test_two_zero_progress_sweeps_open_no_progress(serve, tmp_path):
     (o,) = kinds(tmp_path, "open")
     assert o["reason"] == "no_progress" and "in a row" in o["detail"]
     n = len(fake.posts)
-    assert run(url, tmp_path, "describe", "--live") == 0 and len(fake.posts) == n   # sticky: not retried
+    assert run(url, tmp_path, "describe", "--live") == 0 and len(fake.posts) == n
 
 
 def test_ceiling_counts_journaled_spend_across_runs(serve, tmp_path):
     a = Cr("100", "a", describable=1000, per_poll=250)
     fake = Fake([a])
     url = serve(fake)
-    # ceiling 60c = 6000 mc; reserve 5000 per sweep; real spend 2500 mc per 250 items
     assert run(url, tmp_path, "describe", "--live", "--ceiling-cents", "60") == 3
     assert a.described == 250 and rd.resume(journal(tmp_path))["spent_mc"] == 2500
     assert run(url, tmp_path, "describe", "--live", "--ceiling-cents", "60") == 3
-    assert a.described == 250   # 2500 + 5000 > 6000
+    assert a.described == 250
     assert run(url, tmp_path, "describe", "--live", "--ceiling-cents", "200") == 0
     assert a.described == 1000
     assert [r["ceiling_mc"] for r in kinds(tmp_path, "run_start")] == [6000, 20000]
@@ -608,17 +589,17 @@ def test_resume_after_kill_awaits_running_sweeps_and_skips_done(serve, tmp_path)
     for c in crs[:3]:
         c.per_poll = 50
     assert run(url, tmp_path, "describe", "--live") == 0
-    for c in crs[:3]:   # each in-flight sweep awaited (no second start while it ran), then stepped on
+    for c in crs[:3]:
         ev = [e for e in fake.events if e[1] == c.id]
         assert ev == [("start", c.id, 250), ("end", c.id, 250), ("start", c.id, 500), ("end", c.id, 500)]
         assert c.described == 500
-    assert not any(aid == "103" for path, aid, _ in fake.posts)   # done Creator: no sweep
+    assert not any(aid == "103" for path, aid, _ in fake.posts)
     first = kinds(tmp_path, "sweep")[:3]
     assert {s["creator"] for s in first} == {"100", "101", "102"} and all(s["target"] == 250 for s in first)
 
 
 def test_report_full_and_sanitised(serve, tmp_path, monkeypatch):
-    clock = iter(range(1_800_000_000, 1_900_000_000, 6))   # 6 s per reading: sweeps take minutes, not ms
+    clock = iter(range(1_800_000_000, 1_900_000_000, 6))
     monkeypatch.setattr(rollout, "now", lambda: float(next(clock)))
     crs = [Cr("312345678", "alicefans", describable=600, per_poll=50),
            Cr("498765432", "bobby_b", describable=300, per_poll=50)]
@@ -641,7 +622,7 @@ def test_report_full_and_sanitised(serve, tmp_path, monkeypatch):
     ipm = [c.strip() for c in next(r for r in text.splitlines() if r.startswith("| Creator")).split("|")] \
         .index("Items/minute")
     assert len(done) == 2 and all(float(r.split("|")[ipm]) > 0 for r in done)
-    assert "deepinfra" in text and "deepseek" not in text   # describe purposes only
+    assert "deepinfra" in text and "deepseek" not in text
     assert kinds(tmp_path, "report")
     assert oct((tmp_path / "j.jsonl").stat().st_mode & 0o777) == "0o600"
 
@@ -661,8 +642,6 @@ COL_STATUS, COL_CONT = "/admin/vault-ai/collect/status", "/admin/vault-ai/collec
 
 
 def test_failing_start_is_retried_after_a_sleep_then_left_in_flight(serve, tmp_path, monkeypatch):
-    """A 5xx start answer is unknown (the relay may still claim and bill it): retried on the same reservation,
-    bounded, then left in flight (never closed, never re-baselined) and the run pauses (W30 F40)."""
     monkeypatch.setattr(core, "POLL_S", 0.05)
     bad, good = Cr("100", "a"), Cr("101", "b", describable=250)
     fake = Fake([bad, good])
@@ -670,9 +649,9 @@ def test_failing_start_is_retried_after_a_sleep_then_left_in_flight(serve, tmp_p
     url = serve(fake)
     assert run(url, tmp_path, "describe", "--live") == core.EXIT_PAUSED
     hits = fake.hits[(DA, "100")]
-    assert len(hits) == rd.RETRY_BUDGET                               # bounded, never forever
-    assert all(b - a >= 0.05 for a, b in zip(hits, hits[1:]))       # each retry waits a poll interval
-    assert len(kinds(tmp_path, "sweep_start")) == 2 and not kinds(tmp_path, "open")   # one reservation for 100
+    assert len(hits) == rd.RETRY_BUDGET
+    assert all(b - a >= 0.05 for a, b in zip(hits, hits[1:]))
+    assert len(kinds(tmp_path, "sweep_start")) == 2 and not kinds(tmp_path, "open")
     assert kinds(tmp_path, "pause")[-1]["reason"] == "start_unanswered"
     assert rd.resume(journal(tmp_path))["creators"]["100"]["state"] == "running"
     assert good.described == 250
@@ -683,7 +662,7 @@ def test_failing_target_probe_is_bounded(serve, tmp_path, monkeypatch):
     a = Cr("100", "a")
     fake = Fake([a])
     fake.fail[(PLAN_P, "100")] = lambda c: None if not fake.hits[(PLAN_P, "100")] or \
-        len(fake.hits[(PLAN_P, "100")]) % 2 else 502   # the read at 1000 answers, the read at t fails
+        len(fake.hits[(PLAN_P, "100")]) % 2 else 502
     url = serve(fake)
     assert run(url, tmp_path, "describe", "--live") == 0
     assert [o["reason"] for o in kinds(tmp_path, "open")] == ["relay_errors"]
@@ -698,15 +677,15 @@ def test_unreadable_recount_keeps_the_sweep_in_flight_and_counts_it_next_run(ser
     url = serve(fake)
     assert run(url, tmp_path, "describe", "--live") == 3
     assert len(kinds(tmp_path, "sweep_start")) == 1 and not kinds(tmp_path, "sweep")
-    assert not kinds(tmp_path, "open")                                  # no line drops the in-flight sweep
+    assert not kinds(tmp_path, "open")
     assert [p["reason"] for p in kinds(tmp_path, "pause")] == ["recount_unreadable"]
     assert rd.resume(journal(tmp_path))["creators"]["100"]["state"] == "running"
     fake.fail.clear()
     assert run(url, tmp_path, "describe", "--live") == 0
     (sw,) = kinds(tmp_path, "sweep")
     assert (sw["before"], sw["after"], sw["outcome"]) == (0, 250, "done")
-    assert rd.resume(journal(tmp_path))["spent_mc"] == 250 * ITEM_MC_REAL   # the sweep's spend is not lost
-    assert len([p for p in fake.posts if p[0] == DA]) == 1                 # awaited, never restarted
+    assert rd.resume(journal(tmp_path))["spent_mc"] == 250 * ITEM_MC_REAL
+    assert len([p for p in fake.posts if p[0] == DA]) == 1
 
 
 def test_redirects_are_not_followed(serve, tmp_path):
@@ -716,7 +695,7 @@ def test_redirects_are_not_followed(serve, tmp_path):
     fake.redirect_me = url2 + "/auth/me"
     url = serve(fake)
     assert run(url, tmp_path, "measure") == 2
-    assert other.seen == []                          # the session cookie never left for the Location
+    assert other.seen == []
 
 
 def test_collect_poll_loop_is_bounded(serve, tmp_path, monkeypatch):
@@ -752,7 +731,6 @@ def test_dry_run_reserves_running_sweeps_like_the_live_run(serve, tmp_path, caps
     j = core.Journal(tmp_path / "j.jsonl", "describe")
     for cid in ("100", "101"):
         j.write("sweep_start", cid, target=250, before=0, cap_before={}, started=0.0, goal=600, complete=True)
-    # ceiling 140c = 14,000 mc; each sweep reserves 250 x 20 = 5,000: two running + one more is 15,000
     assert run(url, tmp_path, "describe", "--ceiling-cents", "140") == 3
     out = capsys.readouterr().out
     assert "describe 102: would pause" in out and fake.posts == []
@@ -761,8 +739,6 @@ def test_dry_run_reserves_running_sweeps_like_the_live_run(serve, tmp_path, caps
 
 
 def test_dry_run_labels_a_start_past_the_free_slots_conditional(serve, tmp_path, capsys):
-    """W30 F13: with every slot taken, a later Creator starts only after a sweep ahead ends and only if its real
-    spend leaves the ceiling room: the dry run says so instead of a plain "would sweep"."""
     fake = Fake([Cr("100", "a"), Cr("101", "b")])
     assert run(serve(fake), tmp_path, "describe", "--slots", "1") == 0
     out = capsys.readouterr().out
@@ -773,7 +749,6 @@ def test_dry_run_labels_a_start_past_the_free_slots_conditional(serve, tmp_path,
 
 
 def test_collect_open_never_drops_a_sweep_left_in_flight(serve, tmp_path):
-    # a describe run was killed with a sweep in flight; the sweep then finished on the server (250 items, 2,500 mc)
     a = Cr("100", "a", describable=250, described=250, spent=250 * ITEM_MC_REAL, complete=False)
     fake = Fake([a])
     fake.fail[(COL_STATUS, "100")] = 403
@@ -784,9 +759,9 @@ def test_collect_open_never_drops_a_sweep_left_in_flight(serve, tmp_path):
     assert run(url, tmp_path, "collect", "--live") == 0
     assert [o["reason"] for o in kinds(tmp_path, "open")] == ["collect_unreadable_403"]
     run(url, tmp_path, "describe", "--live")
-    (sw,) = kinds(tmp_path, "sweep")                                    # the in-flight sweep was awaited
+    (sw,) = kinds(tmp_path, "sweep")
     assert (sw["before"], sw["after"]) == (0, 250)
-    assert rd.resume(journal(tmp_path))["spent_mc"] == 250 * ITEM_MC_REAL   # its spend reached run_spend
+    assert rd.resume(journal(tmp_path))["spent_mc"] == 250 * ITEM_MC_REAL
     assert not [p for p in fake.posts if p[0] == DA]
 
 
@@ -801,13 +776,13 @@ def test_failing_summary_is_retried_on_its_own_status_and_skips_the_plan_read(se
     assert run(url, tmp_path, "describe", "--live") == 0
     assert [(o["creator"], o["reason"]) for o in kinds(tmp_path, "open")] == [("100", "relay_errors")]
     assert len(fake.hits[(SUMMARY_P, "100")]) == rd.RETRY_BUDGET
-    assert (PLAN_P, "100") not in fake.hits                            # no plan read after a failed summary
+    assert (PLAN_P, "100") not in fake.hits
     assert good.described == 250
 
 
 def test_collect_that_stays_paused_ends_after_the_pause_budget(serve, tmp_path, monkeypatch):
     monkeypatch.setattr(core, "POLL_S", 0.001)
-    assert rd.COLLECT_PAUSE_BUDGET < 50                                # the fake heals at 50
+    assert rd.COLLECT_PAUSE_BUDGET < 50
     stuck, ok = Cr("100", "a", complete=False, collect_pauses=1, collect_stuck=True), \
         Cr("101", "b", complete=False, collect_items=5)
     fake = Fake([stuck, ok])
@@ -827,13 +802,13 @@ def test_status_4xx_while_running_is_retried_not_recounted(serve, tmp_path, monk
     assert run(url, tmp_path, "describe", "--live") == 3
     hits = fake.hits[(DA + "/status", "100")]
     assert len(hits) == rd.RETRY_BUDGET
-    assert all(b - a >= 0.02 for a, b in zip(hits, hits[1:]))       # each retry waits a poll interval
+    assert all(b - a >= 0.02 for a, b in zip(hits, hits[1:]))
     assert len(kinds(tmp_path, "sweep_start")) == 1 and not kinds(tmp_path, "sweep") and not kinds(tmp_path, "open")
     assert [p["reason"] for p in kinds(tmp_path, "pause")] == ["recount_unreadable"]
     assert rd.resume(journal(tmp_path))["creators"]["100"]["state"] == "running"
     fake.fail.clear()
     assert run(url, tmp_path, "describe", "--live") == 0
-    (sw,) = kinds(tmp_path, "sweep")                                    # one journal line holds the whole spend
+    (sw,) = kinds(tmp_path, "sweep")
     assert (sw["before"], sw["after"], sw["outcome"]) == (0, 250, "done")
     assert rd.resume(journal(tmp_path))["spent_mc"] == 250 * ITEM_MC_REAL
     assert len([p for p in fake.posts if p[0] == DA]) == 1

@@ -1,5 +1,3 @@
-"""Fake mode never leaves the machine: relay_live's egress wraps (`_guard_egress`) decide and log a request on its own
-host, then send it to FakeOF on the same path; the caller's own Request keeps its host."""
 import importlib.util
 import json
 import urllib.request
@@ -13,12 +11,12 @@ FAKE = "127.0.0.1:18999"
 
 
 def _load(monkeypatch, tmp_path, fake: bool):
-    monkeypatch.syspath_prepend(str(HERE.parent.parent / "service"))   # of_client, of_session_stream (relay_guarded.py)
+    monkeypatch.syspath_prepend(str(HERE.parent.parent / "service"))
     monkeypatch.setenv("OFM_PROOF_EVIDENCE", str(tmp_path))
     if fake:
         monkeypatch.setenv("OF_API_ORIGIN", f"http://{FAKE}")
         monkeypatch.setenv("OFM_FAKE_CDN_HOST", "fake-cdn.ofcdn.com")
-    else:   # live: no FakeOF origin, nothing is rewritten
+    else:
         monkeypatch.delenv("OF_API_ORIGIN", raising=False)
         monkeypatch.delenv("OFM_FAKE_CDN_HOST", raising=False)
     spec = importlib.util.spec_from_file_location(f"relay_live_{'fake' if fake else 'live'}", HERE / "relay_live.py")
@@ -34,18 +32,16 @@ def relay_live(monkeypatch, tmp_path):
 
 @pytest.fixture(params=["fake", "live"])
 def relay_any(request, monkeypatch, tmp_path):
-    """relay_live in either mode (`.fake` says which); the stubbed egress below never reaches a network."""
     mod = _load(monkeypatch, tmp_path, fake=request.param == "fake")
     mod.fake = request.param == "fake"
     return mod
 
 
 class _Sent(list):
-    headers: list   # each curl_cffi call's headers, as the stub received them
+    headers: list
 
 
 def _stub_egress(monkeypatch, mod):
-    """`_guard_egress()` over recording stubs of the real curl_cffi Session.request and urlopen (restored after)."""
     from curl_cffi import requests as cffi
     import curl_cffi.requests.session as cffi_session
     import of_session_stream
@@ -115,8 +111,6 @@ def test_a_refused_host_never_reaches_the_stub(sent, tmp_path):
 
 
 def test_an_allowed_write_on_a_fixed_onlyfans_host_goes_to_fakeof(relay_live, sent, tmp_path):
-    """The Record proof's convert claim (service/of_upload.py's fixed convert.onlyfans.com): allowed under the armed
-    proof, logged on its own host, sent to FakeOF."""
     from dataclasses import replace
     from curl_cffi import requests as cffi
     from proofs import ALL
@@ -128,13 +122,11 @@ def test_an_allowed_write_on_a_fixed_onlyfans_host_goes_to_fakeof(relay_live, se
         ("convert.onlyfans.com", "/file/upload", "allow", 200)]
 
 
-# ── ticket 11: the driver's OnlyFans-side read through the Relay (`driver_read`, route /__proof/of-read) ──
 
 SIGN = "sign-value-not-for-the-log"
 
 
 def _of_get(pq):
-    """What the route hands `driver_read`: a signed GET on onlyfans.com (OFClient.get's call, stubbed below)."""
     from curl_cffi import requests as cffi
     return cffi.Session().request("GET", f"https://onlyfans.com{pq}", headers={"sign": SIGN})
 
@@ -142,18 +134,18 @@ def _of_get(pq):
 def test_a_driver_read_is_logged_as_the_drivers_and_tagged_for_fakeof_only(monkeypatch, relay_any, tmp_path):
     sent = _stub_egress(monkeypatch, relay_any)
     relay_any.driver_read(_of_get, "/api2/v2/lists", "offset=0&limit=50")
-    _of_get("/api2/v2/lists")   # the app's own read, outside the driver's
+    _of_get("/api2/v2/lists")
     host = FAKE if relay_any.fake else "onlyfans.com"
     scheme = "http" if relay_any.fake else "https"
     assert [u for _, _, u in sent] == [f"{scheme}://{host}/api2/v2/lists?offset=0&limit=50",
                                        f"{scheme}://{host}/api2/v2/lists"]
-    tag = {"x-oi-proof-read": "1"} if relay_any.fake else {}   # never sent to OnlyFans itself
+    tag = {"x-oi-proof-read": "1"} if relay_any.fake else {}
     assert sent.headers == [{"sign": SIGN, **tag}, {"sign": SIGN}]
     done = [e for e in _wire(tmp_path) if e["phase"] == "done"]
     assert [(e["origin"], e["method"], e["host"], e["path"], e["query"], e["verdict"]) for e in done] == [
         ("driver", "GET", "onlyfans.com", "/api2/v2/lists", "offset=0&limit=50", "read"),
         ("relay", "GET", "onlyfans.com", "/api2/v2/lists", "", "read")]
-    assert SIGN not in (tmp_path / "wire.jsonl").read_text()   # headers are never logged
+    assert SIGN not in (tmp_path / "wire.jsonl").read_text()
 
 
 def test_the_tag_is_fakeofs(relay_live):
@@ -180,7 +172,6 @@ def test_a_driver_read_never_writes(relay_live, sent, tmp_path):
 
 
 def test_arm_keeps_the_relays_own_mode_whatever_the_body_says(relay_any):
-    """A live Relay armed with {"of": "fake"} stays live (a Mocked proof's writes are never let through live)."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     app = FastAPI()
@@ -191,11 +182,9 @@ def test_arm_keeps_the_relays_own_mode_whatever_the_body_says(relay_any):
     assert relay_any._run.of == ("fake" if relay_any.fake else "live")
 
 
-# ── ticket 53: the Record proofs' storage PUT host, named on the armed Proof (`Proof.hosts`) ──
 
 S3 = "of2transcoder.s3-accelerate.amazonaws.com"
-# The live storage PUT's shape (live run 2026-11-21, wire seq 45): OF's key with the Creator's id spliced in.
-S3_PATH = "/upload/80000112/00000000-0000-4000-8000-000000000000/900000000000/video-1.mp4"   # live shape, synthetic ids
+S3_PATH = "/upload/80000112/00000000-0000-4000-8000-000000000000/900000000000/video-1.mp4"
 
 
 def _arm(mod, proof):
@@ -228,9 +217,9 @@ def test_the_armed_record_proof_lets_its_storage_put_through(monkeypatch, relay_
 
 
 @pytest.mark.parametrize("proof, host", [
-    (None, S3),                                  # nothing armed
-    ("tracer.create-list", S3),                  # another proof armed
-    ("p2.record-video", S3 + ".evil"),           # a lookalike host
+    (None, S3),
+    ("tracer.create-list", S3),
+    ("p2.record-video", S3 + ".evil"),
     ("p2.record-video", "evil-" + S3),
 ])
 def test_the_storage_host_is_refused_unless_its_proof_is_armed(monkeypatch, relay_any, tmp_path, proof, host):
@@ -244,8 +233,6 @@ def test_the_storage_host_is_refused_unless_its_proof_is_armed(monkeypatch, rela
 
 @pytest.mark.parametrize("then", [None, "tracer.create-list"])
 def test_rearming_drops_the_last_proofs_hosts(monkeypatch, relay_any, tmp_path, then):
-    """Disarm, or arm another proof, after a Record proof: its host never carries over (`hosts` is the armed proof's
-    own, never added to the last run's)."""
     sent = _stub_egress(monkeypatch, relay_any)
     _arm(relay_any, "p2.record-video")
     _arm(relay_any, then)
@@ -256,7 +243,6 @@ def test_rearming_drops_the_last_proofs_hosts(monkeypatch, relay_any, tmp_path, 
     assert [(e["verdict"], e["class"]) for e in done] == [("refused", "host")]
 
 
-# ── ticket 53: a presigned storage URL's credential and a binary upload's bytes never reach the evidence ──
 
 PRESIGNED = ("X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=ASIAEXAMPLE%2F20261121%2Fus-east-1%2Fs3%2Faws4_request"
              "&X-Amz-Date=20261121T093957Z&X-Amz-Expires=43200&X-Amz-Security-Token=IQoJsecrettoken"

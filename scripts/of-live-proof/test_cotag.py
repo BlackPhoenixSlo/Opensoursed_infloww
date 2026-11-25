@@ -1,8 +1,3 @@
-"""new-post--cotag-scheduled, new-post--cotag-immediate (ofm-not-yet ticket 98): the wire tag assertion, the parks
-(no partner, live immediate, the fan-visible cap), the guard's verdicts on both posts, FakeOF's taggable-creators read
-and tags on posts, the lost-reply fault on the immediate Co-tagged post only, the cotag-extra planted composer, the
-finder and the effect. No browser, no OnlyFans.
-"""
 import dataclasses
 import json
 import time
@@ -35,11 +30,10 @@ SCHED, IMM, PN, SEND = (NEW_POST_COTAG_SCHEDULED.id, NEW_POST_COTAG_IMMEDIATE.id
 RUN = "oi-proof-r"
 
 
-S_TEXT, I_TEXT = draft_text(RUN, COTAG_SCHEDULED), draft_text(RUN, COTAG_IMMEDIATE)   # each proof's draft text
+S_TEXT, I_TEXT = draft_text(RUN, COTAG_SCHEDULED), draft_text(RUN, COTAG_IMMEDIATE)
 
 
 def body(tags=(P,), scheduled=None, media=(), text=f"{RUN} x"):
-    """The Relay's outbound co-tag body (of_client `_write_tag_block`)."""
     b = {"text": text, "mediaFiles": list(media), "price": 0, "userTags": list(tags), "rfTag": list(tags),
          "rfGuest": [], "rfPartner": []}
     if scheduled is not None:
@@ -47,20 +41,19 @@ def body(tags=(P,), scheduled=None, media=(), text=f"{RUN} x"):
     return b
 
 
-# ── the wire tag assertion (story 4) ──
 
 @pytest.mark.parametrize("b, bad", [
     (body(), []),
-    (body(tags=(str(P),)), []),                                       # ids as strings: the same partner
-    (body(tags=(P, fake_layer.COTAG_EXTRA)), ["rfTag", "userTags"]),  # a second creator (cotag-extra)
-    (body(tags=()), ["no Co-tag at all"]),                            # untagged
-    ({**body(), "userTags": [P, 4004]}, ["userTags"]),                # an auto-tag in one array only
+    (body(tags=(str(P),)), []),
+    (body(tags=(P, fake_layer.COTAG_EXTRA)), ["rfTag", "userTags"]),
+    (body(tags=()), ["no Co-tag at all"]),
+    ({**body(), "userTags": [P, 4004]}, ["userTags"]),
     ({**body(), "rfGuest": [7]}, ["rfGuest"]),
     ({**body(), "rfPartner": [{"id": 8}]}, ["rfPartner"]),
-    (body(media=(5001,)), ["media"]),                                 # media: an auto-tag could join
-    ({k: v for k, v in body().items() if k not in ("rfGuest", "rfPartner")}, []),   # absent rf arrays: empty
-    (body(tags=("0" + str(P),)), ["rfTag", "userTags"]),              # "02001" is not 2001 (the guard's id rule)
-    (body(tags=({"id": P},)), ["rfTag", "userTags"]),                 # not an id
+    (body(media=(5001,)), ["media"]),
+    ({k: v for k, v in body().items() if k not in ("rfGuest", "rfPartner")}, []),
+    (body(tags=("0" + str(P),)), ["rfTag", "userTags"]),
+    (body(tags=({"id": P},)), ["rfTag", "userTags"]),
 ])
 def test_wire_assertion_takes_the_partner_alone(b, bad):
     out = cotag_wire_problems(b, str(P))
@@ -78,14 +71,12 @@ def test_wire_assertion_refuses_an_unreadable_body():
 ])
 @pytest.mark.parametrize("partner", [str(P), P, None])
 def test_the_guard_and_the_wire_check_share_one_rule(b, partner):
-    """The guard refuses exactly what the wire check's tag part flags (one function, one id rule)."""
     rule = proof_core.cotag_problems(b, partner)
     assert (proof_core.cotag_refusal(b, partner) is None) == (rule == [])
     if proof_core.cotag_tagged(b) or not isinstance(b, dict):
         assert [f"outbound: {p}" for p in rule] == [p for p in cotag_wire_problems(b, partner) if "media" not in p]
 
 
-# ── parks ──
 
 class _Parked(Exception):
     pass
@@ -120,11 +111,11 @@ def test_live_immediate_parks_on_the_ruling_scheduled_goes_on(monkeypatch):
 
 
 @pytest.mark.parametrize("spent, parks", [
-    ((), False),               # its own run
-    ((SEND,), False),          # Send now already spent its slot: the last one is free
-    ((PN,), True),             # the full Phase 6 run: the last slot kept for Send now
-    ((PN, SEND), True),        # the guard's cap spent
-    ((IMM,), True),            # its one attempt made
+    ((), False),
+    ((SEND,), False),
+    ((PN,), True),
+    ((PN, SEND), True),
+    ((IMM,), True),
 ])
 def test_immediate_takes_a_fan_visible_slot_only_when_one_is_left_for_send_now(monkeypatch, spent, parks):
     monkeypatch.setattr(phase6_cotag, "_cotag_draft", lambda *a: [])
@@ -136,7 +127,6 @@ def test_immediate_takes_a_fan_visible_slot_only_when_one_is_left_for_send_now(m
     assert (cotag_cap_refusal(spent, NEW_POST_COTAG_IMMEDIATE, "fake") is not None) == parks
 
 
-# ── the guard ──
 
 def R(b):
     return Request(method="POST", host="onlyfans.com", path="/api2/v2/posts", body=b, at=AT)
@@ -159,19 +149,18 @@ LATER = (AT + timedelta(minutes=45)).isoformat()
 
 @pytest.mark.parametrize("b, partner, refused", [
     (body(scheduled=LATER), str(P), None),
-    (body(tags=(str(P),), scheduled=LATER), str(P), None),                       # ids as strings: the same partner
-    (body(scheduled=LATER), None, "no Co-tag partner named"),                     # partner unset: a tagged post refused
-    (body(tags=(P, fake_layer.COTAG_EXTRA), scheduled=LATER), str(P), "rfTag"),   # cotag-extra's body
+    (body(tags=(str(P),), scheduled=LATER), str(P), None),
+    (body(scheduled=LATER), None, "no Co-tag partner named"),
+    (body(tags=(P, fake_layer.COTAG_EXTRA), scheduled=LATER), str(P), "rfTag"),
     ({**body(scheduled=LATER), "userTags": [P, 4004]}, str(P), "userTags"),
-    ({**body(scheduled=LATER), "rfTag": []}, str(P), "rfTag"),                    # userTags alone
+    ({**body(scheduled=LATER), "rfTag": []}, str(P), "rfTag"),
     ({**body(scheduled=LATER), "userTags": None}, str(P), "userTags"),
-    (body(tags=(4004,), scheduled=LATER), str(P), "rfTag"),                       # someone else
+    (body(tags=(4004,), scheduled=LATER), str(P), "rfTag"),
     ({**body(scheduled=LATER), "rfGuest": [7]}, str(P), "rfGuest"),
     ({**body(scheduled=LATER), "rfPartner": [{"id": 8}]}, str(P), "rfPartner"),
-    ({**body(tags=(), scheduled=LATER), "rfGuest": [7]}, None, "no Co-tag partner named"),   # any tag array counts
+    ({**body(tags=(), scheduled=LATER), "rfGuest": [7]}, None, "no Co-tag partner named"),
 ])
 def test_the_guard_refuses_a_post_cotagged_with_anyone_but_the_partner(b, partner, refused):
-    """The class 7 backstop alone: the proof's own payload (class 4, test_the_payload_*) taken off its arm."""
     v = decide(R(b), Run(proof=_BARE_SCHED, of="fake", quiet_hour=QUIET, marker=RUN, cotag_partner=partner))
     if refused is None:
         assert v.kind == "allow", v
@@ -186,16 +175,15 @@ _BARE_SCHED = dataclasses.replace(NEW_POST_COTAG_SCHEDULED, arm=(proof_core.Writ
 @pytest.mark.parametrize("b, why", [
     (body(), None),
     ({**body(), "text": "x"}, "lacks this run's marker"),
-    ({**body(), "text": "oi-proof-q x"}, "lacks this run's marker"),               # round 2 #22: another run's
-    (body(tags=()), "no Co-tag at all"),                                          # the declared tag left off
-    (body(media=(5001,)), "media"),                                               # media: an auto-tag could join
+    ({**body(), "text": "oi-proof-q x"}, "lacks this run's marker"),
+    (body(tags=()), "no Co-tag at all"),
+    (body(media=(5001,)), "media"),
     (body(tags=(P, fake_layer.COTAG_EXTRA)), "rfTag"),
     ("text=x&rfTag=2001", "not a JSON object"),
 ])
 def test_the_payload_holds_both_cotag_posts_to_the_marker_the_partner_and_no_media(proof, b, why):
-    """Follow-up #5: each Co-tag post leaves only as declared (Write.payload, class 4), whatever the steps sent."""
     p = _POST_PROOFS()[proof]
-    if isinstance(b, dict) and b["text"] == f"{RUN} x":   # the proof's own draft text (W30 W1)
+    if isinstance(b, dict) and b["text"] == f"{RUN} x":
         b = {**b, "text": I_TEXT if proof == IMM else S_TEXT}
     b = b if proof == IMM or not isinstance(b, dict) else {**b, "isScheduled": 1, "scheduledDate": LATER}
     v = decide(R(b), Run(proof=p, of="fake", quiet_hour=QUIET, marker=RUN, cotag_partner=str(P)))
@@ -211,12 +199,12 @@ def _at(minutes):
 
 @pytest.mark.parametrize("proof, b, why", [
     (SCHED, body(scheduled=LATER, text=S_TEXT), None),
-    (SCHED, body(scheduled=_at(46), text=S_TEXT), None),                     # the draft's lead plus the clock slack
-    (SCHED, body(scheduled=_at(31), text=S_TEXT), None),                     # posted 14 min after its draft
-    (SCHED, body(scheduled=LATER, text=f"{S_TEXT} changed"), "not the draft's"),   # holds the marker, altered
+    (SCHED, body(scheduled=_at(46), text=S_TEXT), None),
+    (SCHED, body(scheduled=_at(31), text=S_TEXT), None),
+    (SCHED, body(scheduled=LATER, text=f"{S_TEXT} changed"), "not the draft's"),
     (SCHED, body(scheduled=LATER, text=f"<p>{S_TEXT}</p>"), "not the draft's"),
-    (SCHED, body(scheduled=LATER, text=I_TEXT), "not the draft's"),          # the other proof's text
-    (SCHED, body(scheduled=_at(4 * 24 * 60), text=S_TEXT), "minutes ahead"),  # +4 days: outside the finder's read
+    (SCHED, body(scheduled=LATER, text=I_TEXT), "not the draft's"),
+    (SCHED, body(scheduled=_at(4 * 24 * 60), text=S_TEXT), "minutes ahead"),
     (SCHED, body(scheduled=_at(48), text=S_TEXT), "minutes ahead"),
     (SCHED, body(scheduled="soon", text=S_TEXT), "unreadable"),
     (SCHED, {**body(scheduled=LATER, text=S_TEXT), "isScheduled": 0}, "not scheduled"),
@@ -227,8 +215,6 @@ def _at(minutes):
     (IMM, {**body(text=I_TEXT), "scheduledDate": LATER}, "carries a schedule"),
 ])
 def test_the_payload_binds_each_cotag_post_to_its_exact_draft_text_and_schedule(proof, b, why):
-    """W30 W1: a Co-tag post leaves only with its draft's exact text (what find_cotag recovers a lost reply by) and
-    its draft's schedule (post C: POST_SCHEDULE_LEAD ahead, inside the finder's today/tomorrow read; immediate: none)."""
     v = decide(R(b), Run(proof=_POST_PROOFS()[proof], of="fake", quiet_hour=QUIET, marker=RUN, cotag_partner=str(P)))
     if why is None:
         assert v.kind == "allow", v
@@ -238,14 +224,12 @@ def test_the_payload_binds_each_cotag_post_to_its_exact_draft_text_and_schedule(
 
 @pytest.mark.parametrize("of", ["fake", "live"])
 @pytest.mark.parametrize("b", [
-    {"text": "t", "mediaFiles": [], "price": 0, "isScheduled": 1, "scheduledDate": LATER},     # no tag arrays at all
-    {**body(tags=(), scheduled=LATER)},                                                        # the Relay's empty ones
+    {"text": "t", "mediaFiles": [], "price": 0, "isScheduled": 1, "scheduledDate": LATER},
+    {**body(tags=(), scheduled=LATER)},
 ])
 @pytest.mark.parametrize("partner", [None, str(P)])
 @pytest.mark.parametrize("proof", ["new-post--upload", "queue--publish-now", SCHED, IMM])
 def test_untagged_posts_pass_as_before(of, b, partner, proof):
-    """An untagged post passes the backstop under every proof, a partner named or not; a Co-tag proof's own payload
-    (follow-up #5) refuses it: its post carries the declared tag."""
     v = decide(R(b), Run(proof=_POST_PROOFS()[proof], of=of, quiet_hour=QUIET, marker=RUN, cotag_partner=partner))
     if proof in (SCHED, IMM):
         assert (v.kind, v.cls) == ("refused", "unarmed"), v
@@ -260,12 +244,10 @@ def _POST_PROOFS() -> dict:
 
 @pytest.mark.parametrize("of", ["fake", "live"])
 @pytest.mark.parametrize("proof, kind", [
-    ("new-post--upload", "refused"), ("queue--publish-now", "refused"),   # an auto-tag on their media: never sent
+    ("new-post--upload", "refused"), ("queue--publish-now", "refused"),
     (SCHED, "allow"), (IMM, "allow"),
 ])
 def test_only_a_cotag_proof_may_tag(of, proof, kind):
-    """A tag notification cannot be undone: the partner's tag rides only the two Co-tag proofs' posts (Proof.may_tag);
-    any other proof's tagged post is refused, the named partner or not."""
     p = _POST_PROOFS()[proof]
     assert p.may_tag == (kind == "allow")
     b = body(text=I_TEXT) if proof == IMM else body(scheduled=LATER, text=S_TEXT)
@@ -278,7 +260,6 @@ def test_only_a_cotag_proof_may_tag(of, proof, kind):
 @pytest.mark.parametrize("raw", ["text=x&rfTag=2001&rfTag=2002", b"\x00\x01", None, ["2001"]])
 @pytest.mark.parametrize("proof", ["new-post--cotag-scheduled", "queue--publish-now"])
 def test_the_guard_refuses_a_post_body_it_cannot_read(raw, proof):
-    """Form-encoded, raw or absent: the backstop cannot see its Co-tags, so the post never leaves."""
     p = {"new-post--cotag-scheduled": NEW_POST_COTAG_SCHEDULED, "queue--publish-now": QUEUE_PUBLISH_NOW}[proof]
     v = decide(R(raw), Run(proof=p, of="fake", quiet_hour=QUIET, marker=RUN, cotag_partner=str(P)))
     assert v.kind == "refused", v
@@ -286,7 +267,6 @@ def test_the_guard_refuses_a_post_body_it_cannot_read(raw, proof):
 
 @pytest.fixture
 def relay(tmp_path, monkeypatch):
-    """relay_live imported afresh against a temp evidence folder, fake mode (as test_publish_now's)."""
     import sys
     monkeypatch.setenv("OFM_PROOF_EVIDENCE", str(tmp_path))
     monkeypatch.setenv("OF_API_ORIGIN", "http://127.0.0.1:9")
@@ -308,14 +288,14 @@ def test_relay_arm_carries_the_partner_to_the_guard(relay, monkeypatch, sent, wa
     monkeypatch.setattr(relay, "pace_wait", lambda last, now: 0)
     _, v, _ = relay._intent("of-browser", "POST", "http://127.0.0.1:9/api2/v2/posts",
                             body(tags=(P, fake_layer.COTAG_EXTRA), scheduled=LATER))
-    assert (v.kind, v.cls) == ("refused", "unarmed")   # cotag-extra's body never leaves (the proof's payload)
+    assert (v.kind, v.cls) == ("refused", "unarmed")
 
 
 @pytest.mark.parametrize("of, quiet, done, kind", [
     ("fake", QUIET, (), "allow"),
-    ("fake", None, (), "refused"),              # outside a declared quiet hour
-    ("fake", QUIET, (PN, SEND), "refused"),     # the effort's cap spent
-    ("fake", QUIET, (IMM,), "refused"),         # its one attempt
+    ("fake", None, (), "refused"),
+    ("fake", QUIET, (PN, SEND), "refused"),
+    ("fake", QUIET, (IMM,), "refused"),
 ])
 def test_immediate_post_is_fan_visible_and_capped(of, quiet, done, kind):
     v = decide(R(body(text=I_TEXT)), Run(proof=NEW_POST_COTAG_IMMEDIATE, of=of, quiet_hour=quiet, fan_visible_done=done,
@@ -326,7 +306,7 @@ def test_immediate_post_is_fan_visible_and_capped(of, quiet, done, kind):
 
 
 @pytest.mark.parametrize("args, want", [
-    (["--of", "fake"], "2001"),                                  # fake default: FakeOF's taggable creator
+    (["--of", "fake"], "2001"),
     (["--of", "fake", "--cotag-partner", "none"], None),
     (["--of", "fake", "--cotag-partner", "NONE"], None),
     (["--of", "fake", "--cotag-partner", ""], None),
@@ -360,7 +340,6 @@ def test_undo_deadlines_scheduled_before_it_fires_immediate_at_once():
     assert imm is not None and imm - now <= timedelta(seconds=60)
 
 
-# ── FakeOF ──
 
 @pytest.fixture
 def fake():
@@ -398,7 +377,7 @@ def test_fake_taggable_creators_read_searches_and_pages(fake):
     assert [i["id"] for i in req("GET", "/api2/v2/posts/tagged-friend-users?name=SYNTHCREATOR2")[1]["items"]] == [2002]
     page = req("GET", "/api2/v2/posts/tagged-friend-users?limit=2&offset=0")[1]
     assert [i["id"] for i in page["items"]] == [2001, 2002] and page["hasMore"] is True
-    assert P in [i["id"] for i in got["items"]]   # the fake run's partner is taggable
+    assert P in [i["id"] for i in got["items"]]
 
 
 def test_fake_scheduled_cotag_post_reads_its_tag_then_deletes(fake):
@@ -431,7 +410,6 @@ def test_fake_immediate_cotag_post_is_published_with_its_tag(fake):
 
 
 def test_the_settle_poll_reads_only_its_own_scheduled_post(fake):
-    """Follow-up #19: the post's settle poll reads the schedule list and that one post, not each scheduled post."""
     _, req, _ = fake()
     posts = [_create(req, text=f"{RUN} {COTAG_SCHEDULED} {n}")[1] for n in range(5)]
     paths = []
@@ -441,7 +419,7 @@ def test_the_settle_poll_reads_only_its_own_scheduled_post(fake):
     row = phase6_cotag._cotag_shown(ctx, str(want["id"]), "queue", f"{RUN} {COTAG_SCHEDULED} 2")
     assert row is not None and (row[1], row[4]) == (want["id"], str(P)), row
     assert paths == ["/api2/v2/schedules", f"/api2/v2/posts/{want['id']}"], paths
-    assert len(read_cotag(get, None)["queue"]) == 5   # the full read still reads them all
+    assert len(read_cotag(get, None)["queue"]) == 5
 
 
 def test_fake_untagged_post_reads_no_tag(fake):
@@ -452,12 +430,12 @@ def test_fake_untagged_post_reads_no_tag(fake):
 
 def test_lost_reply_drops_only_the_immediate_cotagged_post(fake):
     of, req, client = fake("lost-reply")
-    assert _create(req)[0] == 200                                          # scheduled and tagged: answered
-    assert req("POST", "/api2/v2/posts", json={"text": "plain", "mediaFiles": [], "price": 0})[0] == 200   # untagged
+    assert _create(req)[0] == 200
+    assert req("POST", "/api2/v2/posts", json={"text": "plain", "mediaFiles": [], "price": 0})[0] == 200
     with pytest.raises(Exception):   # noqa: B017  (no reply at all)
         _create(req, scheduled=False, text=f"{RUN} {COTAG_IMMEDIATE}")
     made = [p.text for p in fake_posts.state(of)["posts"].values()]
-    assert made == [f"{RUN} {COTAG_SCHEDULED}", "plain", f"{RUN} {COTAG_IMMEDIATE}"]   # made before the drop
+    assert made == [f"{RUN} {COTAG_SCHEDULED}", "plain", f"{RUN} {COTAG_IMMEDIATE}"]
     faults = [h.get("fault", "").split(":")[0] or None for h in client.app.snapshot() if h["path"] == "/api2/v2/posts"]
     assert faults == [None, None, "lost-reply"]
 
@@ -481,8 +459,8 @@ def _request(method, path, data):
 
 @pytest.mark.parametrize("data, fires", [
     ({"text": "t", "media_files": [], "tagged_users": [P]}, True),
-    ({"text": "t", "media_files": [], "tagged_users": []}, False),                  # no Co-tag: untouched
-    ({"text": "t", "tagged_users": [P, fake_layer.COTAG_EXTRA]}, False),           # already there
+    ({"text": "t", "media_files": [], "tagged_users": []}, False),
+    ({"text": "t", "tagged_users": [P, fake_layer.COTAG_EXTRA]}, False),
 ])
 def test_cotag_extra_plants_a_second_creator_on_the_apps_post(data, fires):
     planted, route = [], _Route()
@@ -500,7 +478,6 @@ def test_cotag_extra_is_an_app_fault_the_recorder_does_not_take():
         fake_layer.Recorder(lambda *a: None, "cotag-extra")
 
 
-# ── the declarations and the records ──
 
 @pytest.mark.parametrize("proof, tags", [(NEW_POST_COTAG_SCHEDULED, {"post"}),
                                          (NEW_POST_COTAG_IMMEDIATE, {"post", "delete_at_once"})])
@@ -524,7 +501,6 @@ def test_capture_records_stay_parked_on_the_owner_sheet(proof):
 
 
 def test_a_read_first_park_is_judged_on_its_own_window(monkeypatch, tmp_path):
-    """The full Phase 6 run: other proofs' POST /posts (the same arm) before and after the cap park are not its own."""
     import prove
     monkeypatch.setattr(prove, "census", lambda *a: [])
     monkeypatch.setattr(prove, "pace_problems", lambda *a: [])

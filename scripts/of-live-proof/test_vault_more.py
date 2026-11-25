@@ -1,8 +1,3 @@
-"""ofm-not-yet ticket 34: the vault folder page's More proofs (proofs/phase2.py vault.more.rename, vault.more.delete),
-FakeOF's vault folder writes (soak/fake_of/vault.py), the planted `rename-ignored` fault (fake_layer.py), and the
-driver pieces they need: an arm's `{created}` (proof_core `_match`), a goto to the created folder's page
-(ui_steps.py `goto_target`) and the trigger's own reversal taken as the undo record (undo_driver `trigger_reversal`).
-"""
 import time
 
 import pytest
@@ -39,12 +34,10 @@ def _client(fault=None):
     return call
 
 
-# FakeOF's seeded folders (soak/fake_of/vault.py FOLDERS, ticket 96's folder sort), as read_folders gives them
 SOAK_FOLDERS = sorted((str(ids.vault_list_id(n)), f"Soak folder {n}") for n in range(1, vault.FOLDERS + 1))
 
 
 def _folders(call):
-    """The custom folders as (id, name), through the proof's own read."""
     return phase2.read_folders(lambda path, q: call("GET", f"{path}?view={q['view']}&offset={q['offset']}"
                                                             f"&limit={q['limit']}").json(), None)
 
@@ -57,7 +50,7 @@ def test_fake_folder_create_rename_delete_are_read_back():
     assert made.status_code == 200
     f = made.json()
     assert f["type"] == "custom" and f["name"] == "oi-proof-x" and f["canUpdate"] and f["canDelete"]
-    assert str(f["id"]) not in {i for i, _ in SOAK_FOLDERS}   # never a seeded folder's id (ticket 96 seeds 3)
+    assert str(f["id"]) not in {i for i, _ in SOAK_FOLDERS}
     assert _folders(call) == sorted([*before, (str(f["id"]), "oi-proof-x")])
     r = call("PATCH", f"{LISTS}/{f['id']}", {"name": "oi-proof-x renamed"})
     assert r.status_code == 200 and r.json()["name"] == "oi-proof-x renamed" and r.json()["id"] == f["id"]
@@ -65,7 +58,6 @@ def test_fake_folder_create_rename_delete_are_read_back():
     r = call("DELETE", f"{LISTS}/{f['id']}", {"clearMedia": False})
     assert r.status_code == 200 and r.json() == {"success": True}
     assert _folders(call) == before
-    # ids never reused (as OF's); a folder this fake did not create (the seeded one, a gone one) is 404
     again = call("POST", LISTS, {"name": "second"}).json()
     assert again["id"] != f["id"]
     for method in ("PATCH", "DELETE"):
@@ -74,8 +66,6 @@ def test_fake_folder_create_rename_delete_are_read_back():
 
 
 def test_fake_folder_single_read_answers_its_row_or_404():
-    """GET /vault/lists/{id} (the Relay's found-id read-back, relay_live READ_BACK; answer shape inferred): a created
-    or seeded folder's listing row, a gone or unknown id 404."""
     call = _client()
     f = call("POST", LISTS, {"name": "oi-proof-x"}).json()
     r = call("GET", f"{LISTS}/{f['id']}")
@@ -105,8 +95,8 @@ def test_rename_ignored_fault_answers_200_and_keeps_the_name():
     f = call("POST", LISTS, {"name": "oi-proof-x"}).json()
     r = call("PATCH", f"{LISTS}/{f['id']}", {"name": "oi-proof-x renamed"})
     assert r.status_code == 200 and r.json() == {"id": f["id"], "type": "custom", "name": "oi-proof-x renamed"}
-    assert (str(f["id"]), "oi-proof-x") in _folders(call)   # not applied
-    assert not phase2.renamed_folder([], _folders(call))       # not renamed: the proof fails (at settle)
+    assert (str(f["id"]), "oi-proof-x") in _folders(call)
+    assert not phase2.renamed_folder([], _folders(call))
 
 
 def test_effects_and_finder():
@@ -114,11 +104,11 @@ def test_effects_and_finder():
     made = [*seed, ("9", "oi-proof-r1")]
     renamed = [*seed, ("9", "oi-proof-r1 renamed")]
     assert phase2.renamed_folder(seed, renamed)
-    assert not phase2.renamed_folder(seed, made)            # created, never renamed
-    assert not phase2.renamed_folder(seed, seed)            # nothing made
-    assert not phase2.renamed_folder(seed, [*renamed, ("10", "oi-proof-r1 renamed")])   # two
+    assert not phase2.renamed_folder(seed, made)
+    assert not phase2.renamed_folder(seed, seed)
+    assert not phase2.renamed_folder(seed, [*renamed, ("10", "oi-proof-r1 renamed")])
     assert phase2.folder_gone(seed, seed)
-    assert not phase2.folder_gone(seed, made)               # a delete that did nothing
+    assert not phase2.folder_gone(seed, made)
     assert phase2.find_marked_folder(seed, renamed, "oi-proof-r1") == "9"
     assert phase2.find_marked_folder(seed, seed, "oi-proof-r1") is None
 
@@ -127,22 +117,19 @@ def test_the_two_proofs_run_on_a_created_folder_in_fake_mode_only():
     for p in (RENAME, DELETE):
         assert (p.page, p.control, p.kind) == ("vault/list", "More", "live")
         assert p.undo[0].relay == "/admin/vault-ai/of-folders/{id}?account_id={account}"
-        assert p.trigger[0][0] == "click"   # the opening page's own control, waited for visible first
+        assert p.trigger[0][0] == "click"
         assert ("goto", "vault/list?list={id}") in p.trigger
-        # startable live once the live OF-side reader is built (ticket 11), runnable in fake mode
         assert live_refusal(p, "live", None) is None
         assert live_refusal(p, "fake", None) is None
     assert [w.method for w in RENAME.arm] == ["POST", "PATCH"] and RENAME.arm[1].path.endswith("/{created}")
     assert [w.method for w in DELETE.arm] == ["POST"] and DELETE.trigger[-1] == (
         "accept", "#oi-menu [data-oi-value='delete']", 'Delete the folder "')
-    # Rename is the action row's: the folder's Rename category modal (state-add-list?edit=1), no dialog of its own
     assert ("frame", "vault/state-add-list") in RENAME.trigger[RENAME.trigger.index(("click", "#oi-menu [data-oi-value='rename']")):]
     assert not any("oi-vault-rename" in str(step) for step in RENAME.trigger)
     assert RENAME.settled[-1] == "vault/index"
 
 
 def test_ticket_30_helpers_keep_their_own_new_post_set():
-    """phase2's folder diff is `_new_folders`; ticket 30's helpers still diff posts by (id, text, media) off JSON lists."""
     after = [["1", "oi-proof-x", ["5"]]]
     assert phase2.vault_media([], after) == {"1": {"media": "5"}}
     assert phase2.one_new_marked_post_with_media([], after)
@@ -157,11 +144,9 @@ def _req(method, path):
 @pytest.mark.parametrize("method, path, run, verdict, cls", [
     ("PATCH", f"{LISTS}/9", Run(proof=RENAME, of="fake", spent={("arm", 0): 1}, created=frozenset({"9"})),
      "allow", "allow"),
-    # never a folder the proof did not create
     ("PATCH", f"{LISTS}/5", Run(proof=RENAME, of="fake", spent={("arm", 0): 1}, created=frozenset({"9"})),
      "refused", "unarmed"),
     ("PATCH", f"{LISTS}/9", Run(proof=RENAME, of="fake"), "refused", "unarmed"),
-    # the delete proof's UI Delete is the create's declared undo (class 8), on the created id only
     ("DELETE", f"{LISTS}/9", Run(proof=DELETE, of="fake", spent={("arm", 0): 1}, created=frozenset({"9"})),
      "reversal", "reversal"),
     ("DELETE", f"{LISTS}/5", Run(proof=DELETE, of="fake", spent={("arm", 0): 1}, created=frozenset({"9"})),
@@ -181,7 +166,7 @@ def test_created_binds_to_the_creating_arms_ids_in_undo_paths_too():
     run = Run(proof=proof, of="fake", spent={("arm", 0): 1, ("arm", 1): 1}, created=frozenset({"9", "8"}),
               created_by={0: frozenset({"9"}), 1: frozenset({"8"})})
     assert decide(_req("DELETE", f"{LISTS}/9"), run).kind == "reversal"
-    v = decide(_req("DELETE", f"{LISTS}/8"), run)   # created, but by an arm this undo does not reverse
+    v = decide(_req("DELETE", f"{LISTS}/8"), run)
     assert (v.kind, v.cls) == ("refused", "unarmed"), v.reason
 
 
@@ -197,7 +182,6 @@ class _Dialog:
 
 
 class _Page:
-    """Playwright's page as click_confirm uses it: dialog listeners, on/remove_listener, a wait."""
     def __init__(self):
         self.listeners = []
 
@@ -227,9 +211,9 @@ WANT = 'Delete the folder "'
 
 @pytest.mark.parametrize("dialog, did, ok", [
     (_Dialog("confirm", 'Delete the folder "x"? Its media stay in the vault.'), "accept", True),
-    (_Dialog("confirm", "Remove 2 media from the vault? OnlyFans has no undo."), "dismiss", False),   # another confirm
-    (_Dialog("alert", 'Delete the folder "x"?'), "dismiss", False),                                   # not a confirm
-    (None, None, False),                                                                              # no dialog
+    (_Dialog("confirm", "Remove 2 media from the vault? OnlyFans has no undo."), "dismiss", False),
+    (_Dialog("alert", 'Delete the folder "x"?'), "dismiss", False),
+    (None, None, False),
 ])
 def test_click_confirm_accepts_only_the_wanted_confirm(dialog, did, ok):
     page = _Page()
@@ -239,7 +223,7 @@ def test_click_confirm_accepts_only_the_wanted_confirm(dialog, did, ok):
         with pytest.raises(RuntimeError, match="accept: wanted a confirm"):
             ui_steps.click_confirm(page, _Loc(page, dialog), WANT, wait_ms=100)
     assert (dialog.did if dialog else None) == did
-    assert page.listeners == []   # removed even when the step fails
+    assert page.listeners == []
 
 
 def test_click_confirm_removes_its_listener_when_the_click_raises():
@@ -274,12 +258,12 @@ def _line(seq, path=f"{LISTS}/9", verdict="reversal", status=200, method="DELETE
 
 @pytest.mark.parametrize("lines, want", [
     ([_line(5)], 5),
-    ([_line(2)], None),                                  # before the row's write (an earlier proof's)
-    ([_line(5, path=f"{LISTS}/8")], None),               # another folder
+    ([_line(2)], None),
+    ([_line(5, path=f"{LISTS}/8")], None),
     ([_line(5, verdict="allow")], None),
-    ([_line(5, status=None)], None),                     # still in flight
+    ([_line(5, status=None)], None),
     ([_line(6), _line(5)], 5),
-    ([_line(5, status=500)], 5),                         # verify_undo names the status
+    ([_line(5, status=500)], 5),
 ])
 def test_trigger_reversal(lines, want):
     got = undo_driver.trigger_reversal(UNDO, {"row": 1, "wire_seq": 3}, f"{LISTS}/9", lines)
@@ -292,18 +276,17 @@ def test_trigger_reversal_only_for_an_id_bound_undo():
     assert undo_driver.trigger_reversal(hide, {"row": 1, "wire_seq": 3}, "/api2/v2/vault/media/hidden", [line]) is None
 
 
-# ── follow-up #6: only a 2xx in-page reversal is the undo ──
 
 PPV, MSG = ALL["p2.bubble-unsend-ppv"], "/api2/v2/messages/9"
 
 
 @pytest.mark.parametrize("status, shown, sends", [
-    (500, [("9", "oi-proof-r", 3)], True),    # the UI's Unsend failed, the PPV still there: the driver sends its own
-    (500, [], False),                          # gone anyway: the failed line stays the record (the row FAILS loudly)
-    (500, None, False),                        # the fresh read failed: nothing sent
-    (200, [("9", "oi-proof-r", 3)], True),    # round 2 #21: 2xx (e.g. `{"success": false}`) but still shown: ours
-    (200, [], False),                          # 2xx and gone: the trigger's own is the record
-    (200, None, False),                        # 2xx, the fresh read failed: the trigger's line stays the record
+    (500, [("9", "oi-proof-r", 3)], True),
+    (500, [], False),
+    (500, None, False),
+    (200, [("9", "oi-proof-r", 3)], True),
+    (200, [], False),
+    (200, None, False),
 ])
 def test_a_failed_in_page_unsend_is_no_undo_the_driver_sends_its_own_while_the_ppv_shows(status, shown, sends):
     calls, reads = [], []
@@ -327,26 +310,23 @@ def test_a_failed_in_page_unsend_is_no_undo_the_driver_sends_its_own_while_the_p
 
 
 def _thread(ids, more, marked=()):
-    """A stubbed `get` answering the Proof fan's one page: message ids (newest first), `hasMore`, the marked ones."""
     page = {"list": [{"id": i, "text": "oi-proof-r" if i in marked else "hi", "price": 3 if i in marked else 0}
                      for i in ids], "hasMore": more}
     return lambda path, params: page
 
 
-_BEFORE = (range(20, 10, -1), True)   # the PPV's chat before the send: ten messages on page one, older ones beyond
+_BEFORE = (range(20, 10, -1), True)
 
 
 @pytest.mark.parametrize("after, gone", [
-    ((range(20, 10, -1), True), True),         # the PPV unsent, nothing new: the page still reaches back to 20
-    ((range(23, 13, -1), True), True),         # three new messages: the page reaches back past 20
-    ((range(35, 25, -1), True), False),        # fifteen new ones pushed the PPV (21) past page one: unknown, not gone
-    ((range(35, 25, -1), False), True),        # ... but the page is the whole thread: gone
-    ((range(21, 11, -1), True, (21,)), False),  # still shown
-    (([], True), False),                       # an empty page that says there is more: unknown
+    ((range(20, 10, -1), True), True),
+    ((range(23, 13, -1), True), True),
+    ((range(35, 25, -1), True), False),
+    ((range(35, 25, -1), False), True),
+    ((range(21, 11, -1), True, (21,)), False),
+    (([], True), False),
 ])
 def test_the_ppv_counts_as_gone_only_on_a_page_that_reaches_back_past_the_send(after, gone):
-    """W30 W2: a PPV pushed past the read's one page (`hasMore`) is unknown, never gone: neither the effect
-    (ppv_gone) nor the after-undo check (Proof.same) holds, so the row closes FAILED and blocks the next run."""
     before = PPV.of_read(_thread(*_BEFORE), "555")
     read = PPV.of_read(_thread(*after), "555")
     assert bool(PPV.effect(before, read)) is gone
@@ -357,11 +337,10 @@ def test_the_ppv_counts_as_gone_only_on_a_page_that_reaches_back_past_the_send(a
 
 
 @pytest.mark.parametrize("after, gone", [
-    ((range(35, 25, -1), True), False),   # an empty chat before the send, a full page after: the PPV may be beyond it
-    ((range(35, 25, -1), False), True),   # ... the page is the whole thread: gone
+    ((range(35, 25, -1), True), False),
+    ((range(35, 25, -1), False), True),
 ])
 def test_an_empty_chat_before_the_send_proves_nothing_about_a_page_that_says_more(after, gone):
-    """W30 final [deepseek]: `before` empty (newest None) counted any `hasMore` page as reaching back to the send."""
     before = PPV.of_read(_thread([], False), "555")
     read = PPV.of_read(_thread(*after), "555")
     assert bool(PPV.effect(before, read)) is gone
@@ -369,7 +348,6 @@ def test_an_empty_chat_before_the_send_proves_nothing_about_a_page_that_says_mor
 
 
 def test_the_ppv_read_page_bounds_are_never_taken_for_a_shown_message():
-    """W30 S3: still_shown looks for the PPV's bare id; the page bounds ride the `_page` bookkeeping key it skips."""
     got = PPV.of_read(_thread(range(20, 10, -1), True, (14,)), "555")
     assert got == {"marked": [("14", "oi-proof-r", 3)], "_page": {"newest": 20, "oldest": 11, "more": True}}
     assert not undo_driver.still_shown(lambda tag: got, "20") and not undo_driver.still_shown(lambda tag: got, "11")
@@ -378,7 +356,6 @@ def test_the_ppv_read_page_bounds_are_never_taken_for_a_shown_message():
 
 
 def test_a_failed_in_page_reversal_with_no_budget_left_sends_nothing():
-    """vault.more.delete's undo has max 1 (the UI's Delete spent it): its failed reversal stays the record, unread."""
     calls, reads = [], []
     [(revs, _)] = undo_driver._send_all(DELETE, [{"row": 1, "arm": 0, "wire_seq": 3, "of_id": "9"}],
                                         lambda *a, **k: calls.append(a) or (200, "{}"), lambda: [_line(5, status=500)],
@@ -403,7 +380,6 @@ def test_send_takes_the_trigger_reversal_and_sends_nothing():
     assert calls == [] and unsent is None
     assert revs == [{"method": "DELETE", "path": f"{LISTS}/9", "status": 200, "seq": 5, "relay": None,
                      "relay_status": None, "by": "trigger"}]
-    # no trigger reversal on the wire: the undo goes through the Relay's own route
     wire = [[], [_line(7)]]
     [(revs, _)] = undo_driver._send_all(RENAME, [row], lambda *a, **k: calls.append(a) or (200, "{}"),
                                         lambda: wire[0] if not calls else wire[1], values, {}, "c1", None)

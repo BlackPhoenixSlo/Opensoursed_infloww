@@ -48,7 +48,7 @@ from collections import defaultdict, deque
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-import accounts as account_registry
+import platforms
 import runtime_switches
 from auth import get_request_token, get_request_user
 from chatters import get_request_chatter
@@ -153,7 +153,7 @@ async def live_window_session(request: Request):
     if not _rate_ok(key):
         raise HTTPException(status_code=429, detail="too many Go live opens, wait a minute",
                             headers={"Retry-After": str(int(RATE_WINDOW_S))})
-    if account_registry.get_platform(aid) == "fansly":
+    if platforms.for_account(aid) is not platforms.ONLYFANS:
         raise HTTPException(status_code=409, detail="Go live is for OnlyFans Creators")
     try:
         client = _client_for(aid)

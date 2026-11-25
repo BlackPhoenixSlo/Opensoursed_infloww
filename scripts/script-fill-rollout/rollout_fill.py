@@ -1,9 +1,3 @@
-"""Rollout driver, fill side (Phase 3b): `plan | apply | undo` and the report's contact sheet.
-
-Imported by rollout.py (which owns the CLI and the describe side; see its docstring for the modes); the relay
-client, journal and run context come from rollout_core.py. Decisions live in rollout_decide.py (pure); this
-module only moves data between the relay, the journal and those functions. Standard library only; no `service/` import.
-"""
 from __future__ import annotations
 
 import base64
@@ -22,16 +16,13 @@ import rollout_core as core
 import rollout_decide as rd
 from rollout_core import EXIT_DONE, EXIT_PAUSED, EXIT_REFUSED, VAULT, Ctx, Refused, Resp, say
 
-SCRIPTS = "/admin/saved-replies"     # GET: every row of one Creator (service/saved_replies_api.py:175)
-FILL = f"{SCRIPTS}/fill"             # plan | apply | undo (service/script_fill_api.py)
-ITEMS_PAGE = 1000                    # GET /admin/vault-ai/items `limit` ceiling
-# the apply wave's order within one Creator: settle lost responses and unread applies before new writes
+SCRIPTS = "/admin/saved-replies"
+FILL = f"{SCRIPTS}/fill"
+ITEMS_PAGE = 1000
 RANK = {"reconcile": 0, "read_back": 1, "apply": 2}
 
 
 def call_retry(ctx: Ctx, method: str, path: str, query: dict | None = None, body: Any = None) -> Resp:
-    """A read (GETs and the read-only fill/plan POST) within the per-Creator retry budget: a 5xx / transport
-    failure is tried again after POLL_S, up to rd.RETRY_BUDGET tries. Never used for apply or undo."""
     r = Resp(0, None)
     for n in range(rd.RETRY_BUDGET):
         if n:
@@ -43,9 +34,6 @@ def call_retry(ctx: Ctx, method: str, path: str, query: dict | None = None, body
 
 
 def scripts_rows(ctx: Ctx, cid: str) -> list[dict] | None:
-    """Every Scripts row of one Creator (`GET /admin/saved-replies`, service/saved_replies_api.py:175-223:
-    `list[]` with `id`, `script_id`, `script_step`, `media`, `previews`, `price` in dollars,
-    `removed_media_ids`), as rd.row_of shapes; None when unreadable."""
     r = call_retry(ctx, "GET", SCRIPTS, {"account_id": cid})
     if not r.ok:
         return None
@@ -53,11 +41,6 @@ def scripts_rows(ctx: Ctx, cid: str) -> list[dict] | None:
 
 
 def live_ids(ctx: Ctx, cid: str) -> set[int] | None:
-    """Every live vault media id of one Creator (`GET /admin/vault-ai/items`, paged at 1,000); None when
-    unreadable.
-    ASSUMPTION (rung 4): offset paging, oldest first; an item removed mid-read can push one item past a page
-    edge and read as not live, so the gate refuses (`media_not_live`) rather than writes. Overturned by a keyset
-    page parameter on the items route."""
     out: set[int] = set()
     off = 0
     while True:
@@ -77,7 +60,6 @@ def seq_rows(rows: list[dict], seq: str) -> list[dict]:
 
 
 class Fill:
-    """Shared state of one fill-mode run: journal, per-Creator reads, pause checks."""
 
     def __init__(self, ctx: Ctx) -> None:
         self.ctx, self.relay, self.j = ctx, ctx.relay, ctx.journal
@@ -94,12 +76,9 @@ class Fill:
         return self._live[cid]
 
     def pause(self) -> str | None:
-        """The relay pause rules before a Creator's work (`/livez`, errors in a row)."""
         return rd.pause_reason({"livez": self.relay.livez(), "errors_in_a_row": self.relay.errors_in_a_row})
 
     def halt(self, new_creator: bool) -> str | None:
-        """Why a write loop stops before its next POST: the pause rules on a Creator's first one, then errors in
-        a row before every one."""
         why = self.pause() if new_creator else None
         return why or ("errors" if self.relay.errors_in_a_row >= rd.ERRORS_IN_A_ROW else None)
 
@@ -110,8 +89,6 @@ class Fill:
 
     def plan(self, cid: str, seq: str, rows: list[dict], live: set[int], source: str = "plan"
              ) -> tuple[dict | None, list[str]]:
-        """fill/plan for one Sequence, gated and journaled with the rows' current values. (plan, gate); plan
-        None when unreadable (journaled with gate `unreadable_<status>`)."""
         r = call_retry(self.ctx, "POST", f"{FILL}/plan", {"account_id": cid}, {"sequence": seq})
         if not r.ok:
             gate = [f"unreadable_{r.status}"]
@@ -134,8 +111,6 @@ class Fill:
         return gate
 
     def journal_undo(self, cid: str, seq: str, op: str, undo: list[dict], **fields: Any) -> None:
-        """The `apply` line with its Undo list. If that write fails (disk full), the Undo list is printed to
-        stderr on the host before the error goes on: it must never exist only in memory."""
         try:
             self.j.write("apply", cid, sequence=seq, op=op, undo=undo, **fields)
         except Exception:
@@ -143,12 +118,7 @@ class Fill:
                                             sort_keys=True), file=sys.stderr, flush=True)
             raise
 
-    # ── apply ──
     def refuse(self, cid: str, seq: str, plan: dict, before: list[dict]) -> str | None:
-        """Last checks before any apply POST, for every plan (journaled, 409 fresh, reconcile re-plan): a
-        fingerprint to send (without one the server skips its staleness check) and every row about to be
-        written in the backup with its current values (one indexed read; the file check ran at start). A row
-        mismatch skips this Sequence (`backup:row_values` etc.); its plan stays pending for the next run."""
         if not plan.get("fingerprint"):
             say(f"apply {cid} {seq}: the plan has no fingerprint; not sent")
             return "no_fingerprint"
@@ -158,8 +128,7 @@ class Fill:
         return skip
 
     def apply_one(self, cid: str, seq: str, plan: dict, before: list[dict]) -> str:
-        """Apply one gated plan (spec › Apply). Returns the Sequence's end for this run."""
-        if rd.is_reserved(seq):   # never sent, whatever a journal says
+        if rd.is_reserved(seq):
             return "status:reserved"
         for attempt in (1, 2):
             refused = self.refuse(cid, seq, plan, before)
@@ -174,7 +143,6 @@ class Fill:
             if r.ok:
                 undo = list(r.json.get("undo") or [])
                 status = r.json.get("status")
-                # the Undo list first: whatever happens next, undo stays possible
                 self.journal_undo(cid, seq, op, undo, status=status,
                                   applied=[o.get("id") for o in r.json.get("applied") or [] if isinstance(o, dict)])
                 if status != "ok":
@@ -197,12 +165,9 @@ class Fill:
                 gate = self.journal_plan(cid, seq, fresh, rows, live, "stale")
                 if gate:
                     return gate[0]
-                plan, before = fresh, seq_rows(rows, seq)   # re-checked by `refuse` (fingerprint, backup rows)
+                plan, before = fresh, seq_rows(rows, seq)
                 continue
             if rd.retry_class(r.status) == "retry":
-                # the answer is lost (or the server failed mid-call): read back whether it landed.
-                # ASSUMPTION (rung 4): apply is never re-sent in the same run; a not-landed one stays an orphan
-                # intent that the next run re-plans. Overturned if the canary shows transient 5xx on apply.
                 say(f"apply {cid} {seq}: HTTP {r.status}, reading back")
                 return self.reconcile(cid, seq, op, plan, before, in_run=True)
             self.j.write("apply", cid, sequence=seq, op=op, status=f"http_{r.status}", error=r.error() or None,
@@ -213,9 +178,6 @@ class Fill:
 
     def read_back(self, cid: str, seq: str, op: str, plan: dict, before: list[dict], undo: list[dict],
                   rows: list[dict] | None = None) -> str:
-        """`filled`, `readback_mismatch` (journaled; the caller pauses the wave: a server fault behind a short
-        Undo list or wrong values would hit every later Sequence) or `unverified` (Scripts list unreadable, no
-        readback line: the caller pauses, the next apply run reads it back; never counted filled)."""
         rows = rows if rows is not None else scripts_rows(self.ctx, cid)
         if rows is None:
             say(f"readback {cid} {seq}: Scripts list unreadable; unverified, the next apply run reads it back")
@@ -228,21 +190,17 @@ class Fill:
         return "filled"
 
     def reconcile(self, cid: str, seq: str, op: str, plan: dict, before: list[dict], in_run: bool) -> str:
-        """An apply_intent without its apply line (spec › Lost response), judged by read-back."""
         rows = scripts_rows(self.ctx, cid)
         if rows is None:
             say(f"reconcile {cid} {seq}: Scripts list unreadable; left in flight for the next run")
             return "in_flight"
         undo, uncertain = rd.reconstruct_undo(plan, before, rows)
-        # ASSUMPTION (rung 5): uncertain and not-landed settle the intent as an `apply` line with an empty Undo
-        # list (the spec's kinds are fixed), so undo never replays it; rd.next_action never applies an uncertain
-        # Sequence again. Overturned by a dedicated journal kind.
         if uncertain:
             self.j.write("apply", cid, sequence=seq, op=op, status="uncertain", uncertain=True, undo=[])
             say(f"UNCERTAIN {cid} {seq}: rows differ from the plan; never undone automatically")
             return "uncertain"
         if undo is None:
-            if in_run:   # the next run re-plans it (the intent stays an orphan)
+            if in_run:
                 say(f"apply {cid} {seq}: not landed; the next run re-plans it")
                 return "in_flight"
             self.j.write("apply", cid, sequence=seq, op=op, status="not_landed", undo=[])
@@ -260,7 +218,6 @@ class Fill:
 
 
 def mode_plan(ctx: Ctx) -> int:
-    """Plan + gate every Sequence of every Eligible Creator in scope. Read-only (fill/plan writes nothing)."""
     f = Fill(ctx)
     for a in ctx.scoped:
         cid = str(a.get("id"))
@@ -285,9 +242,6 @@ def mode_plan(ctx: Ctx) -> int:
 
 
 def check_backup(path: str | None, ts: float) -> tuple[bool, str | None, dict]:
-    """(ok, reason, info) for the --backup FILE (spec › Backup): exists, under 6 h old, opened read-only it passes
-    `PRAGMA integrity_check`, has saved_replies and vault_items. Rows are checked per Sequence (`backup_skip`).
-    info: path, size, sha256. The driver never opens the live DB."""
     if not path:
         return False, "no --backup", {}
     p = Path(path).expanduser().resolve()
@@ -322,8 +276,6 @@ def check_backup(path: str | None, ts: float) -> tuple[bool, str | None, dict]:
 
 
 def backup_rows(path: str | None, expected: list[dict]) -> str | None:
-    """None when the backup (file checked at the run's start) holds these rows with their before values; else
-    the reason. Run per Sequence before every apply POST (`refuse`): a mismatch skips that Sequence only."""
     if not expected:
         return None
     if not path:
@@ -341,14 +293,11 @@ def backup_rows(path: str | None, expected: list[dict]) -> str | None:
 
 
 def backup_skip(path: str | None, cid: str, plan: dict, before: list[dict]) -> str | None:
-    """`backup:<reason>` when the backup does not hold the rows `plan` writes with their `before` values: that
-    Sequence is skipped (live: `refuse`; dry run: "would skip"). None when it does."""
     why = backup_rows(path, _expected_rows(cid, plan, before))
     return f"backup:{why.split(':')[0]}" if why else None
 
 
 def _open_ro(path: Path) -> sqlite3.Connection:
-    """The backup, opened read-only (never the live DB)."""
     return sqlite3.connect(f"{path.expanduser().resolve().as_uri()}?mode=ro", uri=True)
 
 
@@ -380,8 +329,6 @@ def _expected_rows(cid: str, plan: dict, before: list[dict]) -> list[dict]:
 
 
 def mode_apply(ctx: Ctx) -> int:
-    """Per Sequence in scope, rd.next_action decides: reconcile a lost response, read back an unread apply, apply
-    a reviewed plan, or list it as not sent with its outcome."""
     f = Fill(ctx)
     st = rd.resume(ctx.journal.read(), now=core.now())
     order = [str(a.get("id")) for a in ctx.scoped]
@@ -401,9 +348,6 @@ def mode_apply(ctx: Ctx) -> int:
             say(f"apply {c} {s}: not sent ({rd.fill_outcome(e)})")
             continue
         work.setdefault(c, []).append((act, e))
-    # The start-of-run check is the FILE (exists, fresh, integrity, tables). Rows are checked per Sequence by
-    # `refuse` right before its POST, against the rows that Sequence is about to write: a backup taken after a
-    # crash holds an orphan's landed values, and one hand-edited row must skip its Sequence, not the whole run.
     if not ctx.live:
         for c in order:
             for act, e in sorted(work.get(c, []), key=lambda x: (RANK[x[0]], x[1]["sequence"])):
@@ -414,8 +358,6 @@ def mode_apply(ctx: Ctx) -> int:
                 if skip:
                     what = f"would skip ({skip})"
                 say(f"apply {c} {e['sequence']}: {what} [dry run]")
-        # ASSUMPTION (rung 4): a dry apply given --backup verifies it and exits 2 when bad, so the canary's dry run
-        # surfaces a bad backup before --live. Overturned if dry runs must always exit 0.
         if ctx.args.backup:
             ok, why, _info = check_backup(ctx.args.backup, core.now())
             say(f"backup: {'ok' if ok else 'refused: ' + str(why)}")
@@ -453,17 +395,15 @@ def mode_apply(ctx: Ctx) -> int:
                 ends[end] = ends.get(end, 0) + 1
             if "readback_mismatch" in got:
                 return f.paused("readback_mismatch", cid, sequence=seq)
-            if "unverified" in got:   # an unattended run never ends green with a write not read back
+            if "unverified" in got:
                 return f.paused("unverified", cid, sequence=seq)
     say("apply: " + (", ".join(f"{k} {v}" for k, v in sorted(ends.items())) or "nothing to apply"))
-    if ends.get("in_flight"):   # W30 F43: a lost apply not yet settled is never a green run
+    if ends.get("in_flight"):
         return f.paused("in_flight", count=ends["in_flight"])
     return EXIT_DONE
 
 
 def mode_undo(ctx: Ctx) -> int:
-    """Replay journaled Undo lists through fill/undo, newest apply first, skipping ones already undone; list
-    rows left because someone edited them. Scoped by --creator / --sequence (the roster does not limit undo)."""
     f = Fill(ctx)
     st = rd.resume(ctx.journal.read(), now=core.now())
     want_c = set(ctx.args.creator or [])
@@ -478,7 +418,7 @@ def mode_undo(ctx: Ctx) -> int:
         if not ctx.live:
             say(f"undo {cid} {seq}: would undo {len(entries)} Option(s) [dry run]")
             continue
-        why = f.halt(new_creator=cid != last)   # the relay pause rules before each Creator's run of undos
+        why = f.halt(new_creator=cid != last)
         if why:
             return f.paused(why)
         last = cid
@@ -489,15 +429,11 @@ def mode_undo(ctx: Ctx) -> int:
             say(f"undo {cid} {seq}: {len(undone)} undone, {len(kept)} left")
             for k in kept:
                 say(f"  left {cid} {seq} row {k.get('id')}: {k.get('reason')}")
-        # ASSUMPTION (rung 4): 404 `sequence_not_found` (Sequence gone) settles the undo; any other refusal, a bare
-        # 404 included, is re-sent by the next undo run; a lost answer is settled by read-back only when every
-        # entry's row is empty. Overturned by the canary.
-        elif r.status == 404 and r.error() == "sequence_not_found":   # nothing left to undo, settled
+        elif r.status == 404 and r.error() == "sequence_not_found":
             ctx.journal.write("undo", cid, sequence=seq, op=op["op"], undone=[], kept=[], left=[],
                               status="http_404", error=r.error() or None)
             say(f"undo {cid} {seq}: Sequence not found, nothing undone")
         elif rd.retry_class(r.status) == "retry":
-            # a lost answer: rows already empty were undone by it; otherwise the next run sends it again
             rows = scripts_rows(ctx, cid)
             by = {int(x["id"]): x for x in rows or []}
             if rows is not None and all(not (by.get(int(e["id"])) or {}).get("media") for e in entries):
@@ -510,17 +446,13 @@ def mode_undo(ctx: Ctx) -> int:
         else:
             unsettled += 1
             say(f"undo {cid} {seq}: refused HTTP {r.status} {r.error()}; the next undo run sends it again")
-    if unsettled:   # W30 F43: an undo the next run must send again is never a green run
+    if unsettled:
         return f.paused("undo_unsettled", count=unsettled)
     return EXIT_DONE
 
 
-# ── report: contact sheet ───────────────────────────────────────────────────
 
 def write_sample(ctx: Ctx, entries: list[dict], n: int, seed: int) -> Path:
-    """sample.html beside the journal, mode 0600: N filled Sequences picked with `seed`, every Option with media
-    shown with its thumbs inlined as data URIs (`GET /admin/vault-ai/thumb?account_id=&media_id=`,
-    service/vault_ai_api.py:620). On a one-Creator run it is the canary sheet."""
     by = {(e["creator"], e["sequence"]): e for e in entries if rd.fill_outcome(e) == "filled"}
     picks = rd.sample(by, n, seed)
     parts = ["<!doctype html><meta charset=utf-8><title>Script fill contact sheet</title>",

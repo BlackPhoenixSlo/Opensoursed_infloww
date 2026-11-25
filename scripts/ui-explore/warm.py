@@ -1,7 +1,3 @@
-"""Load the app once in a browser so next dev has compiled the page and its client chunks.
-
-    warm.py <shim-url> <name=value cookie> <chrome resolver flag> <width> <height>
-"""
 from __future__ import annotations
 
 import sys

@@ -1,6 +1,3 @@
-"""Phase 6's read proofs (tickets 94, 95): vault--thumbnails and the four feed and profile reads, assembled into
-`PROOFS` by phase6.py (its docstring lists the trigger steps). Each `of_read(get, fan)` reads OnlyFans's side; each
-`check(seen)` answers {problems, parked, record} (proof_core.Proof)."""
 from __future__ import annotations
 
 import json
@@ -9,12 +6,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from proof_core import Proof
 
-# ── vault--thumbnails ──
 
 TILE = "[data-oi-media] .b-photos__item__img"
-# The Relay's two tile sources: the /img proxy and the stored square (service/img_api.py, vault_ai_api `_thumb`).
 RELAY_PATHS = ("/img", "/admin/vault-ai/thumb")
-# OnlyFans's CDN hosts, as service/of_client.py `OF_CDN_SUFFIXES` (not imported: of_client loads the Relay's registries).
 CDN_SUFFIXES = (".onlyfans.com", ".ofcdn.com", ".mycdn.dev")
 
 
@@ -24,9 +18,6 @@ def _cdn(host: str) -> bool:
 
 
 def thumbnails_check(seen) -> dict:
-    """Every tile on each recorded page loaded through the Relay, none from a CDN host, no /img error, no browser
-    request to a CDN host, and at least one tile came through a cold /img (X-Img-Cache MISS: no stored square, not in
-    the disk cache)."""
     out = []
     origins = set(seen.get("origins") or ())
     relay = [r for r in seen.get("responses") or [] if urlsplit(r["url"]).path in RELAY_PATHS]
@@ -66,16 +57,10 @@ VAULT_THUMBNAILS = Proof(
     check=thumbnails_check,
 )
 
-# ── ticket 95: the four feed and profile read proofs ──
-# Each `of_read` reads OnlyFans's side through paths the Relay already calls (service/of_reads.py) or, for the strip,
-# OnlyFans's own strip read (of_reads `stories_feed` docstring); each `check` compares it with the `("dom", ...)`
-# snapshots and answers {problems, parked, record}: `parked` when the Proof Creator lacks the thing to compare (never a
-# pass), `record` what the capture record carries (`results`, `branches`, observed and unobserved fields).
 NEEDS_CAPTURE = "needs capture (ticket 12 sitting)"
 
 
 def _read(get, path: str, query=None) -> dict:
-    """One tagged OnlyFans-side read: {path, status, body}; an HTTP refusal is its status, not a crash."""
     try:
         return {"path": path, "status": 200, "body": get(path, dict(query or {}))}
     except urllib.error.HTTPError as e:
@@ -83,14 +68,12 @@ def _read(get, path: str, query=None) -> dict:
 
 
 def _rows(r) -> list:
-    """A read's rows: a bare list or OF's `{list: [...]}`; a refused or odd answer has none."""
     b = (r or {}).get("body")
     b = b.get("list") if isinstance(b, dict) else b
     return [x for x in b if isinstance(x, dict)] if isinstance(b, list) else []
 
 
 def _img_u(src) -> str | None:
-    """The OnlyFans url behind a Relay `/img?u=` src (None: not an /img src)."""
     u = urlsplit(src or "")
     return (parse_qs(u.query).get("u") or [None])[0] if u.path == "/img" else None
 
@@ -114,19 +97,15 @@ def _answers(seen, path: str) -> list:
     return [r["status"] for r in seen.get("responses") or [] if urlsplit(r["url"]).path == path]
 
 
-# notifications--tips
 
 TIP_TYPES = ("tip", "tipped")
 
 
 def read_tips(get, fan) -> dict:
-    """Notifications' Tips tab as the Relay reads it (of_reads `notifications`), once per filter OF knows for tips."""
     return {t: _read(get, "/api2/v2/users/notifications", {"limit": 20, "offset": 0, "type": t}) for t in TIP_TYPES}
 
 
 def tips_check(seen) -> dict:
-    """The Tips tab's shown rows equal OnlyFans's `type=tip` rows, in order: name, @handle, text with its replace pairs,
-    the tip badge; every row OnlyFans answers under either filter is a tip. No tip row: parked."""
     read, out = seen.get("of_read") or {}, []
     results = {t: {"status": (read.get(t) or {}).get("status"), "rows": len(_rows(read.get(t))),
                    "types": sorted({str(r.get("type")) for r in _rows(read.get(t))})} for t in TIP_TYPES}
@@ -175,15 +154,12 @@ NOTIFICATIONS_TIPS = Proof(
 )
 
 
-# home--story-strip
 
 def _stubs(body) -> bool:
-    """OnlyFans's strip answer has the shape the strip read expects: a list of {userId, storyId}."""
     return isinstance(body, list) and all(isinstance(x, dict) and "userId" in x and "storyId" in x for x in body)
 
 
 def read_strip(get, fan) -> dict:
-    """OnlyFans's own strip read: the stubs (`/stories/map`), then each creator's stories (`/stories/items`)."""
     m = _read(get, "/api2/v2/stories/map")
     stubs = m["body"] if _stubs(m["body"]) else []
     out = {"map": m}
@@ -193,11 +169,6 @@ def read_strip(get, fan) -> dict:
 
 
 def strip_check(seen) -> dict:
-    """Home's story tiles name exactly the creators OnlyFans's strip has, watched where it says so, each with all its
-    stories (`data-oi-story`) and the still of its first unwatched story (else its first) loaded through the Relay.
-    The record says whether the Relay's `/stories` read was refused, empty (no tile), matching or differing.
-    Parked only with nothing on either side (or an answer of another shape than the strip read expects); tiles the
-    page shows with no OnlyFans strip beside them fail."""
     read, out = seen.get("of_read") or {}, []
     relay = _answers(seen, "/api/of/v2/stories")
     refused = any(s >= 400 for s in relay) or not relay
@@ -260,10 +231,8 @@ HOME_STORY_STRIP = Proof(
 )
 
 
-# profile--highlights
 
 def read_highlights(get, fan) -> dict:
-    """The Creator's highlight row (of_reads `user_highlights`) and its first highlight with its stories (`highlight`)."""
     me = _read(get, "/api2/v2/users/me")
     uid = (me.get("body") or {}).get("id") if isinstance(me.get("body"), dict) else None
     out = {"me": {"status": me["status"], "id": uid}}
@@ -277,8 +246,6 @@ def read_highlights(get, fan) -> dict:
 
 
 def highlights_check(seen) -> dict:
-    """`row`: My profile's highlight tiles carry OnlyFans's highlights in order, title and cover through the Relay.
-    `playback`: a click on the first plays that highlight: one bar per story, its first story's picture."""
     read, out, branches = seen.get("of_read") or {}, [], {}
     row = read.get("row") or {}
     if row.get("status") != 200:
@@ -288,7 +255,7 @@ def highlights_check(seen) -> dict:
     if not hs and _dom(seen, 0):
         why = f"profile/index: the page shows {len(_dom(seen, 0))} highlight tiles, OnlyFans has no highlight"
         return {"problems": [why], "parked": None, "record": {"branches": {"row": "fail", "playback": "fail"}}}
-    if not hs:   # parked only with nothing on either side
+    if not hs:
         why = "no highlight on the Proof Creator"
         return {"problems": [], "parked": why, "record": {"branches": {b: f"parked: {why}" for b in ("row", "playback")}}}
     tiles, mine = _dom(seen, 0), []
@@ -338,7 +305,6 @@ PROFILE_HIGHLIGHTS = Proof(
 )
 
 
-# statements--payout-rows
 
 PAYOUT_FIELDS = ("invoiceId", "createdAt", "amount", "state", "rejectReason")
 PAYOUT_STATES = ("approved", "pending", "rejected")
@@ -347,7 +313,6 @@ PAYOUT_PAGES = (("statements/payouts", "/api2/v2/payouts/requests"),
 
 
 def read_payouts(get, fan) -> dict:
-    """Statements' payout request rows and referral payout rows (of_reads `payout_requests`, `referral_payouts`)."""
     return {page: _read(get, path, {"limit": 20, "offset": 0}) for page, path in PAYOUT_PAGES}
 
 
@@ -356,8 +321,6 @@ def _state(s) -> str:
 
 
 def payouts_check(seen) -> dict:
-    """Each Statements page shows OnlyFans's rows in order: invoice, amount, state mark (new or pending: pending) and a
-    rejected row's reason. The record lists, per page, the fields and states OnlyFans's rows had and those it lacked."""
     read, out, record = seen.get("of_read") or {}, [], {}
     for n, (page, _path) in enumerate(PAYOUT_PAGES):
         r = read.get(page) or {}
@@ -406,5 +369,4 @@ STATEMENTS_PAYOUT_ROWS = Proof(
     of_read=read_payouts, check=payouts_check,
 )
 
-# this module's own proofs (test_proof_list walks every proofs/*.py's PROOFS); phase6.py's PROOFS is the run's list
 PROOFS = (VAULT_THUMBNAILS, NOTIFICATIONS_TIPS, HOME_STORY_STRIP, PROFILE_HIGHLIGHTS, STATEMENTS_PAYOUT_ROWS)

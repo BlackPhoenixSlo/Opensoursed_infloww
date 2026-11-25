@@ -1,8 +1,3 @@
-"""Rollout driver, fill side (Phase 3b): Seam 1 tables (Apply gate, read-back, Undo reconstruction, apply-side
-resume, next action) and `rollout.py plan | apply | undo` against the fake relay of fake_relay.py.
-
-Run: venv/bin/python -m pytest scripts/script-fill-rollout -q
-"""
 from __future__ import annotations
 
 import hashlib
@@ -24,7 +19,6 @@ HEAD = [{"t": "x", "mode": "describe", "kind": "run_start", "creator": None, "ce
         {"t": "x", "mode": "describe", "kind": "roster", "creator": None, "eligible": ["a", "b"]}]
 
 
-# ── Seam 1, 3b: Apply gate, read-back, Undo reconstruction, apply-side resume ─
 
 CHAT, FREE, PAID = rd.CHAT, rd.FREE, rd.PAID
 
@@ -35,7 +29,6 @@ def opt(oid, step, role, price=0, media=(), previews=(), keep=False, flags=()):
 
 
 LIVE = {1, 2, 3, 4, 5, 6}
-# chat Steps between the paid ones: the rule climbs along paid Steps only
 GOOD = [opt(1, 1, CHAT), opt(2, 2, PAID, 1000, [1, 2], [1]), opt(3, 3, CHAT), opt(4, 4, PAID, 2000, [3])]
 
 
@@ -84,7 +77,6 @@ def test_apply_gate(name, plan, want):
     assert rd.apply_gate(plan, LIVE) == want, name
 
 
-# A Fill-set price (Option 2, before price 0) and a Fixed price (Option 4, before $20), both written.
 RB_PLAN = gplan([opt(1, 1, CHAT), opt(2, 2, PAID, 1000, [1, 2], [1]), opt(4, 4, PAID, 2000, [3]),
                  opt(5, 5, FREE, flags=["free_unfilled"])])
 RB_BEFORE = [{"id": 1, "media": [], "previews": [], "price_cents": 0},
@@ -126,11 +118,11 @@ def test_write_set_skips_kept_and_free_unfilled():
 
 def test_reconstruct_undo_landed_not_landed_uncertain():
     undo, uncertain = rd.reconstruct_undo(RB_PLAN, RB_BEFORE, RB_NOW)
-    assert (undo, uncertain) == (RB_UNDO, False)          # Phase 1 UndoEntry shape, Fill-set and Fixed prices
+    assert (undo, uncertain) == (RB_UNDO, False)
     assert all(set(e) == {"id", "media_ids", "previews", "price_cents", "price_set"} for e in undo)
-    assert rd.reconstruct_undo(RB_PLAN, RB_BEFORE, RB_BEFORE) == (None, False)     # never landed
+    assert rd.reconstruct_undo(RB_PLAN, RB_BEFORE, RB_BEFORE) == (None, False)
     assert rd.reconstruct_undo(RB_PLAN, RB_BEFORE, _now(r2={"media": [1, 6]})) == (None, True)
-    partly = _now(r4={"media": [], "previews": []})       # one landed, one empty: not one transaction's end
+    partly = _now(r4={"media": [], "previews": []})
     assert rd.reconstruct_undo(RB_PLAN, RB_BEFORE, partly) == (None, True)
 
 
@@ -162,12 +154,12 @@ def test_resume_apply_kinds():
     assert rd.next_action(e) == "apply" and rd.fill_outcome(e) == "not_applied"
     j += [_fl("apply_intent", op="o1", plan=RB_PLAN, before=RB_BEFORE)]
     e = rd.resume(j)["fills"][("100", "S")]
-    assert [op["op"] for op in e["ops"] if rd.orphan(op)] == ["o1"]        # apply_intent without apply
+    assert [op["op"] for op in e["ops"] if rd.orphan(op)] == ["o1"]
     assert rd.next_action(e) == "reconcile" and rd.fill_outcome(e) == "in_flight"
     j += [_fl("apply", op="o1", status="ok", undo=RB_UNDO)]
     e = rd.resume(j)["fills"][("100", "S")]
     assert not any(map(rd.orphan, e["ops"])) and [op["op"] for op in e["ops"] if rd.unread(op)] == ["o1"]
-    assert rd.next_action(e) == "read_back"                                # apply without readback
+    assert rd.next_action(e) == "read_back"
     j += [_fl("readback", op="o1", ok=True, reasons=[])]
     e = rd.resume(j)["fills"][("100", "S")]
     assert not any(map(rd.unread, e["ops"])) and rd.fill_outcome(e) == "filled" and rd.next_action(e) == "none"
@@ -176,20 +168,20 @@ def test_resume_apply_kinds():
     j += [_fl("undo", op="o1", undone=[2, 4], kept=[])]
     e = rd.resume(j)["fills"][("100", "S")]
     assert rd.fill_outcome(e) == "undone" and rd.next_action(e) == "none"
-    j += [plan]                                                            # re-planned after the undo
+    j += [plan]
     assert rd.next_action(rd.resume(j)["fills"][("100", "S")]) == "apply"
     j += [_fl("apply_intent", op="o2"), _fl("stale", op="o2", final=True)]
     st = rd.resume(j)
     assert not any(map(rd.orphan, st["fills"][("100", "S")]["ops"]))
     assert rd.fill_outcome(st["fills"][("100", "S")]) == "stale"
     assert rd.next_action(st["fills"][("100", "S")]) == "none"
-    assert st["creators"] == {} and st["spent_mc"] == 0                    # 3a state untouched
+    assert st["creators"] == {} and st["spent_mc"] == 0
 
 
 P_OK = _fl("plan", status="ok", gate=[], plan=RB_PLAN, before=RB_BEFORE)
 INTENT = _fl("apply_intent", op="o1", plan=RB_PLAN, before=RB_BEFORE)
 FILLED = [INTENT, _fl("apply", op="o1", status="ok", undo=RB_UNDO), _fl("readback", op="o1", ok=True, reasons=[])]
-OK_EMPTY = _fl("apply", op="o1", status="ok", undo=[])         # server said ok, Undo list empty
+OK_EMPTY = _fl("apply", op="o1", status="ok", undo=[])
 RB_BAD = _fl("readback", op="o1", ok=False, reasons=["undo_short"])
 RB_CLEAN = _fl("readback", op="o1", ok=True, reasons=[])
 
@@ -263,7 +255,6 @@ def test_fill_counts_reasons_and_eligibility():
     assert rd.fill_rate(3, 4) == "3/4 (75 %)" and rd.fill_rate(0, 0) == "n/a"
 
 
-# ── Driver, fill side ───────────────────────────────────────────────────────
 
 FILL_P = "/admin/saved-replies/fill"
 SCRIPTS_P = "/admin/saved-replies"
@@ -271,8 +262,6 @@ A_SEQ, SHARED, CONFLICT, RES = "Shower Tease 3", "Shared Sequence", "Conflict La
 
 
 def fill_world(**kw):
-    """A: complete vault, a Sequence with a Fill-set and a Fixed price and an unfilled free Option, the shared
-    Sequence name, a Reserved sequence. B: a Fixed-price conflict and the shared name, from its own vault."""
     a, b = Cr("312345678", "alicefans", **kw), Cr("498765432", "bobby_b", **kw)
     a.items = {7000001, 7000002, 7000003, 7000004, 7000005}
     a.seqs = {A_SEQ: [srow(1), srow(2, PAID, fill=([7000001, 7000002], [7000001], 1500)),
@@ -337,15 +326,15 @@ def test_plan_gates_every_sequence_and_dry_runs_post_only_fill_plan(serve, tmp_p
         (a.id, A_SEQ): [], (a.id, SHARED): [], (a.id, RES): ["status:reserved"],
         (b.id, CONFLICT): ["status:price_conflict"], (b.id, SHARED): []}
     assert p[(a.id, A_SEQ)]["flags"] == ["free_unfilled"] and p[(a.id, A_SEQ)]["writes"] == 2
-    assert [r["price_cents"] for r in p[(a.id, A_SEQ)]["before"]] == [0, 0, 2000, 0]   # current row values
+    assert [r["price_cents"] for r in p[(a.id, A_SEQ)]["before"]] == [0, 0, 2000, 0]
     assert run(url, tmp_path, "apply") == 0 and run(url, tmp_path, "undo") == 0
-    assert {x[0] for x in fake.posts} == {f"{FILL_P}/plan"}                # dry runs: no apply, no undo
+    assert {x[0] for x in fake.posts} == {f"{FILL_P}/plan"}
     assert rows_of(fake) == before and not kinds(tmp_path, "apply_intent")
 
 
 def test_live_apply_refuses_without_a_good_backup(world, tmp_path):
     a, b, fake, url, good = world
-    assert run(url, tmp_path, "apply", "--live") == 2                       # no --backup
+    assert run(url, tmp_path, "apply", "--live") == 2
     empty = tmp_path / "empty.db"
     empty.write_bytes(b"")
     assert run(url, tmp_path, "apply", "--live", "--backup", str(empty)) == 2
@@ -355,8 +344,7 @@ def test_live_apply_refuses_without_a_good_backup(world, tmp_path):
     assert [(x["ok"], (x["reason"] or "").split(":")[0]) for x in kinds(tmp_path, "backup")] == [
         (False, "no --backup"), (False, "tables_missing"), (False, "older_than_6h")]
     assert fill_posts(fake, "apply") == [] and not kinds(tmp_path, "apply_intent")
-    # A row missing (A_SEQ) or holding other values (SHARED) skips only that Sequence; the rest is applied.
-    a.seqs[SHARED][1]["price"] = 700                                        # backup no longer holds this value
+    a.seqs[SHARED][1]["price"] = 700
     bad_rows = make_backup(tmp_path / "rows.db", fake, skip={a.seqs[A_SEQ][1]["id"]})
     a.seqs[SHARED][1]["price"] = 0
     assert run(url, tmp_path, "apply", "--live", "--backup", bad_rows) == 0
@@ -370,8 +358,6 @@ def test_live_apply_refuses_without_a_good_backup(world, tmp_path):
 
 
 def test_dry_run_and_live_skip_a_sequence_the_backup_does_not_hold_alike(world, tmp_path, capsys):
-    """W30 F32: dry run and live name one skip per Sequence (`backup_skip`); the start-of-run refusal names the
-    file checks it ran, not the rows."""
     a, b, fake, url, good = world
     assert run(url, tmp_path, "apply", "--live") == 2
     refused = capsys.readouterr()
@@ -393,19 +379,19 @@ def test_apply_reads_back_keeps_fixed_price_isolates_creators_and_never_applies_
     a, b, fake, url, backup = world
     assert run(url, tmp_path, "apply", "--live", "--backup", backup) == 0
     assert fake.applies == [(a.id, SHARED), (a.id, A_SEQ), (b.id, SHARED)]
-    assert not any(s in (RES, CONFLICT) for _, s in fill_posts(fake, "apply"))   # reserved / refused: never sent
+    assert not any(s in (RES, CONFLICT) for _, s in fill_posts(fake, "apply"))
     s = a.seqs[A_SEQ]
     assert (s[1]["media"], s[1]["previews"], s[1]["price"]) == ([7000001, 7000002], [7000001], 1500)
-    assert (s[2]["media"], s[2]["price"]) == ([7000003], 2000)                  # A's Fixed price kept
-    assert s[3]["media"] == []                                                   # free_unfilled: not written
-    assert {m for r in a.seqs[SHARED] for m in r["media"]} <= a.items           # each from its own vault
+    assert (s[2]["media"], s[2]["price"]) == ([7000003], 2000)
+    assert s[3]["media"] == []
+    assert {m for r in a.seqs[SHARED] for m in r["media"]} <= a.items
     assert {m for r in b.seqs[SHARED] for m in r["media"]} == {8000001}
     applies = {(x["creator"], x["sequence"]): x for x in kinds(tmp_path, "apply")}
     for key, undo in fake.last_undo.items():
-        assert applies[key]["undo"] == undo                                     # journal holds what was written
+        assert applies[key]["undo"] == undo
     assert [(x["ok"], x["reasons"]) for x in kinds(tmp_path, "readback")] == [(True, [])] * 3
     lines = journal(tmp_path)
-    for x in kinds(tmp_path, "apply"):                                           # intent before, Undo list next
+    for x in kinds(tmp_path, "apply"):
         i = lines.index(x)
         assert lines[i - 1]["kind"] == "apply_intent" and lines[i - 1]["op"] == x["op"]
         assert lines[i + 1]["kind"] == "readback" and lines[i + 1]["op"] == x["op"]
@@ -421,7 +407,7 @@ def test_canary_filters_one_creator_one_sequence(world, tmp_path):
 
 
 class Crash(BaseException):
-    """A kill: not caught by rollout.main."""
+    pass
 
 
 def _crash_on_journal(monkeypatch, kind):
@@ -438,7 +424,7 @@ def _crash_on_journal(monkeypatch, kind):
 def test_lost_response_is_reconciled_by_read_back_without_a_second_apply(world, tmp_path, monkeypatch):
     a, b, fake, url, backup = world
     canary = ("--creator", a.id, "--sequence", A_SEQ)
-    orig = _crash_on_journal(monkeypatch, "apply")      # killed between apply's answer and its journal line
+    orig = _crash_on_journal(monkeypatch, "apply")
     with pytest.raises(Crash):
         run(url, tmp_path, "apply", "--live", "--backup", backup, *canary)
     monkeypatch.setattr(core.Journal, "write", orig)
@@ -446,18 +432,16 @@ def test_lost_response_is_reconciled_by_read_back_without_a_second_apply(world, 
     fills = rd.resume(journal(tmp_path))["fills"].values()
     assert len([op for e in fills for op in e["ops"] if rd.orphan(op)]) == 1
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
-    assert fake.applies == [(a.id, A_SEQ)] and len(fill_posts(fake, "apply")) == 1   # never applied twice
+    assert fake.applies == [(a.id, A_SEQ)] and len(fill_posts(fake, "apply")) == 1
     (ap,) = kinds(tmp_path, "apply")
-    assert ap["reconstructed"] is True and ap["undo"] == fake.last_undo[(a.id, A_SEQ)]   # Phase 1 UndoEntry
+    assert ap["reconstructed"] is True and ap["undo"] == fake.last_undo[(a.id, A_SEQ)]
     assert [x["ok"] for x in kinds(tmp_path, "readback")] == [True]
-    assert run(url, tmp_path, "undo", "--live", *canary) == 0                  # the rebuilt list undoes it
+    assert run(url, tmp_path, "undo", "--live", *canary) == 0
     s = a.seqs[A_SEQ]
     assert [r["media"] for r in s] == [[]] * 4 and [r["price"] for r in s] == [0, 0, 2000, 0]
 
 
 def test_lost_response_with_an_unreadable_list_stays_in_flight_and_pauses(world, tmp_path, monkeypatch):
-    """W30 F43: the reconcile cannot read the Scripts list, so the lost apply is still unresolved: exit 3 (pause
-    `in_flight`), never a green 0; the next run with the list back settles it without a second apply."""
     a, b, fake, url, backup = world
     canary = ("--creator", a.id, "--sequence", A_SEQ)
     orig = _crash_on_journal(monkeypatch, "apply")
@@ -479,7 +463,7 @@ def test_apply_that_never_landed_is_replanned_and_applied_once(world, tmp_path, 
 
     def call(self, method, path, *args, **kw):
         if path.endswith("/fill/apply"):
-            raise Crash(path)                            # killed after apply_intent, before the POST
+            raise Crash(path)
         return orig(self, method, path, *args, **kw)
     monkeypatch.setattr(core.Relay, "call", call)
     with pytest.raises(Crash):
@@ -499,15 +483,15 @@ def test_uncertain_apply_is_listed_and_never_undone(world, tmp_path, monkeypatch
     with pytest.raises(Crash):
         run(url, tmp_path, "apply", "--live", "--backup", backup, *canary)
     monkeypatch.setattr(core.Journal, "write", orig)
-    a.seqs[A_SEQ][1]["media"] = [7000004]                # someone edited a written row meanwhile
+    a.seqs[A_SEQ][1]["media"] = [7000004]
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
     (ap,) = kinds(tmp_path, "apply")
     assert (ap["status"], ap["undo"]) == ("uncertain", []) and len(fake.applies) == 1
     assert run(url, tmp_path, "undo", "--live") == 0 and fake.undos == []
-    a.seqs[A_SEQ][3]["fill"] = ([7000005], [], None)     # a fresh plan for it would pass the gate again
+    a.seqs[A_SEQ][3]["fill"] = ([7000005], [], None)
     assert run(url, tmp_path, "plan", *canary) == 0 and planned(tmp_path)[(a.id, A_SEQ)]["gate"] == []
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
-    assert len(fill_posts(fake, "apply")) == 1                                # uncertain: never written on top
+    assert len(fill_posts(fake, "apply")) == 1
     assert rd.fill_outcome(rd.resume(journal(tmp_path))["fills"][(a.id, A_SEQ)]) == "uncertain"
 
 
@@ -535,8 +519,8 @@ def test_second_stale_skips_and_is_not_retried(world, tmp_path):
 
 def test_failed_gate_applies_nothing(serve, tmp_path):
     a, b = fill_world()
-    a.items.discard(7000002)                              # a picked item gone from the vault
-    a.seqs[SHARED][1]["fill"] = ([7000005], [], 150)      # a server plan with an unsendable price
+    a.items.discard(7000002)
+    a.seqs[SHARED][1]["fill"] = ([7000005], [], 150)
     fake = Fake([a, b])
     url = serve(fake)
     assert run(url, tmp_path, "plan") == 0
@@ -553,88 +537,88 @@ def test_failed_gate_applies_nothing(serve, tmp_path):
 def test_read_back_mismatch_journals_and_pauses_the_wave(world, tmp_path, capsys, fault):
     a, b, fake, url, backup = world
     if fault == "undo_short":
-        fake.undo_short = True                            # FAULT rollout-undo-list-short
+        fake.undo_short = True
     else:
-        a.items.discard(7000004)                          # gone from the vault after the plan passed the gate
+        a.items.discard(7000004)
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, "--creator", a.id) == 3
-    assert fake.applies == [(a.id, SHARED)]               # the wave stops: the next Sequence is not sent
+    assert fake.applies == [(a.id, SHARED)]
     assert [x["reasons"] for x in kinds(tmp_path, "readback")] == [[fault]]
     (pause,) = kinds(tmp_path, "pause")
     assert (pause["reason"], pause["sequence"]) == ("readback_mismatch", SHARED)
     assert "READ-BACK MISMATCH" in capsys.readouterr().out
-    fake.undo_short = False                               # the operator fixed the server
+    fake.undo_short = False
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, "--creator", a.id) == 0
-    assert fake.applies == [(a.id, SHARED), (a.id, A_SEQ)]   # a re-run goes on; the mismatched one is not re-sent
+    assert fake.applies == [(a.id, SHARED), (a.id, A_SEQ)]
 
 
 def test_unreadable_read_back_is_unverified_and_pauses(world, tmp_path):
     a, b, fake, url, backup = world
     canary = ("--creator", b.id, "--sequence", SHARED)
-    fake.fail[(SCRIPTS_P, b.id)] = lambda c: 401 if fake.applies else None   # the list dies after the write
+    fake.fail[(SCRIPTS_P, b.id)] = lambda c: 401 if fake.applies else None
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 3
     assert fake.applies == [(b.id, SHARED)] and not kinds(tmp_path, "readback")
     (pause,) = kinds(tmp_path, "pause")
     assert (pause["reason"], pause["sequence"]) == ("unverified", SHARED)
     assert rd.fill_outcome(rd.resume(journal(tmp_path))["fills"][(b.id, SHARED)]) == "unverified"
     del fake.fail[(SCRIPTS_P, b.id)]
-    assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0   # read back, never re-sent
+    assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
     assert fake.applies == [(b.id, SHARED)] and [x["ok"] for x in kinds(tmp_path, "readback")] == [True]
     assert rd.fill_outcome(rd.resume(journal(tmp_path))["fills"][(b.id, SHARED)]) == "filled"
 
 
 def test_mismatch_with_an_empty_undo_list_is_never_applied_again(world, tmp_path, capsys):
     a, b, fake, url, backup = world
-    canary = ("--creator", b.id, "--sequence", SHARED)   # a one-row write set: the short Undo list is empty
+    canary = ("--creator", b.id, "--sequence", SHARED)
     fake.undo_short = True
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 3
     (ap,) = kinds(tmp_path, "apply")
     assert (ap["status"], ap["undo"]) == ("ok", []) and fake.applies == [(b.id, SHARED)]
     assert [x["reasons"] for x in kinds(tmp_path, "readback")] == [["undo_short"]]
     fake.undo_short = False
-    b.seqs[SHARED].append(srow(2, PAID, fill=([8000002], [], 1500)))   # a fresh plan passes the gate again
+    b.seqs[SHARED].append(srow(2, PAID, fill=([8000002], [], 1500)))
     assert run(url, tmp_path, "plan", *canary) == 0 and planned(tmp_path)[(b.id, SHARED)]["gate"] == []
     capsys.readouterr()
     assert run(url, tmp_path, "apply", "--live", "--backup", make_backup(tmp_path / "b2.db", fake), *canary) == 0
-    assert len(fill_posts(fake, "apply")) == 1 and fake.applies == [(b.id, SHARED)]   # never re-sent
+    assert len(fill_posts(fake, "apply")) == 1 and fake.applies == [(b.id, SHARED)]
     assert f"apply {b.id} {SHARED}: not sent" in capsys.readouterr().out
 
 
 def test_undo_replays_newest_first_and_reports_edited_rows(world, tmp_path):
     a, b, fake, url, backup = world
     assert run(url, tmp_path, "apply", "--live", "--backup", backup) == 0
-    b.seqs[SHARED][0]["price"] = 1300                     # edited after the Fill
+    b.seqs[SHARED][0]["price"] = 1300
     filled_rows = rows_of(fake)
-    assert run(url, tmp_path, "undo") == 0                # dry run: lists, sends nothing
+    assert run(url, tmp_path, "undo") == 0
     assert fake.undos == [] and fill_posts(fake, "undo") == [] and rows_of(fake) == filled_rows
     assert not kinds(tmp_path, "undo")
     assert run(url, tmp_path, "undo", "--live") == 0
-    assert fake.undos == [(b.id, SHARED), (a.id, A_SEQ), (a.id, SHARED)]    # newest apply first
+    assert fake.undos == [(b.id, SHARED), (a.id, A_SEQ), (a.id, SHARED)]
     sent = {(aid, body["sequence"]): body["undo"] for p, aid, body in fake.posts if p == f"{FILL_P}/undo"}
-    assert sent[(a.id, A_SEQ)] == fake.last_undo[(a.id, A_SEQ)]            # verbatim from the journal
+    assert sent[(a.id, A_SEQ)] == fake.last_undo[(a.id, A_SEQ)]
     s = a.seqs[A_SEQ]
     assert [r["media"] for r in s] == [[]] * 4 and [r["price"] for r in s] == [0, 0, 2000, 0]
     assert all(r["media"] == [] for r in a.seqs[SHARED])
     left = {x["sequence"]: x["left"] for x in kinds(tmp_path, "undo") if x["creator"] == b.id}
     assert left == {SHARED: [{"id": b.seqs[SHARED][0]["id"], "reason": "edited"}]}
     assert b.seqs[SHARED][0]["media"] == [8000001]
-    assert run(url, tmp_path, "undo", "--live") == 0 and len(fake.undos) == 3   # already undone: skipped
+    assert run(url, tmp_path, "undo", "--live") == 0 and len(fake.undos) == 3
 
 
 def test_undo_settles_a_404_only_when_the_sequence_is_gone(world, tmp_path):
     a, b, fake, url, backup = world
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, "--creator", a.id, "--sequence", A_SEQ) == 0
-    fake.fail[(f"{FILL_P}/undo", a.id)] = 404              # a bare 404 (route/proxy), not sequence_not_found
-    assert run(url, tmp_path, "undo", "--live") == core.EXIT_PAUSED   # W30 F43: unsettled is never green
-    assert not kinds(tmp_path, "undo")                     # unsettled: the next undo run sends it again
+    fake.fail[(f"{FILL_P}/undo", a.id)] = 404
+    assert run(url, tmp_path, "undo", "--live") == core.EXIT_PAUSED
+    assert not kinds(tmp_path, "undo")
     assert kinds(tmp_path, "pause")[-1]["reason"] == "undo_unsettled"
     del fake.fail[(f"{FILL_P}/undo", a.id)]
-    del a.seqs[A_SEQ]                                      # the Sequence is gone: sequence_not_found settles it
+    del a.seqs[A_SEQ]
     assert run(url, tmp_path, "undo", "--live") == 0
     assert [(x["status"], x["error"]) for x in kinds(tmp_path, "undo")] == [("http_404", "sequence_not_found")]
 
 
 def test_report_fill_columns_are_sanitised_and_contact_sheet_is_host_only(serve, tmp_path):
-    a, b = fill_world(describable=600, described=600)    # both at their goal: the fill rate counts them
+    a, b = fill_world(describable=600, described=600)
     fake = Fake([a, b])
     url = serve(fake)
     assert run(url, tmp_path, "plan") == 0
@@ -645,10 +629,10 @@ def test_report_fill_columns_are_sanitised_and_contact_sheet_is_host_only(serve,
     for secret in (a.id, b.id, "alicefans", "bobby_b", A_SEQ, SHARED, CONFLICT, RES, "7000001", "8000001"):
         assert secret not in text
     assert re.search(r"\d{6,}", text) is None
-    assert "## Sequences" not in text and "[redacted]" not in text          # counts and tallies only
+    assert "## Sequences" not in text and "[redacted]" not in text
     assert "Fill rate (Creators at their goal): 3/4 (75 %)" in text
     assert "status:price_conflict 1" in text and "status:reserved 1" in text and "free_unfilled 1" in text
-    assert A_SEQ in full and CONFLICT in full                                # per-Sequence list: host only
+    assert A_SEQ in full and CONFLICT in full
     sheet = tmp_path / "sample.html"
     assert oct(sheet.stat().st_mode & 0o777) == "0o600"
     html_text = sheet.read_text()
@@ -659,7 +643,7 @@ def test_re_plan_after_filled_never_applies_twice(world, tmp_path):
     a, b, fake, url, backup = world
     canary = ("--creator", a.id, "--sequence", A_SEQ)
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
-    a.seqs[A_SEQ][3]["fill"] = ([7000004], [], None)     # partly filled: a fresh plan is `ok` again (gap)
+    a.seqs[A_SEQ][3]["fill"] = ([7000004], [], None)
     assert run(url, tmp_path, "plan", *canary) == 0 and planned(tmp_path)[(a.id, A_SEQ)]["gate"] == []
     assert run(url, tmp_path, "apply", "--live", "--backup", make_backup(tmp_path / "b2.db", fake), *canary) == 0
     assert fake.applies == [(a.id, A_SEQ)] and len(fill_posts(fake, "apply")) == 1
@@ -671,7 +655,7 @@ def test_undo_then_re_plan_may_apply_again(world, tmp_path):
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
     assert run(url, tmp_path, "undo", "--live", *canary) == 0
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
-    assert fake.applies == [(a.id, A_SEQ)]                                   # undone, not re-planned: not sent
+    assert fake.applies == [(a.id, A_SEQ)]
     assert run(url, tmp_path, "plan", *canary) == 0
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
     assert fake.applies == [(a.id, A_SEQ)] * 2
@@ -690,7 +674,7 @@ def test_journaled_plan_without_fingerprint_is_refused_before_the_post(world, tm
     a, b, fake, url, backup = world
     p = tmp_path / "j.jsonl"
     lines = [json.loads(x) for x in p.read_text().splitlines()]
-    for ln in lines:                                      # a journal from a driver without the gate reason
+    for ln in lines:
         if ln["kind"] == "plan" and ln.get("plan"):
             ln["fingerprint"] = None
             ln["plan"].pop("fingerprint", None)
@@ -701,7 +685,7 @@ def test_journaled_plan_without_fingerprint_is_refused_before_the_post(world, tm
 
 def test_fresh_plan_without_fingerprint_is_refused(world, tmp_path):
     a, b, fake, url, backup = world
-    fake.fingerprint = False                              # the 409 answer's fresh plan carries none
+    fake.fingerprint = False
     canary = ("--creator", a.id, "--sequence", A_SEQ)
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
     assert len(fill_posts(fake, "apply")) == 1 and fake.applies == []
@@ -710,13 +694,13 @@ def test_fresh_plan_without_fingerprint_is_refused(world, tmp_path):
 
 def test_fresh_plan_rows_are_checked_against_the_backup(world, tmp_path):
     a, b, fake, url, backup = world
-    a.seqs[A_SEQ][1]["price"] = 1800                      # edited after the backup: the 409 plan writes this row
+    a.seqs[A_SEQ][1]["price"] = 1800
     canary = ("--creator", a.id, "--sequence", A_SEQ)
     assert run(url, tmp_path, "apply", "--live", "--backup", backup, *canary) == 0
     assert len(fill_posts(fake, "apply")) == 1 and fake.applies == []
     fresh = planned(tmp_path)[(a.id, A_SEQ)]
     assert fresh["source"] == "stale" and fresh["gate"] == []
-    assert len(kinds(tmp_path, "apply_intent")) == 1      # no intent for the refused fresh plan
+    assert len(kinds(tmp_path, "apply_intent")) == 1
 
 
 def test_failed_apply_journal_write_prints_the_undo_list(world, tmp_path, monkeypatch, capsys):
@@ -751,7 +735,7 @@ def test_orphan_of_a_creator_off_the_roster_is_listed(world, tmp_path, monkeypat
     with pytest.raises(Crash):
         run(url, tmp_path, "apply", "--live", "--backup", backup, *canary)
     monkeypatch.setattr(core.Journal, "write", orig)
-    fake.accounts[0]["is_active"] = False                 # A left the roster with an intent in flight
+    fake.accounts[0]["is_active"] = False
     capsys.readouterr()
     assert run(url, tmp_path, "apply", "--live", "--backup", backup) == 0
     out = capsys.readouterr().out

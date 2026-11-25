@@ -1,23 +1,3 @@
-"""The Messages tab's writes (app/lib/ofMirrorChat.ts): a chat's Send and New message's Send.
-
-Mocks the login (as post_vault.py) and the relay: GET /api/of/v2/chats (one synthetic chat, fan 9001, its partner bare as
-OF sends it) and /users/list (that partner), its detail and messages, GET /api/of/v2/lists (the built-in "fans" and list
-42); every write is recorded and answered {"id":1}; every other /api/** returns [] and a request to a host other than
-localhost fails the check. window.confirm is accepted.
-Single Creator (scope `model:1`):
-- /of-manager/messages/chat?chat=9001: typing "Synthetic hello" enables Send; Send makes exactly one POST
-  /api/of/v2/chats/9001/messages {"text":"Synthetic hello","price":0,"media_files":[]} with X-Account-Id: 1, shows
-  "Sent" and empties the editor. Beside it, Messages Pro's Fan insights column (aside "Fan insights"): 280px, flush
-  with the right edge, #0d0d0d (rgb(13, 13, 13)), over the frame's right 280px as Infloww's column sits inside OF's page:
-  the frame keeps the view's width, so OF keeps its chat list beside the chat, and the chat ends where the column starts;
-  the header's "Fan insights" toggle (aria-pressed) hides it, the chat then running on past it, and shows it again.
-- /of-manager/messages/send: the Send to rows are the 2 lists; ticking both and typing "Synthetic blast" then Send asks
-  first and makes exactly one POST /api/of/v2/messages/queue {"text":"Synthetic blast","user_lists":["fans","42"]}.
-No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
-77e5df419; phase_check.py's one_creator checks it).
-No creator (/admin/accounts lists none), scope `model:1`: Infloww's OfNotHaveModel instead of the frame, nothing sent.
-No console errors. Screenshots: /tmp/of-mirror-shots/messages-*.png. Exit 1 on a failed check.
-"""
 import json, os, sys
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
@@ -67,16 +47,16 @@ def session(b, scope_js, models=True):
         if path=="/api/of/v2/chats/9001": return ok(route, DETAIL)
         if path=="/api/of/v2/chats/9001/messages": return ok(route, MESSAGES)
         if path=="/api/of/v2/lists": return ok(route, LISTS)
-        if path=="/admin/fans/1/9001": return ok(route, FAN_RECORD)  # Fan insights (useFan)
-        if path=="/admin/fans/1/9001/ppv-history": return ok(route, {"items":[],"summary":{"max_cents":0,"avg_cents":0}})  # its Sales
-        if path=="/api/of/v2/chats/9001/media": return ok(route, {"list":[],"hasMore":False})  # its unsold PPVs
+        if path=="/admin/fans/1/9001": return ok(route, FAN_RECORD)
+        if path=="/admin/fans/1/9001/ppv-history": return ok(route, {"items":[],"summary":{"max_cents":0,"avg_cents":0}})
+        if path=="/api/of/v2/chats/9001/media": return ok(route, {"list":[],"hasMore":False})
         if "/auth/me" in u: ok(route, user)
         elif "/chatter/me/accounts" in u: ok(route, [])
         elif "/admin/employees" in u: ok(route, {"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]})
         elif "/chatter/me" in u: ok(route, {"chatter":None,"owners":[]})
         else: ok(route, [])
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**","**/img?**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     return pg, sent, errs
 def frame(pg, page):
@@ -144,7 +124,6 @@ with sync_playwright() as p:
     print("single creator console errors:", [e[:160] for e in errs][:8])
     if errs: failures.append(f"single creator: {len(errs)} console error(s)")
 
-    # No creator: whatever the scope, OF Manager shows OfNotHaveModel, no frame, and sends nothing.
     pg, sent, errs=session(b, "localStorage.setItem('chatterly:scope','model:1')", models=False)
     pg.goto(f"{BASE}{M}/messages/chat?chat=9001", wait_until="load", timeout=90000); pg.wait_for_timeout(3000)
     check("no creator: OfNotHaveModel, no frame", [pg.get_by_text("You have not yet tied a creator").count() > 0, [f.url for f in pg.frames if "of-mirror" in f.url]], [True, []])

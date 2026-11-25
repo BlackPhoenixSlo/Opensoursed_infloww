@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
+import platforms
 import push_decide as pd
 import push_send
 from db.engine import get_session
@@ -152,7 +153,7 @@ async def _save(kind: str, pid: str, issued: int, body: _SubBody) -> str:
 async def _store(kind: str, pid: str, issued: int, body: _SubBody) -> tuple[push_send.Sub, list[str]]:
     """Upsert the row by endpoint and evict past MAX_PER_PRINCIPAL -> (its Sub, evicted ids)."""
     types = json.dumps(sorted(set(body.types) & TYPE_KEYS))
-    platforms = json.dumps({k: bool(v) for k, v in body.platforms.items() if k in ("onlyfans", "fansly")})
+    prefs = json.dumps({k: bool(v) for k, v in body.platforms.items() if k in platforms.KEYS})
     now = datetime.utcnow()
     async with get_session() as s:
         row = (await s.execute(select(PushSubscription).where(
@@ -165,7 +166,7 @@ async def _store(kind: str, pid: str, issued: int, body: _SubBody) -> tuple[push
             raise HTTPException(status_code=409, detail="endpoint bound to another session")
         row.p256dh, row.auth = body.keys.p256dh, body.keys.auth
         row.principal_kind, row.principal_id, row.issued_ms = kind, pid, issued
-        row.types, row.platforms, row.updated_at = types, platforms, now
+        row.types, row.platforms, row.updated_at = types, prefs, now
         await s.flush()
         mine = (await s.execute(select(PushSubscription).where(
             PushSubscription.principal_kind == kind, PushSubscription.principal_id == pid,

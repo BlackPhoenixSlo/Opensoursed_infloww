@@ -49,7 +49,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SHOTS = ROOT / "scripts/demo-shots"
 RUNS = ROOT / ".scratch/verify-app"
 PY = ROOT / "venv/bin/python"
-ROLES = {"owner": 0, "manager": 1, "chatter": 4}  # dataset.EMPLOYEES index: Alex Morgan, Jordan Lee, Hannah Kim
+ROLES = {"owner": 0, "manager": 1, "chatter": 4}
 
 
 def out(obj: dict, run: Path | None = None, code: int = 0):
@@ -113,7 +113,6 @@ def http_get(url: str, timeout: float = 10) -> int:
         return 0
 
 
-# ── up / down ────────────────────────────────────────────────────────────────
 def cmd_up(a):
     rid = a.run or datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
     if not re.fullmatch(r"[A-Za-z0-9_-]+", rid):
@@ -136,7 +135,6 @@ def cmd_up(a):
         if interrupted:
             raise KeyboardInterrupt("startup interrupted by SIGTERM")
 
-    # Defer interruption until the child is registered for teardown.
     previous_term = signal.signal(signal.SIGTERM, interrupt)
     try:
         stack = start_process(run, "stack", [str(SHOTS / "run.sh"), "serve"], env, children)
@@ -197,7 +195,6 @@ def start_process(run: Path, name: str, args: list[str], env: dict, children: di
                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     identity = group_identity(proc.pid)
     if identity is None:
-        # The unreaped child still reserves the process group ID.
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -269,7 +266,6 @@ def cmd_down(a):
          "evidence_files": sorted(p.name for p in run.iterdir())}, run, int(bool(failures)))
 
 
-# ── read-only commands (no daemon needed) ────────────────────────────────────
 def cmd_db(a):
     run = pick_run(a.run)
     db = state(run).get("db")
@@ -291,7 +287,7 @@ def cmd_doctor(a):
     checks = {
         "stack_pid": alive(s.get("stack_pid")),
         "daemon_pid": alive(s.get("daemon_pid")),
-        "relay_livez": http_get(f"{s.get('relay')}/livez") == 200,  # /health is 503 by design: seeded sessions are fake
+        "relay_livez": http_get(f"{s.get('relay')}/livez") == 200,
         "app_http": http_get(f"{s.get('app')}/login", 120) == 200,
         "db_exists": bool(s.get("db")) and Path(s["db"]).exists(),
     }
@@ -313,7 +309,6 @@ def cmd_doctor(a):
          "url": daemon.get("url"), "fix": hint}, run, 0 if ok else 1)
 
 
-# ── browser commands: forwarded to the daemon ────────────────────────────────
 def _call(run: Path, payload: dict, exit_on_error: bool = True) -> dict:
     s = state(run)
     if not s.get("ready") or not alive(s.get("daemon_pid")):
@@ -355,7 +350,6 @@ def cmd_browser(a):
     out(res, run, 0 if res.get("ok") else 1)
 
 
-# ── the daemon: one Playwright browser, one context per session ──────────────
 def navigation_error(page, response) -> dict | None:
     if response is not None and response.status >= 400:
         return {"ok": False, "error": "navigation failed", "status": response.status, "url": page.url}
@@ -367,7 +361,6 @@ def daemon(rid: str):
     s = state(run)
     os.environ.update(DEMO_SHOTS_ROOT=str(ROOT), DEMO_SHOTS_TMP=s["tmp"], DEMO_SHOTS_APP=s["app"],
                       DEMO_SHOTS_RELAY=s["relay"],
-                      # Anchor the dataset at the real now: no browser clock override, schedules are real times.
                       DEMO_SHOTS_NOW=datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat())
     sys.path.insert(0, str(SHOTS))
     from playwright.sync_api import Error as PwError, sync_playwright
@@ -379,14 +372,12 @@ def daemon(rid: str):
     app = s["app"]
     d = dataset.build()
     router = Router(Fixtures(d))
-    of_writes: list[dict] = []  # what the app sent towards OnlyFans (answered by fixtures, never sent)
+    of_writes: list[dict] = []
     plain_handle = router.handle
 
-    # `sse`: from the first call on, /events is answered here (the Relay's stream mocked; reload the page to take
-    # it): each connect gets the queued frames and closes, and EventSource reconnects in 500 ms.
     sse_queue: list[tuple[str, dict]] = []
     sse_on = {"on": False}
-    reads: list[dict] = []  # GET /api/* the page sent, query included (`reads`)
+    reads: list[dict] = []
 
     def handle_route(route, request):
         path = request.url.split("?", 1)[0].split("/", 3)[-1]
@@ -445,7 +436,7 @@ def daemon(rid: str):
         return ctx_for(cur["role"])[1]
 
     def locate(p, q: dict):
-        if q.get("dialog"):  # scope to one open dialog (two dialogs often share "OK" / "Cancel")
+        if q.get("dialog"):
             p = p.get_by_role("dialog", name=q["dialog"], exact=True)
         if q.get("role"):
             loc = p.get_by_role(q["role"], name=q.get("name"), exact=q.get("exact", False))
@@ -473,7 +464,7 @@ def daemon(rid: str):
         try:
             p.wait_for_load_state("networkidle", timeout=8_000)
         except PwError:
-            pass  # an open event stream keeps the network busy; the next command waits on its own target
+            pass
 
     def handle(q: dict) -> dict:
         cmd = q["cmd"]
@@ -484,7 +475,7 @@ def daemon(rid: str):
             return {"ok": True, "owner_me": me.status, "offhost": len(router.offhost),
                     "unmatched": len(set(router.unmatched)), "active": cur["role"], "url": p.url}
         if cmd == "login":
-            if q["as_"] == "anon":  # always a fresh, signed-out browser (a form sign-in leaves cookies behind)
+            if q["as_"] == "anon":
                 if "anon" in ctxs:
                     ctxs.pop("anon")[0].close()
             cur["role"] = q["as_"]
@@ -549,7 +540,6 @@ def daemon(rid: str):
                 sse_queue.append((q["type"], json.loads(q["json"])))
             return {"ok": True, "queued": len(sse_queue)}
         if cmd == "inbox-msg":
-            # The Relay's chats window after a live message (WS-patched cache): that fan's row on top, new preview.
             rows = router.fx.chats(q["account"])
             i = 1 if q.get("nth") is None else q["nth"]
             r = dict(rows.pop(i))
@@ -566,7 +556,7 @@ def daemon(rid: str):
                     if (m in r["url"] if m else r["path"].startswith("api/of/v2/chats") and r["path"].rstrip("/").endswith("chats"))]
             return {"ok": True, "count": len(hits), "reads": hits[-q.get("last", 50):]}
         if cmd == "visibility":
-            # Emulated tab hide/return: headless Chromium never hides a page on its own.
+            # headless Chromium never hides a page on its own
             p.evaluate("""s => { Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => s});
                 Object.defineProperty(document, 'hidden', {configurable: true, get: () => s === 'hidden'});
                 document.dispatchEvent(new Event('visibilitychange'));
@@ -617,7 +607,7 @@ def daemon(rid: str):
     while True:
         srv.handle_request()
         try:
-            page().wait_for_timeout(50)  # pump Playwright so route handlers answer the page between commands
+            page().wait_for_timeout(50)
         except PwError:
             pass
 

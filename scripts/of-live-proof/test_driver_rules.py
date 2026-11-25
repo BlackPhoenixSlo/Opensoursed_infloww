@@ -1,9 +1,3 @@
-"""Seam 2, ticket 08: the driver's pure rules in proof_core: which proofs never start (`not_started`), when a post's
-undo is forced (`undo_deadline`) and how long a write waits for pacing (`pace_wait`).
-
-Expected values come from the spec (docs/spec/ofm-not-yet/phase-00-live-capture-proof-harness.md, stories 9, 10,
-13, 22, 24, 28, 56) and ticket 08 as trimmed by D27 (refusal only: no owner-go run path).
-"""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -60,17 +54,14 @@ def _sched(minutes):
 
 
 @pytest.mark.parametrize("proof, method, path, body, want", [
-    # delete-at-once: deleted within 60 s of the write, so forced 10 s before (5 s pacing + 5 s headroom)
     (P(tags={"delete_at_once"}), "POST", "/api2/v2/lists", {"name": "x"}, AT + timedelta(seconds=50)),
     (P(arm=[Write("POST", "/api2/v2/posts")], tags={"post", "delete_at_once"}), "POST", "/api2/v2/posts",
      {"text": "x"}, AT + timedelta(seconds=50)),
-    # scheduled post: undo forced 10 minutes before its time
     (P(arm=[Write("POST", "/api2/v2/posts")], tags={"post"}), "POST", "/api2/v2/posts", _sched(31),
      AT + timedelta(minutes=21)),
     (P(arm=[Write("POST", "/api2/v2/posts")]), "POST", "/api2/v2/posts", _sched(240), AT + timedelta(minutes=230)),
     (P(arm=[Write("POST", "/api2/v2/posts")], tags={"post", "delete_at_once"}), "POST", "/api2/v2/posts",
      _sched(31), AT + timedelta(seconds=50)),
-    # no deadline: not a post, not delete-at-once, or a post body with no schedule
     (P(), "POST", "/api2/v2/lists", {"name": "x"}, None),
     (P(arm=[Write("POST", "/api2/v2/posts")]), "POST", "/api2/v2/posts", {"text": "x"}, None),
     (P(arm=[Write("POST", "/api2/v2/posts")]), "POST", "/api2/v2/posts", {"isScheduled": 1, "scheduledDate": "soon"},
@@ -114,7 +105,6 @@ def test_pace_problems(wire, want):
                                                ("(1 day free trial)", None, "(1 day free trial)"),
                                                ("to {fan}", "7", "to 7")])
 def test_text_waits_fill_marker_and_fan(want, fan, waited):
-    """Ticket 64: a settled or trigger text wait fills `{marker}` / `{fan}` (prove._wait_text, both callers)."""
     seen = []
 
     class Frame:
@@ -130,7 +120,6 @@ def test_text_wait_with_fan_but_no_proof_fan_is_refused():
         prove._wait_text(object(), "body", "to {fan}", "oi-proof-r1", None)
 
 
-# ── follow-up #6: an earlier live run's FAILED undo refuses the next live run until cleared by hand ──
 
 def _log(root, folder, *rows):
     import json
@@ -150,14 +139,12 @@ def test_an_earlier_live_failed_or_not_reversible_row_refuses_the_next_live_run(
     got = prove.earlier_pending("live", "now")
     assert len(got) == 2 and "aaa/undo-log.jsonl: row 1 (p2.bubble-unsend-ppv) FAILED" in got[0] \
         and "OnlyFans id 9" in got[0] and "clear the row by hand" in got[0] and "(p.x) not reversible" in got[1], got
-    assert prove.earlier_pending("fake", "now") == []   # a fake run's FakeOF is fresh: its FAILED rows block nothing
-    # cleared by hand: a snapshot appended to that log, folded last-wins
+    assert prove.earlier_pending("fake", "now") == []
     with (tmp_path / "slop/evidence/20261121T231838Z-ofm-live-aaa/undo-log.jsonl").open("a") as f:
         f.write('{"row": 1, "state": "cleared by hand"}\n')
     assert [p for p in prove.earlier_pending("live", "now") if "aaa" in p] == []
 
 
-# ── round 2 #23: another worktree's unresolved live Undo log blocks via the Creator's shared index beside its lock ──
 
 def test_another_worktrees_unresolved_live_log_blocks_via_the_shared_index_until_cleared(tmp_path, monkeypatch):
     import run_lock
@@ -170,18 +157,18 @@ def test_another_worktrees_unresolved_live_log_blocks_via_the_shared_index_until
     _log(there, "20261122T010000Z-ofm-live-ddd", {"row": 1, "proof": "p2.bubble-unsend-ppv", "state": "FAILED",
                                                    "write": w, "of_id": "9"})
     other = there / "slop/evidence/20261122T010000Z-ofm-live-ddd/undo-log.jsonl"
-    assert prove.earlier_pending("live", "now", "creatorx") == []   # not listed: this worktree never sees it
+    assert prove.earlier_pending("live", "now", "creatorx") == []
     run_lock.index_update("creatorx", add=other)
     got = prove.earlier_pending("live", "now", "creatorx")
     assert len(got) == 1 and str(other.resolve()) in got[0] and "FAILED" in got[0], got
-    assert prove.earlier_pending("live", "now", "othercreator") == []   # per Creator
-    assert prove.earlier_pending("fake", "now", "creatorx") == []       # live only
-    with other.open("a") as f:   # cleared by hand in its own worktree: folded last-wins, drops out of the index
+    assert prove.earlier_pending("live", "now", "othercreator") == []
+    assert prove.earlier_pending("fake", "now", "creatorx") == []
+    with other.open("a") as f:
         f.write('{"row": 1, "state": "cleared by hand"}\n')
     assert prove.earlier_pending("live", "now", "creatorx") == []
     assert run_lock.index_logs("creatorx") == []
     run_lock.index_update("creatorx", add=tmp_path / "gone" / "x-ofm-live-eee" / "undo-log.jsonl")
-    assert "gone: check by hand" in prove.earlier_pending("live", "now", "creatorx")[0]   # a listed log that vanished
+    assert "gone: check by hand" in prove.earlier_pending("live", "now", "creatorx")[0]
 
 
 def test_a_live_runs_log_is_listed_while_it_runs_and_settles_out_when_resolved(tmp_path, monkeypatch):
@@ -192,7 +179,7 @@ def test_a_live_runs_log_is_listed_while_it_runs_and_settles_out_when_resolved(t
     run_lock.index_update("c", add=log)
     log.write_text('{"row": 1, "proof": "p.x", "state": "FAILED", "write": {"method": "POST", "path": "/a"}}\n')
     prove._index_settle("c", log)
-    assert run_lock.index_logs("c") == [log.resolve()]   # unresolved: stays listed for every worktree
+    assert run_lock.index_logs("c") == [log.resolve()]
     with log.open("a") as f:
         f.write('{"row": 1, "state": "undone"}\n')
     prove._index_settle("c", log)
@@ -204,10 +191,10 @@ def test_an_unreadable_shared_index_blocks_and_writes_are_atomic(tmp_path, monke
     monkeypatch.setattr(run_lock.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(prove, "ROOT", tmp_path / "here")
     run_lock.index_update("c", add=tmp_path / "e" / "x-ofm-live-ggg" / "undo-log.jsonl")
-    assert not list(tmp_path.glob("*.tmp"))                        # the temp file was renamed into place
-    run_lock._index_path("c").write_text('["half a wri')            # torn / corrupt index
+    assert not list(tmp_path.glob("*.tmp"))
+    run_lock._index_path("c").write_text('["half a wri')
     got = prove.earlier_pending("live", "now", "c")
-    assert len(got) == 1 and "check it by hand" in got[0], got     # blocks, not read as empty
+    assert len(got) == 1 and "check it by hand" in got[0], got
     with pytest.raises(ValueError):
-        run_lock.index_update("c", drop=[])                         # never overwrites what it couldn't read
-    prove._index_settle("c", tmp_path / "missing" / "undo-log.jsonl")   # end of run: no raise
+        run_lock.index_update("c", drop=[])
+    prove._index_settle("c", tmp_path / "missing" / "undo-log.jsonl")

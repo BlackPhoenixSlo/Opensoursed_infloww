@@ -1,8 +1,3 @@
-"""Register the demo owner on a `demo-shots/run.sh serve` stack, seed the synthetic agency
-(demo-shots dataset.py -> seed.py, as capture.py does) and print the owner's session cookie.
-
-    DEMO_SHOTS_TMP=... seed_session.py <app-url>   -> stdout: session cookie
-"""
 from __future__ import annotations
 
 import os

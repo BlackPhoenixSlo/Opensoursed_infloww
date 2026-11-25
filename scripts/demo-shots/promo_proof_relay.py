@@ -1,16 +1,3 @@
-"""Keep running proof relay: relay_guarded.py's sandbox (temp DB, loopback, redirected sessions
-and secrets) with the automation supervisor left RUNNING (_run_ui_safe neuters it; it is
-recompiled from the executor's own source, as slop/lib/relay.py) and the event persist worker on,
-so a toast frame goes through the real transcoder → toast gate → poke → materializer → run_once.
-OnlyFans is promo_fake_of.py at OF_API_ORIGIN; curl_cffi refuses any non-loopback host.
-
-Loopback-only hooks (no service/ change; the code root is DEMO_SHOTS_ROOT, so a baseline
-worktree runs under the same hooks):
-  POST /__proof/of-ws-frame {account_id, frame}   server._broadcast_event(frame), as the OF pump
-  POST /__proof/wake                              automation_executor.wake_supervisor()
-  GET  /__proof/idle                              runs in flight, pokes held, frames processed
-  POST /__proof/env {set: {k: v}, unset: [k]}     this process's env (runtime switch, host id)
-"""
 import ast
 import asyncio
 import os
@@ -66,7 +53,7 @@ def _wire(app) -> None:
         finally:
             _stats["processed"] += 1
 
-    event_transcoder.transcode = counted    # the persist worker imports it at loop start
+    event_transcoder.transcode = counted
     app.on_event("startup")(events.start_persist_worker)
     supervisor = _real_supervisor()
 

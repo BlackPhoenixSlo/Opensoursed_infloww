@@ -160,7 +160,7 @@ def case_the_pass_fetches_only_live_onlyfans_creators_a_few_times_a_day_at_most(
     metas = [{"id": A1, "has_session": True}, {"id": A2, "has_session": True},
              {"id": A3, "has_session": False}, {"id": A4, "has_session": True},
              {"id": "7300009", "has_session": True}]
-    platforms = {"7300009": "fansly"}
+    platforms = {"7300009": "fansly", A1: None, A2: "myspace"}
     built: list[str] = []
     fail: dict[str, Exception | None] = {"with": RuntimeError("proxy down")}
 

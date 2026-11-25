@@ -19,9 +19,6 @@ import sys
 from collections import Counter
 
 DATE = re.compile(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{4}\b")
-# The sweep's label of a control, in the frame (JS): aria-label, text or placeholder (60 characters), a date read as
-# "{date}", else [its first two classes], else [its tag]. The one source for dead.py (it writes the sweep) and
-# phase_check.py (it finds a control by its sweep label).
 LABEL_JS = r"""(e) => {
     const t = (e.getAttribute('aria-label') || e.textContent.trim() || e.getAttribute('placeholder') || '').trim().replace(/\s+/g, ' ')
       .replace(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{4}\b/g, '{date}').slice(0, 60);

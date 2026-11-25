@@ -1,12 +1,3 @@
-"""Browser-side answers for the reads the throwaway relay cannot serve.
-
-The relay answers every `/admin/*` read from the seeded SQLite (seed.py). What it
-would fetch live from OnlyFans (`/api/of/*`, plus the few `/admin/*` reads that
-proxy OF, like referrals) is answered here from the same dataset, so totals
-agree across pages. `answer()` returns a JSON-able body, or None to let the
-request through to the relay (for `/admin/*`) or to record it as unmatched (for
-`/api/of/*`, which never reaches the relay).
-"""
 from __future__ import annotations
 
 import random
@@ -23,7 +14,7 @@ EMPTY = {"list": [], "hasMore": False}
 
 
 class AssetRef(str):
-    """An answer that is a picture: the router serves this asset URL's file."""
+    pass
 
 
 class Fixtures:
@@ -44,7 +35,6 @@ class Fixtures:
         self.active = {(s["account_id"], s["fan_id"]) for s in d.subs if s["status"] == "active"}
         self._thread = self._build_thread()
 
-    # ── shapes ──────────────────────────────────────────────────────────────
     def creator_user(self, c: dict[str, Any]) -> dict[str, Any]:
         return {"id": int(c["id"]), "name": c["name"], "username": c["username"], "avatar": c["avatar"],
                 "avatarThumbs": {"c50": c["avatar"], "c144": c["avatar"]}}
@@ -71,7 +61,6 @@ class Fixtures:
                 "files": {"thumb": v, "squarePreview": v, "preview": v, "full": v, "source": v},
                 **({"duration": 95} if kind == "video" else {})}
 
-    # ── Messages Pro ────────────────────────────────────────────────────────
     def _build_thread(self) -> list[dict[str, Any]]:
         th = self.d.thread
         c, fid = self.by_id[th["account_id"]], th["fan_id"]
@@ -103,7 +92,6 @@ class Fixtures:
                 continue
             if m["fan_id"] not in latest or m["created_at"] > latest[m["fan_id"]]["created_at"]:
                 latest[m["fan_id"]] = m
-        # The list a chatter works: active subscribers, nearly all of whom have spent.
         rows = sorted((m for m in latest.values() if (account_id, m["fan_id"]) in self.active
                        and (self.spend.get((account_id, m["fan_id"]), 0) > 0 or m["fan_id"] % 7 == 0)),
                       key=lambda m: m["created_at"], reverse=True)[:60]
@@ -133,7 +121,6 @@ class Fixtures:
                 "canSendMessage": True, "canNotSendReason": None, "isMutedNotifications": False,
                 "canGoToProfile": True, "hasUnreadTips": False, "countPinnedMessages": 0}
 
-    # ── router ──────────────────────────────────────────────────────────────
     def answer(self, method: str, path: str, q: dict[str, list[str]], account: str | None) -> Any:
         one = lambda k: (q.get(k) or [None])[0]  # noqa: E731
         c = self.by_id.get(account or "") or self.top
@@ -143,12 +130,12 @@ class Fixtures:
             ids = (one("account_id") or ",".join(self.by_id)).split(",")
             return {"rows": [{"account_id": a, "total_cents": self._referral(a, one("from"), one("to")), "by_day": []}
                              for a in ids if a in self.by_id], "unavailable": []}
-        if path == "/health" and one("all_accounts"):  # a live OF probe per Creator
+        if path == "/health" and one("all_accounts"):
             return {"ok": True, "accounts": [{"account_id": a, "nickname": x["name"].split()[0], "ok": True,
                                               "name": x["name"]} for a, x in self.by_id.items()]}
-        if path == "/admin/shifts/me":  # a chatter's own shifts (the manager's dashboard), at the anchor, not real now
+        if path == "/admin/shifts/me":
             return self._my_shifts(self.d.employees[MANAGER])
-        if path == "/admin/errors":  # the sandbox's failed OF calls; a healthy deployment reads 0
+        if path == "/admin/errors":
             return {"count": 0, "since_hours": 24, "list": []}
         if path == "/admin/automation-rules":
             return {"rules": self.rules(one("account_id") or c["id"])}
@@ -189,7 +176,7 @@ class Fixtures:
         if re.fullmatch(r"/api/of/v2/chats/(\d+)/pinned", path) or path in (
                 "/api/of/v2/chats/folders", "/api/of/v2/scheduled-sends"):
             return EMPTY
-        if path == "/admin/accounts/roster-counts":  # a live OF read on the relay
+        if path == "/admin/accounts/roster-counts":
             return {"counts": {a: roster_count(self.chats(a), a) for a in self.by_id}}
         if path == "/api/of/v2/users/me":
             return self.profile(c)
@@ -242,7 +229,6 @@ class Fixtures:
             return {"list": [], "hasMore": False}
         return None
 
-    # ── money, automations, links, vault, S4S ──────────────────────────────
     def _notifications(self, account_id: str, kind: str | None) -> list[dict[str, Any]]:
         out = []
         for t in self.sales.get(account_id, []):

@@ -876,6 +876,8 @@ def _capture_and_persist(job: RemoteLoginJob, page, context) -> None:
     """Bind the proxy, persist through paste-curl's pipeline, run the bootstrap
     endpoint's hooks. The proxy is bound BEFORE anything is persisted: when the
     bind fails nothing is written (one egress)."""
+    import accounts as account_registry
+    import platforms
     import session_bootstrap
 
     job.set_state(STATE_CAPTURING, "capturing session")
@@ -889,6 +891,7 @@ def _capture_and_persist(job: RemoteLoginJob, page, context) -> None:
     parsed = _request_from_capture(cap, cookies, ua)
     uid = parsed["headers"]["user-id"]
 
+    account_registry.ensure_platform(uid, platforms.ONLYFANS.key)
     try:
         bind_proxy(job, uid)
     except Exception as e:  # noqa: BLE001

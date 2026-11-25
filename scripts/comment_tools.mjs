@@ -50,6 +50,7 @@ const kidsOf = (n, sf) => n.getChildren(sf).filter((c) => !isJsDoc(c));
 const isJsxParent = (n) => n && (n.kind === K.JsxElement || n.kind === K.JsxFragment);
 const isEmptyExpr = (n) => n.kind === K.JsxExpression && !n.expression && !n.dotDotDotToken;
 
+// A JsxText starting with // or /* is text, yet the trivia scanners read it as a comment.
 function jsxTextStarts(sf) {
   const out = [];
   const visit = (n) => {
@@ -70,7 +71,6 @@ function lastAtOrBefore(sorted, x, key = (v) => v) {
   return lo - 1;
 }
 
-// A JsxText starting with // or /* is text, yet the trivia scanners read it as a comment.
 function collectComments(sf) {
   const text = sf.text;
   const jsxTexts = jsxTextStarts(sf);

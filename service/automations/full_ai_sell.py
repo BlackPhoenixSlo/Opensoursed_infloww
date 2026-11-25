@@ -1,61 +1,3 @@
-"""automations/full_ai_sell.py — Full AI Chat's Sell executor (spec 03b, ticket 10 r3).
-
-The sell step runs `load_rows` -> `pool` -> `shoots_for` -> `pick` and gets one
-Pick or a Refusal (`same_piece` first on a Pending tease's sell). Pure apart from the async `load_rows` (DB reads) and
-`shoots_for` (a coroutine doing no I/O when given rows and prints). No network,
-no LLM, no OF client, send, lease or cooldown: it joins Shadow's strict no-send
-scan (test_full_ai_shadow.py). There is no offer cap.
-
-`in_folders(refs, include, exclude)`: the Creator's folder choice. Refs are
-`vf:<vault_folders.id>` and `of:<OF list id>`; an empty include is the whole
-vault, unfiled items too; exclude wins; a ref naming no live folder matches
-nothing, and a non-empty include never falls back to all.
-
-`list_price_cents(jev, fields, kind)`: one price per item, ticket 10 r3. A
-current Jev blob prices by its lane ($10 / $50 / $100; a review lane has no
-price, checked before `lane_of` reads a review clip's `read_lane5`); without
-one, the shelf price ($50 / $10; 0 is no price, never free). An explicit act
-moves the lane up the owner's ladder ($50 / $100 / $150). Clamped to $10-$200.
-
-Folder prices (`vault_folder_prices`): an agency's price on a folder (`vf:` or `of:` ref).
-`load_rows` gives each row `folder_cents`, the highest price among its folders' (None: no priced
-folder), and `list_price_cents` lists the item at it instead of its lane price, with no explicit
-bump: the folder price is the LIST price. Unpriced items are unchanged; `pick`'s heat targeting,
-the haggle clamp, `price_ok` and the owned / dupe rules read `list_cents` as before. What holds
-after the list: a haggle may go down to 67 % of it (`clamp_quote`); the price Jev (sext_scene,
-which gets it as `list_price`) and a chat-tease ride's price Jev replace it, under or over: Jev
-decides the price (owner 11-15), the folder price is its input, not a floor. The Pick carries
-the folder price as `facts["folder_cents"]` (absent when no locked item is priced).
-Per-Creator switch `vault_settings.folder_price_final` (off by default; everything above is off):
-on, `load_rows` marks each row `folder_final` and a paid Pick containing folder-priced media locks
-its final bundle price in `facts["folder_price_cents"]`: AI pricing, tease pricing and haggling
-cannot change it (`_sell` clamps once, `hold_folder_price`; `_price` skips the price Jev). Photo
-packs keep the highest item price; video bundles keep the existing sum (capped at $200).
-Explicit free-item flows remain free.
-Per-Creator switch `vault_settings.standard_folders` (off by default): on, media in the standard
-Needs Review folder (`vault_standard_rules.REVIEW`) is left out of the pool; off, every standard
-folder (`created_by` `vault_standard:…`) is ignored: no ref, no pack, no folder price.
-ASSUMPTION: an item in several priced folders lists at the HIGHEST of their prices. Overturned if
-the owner wants the lowest or a folder order.
-ASSUMPTION: a Jev "review" item (and a disputed free-tier one, `_unpriced_dispute`) stays not for
-sale in a priced folder; any other item there sells at the folder price, a free-lane or unpriced
-one (no Jev blob, shelf 0) too. Overturned if a folder price may lift a review, or free items
-must stay previews.
-
-The Claim audit (ticket 45), pure, on a sell Turn's final text after the shared chain:
-`claim_ok(text, pick)` (counts, kinds and subject words against the Pick, old `pack_claim.py`'s
-lexicon), `price_ok(text, price_cents)` (every price named is the PPV price; None or 0 = none may
-be named), `discloses(text, pick)` (a Pick not what he asked for is told as such) and
-`fallback_caption(pick, kind)` (counts + kinds, the price only for an `offer`).
-
-His asked count, pure: `asked_count(text)` (the number of pieces he names, "bundle of 5 videos",
-"three pics"; None for none or one, at most `COUNT_MAX`), carried on `Ask.count` to `pick` as a
-suggestion (config `sell_count`).
-
-The haggle quote (ticket 47), pure: `quoted_cents(text)` (his one named dollar amount, not a tip)
-and `clamp_quote(list_cents, asked_cents)` (at least max($10, 67 % of list up to a dollar), at most
-list; no amount = that floor).
-"""
 from __future__ import annotations
 
 import json
@@ -84,15 +26,13 @@ Subject = Literal["feet", "butt", "tits", "pussy", "nude", "lingerie", "bikini",
 Format = Literal["photo", "video", "any"]
 Reason = Literal["sell_off", "inventory_unknown", "no_priced_items", "no_match", "all_owned", "offer_open"]
 
-MIN_CENTS = vault_folder_prices.MIN_CENTS     # $10
-MAX_CENTS = vault_folder_prices.MAX_CENTS     # $200
+MIN_CENTS = vault_folder_prices.MIN_CENTS  # $10
+MAX_CENTS = vault_folder_prices.MAX_CENTS  # $200
 _LANE_CENTS = {"free": 0, "$10": 1000, "$50": 5000, "$100": 10000, "$150": 15000}
 
 
 @dataclass(frozen=True)
 class Ask:
-    """What he asks for: the Router's `asks_subject` / `asks_format`, his `intensity` (1-4) and the
-    count he names (`asked_count`, None: none read; a suggestion, `pick`)."""
     subject: Subject
     format: Format
     intensity: int
@@ -101,7 +41,6 @@ class Ask:
 
 @dataclass(frozen=True)
 class Pick:
-    """One offer: locked `media` (first = `ref`, the `>>OFFER` ref), free `previews`, the price."""
     ref: int
     media: tuple[int, ...]
     previews: tuple[int, ...]
@@ -118,8 +57,6 @@ class Refusal:
     reason: Reason
 
 
-# Ask subject -> the TOPICS it retrieves (ticket 10 r3). feet reads the Feet-pack rungs instead
-# (no feet topic, by owner); lingerie is Jev's outfit tag, a split topic of its own here.
 _LINGERIE = vtf.Topic("lingerie", "lingerie", "in lingerie or a bodysuit", "split",
                       lambda j, f: vtf.jev_tag(j, "outfit") == "lingerie_or_bodysuit")
 _TOPICS: dict[str, tuple[vtf.Topic, ...]] = {
@@ -130,17 +67,12 @@ _TOPICS: dict[str, tuple[vtf.Topic, ...]] = {
         "masturbation": ("masturbation",), "blowjob": ("blowjob",), "sex": ("sex", "with_partner"),
     }.items()}
 _TOPICS["lingerie"] = (_LINGERIE,)
-FEET_PACK = "feet"   # `vault_pack_picker.CATEGORIES` name; `load_rows` puts it in a row's `packs`
-# ASSUMPTION: a subject matches when `split` files the row in any of its topics (so a row
-# with no current Jev blob matches only feet / anything), and feet reads the row's `packs`
-# (its Feet-pack rung folders). Overturned if retrieval should read the describe fields alone.
+FEET_PACK = "feet"
 
-# The asks sold without the solo rule (a partner is the point of them).
 _PARTNER_OK = frozenset({"sex", "blowjob"})
 
 
 def in_folders(refs: Iterable[str], include: Iterable[str], exclude: Iterable[str]) -> bool:
-    """The item (its folder `refs`) is inside the folder choice."""
     refs = set(refs)
     if refs & set(exclude):
         return False
@@ -149,28 +81,20 @@ def in_folders(refs: Iterable[str], include: Iterable[str], exclude: Iterable[st
 
 
 def seed_for(account_id: str, fan_id: str, trigger_key: str) -> str:
-    """The Pick's seed: a replayed Turn draws the same Pick."""
     return f"pick:{account_id}:{fan_id}:{trigger_key}"
 
 
 def clamp_cents(cents: int) -> int:
-    """A sale price inside [$10, $200]."""
     return max(MIN_CENTS, min(MAX_CENTS, int(cents)))
 
 
 def list_price_cents(jev: dict[str, Any] | None, fields: dict[str, Any], kind: str,
                      folder_cents: int | None = None) -> int | None:
-    """The item's list price in cents, or None (not for sale). `jev` is its current Jev blob
-    (`vault_topic_folders.jev_of(fields)`), None without one. `folder_cents` (its highest folder
-    price, module docstring) replaces the lane price, a review item still None.
-
-    ASSUMPTION: the Jev "free" lane prices 0, an item kept in the pool only as a preview or a
-    free item, never a locked paid one (ticket 10 r3: "free" -> preview/gift only); 0 is not
-    clamped up. Overturned if the owner wants free-lane items out of the pool."""
     fields = fields or {}
     if jev is not None:
         if jev.get("lane5") == "review":
             return None
+    # Folder price is the LIST price, replacing the lane price; a review item stays not for sale.
     if folder_cents is not None:
         return clamp_cents(folder_cents)
     if jev is not None:
@@ -180,22 +104,16 @@ def list_price_cents(jev: dict[str, Any] | None, fields: dict[str, Any], kind: s
     if lane not in vtf.PRICES:
         return None
     if vtf._explicit(jev or {}, fields):
-        # Explicit topics are never free (`vault_topic_folders.split`).
         if lane == "free":
             return None
         lane = vtf._EXPLICIT_OF[lane]
+    # Free lane prices 0 (a preview/gift, never a locked paid item); 0 is not clamped up.
     cents = _LANE_CENTS[lane]
     return cents and clamp_cents(cents)
 
 
+# A bad stored value raises (fail closed -> inventory_unknown): [] would read as unfiled, inside an empty include.
 def _of_refs(raw: str | None) -> set[str]:
-    """`vault_items.of_folder_ids` as `of:<id>` refs. The ids are kept as stored, int or string
-    (`vault_mirror` stores OF's `listStates[].id` unconverted). Bad JSON or a non-list raises.
-
-    ASSUMPTION: a bad stored value is an error (-> inventory_unknown), not `[]` as the house parse
-    (`vault_of_folders_decide.parse_folder_ids`) reads it: the spec makes any error reading folder
-    refs fail closed, and `[]` would read as unfiled, inside an empty include. Overturned if bad
-    values are common enough that refusing the whole vault costs more than the unfiled read."""
     ids = json.loads(raw) if raw else []
     if not isinstance(ids, list):
         raise ValueError(f"of_folder_ids not a list: {raw!r}")
@@ -204,17 +122,6 @@ def _of_refs(raw: str | None) -> set[str]:
 
 async def load_rows(account_id: str) -> tuple[list[dict[str, Any]], list[list[int]],
                                               dict[int, dict[str, Any]]] | Refusal:
-    """The Creator's vault as the pool reads it: `vault_scripts._load_rows` rows, each with its
-    folder `refs` (`vf:<id>` per live internal folder, `of:<id>` per OF list) and `packs` (the
-    Pack categories of its folders, e.g. feet); the dupe groups, read straight from
-    `vault_dupes.find_duplicates` (an error there would drop the dupe expansion of Owned media);
-    and the near-dupe `prints` (`vault_scripts._fingerprints`, `{}` on its own error: only
-    near-dupe collapse inside a shoot is lost); each row's `folder_cents` (its highest folder price, None:
-    none). Any error in rows, refs, folder prices or dupe groups ->
-    Refusal("inventory_unknown").
-
-    ASSUMPTION: a deleted folder (`deleted_at` set) gives no ref, so a choice naming it matches
-    nothing (ticket 41). Overturned if a deleted folder's members should still count as in it."""
     try:
         rows = await vault_scripts._load_rows(account_id)
         async with get_session() as s:
@@ -236,7 +143,7 @@ async def load_rows(account_id: str) -> tuple[list[dict[str, Any]], list[list[in
         for mid, fid, name, creator in members:
             standard = parse_key(str(creator or ""))
             if standard and not opts["standard_folders"]:
-                continue   # rwl3 A1: switch off = standard folders do not exist (no ref, pack, price)
+                continue
             if standard and standard[1] == REVIEW:
                 needs_review.add(int(mid))
             refs.setdefault(int(mid), set()).add(f"vf:{fid}")
@@ -250,7 +157,7 @@ async def load_rows(account_id: str) -> tuple[list[dict[str, Any]], list[list[in
         return Refusal("inventory_unknown")
     prints = await vault_scripts._fingerprints(account_id)
     out = []
-    final = {"folder_final": True} if opts["folder_price_final"] else {}   # off: rows as before
+    final = {"folder_final": True} if opts["folder_price_final"] else {}
     for r in rows:
         if r["media_id"] in needs_review:
             continue
@@ -261,7 +168,6 @@ async def load_rows(account_id: str) -> tuple[list[dict[str, Any]], list[list[in
 
 
 def expand_owned(owned: Iterable[int], dupe_groups: list[list[int]]) -> set[int]:
-    """`owned` plus every duplicate copy of each owned item (one copy owned = the set owned, D13)."""
     out = {int(m) for m in owned}
     for group in dupe_groups:
         if out.intersection(group):
@@ -271,22 +177,8 @@ def expand_owned(owned: Iterable[int], dupe_groups: list[list[int]]) -> set[int]
 
 def pool(rows: list[dict[str, Any]], dupe_groups: list[list[int]], owned: Iterable[int],
          folders: dict[str, Any], ask: Ask) -> list[dict[str, Any]] | Refusal:
-    """The rows `pick` may draw from, each with its script `why` and `list_cents`, or a Refusal.
-
-    Folder filter, then `collapse_dupes`, then `_with_script_why` (`_unpriced_dispute` reads it),
-    then drop Owned media and every dupe copy of it, partner content unless `ask` is sex /
-    blowjob, disputed-price items and items with no list price. No offer history is read, so an
-    unbought item stays however often it was offered.
-
-    ASSUMPTION: an empty pool is a Refusal, not `[]`, so the cause survives (ticket 10 r3's
-    `pool -> list | Refusal`): nothing in the folders -> no_match, nothing priced -> no_priced_items,
-    nothing solo for a solo ask -> no_match, every sellable item owned -> all_owned. Overturned if
-    the sell step wants `[]` and derives the reason itself.
-    ASSUMPTION: unknown solo (`sellability().solo` None: no `people_count`, no `partner_visible`)
-    is dropped, as `vault_scripts.is_solo` refuses to guess. Overturned if the owner wants V1
-    rows (no people answer) sold on solo asks."""
     include, exclude = folders.get("include") or [], folders.get("exclude") or []
-    # `r["refs"]`, never a default: a row without refs would read as unfiled and slip past exclude.
+    # r["refs"], never a default: a row without refs would read as unfiled and slip past exclude.
     chosen = [r for r in rows if in_folders(r["refs"], include, exclude)]
     chosen, _ = vault_scripts.collapse_dupes(chosen, dupe_groups)
     if not chosen:
@@ -303,6 +195,7 @@ def pool(rows: list[dict[str, Any]], dupe_groups: list[list[int]], owned: Iterab
         priced = [r for r in priced if vault_ai_brief.sellability(r.get("fields") or {})["solo"] is True]
         if not priced:
             return Refusal("no_match")
+    # No offer history is read: an unbought item stays sellable however often it was offered.
     gone = expand_owned(owned, dupe_groups)
     left = [r for r in priced if r["media_id"] not in gone]
     return left or Refusal("all_owned")
@@ -310,25 +203,18 @@ def pool(rows: list[dict[str, Any]], dupe_groups: list[list[int]], owned: Iterab
 
 async def shoots_for(account_id: str, pool: list[dict[str, Any]],
                      prints: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
-    """The pool's shoots, photo-only ones too (no clip minimum, one item is enough, no escalation
-    needed). With `rows` and `prints` passed it reads nothing, but it is a coroutine, so it runs in
-    the sell step and `pick` stays pure."""
     return await vault_scripts.collect_outfit_scripts(
         account_id, rows=pool, prints=prints, min_items=1, min_videos=0, require_escalation=False)
 
 
-# The sext scene's content level (Router Choice `offer_level`, config `sext_scene`) as a lane
-# target; "any" (its default) keeps `target_cents`.
 LEVEL_CENTS = {"soft": 1000, "nude": 5000, "explicit": 10000}
 
 
 def target_cents(intensity: int) -> int:
-    """The heat target lane: intensity 1-2 -> $10, 3 -> $50, 4 -> $100."""
     return 1000 if intensity <= 2 else 5000 if intensity == 3 else 10000
 
 
 def _lane(cents: int) -> str:
-    """The lane name, or a folder price as money ("$25", "$24.99")."""
     return next((lane for lane, c in _LANE_CENTS.items() if c == cents), None) or _money(cents)
 
 
@@ -346,7 +232,6 @@ def _matches(row: dict[str, Any], ask: Ask) -> bool:
 
 
 def _free_safe(row: dict[str, Any]) -> bool:
-    """A free-lane row may go out free: Jev's free guard holds."""
     jev = vtf.jev_of(row.get("fields") or {})
     return jev is not None and vtf.free_ok(jev)
 
@@ -364,38 +249,24 @@ def _facts(locked: list[dict[str, Any]], previews: list[dict[str, Any]] = ()) ->
         shown[r["kind"]] = shown.get(r["kind"], 0) + 1
     folder = [r["folder_cents"] for r in locked if r.get("folder_cents") is not None]
     return {"kinds": kinds,
-            # locked + free previews: what the PPV bubble shows him (`claim_ok` counts, `fallback_caption`)
             "shown_kinds": shown,
             "items": [vault_ai_brief.sellability(r.get("fields") or {},
                                                  duration_seconds=r.get("duration_seconds"))
                       for r in locked],
-            # the anchor's describe text: the Writer's item line (03b, full_ai_writers.item_line)
             "description": str((locked[0].get("fields") or {}).get("description") or ""),
-            # every locked item's describe text: `claim_ok`'s subject words (previews aren't paid for)
             "descriptions": [str((r.get("fields") or {}).get("description") or "") for r in locked],
-            # the separate caption call's one media (`full_ai_caption`): the first described locked
-            # item, as old `_ppv_caption._first_described` took a pack's hero; None when none is
             "hero": next(({"media_id": r["media_id"], "kind": r["kind"],
                            "seconds": r.get("duration_seconds"), "fields": r.get("fields") or {}}
                           for r in locked
                           if str((r.get("fields") or {}).get("description") or "").strip()), None),
-            # every locked then preview item's kind and length: the Test chat's PPV bubble line
-            # (`full_ai_test.send` stores it as `offer_media_json.items`)
             "media": [{"id": r["media_id"], "kind": r["kind"], "seconds": r.get("duration_seconds") or None}
                       for r in [*locked, *previews]],
-            # the agency's folder price (highest over the locked items), only when one is priced:
-            # steps that reprice the Pick later can read it; an unpriced Pick's facts are unchanged
             **({"folder_cents": max(folder)} if folder else {}),
-            # `vault_settings.folder_price_final` on (rows marked by `load_rows`): absent when off
             **({"folder_final": True} if folder and any(r.get("folder_final") for r in locked) else {})}
 
 
 def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: Ask, *,
            free: bool, subject: str | None = None, price: Literal["highest", "sum"] = "highest") -> Pick:
-    """The Pick over `locked`: listed at the highest of their list prices, or with `price="sum"`
-    (a video bundle) at their sum capped at `MAX_CENTS`; the lane is the top item's either way.
-    ASSUMPTION: a video bundle lists at the sum of its clips, capped at $200; the price Jev may still
-    move it. Overturned if the owner wants a bundle discount or the top clip's price."""
     top = max(r["list_cents"] for r in locked)
     cents = min(MAX_CENTS, sum(r["list_cents"] for r in locked)) if price == "sum" else top
     facts = _facts(locked, previews)
@@ -408,29 +279,21 @@ def _offer(locked: list[dict[str, Any]], previews: list[dict[str, Any]], ask: As
 
 
 def folder_price(pick: Pick) -> int | None:
-    """The operator-approved paid offer price, including the existing bundle rule."""
     return vault_folder_prices.parse_cents((pick.facts or {}).get("folder_price_cents"))
 
 
 def hold_folder_price(got: Pick | Refusal) -> Pick | Refusal:
-    """The one folder-price-final clamp (rwl3 A9): a Pick carrying `folder_price_cents` sells at it,
-    whatever a tease quote or haggle made of it; anything else unchanged. `_sell` calls it last."""
     if isinstance(got, Pick) and (saved := folder_price(got)) is not None:
         return replace(got, price_cents=saved, list_cents=saved)
     return got
 
 
 def tease_price(pick: Pick, cents: int) -> Pick:
-    """Apply an AI tease quote (a final folder price is restored after, `hold_folder_price`)."""
     return replace(pick, price_cents=cents, list_cents=cents or pick.list_cents,
                    facts={**pick.facts, "vault_list_cents": pick.list_cents})
 
 
 def _nearest(pool: list[dict[str, Any]], ask: Ask) -> tuple[list[dict[str, Any]], str, str] | None:
-    """Config `sell_nearest` (test Mode): the first non-empty relaxed match for an ask nothing in
-    `pool` matches, in order (a) same subject, any format (step "format"); (b) any subject, same
-    format ("subject"); (c) anything ("any"). Returns (rows, the Pick's subject, step); the subject
-    is kept only in (a), else "anything" (the Pick never names what its media lacks). Pure."""
     steps = (("format", replace(ask, format="any"), ask.subject),
              ("subject", replace(ask, subject="anything"), "anything"),
              ("any", replace(ask, subject="anything", format="any"), "anything"))
@@ -443,12 +306,10 @@ def _nearest(pool: list[dict[str, Any]], ask: Ask) -> tuple[list[dict[str, Any]]
     return None
 
 
-TEASE_PHOTO_CENTS = 500     # Chat tease: one photo per $5 of its price (the old teaser ladder)
+TEASE_PHOTO_CENTS = 500  # one photo per $5 of its price
 
 
 def tease_photos(cents: int) -> int:
-    """The most photos a Chat tease at `cents` holds: price / $5, at least 1 (so the free photo and
-    a price under $10 are one photo, $10 two, $200 forty); the vault may hold fewer. Pure."""
     return max(1, cents // TEASE_PHOTO_CENTS)
 
 
@@ -456,64 +317,6 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
          seed: str, free: bool = False, target: int | None = None,
          nearest: bool = False, bundle: str = "shoot", ride: bool = False,
          ride_max: int = 2) -> Pick | Refusal:
-    """One Pick from `pool` (`pool()`'s rows, the sell step having handled its Refusal) for `ask`,
-    by a seeded draw (`seed_for`). Pure.
-
-    Retrieval is broad, through the TOPICS rules (`vault_topic_folders.split`); feet from the
-    Feet-pack rungs; the format filters the kind. The lane is the lowest at or above the heat
-    target (`target_cents`), else the subject's lowest; one row of it is drawn. A clip is sold
-    alone. A photo is sold with up to 3 more matching photos of its shoot (one of `shoots`,
-    priced at or under it) and at most one free preview: a free-lane photo of that shoot passing
-    `free_ok`. The price is the highest list price among the locked items. `target` (cents, the
-    sext scene's `offer_level` lane, `LEVEL_CENTS`) replaces the heat target when given.
-
-    `free=True` (the make_right free item): one item, price 0, the lowest matching lane; the
-    caller passes the pool minus every media already sent to him. No match -> the lowest-lane
-    item, its subject "anything" (the Pick never names a subject its media lacks).
-    ASSUMPTION: a photo in no shoot (no `outfit_key`: e.g. a nude with nothing on) sells alone,
-    no companions or preview; requiring a shoot would leave such photos unsellable. Overturned
-    if the owner wants loose photos never sold.
-    ASSUMPTION: companions are priced at or under the anchor, so the set's price stays on the
-    chosen lane. Overturned if a set may climb above the heat target.
-    ASSUMPTION: free mode on an empty pool (everything already sent) -> Refusal("all_owned"), the
-    nearest reason in the spec's set (he has seen it all). Overturned by a reason of its own.
-    ASSUMPTION: the free fallback ("no match -> lowest-lane unseen item", ticket 10 r3) ignores
-    subject and format. Overturned if a gift must keep the asked format.
-
-    `nearest=True` (config `sell_nearest` "plain" / "note", a fresh test-Mode sell_now Pick only):
-    no match relaxes (`_nearest`) instead of Refusal("no_match"), then the same lane / shoot /
-    preview logic runs on the relaxed rows (nothing priced there is still no_priced_items). The
-    Pick's `facts["asked"]` = {subject, format} records his ask and `facts["nearest"]` the step;
-    an exact match records neither. Ignored with `free`.
-
-    `bundle="fill"` (config `sell_bundle`, a fresh test-Mode sell_now photo Pick only, phase 03d
-    Bundle): up to 4 shoot mates (5 photos at most); under 3 photos, it fills to 3 with other
-    matching priced photos at or under the anchor's price (sorted by media id, shuffled after the
-    mates), never Owned and never two of a dupe group (both already out of `pool`). Subject
-    "anything" (the generic "send me pics", the common ask) fills only from the anchor's own price
-    lane, so the set stays one level (owner proof 2026-11-14: both generic Offers held 1 photo).
-    "shoot" (the default) is the path above, rng sequence unchanged.
-    ASSUMPTION (spec 03d): near-dupe `prints` are not checked.
-    Ignored with `free`.
-
-    `ride=True` (config `chat_tease`, a fresh test-Mode Chat tease Turn): photos only
-    (the ask's format is photo, so a video `asks_format` never refuses or relaxes a ride; the
-    pool's videos are dropped too, so `nearest` cannot relax into one), at most 2: the anchor and one shoot mate ("shoot"), or under
-    2 filled to 2 ("fill", the fill rules above); never a free preview. The Pick's
-    `facts["ride"]` = True marks it (`full_ai_writers.is_ride`).
-    ASSUMPTION: a ride carries no free preview, so the bubble shows at most 2 photos. Overturned if
-    the owner wants the old ladder's free first rung back.
-    `ride_max` (ride only, default 2): the most photos a ride holds; Chat tease passes
-    `tease_photos` of Jev's price.
-    Ignored with `free`.
-
-    `ask.count` (config `sell_count`, his `asked_count`, a fresh sell_now Pick only; a suggestion):
-    a clip anchor sells with up to `count - 1` more matching priced clips listed at or under it
-    (sorted by media id, then shuffled; fewer when fewer exist), the Pick listed at their sum
-    (`_offer(price="sum")`, capped at $200); a photo anchor with `bundle="fill"` fills to
-    `min(COUNT_MAX, max(3, count))` instead of 3 ("shoot" unchanged). An applied count lands on
-    `facts["asked_count"]`. None (the default) is the path above, rng sequence unchanged.
-    Ignored with `free` and `ride`."""
     rng = random.Random(seed)
     if free:
         unseen = [r for r in pool if r["list_cents"] > 0 or _free_safe(r)]
@@ -560,12 +363,12 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
              and r["kind"] == "photo" and r["list_cents"] <= anchor["list_cents"]]
     mates.sort(key=lambda r: r["media_id"])
     rng.shuffle(mates)
-    counted = bool(count) and bundle == "fill"              # his count sets the fill target
-    size = ride_max if ride else min(COUNT_MAX, max(3, count)) if counted else 3   # the fill target
+    counted = bool(count) and bundle == "fill"
+    size = ride_max if ride else min(COUNT_MAX, max(3, count)) if counted else 3
     locked = [anchor, *mates[:ride_max - 1 if ride else 4 if bundle == "fill" else 3]]
     if bundle == "fill" and len(locked) < size:
         have = {r["media_id"] for r in locked}
-        same_lane = (subject or ask.subject) == "anything"      # no subject to hold a mix together
+        same_lane = (subject or ask.subject) == "anything"
         fill = sorted((r for r in cands if r["kind"] == "photo" and r["media_id"] not in have
                        and (r["list_cents"] == anchor["list_cents"] if same_lane
                             else r["list_cents"] <= anchor["list_cents"])), key=lambda r: r["media_id"])
@@ -583,12 +386,9 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
 
 
 def _missed(p: Pick, miss: dict[str, Any] | None) -> Pick:
-    """A relaxed Pick with his ask and the relax step on its facts; an exact one untouched."""
     return p if miss is None else replace(p, facts={**p.facts, **miss})
 
 
-# ── Claim audit (ticket 45) ───────────────────────────────────────────
-# Old `pack_claim.py:47-87`, verbatim: the media nouns and the moving / audio kinds.
 _MEDIA_NOUNS = frozenset({
     "video", "videos", "vid", "vids", "clip", "clips",
     "pic", "pics", "picture", "pictures", "photo", "photos", "image", "images",
@@ -596,29 +396,23 @@ _MEDIA_NOUNS = frozenset({
 })
 MOVING_KINDS = ("video", "gif")
 AUDIO_KINDS = ("audio",)
-# `_MEDIA_NOUNS` by the bucket each claims; content / stuff / set / sets / media claim none.
 _VID_NOUNS = frozenset(w for w in _MEDIA_NOUNS if w.startswith(("vid", "clip")))
 _PIC_NOUNS = frozenset(w for w in _MEDIA_NOUNS if w.startswith(("pic", "photo", "image")))
 _KIND_NOUNS = _VID_NOUNS | _PIC_NOUNS
 
 
 def _buckets(kinds: dict[str, int]) -> tuple[int, int, int]:
-    """(pics, vids, voice notes) of a Pick's `facts["kinds"]`, old `pack_claim._media_phrase`'s
-    buckets: moving kinds are vids, audio is a voice note, anything else a pic."""
     vids = sum(n for k, n in kinds.items() if str(k).lower() in MOVING_KINDS)
     auds = sum(n for k, n in kinds.items() if str(k).lower() in AUDIO_KINDS)
     return sum(kinds.values()) - vids - auds, vids, auds
 
 
 def kind_of(fmt: str) -> str:
-    """One item's kind by `_buckets`' rule: "video" (a moving kind), "audio" (a voice note), else
-    "photo". The open card's need-line and a yes to it read it alike (rwl3 A7)."""
     k = str(fmt).lower()
     return "video" if k in MOVING_KINDS else "audio" if k in AUDIO_KINDS else "photo"
 
 
 def _media_phrase(kinds: dict[str, int]) -> str:
-    """`"6 pics + 1 vid"`, old `pack_claim._media_phrase`'s wording."""
     pics, vids, auds = _buckets(kinds)
     parts = [f"{n} {word}{'s' * (n > 1)}" for n, word in ((pics, "pic"), (vids, "vid"), (auds, "voice note")) if n]
     return " + ".join(parts) if parts else "0 pics"
@@ -626,14 +420,10 @@ def _media_phrase(kinds: dict[str, int]) -> str:
 
 _NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
                  "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
-# A word between a number and its noun that makes the number no count ("a 5 minute video",
-# "a few pics").
 _NOT_A_COUNT = frozenset({"sec", "secs", "second", "seconds", "min", "mins", "minute", "minutes",
                           "hour", "hours", "few", "couple", "lot", "lots", "bunch", "ton", "tons",
                           "handful", "pair"})
-# A token: a number glued to its currency ("$25", "25$": a price, never a count) or a word.
 _TOKEN = re.compile(r"[$€£]?\d+(?:[.,]\d+)?[$€£]?|[a-z]+")
-# Subject words per Ask subject: the Pick's subject, or one its describe text names, allows them.
 _SUBJECT_WORDS: dict[str, frozenset[str]] = {k: frozenset(v) for k, v in {
     "feet": ("feet", "foot", "toes", "soles"), "butt": ("butt", "ass", "booty"),
     "tits": ("tits", "titties", "boobs", "breasts", "nipples"), "pussy": ("pussy",),
@@ -644,12 +434,9 @@ _SUBJECT_WORDS: dict[str, frozenset[str]] = {k: frozenset(v) for k, v in {
 }.items()}
 
 
-COUNT_MAX = 5       # the most pieces his asked count asks for (`asked_count`)
-# A word after a number that makes it a price or an age, never a count of pieces.
+COUNT_MAX = 5
 _PRICE_AGE = frozenset({"dollar", "dollars", "buck", "bucks", "usd", "euro", "euros", "cent", "cents",
                         "year", "years", "yr", "yrs", "yo", "old"})
-# A word between a number and its media noun that makes the number no count of pieces: a price, an
-# age, or a word that joins two clauses ("im 25 and want videos"); `_NOT_A_COUNT` too.
 _GAP_STOP = _PRICE_AGE | frozenset({"and", "or", "but", "so", "then", "i", "im", "me", "my", "you", "u",
                                     "ur", "your", "is", "am", "are", "was", "want", "wanna", "need",
                                     "send", "get", "buy", "have", "got", "give", "for", "to", "of",
@@ -658,19 +445,10 @@ _BUNDLE_WORDS = frozenset({"bundle", "pack", "set"})
 
 
 def _count_word(tok: str) -> int | None:
-    """A token as a count: digits or a number word, never "a" / "an" (one) or a price ("$5")."""
     return int(tok) if tok.isdigit() else None if tok in ("a", "an") else _NUMBER_WORDS.get(tok)
 
 
 def asked_count(text: str) -> int | None:
-    """The number of pieces he names, clamped to `COUNT_MAX`; None for no count or one. Read: a
-    number right before a media noun ("5 videos", "three pics", "5 vids for me") or with up to two
-    words between ("5 hot videos"), none of them a number, `_NOT_A_COUNT` or `_GAP_STOP`; or right
-    after "bundle of" / "pack of" / "set of" ("bundle of 5") not followed by a `_NOT_A_COUNT` or
-    `_PRICE_AGE` word. A price ("$5", "5 dollars"), a length ("5 min video" is one video) or an age is no
-    count. Pure.
-    ASSUMPTION: several counts in one message ("3 pics and 2 videos") -> the largest. Overturned if
-    the owner wants the count of the asked format only."""
     toks = _TOKEN.findall(text.lower())
     found = []
     for i, tok in enumerate(toks):
@@ -696,9 +474,7 @@ def asked_count(text: str) -> int | None:
     return min(COUNT_MAX, top) if top > 1 else None
 
 
-# The describe text's own words for a subject (it writes "vulva", never "pussy"): a locked item
-# described with one allows that subject's words in her text. Measured 2026-11-14: "my pussy" over
-# a clip described "strokes her exposed vulva" false-failed and the scene line became the fallback.
+# The describer writes 'vulva', never 'pussy': without these, 'my pussy' over such a clip false-failed the audit.
 _DESCRIBE_WORDS: dict[str, frozenset[str]] = {k: frozenset(v) for k, v in {
     "pussy": ("vulva", "vagina", "labia", "genitals"), "butt": ("buttocks",),
     "tits": ("breast", "nipple", "topless"), "nude": ("unclothed", "undressed"),
@@ -710,17 +486,13 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[a-z]+", text.lower())
 
 
-# Words that claim a clip as surely as "video" does (owner-forwarded M3 2026-11-16: "i just filmed it
-# for u" over a 1-photo card); "watch" and "shot" are not here (photos are watched and shot too), nor
-# "movie" / "film" (everyday words: "watching a movie").
+# 'watch'/'shot' excluded (photos are watched and shot too), as are 'movie'/'film'.
 _CLIP_WORDS = frozenset({"filmed", "filming", "recorded", "recording", "footage"})
 _PLAY = re.compile(r"\b(?:press|hit)\s+play\b")
 
 
 def claims_clip(text: str) -> bool:
-    """A clip word (`_CLIP_WORDS`) or "press/hit play": the text claims a clip as "video" does."""
     return bool(_CLIP_WORDS & set(_words(text))) or bool(_PLAY.search(text.lower()))
-# A negation cue (F1, client rule 2026-11-16): "n't" forms are folded to "nt" first (`_NT`).
 _NT = re.compile(r"n['’]t\b")
 _NEG_CUES = frozenset({"not", "no", "without", "instead", "rather", "never", "nt", "dont", "doesnt",
                        "didnt", "isnt", "arent", "wasnt", "werent", "cant", "cannot", "wont",
@@ -728,66 +500,47 @@ _NEG_CUES = frozenset({"not", "no", "without", "instead", "rather", "never", "nt
 
 
 def _neg_words(text: str) -> list[str]:
-    """`_words` with "n't" folded into its word ("don't" -> "dont"), so a cue is one token."""
     return _words(_NT.sub("nt", text.lower()))
 
 
-# Words before an asked noun a negation cue may sit in (`_negated`): the Claim audit's excuse, and
-# `discloses`' cue (a wider window: a miss there costs a rewrite, then the honest fallback).
 _EXCUSE_WINDOW, _DISCLOSE_WINDOW = 3, 4
-# A plain "this is not what you asked for" (`discloses`), over `_neg_words` joined by spaces.
 _DISCLOSE = re.compile(r"\b(?:not what|not exactly|not quite|instead|rather than|different|closest|only got"
                        r"|only have|dont have (?:that|it|one|any)|havent got)\b")
 
 
-# A word after a cue that turns it into an affirmation: "not just a video" says there is one (rwl3 A6).
 _AFFIRMS = frozenset({"just", "only"})
 
 
 def _negated(words: list[str], i: int, window: int) -> bool:
-    """A negation cue (`_NEG_CUES`) among the `window` words before `words[i]`, not followed by
-    "just" / "only" ("not just a video" affirms the video)."""
     lo = max(0, i - window)
     return any(w in _NEG_CUES and words[j + 1] not in _AFFIRMS for j, w in enumerate(words[lo:i], lo))
 
 
-# Words that join an asked phrase ("no video of my feet"): an excused asked word excuses the next
-# one after only these (`_continues`).
 _LINKS = frozenset({"of", "my", "ur", "your"})
 
 
 def _continues(words: list[str], i: int, excused: set[int]) -> bool:
-    """`words[i]` continues an excused asked phrase: the word before it, past `_LINKS` words, is
-    excused ("dont have a feet video", "no video of my feet": the cue negates the whole phrase)."""
     j = i - 1
     while j >= 0 and words[j] in _LINKS:
         j -= 1
     return j in excused
 
 
-# A clause boundary (W30 #4b): a cue negates only words in its own clause ("No video of my feet.
-# Videos right here" claims the video). A contrast word starts a clause too, kept in it (W30 #19:
-# "No video but videos here" claims the video).
 _CLAUSE = re.compile(r"[.!?;:,\n]+|(?=\b(?:but|though|tho|although|however)\b)")
 
 
 def _clauses(text: str) -> list[list[str]]:
-    """`_neg_words(text)` clause by clause; their concatenation is the whole text's."""
     return [_words(c) for c in _CLAUSE.split(_NT.sub("nt", text.lower()))]
 
 
 class _Count(NamedTuple):
-    n: int          # "a" / "an": 1
-    article: bool   # the count is "a" / "an"
-    noun: str       # the kind noun counted
-    at: int         # the noun's index among `_words(low)`
+    n: int
+    article: bool
+    noun: str
+    at: int
 
 
 def _counts(low: str) -> list[_Count]:
-    """Every count before a kind noun in `low` (lower-cased): a digit or number word right before
-    one, or with one word between that is no number or `_NOT_A_COUNT` word ("5 hot videos").
-    Tokenized whole (`_TOKEN`), so a price ("$12.50") is one token, never a count. The one count
-    reader `claim_ok` and `states_terms` share (W30 #12); each applies its own policy. Pure."""
     toks = _TOKEN.findall(low)
     at, words = [], 0
     for t in toks:
@@ -801,7 +554,7 @@ def _counts(low: str) -> list[_Count]:
             continue
         if nxt[0] in _KIND_NOUNS:
             j = i + 1
-        elif (len(nxt) == 2 and nxt[1] in _KIND_NOUNS and nxt[0].isalpha()   # "5 hot videos"
+        elif (len(nxt) == 2 and nxt[1] in _KIND_NOUNS and nxt[0].isalpha()
               and nxt[0] not in _NOT_A_COUNT and nxt[0] not in _NUMBER_WORDS):
             j = i + 2
         else:
@@ -811,9 +564,6 @@ def _counts(low: str) -> list[_Count]:
 
 
 def _excused(clauses: list[list[str]], mask: frozenset[str]) -> set[int]:
-    """Indices (into the clauses joined) of the asked words a negation cue excuses: an asked word
-    (`mask`) with a cue among the `_EXCUSE_WINDOW` words before it in its clause, or continuing an
-    excused one (`_continues`)."""
     out: set[int] = set()
     at = 0
     for words in clauses:
@@ -827,49 +577,19 @@ def _excused(clauses: list[list[str]], mask: frozenset[str]) -> set[int]:
 
 
 def _asked_mask(asked: dict) -> frozenset[str]:
-    """His ask's words: the asked format's kind nouns (a video ask: clip words too) and the asked
-    subject's words."""
     fmt = asked.get("format")
     nouns = _VID_NOUNS | _CLIP_WORDS if fmt == "video" else _PIC_NOUNS if fmt == "photo" else frozenset()
     return nouns | _SUBJECT_WORDS.get(asked.get("subject"), frozenset())
 
 
 def real_formats(pick: Pick) -> set[str]:
-    """The ask formats the Pick's locked items hold (`facts["kinds"]`, `_buckets`): "video" for a
-    moving kind, "photo" for a still one; audio is neither. A mixed set holds both. Pure."""
     pics, vids, _auds = _buckets(pick.facts.get("kinds") or {pick.format: len(pick.media) or 1})
     return {f for f, n in (("photo", pics), ("video", vids)) if n}
 
 
 def claim_ok(text: str, pick: Pick) -> bool:
-    """The text claims only what the Pick holds: a video word needs a clip and a photo word a
-    photo; a clip word (`_CLIP_WORDS`, "press/hit play") needs a clip like a video word;
-    a count before one ("5 videos", "four pics") equals that kind's count; a plural
-    needs more than one; a subject word is the Pick's subject's or named by the describe text of
-    any of its locked items (`facts["descriptions"]`, in the subject's words or the describer's:
-    `_DESCRIBE_WORDS`). A price or a time before a noun is no count,
-    nor is "a"/"an" ("a pic" over 2 photos is over-delivery; "a vid" still needs a clip). Pure.
-    ASSUMPTION: the per-subject word lists (`_SUBJECT_WORDS`) and the uncounted words
-    (`_NOT_A_COUNT`) are this repo's; old `pack_claim` audited a caption it assembled itself, so it
-    had no such check. Overturned by a measured false-fail on real Writer captions.
-    ASSUMPTION: "a"/"an" is no count and every locked item's describe text allows its subject
-    words (measured 2026-11-14: "a pic" and "naked" false-failed a 2-photo Pick whose second photo
-    is the nude one). Overturned if he complains "a pic" got him several.
-    ASSUMPTION (owner 2026-11-14, "there are 3 photos"): a count may be the locked items' or what
-    the bubble shows (locked + free previews: "2 pics" and "3 pics" both pass over 2 locked + 1
-    preview), and a media noun / plural reads against what it shows. Overturned if a fan disputes
-    paying for a count that included the free preview.
-
-    A Pick carrying `facts["asked"]` (not what he asked for, client rule 2026-11-16): a kind noun
-    of the ASKED format (a video ask: a clip word too) or a subject word of the ASKED subject is
-    excused when a negation cue (`_NEG_CUES`) is among the 3 words before it in its clause
-    (`_CLAUSE`, W30 #4b; "no vid of that babe but ive got 3 pics", "i havent filmed that one"), and
-    so is an asked word right after an excused one, past "of" / "my" / "ur" / "your" only
-    (`_continues`: "dont have a feet video", "no video of my feet"; owner 2026-11-17 replay); the
-    count check and everything else are unchanged. An untagged Pick reads as before."""
     low = text.lower()
     pics, vids, _auds = _buckets(pick.facts["kinds"])
-    # what the bubble shows: the locked items plus the free previews beside them
     seen_pics, seen_vids, _ = _buckets(pick.facts.get("shown_kinds", pick.facts["kinds"]))
     asked = pick.facts.get("asked")
     said = _neg_words(low) if asked else _words(low)
@@ -893,16 +613,6 @@ def claim_ok(text: str, pick: Pick) -> bool:
 
 
 def discloses(text: str, pick: Pick) -> bool:
-    """The text tells him the piece is not what he asked for (client rule 2026-11-16): True for a
-    Pick without `facts["asked"]`; for one with it, (a) a negation cue within the 4 words before
-    one of his ask's words in its clause (`_asked_mask`, `_CLAUSE`: "no feet vid rn") or (b) a plain
-    disclosure in one clause (`_DISCLOSE`:
-    "not what u asked for", "only got pics", "closest i have"), and, when no locked item is of the
-    asked photo / video format (`real_formats`), a kind noun of a format it holds ("3 pics"); an
-    audio-only Pick needs no noun. A negation elsewhere ("can't wait for u to see these") is no
-    disclosure. Pure.
-    ASSUMPTION: a false fail costs one rewrite, then the honest fallback caption; so strict.
-    Overturned by a measured honest caption failing it often."""
     asked = pick.facts.get("asked")
     if not asked:
         return True
@@ -919,8 +629,6 @@ def discloses(text: str, pick: Pick) -> bool:
 
 
 def _affirmed_amount(text: str) -> bool:
-    """An amount (`_AMOUNT`) with no negation cue among the `_EXCUSE_WINDOW` words before it in its
-    clause: "2 pics, not $10" names no price (W30 #19)."""
     for m in _AMOUNT.finditer(text):
         words = _clauses(text[:m.start()])[-1]
         if not _negated([*words, ""], len(words), _EXCUSE_WINDOW):
@@ -929,13 +637,6 @@ def _affirmed_amount(text: str) -> bool:
 
 
 def states_terms(text: str, pick: Pick, price_cents: int | None) -> bool:
-    """A caption that ships alone (a Pick not what he asked for, `full_ai_turn._caption`, W30 #4a)
-    states the deal DIFFERS_RULE asks for: priced, it names an amount not negated in its clause
-    (`price_ok` checks it is the price); every count before a kind noun (`_counts`, "a" / "an" one,
-    unlike claim_ok) is that kind's LOCKED count, never the shown one (NEW-172, owner 2026-11-17), and
-    each locked photo / video kind has one not negated in its clause ("not 2 pics" states none, W30
-    #19; a wrong one fails either way). A count of an excused asked noun ("dont have a feet video") is
-    no claim. Pure."""
     if price_cents and not _affirmed_amount(text):
         return False
     pics, vids, _auds = _buckets(pick.facts["kinds"])
@@ -944,7 +645,7 @@ def states_terms(text: str, pick: Pick, price_cents: int | None) -> bool:
     excused = _excused(clauses, _asked_mask(asked)) if asked else set()
     negated = _excused(clauses, _KIND_NOUNS)
     counted: set[str] = set()
-    for c in _counts(_NT.sub("nt", text.lower())):    # `at` in `_neg_words` space, as `excused`
+    for c in _counts(_NT.sub("nt", text.lower())):
         if c.at in excused:
             continue
         kind = "video" if c.noun in _VID_NOUNS else "photo"
@@ -956,16 +657,12 @@ def states_terms(text: str, pick: Pick, price_cents: int | None) -> bool:
 
 
 def caption_fails(text: str, pick: Pick, price_cents: int | None, *, differs: bool) -> list[str]:
-    """The Claim audit's checks on `text` (`claim_ok`, `price_ok` at `price_cents`, `discloses`; with
-    `differs`, a caption that ships alone for a Pick not what he asked for, `states_terms` too, W30 #16):
-    the names of those it fails ("claim", "price", "disclose", "terms"); [] passes. Pure."""
     return [c for c, good in (("claim", claim_ok(text, pick)), ("price", price_ok(text, price_cents)),
                               ("disclose", discloses(text, pick)),
                               ("terms", not differs or states_terms(text, pick, price_cents))) if not good]
 
 
 def _amount_re(signs: str, words: str) -> re.Pattern:
-    """A named amount: a sign before or after the number, or a currency word after it."""
     num = r"(\d+(?:\.\d{1,2})?)"
     return re.compile(rf"[{signs}]\s?{num}|{num}\s?(?:[{signs}]|(?:{words})\b)", re.I)
 
@@ -976,22 +673,14 @@ _AMOUNT = _amount_re("$€£", "dollars?|bucks?|usd|euros?")
 _FREE = re.compile(r"\bfree\b", re.I)
 
 
+# A priced PPV is never called free; any whole word 'free' fails (one rewrite, then the fallback caption).
 def price_ok(text: str, price_cents: int | None) -> bool:
-    """Every price the text names ($25, 25$, $25.00, 25 bucks / dollars, € / £ too) equals
-    `price_cents`; with None or 0 (a tease, a Free item) no price may be named. A priced PPV is
-    never called free (rwl fa3 S4). Pure.
-    ASSUMPTION: a spelled-out amount ("twenty bucks") is not read. Overturned if Writers spell
-    prices out.
-    ASSUMPTION: any whole word "free" fails a priced PPV, "feel free" and an honest "free preview"
-    too (a fail costs one rewrite, then the fallback caption). Overturned by a measured false-fail
-    rate on real Writer captions."""
     named = {round(float(a or b) * 100) for a, b in _AMOUNT.findall(text)}
     if not price_cents:
         return not named
     return named <= {price_cents} and not _FREE.search(text)
 
 
-# His named amount (ticket 47): the dollar spellings only (spec › Interfaces `quoted_cents`).
 _QUOTE = _amount_re("$", "dollars?|bucks?|usd")
 
 
@@ -1001,11 +690,6 @@ def _next_to_tip(text: str, m: re.Match) -> bool:
 
 
 def quoted_cents(text: str) -> int | None:
-    """His one named amount in cents ("$50", "50$", "50 dollars", "50 bucks", "50 usd"), read
-    on a haggle row only (D32). Two amounts, an amount next to "tip", or none -> None. Pure.
-    ASSUMPTION: every amount counts toward "exactly one", a tip amount too ("$20 and a $5
-    tip" -> None), and "next to tip" is a tip word within two words before or one after
-    ("I'll tip you 20 bucks"). Overturned if the owner wants the non-tip amount read."""
     found = list(_QUOTE.finditer(text))
     if len(found) != 1 or _next_to_tip(text, found[0]):
         return None
@@ -1017,10 +701,8 @@ def _ceil_dollar(cents: int) -> int:
     return -(-cents // 100) * 100
 
 
+# Always against the row's list price, never an earlier quote, so discounts never compound; integer math (0.67 * 10000 drifts to $68).
 def clamp_quote(list_cents: int, asked_cents: int | None) -> int:
-    """The haggle price: at least max($10, 67 % of list rounded up to a dollar), at most list,
-    whole dollars, always against the row's list price (never an earlier quote, so discounts
-    never compound); no amount -> the floor. Integer math (0.67 * 10000 drifts to $68). Pure."""
     floor = max(MIN_CENTS, _ceil_dollar(-(-67 * list_cents // 100)))
     if asked_cents is None:
         return floor
@@ -1028,21 +710,10 @@ def clamp_quote(list_cents: int, asked_cents: int | None) -> int:
 
 
 def _money(cents: int) -> str:
-    """OLD-CORE-33's `_money`: `$41` on whole dollars, else `$41.23` (full_ai_writers' price block too)."""
     return f"${cents // 100}" if cents % 100 == 0 else f"${cents / 100:.2f}"
 
 
 def fallback_caption(pick: Pick, kind: Literal["offer", "tease", "free"]) -> str:
-    """The plain caption a twice-failed (or too late) audit sends instead: the counts and kinds the
-    bubble shows, free previews included (`_media_phrase` over `facts["shown_kinds"]`), plus OLD-AIC-12's terms wording with the price only for an `offer`
-    ("1 vid, $25 to unlock"); a tease and a Free item name no money ("4 pics"). A Pick not what he
-    asked for names the LOCKED counts (`facts["kinds"]`, NEW-172; W30 #20): it ships alone, so it
-    passes `states_terms`. Pure.
-    ASSUMPTION: the bare clause, as old `pack_claim.compose_caption` sent with no voice line.
-    Overturned if the owner wants a flirt line beside it (old `ppv_send._FALLBACK_CAPTION`).
-    A Pick carrying `facts["asked"]` leads with a plain disclosure (client rule 2026-11-16): "not
-    what u asked for babe, this one's 3 pics, $34 to unlock"; it passes `claim_ok`, `price_ok`
-    and `discloses`."""
     if pick.facts.get("asked"):
         phrase = f"not what u asked for babe, this one's {_media_phrase(pick.facts['kinds'])}"
     else:
@@ -1052,10 +723,6 @@ def fallback_caption(pick: Pick, kind: Literal["offer", "tease", "free"]) -> str
 
 @dataclass(frozen=True)
 class Teased:
-    """A piece a later Turn sells again, read off its row: a Pending tease's (ticket 46) or the
-    open Offer's a haggle re-offers (ticket 47). The subject and format it asks for again, the
-    media `same_piece` re-offers, the row's list price (`offer_list_cents`, the haggle's clamp
-    base; every Offer and tease row records it) and its row id (the haggle row's `over`)."""
     subject: str
     format: str
     locked: tuple[int, ...]
@@ -1066,11 +733,6 @@ class Teased:
 
 def same_piece(pool: list[dict[str, Any]], locked: Iterable[int], previews: Iterable[int],
                ask: Ask) -> Pick | None:
-    """A Pending tease's piece re-validated against the current `pool` (`pool()`'s rows): every
-    locked id still sellable and priced -> the same piece as a priced Pick at today's list prices,
-    with those of its previews still free-safe in the pool; else None (the caller re-picks the
-    same subject and format, ticket 07 r3). `ask` carries the teased subject. A piece of several
-    clips (a video bundle, `ask.count`) lists at their sum again, as `pick` listed it. Pure."""
     by_id = {r["media_id"]: r for r in pool}
     locked = list(locked)
     if not locked or any(m not in by_id or by_id[m]["list_cents"] <= 0 for m in locked):

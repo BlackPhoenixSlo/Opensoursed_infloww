@@ -1,57 +1,3 @@
-"""service/automations/priority_mass.py — Smart Messages' Priority mass message.
-
-Infloww's "Priority mass message" (`/message/smart-message/priority-mass-messages`,
-06-growth-automations M4) sends ONE DIRECT MESSAGE PER FAN instead of OF's mass
-message, so it lands in each fan's priority inbox: "about 300–700 fans per hour,
-max 5,000 fans". Here it is a run (`priority_mass_runs`, made by
-priority_mass_api) whose job legs walk its frozen recipient rows
-(`priority_mass_recipients`) through the per-fan chat send.
-
-  1. The first leg FREEZES the audience (claim-first). The posted OF lists are
-     read off OF's own rosters (`audiences.roster_audience_blocking`, which
-     fails closed: a truncated or unknown list stops the run, nothing is sent),
-     the exclusions below drop fans, the first `MAX_RECIPIENTS` by fan id are
-     inserted `pending` and the run turns `running`, in one transaction. A run
-     cancelled while it resolved never turns running.
-  2. Every leg sends to at most `_LEG` pending fans and queues the next leg, so
-     a 5,000-fan run is a chain of short jobs that survives a restart: the
-     executor requeues an interrupted job (boot reconcile, retry on failure)
-     and the next leg picks up the rows still `pending`. A row is CLAIMED
-     (`claimed`, committed) before its send; a leg that finds a claimed row left
-     by a crash marks it `unknown` and never sends it again, because whether OF
-     created that message cannot be known. A `sent` row is never touched again.
-
-Exclusions, at the freeze and again for each fan right before his claim, under
-his lease (a long run honours exclusions made after it started): the include-only audience (`filter_candidates`), the
-hard skip list, the global blacklist, the contact guard (`contact_guard_excludes`:
-messaged by us or nudged in the last 6h, or messaging us in the last 2h, the
-mass default), the MASSdmEXCLUDE list, fans a queued
-send is about to reach, and, priced, fans who already own the media
-(`ownership.owners_of_media`). At send time: a muted creator, a fan paused longer
-than `_PAUSED_SKIP` (quarantined), and the fan lease; a fan resting a shorter
-while or leased by another automation waits for a later leg.
-
-Pacing: every send is `of_write_paced(..., send_purpose="gated", tries=1)`, the
-per-Creator 11 s OF write gap shared with every other automation, so a run
-sends at most ~300 fans an hour (Infloww's upper 700/h is not reachable without
-a shorter gap; owner question). OF's rate-limit refusal puts the fan back to
-pending and the next leg waits `_DEFER_S`; so does a send refused before it
-left the box (`OFSessionRetired`): a client retired mid-leg (client_pool.evict
-on a proxy switch / re-capture) is replaced by the pool on the next leg, and a
-busy signed pool retries every `_DEFER_S` until it frees. The text gets the
-account's banned words (block stops the run, mask masks; the create route's
-phrase matcher `sensitive_hits` also stops it), `{name}`, and the OF word restriction.
-A vault id OF refuses stops the run (`error`): every later fan would fail too.
-Another 4xx marks the fan `failed`; a timeout, dropped connection or 5xx may
-have sent, so the fan turns `unknown`. A leg past `_LEG_BUDGET_S` stops early
-and chains, so it never holds a bulk slot long. A run no fan of which left
-pending for `_STALL_DEADLINE` (deferred leg after leg) skips its pending fans
-("deadline") and is done. Each send writes the outbound
-`messages` row (automation_kind "priority_mass", the launching Employee) and
-rests the fan `_REST_S` (`start_fan_cooldown`, which creates a missing row).
-
-  job payload: {"run_id": N}
-"""
 from __future__ import annotations
 
 import asyncio
@@ -62,7 +8,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, update
 
-import automation_executor as ax        # _make_client / of_write_paced / lease seams
+import automation_executor as ax
 from attribution import write_outbound_attribution
 from automation_registry import register
 from automations._common import (
@@ -78,38 +24,29 @@ from of_client import OFSessionRetired
 log = logging.getLogger("of-relay.automation.priority_mass")
 
 KIND = "priority_mass"
-MAX_RECIPIENTS = 5_000       # Infloww's cap
-HOURLY_RATE = 300            # what the 11 s per-Creator write gap allows, rounded down
+MAX_RECIPIENTS = 5_000
+HOURLY_RATE = 300
 _SEND_PURPOSE = "gated"
-_LEG = 10                    # fans per leg: ~2 min of paced sends, then the next job
-_LEG_BUDGET_S = 180          # a leg slowed by the shared write gap stops here and chains
-_DEFER_S = 60                # the next leg's wait after a rate limit or an all-deferred leg
-_REST_S = 45                 # as lifecycle_messages: a short rest after a send
-_PAUSED_SKIP = timedelta(minutes=15)   # paused longer than this = quarantined, skipped
-# A run with no progress this long (no fan left pending: sent, skipped, failed
-# or unknown; since it was made when none has yet) ends: its pending fans are
-# skipped ("deadline"). Progress, not age: a big run that keeps sending never
-# stops. A guess: only a rate limit / busy pool deferring every fan leg after
-# leg goes 48 h without one.
+_LEG = 10
+_LEG_BUDGET_S = 180
+_DEFER_S = 60
+_REST_S = 45
+_PAUSED_SKIP = timedelta(minutes=15)
+# A guess: only a rate limit or busy pool deferring every leg goes 48 h without progress.
 _STALL_DEADLINE = timedelta(hours=48)
 
-# Run statuses.
 RESOLVING, RUNNING, DONE, CANCELLED, ERROR = "resolving", "running", "done", "cancelled", "error"
 LIVE = (RESOLVING, RUNNING)
-# Recipient statuses.
 PENDING, CLAIMED, SENT, SKIPPED, FAILED, UNKNOWN = (
     "pending", "claimed", "sent", "skipped", "failed", "unknown")
 
 
 def leg_payload(run_id: int) -> str:
-    """The leg job's payload as stored — one spelling, so a queued leg is found."""
     return json.dumps({"run_id": int(run_id)})
 
 
 async def ensure_leg(account_id: str, run_id: int, *, delay_s: float = 0,
                      include_running: bool = False) -> bool:
-    """Queue the run's next leg unless one is already queued (or, with
-    `include_running`, running). True when one was queued."""
     statuses = ["pending", "running"] if include_running else ["pending"]
     async with get_session() as s:
         queued = (await s.execute(select(ScheduledJob.id).where(
@@ -118,8 +55,6 @@ async def ensure_leg(account_id: str, run_id: int, *, delay_s: float = 0,
             ScheduledJob.payload_json == leg_payload(run_id)).limit(1))).first()
         if queued is not None:
             return False
-        # An operator started the run: every leg is the operator's (the
-        # supervisor's operator tier, ADR 0025).
         run = await s.get(PriorityMassRun, int(run_id))
         await ax.enqueue_job(
             str(account_id), KIND, payload={"run_id": int(run_id)},
@@ -144,7 +79,6 @@ def _ids(raw: str | None) -> list[int]:
 
 async def _set_status(run_id: int, status: str, *, error: str | None = None,
                       only_from: tuple[str, ...] = LIVE) -> bool:
-    """Move a live run to `status`; never overwrites a cancelled/finished one."""
     values: dict = {"status": status}
     if status not in LIVE:
         values["completed_at"] = datetime.utcnow()
@@ -177,11 +111,9 @@ async def _set_recipient(run_id: int, fan_id: int, status: str, *,
     return bool(res.rowcount)
 
 
-# ── Exclusions ────────────────────────────────────────────────────────
 
 async def exclusions(account_id: str, fan_ids: list[int], *, priced: bool,
                      media: list[int]) -> dict[int, str]:
-    """{fan_id: reason} for the fans of `fan_ids` this run must not message now."""
     import audience_include as _audiences
     from audiences import (
         BROADCAST_DEFAULT_INBOUND_H, BROADCAST_DEFAULT_OUTBOUND_H, MASSDMEXCLUDE_LIST,
@@ -216,7 +148,6 @@ async def exclusions(account_id: str, fan_ids: list[int], *, priced: bool,
     return out
 
 
-# ── Leg 0: freeze the audience ────────────────────────────────────────
 
 async def _freeze(run: PriorityMassRun) -> dict:
     from audiences import roster_audience_blocking
@@ -240,7 +171,7 @@ async def _freeze(run: PriorityMassRun) -> dict:
             PriorityMassRun.id == run.id, PriorityMassRun.status == RESOLVING).values(
             status=RUNNING, resolved_count=len(ids), excluded_count=len(excl),
             capped_count=len(eligible) - len(claimed)))
-        if not res.rowcount:        # cancelled while the rosters were read
+        if not res.rowcount:
             return {"status": "skipped", "reason": "not_resolving"}
         if claimed:
             await s.execute(PriorityMassRecipient.__table__.insert(), [
@@ -252,11 +183,8 @@ async def _freeze(run: PriorityMassRun) -> dict:
             "capped": len(eligible) - len(claimed)}
 
 
-# ── A leg: send to the next pending fans ──────────────────────────────
 
 def _refused(exc: Exception) -> bool:
-    """OF answered with a 4xx: it refused, so it created nothing. Anything else
-    (a timeout, a dropped connection, a 5xx) may have sent the message."""
     status = getattr(getattr(exc, "response", None), "status_code", None)
     return isinstance(status, int) and 400 <= status < 500
 
@@ -268,15 +196,13 @@ async def _paused_until(account_id: str, fan_id: int) -> datetime | None:
 
 
 async def _defer(run_id: int, fan_id: int) -> None:
-    """Leave the fan pending, at the back of the queue."""
     await _set_recipient(run_id, fan_id, PENDING, only_from=PENDING)
 
 
 async def _leg(run: PriorityMassRun) -> dict:
     aid, rid = run.account_id, run.id
     async with get_session() as s:
-        # A claim this leg did not make was left by a crash mid-send: unknown, never resent.
-        # Its updated_at stays the claim's: the sweep is no progress (the deadline below).
+        # A claim this leg did not make was left by a crash mid-send: unknown, never resent (OF may have created it).
         stale = await s.execute(update(PriorityMassRecipient).where(
             PriorityMassRecipient.run_id == rid, PriorityMassRecipient.status == CLAIMED,
         ).values(status=UNKNOWN, reason="interrupted"))
@@ -310,8 +236,6 @@ async def _leg(run: PriorityMassRun) -> dict:
 
     words, mode = await load_banned_words(aid)
     scanned, hits = filter_banned([run.text], words, mode)
-    # And the create route's matcher (any whitespace between a phrase's words): a word
-    # listed after the run was created stops it here however the text spaces it.
     phrase_hits = sensitive_hits(run.text or "", words)
     if scanned is None or phrase_hits:
         await _set_status(rid, ERROR, error=(
@@ -326,12 +250,12 @@ async def _leg(run: PriorityMassRun) -> dict:
 
     for fid in batch:
         if time.monotonic() - started > _LEG_BUDGET_S:
-            break       # a slow leg yields its bulk slot; the rest stay pending
+            break
         if fans.get(fid) is not None and should_skip_muted_creator(fans[fid]):
             await _set_recipient(rid, fid, SKIPPED, reason="muted_creator", only_from=PENDING)
             stats["skipped"] += 1
             continue
-        if await _status(rid) != RUNNING:       # cancelled mid-leg
+        if await _status(rid) != RUNNING:
             return {**stats, "status": "ok", "stopped": True}
         if not await ax.acquire_fan_lease(aid, fid, KIND):
             await _defer(rid, fid)
@@ -348,8 +272,7 @@ async def _leg(run: PriorityMassRun) -> dict:
                 await _defer(rid, fid)
                 stats["deferred"] += 1
                 continue
-            # Exclusions as of now, under the lease: a fan who wrote in or was
-            # messaged since this leg began is skipped.
+            # Exclusions as of now, under the lease: a long run honours ones made after it started.
             reason = (await exclusions(aid, [fid], priced=price > 0, media=media)).get(fid)
             if reason:
                 await _set_recipient(rid, fid, SKIPPED, reason=reason, only_from=PENDING)
@@ -371,12 +294,8 @@ async def _leg(run: PriorityMassRun) -> dict:
                     await _set_recipient(rid, fid, SKIPPED, reason="unreachable")
                     stats["skipped"] += 1
                     continue
+                # nothing was created (rate limit) or the send never left the box: fan goes back, next leg waits
                 if ax.is_rate_limited(exc) or isinstance(exc, OFSessionRetired):
-                    # Nothing was created (OF's rate limit), or the send never
-                    # left the box (OFSessionRetired): the fan goes back and the
-                    # next leg waits _DEFER_S. A retired client is replaced by
-                    # the pool on that leg; a busy signed pool retries every
-                    # _DEFER_S until it frees, like the rate-limit wait.
                     await _set_recipient(rid, fid, PENDING)
                     stats["deferred"] += 1
                     delay_s = _DEFER_S
@@ -387,13 +306,13 @@ async def _leg(run: PriorityMassRun) -> dict:
                     await _set_recipient(rid, fid, PENDING)
                     await _set_status(rid, ERROR, error=(
                         "OnlyFans refused the attached media; stopped"))
-                    # A media the creator deleted on OF leaves the mirror.
                     schedule_recheck_rejected_media(aid, client, media + previews, log=log)
                     return {**stats, "status": "error", "reason": "media_rejected"}
                 if _refused(exc):
                     await _set_recipient(rid, fid, FAILED, reason="error")
                     stats["failed"] += 1
-                else:       # OF may have sent it: never resent
+                else:
+                    # OF may have sent it: never resent.
                     await _set_recipient(rid, fid, UNKNOWN, reason="transport")
                     stats["unknown"] += 1
                 log.warning("priority_mass send failed run=%s account=%s fan=%s",
@@ -407,7 +326,6 @@ async def _leg(run: PriorityMassRun) -> dict:
                 continue
             await _set_recipient(rid, fid, SENT, message_id=int(msg_id))
             stats["sent"] += 1
-            # An UPSERT: a fan read off OF's roster may have no `fans` row yet.
             await ax.start_fan_cooldown(aid, fid, cooldown_s=_REST_S)
             await write_outbound_attribution(
                 account_id=aid, fan_id=int(fid), message_id=int(msg_id),
@@ -420,7 +338,7 @@ async def _leg(run: PriorityMassRun) -> dict:
 
     if stats["deferred"] and not (stats["sent"] or stats["skipped"] or stats["failed"]
                                   or stats["unknown"]):
-        delay_s = _DEFER_S          # every fan was busy: give them a minute
+        delay_s = _DEFER_S
     if await _status(rid) == RUNNING:
         await ensure_leg(aid, rid, delay_s=delay_s)
     return {**stats, "status": "ok"}
@@ -450,7 +368,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
 
 async def counts(run_ids: list[int]) -> dict[int, dict[str, int]]:
-    """{run_id: {status: n}} over the runs' recipients."""
     out: dict[int, dict[str, int]] = {int(r): {} for r in run_ids}
     if not run_ids:
         return out

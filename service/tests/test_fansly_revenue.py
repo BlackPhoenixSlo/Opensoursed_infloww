@@ -43,6 +43,7 @@ import _harness  # MUST be first
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+import contextlib  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 from datetime import datetime  # noqa: E402
@@ -50,6 +51,7 @@ from datetime import datetime  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 import fansly_revenue  # noqa: E402
+import platforms  # noqa: E402
 import stats  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Fan, Transaction, TransactionScanHistory  # noqa: E402
@@ -118,12 +120,21 @@ async def _seed_account() -> None:
             s.add(Account(id=ACCT, nickname="founderfansly"))
 
 
+@contextlib.contextmanager
+def _fansly_in_registry():
+    real = platforms.for_account
+    platforms.for_account = lambda _aid: platforms.FANSLY
+    try:
+        yield
+    finally:
+        platforms.for_account = real
+
+
 def _install(monkey_rows):
     """Point the module at a stub feed for one case."""
     stub = _FeedStub(monkey_rows)
     fansly_revenue.fansly_backend = type(
-        "_B", (), {"get_client": staticmethod(lambda _aid: stub),
-                   "is_fansly": staticmethod(lambda _aid: True)}
+        "_B", (), {"get_client": staticmethod(lambda _aid: stub)}
     )
     return stub
 
@@ -394,8 +405,7 @@ def case_a_broken_feed_raises_so_backoff_can_work():
     async def go():
         await _seed_account()
         fansly_revenue.fansly_backend = type(
-            "_B", (), {"get_client": staticmethod(lambda _aid: _Boom()),
-                       "is_fansly": staticmethod(lambda _aid: True)})
+            "_B", (), {"get_client": staticmethod(lambda _aid: _Boom())})
         with _quiet_lane_errors():
             try:
                 await fansly_revenue.run_one_tick(ACCT)
@@ -413,8 +423,7 @@ def case_a_missing_session_is_reported_not_raised():
         def _raise(_aid):
             raise FileNotFoundError("no session")
         fansly_revenue.fansly_backend = type(
-            "_B", (), {"get_client": staticmethod(_raise),
-                       "is_fansly": staticmethod(lambda _aid: True)})
+            "_B", (), {"get_client": staticmethod(_raise)})
         res = await fansly_revenue.run_one_tick(ACCT)
         assert res.error == "no_session", res
         assert res.rows_inserted == 0, res
@@ -516,14 +525,14 @@ def case_the_fast_poll_seam_banks_too():
     async def go():
         await _seed_account()
         import purchase_poll as pp
-        pp.fansly_backend = type("_B", (), {"is_fansly": staticmethod(lambda _a: True)})
         _install([dict(LIVE_ROW, id="900642430324909111", price_usd=2.0)])
-        res = await pp.run_fast_tick(ACCT)
-        assert res["rows_inserted"] == 1, res
-        rows = await _rows_for("900642430324909111")
-        assert len(rows) == 1 and rows[0].amount_cents == 200, rows
-        # ...and it dedups against the supervisor lane, sharing one ledger.
-        again = await pp.run_fast_tick(ACCT)
+        with _fansly_in_registry():
+            res = await pp.run_fast_tick(ACCT)
+            assert res["rows_inserted"] == 1, res
+            rows = await _rows_for("900642430324909111")
+            assert len(rows) == 1 and rows[0].amount_cents == 200, rows
+            # ...and it dedups against the supervisor lane, sharing one ledger.
+            again = await pp.run_fast_tick(ACCT)
         assert again["rows_inserted"] == 0, again
         assert len(await _rows_for("900642430324909111")) == 1
     asyncio.run(go())
@@ -576,10 +585,8 @@ def case_a_failed_tick_is_counted_exactly_once_on_both_paths():
         await _seed_account()
         import purchase_poll as pp
         import transaction_ingest as ti
-        ti.fansly_backend = pp.fansly_backend = type("_B", (), {"is_fansly": staticmethod(lambda _a: True)})
         fansly_revenue.fansly_backend = type(
-            "_B", (), {"get_client": staticmethod(lambda _a: _Boom()),
-                       "is_fansly": staticmethod(lambda _a: True)})
+            "_B", (), {"get_client": staticmethod(lambda _a: _Boom())})
 
         async def failures():
             async with get_session() as s:
@@ -597,7 +604,7 @@ def case_a_failed_tick_is_counted_exactly_once_on_both_paths():
         for run in (lambda: ti.run_one_tick(ACCT, mode="refresh"),
                     lambda: pp.run_fast_tick(ACCT)):
             before = await failures()
-            with _quiet_lane_errors():
+            with _quiet_lane_errors(), _fansly_in_registry():
                 try:
                     await run()
                 except Exception as e:

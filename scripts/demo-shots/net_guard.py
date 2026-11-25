@@ -1,7 +1,3 @@
-"""Loopback-only network and dotenv guards for the throwaway relay and bio launchers.
-
-Both launchers force uvicorn loop=asyncio: uvloop connects past these socket guards.
-"""
 import ipaddress
 import json
 import os
@@ -22,7 +18,7 @@ def _record(path, rec):
 def _loopback(host) -> bool:
     if isinstance(host, bytes):
         host = host.decode("ascii", "replace")
-    if host is None or host == "localhost":  # None: a local bind lookup, getaddrinfo(None, port)
+    if host is None or host == "localhost":
         return True
     try:
         return ipaddress.ip_address(str(host).split("%")[0]).is_loopback
@@ -30,12 +26,6 @@ def _loopback(host) -> bool:
         return False
 
 
-# DEMO_SHOTS_ALLOW_HOSTS (comma-separated host names, default none): the only
-# off-host names a run may reach, for a declared live call to a test-keyed API
-# (slop's `SLOP_LIVE=1` single runs: api.typesafe.ai, api.deepseek.com). A name
-# on the list resolves for real and only the addresses it resolved to may be
-# connected; every other name and address is refused as before. Each allowed
-# lookup is logged next to the refusals.
 _ALLOW = {h.strip().lower().rstrip(".") for h in os.environ.get("DEMO_SHOTS_ALLOW_HOSTS", "").split(",")
           if h.strip()}
 _ALLOWED_IPS: set = set()
@@ -79,7 +69,6 @@ def create_connection(address, *a, **k):
     return _real["create_connection"](address, *a, **k)
 
 
-# Name lookups are refused before resolution, so no DNS query leaves the machine either.
 def getaddrinfo(host, *a, **k):
     if _allowed_name(host):
         res = _real["getaddrinfo"](host, *a, **k)
@@ -108,8 +97,6 @@ def gethostbyname_ex(host):
 socket.socket.connect, socket.socket.connect_ex, socket.create_connection = connect, connect_ex, create_connection
 socket.getaddrinfo, socket.gethostbyname, socket.gethostbyname_ex = getaddrinfo, gethostbyname, gethostbyname_ex
 
-# Opt-in: scripts/of-live-proof/relay_live.py loads this guard too, and its live mode must reach OnlyFans through
-# curl_cffi under its own Live guard.
 if os.environ.get("DEMO_SHOTS_CURL_GUARD") == "1":
     from curl_cffi import Curl, CurlOpt
 
@@ -133,7 +120,6 @@ if os.environ.get("DEMO_SHOTS_CURL_GUARD") == "1":
     def curl_setopt(self, option, value):
         if option == CurlOpt.URL:
             _check_curl_url(value)
-            # libcurl reads proxy environment variables unless given an explicit proxy setting.
             _curl_setopt(self, CurlOpt.PROXY, "")
         elif option in (CurlOpt.PROXY, CurlOpt.PRE_PROXY) and value:
             _check_curl_url(value, proxy=True)
@@ -144,8 +130,7 @@ if os.environ.get("DEMO_SHOTS_CURL_GUARD") == "1":
 
     Curl.setopt = curl_setopt
 
-# service/.env holds real keys; db/engine.py, llm_providers.py and auth.py
-# read it through `from dotenv import ...`. No-op both before any import.
+# service/.env holds real keys: no-op dotenv loading before anything imports it.
 import dotenv  # noqa: E402
 import dotenv.main  # noqa: E402
 

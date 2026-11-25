@@ -60,8 +60,8 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-VIEWS = ("all scripts", "uncategorized")  # Infloww's fixed Tag-sidebar entries
-_FM = re.compile(r"^FM[0-9]+$")  # the relay's reserved script names (FM<digits>)
+VIEWS = ("all scripts", "uncategorized")
+_FM = re.compile(r"^FM[0-9]+$")
 
 
 def _relay_modules():
@@ -82,7 +82,7 @@ def _relay_modules():
 
 
 _of_text, _parse_step, _sequence_dates = _relay_modules()
-_UNREAD = datetime.min  # `sequence_dates`' stand-in for the import's own time: a date the dump doesn't give
+_UNREAD = datetime.min
 
 
 def _load(path: Path, key: str) -> list[dict] | None:
@@ -160,7 +160,6 @@ def plan(sequences: list[dict] | None, tags: list[dict]) -> dict:
             loose.append({**{k: v for k, v in t.items() if k != "scripts"}, "scripts": scripts})
     standalone = {_script_key(sc.get("name"), sc.get("text")): tags_of.get(
         _script_key(sc.get("name"), sc.get("text")), [t["name"].strip()]) for t in loose for sc in t["scripts"]}
-    # Infloww's loose scripts in no sequence and no tag: only in the views; one untagged ("") group.
     in_tags = {_script_key(sc.get("name"), sc.get("text")) for t in real for sc in t.get("scripts") or []}
     all_view, uncategorized = _view(tags, "all scripts"), _view(tags, "uncategorized")
     untagged_loose: dict[tuple[str, str], dict] = {}
@@ -169,7 +168,6 @@ def plan(sequences: list[dict] | None, tags: list[dict]) -> dict:
         if key not in in_seq and key not in in_tags:
             untagged_loose.setdefault(key, sc)
     if (untagged_loose or standalone) and not known:
-        # The relay's sequence import never merges a step into a standalone row: a later full dump would dupe it.
         problems.append(f"no sequences.json: {len(untagged_loose) + len(standalone)} scripts were not imported "
                         f"(a sequence step, tagged or not, can't be told from a loose script); add a "
                         f"sequences.json containing [] if the Creator has no sequences")
@@ -187,9 +185,6 @@ def plan(sequences: list[dict] | None, tags: list[dict]) -> dict:
     untagged = sum(1 for q in out for st in q["steps"] if not st["tags"]) + len(untagged_loose)
     expected = {"sequences": len(out), "steps": n_steps, "standalone": len(standalone),
                 "rows": n_steps + len(standalone), "per_tag": dict(per_tag), "untagged": untagged}
-    # The dump's own views must agree with the plan (All scripts == every script, Uncategorized == the untagged
-    # ones, a tag == its scripts), by unique (name, text): a script shared by several sequences is one script in
-    # Infloww's views but one row per step here.
     planned = {_script_key(st["name"], st.get("text")): st["tags"] for q in out for st in q["steps"]}
     planned.update(standalone)
     views = {"all_scripts": len(all_view) if all_view is not None else None,
@@ -301,7 +296,6 @@ def read_back(rows: list[dict], metas: list[dict], p: dict) -> dict:
     meta_diffs = []
     for q in p["sequences"]:
         m = by_name.get(q["name"].strip()) or {}
-        # The days the relay stores (UTC), by its own rule for an unreadable date; the import's time is not compared.
         created, modified = (d.strftime("%Y-%m-%d") if d != _UNREAD else None for d in _sequence_dates(
             q.get("created_on"), q.get("modified_on"), _UNREAD))
         for field, w, h in (("created_by", (q.get("created_by") or "").strip() or None, m.get("created_by")),
@@ -345,7 +339,7 @@ class Relay:
                 return e.code, json.loads(e.read() or b"{}")
             except ValueError:
                 return e.code, {}
-        except OSError as e:  # unreachable, refused, timed out (URLError and TimeoutError are OSErrors): HTTP 0
+        except OSError as e:
             return 0, {"detail": str(getattr(e, "reason", None) or e)}
 
 
@@ -404,8 +398,6 @@ def main(argv: list[str] | None = None) -> int:
               f"tag_scripts {ans['tag_scripts']}")
 
     tag_scripts = sum(len(t["scripts"]) for t in p["tags"])
-    # A dry run rolls back each chunk, so no chunk sees an earlier one's scripts: a script in two tags that land in
-    # two chunks is "created" by both. Over one chunk the counts are exact.
     per_chunk = a.dry_run and len(bodies) > 1
     print("\nreconciliation" + (" (dry run: nothing written)" if a.dry_run else "")
           + (f"; {len(bodies)} chunks each counted alone, so the totals are per-chunk estimates (a script in "
@@ -432,7 +424,6 @@ def main(argv: list[str] | None = None) -> int:
         code, ans = relay.call("GET", "/admin/saved-replies", account_id=a.account_id)
         code2, metas = relay.call("GET", "/admin/saved-replies/sequences", account_id=a.account_id)
         if code != 200 or code2 != 200:
-            # Still a report: the run's counts and failures, and which read-back request failed.
             print(f"  read-back: HTTP {code} / {code2}", file=sys.stderr)
             report["read_back"] = {"failed": {"list_http": code, "sequences_http": code2}}
             ok = False

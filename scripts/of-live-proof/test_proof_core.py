@@ -1,8 +1,3 @@
-"""Seam 2: the Live guard policy (`decide`), the Proof shape and `order`, as table tests.
-
-Expected verdicts come from the spec's nine classes (docs/spec/ofm-not-yet/phase-00-live-capture-proof-harness.md,
-Implementation Decisions) and ticket 01; the paths stand for the spec's pattern families.
-"""
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,7 +8,7 @@ from proof_core import Proof, Request, Run, Write, decide, order
 
 HERE = Path(__file__).parent
 AT = datetime(2026, 11, 21, 3, 10, tzinfo=timezone.utc)
-QUIET = datetime(2026, 11, 21, 3, 0, tzinfo=timezone.utc)  # the run's declared quiet hour starts here
+QUIET = datetime(2026, 11, 21, 3, 0, tzinfo=timezone.utc)
 FAN = "555"
 YES = lambda before, after: True  # noqa: E731
 
@@ -28,7 +23,6 @@ def R(method, path, body=None, host="onlyfans.com", at=AT):
 
 
 def armed(method, path, body_must=None, undo=(Write("DELETE", "/api2/v2/lists/{id}"),), **kw):
-    """A proof arming exactly this one write, with an undo unless told otherwise."""
     return P(arm=[Write(method, path, body_must=body_must)], undo=undo, **kw)
 
 
@@ -36,7 +30,7 @@ def sched(minutes):
     return {"isScheduled": 1, "scheduledDate": (AT + timedelta(minutes=minutes)).isoformat()}
 
 
-QD = sched(35)["scheduledDate"]   # a queued message's date, past POST_LEAD
+QD = sched(35)["scheduledDate"]
 
 
 LIST = armed("POST", "/api2/v2/lists")
@@ -46,14 +40,12 @@ QUEUE = armed("POST", "/api2/v2/messages/queue")
 PUBLISH = armed("PUT", "/api2/v2/schedules/{id}/publish", tags={"post", "delete_at_once"}, id="queue.publish-now")
 NOW_POST = armed("POST", "/api2/v2/posts", tags={"post", "delete_at_once"}, id="post.now")
 FAN_RUN = dict(proof_fan=FAN, quiet_hour=QUIET)
-IPS = {"ips": ["192.0.2.1"]}  # TEST-NET-1, owner-proxy Q8
-# ticket 30: an upload (arm 0) then a post (arm 1); the post's DELETE reverses arm 1, the hide arms 0 and 1.
+IPS = {"ips": ["192.0.2.1"]}
 HIDE = Write("PUT", "/api2/v2/vault/media/hidden", body_must={"mediaIds": ["{media}"]}, relay_method="POST",
              relay="/admin/vault-ai/items/{media}/hide", relay_body={"account_id": "{account}"}, reverses=(0, 1))
 RECORD = P(arm=[Write("POST", "/api2/v2/upload/signed/create"), Write("POST", "/api2/v2/posts")],
         undo=[Write("DELETE", "/api2/v2/posts/{id}", relay="/api/of/v2/posts/{id}", reverses=(1,)), HIDE],
         tags={"post"}, id="p2.record")
-# post 9 created by the post arm (1), upload id 55 by the upload arm (0), media 77 read off the post
 MEDIA77 = dict(created=frozenset({"9", "55"}), created_by={0: frozenset({"55"}), 1: frozenset({"9"})},
                keys={"media": frozenset({"77"})})
 UNBLOCK = Write("DELETE", "/api2/v2/streams/users/{id}/block")
@@ -62,16 +54,13 @@ L2 = P(id="sec.forgot-tag", arm=[Write("PATCH", "/api2/v2/users/me/blocked-ips",
 
 
 CASES = [
-    # 1. host: onlyfans.com or its subdomains; another host only by exact name, never by wildcard
     ("off-host", R("GET", "/x", host="example.com"), Run(), "refused", "host"),
     ("look-alike host", R("GET", "/x", host="onlyfans.com.evil.com"), Run(), "refused", "host"),
     ("wildcard host never armed", R("GET", "/x", host="a.cdn.example.net"), Run(hosts=("*.cdn.example.net",)),
      "refused", "host"),
-    # ticket 53: a named host takes only the armed Write naming it, never a read
     ("named host, read", R("GET", "/x", host="a.cdn.example.net"), Run(hosts=("a.cdn.example.net",)), "refused", "host"),
     ("subdomain", R("GET", "/api2/v2/lists", host="www.onlyfans.com"), Run(), "read", "read"),
     ("off-host write, armed", R("POST", "/api2/v2/lists", host="example.com"), Run(proof=LIST), "refused", "host"),
-    # 2. reads pass; a Critical GET only when the proof names it
     ("GET", R("GET", "/api2/v2/lists"), Run(), "read", "read"),
     ("HEAD", R("HEAD", "/api2/v2/lists"), Run(), "read", "read"),
     ("OPTIONS", R("OPTIONS", "/api2/v2/lists"), Run(), "read", "read"),
@@ -90,13 +79,11 @@ CASES = [
      Run(proof=P(reads=["/api2/v2/users/me/dac7"])), "read", "read"),
     ("Critical GET named by template", R("GET", "/api2/v2/bank/accounts/42"),
      Run(proof=P(reads=["/api2/v2/bank/accounts/{id}"])), "read", "read"),
-    # 3. Critical: capture-abort mode answers an aborted capture (asserted in its own test below)
     ("PATCH /users/me harmless key, armed", R("PATCH", "/api2/v2/users/me", {"about": "hi"}),
      Run(proof=armed("PATCH", "/api2/v2/users/me", undo=[Write("PATCH", "/api2/v2/users/me")])), "allow", "allow"),
     ("same-path undo once the write is spent", R("PATCH", "/api2/v2/users/me", {"about": ""}),
      Run(proof=armed("PATCH", "/api2/v2/users/me", undo=[Write("PATCH", "/api2/v2/users/me")]),
          spent={("arm", 0): 1}), "reversal", "reversal"),
-    # ticket 07: under `capture --abort` every write past class 3 is recorded, never sent (any origin); reads pass
     ("capture --abort: armed write", R("POST", "/api2/v2/lists"), Run(proof=LIST, capture_abort=True),
      "refused", "capture_abort"),
     ("capture --abort: unarmed write", R("DELETE", "/api2/v2/lists/1"), Run(capture_abort=True),
@@ -107,7 +94,6 @@ CASES = [
      Run(proof=LIST, capture_abort=True), "refused", "critical"),
     ("capture --abort: a read passes", R("GET", "/api2/v2/lists"), Run(proof=LIST, capture_abort=True),
      "read", "read"),
-    # 4. arming, count, undo, irreversible under the owner's named go
     ("no armed proof", R("POST", "/api2/v2/lists"), Run(), "refused", "unarmed"),
     ("write not armed", R("POST", "/api2/v2/vault/lists"), Run(proof=LIST), "refused", "unarmed"),
     ("OF telemetry (Relay backstop), unarmed", R("POST", "/api2/v2/log", {}), Run(proof=LIST), "refused", "critical"),
@@ -140,7 +126,6 @@ CASES = [
     ("irreversible on the Relay backstop (/log), go given", R("POST", "/api2/v2/log"),
      Run(proof=P(arm=[Write("POST", "/api2/v2/log")], tags={"irreversible"}, id="x.log"),
          owner_go=frozenset({"x.log"})), "refused", "critical"),
-    # 5. kinds; stream and lockout by tag or by the guard's own path lists
     ("OAuth proof, armed write", R("POST", "/api2/v2/lists"), Run(proof=armed("POST", "/api2/v2/lists", kind="oauth")),
      "refused", "oauth"),
     ("mocked proof under --of live", R("POST", "/api2/v2/lists"),
@@ -188,7 +173,6 @@ CASES = [
      Run(proof=L2, lockout=True, spent={("arm", 0): 1}), "refused", "over_count"),
     ("same-path lockout revert body before the write", R("PATCH", "/api2/v2/users/me/blocked-ips", {"ips": []}),
      Run(proof=L2, lockout=True), "refused", "unarmed"),
-    # 6. messages: the Proof fan alone; publish only for an id this proof created
     ("chat send, Proof fan unset", R("POST", f"/api2/v2/chats/{FAN}/messages", {"text": "hi"}),
      Run(proof=armed("POST", "/api2/v2/chats/{fan}/messages", tags={"message"})), "refused", "mass_message"),
     ("chat send to the Proof fan", R("POST", f"/api2/v2/chats/{FAN}/messages", {"text": "hi"}),
@@ -196,14 +180,12 @@ CASES = [
     ("chat send to another Fan", R("POST", "/api2/v2/chats/556/messages", {"text": "hi"}),
      Run(proof=armed("POST", "/api2/v2/chats/{fan}/messages", tags={"message"}), proof_fan=FAN),
      "refused", "mass_message"),
-    # ticket 73: stream block path segment = u{Proof fan}
     ("stream block of the Proof fan", R("POST", f"/api2/v2/streams/users/u{FAN}/block"),
      Run(proof=armed("POST", "/api2/v2/streams/users/{fan}/block"), proof_fan=FAN), "allow", "allow"),
     ("stream block of another user", R("POST", "/api2/v2/streams/users/someone/block"),
      Run(proof=armed("POST", "/api2/v2/streams/users/{fan}/block"), proof_fan=FAN), "refused", "mass_message"),
     ("stream block, Proof fan unset", R("POST", f"/api2/v2/streams/users/u{FAN}/block"),
      Run(proof=armed("POST", "/api2/v2/streams/users/{fan}/block")), "refused", "mass_message"),
-    # ticket 73: the unblock undo's row id = the Proof fan's user id; another created id is refused
     ("stream unblock of the Proof fan", R("DELETE", f"/api2/v2/streams/users/{FAN}/block"),
      Run(proof=armed("POST", "/api2/v2/streams/users/{fan}/block", undo=(UNBLOCK,)), proof_fan=FAN,
          spent={("arm", 0): 1}, created=frozenset({FAN, "556"})), "reversal", "reversal"),
@@ -236,7 +218,6 @@ CASES = [
      Run(proof=PUBLISH, quiet_hour=QUIET, created=frozenset({"777"})), "allow", "allow"),
     ("publish, any other id", R("PUT", "/api2/v2/schedules/778/publish"),
      Run(proof=PUBLISH, quiet_hour=QUIET, created=frozenset({"777"})), "refused", "mass_message"),
-    # 7. posts: scheduled 30+ minutes ahead, or delete-at-once
     ("post scheduled 29 min ahead", R("POST", "/api2/v2/posts", sched(29)), Run(proof=armed("POST", "/api2/v2/posts")),
      "refused", "post"),
     ("post scheduled 30 min ahead", R("POST", "/api2/v2/posts", sched(30)), Run(proof=armed("POST", "/api2/v2/posts")),
@@ -249,7 +230,6 @@ CASES = [
      Run(proof=armed("POST", "/api2/v2/posts", tags={"post"}), quiet_hour=QUIET), "refused", "post"),
     ("post now, delete-at-once", R("POST", "/api2/v2/posts", {"text": "x"}), Run(proof=NOW_POST, quiet_hour=QUIET),
      "allow", "allow"),
-    # fan-visible publishes: 2 for the whole effort, one attempt each, quiet hour, immediate undo
     ("fan-visible, second of the effort", R("POST", "/api2/v2/posts", {"text": "x"}),
      Run(proof=NOW_POST, quiet_hour=QUIET, fan_visible_done=("queue.publish-now",)), "allow", "allow"),
     ("fan-visible, third of the effort", R("POST", "/api2/v2/posts", {"text": "x"}),
@@ -275,7 +255,6 @@ CASES = [
     ("tagged fan-visible, outside the quiet hour", R("POST", "/api2/v2/posts/9/cotag-publish", {}, at=QUIET - timedelta(hours=2)),
      Run(proof=armed("POST", "/api2/v2/posts/{id}/cotag-publish", tags={"fan_visible", "delete_at_once"}),
          quiet_hour=QUIET), "refused", "fan_visible"),
-    # 8. reversal: matches the declared undo of a write already allowed
     ("reversal of an allowed write", R("DELETE", "/api2/v2/lists/901"),
      Run(proof=TRACER, spent={("arm", 0): 1}, created=frozenset({"901"})), "reversal", "reversal"),
     ("undo of an id this proof did not create", R("DELETE", "/api2/v2/lists/902"),
@@ -285,8 +264,6 @@ CASES = [
                      undo=[Write("PUT", "/api2/v2/users/me/settings/notifications")])), "refused", "unarmed"),
     ("second reversal over its count", R("DELETE", "/api2/v2/lists/901"),
      Run(proof=TRACER, spent={("arm", 0): 1, ("undo", 0): 1}, created=frozenset({"901"})), "refused", "over_count"),
-    # ticket 30: OF's hide (Remove from vault) as an undo, its pinned body's `{media}` bound to a registered id;
-    # ticket 131: each placeholder binds only to ids of its own kind (`{id}` to created, `{media}` to keys["media"])
     ("hide of a registered vault media id", R("PUT", "/api2/v2/vault/media/hidden", {"mediaIds": [77]}),
      Run(proof=RECORD, spent={("arm", 1): 1}, **MEDIA77), "reversal", "reversal"),
     ("hide of a media id not registered", R("PUT", "/api2/v2/vault/media/hidden", {"mediaIds": [78]}),
@@ -310,7 +287,6 @@ CASES = [
      Run(proof=RECORD, spent={("arm", 1): 1}, **MEDIA77), "refused", "unarmed"),
     ("an arm's pinned body is exact: a brace value is literal", R("POST", "/api2/v2/lists", {"name": "abc"}),
      Run(proof=armed("POST", "/api2/v2/lists", body_must={"name": "{name}"})), "refused", "unarmed"),
-    # 9. anything else armed passes
     ("tracer create", R("POST", "/api2/v2/lists", {"name": "oi-proof-r1"}), Run(proof=TRACER), "allow", "allow"),
 ]
 
@@ -323,8 +299,8 @@ def test_decide(request_, run, kind, cls):
 
 
 CRITICAL = [
-    ("POST", "/api2/v2/payouts/requests", {"amount": 20}),       # withdrawal
-    ("PATCH", "/api2/v2/payouts/requests", {"frequency": "x"}),  # payout frequency
+    ("POST", "/api2/v2/payouts/requests", {"amount": 20}),
+    ("PATCH", "/api2/v2/payouts/requests", {"frequency": "x"}),
     ("POST", "/api2/v2/bank/accounts", {}),
     ("POST", "/api2/v2/payments/cards", {}),
     ("PUT", "/api2/v2/payment-methods/default", {}),
@@ -337,9 +313,9 @@ CRITICAL = [
     ("PATCH", "/api2/v2/users/me/username", {}),
     ("POST", "/api2/v2/users/me/2fa", {}),
     ("POST", "/api2/v2/users/me/passwordless", {}),
-    ("POST", "/api2/v2/users/delete/request", {}),               # Relay backstop
-    ("POST", "/api2/v2/users/logout", {}),                       # Relay backstop
-    ("PATCH", "/api2/v2/users/me", {"username": "x"}),           # sign-in keys on a profile update
+    ("POST", "/api2/v2/users/delete/request", {}),
+    ("POST", "/api2/v2/users/logout", {}),
+    ("PATCH", "/api2/v2/users/me", {"username": "x"}),
     ("PATCH", "/api2/v2/users/me", {"email": "x"}),
     ("PATCH", "/api2/v2/users/me", {"phone": "x"}),
     ("PATCH", "/api2/v2/users/me", {"password": "x", "about": "y"}),
@@ -366,7 +342,7 @@ def test_critical_in_capture_abort_mode_is_an_aborted_capture(method, path, body
     assert (v.kind, v.cls, v.capture) == ("refused", "critical", "aborted")
 
 
-DENIED = [  # service/of_client.py:343-360 `_denied`, one row per path
+DENIED = [
     ("bugs.onlyfans.com", "POST", "/api2/v2/report"),
     ("onlyfans.com", "POST", "/api2/v2/users/logout"),
     ("onlyfans.com", "POST", "/api2/v2/users/delete/request"),
@@ -410,8 +386,6 @@ def test_allowed_fan_visible_publish_is_flagged_for_the_effort_count(request_, r
     assert v.kind == "allow" and v.fan_visible is fan_visible
 
 
-# A post or queue write is not fan-visible only when scheduled at least POST_LEAD ahead, never on isScheduled alone
-# (review round 2): a near, past or unreadable date publishes now, so delete_at_once meets the cap and quiet hour.
 NEAR = {"+1 min": sched(1), "past": sched(-5), "malformed": {"isScheduled": 1, "scheduledDate": "soon"},
         "no isScheduled": {"scheduledDate": sched(45)["scheduledDate"]}}
 
@@ -420,14 +394,14 @@ NEAR = {"+1 min": sched(1), "past": sched(-5), "malformed": {"isScheduled": 1, "
 @pytest.mark.parametrize("body", NEAR.values(), ids=NEAR.keys())
 def test_delete_at_once_post_near_scheduled_is_fan_visible(body, of):
     req = R("POST", "/api2/v2/posts", body)
-    v = decide(req, Run(proof=NOW_POST, of=of))   # no quiet hour declared
+    v = decide(req, Run(proof=NOW_POST, of=of))
     assert (v.kind, v.cls) == ("refused", "fan_visible"), v.reason
     v = decide(req, Run(proof=NOW_POST, of=of, quiet_hour=QUIET))
     assert (v.kind, v.fan_visible) == ("allow", True), v.reason
     v = decide(req, Run(proof=NOW_POST, of=of, quiet_hour=QUIET, fan_visible_done=("post.now",)))
-    assert (v.kind, v.cls) == ("refused", "fan_visible"), v.reason   # one attempt
+    assert (v.kind, v.cls) == ("refused", "fan_visible"), v.reason
     v = decide(req, Run(proof=NOW_POST, of=of, quiet_hour=QUIET, fan_visible_done=("a", "b")))
-    assert (v.kind, v.cls) == ("refused", "fan_visible"), v.reason   # the effort's cap
+    assert (v.kind, v.cls) == ("refused", "fan_visible"), v.reason
 
 
 @pytest.mark.parametrize("of", ["live", "fake"])
@@ -471,13 +445,11 @@ def test_no_script_takes_a_stdlib_module_name():
     assert [s for s in scripts if s in sys.stdlib_module_names] == []
 
 
-# ── ticket 03: the driver's wire check (step 9), the Undo log fold and its Markdown, the tracer's effect ──
 from proof_core import wire_problems  # noqa: E402
 from undo_log import undo_markdown, undo_rows  # noqa: E402
 
 
 def W(method, path, verdict="allow", cls=None, status=200, reason=""):
-    """One folded wire log line, as GET /__proof/wire answers it."""
     return {"origin": "relay", "method": method, "host": "onlyfans.com", "path": path, "query": "", "body": None,
             "status": status, "verdict": verdict, "class": cls or verdict, "reason": reason, "proof": "p"}
 
@@ -531,7 +503,6 @@ def test_undo_markdown_one_table_row_per_entry():
                                                                                   "path": "/x|y"}}]).count("\\|") == 1
 
 
-# ── verify_undo: the row-closing decision (undone iff it returns no problems) ──
 from undo_log import append_jsonl, read_undo_log, reads_equal, verify_undo  # noqa: E402
 
 BEFORE = [["1", "Soak list 1"]]
@@ -539,7 +510,6 @@ AFTER = [["1", "Soak list 1"], ["2", "oi-proof-x"]]
 
 
 def ROW_(effect=True, reversal=("DELETE", "/api2/v2/lists/2"), before=BEFORE, after_undo=BEFORE, seq=3):
-    """A row as the driver hands it to verify_undo before closing it; its reversal names the wire seq it caused."""
     rev = {"method": reversal[0], "path": reversal[1], "seq": seq} if reversal else {}
     return {"row": 1, "proof": "tracer.create-list", "write": {"method": "POST", "path": "/api2/v2/lists"},
             "of_id": "2", "effect": effect, "reversal": rev,
@@ -578,11 +548,10 @@ def test_verify_undo(wire, row, want):
     assert verify_undo(wire, [row]) == want
 
 
-# ticket 30: a row reversed by more than one request (the post's DELETE, then the hide) checks each on the wire.
 HIDE_OK = WQ(4, "PUT", "/api2/v2/vault/media/hidden", "reversal")
 TWO = [{"method": "DELETE", "path": "/api2/v2/lists/2", "seq": 3},
        {"method": "PUT", "path": "/api2/v2/vault/media/hidden", "seq": 4}]
-UNSENT = {**TWO[1], "seq": None}   # the hide's Relay call caused no wire line
+UNSENT = {**TWO[1], "seq": None}
 
 
 @pytest.mark.parametrize("wire, revs, want", [
@@ -592,7 +561,6 @@ UNSENT = {**TWO[1], "seq": None}   # the hide's Relay call caused no wire line
      ["row 1: reversal PUT /api2/v2/vault/media/hidden answered 404"]),
     ([HIDE_OK], TWO[1:], []),
     ([DEL_OK], [], ["row 1: no reversal of POST /api2/v2/lists on the wire"]),
-    # ticket 131: the hide is id-less (one path for video and voice); only the line this row's undo caused counts
     ([HIDE_OK, WQ(9, "DELETE", "/api2/v2/lists/2", "reversal")], [{**TWO[0], "seq": 9}, UNSENT],
      ["row 1: no reversal of POST /api2/v2/lists on the wire (PUT /api2/v2/vault/media/hidden)"]),
     ([HIDE_OK, WQ(9, "DELETE", "/api2/v2/lists/2", "reversal"), WQ(10, "PUT", "/api2/v2/vault/media/hidden", "reversal",
@@ -619,7 +587,6 @@ def test_undo_log_append_then_read_folds_snapshots(tmp_path):
     assert read_undo_log(log) == [{"row": 1, "proof": "p", "state": "undone"}]
 
 
-# ── ticket 05: the whole Undo log check (complete, missing, failed, pending), earlier runs, the lock ──
 from proof_core import NOT_REVERSIBLE, lock_decision  # noqa: E402
 from undo_log import check_undo_log, pending_rows  # noqa: E402
 
@@ -629,7 +596,6 @@ def WS(seq, method, path, verdict="allow", status=200):
 
 
 def LOG_ROW(state="undone", of_id="2", after_undo=BEFORE, **kw):
-    """A row as the Undo log folds it: one allowed write (wire line 2), its reads, its state."""
     return {"row": 1, "proof": "tracer.create-list", "state": state, "wire_seq": 2, "of_id": of_id,
             "write": {"method": "POST", "path": "/api2/v2/lists", "narrowed": "none"},
             "reads": {"before": BEFORE, "after_write": AFTER, "after_undo": after_undo}, **kw}
@@ -677,7 +643,6 @@ def test_check_undo_log(wire, rows, want):
     assert check_undo_log(wire, rows) == want
 
 
-# ticket 30: which undo Writes reverse a row, by the arm index the Relay stamps on it; the settle order; the finder.
 from undo_log import needs_row_id, row_undos, undo_order  # noqa: E402
 
 UP, POST_ROW = {"row": 1, "arm": 0}, {"row": 2, "arm": 1}
@@ -755,7 +720,6 @@ def test_pending_rows_name_only_pending_rows():
     assert pending_rows([LOG_ROW(state="pending")]) == [
         "row 1 (tracer.create-list) pending: POST /api2/v2/lists (OnlyFans id 2) may be left on the account; "
         "check it, then clear the row by hand"]
-    # cleared by hand: a snapshot appended to that log, folded last-wins
     assert pending_rows(undo_rows([LOG_ROW(state="pending"), {"row": 1, "state": "cleared by hand"}])) == []
 
 
@@ -773,7 +737,6 @@ def test_lock_decision(held, alive, want):
     assert lock_decision(held, alive) == want
 
 
-# ── ticket 04: the drills (story 39), the fake-only refusal under live, the guard census (story 38) ──
 from proof_core import census, fake_only_refused  # noqa: E402
 
 LISTED = lambda body: bool((body or {}).get("userLists"))  # noqa: E731
@@ -797,7 +760,7 @@ def test_drill_shape_is_fake_only_and_needs_no_effect():
 
 @pytest.mark.parametrize("field,steps", [
     ("trigger", (("relay", "GET", "/api/of/v2/x", None), ("click", "button"))),
-    ("trigger", (("fetch", "GET", "/api2/v2/lists", None, "sent"), ("click", "button"))),   # ticket 07
+    ("trigger", (("fetch", "GET", "/api2/v2/lists", None, "sent"), ("click", "button"))),
     ("trigger", (("hand-off", "#a"), ("relay", "GET", "/api/of/v2/x", None))),
     ("capture_steps", (("fetch", "GET", "/api2/v2/lists", None, "sent"), ("fill", "input", "x"))),
 ])
@@ -845,7 +808,6 @@ def test_wire_problems_of_a_drill(proof, entries, errors, want):
     assert wire_problems(proof, entries, errors) == want
 
 
-# Phase 3 ticket 63: a Mocked drill on the Relay's own backstop (`_denied`), e.g. Close all sessions until ticket 81.
 CLOSE = Proof(id="drill.close", phase=3, page="settings/account/sessions", control="x", kind="mocked",
               tags=frozenset({"irreversible"}), arm=(Write("DELETE", "/api2/v2/sessions"),), refused_as="backstop",
               trigger=(("click", "#x"),))
@@ -857,9 +819,6 @@ def test_a_mocked_drill_needs_no_fake_only_and_is_recorded_not_run_live():
     assert (not_started(CLOSE, "live"), not_started(CLOSE, "fake")) == ("mocked: not run live", None)
 
 
-# Ticket 134: a proof with no trigger (p1.engagement.msg.search, messages.more.*, fixture.message-parked) never
-# starts, so run_proof never reads its trigger[0] or opens a page; the earlier reasons still win. A non-Mocked one is
-# not parked here: live_entry refuses it (test_live_entry).
 NO_TRIGGER_MOCKED = P(kind="mocked", id="p.search")
 NO_TRIGGER_MESSAGE = armed("POST", "/api2/v2/chats/{fan}/messages", undo=(Write("DELETE", "/api2/v2/messages/{id}"),),
                            tags={"message"}, id="p.msg")
@@ -896,7 +855,6 @@ def test_wire_problems_of_a_backstop_drill(entries, errors, want):
 
 
 def H(method, path, tagged=False):
-    """One FakeOF hit as fake_layer's Recorder records it."""
     return {"method": method, "path": path, "query": "", "body": None, "tagged": tagged, "status": 200}
 
 
@@ -925,7 +883,6 @@ def test_census(wire, hits, want):
     assert census(wire, hits) == want
 
 
-# ── ticket 53: a Write's own host (`Write.host`); `Proof.hosts` derived from the arms ──
 
 S3 = "of2transcoder.s3-accelerate.amazonaws.com"
 PUT_PATH = "/upload/7/u/1/rec.webm"
@@ -959,7 +916,6 @@ def test_a_named_host_takes_only_the_write_that_names_it(name, req, run, kind, c
 
 
 def test_the_named_hosts_put_leaves_the_post_arm_unspent():
-    """A write on the named host never uses up another arm's one send (reviewer finding 1)."""
     run = Run(proof=HOSTED, hosts=(S3,))
     assert decide(R("POST", "/api2/v2/posts", sched(60), host=S3), run).key is None
     assert decide(R("POST", "/api2/v2/posts", sched(60)), run).kind == "allow"
@@ -979,7 +935,7 @@ def test_a_write_host_is_an_exact_lowercase_host_name(host):
     ("Expires=1&Signature=s&Key-Pair-Id=k&Policy=p", "Expires=1&Signature=REDACTED&Key-Pair-Id=REDACTED&Policy=REDACTED"),
     ("access_token=a&uploadToken=b&sig=c&X-Goog-Credential=d", "access_token=REDACTED&uploadToken=REDACTED&sig=REDACTED"
      "&X-Goog-Credential=REDACTED"),
-    ("X-Amz-Signature", "X-Amz-Signature"),            # a bare name holds no value
+    ("X-Amz-Signature", "X-Amz-Signature"),
 ])
 def test_redact_query_keeps_names_and_drops_secret_values(query, want):
     from proof_core import redact_query
@@ -991,7 +947,7 @@ def test_redact_query_keeps_names_and_drops_secret_values(query, want):
     (b'{"a": 1}', {"a": 1}),
     ("name=x", "name=x"),
     (b"\xff\xfe\x00video", "<8 bytes>"),
-    (b"\x1aE\xdf\xa3\x01\x02", "<6 bytes>"),            # valid UTF-8 by chance, still binary
+    (b"\x1aE\xdf\xa3\x01\x02", "<6 bytes>"),
 ])
 def test_log_body_logs_a_binary_upload_by_length_only(data, want):
     from proof_core import log_body
@@ -1015,8 +971,6 @@ def test_capture_browser_logs_bodies_through_log_body():
     assert of_browser.log_body(b"\x1aE\xdf\xa3 webm") == "<9 bytes>"
 
 
-# ticket 73: a trigger that types the Proof fan (`{fan}` in a fill step) parks while it is unset, in both modes; the
-# fill puts the run's Proof fan and marker in.
 TYPES_FAN = Proof(id="p.types-fan", phase=3, page="settings/streaming/blocked", control="Block", kind="live",
                   arm=(Write("POST", "/api2/v2/streams/users/{fan}/block"),),
                   trigger=(("fill", "#input-365", "u{fan}"), ("click", "button[type=submit]")), effect=lambda b, a: True)
@@ -1035,11 +989,9 @@ def test_fill_text_puts_in_the_marker_and_the_proof_fan():
     assert fill_text("u{fan}", "oi-proof-r1", FAN) == f"u{FAN}"
     assert fill_text("{marker} for {fan}", "oi-proof-r1", None) == "oi-proof-r1 for "
     assert fill_text("plain", "m", FAN) == "plain"
-    assert fill_text("{handle}", "oi-proof-20261121T010203Z", None) == "oi_proof_20261121t010203z"   # ticket 69
+    assert fill_text("{handle}", "oi-proof-20261121T010203Z", None) == "oi_proof_20261121t010203z"
 
 
-# ofm-not-yet ticket 101: reads, then writes no Fan can see, then Fan-reaching writes, then Lockout, whatever the
-# given order; within a group a `canon` id order (the proof list's) wins over the caller's.
 RD = P(id="read")
 INV = armed("POST", "/api2/v2/lists", id="invisible")
 DAO = armed("POST", "/api2/v2/posts", id="at-once", tags={"delete_at_once", "post"})
@@ -1063,12 +1015,10 @@ def test_order_runs_reads_then_invisible_then_fan_reaching_then_lockout_whatever
 def test_order_canon_fixes_the_order_inside_a_group():
     got = [p.id for p in order([MSG, DAO, PUB, INV, RD], canon=("read", "invisible", "at-once", "publish", "msg"))]
     assert got == ["read", "invisible", "at-once", "publish", "msg"]
-    # ids outside canon keep the given order, after the canon ones of their group
     X = armed("POST", "/api2/v2/trials", id="x")
     assert [p.id for p in order([X, INV], canon=("invisible",))] == ["invisible", "x"]
 
 
-# ── follow-up #5: an arm's declared payload (Write.payload, class 4) ──
 
 def _ppv(**kw):
     return {"text": "<p>oi-proof-r</p>", "price": 3, "mediaFiles": [9001], "previews": [], "lockedText": False, **kw}
@@ -1076,12 +1026,12 @@ def _ppv(**kw):
 
 @pytest.mark.parametrize("body, why", [
     (_ppv(), None),
-    (_ppv(price="3"), None),                                   # a numeric string: the same price
+    (_ppv(price="3"), None),
     (_ppv(text="<p>hi</p>"), "marker"),
-    (_ppv(text="<p>oi-proof-q</p>"), "marker"),                # round 2 #22: another run's marker
-    (_ppv(text="<p>oi-proof-rr</p>"), "marker"),               # this run's as a prefix only
-    (_ppv(text="oi-proof-r copy"), None),                      # this run's as a whole token
-    (_ppv(price=0), "price"),                                  # free media
+    (_ppv(text="<p>oi-proof-q</p>"), "marker"),
+    (_ppv(text="<p>oi-proof-rr</p>"), "marker"),
+    (_ppv(text="oi-proof-r copy"), None),
+    (_ppv(price=0), "price"),
     (_ppv(price=30), "price"),
     (_ppv(price=True), "price"),
     ({k: v for k, v in _ppv().items() if k != "price"}, "price"),
@@ -1091,8 +1041,6 @@ def _ppv(**kw):
     ("text=oi-proof-r&price=3", "not a JSON object"),
 ])
 def test_the_ppv_send_leaves_only_as_declared(body, why):
-    """p2.bubble-unsend-ppv: the guard holds the send to the run's marker, the declared price, one locked medium and no
-    free preview (phase2.ppv_payload) before it leaves."""
     from proofs.phase2 import PROOFS as P2
     proof = next(p for p in P2 if p.id == "p2.bubble-unsend-ppv")
     v = decide(R("POST", f"/api2/v2/chats/{FAN}/messages", body), Run(proof=proof, proof_fan=FAN, marker="oi-proof-r"))
@@ -1103,7 +1051,6 @@ def test_the_ppv_send_leaves_only_as_declared(body, why):
 
 
 def test_a_payload_proof_armed_with_no_marker_refuses_the_send():
-    """Round 2 #22: the payload binds to the marker the arm declared; none armed, nothing leaves."""
     from proofs.phase2 import PROOFS as P2
     proof = next(p for p in P2 if p.id == "p2.bubble-unsend-ppv")
     v = decide(R("POST", f"/api2/v2/chats/{FAN}/messages", _ppv()), Run(proof=proof, proof_fan=FAN))

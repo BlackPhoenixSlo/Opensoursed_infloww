@@ -1,34 +1,3 @@
-"""automations/_price_jev.py — Full AI Chat's price Jev: one Score, the Offer's price (test Mode).
-
-Not a stream (`_info_jev`'s shape). With config `sext_scene` on a sell_now Turn with a fresh priced
-Pick (not a `haggle` row: its clamp stays), `full_ai_turn._price` asks Jev ONE Score `price` over
-the Offer's contents, its list price, his heat, the saved scene and his purchases; the Pick then
-carries Jev's price (`cents_of`) as both price and list (owner 2026-11-14: "Jev picks the price
-from full info"). 03d: the state carries the Price signals `he_asked` and `bought_before`. No
-other code rule: only MIN_CENTS..MAX_CENTS clamp it. Any failure keeps the vault's list price
-(`GateError`, the caller records why). Wording: new, DRAFT docs/prompts NEW-134 (03d rewrite);
-not probed yet. `PRICE_VERSION` (`price_version()`) goes on the row.
-
-  - `PRICE`, `PRICE_LADDER_CENTS`, `PRICE_VERSION`.
-  - `cents_of(score)`: pure, the ladder interpolated at Jev's expected level, nearest $5, clamped.
-  - `offer_state(pick)`: the Offer as Jev reads it. `state(...)`: the whole request state.
-  - `ask(state, account_id, *, timeout_s)`: one request; `Price`, or `GateError` on any failure.
-
-Chat tease price (config `chat_tease`, test Mode, owner 2026-11-14 "jev puts the price no leader just
-pass info to jev"): on a Chat tease Turn, before the pick, `full_ai_turn._tease_price` asks ONE Choice
-`chat_tease_price` in its own request: which of config `chat_tease_prices` (`tease_options`: "free",
-"$3", "$10", ...) the tease costs him, over his Turn, the thread, heat, what he bought and spent, and
-the teases he already got (`tease_state`). The answer is the most probable option; code attaches no
-order or climb to the list. Any failure (`GateError`) means no tease this Turn. Wording: new, DRAFT
-docs/prompts NEW-153. `TEASE_PRICE_VERSION` (wording, model, state keys; the options come from config
-and go on the row) goes on the row.
-
-  - `TEASE_PRICE`, `TEASE_PRICE_STATE_KEYS`, `TEASE_PRICE_VERSION`.
-  - `tease_options(prices)`, `tease_state(...)`: pure. `ask_tease(state, options, account_id, *,
-    timeout_s)`: one request; `TeasePrice`, or `GateError`.
-
-The key is `_router_jev`'s (`tenant_keys.typesafe_key_for`). `_client` is the tests' fake seam.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -66,11 +35,10 @@ PRICE = {
         "$150: he last paid $80 or more, for a long, most explicit video",
     ],
 }
-PRICE_LADDER_CENTS = (1000, 2000, 3500, 5000, 7500, 10000, 15000)   # one per criterion, same order
+PRICE_LADDER_CENTS = (1000, 2000, 3500, 5000, 7500, 10000, 15000)
 
 
 def price_version() -> str:
-    """A short digest of what changes what Jev answers: model, wording, ladder, state keys."""
     return hashlib.sha256(json.dumps(
         {"model": MODEL, "price": PRICE, "ladder": PRICE_LADDER_CENTS, "state_keys": STATE_KEYS},
         sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
@@ -80,15 +48,13 @@ PRICE_VERSION = price_version()
 
 
 class Price(NamedTuple):
-    cents: int                      # `cents_of(score)`
-    score: float                    # Jev's expected level, 0..len(ladder)-1
-    p: dict[str, float]             # level -> probability
+    cents: int
+    score: float
+    p: dict[str, float]
     ms: int
 
 
 def cents_of(score: float) -> int:
-    """The ladder linearly interpolated at `score` (0 = first rung), rounded to the nearest $5,
-    clamped to MIN_CENTS..MAX_CENTS. Pure."""
     top = len(PRICE_LADDER_CENTS) - 1
     s = min(max(float(score), 0.0), float(top))
     lo = int(s)
@@ -102,8 +68,6 @@ def _dollars(cents: int) -> str:
 
 
 def offer_state(pick: Pick) -> dict[str, Any]:
-    """The Offer as Jev reads it: counts, clip lengths, free previews, each locked item's
-    description, its lane and the vault's list price."""
     facts = pick.facts or {}
     kinds = facts.get("kinds") or {}
     shown = facts.get("shown_kinds") or {}
@@ -138,8 +102,6 @@ def _questions() -> dict[str, Any]:
 
 
 async def ask(st: dict[str, Any], account_id: str, *, timeout_s: float) -> Price:
-    """The `price` Score in one request within `min(TIMEOUT_S, timeout_s)`. Raises `GateError` on
-    any failure (no key, no SDK, timeout, HTTP, a missing or out-of-range answer)."""
     try:
         res, ms = await _jev.ask_one(_client, account_id, st, _questions(), MODEL,
                                      min(TIMEOUT_S, timeout_s), GateError)
@@ -150,14 +112,11 @@ async def ask(st: dict[str, Any], account_id: str, *, timeout_s: float) -> Price
         p = {str(k): float(v) for k, v in (sc.probabilities or {}).items()}
     except GateError:
         raise
-    except Exception as e:      # SDK missing, HTTP, timeout, a missing answer
+    except Exception as e:
         raise GateError(f"{type(e).__name__}: {e}"[:300]) from e
     return Price(cents_of(score), score, p, ms)
 
 
-# ── Chat tease price (config `chat_tease`, test Mode) ──────────────────────
-# DRAFT wording (owner edits it; docs/prompts NEW-153). An option's description is built from its
-# price (`free` / `paid`, `{n}` = `tease_photos`, `{price}` its label), so Jev sees what each holds.
 TEASE_PRICE = {
     "instructions": (
         "She is about to slip a teasing photo of herself in with her normal chat reply; he did not "
@@ -179,8 +138,6 @@ TEASE_QID = "chat_tease_price"
 
 
 def tease_price_version() -> str:
-    """A short digest of what changes what Jev answers on the tease price: model, wording, state
-    keys (the options come from config and are recorded on the row)."""
     return hashlib.sha256(json.dumps(
         {"model": MODEL, "tease_price": TEASE_PRICE, "state_keys": TEASE_PRICE_STATE_KEYS},
         sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
@@ -190,15 +147,13 @@ TEASE_PRICE_VERSION = tease_price_version()
 
 
 class TeasePrice(NamedTuple):
-    cents: int                      # the most probable option's price
-    option: str                     # its label ("free", "$10")
-    p: dict[str, float]             # option -> probability
+    cents: int
+    option: str
+    p: dict[str, float]
     ms: int
 
 
 def tease_options(prices: list[int]) -> dict[str, int]:
-    """Config `chat_tease_prices` as the Choice's options, in config order: label -> cents ("free"
-    for 0, else "$10" / "$12.50"). Pure."""
     return {("free" if c == 0 else _dollars(c)): int(c) for c in prices}
 
 
@@ -208,9 +163,6 @@ def _tease_criteria(options: dict[str, int]) -> dict[str, str]:
 
 
 def tease_state(router_state: dict, heat: int, purchases: list[str], spent_cents: list[int]) -> dict[str, Any]:
-    """His Turn and the thread as the Router reads them, the heat, whether and what he bought
-    (`purchases` in words, `spent_so_far` the session's total), and the Router's Chat tease keys
-    (`teases_sent`, `his_lines_this_sitting`). Pure."""
     total = sum(spent_cents)
     return {"fan_new_messages": router_state.get("fan_new_messages"),
             "thread": router_state.get("thread"), "heat": f"{int(heat)} of 4",
@@ -222,9 +174,6 @@ def tease_state(router_state: dict, heat: int, purchases: list[str], spent_cents
 
 async def ask_tease(st: dict[str, Any], options: dict[str, int], account_id: str, *,
                     timeout_s: float) -> TeasePrice:
-    """The `chat_tease_price` Choice over `options` (`tease_options`) in one request within
-    `min(TIMEOUT_S, timeout_s)`; the answer is the most probable option. Raises `GateError` on any
-    failure (no key, no SDK, timeout, HTTP, no answer, a tie at the top or an unoffered label)."""
     if timeout_s <= 0:
         raise GateError("deadline")
     if not options:
@@ -236,7 +185,7 @@ async def ask_tease(st: dict[str, Any], options: dict[str, int], account_id: str
         p = {str(k): float(v) for k, v in (res.choices[TEASE_QID].probabilities or {}).items()}
     except GateError:
         raise
-    except Exception as e:      # SDK missing, HTTP, timeout, a missing answer
+    except Exception as e:
         raise GateError(f"{type(e).__name__}: {e}"[:300]) from e
     top = max(p.values(), default=None)
     best = [k for k, v in p.items() if v == top]

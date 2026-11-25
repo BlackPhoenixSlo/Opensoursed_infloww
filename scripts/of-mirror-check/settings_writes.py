@@ -1,34 +1,3 @@
-"""OF settings > Subscription: the modals that write through the Relay (app/lib/ofMirrorWrites.ts SUBMITS), the ones with
-no Known body, and the Relay's rows (app/lib/ofMirrorSubscription.ts).
-
-Mocks the login (as writes.py), the relay's POST /api/of/v2/campaigns and synthetic GETs (ROWS: /users/me, one tracking
-link, one free trial link, and one promotion and one bundle in /users/me's promotions and subscriptionBundles, as OF reads them); every unmocked /api/** returns [] and any
-request to a host other than localhost is aborted and fails the check (even one whose path a mock matches). Every
-non-GET /api/** request is recorded as [method, path, JSON body, X-Account-Id]. Checks in the frame:
-Single Creator (scope `model:1`), "Create new tracking link" (settings/subscription/tracking-links/modal-1):
-1. "Create Link" is disabled until a name is typed, and enabled once "Synthetic link" is typed; the name's label then
-   floats clear of it and the counter reads "14 / 100".
-2. Clicking it sends exactly one POST /api/of/v2/campaigns {"name":"Synthetic link"} with X-Account-Id: 1 (no `code`),
-   and the page lands on the Tracking links tab (/of-manager/settings/subscription/tracking-links).
-3. Opening the modal again, typing "Synthetic link" and pressing Enter in the name field sends exactly one more such
-   POST, and lands on the tab too (a native form submit never reloads the frame).
-4. The offer dialogs (OFFERS; ofMirrorOffers, OF's own bodies): the promotion modal's "Start campaign"
-   (settings/subscription/promotion-campaign/modal-1) and the free trial modal's "Create link" (trial-links/modal-1) are
-   enabled, and a click sends exactly one POST of OF's default body (promotions: a 7-day free trial for new subscribers,
-   offer limit 10, 7 days; trials: no name, 10, 7, 7) with X-Account-Id 1 and lands on its tab; the bundle modal's "Save"
-   (.../modal-2) is disabled with OF's reason while users/me settings offer no bundle (unmocked here). The
-   writes are answered by the mock, never sent anywhere.
-5. The rows (Single Creator): the Tracking links tab shows the synthetic link (name, Clicks count) and no "No results :(";
-   its Copy link shows OF's toast "Link copied"; its Delete asks in OF's ModalConfirm (its Delete clicked) and sends exactly one
-   DELETE /api/of/v2/campaigns/7 with X-Account-Id 1, removes the row and stays on the tab. The Free trial links tab and
-   the promotion page show their synthetic rows (the promotion's title, the bundle's "$20.35 USD total for 3 months").
-No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
-77e5df419; phase_check.py's one_creator checks it).
-No console errors. Prints one {"check","want","got"} line per check. Screenshots:
-/tmp/of-mirror-shots/inapp-settings-writes-tracking-filled.png, -tracking-tab.png,
--promotion.png, -bundle.png, -trial.png, -rows-tracking.png, -rows-trials.png, -rows-promotion.png.
-Exit 1 on a failed check.
-"""
 import json, os, sys
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
@@ -43,7 +12,6 @@ TRACKING_TAB=f"{M}/settings/subscription/tracking-links"
 CREATE_LINK=".modal-footer button[type='submit']"
 NAME="input[name='name']"
 NOT_YET="Not available in Inflowwww yet"
-# Page under settings/ -> (screenshot name, its button, its label, its write (None: disabled here), the tab it lands on).
 OFFERS={"subscription/promotion-campaign/modal-1":("promotion",".modal-footer button[type='submit']","Start campaign",
             ["POST","/api/of/v2/promotions",{"discount":100,"subscribe_counts":10,"subscribe_days":7,"finish_days":7,"message":"","type":["all"]},"1"],
             f"{M}/settings/subscription/promotion-campaign"),
@@ -54,8 +22,6 @@ OFFERS={"subscription/promotion-campaign/modal-1":("promotion",".modal-footer bu
 NOTE="document.getElementById('oi-note')?.textContent ?? null"
 TOAST="document.querySelector('#oi-toast .toast__text')?.textContent ?? null"
 ROWS={
-    # OF lists the bundles and the settings promotions from /users/me (subscriptionBundles, promotions), not
-    # /subscriptions/bundles or /promotions.
     "/api/of/v2/users/me": {"id":1,"username":"alphaone","name":"Alpha One","subscribePrice":10,"canCreatePromotion":True,
                             "subscriptionBundles":[{"id":10,"price":20.35,"duration":3,"discount":30}],
                             "promotions":[{"id":9,"price":0,"type":"new","subscribeDays":30,"subscribeCounts":0,"claimsCount":4,"isFinished":False,"canClaim":True,"message":"<p>Synthetic welcome</p>","createdAt":"2026-03-02T12:00:00+00:00","finishedAt":None}]},
@@ -82,25 +48,23 @@ def session(b, scope_js):
     writes=[]
     def mock(route):
         req=route.request; u=req.url; path=urlparse(u).path
-        # Page routes win over the context's: a foreign URL matching a mock pattern still fails the check.
         if foreign(u): return outside(route)
         if req.method!="GET" and path.startswith("/api/"):
             writes.append([req.method, path, req.post_data_json if req.post_data else None, req.headers.get("x-account-id")])
             if req.method=="POST" and path==CAMPAIGNS: return route.fulfill(status=200, content_type="application/json", body='{"id":1}')
         if req.method=="GET" and path in ROWS: return route.fulfill(status=200, content_type="application/json", body=json.dumps(ROWS[path]))
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     pg.on("pageerror", lambda e: errs.append(f"uncaught: {e}"))
     first=[True]
     def open_page(page):
-        """The settings page's frame, once loaded (the employee card picked on the first load)."""
         pg.goto(f"{BASE}{M}/settings/{page}", wait_until="load", timeout=90000); pg.wait_for_timeout(2000)
         if first[0]:
             card=pg.get_by_text("Tim", exact=True)
@@ -118,11 +82,10 @@ def wait_path(pg, path):
     for _ in range(40):
         if urlparse(pg.url).path==path: break
         pg.wait_for_timeout(250)
-    pg.wait_for_timeout(500)  # a stray second write would land here
+    pg.wait_for_timeout(500)
     return urlparse(pg.url).path
 ONE=[["POST",CAMPAIGNS,{"name":"Synthetic link"},"1"]]
 def offers(pg, writes, open_page):
-    """The offer dialogs (4), Single Creator."""
     for page, (name, sel, text, write, tab) in OFFERS.items():
         fr=open_page(page)
         if not fr: continue
@@ -139,7 +102,6 @@ def offers(pg, writes, open_page):
         check(f"{name}: lands on its tab", wait_path(pg, tab), tab)
         check(f"{name}: exactly one POST of OF's default body", writes[len(before):], [write])
 def rows(pg, writes, open_page):
-    """The Relay's rows (5), Single Creator."""
     fr=open_page("subscription/tracking-links")
     if fr:
         pg.wait_for_timeout(1000)

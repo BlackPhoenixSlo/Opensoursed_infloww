@@ -1,34 +1,3 @@
-"""The story strip's "Add to story" (app/lib/ofMirrorPost.ts bindStory): a picked image is published as the Creator's Story.
-
-Mocks the login (as writes.py) and the relay's POST /api/of/v2/stories/upload (200 {}); every unmocked /api/** returns []
-and any request to a host other than localhost is aborted and fails the check (even one whose path a mock matches). Every
-non-GET /api/** request is recorded as [method, path, X-Account-Id, multipart parts as [name, filename, bytes as hex]].
-The script builds a 1x1 PNG (stdlib zlib/struct) and hands it to the chooser as an in-memory file, because Chromium leaves
-a disk file's bytes out of the request body Playwright reports (post_upload.py); the multipart body is parsed with stdlib
-email.parser.BytesParser. Checks in the frame, scope `model:1`, on `home` and on `new-post`:
-1. "Add to story" carries data-oi-wired; clicking it fires a file chooser whose input has accept="image/*,video/*" and no
-   multiple (OF's stories take a photo or a video).
-2. Setting the PNG sends exactly one non-GET /api/** request: POST /api/of/v2/stories/upload with X-Account-Id: 1 and one
-   multipart part named `file`, filename the PNG's name, bytes equal to the PNG.
-3. The note reads "Added to story" in grey, is visible and sits right after the strip (.stories-list).
-4. No console errors but the 500's one failed resource load; no request left localhost.
-5. Error: the mock answers the next upload 500 {"detail":"synthetic failure"} once; picking the same PNG again sends a
-   second identical upload, the note reads "Could not add: synthetic failure" in red after the strip and is still there
-   after the grey note's 3s fade, and the tile is enabled again.
-6. Neither image nor video: setting a .txt file on the chooser sends nothing (the recorded requests equal those before the
-   pick) and the note reads exactly the red "Could not add: choose an image or a video" right after the strip, never
-   "Added to story".
-7. (Retired) No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner
-   2026-11-20, origin/main 77e5df419; phase_check.py's one_creator checks it).
-8. My profile, scope `model:1`: "Create highlight" (no Relay write; like Home's and New post's "Start profile
-   promotion") is disabled with the tooltip "Not available in Inflowwww yet"; a dispatched click fires no file chooser
-   within 1s, sends nothing and shows no note. "Story archive" carries data-oi-wired; a click opens the in-place archive
-   box right after the strip (ofMirrorProfile), sends nothing but GETs, shows no note and leaves the page where it is.
-   No console errors.
-Prints one {"check","want","got"} line per check. Screenshots: /tmp/of-mirror-shots/inapp-story-{home,new-post}.png and
-inapp-story-{home,new-post}-error.png and inapp-story-profile.png (profile, the archive box open).
-Exit 1 on a failed check.
-"""
 import json, os, struct, sys, zlib
 from email.parser import BytesParser
 from email.policy import HTTP
@@ -49,14 +18,12 @@ def png_1x1():
 PIXEL=png_1x1()
 PNG={"name":"synthetic.png","mimeType":"image/png","buffer":PIXEL}
 TXT={"name":"synthetic.txt","mimeType":"text/plain","buffer":b"synthetic"}
-# The shared note: [text, red, the strip right before it]
 NOTE="(() => { const e = document.getElementById('oi-note'); return e && [e.textContent, e.style.color === 'rgb(255, 69, 69)', !!e.previousElementSibling?.matches('.stories-list')]; })()"
 failures=[]
 def check(label, got, want):
     print(json.dumps({"check":label,"want":want,"got":got}))
     if got!=want: failures.append(f"{label}: got {got!r}, expected {want!r}")
 def parts(content_type, body):
-    """A multipart body's parts as [name, filename, bytes as hex]; [] when the body is not multipart."""
     if not content_type.startswith("multipart/"): return []
     msg=BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body)
     return [[p.get_param("name", header="content-disposition"), p.get_filename(), p.get_payload(decode=True).hex()] for p in msg.iter_parts()]
@@ -75,7 +42,6 @@ def session(b, scope_js):
     fail={"next":0}
     def mock(route):
         req=route.request; u=req.url; path=urlparse(u).path
-        # Page routes win over the context's: a foreign URL matching a mock pattern still fails the check.
         if foreign(u): return outside(route)
         if req.method!="GET" and path.startswith("/api/"):
             sent.append([req.method, path, req.headers.get("x-account-id"), parts(req.headers.get("content-type",""), req.post_data_buffer or b"")])
@@ -85,18 +51,17 @@ def session(b, scope_js):
                     return route.fulfill(status=500, content_type="application/json", body=json.dumps({"detail":"synthetic failure"}))
                 return route.fulfill(status=200, content_type="application/json", body="{}")
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     pg.on("pageerror", lambda e: errs.append(f"uncaught: {e}"))
     return pg, sent, errs, fail
 def open_page(pg, section):
-    """/of-manager/<section> and its Mirror frame (pages/<section>/index.html) once loaded, or None."""
     pg.goto(f"{BASE}/of-manager/{section}", wait_until="load", timeout=90000); pg.wait_for_timeout(2000)
     card=pg.get_by_text("Tim", exact=True)
     if card.count(): card.first.click(); pg.wait_for_timeout(2000)
@@ -174,13 +139,11 @@ with sync_playwright() as p:
                     pg.wait_for_timeout(1000)
                     check(f"6 {section}: a .txt sends nothing (requests unchanged by the pick)", sent, before)
                     check(f"6 {section}: no 'Added to story' note after the .txt", fr.evaluate(NOTE), want_note)
-        # the error case's 500 is logged by the browser as one failed resource load; only that, exactly once
         loads=[e for e in errs if "Failed to load resource" in e and "500" in e]
         print(f"{section} console errors:", [e[:160] for e in errs][:8])
         check(f"4 {section}: one failed 500 load (the error case)", len(loads), 1)
         check(f"4 {section}: no other console errors", [e for e in errs if e not in loads], [])
         pg.context.close()
-    # My profile: Create highlight disabled quietly; Story archive opens its box in place.
     pg, sent, errs, fail=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_page(pg, "profile")
     if fr:

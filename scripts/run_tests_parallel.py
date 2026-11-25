@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""Run service/tests/test_*.py scripts in parallel for scripts/run-tests.sh.
-
-Each script runs in its own process (it already binds its own temp DB via
-_harness), `-j` at a time. Output is buffered per script and printed in name
-order, so the log reads like the serial loop. A script past `--timeout` gets
-SIGABRT (PYTHONFAULTHANDLER=1 prints every thread's stack first), counts as
-FAILED and is named in the summary; the run goes on. SERIAL scripts run one at
-a time after the parallel batch.
-
-Times are awake time (time.monotonic = mach_absolute_time on macOS, which stops
-while the machine sleeps): a closed laptop lid froze scripts for ~900 s per
-Maintenance Sleep (pmset log, 11-16) and read as a test stall. Sleep never
-trips the timeout; the summary names how long the machine slept.
-
-`--pytest` runs each test_*.py as `python -m pytest -q <file>` instead (pytest
-suites like slop/lib, scripts/proxy-health: one file per process, same tests).
-Discovery is the dir's own test_*.py (not recursive, no *_test.py: neither suite
-has such files; pytest's default would also collect those). The summary counts
-files (one process each), not test cases: each file's own pytest line has those.
-
-Exit 0 only if every script passed.
-"""
 from __future__ import annotations
 
 import argparse
@@ -34,8 +12,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-# Scripts that cannot share the machine with others, with the reason. Empty: every
-# script binds its own temp DB / ephemeral port.
 SERIAL: dict[str, str] = {}
 
 
@@ -57,13 +33,13 @@ def _run(py: str, path: Path, timeout: float, pytest: bool = False) -> tuple[int
         p.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        p.send_signal(signal.SIGABRT)          # faulthandler dumps all thread stacks
+        p.send_signal(signal.SIGABRT)
         try:
             p.wait(timeout=10)
         except subprocess.TimeoutExpired:
             pass
         try:
-            os.killpg(p.pid, signal.SIGKILL)   # children too (servers a script started)
+            os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         p.wait()
@@ -129,7 +105,8 @@ def main() -> int:
         ex.shutdown()
         for s in ser:
             job(s)
-    except KeyboardInterrupt:   # scripts run in their own sessions: Ctrl-C must kill them
+    except KeyboardInterrupt:
+        # scripts run in their own sessions: Ctrl-C must kill them.
         ex.shutdown(wait=False, cancel_futures=True)
         for p in list(_LIVE):
             try:
@@ -138,7 +115,7 @@ def main() -> int:
                 pass
         sys.stdout.write("\n✗ interrupted\n")
         sys.stdout.flush()
-        os._exit(130)           # skip finalization: the printer thread may hold stdout
+        os._exit(130)
     pt.join()
     wall = time.monotonic() - t0
     slept = (time.time() - w0) - wall

@@ -1,5 +1,3 @@
-"""W30 rollout regressions through the CLI and the fake relay."""
-
 import json
 from email.message import Message
 from io import BytesIO
@@ -21,8 +19,6 @@ def serve_relay(serve, monkeypatch):
         try:
             return serve(fake)
         except PermissionError:
-            # Some sandboxes deny loopback binds. Keep the real CLI, Relay and
-            # wire payloads by substituting only urllib's transport.
             def open_request(request, *, timeout):
                 url = urlsplit(request.full_url)
                 body = json.loads(request.data) if request.data else None
@@ -84,7 +80,7 @@ def test_f5_crash_after_describe_post_preserves_fleet_ceiling(serve_relay, tmp_p
         with pytest.raises(Crash):
             run(url, tmp_path, *args)
     assert creator.running_target == decide.STEP
-    fake.tick(creator)  # The relay finishes billing while the driver is down.
+    fake.tick(creator)
     assert creator.spent == ceiling
 
     run(url, tmp_path, *args)
@@ -96,8 +92,6 @@ def test_f5_crash_after_describe_post_preserves_fleet_ceiling(serve_relay, tmp_p
 
 @pytest.mark.parametrize("lost", [0, 502])
 def test_f34_lost_describe_start_answer_keeps_the_reservation_in_flight(serve_relay, tmp_path, monkeypatch, lost):
-    """W30 F34: the relay accepts and bills the start, the driver sees a transport error (0) or a 5xx and runs on:
-    the reservation is never closed at zero spend; one paid start, journal spend == billed == ceiling."""
     creator = Cr("100", "alice", describable=2 * decide.STEP, per_poll=decide.STEP)
     fake = Fake([creator])
     url = serve_relay(fake)
@@ -111,7 +105,7 @@ def test_f34_lost_describe_start_answer_keeps_the_reservation_in_flight(serve_re
         response = relay_call(self, method, path, *a, **kw)
         if method == "POST" and path == f"{core.VAULT}/describe-all" and response.status == 200 and not lost_once:
             lost_once.append(path)
-            fake.tick(creator)  # the relay bills the whole step before the driver reads anything again
+            fake.tick(creator)
             self.last_status = lost
             return core.Resp(lost, {"error": "URLError"} if lost == 0 else None)
         return response
@@ -132,10 +126,6 @@ def test_f34_lost_describe_start_answer_keeps_the_reservation_in_flight(serve_re
 
 @pytest.mark.parametrize("kill", [False, True])
 def test_f40_lost_start_settles_against_its_own_baseline(serve_relay, tmp_path, monkeypatch, kill):
-    """W30 F40 (+F37 with `kill`): the start answer is lost while the relay's POST still waits on coverage before
-    claiming, so status reads idle and the recount is zero; the POST then claims and bills, and the retry gets 409.
-    The reservation settles against the ORIGINAL start's baseline: one paid start, journal spend == billed <= the
-    ceiling. With `kill` the driver dies right after the lost answer; the next run still knows the start was lost."""
     creator = Cr("100", "alice", describable=2 * decide.STEP, per_poll=decide.STEP // 2)
     fake = Fake([creator])
     url = serve_relay(fake)
@@ -143,7 +133,7 @@ def test_f40_lost_start_settles_against_its_own_baseline(serve_relay, tmp_path, 
     args = ("describe", "--live", "--ceiling-cents", str(ceiling // decide.MC_PER_CENT),
             "--item-mc", str(ITEM_MC_REAL))
     relay_call = core.Relay.call
-    held = {}   # the POST the relay is still working on: {"target": t, "recounts": n}
+    held = {}
 
     def lose_start_answer(self, method, path, *a, **kw):
         if method == "POST" and path == f"{core.VAULT}/describe-all" and not held and not fake.events:
@@ -154,7 +144,6 @@ def test_f40_lost_start_settles_against_its_own_baseline(serve_relay, tmp_path, 
             held["recounts"] += 1
         response = relay_call(self, method, path, *a, **kw)
         if held.get("target") and held["recounts"] == 1 and not fake.events:
-            # the held POST claims after the driver's first look at the lost start, and bills half a step
             fake.start(creator, held["target"])
             fake.tick(creator)
         return response
@@ -187,7 +176,7 @@ def test_f40_lost_start_settles_against_its_own_baseline(serve_relay, tmp_path, 
 def test_f6_collect_still_running_reaches_a_wait_limit(serve_relay, tmp_path, monkeypatch):
     class RunningRelay(Fake):
         def collect_tick(self, creator):
-            pass  # The healthy status endpoint always reports running.
+            pass
 
     creator = Cr("100", "alice", complete=False)
     fake = RunningRelay([creator])
@@ -220,8 +209,6 @@ def test_f6_collect_still_running_reaches_a_wait_limit(serve_relay, tmp_path, mo
 
 def test_f44_describe_still_running_pauses_at_a_wait_limit_with_the_reservation_kept(serve_relay, tmp_path,
                                                                                      monkeypatch):
-    """W30 F44: a stranded describe flag answers 200 `running: true` forever; the run stops awaiting it at a wait
-    limit and pauses (exit 3) with the sweep_start still in flight (reserved), and the next run awaits it."""
     class Stranded(Fake):
         stuck = True
 
@@ -259,9 +246,7 @@ def test_f44_describe_still_running_pauses_at_a_wait_limit_with_the_reservation_
 
 
 def test_f49_back_to_back_healthy_sweeps_never_hit_the_wait_limit(serve_relay, tmp_path, monkeypatch):
-    """W30 F49: the wait limit is per sweep: two healthy sweeps of one Creator, each under DESCRIBE_WAIT_S but
-    together over it, run to done without a `describe_still_running` pause."""
-    per_poll = 14   # 18 polls (1.5 h at 5 min) per 250-item sweep: each under 2 h, both together over it
+    per_poll = 14
     creator = Cr("100", "alice", describable=2 * decide.STEP, per_poll=per_poll)
     fake = Fake([creator])
     url = serve_relay(fake)

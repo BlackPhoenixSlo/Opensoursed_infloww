@@ -1,66 +1,19 @@
-"""service/automations/mass_premade.py — P3 `mass_premade` (timed broadcasts).
-
-The "ready-made mass messages, 2 ways" idea from library/AUTOMATIONS_SIMPLE.txt
-§"NEXT IDEAS" (P3). A thin ORCHESTRATOR over the existing send + unsend
-automations — it owns only the TIMERS, never the wire calls:
-
-  Way 1 (premade → send → resend later → delete):
-      one message with `resend_count` ≥ 1 and `resend_after_hours`. Each send
-      also re-enqueues `mass_premade` for the next resend (count-1), and each
-      send schedules its own unsend at `unsend_after_hours`.
-  Way 2 (a list of messages, send + unsend on a timer):
-      a multi-item `messages` list (resend_count = 0). Posts the first, drips
-      the rest forward at each item's `delay_minutes`, each with its own unsend.
-
-Per run it: (1) delegates the SEND+persist to `send_mass_message.run` (which
-mints the mass_runs row, writes optimistic rows, and now returns the OF
-`queue_id`), (2) if `unsend_after_hours` is set, enqueues a one-shot
-`unsend_messages` job at now+ttl carrying `{queue_id, mass_run_id}` — the SAME
-forever-window unsend the relay's Mass Online auto-unsend uses, (3) re-enqueues
-itself for the resend and/or the rest of the list.
-
-The whole queue rides in the job payload — one run does one send and hands the
-rest forward, so there's no new table. Self-registers via
-`@register("mass_premade")`. Spend/lease are handled inside send_mass_message;
-this layer only schedules.
-
-Payload shape::
-
-    {
-      "messages": [
-        {"text": "<p>..</p>", "media_files": [123], "previews": [123],
-         "price": 0, "online_only": true, "filters": {"online": 1},
-         "included_users": [..], "excluded_users": [..],
-         "user_lists": ["fans"], "list_ids": [7],
-         "unsend_after_hours": 8,                 # delete this broadcast later
-         "resend_after_hours": 24, "resend_count": 1,   # Way 1: send→resend→delete
-         "delay_minutes": 0},                     # Way 2: stagger after previous
-        {"text": "...", "unsend_after_hours": 6}
-      ],
-      "dry_run": false                            # plan only — no send, no enqueue
-    }
-"""
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime, timedelta
 
-import automation_executor as ax  # enqueue_job + _make_client
+import automation_executor as ax
 from automation_registry import register
 from automations._pools import has_media_source, pick_media, pick_text
 
 log = logging.getLogger("of-relay.automation.mass_premade")
 
-# Keys forwarded verbatim to send_mass_message; the timer keys
-# (unsend_after_hours/resend_*/delay_minutes) stay here in the orchestrator.
 _SEND_KEYS = (
     "text", "media_files", "previews", "price", "online_only", "filters",
     "included_users", "excluded_users", "user_lists", "excluded_user_lists",
     "list_ids", "exclude_list_ids", "funnel_id", "funnel_name", "funnel",
-    # Mass Online audience parity — resolved inside send_mass_message via
-    # audiences.resolve_mass_audience (recent-chat / unread include, replied /
-    # inbound exclude). The TIMER keys stay in this orchestrator, not here.
     "recent_chat_hours", "recent_chat_limit",
     "exclude_replied_hours", "exclude_inbound_hours", "exclude_last_chat_hours",
     "unread_limit",
@@ -75,7 +28,7 @@ def _pos_float(raw: object) -> float | None:
 
 def _paid(raw: object) -> bool:
     try:
-        return float(raw or 0) > 0  # a rule's price may be a number or its string
+        return float(raw or 0) > 0
     except (TypeError, ValueError):
         return False
 
@@ -89,7 +42,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if not isinstance(messages, list) or not messages:
         return {"status": "skipped", "reason": "no_messages"}
 
-    # ── dry_run: preview the whole plan, touch nothing ──────────────────
     if payload.get("dry_run"):
         plan = []
         for m in messages:
@@ -121,23 +73,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     spec = messages[0] if isinstance(messages[0], dict) else {}
     rest = messages[1:]
-    # Resend / drip follow-ons go through `ax.enqueue_followup` (they carry the
-    # rule that started the list) so switching it OFF, even mid-run, ends it. The unsend
-    # cleanup below deliberately does not — a sent mass still comes down.
 
-    # ── 1) Randomise text + media for THIS fire, then delegate the SEND ─
-    # Pick one text from the variant pool and sample media_count images from the
-    # image pool (pre-picked ids and/or a vault folder). A client is only needed
-    # to expand a folder. See automations/_pools.py.
     text = pick_text(spec)
     client = (
         await asyncio.to_thread(ax._make_client, account_id)
         if spec.get("media_folder_id") is not None else None
     )
     media = await asyncio.to_thread(pick_media, spec, client)
+    # Fail closed: a priced mass with unreadable media would go out with nothing to lock.
     if not media and has_media_source(spec) and _paid(spec.get("price")):
-        # Fail closed: a paid mass whose photos could not be read (empty folder, failed read) would go out
-        # priced with nothing to lock. This fire is skipped, nothing sent; the rule fires again next interval.
         log.warning("mass_premade: paid mass with no media (folder=%r) — not sent, draining rest",
                     spec.get("media_folder_id"))
         remaining = await _drip_rest(account_id, rest)
@@ -145,14 +89,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     from automations.send_mass_message import run as send_mass_run
     send_payload = {k: spec[k] for k in _SEND_KEYS if k in spec}
-    send_payload["text"] = text          # resolved text wins over any pool/raw
-    send_payload["media_files"] = media  # resolved sample wins over the pool
-    # Mass Messages tab attribution: a premade broadcast is not a manual send.
+    send_payload["text"] = text
+    send_payload["media_files"] = media
     send_payload["automation_kind"] = "mass_premade"
     res = await send_mass_run(account_id, send_payload, run_id=run_id)
 
     if res.get("status") not in (None, "ok"):
-        # Skipped or errored: nothing went out, so don't strand the queue.
         log.warning("mass_premade: send not sent (%s) — draining rest", res.get("reason"))
         remaining = await _drip_rest(account_id, rest)
         return {"status": res["status"], "reason": res.get("reason"), "remaining": remaining}
@@ -161,14 +103,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     mass_run_id = res.get("mass_run_id")
     now = datetime.utcnow()
 
-    # The broadcast is out: a failure from here parks the job ("may have sent",
-    # run_decide.outcome), never resent, so the legs not yet enqueued are lost.
-    # Named in the log so an operator can redo them by hand.
     unsend_job_id: int | None = None
     resend_job_id: int | None = None
     remaining: int | None = None
     try:
-        # ── 2) Schedule the unsend (forever-window mass delete) ─────────────
         unsend_at_iso: str | None = None
         unsend_after = _pos_float(spec.get("unsend_after_hours"))
         if unsend_after and queue_id is not None:
@@ -182,7 +120,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         elif unsend_after and queue_id is None:
             log.warning("mass_premade: unsend_after set but OF returned no queue id — no auto-unsend")
 
-        # ── 3a) Way 1 resend: re-enqueue this message with count-1 ──────────
         resend_at_iso: str | None = None
         resend_count = int(spec.get("resend_count") or 0)
         resend_after = _pos_float(spec.get("resend_after_hours"))
@@ -196,8 +133,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             )
             resend_at_iso = resend_at.isoformat() + "Z"
 
-        # ── 3b) Way 2 drip: hand the rest of the list forward ───────────────
         remaining = await _drip_rest(account_id, rest)
+    # The broadcast is out: a failure from here parks the job, never resent, so unenqueued legs are lost.
     except BaseException:
         log.warning("mass_premade_followons_dropped account=%s run_id=%s mass_run=%s "
                     "unsend=%s resend=%s rest=%s (unsend %sh, resends %s, rest %d message(s); "
@@ -222,8 +159,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
 
 async def _drip_rest(account_id: str, rest: list) -> int:
-    """Re-enqueue `mass_premade` with the remaining list at now+delay_minutes (the
-    next item's stagger). Returns the count handed forward (0 = list done)."""
     if not rest:
         return 0
     head = rest[0] if isinstance(rest[0], dict) else {}
@@ -234,4 +169,4 @@ async def _drip_rest(account_id: str, rest: list) -> int:
         payload={"messages": rest},
         run_at=run_at,
     )
-    return len(rest) if job_id is not None else 0  # None: rule went OFF mid-run
+    return len(rest) if job_id is not None else 0

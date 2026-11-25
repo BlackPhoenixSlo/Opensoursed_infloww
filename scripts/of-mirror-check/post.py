@@ -1,34 +1,3 @@
-"""New post (app/lib/ofMirrorPost.ts): Post sends exactly one POST /api/of/v2/posts for the selected Creator.
-
-Mocks the login (as writes.py) and the relay, scope `model:1` (as data.py); every unmocked /api/** returns [] and any
-request to a host other than localhost is aborted and fails the check. Checks in the frame:
-Run 1: Post is disabled at first; typing "Synthetic post" enables it; pressing it sends exactly one
-POST /api/of/v2/posts {"text":"Synthetic post","media_files":[],"price":0} with X-Account-Id: 1, stays on
-/of-manager/new-post with the composer empty and OF's toast "Your post has been published", and the draft key
-(sessionStorage oi:new-post:1) is gone.
-Run 2 (schedule): type the text, open Schedule, move to tomorrow, click it, type "6:30 pm" and press Next: back on the
-composer the text is restored and the "Scheduled for <date> 6:30 PM · Clear" summary shows; Schedule then Cancel leaves
-the summary unchanged; Tag other creators lists the mocked Relay's "Alpha One" (901) and "Beta Two" (902) from one
-GET /api/of/v2/posts/tagged-friend-users?limit=50&offset=0 (X-Account-Id: 1) and no "List <n>" example text; checking
-Alpha One and pressing Close shows "Tagged: Alpha One" in the summary; Post sends exactly one POST /api/of/v2/posts with
-posted_at = Python's datetime(tomorrow, 18:30).astimezone().isoformat() and tagged_users [901], and stays with the toast
-"Your post is scheduled for …".
-Tag list failure: with tagged-friend-users answering 502, the tag dialog shows no rows (never the captured examples); the
-following Post carries no tagged_users.
-Validation: Next with today at 12:00 am (already past) sends nothing, stores no schedule and shows the red note.
-Save for Later (marked wired) sends nothing, stores save_for_later in the draft and returns to the composer.
-Extras: new-post/state-labels lists the mocked Relay's "Alpha label" (11) from GET /api/of/v2/labels; checking it and
-typing two options on new-post/state-poll send nothing, add label_ids [11] and the poll to the draft and show no note;
-the poll's "7 days" piece opens new-post/state-expiration titled "POLL DURATION", whose "3 days" tab and Save return to
-the poll with the piece at "3 days" and the options kept; New post (loaded afresh) names the label in its summary
-("Labels: Alpha label"); Post then sends exactly one POST /api/of/v2/posts with
-label_ids [11], voting_type 1, voting_options ["Yes","No"] and voting_due 3, and stays with the toast.
-Error: with the mock answering 502, the page shows the red "Could not post: <relay text>" note, Post is enabled again,
-the draft is kept and the page stays on New post.
-No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
-77e5df419; phase_check.py's one_creator checks it).
-Screenshots: /tmp/of-mirror-shots/inapp-post-*.png. Exit 1 on a failed check.
-"""
 import json, os, sys
 from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
@@ -48,12 +17,10 @@ TAGS="/api/of/v2/posts/tagged-friend-users"
 TAG_ROW="label.b-rows-lists__item"
 LABELS="/api/of/v2/labels"
 LABEL_ITEMS=[{"id":11,"name":"Alpha label","postsCount":3}]
-# the poll panel's "Poll · 7 days" piece and its value
 PIECE=".b-make-post__voting .b-post-piece"
 PIECE_VALUE=f"{PIECE} .b-post-piece__value"
 TAG_ITEMS=[{"id":901,"name":"Alpha One","type":"user","user":{"id":901,"name":"Alpha One","username":"alphaone"}},
            {"id":902,"name":"Beta Two","type":"user","user":{"id":902,"name":"Beta Two","username":"betatwo"}}]
-# the tag dialog's shown rows: [data-oi-user, name, subline]
 ROWS="[...document.querySelectorAll('label.b-rows-lists__item')].filter(r => r.getClientRects().length).map(r => [r.getAttribute('data-oi-user'), r.querySelector('.b-rows-lists__item__name').textContent.trim(), r.querySelector('.b-rows-lists__item__subline').textContent.trim()])"
 EXAMPLE_TEXT="/\\bList \\d+/.test(document.querySelector('.b-rows-lists').innerText)"
 NEXT=".vdatetime-popup__actions__button--confirm button"
@@ -94,13 +61,13 @@ def session(b, scope_js, post_status=200, tags_status=200):
                 body={"id":1} if post_status==200 else {"detail":RELAY_ERROR}
                 return route.fulfill(status=post_status, content_type="application/json", body=json.dumps(body))
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     def open_new_post(page="index"):
         pg.goto(f"{BASE}{M}/new-post" + ("" if page=="index" else f"/{page}"), wait_until="load", timeout=90000); pg.wait_for_timeout(2000)
@@ -109,16 +76,14 @@ def session(b, scope_js, post_status=200, tags_status=200):
         return frame(pg, page)
     return pg, sent, tag_gets, errs, open_new_post
 def frame(pg, page="index"):
-    """The loaded new-post/<page> frame, once useOfPost has bound it."""
     for _ in range(60):
         fr=[f for f in pg.frames if f.url.endswith(f"/of-mirror/pages/new-post/{page}.html")]
         if fr and fr[0].evaluate("document.readyState")=="complete":
-            pg.wait_for_timeout(500)  # useOfPost binds on the frame's load
+            pg.wait_for_timeout(500)
             return fr[0]
         pg.wait_for_timeout(250)
     failures.append(f"new-post/{page}: NO IFRAME (url {pg.url})"); return None
 def pick(fr, day, time):
-    """In the schedule dialog: show day's month with the next arrow, click the day, type the time."""
     for _ in range(3):
         if fr.locator(".vdatetime-calendar__current--month").inner_text().strip()==day.strftime("%B %Y"): break
         fr.locator(".vdatetime-calendar__navigation--next").click()
@@ -129,13 +94,11 @@ def wait_url(pg, path):
         if urlparse(pg.url).path==path: return
         pg.wait_for_timeout(250)
 def wait_toast(pg, fr):
-    """OF's toast text once it shows (None after 10s)."""
     for _ in range(40):
         if (t:=fr.evaluate(TOAST)): return t
         pg.wait_for_timeout(250)
     return None
 def console_ok(label, errs, failed_loads=0):
-    # the Error case's 502 is logged by the browser as one failed resource load; only there, and exactly once
     loads=[e for e in errs if "Failed to load resource" in e and "502" in e]
     if len(loads)!=failed_loads: failures.append(f"{label}: {len(loads)} failed 502 load(s), expected {failed_loads}")
     errs=[e for e in errs if e not in loads]
@@ -145,7 +108,6 @@ WANT={"text":"Synthetic post","media_files":[],"price":0}
 with sync_playwright() as p:
     b=p.chromium.launch()
 
-    # Run 1: a text-only post for Creator 1.
     pg, sent, tag_gets, errs, open_new_post=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post()
     if fr:
@@ -154,7 +116,7 @@ with sync_playwright() as p:
         check("run 1: typing enables Post", fr.locator(POST).is_enabled(), True)
         check("run 1: the placeholder is gone", fr.locator(EDITOR).get_attribute("data-is-empty"), "false")
         check("run 1: the draft is kept for Creator 1", json.loads(pg.evaluate(DRAFT) or "{}").get("text"), "Synthetic post")
-        pg.wait_for_timeout(600)  # OF's own placeholder and button transitions
+        pg.wait_for_timeout(600)
         pg.screenshot(path=f"{SHOTS}/inapp-post-typed.png")
         fr.locator(POST).click()
         check("run 1: OF's toast says the post is published", wait_toast(pg, fr), POSTED)
@@ -166,7 +128,6 @@ with sync_playwright() as p:
     console_ok("run 1", errs)
     pg.context.close()
 
-    # Run 2: a post scheduled for tomorrow 6:30 pm.
     pg, sent, tag_gets, errs, open_new_post=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post()
     if fr:
@@ -229,7 +190,6 @@ with sync_playwright() as p:
     console_ok("run 2", errs)
     pg.context.close()
 
-    # Validation and Save for Later, in the schedule dialog.
     pg, sent, tag_gets, errs, open_new_post=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post("state-schedule")
     if fr:
@@ -252,7 +212,6 @@ with sync_playwright() as p:
     console_ok("validation", errs)
     pg.context.close()
 
-    # Extras: a label and a poll, then Post.
     pg, sent, tag_gets, errs, open_new_post=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     fr=open_new_post("state-labels")
     if fr:
@@ -301,7 +260,6 @@ with sync_playwright() as p:
     console_ok("extras", errs)
     pg.context.close()
 
-    # Tag list failure: tagged-friend-users answers 502.
     pg, sent, tag_gets, errs, open_new_post=session(b, "localStorage.setItem('chatterly:scope','model:1')", tags_status=502)
     fr=open_new_post()
     if fr:
@@ -327,7 +285,6 @@ with sync_playwright() as p:
     console_ok("tag list failure", errs, failed_loads=1)
     pg.context.close()
 
-    # Error: the relay answers 502.
     pg, sent, tag_gets, errs, open_new_post=session(b, "localStorage.setItem('chatterly:scope','model:1')", post_status=502)
     fr=open_new_post()
     if fr:

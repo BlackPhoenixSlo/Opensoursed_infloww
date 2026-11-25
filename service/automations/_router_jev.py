@@ -1,57 +1,3 @@
-"""automations/_router_jev.py — Full AI Chat's Router questions and the one Jev call.
-
-Not a stream: it registers no kind and holds no outbound primitive (ADR-0033).
-On every Turn the shadow runner (`full_ai_chat`) asks Jev (TypeSafe's System
-One model) every Router question in ONE request; the pure Route table
-(`full_ai_decide.decide_turn`) maps the answers to a Route (ADR-0032). Every
-question's wording, its criteria, the thresholds, the `intensity` levels and
-the model pin live in this module and nowhere else, so a wording change is a
-data edit the owner can audit (spec story 21), and `QUESTION_VERSION` (a
-digest of all of them and of the state's shape) goes on every Decision row
-(story 22).
-
-Wording: the strings the thresholds were measured on, letter for letter
-(`.scratch/full-ai-chat/research/jevprobe/probe.py`, the R7 freeze in
-`.scratch/full-ai-chat/DECISIONS.md`): `wants_content`, `declines_buying` and
-`says_yes_to_offer` its B variant, `complains_now` its `complains_purchase` A,
-every other question and the `intensity` Score its A; `gif_fits` (not probed
-yet, ticket 23) from `.scratch/full-ai-chat/OWNER-REVIEW-router.md` item 12.
-The owner approves that review, which shows these strings (D28). Request
-shape: the probe's.
-
-  - `QUESTIONS`, `THRESHOLDS`, `INTENSITY`, `STATE_VERSION`,
-    `QUESTION_VERSION` (`question_version()`).
-  - Test + live only, never Shadow (03b): `TEST_CHOICES` (`asks_subject`, `asks_format`; with config
-    `sext_scene` also `scene_stage`, `offer_level`), `TEST_NOULS` (DRAFT `counter_offer`,
-    `offer_moment`; with `sext_scene` also `scene_on`, `scene_offer`: the `SCENE` set, which
-    reads the `SCENE_STATE_KEYS` `full_ai_test.fetch` adds), `DRAFT`, `TEST_THRESHOLDS`,
-    `question_version("test")`, `_questions("test", scene, spacing)` (03d `TEST_SPACING`,
-    `SPACING_STATE_KEYS`, config `sell_spacing`; `TEST_LIKES`, `LIKES_STATE_KEYS`, config
-    `he_likes`; `chat_tease` in `TEASE`, `TEASE_STATE_KEYS`, config `chat_tease`; `TEST_IMPLIED`,
-    config `ask_implied`; `TEST_NEW_ONLY`, no config key); Shadow's request and
-    digest are unchanged (spec 03b story 66).
-  - `fired(answers, mode="shadow")`: the ids at or above their threshold.
-  - `choice_of(choices, qid)`: a test-Mode Choice's argmax; tie or none ->
-    `CHOICE_DEFAULT`; `choice_or_none` the same with None for the default.
-  - `line_text(m)`: one stored message as a person reads it (`MEDIA_ONLY`,
-    `GIF_ONLY` with no text).
-  - `thread`, `her_last_line`, `last_purchase`, `pending_offer`: the rest of
-    the state in the probe's words, from stored rows (pure).
-  - `state(...)`: the Jev state (spec › Contracts).
-  - `ask(state, account_id, mode="shadow")`: one request (`_questions(mode)`);
-    `Answers`, or `GateError` on any failure (no key, no SDK, timeout, HTTP
-    error, a missing or out-of-range answer or Score). A failed call is an
-    error, never a "no". In test Mode `Answers.answers` also holds the
-    `TEST_NOULS` P(yes) (`fired(answers, "test")` adds them at their
-    `TEST_THRESHOLDS`, Shadow never) and `Answers.choices` the `TEST_CHOICES`
-    probabilities (the Sell executor reads them through `choice_of`);
-    Shadow's `choices` is `{}`.
-
-The key is the Creator's agency's own TypeSafe key, else the deployment's
-`TYPESAFE_API_KEY` (`tenant_keys.typesafe_key_for`); `TYPESAFE_BASE_URL` (the
-SDK's own env) moves the endpoint. `_client` is the tests' fake seam over the
-shared transport (`_jev.client`).
-"""
 from __future__ import annotations
 
 import hashlib
@@ -61,35 +7,26 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from automations import _jev
 from automations.full_ai_mode import full
-from of_shapes import giphy_dm_id   # stdlib-only OF payload-shape reader
+from of_shapes import giphy_dm_id
 
-if TYPE_CHECKING:  # annotation only: no DB import at runtime
+if TYPE_CHECKING:
     from db.models import Message, Transaction
 
-# A versioned id, not `jev-latest`: the thresholds were probed on it.
 MODEL = "jev-1.14.0"
-# The SDK's RetryPolicy.timeout: per HTTP operation, each attempt (retries come on top).
 TIMEOUT_S = 10.0
 MAX_RETRIES = 1
-# `ask`'s wall-clock cap for every caller, Shadow included: every attempt at its timeout (rwl-a N6).
 WALL_S = TIMEOUT_S * (1 + MAX_RETRIES)
-# Chat lines before his Turn that Jev reads as `thread` (probe.py).
 THREAD_LINES = 12
-# The one named D32 exception in PR1 (spec › Contracts): past this many days
-# his last purchase reads as none, as in the probe the thresholds were measured on.
 PURCHASE_DAYS = 7
 PURCHASE_KINDS = ("tip", "ppv_message", "ppv_post")
-# Bump by hand on any change to how stored rows map to the Jev state (`thread`,
-# `her_last_line`, `last_purchase`, `pending_offer`, `state`, `line_text`'s
-# words, `full_ai_chat.build_state` and the reads feeding it).
+# Bump by hand on any change to how stored rows map to the Jev state.
 STATE_VERSION = 1
 
 
 _q = _jev.q
 
 
-# The Nouls, by id, in the owner review's order (items 1-10, 12). Ids are for
-# code; Jev reads only the wording.
+# Wording is what the thresholds were measured on, letter for letter; a reword needs a re-probe.
 QUESTIONS: dict[str, dict[str, Any]] = {
     "promo": _q(
         "Is `fan_new_messages` an advertisement for someone else's page or account?",
@@ -127,6 +64,7 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "asks where her content is or how to unlock it",
         "He only compliments her, says what he would do to her, asks what kind of content she makes, "
         "or offers to send her his own pics"),
+    # Routes nothing (owner: ignore "broke"); only cues the Writer's joke.
     "declines_buying": _q(
         "In `fan_new_messages`, does the fan say he will not pay or cannot pay her for something?",
         "He says no to buying, that he has no money or cannot afford it, that it costs too much or is "
@@ -144,9 +82,6 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "sexual way",
         "He talks about everyday things, compliments her without anything sexual, or asks a "
         "plain question"),
-    # ASSUMPTION: `gif_fits` (no probe string yet) is the review's item 12 in
-    # the probe's form (first letter capitalised, no final period), as every
-    # measured line is. Overturned by ticket 23's measured wording.
     "gif_fits": _q(
         "Would a cute reaction GIF from her fit as part of this reply?",
         "Light, playful or warm moment; he greets her, jokes, flirts or reacts with emotion, and "
@@ -155,16 +90,12 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "reacted badly to her GIFs"),
 }
 
-# At or above its threshold a question fires (the R7 freeze). `gif_fits` is a
-# DRAFT, asked and kept, never read by the Route table (story 24). `declines_buying` routes
-# nothing (owner 2026-11-15: ignore "broke"); at 0.95 in every Mode it only cues the Writer's joke.
 THRESHOLDS: dict[str, float] = {
     "promo": 0.7, "says_under_18": 0.7, "complains_now": 0.5, "asks_if_ai": 0.7,
     "stop": 0.6, "price": 0.7, "wants_content": 0.7, "declines_buying": 0.95,
     "says_yes_to_offer": 0.7, "sexual_now": 0.7, "gif_fits": 0.6,
 }
 
-# The Score that sets Heat: its levels 0-4, in order (item 11).
 INTENSITY: dict[str, Any] = {
     "instructions": "How sexual is what the fan writes in `fan_new_messages`?",
     "criteria": [
@@ -176,14 +107,7 @@ INTENSITY: dict[str, Any] = {
     ],
 }
 
-# ── Test + live only (03b) ────────────────────────────────────────────────
-# Asked in test and live Mode (`full_ai_mode.full`), in its one request; Shadow never: its
-# request, `QUESTIONS`, `THRESHOLDS` and `QUESTION_VERSION` stay Phase 01's. Wording is new
-# (no old question existed), docs/prompts NEW-118..121; not probed yet.
 
-# What he asks to see and in which format; the Sell executor's `Ask` options
-# (ticket 10 r3), in its order. ASSUMPTION: wording new (rung 5), overturned by
-# the owner's wording.
 TEST_CHOICES: dict[str, dict[str, Any]] = {
     "asks_subject": {
         "instructions": "In `fan_new_messages`, what does the fan ask to see of her? Pick anything "
@@ -212,7 +136,6 @@ TEST_CHOICES: dict[str, dict[str, Any]] = {
             "any": "He does not say, or either is fine",
         },
     },
-    # Sext scene (config `sext_scene`, owner 2026-11-14), docs/prompts NEW-133.
     "scene_stage": {
         "instructions": "They are sexting. How far along is it, counting `thread` and "
                         "`fan_new_messages` together? `scene` says how far it had got before his "
@@ -239,24 +162,15 @@ TEST_CHOICES: dict[str, dict[str, Any]] = {
         },
     },
 }
-# `choice_of`'s answer on a tie at the top, an unoffered top label or no answer. `offer_level`'s
-# "any" is a default only, never an offered label (the Sell executor's heat path).
 CHOICE_DEFAULT = {"asks_subject": "anything", "asks_format": "any", "scene_stage": "building",
                   "offer_level": "any"}
 
-# DRAFT Nouls (haggle, unasked offer): asked and kept in test Mode, read by
-# nothing until ticket 47, and then only in a `draft_questions` window.
 TEST_NOULS: dict[str, dict[str, Any]] = {
     "counter_offer": _q(
         "In `fan_new_messages`, does the fan ask her for a lower price or offer to pay less?",
         "He names a lower amount, asks for a discount or a deal, or says he would buy it for less",
         "He accepts the price, says no without bargaining, only asks what it costs, or does not "
         "mention the price"),
-    # Offer details (spec phase-01-full-ai-offer-details A): asked on every test + live Turn (not
-    # DRAFT, SCENE or TEASE); read by the Route table only with `Facts.offer_details`. Reads his new
-    # messages only (NEW-158's lesson). "The only thing he wants" + its "no" keep a mixed line (a
-    # different item, a deal, a yes), a pre-offer price ask and a bare "ok" out. docs/prompts
-    # NEW-165; probed 2026-11-17 (the F replay's stored states, see TEST_THRESHOLDS).
     "asks_offer_details": _q(
         "In `fan_new_messages`, is a factual question about content she already offered or sent "
         "him the only thing the fan wants: what is in it, whether it is a photo or a video, how "
@@ -274,7 +188,6 @@ TEST_NOULS: dict[str, dict[str, Any]] = {
         "and nothing shows he is upset or cannot pay",
         "He is upset or complaining, says he cannot pay, asks something serious, or the chat is "
         "only small talk so far"),
-    # Sext scene (config `sext_scene`): gated by that flag, not by `draft_questions` (not DRAFT).
     "scene_on": _q(
         "Is a sexual chat between her and the fan going on right now, counting `thread` and "
         "`fan_new_messages` together?",
@@ -286,9 +199,6 @@ TEST_NOULS: dict[str, dict[str, Any]] = {
     "scene_offer": _q(
         "They are sexting. Is this a good moment for her to send him a locked photo or video as the "
         "next step of it?",
-        # DRAFT, NEW-133 updated (owner 2026-11-14 "we may not need off by default but still
-        # improve"): the no-Spacing wording (`sell_spacing` off); your-host.example.com bought 18%
-        # back-to-back, 42-44% with 3+ of his lines between.
         "He is turned on and adding to the scene himself (he says what he wants, what he would do "
         "to her, or asks for more), they have each sent several sexting messages, no locked message "
         "of hers is waiting unbought in `thread`, and he has written three or more lines since the "
@@ -297,9 +207,6 @@ TEST_NOULS: dict[str, dict[str, Any]] = {
         "of hers in `thread` is still not bought, she sent or offered him something in one of her "
         "last two messages, he has written fewer than three lines since her last locked message, "
         "his lines are getting shorter or cooler, or he just came"),
-    # Chat tease (config `chat_tease`, owner 2026-11-14 "Escalating teases during normal chat"):
-    # gated by that flag (`TEASE`), not by `draft_questions`. Reads the `TEASE_STATE_KEYS` and the
-    # Spacing keys `full_ai_test.fetch` adds with the flag. DRAFT docs/prompts NEW-149.
     "chat_tease": _q(
         "They are chatting, not sexting, and he did not ask to see anything. Is this a good moment "
         "for her to slip a teasing photo of herself in with her normal reply?",
@@ -312,38 +219,17 @@ TEST_NOULS: dict[str, dict[str, Any]] = {
         "he did not ask for (`unasked_pieces_this_sitting` is 3 or more)"),
 }
 
-# Asked and stored, never read by the Route table before the owner OKs them.
 DRAFT = frozenset({"gif_fits", "counter_offer", "offer_moment"})
-# The DRAFT Nouls' thresholds, read only by `fired(answers, "test")`; the Route table
-# counts them only when `draft_on` (ticket 47). ASSUMPTION: 0.7 is unprobed (no measurement
-# exists; THRESHOLDS' usual value, rung 3); overturned by a measured threshold.
-# ASSUMPTION: `scene_on` / `scene_offer` at 0.7 are unprobed too (same rung). Overturned by a
-# measured threshold.
-# Ask cut-off (03d, owner 2026-11-14): `wants_content` at 0.65 in test Mode; `fired` reads it in
-# place of Shadow's 0.7 there only, so Shadow's stays.
-# ASSUMPTION: `chat_tease` at 0.7 is unprobed (same rung). Overturned by a measured threshold.
-# `asks_offer_details` at 0.6: measured 2026-11-17 on the offer-details F replay's stored states
-# plus hand-written lines (59 states, one Creator): factual questions 0.73-0.97 (one vague
-# "what do i get for that" 0.50), every other line <= 0.50 (mixed lines 0.08-0.22), bar "huh? i
-# asked you a question" 0.76-0.84, which repeats the question and should be answered. Small sample.
+# asks_offer_details 0.6 measured 2026-11-17: factual questions scored 0.73-0.97, every other line <=0.50 (59 states, small sample); wants_content 0.65 here only.
 TEST_THRESHOLDS: dict[str, float] = {"counter_offer": 0.7, "offer_moment": 0.7,
                                      "scene_on": 0.7, "scene_offer": 0.7, "wants_content": 0.65,
                                      "chat_tease": 0.7, "asks_offer_details": 0.6}
-# The sext scene's questions (in `TEST_NOULS` / `TEST_CHOICES`): asked in test and live Mode (`full`) with
-# config `sext_scene` (`_questions(mode, scene)`); off, the request is the pre-scene one. They
-# read two state keys only `full_ai_test.fetch` adds with the flag (`SCENE_STATE_KEYS`).
 SCENE = frozenset({"scene_on", "scene_offer", "scene_stage", "offer_level"})
 SCENE_STATE_KEYS = ("purchases", "scene")
-# Chat tease (config `chat_tease`): asked in test and live Mode (`full`) with the flag (`_questions(..., tease)`);
-# off, the request is the one before it. `full_ai_test.fetch` adds these keys (`chat_tease_of`)
-# and the Spacing keys with the flag. The tease's price is a second Jev (`_price_jev.ask_tease`).
 TEASE = frozenset({"chat_tease"})
 TEASE_STATE_KEYS = ("his_lines_this_sitting", "teases_sent")
 
-# Spacing (03d, config `sell_spacing`, owner 2026-11-14): with the flag, `offer_moment` and
-# `scene_offer` take this wording, which reads the three `SPACING_STATE_KEYS` `full_ai_test.fetch`
-# adds (`spacing_of`). Jev applies the rule (ADR 0032); an ask never reads them. docs/prompts
-# NEW-142 / NEW-143.
+# Measured: your-host.example.com bought 18% back-to-back, 42-44% with 3+ of his lines between.
 TEST_SPACING: dict[str, dict[str, Any]] = {
     "offer_moment": _q(
         "Would this be a good moment for her to offer him some of her content to buy, even "
@@ -371,9 +257,6 @@ TEST_SPACING: dict[str, dict[str, Any]] = {
 }
 SPACING_STATE_KEYS = ("his_lines_since_last_piece", "pieces_this_sitting", "unasked_pieces_this_sitting")
 
-# He likes (config `he_likes`, owner 2026-11-14): with the flag, `asks_subject` takes this wording
-# (criteria unchanged), which reads the `LIKES_STATE_KEYS` `full_ai_test.fetch` adds (the fold's
-# `fetishes`). Jev's Choice decides (ADR 0032). docs/prompts NEW-118 (DRAFT variant).
 TEST_LIKES: dict[str, dict[str, Any]] = {
     "asks_subject": {
         "instructions": "What should she show him? First what he asks to see in `fan_new_messages`. "
@@ -385,9 +268,6 @@ TEST_LIKES: dict[str, dict[str, Any]] = {
 }
 LIKES_STATE_KEYS = ("he_likes",)
 
-# Implied asks (config `ask_implied`, owner 2026-11-14 "may you send me somthing fun" routed chat):
-# with the flag, `wants_content` (a Shadow Noul, `QUESTIONS`) takes this wider wording in test
-# Mode only; Shadow's `QUESTIONS["wants_content"]` is untouched. DRAFT docs/prompts NEW-150.
 TEST_IMPLIED: dict[str, dict[str, Any]] = {
     "wants_content": _q(
         "In `fan_new_messages`, does the fan say he wants to see or get her photos, videos or body "
@@ -402,11 +282,7 @@ TEST_IMPLIED: dict[str, dict[str, Any]] = {
         "or says please about something other than seeing her"),
 }
 
-# New messages only (owner 2026-11-15, first live chat: one "are you a real person or a bot?" kept
-# `asks_if_ai` at .96-.98 on his next four Turns, "can you send me some pics?" and a sext line among
-# them, so every one routed ai_dare and she repeated the brush-off): Shadow's `asks_if_ai`
-# (`QUESTIONS`) names no state key, so Jev reads the question back out of `thread`. Test + live take
-# this wording, always (no config key); Shadow's is untouched. docs/prompts NEW-158; not probed.
+# New messages only: one 'are you a bot?' kept asks_if_ai at .96-.98 on his next four Turns, so each routed ai_dare and repeated the brush-off.
 TEST_NEW_ONLY: dict[str, dict[str, Any]] = {
     "asks_if_ai": _q(
         "In `fan_new_messages`, does the fan ask or suggest that she is a bot or an AI rather than a "
@@ -419,12 +295,6 @@ TEST_NEW_ONLY: dict[str, dict[str, Any]] = {
 
 
 def question_version(mode: str = "shadow") -> str:
-    """A short digest of what changes what Jev answers: the model, the wording,
-    thresholds and levels, and the state's shape (`STATE_VERSION`, the
-    `THREAD_LINES`, `PURCHASE_DAYS` and `PURCHASE_KINDS` it reads). For any
-    Mode but `test` exactly Phase 01's digest; `test` adds `TEST_CHOICES`,
-    `TEST_NOULS`, `TEST_THRESHOLDS`, `DRAFT`, the scene, Spacing, He likes, Chat tease, Implied
-    asks and New only sets (what test rows record)."""
     d: dict[str, Any] = {
         "model": MODEL, "questions": QUESTIONS, "thresholds": THRESHOLDS, "intensity": INTENSITY,
         "state_version": STATE_VERSION, "thread_lines": THREAD_LINES,
@@ -445,23 +315,19 @@ QUESTION_VERSION = question_version()
 
 
 class GateError(Exception):
-    """Jev could not judge (no key, no SDK, timeout, an HTTP error, a missing or
-    out-of-range answer or Score). Never read as an answer."""
+    pass
 
 
 class Answers(NamedTuple):
-    answers: dict[str, float]       # Noul id -> P(yes), as Jev gave it (+ `TEST_NOULS` in test Mode)
-    intensity: float                # the Score, 0..4
-    intensity_p: dict[str, float]   # level -> probability
-    model: str | None               # the model id Jev reports
-    ms: int                         # the call's wall time
-    choices: dict[str, dict[str, float]]   # test Mode: `TEST_CHOICES` id -> label -> P; Shadow {}
+    answers: dict[str, float]
+    intensity: float
+    intensity_p: dict[str, float]
+    model: str | None
+    ms: int
+    choices: dict[str, dict[str, float]]
 
 
 def fired(answers: dict[str, float], mode: str = "shadow") -> frozenset[str]:
-    """The question ids at or above their threshold. Shadow (any Mode but `test`) walks
-    `THRESHOLDS` only; in `test` a `TEST_THRESHOLDS` value replaces a `THRESHOLDS` one, and each
-    other `TEST_THRESHOLDS` id present in `answers` is added."""
     test = TEST_THRESHOLDS if full(mode) else {}
     ids = {q for q, t in THRESHOLDS.items() if answers[q] >= test.get(q, t)}
     ids |= {q for q, t in test.items() if q not in THRESHOLDS and q in answers and answers[q] >= t}
@@ -469,15 +335,10 @@ def fired(answers: dict[str, float], mode: str = "shadow") -> frozenset[str]:
 
 
 def choice_of(choices: dict[str, dict[str, float]], qid: str) -> str:
-    """A test-Mode Choice's answer from `choices` (Choice id -> label -> probability, as
-    Jev gave it): the label with the highest probability; a tie at the top, a top label
-    the Choice never offered, or no answer is `CHOICE_DEFAULT` (anything / any). Pure."""
     return choice_or_none(choices, qid) or CHOICE_DEFAULT[qid]
 
 
 def choice_or_none(choices: dict[str, dict[str, float]] | None, qid: str) -> str | None:
-    """`choice_of` without its default: None on a tie at the top, an unoffered top label or no
-    answer (the scene fold keeps its saved stage then). Pure."""
     probs = (choices or {}).get(qid) or {}
     top = max(probs.values(), default=None)
     best = [k for k, p in probs.items() if p == top]
@@ -486,14 +347,10 @@ def choice_or_none(choices: dict[str, dict[str, float]] | None, qid: str) -> str
     return None
 
 
-# How a message with no text reads. His media DM and every word below but
-# `GIF_ONLY` are the probe's (probe.py:61-115), letter for letter: the
-# thresholds were measured on them. A Giphy DM, which OF sends with `media: []`
-# and `mediaCount: 0` (of_shapes.giphy_dm_id), is new words in `MEDIA_ONLY`'s shape.
-MEDIA_ONLY = _jev.MEDIA_ONLY          # his photo or video
+MEDIA_ONLY = _jev.MEDIA_ONLY
 GIF_ONLY = "[sent a GIF]"
 HER_MEDIA = "[photo or video]"
-LOCKED = "[locked message]"           # her priced message with no words
+LOCKED = "[locked message]"
 REACTION = {"image_reply": "[she sent him a pic back]", "tip_reward": "[she sent him his tip reward]"}
 
 
@@ -505,10 +362,6 @@ def _giphy(raw_json: str | None) -> bool:
 
 
 def line_text(m: Message) -> str:
-    """A stored message as a person reads it (OF bodies are HTML), untruncated
-    (probe.py `text`); with no text, `MEDIA_ONLY` (hers `HER_MEDIA`) or `GIF_ONLY`.
-    His photo read for this Turn (`read_photos`) adds Auto-reply's tag `[he sent: <desc>]`
-    (`_bubbles._history_text`), alone when he wrote nothing."""
     t = _jev.text(m.body)
     desc = getattr(m, "photo_read", None)
     if desc:
@@ -522,8 +375,6 @@ def line_text(m: Message) -> str:
 
 
 def read_photos(rows: list, on: bool) -> None:
-    """Switch the photo tag for this Turn's rows: his described media reads `[he sent: …]` in
-    `line_text` only when the side's `describe_fan_photos` is on (off: every line as before)."""
     for m in rows:
         m.photo_read = (getattr(m, "image_desc", None) or None) if on and m.direction == "in" \
             and m.media_count else None
@@ -554,10 +405,6 @@ def _ppv(m: Message) -> str | None:
 
 
 def thread(rows: list[Message], t0: datetime) -> list[dict[str, Any]]:
-    """The chat lines `rows` (stored messages, oldest first) as Jev reads them,
-    each `when` before `t0` (his Turn's first message) and, on her priced
-    message, its `ppv` note; a line with nothing to read is left out
-    (probe.py `build_state`)."""
     out = []
     for m in rows:
         her = m.direction == "out"
@@ -577,8 +424,6 @@ def thread(rows: list[Message], t0: datetime) -> list[dict[str, Any]]:
 
 
 def her_last_line(rows: list[Message]) -> str:
-    """Her newest line in `rows` with words or a price, with its `ppv` note, else
-    "none" (probe.py `build_state`)."""
     outs = [m for m in rows if m.direction == "out" and (line_text(m) or m.price_cents)]
     if not outs:
         return "none"
@@ -597,9 +442,6 @@ def _ago(minutes: float) -> str:
 
 
 def last_purchase(tx: Transaction | None, t0: datetime) -> str:
-    """His last purchase `tx` (a `PURCHASE_KINDS` row), aged from `t0` (his
-    Turn's first message; one inside his Turn reads 0 minutes), else
-    "none in the last 7 days" (probe.py `build_state`)."""
     minutes = max(0.0, _minutes(tx.occurred_at, t0)) if tx is not None else None
     if minutes is None or minutes > PURCHASE_DAYS * 1440:
         return "none in the last 7 days"
@@ -608,8 +450,6 @@ def last_purchase(tx: Transaction | None, t0: datetime) -> str:
 
 
 def pending_offer(m: Message | None) -> str:
-    """The Pending offer `m` (her priced, unbought message), with its caption,
-    else "none" (probe.py `build_state`)."""
     if m is None:
         return "none"
     cap = line_text(m)
@@ -630,7 +470,6 @@ def state(fan_messages: list[str], thread: list[dict[str, Any]], her_last_line: 
 
 
 def _client(key: str) -> Any:
-    """One async client per event loop and key (`_jev.client`)."""
     return _jev.client(key, MODEL, TIMEOUT_S, MAX_RETRIES)
 
 
@@ -640,14 +479,6 @@ def _test_ids(src: dict[str, Any], scene: bool, tease: bool = False) -> list[str
 
 def _questions(mode: str = "shadow", scene: bool = False, spacing: bool = False,
                likes: bool = False, tease: bool = False, implied: bool = False) -> dict[str, Any]:
-    """The request's questions: every `QUESTIONS` Noul and the `intensity` Score; in
-    test Mode also the `TEST_NOULS` and the `TEST_CHOICES` (built as `_info_jev`'s
-    Choice), after them, the `SCENE` ones only with `scene` (config `sext_scene`), `chat_tease`
-    only with `tease` (config `chat_tease`); with
-    `spacing` (config `sell_spacing`) a `TEST_SPACING` id takes that wording, same place; with
-    `likes` (config `he_likes`) `asks_subject` takes `TEST_LIKES`' wording; with `implied` (config
-    `ask_implied`) `wants_content` takes `TEST_IMPLIED`'s wording, same place; `asks_if_ai` always
-    takes `TEST_NEW_ONLY`'s, same place. Pure."""
     from typesafe_sdk import Choice, Noul, Score
     shadow = {**QUESTIONS, **TEST_NEW_ONLY, **(TEST_IMPLIED if implied else {})} if full(mode) else QUESTIONS
     q: dict[str, Any] = {qid: Noul(instructions=v["instructions"], criteria=v["criteria"])
@@ -667,14 +498,6 @@ async def ask(st: dict[str, Any], account_id: str | None = None,
               mode: str = "shadow", scene: bool = False, spacing: bool = False,
               likes: bool = False, tease: bool = False, implied: bool = False,
               timeout_s: float | None = None) -> Answers:
-    """Ask every Router question and the `intensity` Score over `st` in one
-    request (`_questions(mode)`), on `account_id`'s TypeSafe key, within `WALL_S`
-    wall-clock seconds, or `timeout_s` when less (test Mode's Turn time left). Raises
-    `GateError` on any failure; in test Mode a missing or out-of-range
-    `TEST_NOULS` answer or a missing `TEST_CHOICES` answer is one too. A Choice's
-    probabilities are stored as Jev gave them: a top label it never offered is
-    not an error here (`choice_of` reads it as anything / any), so a Sell-subject
-    glitch never costs the Turn its Route."""
     try:
         q = _questions(mode, scene, spacing, likes, tease, implied)
         cap = WALL_S if timeout_s is None else min(WALL_S, timeout_s)
@@ -682,7 +505,7 @@ async def ask(st: dict[str, Any], account_id: str | None = None,
         answers = {qid: float(res.nouls[qid].noul) for qid in q if qid != "intensity" and qid not in TEST_CHOICES}
         choices = {qid: {str(k): float(v) for k, v in res.choices[qid].probabilities.items()}
                    for qid in q if qid in TEST_CHOICES}
-        bad = [q for q, p in answers.items() if not 0.0 <= p <= 1.0]   # NaN fails too
+        bad = [q for q, p in answers.items() if not 0.0 <= p <= 1.0]
         if bad:
             raise GateError(f"answer out of range: {bad}")
         sc = res.scores["intensity"]
@@ -692,6 +515,6 @@ async def ask(st: dict[str, Any], account_id: str | None = None,
         p = {str(k): float(v) for k, v in (sc.probabilities or {}).items()}
     except GateError:
         raise
-    except Exception as e:      # SDK missing, HTTP, timeout, a missing answer
+    except Exception as e:
         raise GateError(f"{type(e).__name__}: {e}"[:300]) from e
     return Answers(answers, intensity, p, getattr(res, "model", None), ms, choices)

@@ -1,18 +1,3 @@
-"""automations/_human_outbound.py — did a person write to this Fan, or did a mass reach him?
-
-Shared by every Lane that yields to a human 1:1 send (moved out of a Lane module so each
-Lane reads the same rule):
-
-  - `manual_outbound_since(account_id, fan_id, since, rules=None)`: a human's 1:1 outbound
-    to him after `since`.
-  - `is_manual_outbound(row, rules)` / `is_broadcast_copy(row, rules)`: the per-row tests.
-    A human's send is employee-stamped (not the Automation sentinel), or untagged,
-    unattributed and not a broadcast copy (a chatter typing in the OF app).
-  - `CopyRules`: one tick's cached reads behind the broadcast-copy test (the Automation
-    sentinel, the account's broadcast bodies, mass bodies, shared OF queue ids).
-  - `OutRow` / `_OUT_COLS` / `_outbound`: the outbound columns the tests read.
-  - `mass_at()`: SQL for a mass's send time.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -25,16 +10,13 @@ from db.engine import get_session
 from db.models import MassRun, Message
 from messages import _queue_id_of
 
-# The house broadcast threshold (Fastt's ai_chatter._BROADCAST_MIN_FANS), copied.
+# Copied from Fastt's ai_chatter._BROADCAST_MIN_FANS.
 _BROADCAST_MIN_FANS = 5
-# How far apart two fans' rows of one OF queue may be and still read as one
-# mass's copies; the tick's one batch read of shared queues looks this far
-# back from now (a row older than that is asked on its own).
+# Max gap between two fans' rows of one OF queue to still count as one mass's copies.
 _QUEUE_SLACK = timedelta(hours=24)
 
 
 class OutRow(NamedTuple):
-    """The columns the outbound tests read."""
     fan_id: int
     created_at: datetime
     body: str | None
@@ -52,43 +34,29 @@ _OUT_COLS = (Message.fan_id, Message.created_at, Message.body, Message.raw_json,
 
 
 def mass_at():
-    """SQL: a mass's send time, OF's `sent_at`, else when the run started."""
     return func.coalesce(MassRun.sent_at, MassRun.started_at)
 
 
 class CopyRules:
-    """One tick's reads behind the broadcast-copy tests. The Automation
-    sentinel is resolved when it is built (`await CopyRules.load(account)`);
-    the account's broadcast bodies load on first use, once, and its mass
-    bodies on first use and again for a row newer than that read (a mass sent
-    mid-tick)."""
 
     def __init__(self, account_id: str, automation_emp_id: int | None):
         self.account_id = str(account_id)
         self.automation_emp_id = automation_emp_id
         self._bodies: frozenset[str] | None = None
-        # The mass bodies' send times, and the newest time that read covers.
         self._masses: tuple[datetime, dict[str, list[datetime]]] | None = None
-        # Queue ids that are masses (ledger, OF's broadcast cache, or on rows of
-        # two fans), when that read ran and how far back its row scan went.
         self._queues: tuple[datetime, datetime, set[int]] | None = None
-        self._queue_asked: dict[int, bool] = {}   # one queue asked on its own
+        self._queue_asked: dict[int, bool] = {}
 
     @classmethod
     async def load(cls, account_id: str) -> "CopyRules":
         try:
             from employees import get_automation_employee_id
             emp = await get_automation_employee_id()
-        except LookupError:         # the documented "migration not run" case
+        except LookupError:
             emp = None
         return cls(account_id, emp)
 
     async def broadcast_bodies(self) -> frozenset[str]:
-        """Bodies the account sent to at least 5 distinct fans, counting
-        untagged rows and per-fan mass rows but never a named human's 1:1 send,
-        a tagged 1:1 automation line or a funnel block line (a mass-tagged 1:1
-        answer, this walker's included: Fastt's ai_chatter `_broadcast_bodies`,
-        copied). A whole-account scan, so it never loads `raw_json`."""
         if self._bodies is None:
             async with get_session() as s:
                 rows = (await s.execute(
@@ -110,20 +78,13 @@ class CopyRules:
         return self._bodies
 
     async def shared_queue(self, qid: int, at: datetime) -> bool:
-        """OF queue `qid` (on a row at `at`) is a mass's, not a 1:1 send's:
-        the account's `mass_runs` row or `mass_broadcast_cache` entry has it,
-        or an outbound row of two fans carries it within `_QUEUE_SLACK`. One
-        read per tick of every queue id on the account's outbound rows of
-        the last `_QUEUE_SLACK`, grouped by fan in SQL (json_extract: no
-        raw_json crosses into Python); a row newer than that read, or older
-        than its scan, asks its own queue once (a mass sent mid-tick)."""
         if self._queues is None:
             self._queues = await self._read_queues()
         read_at, scan_from, shared = self._queues
         if qid in shared:
             return True
         if at <= read_at and at >= scan_from + _QUEUE_SLACK:
-            return False        # the batch read saw every row either side of it
+            return False
         if qid not in self._queue_asked:
             self._queue_asked[qid] = await self._ask_queue(qid, at)
         return self._queue_asked[qid]
@@ -167,9 +128,6 @@ class CopyRules:
         return int(fans or 0) >= 2
 
     async def matches_a_mass(self, key: str, at: datetime) -> bool:
-        """`key` is the body of an account mass sent within
-        `attribution._BLAST_COPY_SLACK` of `at`. A row newer than the last
-        read of the masses re-reads them: its mass may have gone out since."""
         if self._masses is None or at > self._masses[0]:
             read_at = max(datetime.utcnow(), at)
             sent = mass_at()
@@ -189,8 +147,6 @@ class CopyRules:
 
 def _named_human(automation_kind: str | None, mass_run_id: int | None,
                  sent_by_employee_id: int | None, emp: int | None) -> bool:
-    """A 1:1 row a person positively sent: untagged, stamped with an employee
-    who is not the Automation sentinel (the W7 hard-yield predicate)."""
     return (mass_run_id is None and automation_kind is None
             and sent_by_employee_id is not None
             and (emp is None or int(sent_by_employee_id) != int(emp)))
@@ -202,9 +158,8 @@ def _row_is_named_human(row: OutRow, rules: CopyRules) -> bool:
 
 
 async def is_broadcast_copy(row: OutRow, rules: CopyRules) -> bool:
-    """A mass reaching him, not someone talking to him."""
     if row.mass_run_id is not None:
-        return row.funnel_step is None      # a funnel block is a 1:1 answer
+        return row.funnel_step is None
     if row.automation_kind is not None or _row_is_named_human(row, rules):
         return False
     qid = _queue_id_of(row.raw_json)
@@ -219,8 +174,6 @@ async def is_broadcast_copy(row: OutRow, rules: CopyRules) -> bool:
 
 
 async def is_manual_outbound(row: OutRow, rules: CopyRules) -> bool:
-    """A human's 1:1 send: employee-stamped (not the sentinel), or untagged and
-    unattributed and not a broadcast copy (a chatter typing in the OF app)."""
     if row.is_unsent or row.mass_run_id is not None or row.automation_kind is not None:
         return False
     if row.sent_by_employee_id is not None:

@@ -1,9 +1,3 @@
-"""Single-model scope: the OF settings mirror shows the model's settings values.
-
-Mocks the login (as render.py) and the relay's settings sources with SYNTHETIC
-values, sets scope `model:acc1` (as navigate.py), and checks the mapped controls
-in the frame. Screenshot: /tmp/of-mirror-shots/inapp-settings-values.png. Exit 1 on a failed check.
-"""
 import json, os, sys
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
@@ -18,7 +12,6 @@ SOURCES={
                                      "sendAwardsTop1":True,"sendAwardsTop5":False,"replyOnSubscribe":True,"coStreamingRequestFrom":"nobody"},
     "/api/of/v2/users/settings/notifications/toast": [{"code":"g","items":[{"code":"new_tips","isEnabled":True},{"code":"new_comment","isEnabled":False}]}],
 }
-# page -> (control id or name, expected checked / value / text JS)
 CHECKS={
     "fans": [("#setting_isAutoFollowBack",True),("#setting_unfollowAutoFollowBack",False),("#setting_recommenderReward",True),
              ("#setting_sendAwardsTop1",True),("#setting_sendAwardsTop5",False)],
@@ -39,13 +32,13 @@ with sync_playwright() as p:
         if path in SOURCES:
             seen.add(path); return route.fulfill(status=200, content_type="application/json", body=json.dumps(SOURCES[path]))
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     first=True
     for page, checks in CHECKS.items():

@@ -1,18 +1,3 @@
-"""Loopback fixture shim: Bombadil's browser origin, in front of the demo-shots `next dev`.
-
-capture.py answers OnlyFans reads in its Playwright router; Bombadil drives its own Chrome,
-so the same answers are served here at HTTP level instead (same Fixtures, same dataset):
-  /api/*, /admin/* reads fixtures.py knows   -> fixture JSON (unmatched /api/* -> {} as capture.py)
-  /img?u=<asset>, /__assets/<file>           -> scripts/demo-shots/assets
-  POST /__ui-explore/reauth                 -> log in the seeded demo owner
-  /auth/me, /chatter/me                      -> forwarded, created_at nulled (no trial nag, as capture.py)
-  /admin/vault-ai/{image,thumb,poster}       -> the dataset's vault image (relay would fetch from OF)
-  everything else (pages, HMR websocket, SSE) -> forwarded to next dev
-The demo asset origin (https://demo-assets.invalid) is rewritten to /__assets in JSON bodies so
-the browser never resolves it. Runs under demo-shots net_guard: loopback only.
-
-    env UI_EXPLORE_NEXT=http://127.0.0.1:<next> UI_EXPLORE_PORT=<port> UI_EXPLORE_OUT=<dir> DEMO_SHOTS_TMP=<tmp>
-"""
 from __future__ import annotations
 
 import asyncio
@@ -88,10 +73,8 @@ def out_headers(res: httpx.Response, drop_length: bool) -> list[tuple[bytes, byt
     return keep
 
 
+# next dev rewrites chunks in place; a chunk read mid-rewrite ends short and kills the page, so retry.
 async def static_chunk(up: httpx.Request) -> Response:
-    """next dev (webpack) rewrites chunks in place when it compiles a route on demand; a chunk read
-    meanwhile ends short ("peer closed connection without sending complete message body") and the
-    page dies on a SyntaxError / ChunkLoadError no production build can produce. Buffer and retry."""
     for attempt in range(5):
         try:
             res = await client.send(up)
@@ -130,8 +113,6 @@ async def forward(req: Request, mutate=None, *, path: str | None = None, body: b
     return r
 
 
-# The relay renders these from OnlyFans with the account's session; the seeded session files are
-# stubs (no OF login), so the relay 500s on them. Serve the dataset's vault image instead.
 VAULT_STILLS = ("/admin/vault-ai/image", "/admin/vault-ai/thumb", "/admin/vault-ai/poster")
 
 
@@ -186,9 +167,7 @@ async def http(req: Request) -> Response:
     return await forward(req)
 
 
-# next dev (webpack) broadcasts this to every open page when it compiles a route on demand; a page
-# still hydrating then throws "Router action dispatched before initialization" (dev-only race, no
-# source edits happen during a run). Dropped so it never reads as a product exception.
+# next dev broadcasts this on on-demand compiles; a hydrating page then throws (dev-only race), so drop it.
 HMR_DROP = '"type":"serverComponentChanges"'
 
 

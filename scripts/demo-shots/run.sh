@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
-# run.sh — regenerate the marketing-site product shots in web/public/img/ from a
-# throwaway localhost stack fed a synthetic demo agency (scripts/demo-shots/dataset.py).
 #
-#   scripts/demo-shots/run.sh                  capture every screen, compose, encode
-#   scripts/demo-shots/run.sh --only dashboard,creators   capture a subset
-#   scripts/demo-shots/run.sh serve            start the stack and wait (prints its URLs;
-#                                              point capture.py at it with DEMO_SHOTS_APP/RELAY)
 #
-# Same safety model as scripts/ui-shots.sh: temp-DB relay with network guards and the
-# secret store redirected, `next dev` with a fetch guard and dead proxies, and a browser
-# that resolves no name but localhost. Nothing leaves the machine. See README.md here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -20,8 +11,7 @@ if ! test -x "$PY"; then
   echo "demo-shots: $PY not found (needs the repo's relay venv with uvicorn, FastAPI, Playwright)." >&2
   exit 3
 fi
-# Importing service/secrets_store.py would copy service/secrets.json into service/secrets/
-# before the redirect can run (see docs/ui-shots.md). Refuse in that state.
+# Importing service/secrets_store.py would copy secrets.json into service/secrets/ before the redirect can run; refuse in that state.
 if [ -f "$ROOT/service/secrets.json" ] && [ ! -e "$ROOT/service/secrets/secrets.json" ]; then
   echo "demo-shots: service/secrets.json exists and service/secrets/secrets.json does not; see docs/ui-shots.md." >&2
   exit 3
@@ -64,7 +54,7 @@ cleanup() {
     fi
   done
   if [ "$NEXT_ENV_ABSENT" = 1 ] && [ -f "$ROOT/app/next-env.d.ts" ]; then
-    rm -f "$ROOT/app/next-env.d.ts"   # it was absent: leave it absent (as slop/lib/stack.py)
+    rm -f "$ROOT/app/next-env.d.ts"
   fi
   if [ "$alive" != 0 ]; then
     echo "demo-shots: child groups did not exit after TERM, retaining $TMP" >&2
@@ -81,7 +71,6 @@ trap 'exit 143' TERM
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/demo-shots.XXXXXX")"
 echo "demo-shots: temp $TMP"
 cp "$ROOT/app/tsconfig.json" "$TMP/tsconfig.json.orig"
-# next-env.d.ts is gitignored (absent in a fresh worktree): cleanup then removes the one `next dev` writes.
 if [ -f "$ROOT/app/next-env.d.ts" ]; then cp "$ROOT/app/next-env.d.ts" "$TMP/next-env.d.ts.orig"; else NEXT_ENV_ABSENT=1; fi
 
 read -r RELAY_PORT APP_PORT CLOSED_PORT < <("$PY" -c '
@@ -94,7 +83,7 @@ RELAY="http://127.0.0.1:$RELAY_PORT"
 APP="http://127.0.0.1:$APP_PORT"
 DEAD_PROXY="http://127.0.0.1:$CLOSED_PORT"
 
-set -m  # own process group per job, so the trap stops children too
+set -m
 
 env -u OPENINFLOWW_LEGACY_AUTOMATIONS \
   DATABASE_URL="sqlite+aiosqlite:///$TMP/relay.db" CHATTERLY_DB_URL="sqlite:///$TMP/relay.db" \
@@ -106,8 +95,6 @@ env -u OPENINFLOWW_LEGACY_AUTOMATIONS \
   "$PY" "$HERE/relay_guarded.py" >"$TMP/relay.log" 2>&1 &
 PIDS+=($!); disown $!
 
-# NEXT_PUBLIC_* knobs keep dev chrome out of the shots where Next allows it; the
-# capture script also hides the dev indicator with CSS.
 (cd "$ROOT/app" && exec env RELAY_URL="$RELAY" NEXT_DIST_DIR=.next/demo-shots NEXT_TELEMETRY_DISABLED=1 \
   HTTP_PROXY="$DEAD_PROXY" HTTPS_PROXY="$DEAD_PROXY" http_proxy="$DEAD_PROXY" https_proxy="$DEAD_PROXY" \
   NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost \
@@ -117,7 +104,7 @@ PIDS+=($!); disown $!
 
 set +m
 
-wait_for() {  # name url timeout-seconds pid log
+wait_for() {
   local i
   for i in $(seq 1 "$3"); do
     curl --noproxy '*' -s -o /dev/null --max-time 60 "$2" &

@@ -23,6 +23,7 @@ import json
 import sys
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import accounts as account_registry
 
@@ -31,9 +32,16 @@ _FANSLY_PKG = _HERE.parent / "fansly"
 if str(_FANSLY_PKG) not in sys.path:
     sys.path.insert(0, str(_FANSLY_PKG))
 
-# Imported lazily-but-once; only reached when a Fansly account is loaded.
+from fansly_client import FanslyAPIError as APIError  # noqa: E402,F401
 from fansly_client import FanslySession  # noqa: E402
 from fansly_shim import FanslyShimClient  # noqa: E402
+from fansly_shim import check_sendable  # noqa: E402,F401
+from fansly_ws import FanslyWebSocket  # noqa: E402
+
+if TYPE_CHECKING:
+    from fansly_revenue import TickResult
+
+Shim = FanslyShimClient
 
 SESSION_FILENAME = "fansly_session.json"
 
@@ -45,10 +53,6 @@ def session_path(account_id: str) -> Path:
     """Where this Fansly account's captured session lives — next to its OF
     cousins under the account dir."""
     return account_registry.account_dir(account_id) / SESSION_FILENAME
-
-
-def is_fansly(account_id: str) -> bool:
-    return account_registry.get_platform(account_id) == "fansly"
 
 
 def get_client(account_id: str) -> FanslyShimClient:
@@ -79,6 +83,16 @@ def get_client(account_id: str) -> FanslyShimClient:
         return client
 
 
+def identify(session: dict) -> tuple[dict, dict]:
+    s = FanslySession(dict(session))
+    client = FanslyShimClient(s)
+    fetched = {}
+    if not s.device_id:
+        client.ensure_device_id()
+        fetched = {"device_id": s.device_id, "device_id_ts": s.device_id_ts}
+    return client.me(), {**session, **fetched}
+
+
 def drop(account_id: str | None = None) -> None:
     """Evict a cached client (e.g. after a fresh capture is written).
 
@@ -89,3 +103,13 @@ def drop(account_id: str | None = None) -> None:
             _pool.clear()
         else:
             _pool.pop(account_id, None)
+
+
+def ws(client: FanslyShimClient) -> FanslyWebSocket:
+    return FanslyWebSocket(client)
+
+
+async def revenue_tick(account_id: str) -> TickResult:
+    import fansly_revenue  # imports this module at load
+
+    return await fansly_revenue.run_one_tick(account_id)

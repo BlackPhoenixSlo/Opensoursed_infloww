@@ -1,10 +1,3 @@
-"""capture: the driver's capture-browser part (ticket 07; prove.py calls it): opening the capture browser after
-preflight, the `capture [--abort]` command, and the run's output kept for the session-leak check.
-
-`capture` plays one proof's capture steps in the capture browser (no app) and writes each write OnlyFans was sent (or,
-with --abort, would have been sent) as `capture-<id>.raw.json` and its scrubbed, checked `.record.json`. A Critical
-control's capture is refused without --abort, before anything starts (story 26).
-"""
 from __future__ import annotations
 
 import json
@@ -18,7 +11,6 @@ from proof_core import READS, critical_capture_refused, critical_write, step_fam
 
 
 class Tee:
-    """The run's own stdout and stderr, kept as they are printed for the session-leak check."""
 
     def __init__(self):
         self.parts: list = []
@@ -48,17 +40,10 @@ def needs_browser(proofs) -> bool:
 
 
 def opens_capture_browser(capture, proofs, preflight: list) -> bool:
-    """Whether a run opens the capture browser: `capture`, or a proof with capture-browser steps, after a clean
-    preflight, among the proofs that may start (live_entry `startable`; none left: it never opens); the mode never
-    decides it. Its own identity read (`start` here) runs whenever it opens, before
-    any step.
-    ASSUMPTION (D27 over the spec's "live always"): never by default in live prove/serve; D26 saw the browser kill
-    the session once, and ticket 11 starts Relay-only with a signed API read."""
     return not preflight and bool(proofs) and bool(capture or needs_browser(proofs))
 
 
 def cli_refusal(proof, n_ids: int, fault, abort: bool) -> str | None:
-    """`capture`'s CLI checks, before anything starts: one proof, no fault, a Critical control only with --abort."""
     if n_ids != 1 or fault:
         return "capture plays one proof's capture steps (one --proof, no --fault)"
     if why := critical_capture_refused(proof, abort):
@@ -68,10 +53,6 @@ def cli_refusal(proof, n_ids: int, fault, abort: bool) -> str | None:
 
 def start(pw, session_dir: Path, call, creator: str, evidence: Path, rep: dict, *, fake_origin, fake_sign,
           launch_args):
-    """The capture browser, signed in from the session in the run's temp dir, through the Relay's Live guard (`call`:
-    prove.py `_relay_client`). Its first load, the session probe (once: a dead session is never probed again) and
-    OnlyFans's own identity read run before any step. A stop is added to `rep["preflight"]` (None returned);
-    `SessionDead` also writes `session-dead.json`."""
     def probe():
         status, raw = call("GET", "/__proof/session", account=creator)
         try:
@@ -83,7 +64,7 @@ def start(pw, session_dir: Path, call, creator: str, evidence: Path, rep: dict, 
                         fake_sign=fake_sign, probe=probe, launch_args=launch_args)
     try:
         cb.open()
-    except CaptureBrowserStop as e:   # SessionDead included: the run stops, never retried
+    except CaptureBrowserStop as e:
         if isinstance(e, SessionDead):
             (evidence / "session-dead.json").write_text(json.dumps({
                 "creator": creator, "state": "dead", "reason": str(e), "retried": False,
@@ -100,7 +81,6 @@ def start(pw, session_dir: Path, call, creator: str, evidence: Path, rep: dict, 
 
 
 def finish(cb, evidence: Path, rep: dict) -> None:
-    """Always (the driver's finally): capture-browser.jsonl, the browser's off-host aborts into the report, close."""
     if cb is None:
         return
     with open(evidence / "capture-browser.jsonl", "w") as f:
@@ -114,9 +94,6 @@ def finish(cb, evidence: Path, rep: dict) -> None:
 
 
 def play(step, cb, before, marker: str, wire, res: dict) -> set:
-    """One capture-browser trigger step of run_proof: ("fetch", method, path, body, expect) from the fake-mode drill
-    page, checked against its expectation, or ("hand-off", selector), an OAuth hand-off's click (story 17). Returns the
-    wire seqs it expected aborted, which run_proof leaves out of the step-9 window."""
     if step[0] == "hand-off":
         cb.click_hand_off(step[1])
         return set()
@@ -135,10 +112,6 @@ def play(step, cb, before, marker: str, wire, res: dict) -> set:
 
 
 def run_capture(proof, run_proof, cb, creator: str, evidence: Path, run_id: str, proof_fan, abort: bool) -> dict:
-    """One proof's capture steps, run as its trigger by `run_proof(proof, capture_abort)` (prove.py), then each write
-    the capture browser recorded as a raw capture and its capture record. Abort mode arms the proof with
-    capture_abort (the guard refuses every write: `capture_abort`, a Critical one `critical`) and runs it as a read
-    proof whose OnlyFans side must read the same after."""
     steps = tuple((*st[:4], "critical" if isinstance(st[2], str) and critical_write(*st[1:4]) else "capture_abort")
                   if abort and st[0] == "fetch" and st[4] == "sent" else st for st in proof.capture_steps)
     n0 = len(cb.exchanges)

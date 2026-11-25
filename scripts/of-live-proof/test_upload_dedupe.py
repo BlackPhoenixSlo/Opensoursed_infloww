@@ -28,11 +28,10 @@ from soak.fake_of.vault import MEDIA_COUNT
 from soak.world import World
 
 AT = datetime(2026, 11, 21, 3, 10, tzinfo=timezone.utc)
-HASH = "/api2/v2/vault/media/" + "hash"   # split: the worktree's shell guard refuses the joined literal
+HASH = "/api2/v2/vault/media/" + "hash"  # split: the worktree's shell guard refuses the joined literal
 SEEDED = [ids.vault_media_id(n) for n in range(1, MEDIA_COUNT + 1)]
 
 
-# ── FakeOF ──
 
 @pytest.fixture
 def fake():
@@ -92,7 +91,7 @@ def test_fake_upload_post_delete_and_remove_from_vault(fake):
     of, req, client = fake()
     up = _upload(req, client, b"proof bytes a")
     assert up["deduped"] is False
-    assert _vault(req) == SEEDED   # a claim is no vault item until a post references it
+    assert _vault(req) == SEEDED
     status, post = _post(req, [up["send_with"]])
     assert status == 200 and post["id"] == ids.post_id(1)
     x = post["media"][0]["id"]
@@ -100,7 +99,7 @@ def test_fake_upload_post_delete_and_remove_from_vault(fake):
     assert req("GET", f"/api2/v2/posts/{post['id']}")[1]["media"] == post["media"]
     rows = req("GET", "/api2/v2/schedules?limit=50")[1]["list"]
     assert [(r["id"], r["type"], r["entity"]["id"]) for r in rows] == [(ids.post_schedule_id(1), "post", post["id"])]
-    again = _upload(req, client, b"proof bytes a")   # the same bytes: a dedupe hit to the same id
+    again = _upload(req, client, b"proof bytes a")
     assert again == {"deduped": True, "vault_id": x, "hidden": False}
     assert req("DELETE", f"/api2/v2/posts/{post['id']}") == (200, {"success": True})
     assert req("GET", f"/api2/v2/posts/{post['id']}")[0] == 404
@@ -108,7 +107,7 @@ def test_fake_upload_post_delete_and_remove_from_vault(fake):
     assert req("PUT", "/api2/v2/vault/media/hidden", json={"mediaIds": [x]}) == (200, {"success": True})
     assert _vault(req) == SEEDED
     assert _upload(req, client, b"proof bytes a") == {"deduped": True, "vault_id": x, "hidden": True}
-    assert _post(req, [x])[0] == 200   # ticket 99: OnlyFans takes a hidden id in a post (ASSUMPTION)
+    assert _post(req, [x])[0] == 200
 
 
 def test_fake_post_keeps_a_duplicate_id_and_refuses_unknown_media(fake):
@@ -117,7 +116,6 @@ def test_fake_post_keeps_a_duplicate_id_and_refuses_unknown_media(fake):
     assert status == 200 and [m["id"] for m in post["media"]] == [SEEDED[0], SEEDED[0]]
     assert _post(req, [123])[0] == 400
     assert _post(req, [{"processId": "nope"}])[0] == 400
-    # an unscheduled post (ticket 131's model) is stored and never listed
     assert req("POST", "/api2/v2/posts", json={"text": "t", "mediaFiles": [], "isScheduled": 0})[0] == 200
     assert [x["entity"]["id"] for x in req("GET", "/api2/v2/schedules?limit=50")[1]["list"]] == [post["id"]]
     assert req("PUT", "/api2/v2/vault/media/hidden", json={"mediaIds": [123]})[0] == 400
@@ -135,8 +133,7 @@ def test_fake_convert_refuses_a_claim_not_naming_the_stored_key_token_and_etag(f
         r = client.post("/file/upload", files={"file[ETag]": (None, f'"{etag}"'), "file[Key]": (None, key),
                                                "file[uploadToken]": (None, token)})
         assert r.status_code == 400 and r.json() == {"error": "Invalid input."}
-    assert client.put("/upload/u/9/unknown.png", content=b"x").status_code == 404   # no signed/create named it
-    # one convert path: check, then png_intact, then the claim stored; a corrupt PNG's claim is never claimed
+    assert client.put("/upload/u/9/unknown.png", content=b"x").status_code == 404
     bad = req("POST", "/api2/v2/upload/signed/create", json={"key": "upload/u/2/bad.png", "parts": 1})[1]
     etag = client.put(urlsplit(bad["putUrl"]).path, content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\x01IHDR").headers["ETag"]
     r = client.post("/file/upload", files={"file[ETag]": (None, etag), "file[Key]": (None, bad["key"]),
@@ -149,7 +146,7 @@ def test_dup_id_refused_fault_refuses_only_a_post_holding_one_id_twice(fake):
     of, req, client = fake("dup-id-refused")
     status, body = _post(req, [SEEDED[0], SEEDED[0]])
     assert status == 400 and "duplicate media id" in body["error"]["message"]
-    assert req("GET", "/api2/v2/schedules?limit=50")[1]["list"] == []   # nothing posted
+    assert req("GET", "/api2/v2/schedules?limit=50")[1]["list"] == []
     assert _post(req, [SEEDED[0], SEEDED[1]])[0] == 200
     hits = client.app.snapshot()
     assert [h.get("fault") for h in hits if h["path"] == "/api2/v2/posts"] == ["dup-id-refused", None]
@@ -160,13 +157,13 @@ def test_post_commit_500_fault_makes_the_post_then_answers_500(fake):
     status, body = _post(req, [SEEDED[0]])
     assert status == 500 and body["error"]["code"] == 500
     rows = req("GET", "/api2/v2/schedules?limit=50")[1]["list"]
-    assert [r["entity"]["id"] for r in rows] == [ids.post_id(1)]   # OnlyFans committed it before the 500
+    assert [r["entity"]["id"] for r in rows] == [ids.post_id(1)]
     assert [h.get("fault") for h in client.app.snapshot() if h["path"] == "/api2/v2/posts"] == ["post-commit-500"]
 
 
 def test_composer_once_is_an_app_fault_unknown_to_fakeof():
     f = fake_layer.FAULTS["composer-once"]
-    assert isinstance(f, fake_layer.AppFault) and f.hook is fake_layer.composer_once   # FakeOF never fires it
+    assert isinstance(f, fake_layer.AppFault) and f.hook is fake_layer.composer_once
     with pytest.raises(ValueError, match="unknown FakeOF fault"):
         fake_layer.Recorder(None, "composer-once")
     assert of_browser.dedupe_media([5, {"processId": "p"}, 5, 6, 6]) == [5, {"processId": "p"}, 6]
@@ -199,7 +196,7 @@ def test_composer_once_hook_sends_each_media_id_once_and_records_it():
 
     def req(method, path, body):
         return SimpleNamespace(method=method, url=f"http://127.0.0.1:1{path}", post_data=json.dumps(body))
-    assert not hook(route, req("POST", "/api/of/v2/posts", {"media_files": [5, 6]}))      # no duplicate: untouched
+    assert not hook(route, req("POST", "/api/of/v2/posts", {"media_files": [5, 6]}))
     assert not hook(route, req("POST", "/api/of/v2/other", {"media_files": [5, 5]}))
     assert not hook(route, req("GET", "/api/of/v2/posts", {"media_files": [5, 5]}))
     assert sent == [] and planted == []
@@ -208,7 +205,6 @@ def test_composer_once_hook_sends_each_media_id_once_and_records_it():
     assert planted == [{"method": "POST", "path": "/api/of/v2/posts", "media_files": [5, 5]}]
 
 
-# ── the Live guard ──
 
 def R(method, path, body=None, host="onlyfans.com"):
     return Request(method=method, host=host, path=path, body=body, at=AT)
@@ -219,17 +215,15 @@ def post_body(media, ahead=45, **kw):
             "scheduledDate": (AT + timedelta(minutes=ahead)).isoformat(), **kw}
 
 
-POST_ID, X = str(ids.post_id(1)), ids.vault_media_id(ids.UPLOADED + 1)   # a created post id; an uploaded vault id
+POST_ID, X = str(ids.post_id(1)), ids.vault_media_id(ids.UPLOADED + 1)
 SPENT = {("arm", i): 1 for i in range(4)}
-MEDIA = {"media": frozenset({str(X)})}   # X registered through /__proof/read-id, read off the created post
-BY_POST = {3: frozenset({POST_ID})}   # ticket 131: the post arm created it (the DELETE reverses arm 3 alone)
+MEDIA = {"media": frozenset({str(X)})}
+BY_POST = {3: frozenset({POST_ID})}
 
 
 @pytest.mark.parametrize("why, request_, run, kind", [
     ("signed/create", R("POST", "/api2/v2/upload/signed/create", {"key": "upload/x"}), Run(proof=NEW_POST_UPLOAD),
      "allow"),
-    # ticket 53's hosts (inferred: same upload_media, this proof's PUT not measured live yet): the PUT on S3_HOST
-    # alone (armed with Proof.hosts), the claim on convert
     ("the S3 PUT", R("PUT", "/upload/900000000000000001/9f1c/123/clip.png", host=S3_HOST),
      Run(proof=NEW_POST_UPLOAD, hosts=(S3_HOST,)), "allow"),
     ("the S3 PUT on onlyfans.com, live", R("PUT", "/upload/900000000000000001/9f1c/123/clip.png"),
@@ -280,7 +274,6 @@ def test_scheduled_post_is_not_fan_visible():
     assert not decide(R("POST", "/api2/v2/posts", post_body([1])), Run(proof=NEW_POST_UPLOAD)).fan_visible
 
 
-# ── the proofs' pure helpers ──
 
 RUN = "oi-proof-r"
 UP_TEXT, DE_TEXT = draft_text(RUN, "upload"), draft_text(RUN, "dedupe")
@@ -303,7 +296,7 @@ def test_read_posts_and_vault_keeps_post_items_with_their_media():
 
 def test_effects_and_new_ids():
     assert upload_effect(BEFORE, A_AFTER) and not upload_effect(BEFORE, BEFORE)
-    assert not upload_effect(BEFORE, {"queue": [[1, 2, UP_TEXT, SEEDED[0]]], "vault": SEEDED})   # no new medium
+    assert not upload_effect(BEFORE, {"queue": [[1, 2, UP_TEXT, SEEDED[0]]], "vault": SEEDED})
     assert upload_effect(BEFORE, B_AFTER)
     assert new_posts(BEFORE, B_AFTER) == [ids.post_id(1), ids.post_id(2)] and new_media(BEFORE, B_AFTER) == [X]
 
@@ -311,24 +304,24 @@ def test_effects_and_new_ids():
 def test_post_media_keys_each_new_post_holding_one_media_id():
     p1, p2 = str(ids.post_id(1)), str(ids.post_id(2))
     assert post_media(BEFORE, A_AFTER) == {p1: {"media": X}}
-    assert post_media(BEFORE, B_AFTER) == {p1: {"media": X}, p2: {"media": X}}   # X_B twice: still one id
+    assert post_media(BEFORE, B_AFTER) == {p1: {"media": X}, p2: {"media": X}}
     two = {"queue": [[1, 7, UP_TEXT, X, SEEDED[0]]], "vault": B_AFTER["vault"]}
     assert post_media(BEFORE, two) == {} and post_media(BEFORE, BEFORE) == {}
 
 
-OTHER = [ids.post_schedule_id(9), ids.post_id(9), "an operator's post", X]   # scheduled meanwhile, not the proof's
+OTHER = [ids.post_schedule_id(9), ids.post_id(9), "an operator's post", X]
 
 
 @pytest.mark.parametrize("suffix, after, want", [
     ("upload", A_AFTER, ids.post_id(1)),
-    ("upload", {"queue": [OTHER], "vault": A_AFTER["vault"]}, None),                       # unmarked new post
-    ("upload", {"queue": [OTHER, A_AFTER["queue"][0]], "vault": A_AFTER["vault"]}, ids.post_id(1)),   # marked only
-    ("upload", {"queue": [[1, 5, RUN, X]], "vault": A_AFTER["vault"]}, None),               # marker alone, not the text
+    ("upload", {"queue": [OTHER], "vault": A_AFTER["vault"]}, None),
+    ("upload", {"queue": [OTHER, A_AFTER["queue"][0]], "vault": A_AFTER["vault"]}, ids.post_id(1)),
+    ("upload", {"queue": [[1, 5, RUN, X]], "vault": A_AFTER["vault"]}, None),
     ("upload", {"queue": [[1, 5, draft_text("oi-proof-other", "upload"), X]], "vault": A_AFTER["vault"]}, None),
-    ("dedupe", A_AFTER, None),                                                             # the other proof's text
-    ("dedupe", B_AFTER, None),                                                             # two marked: whose is whose
+    ("dedupe", A_AFTER, None),
+    ("dedupe", B_AFTER, None),
     ("dedupe", {"queue": B_AFTER["queue"][:1] + [OTHER], "vault": B_AFTER["vault"]}, ids.post_id(1)),
-    ("upload", BEFORE, None),                                                              # none
+    ("upload", BEFORE, None),
 ], ids=["marked", "unmarked", "marked + unmarked", "marker only", "another run", "other suffix", "two marked",
         "dedupe marked + unmarked", "none"])
 def test_lost_post_finder_takes_only_the_one_post_with_the_seeded_text(suffix, after, want):
@@ -337,10 +330,10 @@ def test_lost_post_finder_takes_only_the_one_post_with_the_seeded_text(suffix, a
 
 @pytest.mark.parametrize("after, want", [
     (A_AFTER, {str(ids.post_id(1)): {"media": X}}),
-    ({"queue": [[1, 7, UP_TEXT, SEEDED[0]]], "vault": A_AFTER["vault"]}, {}),               # medium already in the vault
-    ({"queue": [[1, 7, UP_TEXT, SEEDED[0]]], "vault": SEEDED}, {}),                       # no new medium at all
+    ({"queue": [[1, 7, UP_TEXT, SEEDED[0]]], "vault": A_AFTER["vault"]}, {}),
+    ({"queue": [[1, 7, UP_TEXT, SEEDED[0]]], "vault": SEEDED}, {}),
     ({"queue": [A_AFTER["queue"][0], [1, 7, "x", SEEDED[1]]], "vault": A_AFTER["vault"]},
-     {str(ids.post_id(1)): {"media": X}}),                                               # only the new one keyed
+     {str(ids.post_id(1)): {"media": X}}),
 ], ids=["new medium", "old medium", "nothing new", "new + old"])
 def test_post_media_never_keys_a_medium_the_vault_had_before(after, want):
     assert post_media(BEFORE, after) == want
@@ -362,7 +355,6 @@ def test_proof_png_is_a_png_with_its_own_bytes():
     assert a.startswith(b"\x89PNG\r\n\x1a\n") and a != b and a == proof_png("oi-proof-1", "new-post--upload")
 
 
-# ── the driver's undo: each post deleted, then the hide on the registered media id, once for every row ──
 
 class Wire:
     """A stub Relay: each reversal answered `status`, logged as the wire log would; `/__proof/read-id` answers
@@ -416,10 +408,9 @@ def test_undo_deletes_both_posts_then_hides_x_b_once_for_every_row():
     assert res["problems"] == [] and [x["state"] for x in closed] == ["undone"] * 3
     assert _sent(w) == [("DELETE", f"/api/of/v2/posts/{P1}", None), ("DELETE", f"/api/of/v2/posts/{P2}", None),
                         ("POST", f"/admin/vault-ai/items/{X}/hide", {"account_id": "1"})]
-    # registered once, read off the first post (the second post's X_B is the same id: not registered again)
     assert [d for _, r, d, _ in w.calls if r == "/__proof/read-id"] == [
         {"row": 2, "key": "media", "of_id": str(X), "source": P1}]
-    assert w.calls[0][1] == "/__proof/read-id"   # before any DELETE: the Relay reads the media on the post
+    assert w.calls[0][1] == "/__proof/read-id"
     by = {c["row"]: [rv["path"] for rv in c["reversals"]] for c in closed}
     assert by == {1: ["/api2/v2/vault/media/hidden"],
                   2: [f"/api2/v2/posts/{P1}", "/api2/v2/vault/media/hidden"],
@@ -468,18 +459,17 @@ def test_fake_check_counts_only_the_post_writes_after_each_row_opened():
              hit(4, "DELETE", f"/api2/v2/posts/{P1}"), hit(5, "DELETE", f"/api2/v2/posts/{P2}"),
              hit(6, "PUT", "/api2/v2/vault/media/hidden", {"mediaIds": [X]})]
     assert [undo_driver.row_problem(NEW_POST_DEDUPE, c, rows, plain) for c in rows] == [None, None]
-    retried = plain + [hit(3.5, "POST", "/api2/v2/posts")]   # a retry reaching FakeOF still fails both rows
+    retried = plain + [hit(3.5, "POST", "/api2/v2/posts")]
     assert all(undo_driver.row_problem(NEW_POST_DEDUPE, c, rows, retried) for c in rows)
 
 
-# ── review: a 4xx post create made nothing; a 5xx may have committed, so its row keeps the DELETE and is found ──
 
 @pytest.mark.parametrize("status, deletes", [(400, False), (404, False), (500, True), (502, True),
                                              ("reply lost: OFAPIError", True)])
 def test_only_a_4xx_post_create_drops_the_delete(status, deletes):
     row = POST_ROW(3, None, write_status=status)
     assert any(w.method == "DELETE" for _, w in row_undos(NEW_POST_UPLOAD, row)) is deletes
-    assert needs_row_id(NEW_POST_UPLOAD, row) is deletes   # the lost-reply finder runs for it (prove.py settle)
+    assert needs_row_id(NEW_POST_UPLOAD, row) is deletes
 
 
 def test_a_5xx_post_found_after_is_deleted_then_hidden_and_passes_the_fake_check():

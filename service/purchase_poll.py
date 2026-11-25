@@ -15,8 +15,7 @@ import time
 
 import account_health
 from cadence import boot_grace
-import fansly_backend
-import fansly_revenue
+import platforms
 import purchase_notifications
 import purchase_poll_decide as poll_decide
 from purchase_poll_decide import PollState, Tier
@@ -61,9 +60,10 @@ async def run_fast_tick(account_id: str) -> dict:
     # Fansly sellers on the 15-minute supervisor cadence, still saying "waiting
     # on your tip" to a fan who had already paid. The read is cheap here: one
     # un-paginated page, already TTL-cached in the shim.
-    if fansly_backend.is_fansly(account_id):
+    backend = platforms.for_account(account_id).backend
+    if backend is not None:
         async with ti._tick_locks[account_id]:
-            r = await fansly_revenue.run_one_tick(account_id)
+            r = await backend.revenue_tick(account_id)
         return {"rows_inserted": r.rows_inserted, "rows_patched": 0,
                 "error": r.error}
     client = ti._client_for(account_id)

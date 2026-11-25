@@ -1,7 +1,3 @@
-"""Shared test support for the Rollout driver tests: an in-process fake relay on loopback (stdlib http.server)
-that speaks the product routes the driver reads, and journal helpers. The fill routes follow
-service/script_fill_api.py's contract (plan / apply with fingerprint and 409 stale / undo with `kept`).
-"""
 from __future__ import annotations
 
 import hashlib
@@ -16,12 +12,11 @@ import rollout
 BASE = {"platform": "onlyfans", "has_session": True, "session_dead_at": None, "is_active": True}
 
 SESSION = "s3cret-cookie"
-ITEM_MC_REAL = 10   # what the fake bills per described item
+ITEM_MC_REAL = 10
 _ROW_IDS = itertools.count(9001)
 
 
 def srow(step, role="chat", price=0, media=(), previews=(), fill=None):
-    """One Scripts row of a fake Sequence. `fill`: (media, previews, price cents | None) a Fill would write."""
     return {"id": next(_ROW_IDS), "step": step, "role": role, "price": price, "media": list(media),
             "previews": list(previews), "fill": fill}
 
@@ -37,13 +32,13 @@ class Cr:
         self.running_target = running_target
         self.progress = None
         self.collect_pauses, self.collect_complete, self.collect_items = collect_pauses, collect_complete, collect_items
-        self.collect = None   # {"status", "running", "pauses_left", "polls"}
-        self.collect_stuck = collect_stuck   # continue answers 200 but the run stays paused (first 50 hits)
+        self.collect = None
+        self.collect_stuck = collect_stuck
         self.forbidden = False
-        self.items = set()                   # live vault media ids (3b)
-        self.seqs = {"S1": [srow(1), srow(2)], "S2": [srow(1)]}   # chat-only by default
-        self.fill_status = {}                # Sequence -> Fill status the fake plan forces
-        self.version = {}                    # Sequence -> edits since plan (part of the fingerprint)
+        self.items = set()
+        self.seqs = {"S1": [srow(1), srow(2)], "S2": [srow(1)]}
+        self.fill_status = {}
+        self.version = {}
 
     def goal(self, target):
         return max(0, min(target, self.describable - self.terminal))
@@ -58,23 +53,22 @@ class Fake:
         self.watchers = list(watchers)
         self.is_admin = True
         self.phase1a = True
-        self.posts = []          # (path, account_id, body) of every POST
-        self.events = []         # ("start"|"end", account_id, target)
+        self.posts = []
+        self.events = []
         self.max_running = 0
         self.status_polls = 0
-        self.fail = {}           # (path, account_id) -> status, or c -> status | None; heals after 50 hits
-        self.hits = {}           # (path, account_id) -> [monotonic time of each request]
-        self.seen = []           # (method, path) of every request
-        self.redirect_me = None  # a Location /auth/me answers 302 with
-        self.applies = []        # (account, sequence) of every apply that wrote
-        self.undos = []          # (account, sequence) of every undo call
-        self.last_undo = {}      # (account, sequence) -> the full Undo list the last write produced
-        self.undo_short = False  # FAULT rollout-undo-list-short: the answer drops the last Undo entry
-        self.bump_on_apply = {}  # sequence -> applies that see an edit first (409 stale)
-        self.fingerprint = True  # False: plans carry no fingerprint (a server contract fault)
+        self.fail = {}
+        self.hits = {}
+        self.seen = []
+        self.redirect_me = None
+        self.applies = []
+        self.undos = []
+        self.last_undo = {}
+        self.undo_short = False
+        self.bump_on_apply = {}
+        self.fingerprint = True
         self.livez_status = 200
 
-    # ── fill (service/script_fill_api.py contract) ──
     def fill_plan(self, c, name):
         rows = c.seqs[name]
         paid = any(r["role"] == "paid_media" for r in rows)
@@ -143,7 +137,7 @@ class Fake:
         if name not in c.seqs:
             return 404, {"detail": {"error": "sequence_not_found"}}
         self.undos.append((c.id, name))
-        if re.fullmatch(r"FM\d+", name):   # a reserved FM Sequence: every entry kept, nothing written
+        if re.fullmatch(r"FM\d+", name):
             return 200, {"undone": [], "kept": [{"id": e["id"], "reason": "reserved"} for e in body.get("undo") or []]}
         rows = {r["id"]: r for r in c.seqs[name]}
         undone, kept = [], []
@@ -167,7 +161,6 @@ class Fake:
                for name, rows in c.seqs.items() for r in rows]
         return out + [{"id": 1, "script_id": None, "media": [], "previews": [], "price": 0}]
 
-    # ── state transitions ──
     def plan(self, c, target):
         g = c.goal(target)
         cov = {"target": target, "describable": c.describable, "described": c.described, "terminal": c.terminal,
@@ -232,7 +225,6 @@ class Fake:
         k.update(status="done", running=False)
         c.complete = c.collect_complete
 
-    # ── HTTP ──
     def handle(self, method, path, q, body, cookie):
         with self.lock:
             aid = (q.get("account_id") or [None])[0] or (body or {}).get("account_id")
@@ -261,7 +253,7 @@ class Fake:
             hits.append(time.monotonic())
             f = self.fail.get((path, aid))
             f = f(c) if callable(f) else f
-            if f and len(hits) <= 50:   # healing keeps an unbounded retry loop from hanging the suite
+            if f and len(hits) <= 50:
                 return f, {"detail": {"error": "boom"}}
             if path == "/admin/vault-ai/cache/summary":
                 return 200, {"account_id": aid, "count": getattr(c, "count", c.describable), "complete": c.complete,

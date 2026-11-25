@@ -1713,15 +1713,14 @@ async def case_scrape_click_mid_scrape_stays_read():
 async def case_scrape_fansly_keeps_both_ends():
     """A Fansly account (read semantics unmeasured): an unread long first scrape keeps
     today's both-ends pull."""
-    from automations import scrape_chats as sc
     aid, fan = "acc_peek", 5890
-    real = sc.fansly_backend.is_fansly
-    sc.fansly_backend.is_fansly = lambda account_id: account_id == aid
+    real = ax.account_registry.get_platform
+    ax.account_registry.get_platform = lambda account_id: "fansly" if account_id == aid else real(account_id)
     try:
         fake = PeekRecordingClient(fan, _fan_msgs(fan), unread=2)
         await _scrape(aid, fake, {})
     finally:
-        sc.fansly_backend.is_fansly = real
+        ax.account_registry.get_platform = real
     assert ("asc", None, 0) in fake.calls, fake.calls
     _, hist, _, _ = await _thread(aid, fan)
     assert hist.history_deferred_at is None and hist.last_message_id == 150

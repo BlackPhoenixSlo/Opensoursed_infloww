@@ -1,45 +1,3 @@
-"""service/automations/send_followup_decide.py — the follow-up drip's per-fan phase
-machine as ONE pure transition (docs/reducer-scan.md, Non-React #1):
-
-    decide(entry, ev, thresholds) -> (entry', effects)
-
-No I/O and no service imports beyond the pure isotime, so it loads and tests without a DB. send_followup.run()
-is the shell: it loads, builds the event, calls decide() and performs the effects in
-the order given. Every phase rule of the drip lives here and nowhere else.
-
-Phases: tracking -> (steps 1..3 at the silence thresholds, >= _MIN_GAP_H apart) ->
-all_sent_waiting; a reply mid-drip -> reply_cooldown (26 h) -> tracking, same cycle;
-a reply after the drip (or after the cap retired him: completed) -> restart_cooldown
-(72 h) -> tracking, cycle + 1, steps reset; silent past _MAX_SILENCE_H -> completed.
-
-Events (what run() saw):
-  Tick(now)                             the time-only pass over EVERY state row,
-                                        before the LLM-key check and the sweep
-  Seen(now, last_in, last_out, guarded) one eligible fan in the sweep: his latest
-                                        inbound / outbound message times, and
-                                        whether the contact guard holds him;
-                                        fed again with fresh times right before
-                                        his send (a reply mid-tick -> no Send)
-  Sent(step, now)                       his step went out (OF returned the send, or
-                                        the settle found it landed); clears the marker
-
-A marked entry (send-once marker `sending_at` / `unconfirmed_at`, send_marker_decide)
-is never auto-sent: every event but Sent is (e, []), no Send and no Save, so a tick
-never rewrites a marker the user's Retry just cleared.
-
-Effects (what run() does, in list order; run() counts each by value):
-  Save()                 upsert entry' into followup_state
-  Resume()               a cooldown ran out: entry' is the fan's state from here on
-                         (`transitioned`)
-  Cooldown(kind)         'reply' | 'restart' (`state_advanced`; a reply also
-                         `skipped_unread`)
-  Complete()             retired by the 7-day silence cap (`completed`)
-  Wait()                 a due step held by the contact guard (`skipped_guard`);
-                         every other hold is simply no Send
-  Send(step, silence_h)  generate + send this step (run() still checks the fan
-                         cooldown and the lease first; on a returned send it feeds
-                         Sent back in)
-"""
 from __future__ import annotations
 
 import json
@@ -48,26 +6,16 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Literal
 
-from isotime import parse_iso as _parse_iso  # dependency-free (no service imports)
+from isotime import parse_iso as _parse_iso
 
 log = logging.getLogger("of-relay.automation.send_followup")
 
-# Silence thresholds per step (hours) and the minimum gap between consecutive
-# sends. Carried over from the DOM script unchanged (07 §pick_next_step).
-# Overridable per-rule via payload["step_hours"] = [h1, h2, h3] (see
-# _resolve_step_thresholds) — the Brain panel's "Follow-ups" delays write it.
-# Step 3 must sit UNDER _MAX_SILENCE_H or the cap retires the fan first and the
-# final nudge never fires (it was 256h > the 168h cap — dead for every fan).
 _STEP_THRESHOLDS_H = {1: 26, 2: 64, 3: 120}
 _MIN_GAP_H = 18
-# Hard cap: never follow up a fan who's been silent longer than this. A chat
-# cold for over a week is ghosted/dead — reminders just waste sends and draw
-# "Cannot send message to this user" rejections. A fan retired here is not gone
-# for good: an inbound after the silence anchor restarts the cycle, same as a
-# finished drip (see Entry.replied_since_anchor).
+# Step 3 must stay under this or the cap retires the fan before the final nudge fires.
+# Never follow up a fan cold over a week: reminders waste sends and draw 'Cannot send message' rejections.
 _MAX_SILENCE_H = 24 * 7
 
-# Cooldowns (hours) for the reply / restart branches (07 §Core algorithm).
 _REPLY_COOLDOWN_H = 26
 _RESTART_COOLDOWN_H = 72
 
@@ -75,32 +23,25 @@ _COOLING = ("reply_cooldown", "restart_cooldown")
 _DONE = ("all_sent_waiting", "completed")
 
 
-# ── State ─────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Entry:
-    """One followup_state row (or a fresh tracking entry). Never mutated: decide()
-    returns a new one. `messages_sent` is {"<step>": iso send time}."""
     phase: str = "tracking"
     cycle: int = 1
     silence_started_at: datetime | None = None
     fan_last_reply_at: datetime | None = None
     cooldown_until: datetime | None = None
     messages_sent: dict = field(default_factory=dict)
-    # The send-once marker (followup_state columns): set right before the OF call,
-    # `unconfirmed_at` when it may have sent; `sending_ctx` = {"step": n}.
     sending_at: datetime | None = None
     sending_ctx: dict | None = None
     unconfirmed_at: datetime | None = None
 
     @property
     def marked(self) -> bool:
-        """A send of his may have left: never auto-send (a settle or Retry clears it)."""
         return self.sending_at is not None or self.unconfirmed_at is not None
 
     @classmethod
     def from_row(cls, row) -> "Entry":
-        """From a FollowupState row (duck-typed: no ORM import); None -> fresh."""
         if row is None:
             return cls()
         try:
@@ -119,15 +60,12 @@ class Entry:
                    sending_ctx=ctx if isinstance(ctx, dict) else None,
                    unconfirmed_at=row.unconfirmed_at)
 
+    # Anchored on silence_started_at, not the last outbound: another automation's send (a PPV blast) would bury the reply.
     def replied_since_anchor(self, last_fan: datetime | None) -> bool:
-        """Fan wrote back after we started counting his silence. Anchored on
-        `silence_started_at`, NOT the last outbound — any other automation's
-        send (a PPV blast a minute later) would otherwise bury the reply."""
         return bool(last_fan and (self.silence_started_at is None
                                   or last_fan > self.silence_started_at))
 
     def last_sent_dt(self) -> datetime | None:
-        """Latest send timestamp across messages_sent (for the >=18h gap)."""
         best: datetime | None = None
         for iso in self.messages_sent.values():
             dt = _parse_iso(iso)
@@ -136,7 +74,6 @@ class Entry:
         return best
 
 
-# ── Events ────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Tick:
@@ -157,7 +94,6 @@ class Sent:
     now: datetime
 
 
-# ── Effects ───────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Save:
@@ -193,16 +129,8 @@ class Send:
 Effect = Save | Resume | Cooldown | Complete | Wait | Send
 
 
-# ── Thresholds ────────────────────────────────────────────────────────
 
 def _resolve_step_thresholds(payload: dict) -> dict[int, float]:
-    """Per-step silence thresholds (hours). `payload['step_hours'] = [h1, h2, h3]`
-    overrides the defaults; any missing/invalid entry falls back to that step's
-    default ({1:26, 2:64, 3:120}). Written by the Brain panel's "Follow-ups"
-    delays so an operator can tune the drip cadence per account.
-
-    A threshold at/over _MAX_SILENCE_H counts as invalid: the cap retires the fan
-    before that step could ever fire, so honouring it would silently kill it."""
     out = dict(_STEP_THRESHOLDS_H)
     sh = (payload or {}).get("step_hours")
     if isinstance(sh, (list, tuple)):
@@ -224,8 +152,6 @@ def _resolve_step_thresholds(payload: dict) -> dict[int, float]:
 def _pick_next_step(
     silence_hours: float, sent: dict, thresholds: dict[int, float] = _STEP_THRESHOLDS_H,
 ) -> int | None:
-    """The first unsent step whose threshold the silence has reached, else None.
-    Steps are tried 1, 2, 3 in order, so a skipped step is sent before a later one."""
     if "1" not in sent and silence_hours >= thresholds[1]:
         return 1
     if "2" not in sent and silence_hours >= thresholds[2]:
@@ -235,12 +161,11 @@ def _pick_next_step(
     return None
 
 
-# ── The transition ────────────────────────────────────────────────────
 
 def decide(e: Entry, ev: Tick | Seen | Sent,
            thresholds: dict[int, float]) -> tuple[Entry, list[Effect]]:
     if e.marked and not isinstance(ev, Sent):
-        return e, []  # may have sent: held for a settle or the user's Retry
+        return e, []
 
     if isinstance(ev, Tick):
         if e.phase in _COOLING and e.cooldown_until and ev.now > e.cooldown_until:
@@ -258,40 +183,35 @@ def decide(e: Entry, ev: Tick | Seen | Sent,
 
     now = ev.now
     if e.phase in _COOLING:
-        return e, []  # still cooling down (the Tick pass ran first)
+        return e, []
 
-    # He wrote back after we stopped counting his silence — either the drip ran
-    # out of steps or the cap retired him. Same restart either way.
     if e.phase in _DONE:
         if e.replied_since_anchor(ev.last_in):
             return replace(e, phase="restart_cooldown",
                            cooldown_until=now + timedelta(hours=_RESTART_COOLDOWN_H),
                            fan_last_reply_at=ev.last_in), [Save(), Cooldown("restart")]
-        return e, []  # finished, no reply: nothing to do
+        return e, []
 
-    # tracking: his latest message is newer than ours -> pause for a human.
     if ev.last_in and (ev.last_out is None or ev.last_in > ev.last_out):
         return replace(e, phase="reply_cooldown",
                        cooldown_until=now + timedelta(hours=_REPLY_COOLDOWN_H),
                        fan_last_reply_at=ev.last_in), [Save(), Cooldown("reply")]
 
-    if e.silence_started_at is None:  # establish the silence anchor
+    if e.silence_started_at is None:
         e = replace(e, silence_started_at=ev.last_out or now)
     silence_hours = (now - e.silence_started_at).total_seconds() / 3600.0
 
-    if silence_hours > _MAX_SILENCE_H:  # cold for over a week: stop the drip
+    if silence_hours > _MAX_SILENCE_H:
         return replace(e, phase="completed"), [Save(), Complete()]
 
     step = _pick_next_step(silence_hours, e.messages_sent, thresholds)
     if step is None:
-        return e, [Save()]  # not due yet; persists an anchor just set
+        return e, [Save()]
 
     last_sent = e.last_sent_dt()
     if last_sent and (now - last_sent).total_seconds() / 3600.0 < _MIN_GAP_H:
-        return e, [Save()]  # inside the gap: the step waits
+        return e, [Save()]
 
-    # A blast/nudge/manual send touched him inside the guard window: the step
-    # stays due and fires on a later tick. Nothing saved (as before).
     if ev.guarded:
         return e, [Wait()]
     return e, [Send(step, silence_hours)]

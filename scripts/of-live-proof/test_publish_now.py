@@ -1,7 +1,3 @@
-"""queue--publish-now (ticket 99): the guard's publish gate and fan-visible attempts (Proof.fan_visible_max), the
-Relay counting each attempt, a found publish taking the post its own create made, FakeOF's Publish now and profile
-read, the three planted faults, the proof's pure helpers and the fake check's phased window. No browser, no OnlyFans.
-"""
 import json
 import sys
 import time
@@ -52,7 +48,6 @@ def armed(**kw):
 PUBLISH = R("PUT", f"/api2/v2/schedules/{SID}/publish")
 
 
-# ── the guard ──
 
 def test_post_d_scheduled_ahead_is_allowed_and_not_fan_visible():
     v = decide(R("POST", "/api2/v2/posts", post_body()), Run(proof=QUEUE_PUBLISH_NOW, of="fake", quiet_hour=QUIET))
@@ -60,16 +55,15 @@ def test_post_d_scheduled_ahead_is_allowed_and_not_fan_visible():
 
 
 @pytest.mark.parametrize("of, host, kind", [
-    ("fake", "onlyfans.com", "allow"),   # FakeOF's origin, logged as onlyfans.com
-    ("fake", S3_HOST, "allow"),          # spec 53h: the PUT arm names S3_HOST (phase2 UPLOAD_ARMS)
+    ("fake", "onlyfans.com", "allow"),
+    ("fake", S3_HOST, "allow"),
 ])
 def test_the_storage_put_takes_ofs_creator_spliced_key(of, host, kind):
-    """Spec 53: OnlyFans' putUrl carries the Creator's id spliced into the key; the arm names its S3 host."""
     assert S3_HOST in QUEUE_PUBLISH_NOW.hosts
     req = Request("PUT", host, f"/upload/{ids.CREATOR_ID}"
                   "/be74f324-6712-4dff-a833-aa3d6a76f2e6/1136746826498/oi-proof-publish.png", None, AT)
     run = Run(proof=QUEUE_PUBLISH_NOW, of=of, quiet_hour=QUIET, spent={("arm", 0): 1},
-              hosts=QUEUE_PUBLISH_NOW.hosts)   # the Relay's arm adds the proof's named hosts
+              hosts=QUEUE_PUBLISH_NOW.hosts)
     assert decide(req, run).kind == kind
 
 
@@ -79,17 +73,16 @@ def test_publish_of_ds_registered_schedule_is_allowed_and_fan_visible():
 
 
 def test_publish_of_another_queued_posts_schedule_is_refused_by_the_publish_gate():
-    """Adviser 1: the planted other-post Publish now is the guard's publish gate's to refuse."""
     v = decide(R("PUT", f"/api2/v2/schedules/{OTHER_SID}/publish"), armed())
     assert (v.kind, v.cls) == ("refused", "mass_message")
 
 
 @pytest.mark.parametrize("done, kind", [
     ((), "allow"),
-    ((PN,), "allow"),                 # the visible re-run: Publish now's second attempt
-    ((PN, PN), "refused"),            # fan_visible_max = 2 spent
-    ((SEND, PN), "refused"),          # the effort's cap of 2 spent
-    ((SEND,), "allow"),               # another proof's one attempt
+    ((PN,), "allow"),
+    ((PN, PN), "refused"),
+    ((SEND, PN), "refused"),
+    ((SEND,), "allow"),
 ], ids=["none", "one own", "two own", "cap spent", "other"])
 def test_publish_now_may_make_two_fan_visible_attempts_within_the_cap(done, kind):
     v = decide(PUBLISH, armed(fan_visible_done=done))
@@ -100,7 +93,7 @@ def test_publish_now_may_make_two_fan_visible_attempts_within_the_cap(done, kind
 
 @pytest.mark.parametrize("done, kind", [
     ((), "allow"),
-    ((PN,), "refused"),   # live: Publish now runs with a fan-visible cap of 1, the re-run never sent
+    ((PN,), "refused"),
 ], ids=["first", "re-run"])
 def test_live_publish_now_gets_one_fan_visible_attempt(done, kind):
     v = decide(PUBLISH, armed(of="live", fan_visible_done=done))
@@ -110,9 +103,9 @@ def test_live_publish_now_gets_one_fan_visible_attempt(done, kind):
 
 
 @pytest.mark.parametrize("of, media, kind", [
-    ("live", [X], "refused"),   # the guard backstop: live, a fan-visible proof's post carries no media
+    ("live", [X], "refused"),
     ("live", [], "allow"),
-    ("fake", [X], "allow"),     # fake mode: the hidden-dedupe drill posts X_D
+    ("fake", [X], "allow"),
 ], ids=["live media", "live text-only", "fake media"])
 def test_outside_fake_a_fan_visible_proofs_post_carries_empty_media_files(of, media, kind):
     v = decide(R("POST", "/api2/v2/posts", {**post_body(), "mediaFiles": media}),
@@ -129,11 +122,9 @@ def test_send_now_keeps_its_single_attempt():
     assert (v.kind, v.cls) == ("refused", "fan_visible") and "its one fan-visible attempt" in v.reason
 
 
-# ── the Relay ──
 
 @pytest.fixture
 def relay(tmp_path, monkeypatch):
-    """relay_live imported afresh against a temp evidence folder, fake mode (as test_relay_live's)."""
     monkeypatch.setenv("OFM_PROOF_EVIDENCE", str(tmp_path))
     monkeypatch.setenv("OF_API_ORIGIN", "http://127.0.0.1:9")
     sys.modules.pop("relay_live", None)
@@ -151,10 +142,9 @@ def test_relay_counts_each_fan_visible_attempt(relay, monkeypatch):
     for _ in range(3):
         _, v, row = relay._intent("of-browser", "PUT", url, None)
         verdicts.append((v.kind, v.cls, bool(row and row["fan_visible"])))
-    # the third: the publish arm's max of 2 refuses it first
     assert verdicts == [("allow", "allow", True), ("allow", "allow", True), ("refused", "over_count", False)]
     assert relay._run.fan_visible_done == (PN, PN)
-    v = decide(PUBLISH, replace(relay._run, spent=SPENT))   # with the arm unspent, the attempts count refuses it
+    v = decide(PUBLISH, replace(relay._run, spent=SPENT))
     assert (v.kind, v.cls) == ("refused", "fan_visible")
 
 
@@ -167,8 +157,8 @@ def _app(relay):
 
 @pytest.mark.parametrize("post_row, want", [
     ({"proof": PN, "of_id": POST}, 200),
-    ({"proof": PN, "of_id": OTHER_POST}, 409),                  # the found id is another post
-    ({"proof": "new-post--upload", "of_id": POST}, 409),        # another proof's post create
+    ({"proof": PN, "of_id": OTHER_POST}, 409),
+    ({"proof": "new-post--upload", "of_id": POST}, 409),
     (None, 409),
 ], ids=["own post create", "another post", "another proof", "no post create"])
 def test_found_publish_takes_only_the_post_its_own_create_made(relay, post_row, want):
@@ -192,7 +182,6 @@ def test_found_mismatch_takes_a_publish_row_only_with_ds_own_post_id(relay, of_i
     assert (why is None) == ok, why
 
 
-# ── FakeOF ──
 
 @pytest.fixture
 def fake():
@@ -220,7 +209,6 @@ def _post(req, media, text="oi-proof-t"):
 
 
 def _hidden_post(of, req):
-    """A post holding the seeded vault item 2, then Removed from vault (a hidden id in a scheduled post)."""
     m = ids.vault_media_id(2)
     assert req("PUT", "/api2/v2/vault/media/hidden", json={"mediaIds": [m]}) == (200, {"success": True})
     return m
@@ -235,7 +223,7 @@ def test_fake_publish_now_moves_a_post_holding_a_hidden_id_to_the_profile(fake):
     of, req, _ = fake()
     m = _hidden_post(of, req)
     status, post = _post(req, [m])
-    assert status == 200 and [x["id"] for x in post["media"]] == [m]   # OnlyFans takes a hidden id (ASSUMPTION)
+    assert status == 200 and [x["id"] for x in post["media"]] == [m]
     sid = req("GET", "/api2/v2/schedules?limit=50")[1]["list"][0]["id"]
     uid = of.world.creator_id
     assert req("GET", f"/api2/v2/users/{uid}/posts?limit=10") == (200, [])
@@ -245,7 +233,7 @@ def test_fake_publish_now_moves_a_post_holding_a_hidden_id_to_the_profile(fake):
     assert status == 200 and [(r["id"], r["rawText"], [x["id"] for x in r["media"]]) for r in rows] == \
         [(post["id"], "oi-proof-t", [m])]
     assert req("GET", f"/api2/v2/users/{uid + 1}/posts")[0] == 404
-    assert req("PUT", f"/api2/v2/schedules/{sid}/publish")[0] == 404   # published: no schedule item left
+    assert req("PUT", f"/api2/v2/schedules/{sid}/publish")[0] == 404
     read = read_publish_now(_get(of, req), None)
     assert read["queue"] == [] and read["profile"] == [[post["id"], "oi-proof-t", m]]
     assert req("DELETE", f"/api2/v2/posts/{post['id']}") == (200, {"success": True})
@@ -261,7 +249,7 @@ def test_hidden_refused_answers_400_only_for_a_post_holding_a_hidden_medium(fake
     hidden_sid, visible_sid = rows[ids.post_id(1)], rows[ids.post_id(2)]
     status, body = req("PUT", f"/api2/v2/schedules/{hidden_sid}/publish")
     assert status == 400 and "hidden media" in body["error"]["message"]
-    assert hidden_sid in [r["id"] for r in req("GET", "/api2/v2/schedules?limit=50")[1]["list"]]   # unpublished
+    assert hidden_sid in [r["id"] for r in req("GET", "/api2/v2/schedules?limit=50")[1]["list"]]
     assert req("PUT", f"/api2/v2/schedules/{visible_sid}/publish") == (200, {"success": True})
     faults = [h.get("fault") for h in client.app.snapshot() if h["path"].endswith("/publish")]
     assert faults == ["hidden-refused", None]
@@ -269,17 +257,16 @@ def test_hidden_refused_answers_400_only_for_a_post_holding_a_hidden_medium(fake
 
 def test_post_lost_hidden_makes_the_post_holding_a_hidden_id_then_drops_the_reply(fake):
     of, req, client = fake("post-lost-hidden")
-    assert _post(req, [ids.vault_media_id(3)])[0] == 200   # a visible medium: untouched
+    assert _post(req, [ids.vault_media_id(3)])[0] == 200
     m = _hidden_post(of, req)
     with pytest.raises(Exception):   # noqa: B017  (no reply at all)
         _post(req, [m])
     held = [p.media for p in fake_posts.state(of)["posts"].values()]
-    assert held == [[ids.vault_media_id(3)], [m]]   # OnlyFans made it before the reply was lost
+    assert held == [[ids.vault_media_id(3)], [m]]
 
 
 @pytest.mark.parametrize("fault, status", [("publish-lost", None), ("publish-500", 500)])
 def test_publish_reply_faults_publish_d_then_lose_the_answer(fake, fault, status):
-    """The required drill: OnlyFans publishes D, its reply is lost (no reply) or a 5xx; D is on the profile."""
     of, req, client = fake(fault)
     _, post = _post(req, [ids.vault_media_id(3)])
     sid = req("GET", "/api2/v2/schedules?limit=50")[1]["list"][0]["id"]
@@ -291,7 +278,6 @@ def test_publish_reply_faults_publish_d_then_lose_the_answer(fake, fault, status
     assert req("GET", "/api2/v2/schedules?limit=50")[1]["list"] == []
     rows = req("GET", f"/api2/v2/users/{of.world.creator_id}/posts?limit=10")[1]
     assert [r["id"] for r in rows] == [post["id"]]
-    # in-process there is no transport to drop (": connection not dropped"); the fake run proves the real drop
     assert [h.get("fault", "").split(":")[0] for h in client.app.snapshot() if h["path"].endswith("/publish")] == \
         [fault]
 
@@ -320,7 +306,6 @@ def test_publish_other_seeds_the_owners_post_and_rewrites_only_the_publish():
         fake_layer.Recorder(None, "publish-other")
 
 
-# ── the proof's helpers ──
 
 RUN = "oi-proof-r"
 BEFORE = {"queue": [], "vault": [1, 2], "profile": [[7, "owner's", 1]]}
@@ -335,7 +320,7 @@ D_PUBLISHED = {"queue": [], "vault": [1, 2], "profile": sorted([[int(POST), draf
     (D_QUEUED, int(POST)),
     (D_PUBLISHED, int(POST)),
     ({**D_QUEUED, "queue": [[int(SID), int(POST), "an operator's post", X]]}, None),
-    ({**D_QUEUED, "queue": [*D_QUEUED["queue"], [9, 10, draft_text(RUN, PN_VISIBLE), 11]]}, None),   # two
+    ({**D_QUEUED, "queue": [*D_QUEUED["queue"], [9, 10, draft_text(RUN, PN_VISIBLE), 11]]}, None),
     ({**BEFORE, "queue": [[9, 10, draft_text(RUN, PN_FILE), 11]]}, 10),
 ], ids=["nothing", "queued", "published", "unmarked", "two", "P"])
 def test_finder_takes_the_one_new_marked_post_queued_or_published(after, want):
@@ -345,7 +330,6 @@ def test_finder_takes_the_one_new_marked_post_queued_or_published(after, want):
 def test_effect_and_undo_keys():
     assert not publish_now_effect(BEFORE, BEFORE)
     assert publish_now_effect(BEFORE, D_QUEUED) and publish_now_effect(BEFORE, D_PUBLISHED)
-    # X_D is hidden (not listed in the vault after): still D's key; a medium the vault had before never is
     assert publish_media(BEFORE, D_PUBLISHED) == {POST: {"media": X}}
     assert publish_media(BEFORE, {**BEFORE, "queue": [[9, 10, "t", 2]]}) == {}
     assert publish_media(BEFORE, {**BEFORE, "queue": [[9, 10, "t", 11, 12]]}) == {}
@@ -379,7 +363,6 @@ def _pn_ctx(of="fake", spent=()):
 
 
 def test_pn_draft_parks_live_before_any_write(monkeypatch):
-    """No capture holds a text-only post body: live parks pending capture, nothing written."""
     monkeypatch.setattr(phase6_writes, "_seed_draft", lambda *a: pytest.fail("a write before the live park"))
     ctx, calls = _pn_ctx("live")
     with pytest.raises(_Parked, match="needs capture \\(ticket 12 sitting\\)"):
@@ -389,7 +372,6 @@ def test_pn_draft_parks_live_before_any_write(monkeypatch):
 
 @pytest.mark.parametrize("status", ["error: RemoteProtocolError", None, 500, 502])
 def test_pn_publish_lost_or_5xx_fails_unretried_and_leaves_d_to_the_finder(monkeypatch, status):
-    """No re-run, no settle here: D is found by the final after-write read (`/__proof/found`) and undone."""
     monkeypatch.setattr(phase6_writes, "_publish_now", lambda ctx, pid, sid, tag: ([], status, None))
     monkeypatch.setattr(phase6_writes, "_seed_draft", lambda *a: pytest.fail("re-run attempted"))
     ctx, calls = _pn_ctx()
@@ -401,8 +383,8 @@ def test_pn_publish_lost_or_5xx_fails_unretried_and_leaves_d_to_the_finder(monke
 
 @pytest.mark.parametrize("of, spent, rerun", [
     ("fake", [PN], True),
-    ("fake", [SEND, PN], False),   # the effort's cap spent: parks
-    ("live", [PN], False),         # live: cap 1, parks, never attempts
+    ("fake", [SEND, PN], False),
+    ("live", [PN], False),
 ])
 def test_pn_publish_hidden_refusal_reruns_only_in_fake_within_the_cap(monkeypatch, of, spent, rerun):
     monkeypatch.setattr(phase6_writes, "_publish_now", lambda ctx, pid, sid, tag: ([], 400, {"error": {}}))
@@ -428,10 +410,8 @@ def test_publish_now_is_declared_as_a_two_branch_delete_at_once_proof():
     assert p.undo[0].reverses == (3, 4) and p.undo[1].reverses == (0, 1, 2, 3, 4)
 
 
-# ── the fake check: a proof settled in phases ──
 
 def test_fake_check_counts_only_the_rows_inside_each_rows_window():
-    """P's row (phase 1) and D's (phase 2) on one path: P's window does not count D's later write."""
     t0 = AT.timestamp()
 
     def at(s):

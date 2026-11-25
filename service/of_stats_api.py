@@ -28,6 +28,7 @@ import account_health
 import accounts as account_registry
 import admission
 import of_promos
+import platforms
 import relay_cache
 from relay_host import account_ttl as _account_ttl
 from relay_host import get_client as _get_client
@@ -365,7 +366,7 @@ async def admin_stats_referrals(
     metas = account_registry.list_accounts()
     live = {m["id"] for m in metas if m.get("has_session")}
     ids = [a for a in (scoped if scoped is not None else [m["id"] for m in metas])
-           if a in live and account_registry.get_platform(a) != "fansly"]
+           if a in live and platforms.Lack.REFERRALS not in platforms.for_account(a).lacks]
     off = await account_health.deactivated_ids()
     start, end = f"{from_} 00:00:00", f"{to} 23:59:59"
 

@@ -1,23 +1,3 @@
-"""Single-model scope: the writable OF settings mirror controls send their relay PATCH; others send nothing.
-No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner 2026-11-20, origin/main
-77e5df419; phase_check.py's one_creator checks it).
-
-Mocks the login and relay as settings_values.py (SYNTHETIC values), records the
-bodies of PATCH /api/of/v2/users/me and /users/me/reply-on-subscribe, and checks:
-typing a display name + SAVE sends {name}, stays on the page with OF's settings toast ("Changes were saved",
-visible, no note) and the page's name (.g-user-name) then shows it (the
-mocked /users/me returns what was saved), the filled Location field's label sits clear of its value,
-the welcome switch sends {enabled: true} with the toast, the fans auto-follow toggle sends PATCH /users/me/settings/security
-{isAutoFollowBack: true} with the toast, a toast notification toggle sends PATCH /users/settings/notifications, the subscription
-price shows the real price and its Save (after the confirm) sends PATCH /users/me {subscribePrice: 12.5} with the toast,
-staying on the page, the web push permission switch (the browser's, no Relay write) is disabled with the tooltip "Not
-available in Inflowwww yet", and the stream schedule form (streaming/dashboard/create): SCHEDULE with the form
-empty sends nothing and shows the validation note; with tomorrow picked in the Date field's day popup (shown as OF's
-"Oct 13, 2026"), 6:30 pm in the Time field's time input and a description it sends exactly one POST /api/of/v2/streams {description, scheduledDate (local ISO with
-offset), isShowTips: true} and lands on /of-manager/queue.
-Screenshots: /tmp/of-mirror-shots/inapp-writes.png (profile, its toast), inapp-writes-fans.png, inapp-writes-price.png, inapp-writes-webpush.png,
-inapp-writes-schedule-invalid.png, inapp-writes-schedule-filled.png, inapp-writes-schedule-queue.png. Exit 1 on a failed check.
-"""
 import json, os, sys
 from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
@@ -54,13 +34,13 @@ def session(b, scope_js):
         if req.method=="GET" and path in SOURCES:
             return route.fulfill(status=200, content_type="application/json", body=json.dumps(SOURCES[path]))
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     first=[True]
     def open_page(page, section="settings"):
@@ -79,8 +59,6 @@ SAVED_TOAST="Changes were saved"
 SUBMIT=".g-page__header > button.g-btn"
 TOMORROW=date.today()+timedelta(days=1)
 def fill_stream(fr):
-    """Tomorrow picked in OF's day popup (the Date field's), 6:30 pm in the Time field's time input and a description;
-    returns the expected POST body."""
     fr.locator(".vdatetime:has(input[name='date'])").click()
     fr.locator(".vdatetime-popup").wait_for(state="visible")
     if TOMORROW.month!=date.today().month: fr.locator("[data-oi-month='next']").click()
@@ -169,7 +147,7 @@ with sync_playwright() as p:
         check("schedule form: typing clears the validation note (and adds no read-only note)", fr.evaluate(note), None)
         check("schedule form: the description's label moves up and its counter counts", fr.evaluate("""[document.querySelector('.create-scheduled__description [contenteditable]').getAttribute('data-is-empty'),
           document.querySelector('.create-scheduled__description .count-block').textContent.trim()]"""), ["false","16/500"])
-        pg.wait_for_timeout(600)  # the label's own transition
+        pg.wait_for_timeout(600)
         pg.screenshot(path=f"{SHOTS}/inapp-writes-schedule-filled.png")
         fr.locator(SUBMIT).click()
         for _ in range(40):

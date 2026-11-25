@@ -147,6 +147,22 @@ def test_put_validation():
     assert _rows(id=sid)[0].types == '["purchases"]'
 
 
+def test_put_platforms_keep_only_registered_keys():
+    import platforms
+    _fresh()
+    a = fx.login_owner("agency_a_owner")
+    asked = {"onlyfans": True, "fansly": False, "myspace": True, "": True}
+    sid = a.put("/push/subscription", json={**_body(), "platforms": asked}).json()["id"]
+    assert _rows(id=sid)[0].platforms == '{"onlyfans": true, "fansly": false}'
+    real = platforms.KEYS
+    platforms.KEYS = (*real, "myspace")
+    try:
+        sid = a.put("/push/subscription", json={**_body(), "platforms": asked}).json()["id"]
+    finally:
+        platforms.KEYS = real
+    assert _rows(id=sid)[0].platforms == '{"onlyfans": true, "fansly": false, "myspace": true}'
+
+
 def test_cap_and_rate():
     _fresh()
     c = fx.login_chatter("chatter_b")

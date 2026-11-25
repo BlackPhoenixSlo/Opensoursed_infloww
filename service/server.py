@@ -74,6 +74,7 @@ from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_S
 from of_sends import SendsMixin  # noqa: E402
 from of_rich_text import MARKUP_MAX, is_of_html, sanitize_of_html  # noqa: E402
 import client_pool  # noqa: E402 — the relay's one OFClient pool
+import platforms  # noqa: E402
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
 
 # Phase A — SQL persistence + SSE broadcaster: every pump event fans into
@@ -357,22 +358,18 @@ import llm_client as _llm_client  # noqa: E402  (the key-error handler below)
 import vault_sweep as _vault_sweep  # noqa: E402  (the sweep-stop handler below)
 
 
-# Fansly writes we haven't wired raise FanslyAPIError. _proxy() only maps
-# OFAPIError, so without this these surface as a generic 500 and the
-# "isn't wired for Fansly yet" message never reaches the UI. Map it to a 502
-# carrying the message. Registered defensively — Fansly may be absent.
-try:
-    import fansly_backend as _fansly_backend  # noqa: F401  (puts ../fansly on sys.path)
-    from fansly_client import FanslyAPIError as _FanslyAPIError
+# _proxy() maps only OFAPIError, so a Backend module's API error would surface as a
+# generic 500 and its message never reach the UI.
+def _backend_api_error_handler(key: str):
+    async def handle(request, exc):  # noqa: ANN001
+        return JSONResponse(status_code=getattr(exc, "status_code", 502),
+                            content={"ok": False, "error": key, "detail": str(exc)})
+    return handle
 
-    @app.exception_handler(_FanslyAPIError)
-    async def _fansly_api_error_handler(request, exc):  # noqa: ANN001
-        return JSONResponse(
-            status_code=502,
-            content={"ok": False, "error": "fansly", "detail": str(exc)},
-        )
-except Exception:
-    log.warning("FanslyAPIError handler not registered", exc_info=True)
+
+for _p in platforms.ALL:
+    if _p.backend is not None:
+        app.add_exception_handler(_p.backend.APIError, _backend_api_error_handler(_p.key))
 
 
 # An AI feature whose API key is missing, empty or rejected (401/403/402): one
@@ -1248,15 +1245,9 @@ async def _ws_pump_for_account(account_id: str) -> bool:
             meta = account_registry.get_account(account_id) or {}
             nickname = meta.get("nickname") or account_id
             color = meta.get("color")
-            # Seam 3 of 3 (HTTP client, automation client, WS pump). Fansly's
-            # socket is a different protocol end to end — wsv3, in-band auth,
-            # triple-encoded frames — but FanslyWebSocket presents the same
-            # interface and yields the same OF-shaped events, so everything
-            # below this branch is platform-blind.
-            platform = account_registry.get_platform(account_id)
-            if platform == "fansly":
-                from fansly_ws import FanslyWebSocket
-                ws = FanslyWebSocket(_load_client(account_id))
+            platform = platforms.for_account(account_id)
+            if platform.backend is not None:
+                ws = platform.backend.ws(_load_client(account_id))
             else:
                 ws = OFWebSocket(lambda: _load_client(account_id),
                                  session_dead=account_health.is_session_dead_error,
@@ -1267,8 +1258,7 @@ async def _ws_pump_for_account(account_id: str) -> bool:
             # platforms share this registry, so `of_ws.emit_typing` finds a
             # Fansly pump the same way (it routes typing over REST).
             register_pump(account_id, ws)
-            log.info("ws-pump[%s]: connecting to %s", nickname,
-                     "Fansly" if platform == "fansly" else "OF")
+            log.info("ws-pump[%s]: connecting to %s", nickname, platform.label)
             try:
                 async for event in ws.events():
                     # Tag every event so multi-account subscribers can route.
@@ -1921,15 +1911,11 @@ def _load_client(account_id: str) -> OFClient:
     Pooling lives in client_pool; this is only the HTTP translation of the
     ways a build can fail (no file, incomplete signing rules, a missing field).
     Routes and automations share the one pool, so an account has one client
-    (and one cookie jar), not one per lane.
-
-    Platform branch (additive): a Fansly account returns the OF-shaped shim
-    (fansly_backend → FanslyShimClient); OnlyFans accounts — the default for
-    every account without a `platform` — hit the unchanged client_pool."""
+    (and one cookie jar), not one per lane."""
     try:
-        if account_registry.get_platform(account_id) == "fansly":
-            import fansly_backend
-            return fansly_backend.get_client(account_id)
+        backend = platforms.for_account(account_id).backend
+        if backend is not None:
+            return backend.get_client(account_id)
         c = client_pool.get(account_id)
         seen = _proxy_clients.get()
         if seen is not None:
@@ -6419,7 +6405,8 @@ async def of_schedule_message(chat_id: int, request: Request,
     the ≤15-min route uses, fired through the shim's real `send_message`). The OF
     path is untouched."""
     account_id = _resolve_account_id(request)
-    if account_registry.get_platform(account_id) == "fansly":
+    platform = platforms.for_account(account_id)
+    if platforms.Lack.SERVER_SCHEDULE in platform.lacks:
         # Apply the shim's OWN send rules AT SCHEDULE TIME. The executor
         # forwards these kwargs verbatim, so anything send_message refuses
         # would otherwise be accepted here and fail silently at fire time —
@@ -6430,12 +6417,10 @@ async def of_schedule_message(chat_id: int, request: Request,
         # check was added to the shim and not here, re-opening the exact
         # deferred-failure hole this block exists to close). check_sendable is
         # stateless precisely so this route can ask without a session.
-        from fansly_client import FanslyAPIError
-        from fansly_shim import check_sendable
         try:
-            check_sendable(media_files=body.media_files, price=body.price,
-                           previews=body.previews, locked_text=body.locked_text)
-        except FanslyAPIError as e:
+            platform.backend.check_sendable(media_files=body.media_files, price=body.price,
+                                            previews=body.previews, locked_text=body.locked_text)
+        except platform.backend.APIError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return await _enqueue_scheduled(request, account_id, body, fan_id=chat_id,
                                         run_at_iso=body.scheduled_date, giphy_id=None)
@@ -6516,12 +6501,12 @@ async def create_scheduled_send(request: Request, body: _ScheduledSendBody = Bod
     # send_message refuses PPV price and media attachments, and it does so at
     # FIRE time — minutes later, into a retry loop the chatter never sees. Fail
     # here, while they are still looking at the composer.
-    if account_registry.get_platform(account_id) == "fansly" and (
-            body.media_files or body.price > 0):
+    p = platforms.for_account(account_id)
+    if platforms.Lack.NEAR_SCHEDULE_MEDIA in p.lacks and (body.media_files or body.price > 0):
         raise HTTPException(
             status_code=400,
-            detail="Fansly scheduled sends support text and GIFs for now — "
-                   "PPV price and media attachments aren't wired on the Fansly "
+            detail=f"{p.label} scheduled sends support text and GIFs for now — "
+                   f"PPV price and media attachments aren't wired on the {p.label} "
                    "path yet.",
         )
     return await _enqueue_scheduled(request, account_id, body, fan_id=body.fan_id,

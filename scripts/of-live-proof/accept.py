@@ -1,20 +1,3 @@
-"""accept.py: a Phase's fake-mode acceptance run over `run.sh` (ticket 77; no runner existed in ticket 10's tree).
-
-    nice -n 10 ./venv/bin/python -I scripts/of-live-proof/accept.py --phase 3 [--batch 4] [--sweep-port 3091 | --sweep <file>]
-
-1. The Phase's whole proof list (`proofs/phase<N>.py` PROOFS + WIRED_PROOFS) in fake mode, batches of at most `--batch`
-   (default 4: load), Lockout proofs last in their own batches with `--lockout`. `refused: lock held` (another lane's
-   run) waits 15 s and tries again. A failed batch whose run-level verdict holds (report.json `run_ok`, prove.py) and
-   whose only failures are proofs failing on a `Page.goto` timeout or "no Mirror frame" (load, not the code) retries
-   each such proof once, alone; any other failure is FAIL.
-2. `phase<N>.py --check-records docs/of-manager/captures`.
-3. `phase<N>.py --check-sweep` on a fresh `dead.py --sweep-out` of the Phase's sections when `--sweep-port` names a
-   running `next dev` (its dead.py exit counts too), else on `--sweep` (default: the committed 2026-11-20 sweep,
-   overlaid by COMMITTED_OVERLAYS, its pages re-swept since: proof_list `--overlay`).
-
-Last line: `accept phase N: PASS (n retried: ids)` or `accept phase N: FAIL (...)`, after the evidence folders and the
-load average at start and end. Exit 0 only on PASS.
-"""
 from __future__ import annotations
 
 import argparse
@@ -37,15 +20,12 @@ from prove import proof_ok  # noqa: E402
 PY = ROOT / "venv" / "bin" / "python"
 CAPTURES = ROOT / "docs" / "of-manager" / "captures"
 COMMITTED_SWEEP = ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-20.json"
-# The pages re-swept on the 2026-11-21 tree (the dated file stays frozen; ticket 10's phase1-v2 precedent): the pages
-# whose Live passes (D1) un-greyed a control, Phase 1 statements/stats/earnings and the 11 home/state-* pages included,
-# each page's Not-yet set otherwise unchanged.
 COMMITTED_OVERLAYS = (ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-21-live.json",
-                      ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-21-own-bubbles.json")   # ticket 33: messages/chat at SWEEP_QUERY
-SWEEP_SECTIONS = {3: ("settings", "profile")}   # the Phase spec's Acceptance `dead.py --sweep-out` sections
+                      ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-21-own-bubbles.json")
+SWEEP_SECTIONS = {3: ("settings", "profile")}
 RETRYABLE = re.compile(r"Page\.goto: Timeout|no Mirror frame")
 LOCK_HELD = "refused: lock held"
-LOCK_WAIT, LOCK_TRIES = 15, 80   # 20 min of another lane's runs at most
+LOCK_WAIT, LOCK_TRIES = 15, 80  # 20 min of another lane's runs at most
 _EVIDENCE = re.compile(r"^ofm-live-proof: evidence (\S+)", re.M)
 
 
@@ -55,7 +35,6 @@ def phase_proofs(n: int) -> list:
 
 
 def batches(proofs, size: int, lockout=is_lockout) -> list[tuple[list[str], bool]]:
-    """[(ids, lockout batch)]: the plain proofs in list order, then the Lockout ones, each cut into chunks of `size`."""
     plain = [p.id for p in proofs if not lockout(p)]
     locked = [p.id for p in proofs if lockout(p)]
     return ([(plain[i:i + size], False) for i in range(0, len(plain), size)]
@@ -68,8 +47,6 @@ def evidence_of(output: str) -> str | None:
 
 
 def retry_ids(rep: dict) -> list[str] | None:
-    """The ids to retry alone, [] when the batch passed, None when its failure is not only retryable proofs (FAIL).
-    A batch whose run-level verdict (prove.py's `run_ok` in report.json) is false is FAIL, never retried."""
     if rep.get("run_ok") is not True:
         return None
     if rep.get("exit") == 0:

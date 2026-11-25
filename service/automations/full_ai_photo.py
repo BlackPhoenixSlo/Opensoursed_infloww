@@ -1,25 +1,3 @@
-"""automations/full_ai_photo.py — Full AI Chat reads the photo he sends (side key `describe_fan_photos`).
-
-On by default (owner 2026-11-15, `full_ai_config.DEFAULTS`): with the key off nothing here runs and
-every line reads as before.
-
-  describe_turn(account_id, turn, client) -> record | None
-      The real-messages step (Auto-reply's lazy rule): the newest inbound media row of his Turn with
-      no `image_desc` is described once (`inbound_describe.describe_message`, cached on
-      `messages.image_desc`, so never twice) and the row object gets the description. The record
-      lands on the Decision row as `photo`: `{outcome, model, ms}`, outcome
-      described | cached | none | no_key | cap | failed | no_client; None when the Turn has no photo.
-      Every failure leaves the line `MEDIA_ONLY` and the Turn still answers (a cap is an attempt
-      outcome, as the Writers record it). `client` is the OF client the CDN download needs; Shadow
-      has none by construction (ADR-0033: no OF client), so it reads only descriptions already
-      cached and records `no_client` for a photo nobody described.
-  upload_still(data_url) -> (still, thumb)
-      The Test chat's upload: one JPG / PNG / GIF / WebP image (bio pages' limits and wording), its
-      first frame as the still the vision call gets and a small JPEG thumbnail stored on the session.
-
-Which text a row reads as (`[he sent: <desc>]`) is `_router_jev.line_text` alone, switched per
-Turn by `_router_jev.read_photos`.
-"""
 from __future__ import annotations
 
 import base64
@@ -38,20 +16,17 @@ from llm_client import LLMCapExceeded, LLMConfigError
 log = logging.getLogger(__name__)
 
 KEY = "describe_fan_photos"
-MAX_UPLOAD = 20 * 1024 * 1024       # bio pages' upload cap
+MAX_UPLOAD = 20 * 1024 * 1024
 THUMB_EDGE = 320
 _DATA_URL = re.compile(r"data:image/(?:jpeg|jpg|png|gif|webp);base64,(.+)", re.S | re.I)
 
 
 def _todo(turn: list) -> Any:
-    """The newest inbound media row of the Turn with no description yet, else None."""
     return next((m for m in reversed(turn) if m.direction == "in" and m.media_count
                  and not getattr(m, "image_desc", None)), None)
 
 
 async def describe_turn(account_id: str, turn: list, client: Any) -> dict | None:
-    """Describe the Turn's newest undescribed photo once; the record (module doc). Run it with no DB
-    session open: it calls the vision model."""
     todo = _todo(turn)
     if todo is None:
         seen = any(m.direction == "in" and m.media_count and getattr(m, "image_desc", None) for m in turn)
@@ -74,14 +49,11 @@ async def describe_turn(account_id: str, turn: list, client: Any) -> dict | None
                     todo.message_id, exc_info=True)
         desc, outcome = None, "failed"
     if desc:
-        # The value describe_message just stored: the row object reads as the DB now does.
         todo.image_desc = desc
     return {"outcome": outcome, "model": model, "ms": int((time.perf_counter() - t0) * 1000)}
 
 
 def upload_still(data_url: str) -> tuple[str, str]:
-    """(still, thumb) data-URLs of one uploaded image. Raises `Refused` (415 not a JPG / PNG /
-    GIF / WebP image or over `MAX_PIXELS`, 413 over `MAX_UPLOAD`)."""
     from PIL import Image, ImageOps
 
     m = _DATA_URL.fullmatch(data_url.strip())
@@ -113,5 +85,4 @@ def upload_still(data_url: str) -> tuple[str, str]:
         im.save(buf, format="JPEG", quality=quality)
         return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
-    # The still is shrunk again by `inbound_describe.describe_upload`, as a downloaded frame is.
     return jpeg(inbound_describe._IMG_MAX_EDGE, 90), jpeg(THUMB_EDGE, 75)

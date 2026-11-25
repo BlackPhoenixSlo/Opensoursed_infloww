@@ -225,6 +225,33 @@ def case_in_scope_session_without_cloudflare_no_store():
             assert by["auth_id"]["expires"] is None
 
 
+
+@contextlib.contextmanager
+def _platform(aid, key):
+    import accounts
+    saved = accounts.load_meta(aid)
+    meta = {k: v for k, v in (saved or {"id": aid}).items() if k != "platform"}
+    if key is not None:
+        meta["platform"] = key
+    accounts.save_meta(aid, meta)
+    try:
+        yield
+    finally:
+        if saved is None:
+            (accounts.account_dir(aid) / "meta.json").unlink()
+        else:
+            accounts.save_meta(aid, saved)
+
+
+def case_only_a_fansly_creator_is_refused_whatever_the_key():
+    owner = fx.login_owner("agency_a_owner")
+    for key, want in ((None, 200), ("onlyfans", 200), ("myspace", 200), ("fansly", 409)):
+        with _switch("1"), _platform(A, key):
+            r = _post(owner, A)
+        assert r.status_code == want, (key, r.status_code, r.text)
+        if want == 409:
+            assert r.json()["detail"] == "Go live is for OnlyFans Creators", r.text
+
 def case_get_is_not_the_session():
     owner = fx.login_owner("agency_a_owner")
     with _switch("1"):

@@ -1,11 +1,3 @@
-"""Single-model scope: the OF mirror's Statements and Statistics pages show the model's money figures (app/lib/ofMirrorMoney.ts).
-
-Mocks the login (as settings_values.py) and the relay's GET /api/of/v2/payouts/balances, /payouts/stats,
-/payments/referrals/balance and /payouts/chargebacks/ratio with SYNTHETIC values, sets scope `model:acc1`, and checks in
-the frame: the balance box (Statements) and sidebar (Statistics) amounts, payout frequency and its line (OF's minSumMessage); Earning
-Statistics' all-time net and month rows, a month's head expanding that month (and All time's All time); the referral earnings; the chargeback ratio. Every money request is a GET with
-X-Account-Id. Screenshot: /tmp/of-mirror-shots/inapp-money.png. Exit 1 on a failed check.
-"""
 import datetime, json, os, sys, time
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
@@ -14,7 +6,6 @@ SHOTS="/tmp/of-mirror-shots"
 os.makedirs(SHOTS, exist_ok=True)
 user={"user_id":"u1","username":"tester","is_admin":False}
 month=lambda y, m: str(int(time.mktime((y, m, 1, 0, 0, 0, 0, 0, -1))))
-# OF's minSumMessage for weekly payouts (OF reads availableAmount, absent from its balances): the next payout, a week on's Monday.
 _d=datetime.date.today()+datetime.timedelta(days=7); _d-=datetime.timedelta(days=_d.weekday())
 WEEKLY_LINE=f"Once your balance is over $50 next payout will be scheduled on: {_d.strftime('%b')} {_d.day}, {_d.year}"
 SOURCES={
@@ -49,7 +40,7 @@ with sync_playwright() as p:
             seen.add(path); sent.append((r.method, path, r.headers.get("x-account-id")))
             return route.fulfill(status=200, content_type="application/json", body=json.dumps(SOURCES[path]))
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
@@ -57,7 +48,7 @@ with sync_playwright() as p:
             if r.method!="GET" and "/api/of/" in u: sent.append((r.method, path, r.headers.get("x-account-id")))
             route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     first=True
     for page, checks in CHECKS.items():
@@ -74,7 +65,6 @@ with sync_playwright() as p:
             if got!=want: failures.append(f"{page}: {sel} is {got!r}, expected {want!r}")
         if page=="statements/stats/earnings":
             pg.screenshot(path=f"{SHOTS}/inapp-money.png")
-            # OF's one expanded row: a month's head expands it (its body, its range), All time's brings All time back.
             OPEN="() => [...document.querySelectorAll('.b-stats-wrap > .b-stats-row.m-expanded')].filter(e => !e.closest(\"[style*='display:none']\")).map(e => [e.querySelector('.b-stats-row__month').textContent.trim(), !!e.querySelector('.b-stats-row__body canvas')])"
             for title, want in (("September, 2026", [["September, 2026", True]]), ("All time", [["All time", True]])):
                 fr[0].locator(".b-stats-row__head", has_text=title).click(); pg.wait_for_timeout(300)

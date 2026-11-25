@@ -232,6 +232,20 @@ def case_owner_inbox_is_the_per_creator_routes_in_one_call():
     assert nxt["chats"][A1]["hasMore"] is False
 
 
+
+def case_the_inbox_skips_only_a_fansly_creator_whatever_the_platform_key():
+    saved = account_registry.load_meta(A2)
+    try:
+        for key, listed in ((None, True), ("onlyfans", True), ("myspace", True), ("fansly", False)):
+            meta = {k: v for k, v in saved.items() if k != "platform"}
+            if key is not None:
+                meta["platform"] = key
+            account_registry.save_meta(A2, meta)
+            _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
+            assert (A2 in _inbox(OWNER_A)["chats"]) is listed, key
+    finally:
+        account_registry.save_meta(A2, saved)
+
 def _lanes() -> dict[str, dict]:
     with server._lane_stats_lock:
         return {aid: dict(server._lane_stats.get(aid) or server._new_lane_stat()) for aid in (A1, A2)}

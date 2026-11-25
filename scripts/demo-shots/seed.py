@@ -1,13 +1,3 @@
-"""Lay a `dataset.Dataset` into the throwaway relay started by run.sh.
-
-Bulk rows (accounts, fans, sales, messages, shifts, clock events, scripts, posts,
-links, S4S) go straight into the temp SQLite file; the relay's own triggers keep
-the sales rollups and the per-sale Employee credit up to date. Settings that the
-relay validates (roles, time tracking) and the Employee mirrors of the chatter
-logins go through its API as the signed-in owner. The account registry is the
-temp `sessions/accounts/` dir that relay_guarded.py redirected; nothing outside
-the run's temp dir is written.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -26,7 +16,6 @@ def _uid(*parts: Any) -> str:
 
 
 class Api:
-    """Thin JSON client over a Playwright APIRequestContext signed in as the owner."""
 
     def __init__(self, request, base: str):
         self.r, self.base = request, base
@@ -50,15 +39,13 @@ class Api:
 
 
 def seed(d: Dataset, *, db: Path, sessions: Path, user_id: str, api: Api) -> dict[int, int]:
-    """Write the dataset; returns employee index -> employees.id."""
     con = sqlite3.connect(db, timeout=30)
     con.execute("PRAGMA foreign_keys=ON")
-    con.execute("PRAGMA cache_size=-262144")  # 256 MB: the credit triggers' message lookups thrash the 2 MB default
+    con.execute("PRAGMA cache_size=-262144")
     now = d.now
     with con:
         _accounts(con, d, sessions, user_id)
         _chatters(con, d, user_id)
-    # The relay creates each login's Employee row (and the owner's) on the roster read.
     roster = api.get("/admin/employees?include_disabled=true")["employees"]
     by_chatter = {r.get("chatter_id"): r["id"] for r in roster if r.get("chatter_id")}
     owner = next(r["id"] for r in roster if r["kind"] == "owner" or r.get("user_id") == user_id and not r.get("chatter_id"))
@@ -108,7 +95,6 @@ def _chatters(con, d: Dataset, user_id: str) -> None:
 
 
 def _fill_fan_columns(con, account_ids: list[str]) -> None:
-    """The slop seeders' fan-column hooks. A tree without `slop/` (the demo image) has none to run."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     try:
         from slop.seed.fans import fill_fan_columns
@@ -134,7 +120,6 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         tgt = last_in if m["direction"] == "in" else last_out
         tgt[k] = max(tgt.get(k, m["created_at"]), m["created_at"])
 
-    # Fans (one row per Creator x fan).
     rows = []
     for s in d.subs:
         f = d.fans[s["fan_id"]]
@@ -151,12 +136,8 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         "subscription_expires_at, subscription_status, is_followed, "
         "deep_convo_state, deep_convo_skip_level, deep_convo_skip_remaining, source, created_at, updated_at, tags) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
-    # A flow's own fans columns: the slop seeders' `*_fan_columns.py` hooks (slop/seed/fans.py), when present.
     _fill_fan_columns(con, sorted({s["account_id"] for s in d.subs}))
-    # NOT NULL text columns the insert above leaves to their defaults are filled here if the schema has no default.
 
-    # Messages first: a sale's credit trigger reads the message that earned it. The messages credit triggers only
-    # re-credit existing transactions and there are none yet, so they are dropped for this insert (same rows, ~3 s less).
     assert con.execute("SELECT 1 FROM transactions LIMIT 1").fetchone() is None
     msg_triggers = con.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='messages' "
                                "AND name LIKE 'trg\\_msg\\_credit\\_%' ESCAPE '\\'").fetchall()
@@ -194,7 +175,6 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         "description, source, attributed_employee_id, ingested_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         tx_rows)
 
-    # Local chat rows (the app's first-paint seed and the roster counts).
     latest: dict[tuple[str, int], dict] = {}
     for m in d.messages:
         k = (m["account_id"], m["fan_id"])
@@ -206,7 +186,6 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         [(a, f, m["message_id"], ts(m["created_at"]), m["body"][:120], 1 if m["direction"] == "in" else 0)
          for (a, f), m in latest.items()])
 
-    # Shifts: one daily series per seat (Employee x slot), from two weeks back.
     day0 = (now - timedelta(days=14)).replace(hour=0, minute=0, second=0)
     seats: dict[tuple[int, int], list[str]] = {}
     for (aid, s), e in d.coverage.items():
@@ -224,12 +203,11 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
                         [(cur.lastrowid, emp[e], a) for a in aids])
         con.executemany("INSERT OR IGNORE INTO employee_account_access(employee_id, account_id) VALUES (?,?)",
                         [(emp[e], a) for a in aids])
-    # Chatter logins' Creator allowlists, so each one's access lists its Creators.
     for e in d.employees[1:]:
         cid = _uid("chatter", e["username"])
         aids = sorted({a for (a, s), x in d.coverage.items() if x == e["index"]})
         if e["role"] == "manager":
-            continue  # managers see every Creator
+            continue
         con.executemany("INSERT OR IGNORE INTO chatter_account_access(chatter_id, user_id, account_id, created_at) "
                         "VALUES (?,?,?,?)", [(cid, user_id, a, ts(now - timedelta(days=120))) for a in aids])
     con.executemany(
@@ -237,11 +215,9 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         "last_seen_utc) VALUES (?,?,?,?,?,?,?,?)",
         [(user_id, emp[c["employee"]], c["account_id"], shift_of.get((c["employee"], c["slot"])), ts(c["in"]),
           ts(c["out"]) if c["out"] else None, "manual" if c["out"] else None,
-          # An open event's heartbeat is the relay's real now, so its Auto clock-out sweep (real clock) keeps it open.
           ts(c["last_seen"]) if c["out"] else ts(datetime.now(timezone.utc)))
          for c in d.clock_events])
 
-    # Scripts (saved replies) for the top Creators.
     for c in d.creators[:6]:
         con.executemany(
             "INSERT INTO saved_replies(account_id, title, text, price_cents, locked_text, media_json, "
@@ -251,7 +227,6 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
               json.dumps(s["tags"]), ts(now - timedelta(days=60 - s["step"] * 3)),
               ts(now - timedelta(days=20 - s["step"]))) for s in d.scripts])
 
-    # Scheduled posts.
     con.executemany(
         "INSERT INTO posts(account_id, status, text, price_cents, media_ids, label_ids, scheduled_for, "
         "excluded_list_ids, created_by_employee_id, created_at, updated_at) VALUES (?,?,?,?,?,'[]',?,'[]',?,?,?)",
@@ -259,7 +234,6 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
           json.dumps([d.vault[int(f.split("-")[1][:2]) - 1]["id"] for f in p["media"]]), ts(p["scheduled_for"]),
           emp[1], ts(now - timedelta(days=1)), ts(now - timedelta(days=1))) for p in d.posts])
 
-    # Tracking links with their clicks.
     for link in d.tracking_links:
         cur = con.execute("INSERT INTO tracking_links(account_id, name, slug, target_url, click_count, created_at) "
                           "VALUES (?,?,?,?,?,?)", (link["account_id"], link["name"], link["slug"],
@@ -267,7 +241,6 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
                                                    link["clicks"], ts(link["created_at"])))
         link["db_id"] = cur.lastrowid
 
-    # Share for Share: each top Creator's own profile, opted in.
     for c in d.creators[:8]:
         con.execute("INSERT INTO s4s_profiles(account_id, opted_in, discovery_visible, daily_limit, display_name, "
                     "username, avatar_url, created_at, updated_at) VALUES (?,1,1,3,?,?,?,?,?)",

@@ -1,9 +1,3 @@
-"""Ticket 94: Phase 6's proof list (proofs/phase6.py), the driver parking an id with no definition yet, the
-spec's Acceptance record check (`record_problems`, docs/spec/ofm-not-yet/phase-06-unproven-live-check.md) on the
-committed records and on planted bad ones, the vault--thumbnails judge (`thumbnails_check`), and its `images` step
-(`ui_steps.collect_tiles`) over lazy tiles below the fold. Ticket 95: the Tips, story strip, highlights and payout-row
-judges, each passing, failing on its planted variant and parking with no precondition.
-"""
 import ast
 import json
 import subprocess
@@ -28,7 +22,6 @@ def test_ids_cli_prints_the_twelve_in_proof_order():
                          capture_output=True, text=True, check=True).stdout.strip()
     ids = out.split(",")
     assert ids == list(phase6.IDS) and sorted(ids) == sorted(SPEC_IDS) and len(ids) == 12
-    # Proof order: reads first, Fan-reaching writes last, Publish now (proof D) before the immediate Co-tag.
     assert ids[0] == "vault--thumbnails" and ids[-1] == "queue--send-message-right-now"
     assert ids.index("queue--publish-now") < ids.index("new-post--cotag-immediate")
 
@@ -38,18 +31,18 @@ READS = ["vault--thumbnails", "notifications--tips", "home--story-strip", "profi
 
 
 def test_the_reads_are_defined_and_the_rest_are_pending():
-    defined = [p.id for p in phase6.PROOFS]   # tickets 95-100 append theirs (D29)
+    defined = [p.id for p in phase6.PROOFS]
     assert defined[:len(READS)] == READS
-    assert {"vault--customize-order-save", "queue--send-message-right-now"} <= set(defined)   # tickets 96, 100
+    assert {"vault--customize-order-save", "queue--send-message-right-now"} <= set(defined)
     assert set(defined) <= set(ALL) and set(defined) <= set(SPEC_IDS)
     assert PENDING == frozenset(SPEC_IDS) - set(defined)
-    assert all(not p.arm for p in phase6.PROOFS if p.id in READS)   # the reads: zero writes
+    assert all(not p.arm for p in phase6.PROOFS if p.id in READS)
     assert phase6.PROFILE_HIGHLIGHTS.branches == ("row", "playback")
 
 
 def test_driver_takes_pending_ids_to_park_and_still_refuses_unknown(monkeypatch, capsys):
     ran = []
-    monkeypatch.setattr(prove, "prove", lambda ids, fault, fan, **k: ran.append(ids) or 0)   # ticket 09: of, session_src, serve
+    monkeypatch.setattr(prove, "prove", lambda ids, fault, fan, **k: ran.append(ids) or 0)
     monkeypatch.setattr(prove.os, "setpriority", lambda *a: None)
     assert prove.main(["--of", "fake", "--proof", ",".join(phase6.IDS)]) == 0
     assert ran == [list(phase6.IDS)]
@@ -67,7 +60,7 @@ def test_cdn_suffixes_match_the_relay():
 def test_committed_records_pass_the_spec_check():
     assert phase6.record_problems() == []
     recs = proof_list.load_records(phase6.CAPTURES)[0]
-    for proof in phase6.PROOFS:   # proof_list finds each defined proof's record by label and page
+    for proof in phase6.PROOFS:
         assert proof_list.record_of(proof, recs)[0] == f"{proof.id}.json"
     reasons = {i: json.loads((phase6.CAPTURES / f"{i}.json").read_text())["proof"].get("reason", "") for i in SPEC_IDS}
     assert "owner sheet item 1 (Proof fan)" in reasons["queue--send-message-right-now"]
@@ -79,10 +72,10 @@ PARKED = {"kind": "live", "verdict": "parked", "undo": "none", "reason": "Live p
 
 
 @pytest.mark.parametrize("planted, flagged", [
-    ({"verdict": "parked", "reason": ""}, True),                                     # parked without a reason
-    ({"verdict": "pass", "evidence": ""}, True),                                     # pass without evidence
-    ({"verdict": "pass", "kind": "mocked", "evidence": "slop/evidence/x"}, True),    # pass, not live
-    ({"verdict": "pass", "evidence": "slop/evidence/x", "undo": "FAILED"}, True),    # a FAILED undo
+    ({"verdict": "parked", "reason": ""}, True),
+    ({"verdict": "pass", "evidence": ""}, True),
+    ({"verdict": "pass", "kind": "mocked", "evidence": "slop/evidence/x"}, True),
+    ({"verdict": "pass", "evidence": "slop/evidence/x", "undo": "FAILED"}, True),
     ({"verdict": "fail", "reason": "x"}, True),
     ({"verdict": "pass", "evidence": "slop/evidence/x", "undo": "undone"}, False),
 ])
@@ -110,7 +103,7 @@ def test_record_check_missing_record_and_cli_exit(tmp_path):
         (tmp_path / f"{i}.json").write_text(json.dumps({"proof": PARKED}))
     assert [i for i, _ in phase6.record_problems(tmp_path)] == ["vault--thumbnails"]
     assert phase6.main(["--check-records", str(tmp_path)]) == 1
-    assert phase6.main([f"--check-records={tmp_path}"]) == 1   # the `=` form runs the spec check too
+    assert phase6.main([f"--check-records={tmp_path}"]) == 1
     assert phase6.main(["--check-records", str(phase6.CAPTURES)]) == 0
     assert phase6.main([f"--check-records={phase6.CAPTURES}"]) == 0
     assert phase6.main(["--check-records", str(tmp_path / "missing")]) == 2
@@ -120,7 +113,6 @@ APP = "http://127.0.0.1:3000"
 
 
 def img(n, cache="HIT"):
-    """(tile src, the Relay's /img response for it)."""
     src = f"{APP}/img?u=https%3A%2F%2Ffake-cdn.ofcdn.com%2F{n}.png&account_id=1"
     return src, {"url": src, "status": 200, "cache": cache}
 
@@ -137,7 +129,7 @@ def tile(src, complete=True, width=8):
 def test_thumbnails_check_passes_with_a_cold_relay_tile():
     (s1, r1), (s2, r2) = img(1, "MISS"), img(2, "HIT")
     sq = f"{APP}/admin/vault-ai/thumb?media_id=1"
-    other = {"url": f"{APP}/api/of/v2/users/notifications/count", "status": 404, "cache": None}   # not a tile's
+    other = {"url": f"{APP}/api/of/v2/users/notifications/count", "status": 404, "cache": None}
     assert phase6.thumbnails_check(seen([tile(s1), tile(s2), tile(sq)], [r1, r2, other])) == \
         {"problems": [], "parked": None, "record": {}}
 
@@ -165,7 +157,6 @@ def test_thumbnails_check_fails(why, build):
     assert any(why in p for p in problems), problems
 
 
-# ── ticket 95: the feed and profile read checks ──
 
 def ok(body):
     return {"status": 200, "body": body}
@@ -250,7 +241,7 @@ def test_strip_check_pass():
 
 
 @pytest.mark.parametrize("why, tiles", [
-    ("has no tile", [strip_tile(2, STRIP[2], True)]),                                    # the planted strip-miss
+    ("has no tile", [strip_tile(2, STRIP[2], True)]),
     ("is not on OnlyFans's strip", [strip_tile(1, STRIP[1]), strip_tile(2, STRIP[2], True), strip_tile(3, STRIP[2])]),
     ("carries 1 stories, OnlyFans 2", [{**strip_tile(1, STRIP[1]), "story": "[{}]"}, strip_tile(2, STRIP[2], True)]),
     ("watched mark", [strip_tile(1, STRIP[1]), strip_tile(2, STRIP[2])]),
@@ -332,7 +323,7 @@ def test_highlights_check_pass_both_branches():
 
 
 @pytest.mark.parametrize("why, branches, tiles, viewer", [
-    ("(cover)", {"row": "fail", "playback": "pass"}, [hl_tile(H1, cover=False), hl_tile(H2)], VIEWER),  # planted
+    ("(cover)", {"row": "fail", "playback": "pass"}, [hl_tile(H1, cover=False), hl_tile(H2)], VIEWER),
     ("differ from OnlyFans's", {"row": "fail", "playback": "pass"}, [hl_tile(H1)], VIEWER),
     ("opened no viewer", {"row": "pass", "playback": "fail"}, [hl_tile(H1), hl_tile(H2)], None),
     ("shows 1 bars", {"row": "pass", "playback": "fail"}, [hl_tile(H1), hl_tile(H2)], {**VIEWER, "bars": 1}),
@@ -391,7 +382,7 @@ def test_payouts_check_pass_lists_observed_and_unobserved():
 
 
 @pytest.mark.parametrize("why, shown", [
-    ("row 1 invoice", [{**pay_item(*REF[0]), "invoice": ""}]),                 # the planted payout-field
+    ("row 1 invoice", [{**pay_item(*REF[0]), "invoice": ""}]),
     ("row 1 amount", [pay_item("approved", 7.5, "51")]),
     ("row 1 state mark ['pending']", [pay_item("new", 7.25, "51")]),
     ("shows 0 rows, OnlyFans 1", []),
@@ -409,15 +400,12 @@ def test_payouts_check_reject_reason_and_park():
     assert got["record"]["statements/payouts"]["unobserved"]["states"] == list(phase6.PAYOUT_STATES)
 
 
-# ── the `images` step in a real browser ──
 
 PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
                     "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")
 
 
 def test_images_step_scrolls_lazy_tiles_below_the_fold_into_loading(pw):
-    """Measured live: the Mirror's tiles carry OF's loading="lazy", so the ones below the fold of the Mirror frame never
-    started loading and the check flagged them. The step scrolls each one into view; every tile loads."""
     sel = "[data-oi-media] .b-photos__item__img"
     tiles = "".join(f'<div data-oi-media="{n}" style="height:300px"><img loading="lazy" class="b-photos__item__img" '
                     f'src="http://mirror.test/img?n={n}"></div>' for n in range(24))
@@ -450,8 +438,6 @@ def test_images_step_scrolls_lazy_tiles_below_the_fold_into_loading(pw):
 
 
 def test_images_step_walks_past_a_broken_and_a_hanging_tile(pw):
-    """A tile that fails (404) is reported loaded-with-no-width, one whose request never answers stays incomplete, and
-    neither keeps the walk from scrolling the tiles after them into loading."""
     sel = "[data-oi-media] .b-photos__item__img"
     tiles = "".join(f'<div data-oi-media="{n}" style="height:300px"><img loading="lazy" class="b-photos__item__img" '
                     f'src="http://mirror.test/img?n={n}"></div>' for n in range(16))
@@ -464,7 +450,7 @@ def test_images_step_walks_past_a_broken_and_a_hanging_tile(pw):
             if u.query == "n=5":
                 return r.fulfill(status=404, body="")
             if u.query == "n=8":
-                return None   # never answered
+                return None
             return r.fulfill(status=200, content_type="image/png", body=PNG)
         r.fulfill(status=200, content_type="text/html", body=pages[u.path])
 
@@ -481,10 +467,9 @@ def test_images_step_walks_past_a_broken_and_a_hanging_tile(pw):
     assert got[5]["complete"] and got[5]["width"] == 0, got[5]
     assert not got[8]["complete"], got[8]
     assert all(t["complete"] and t["width"] > 0 for n, t in enumerate(got) if n not in (5, 8)), got
-    assert marks == 0   # the walk's marks are gone before the settled shot
+    assert marks == 0
 
 
-# ticket 101: the proof list's order is the driver's, not the caller's
 def test_driver_order_is_the_proof_list_order_whatever_the_given_order():
     from proof_core import order, order_group
     from proofs import ORDER
@@ -492,7 +477,7 @@ def test_driver_order_is_the_proof_list_order_whatever_the_given_order():
     got = [p.id for p in order(given, canon=ORDER)]
     assert got == list(phase6.IDS)
     groups = [order_group(ALL[i]) for i in got]
-    assert groups == [0] * 5 + [1] * 4 + [2] * 3   # reads, Fan-invisible writes, Fan-reaching writes
+    assert groups == [0] * 5 + [1] * 4 + [2] * 3
 
 
 def test_prove_orders_by_the_proof_list():
@@ -500,8 +485,6 @@ def test_prove_orders_by_the_proof_list():
     assert "order([ALL[i] for i in proof_ids if i in ALL], canon=ORDER)" in src
 
 
-# ticket 101: `--fault delete-500` reaches a Phase 6 run: an undo's DELETE of a list (tracer) or a post (the upload,
-# dedupe, Co-tag and Publish now proofs) answers 500, so the run stops on its FAILED row before any Fan-reaching proof
 @pytest.mark.parametrize("method, path, fires", [
     ("DELETE", "/api2/v2/lists/901", True), ("DELETE", "/api2/v2/posts/900070000000001", True),
     ("POST", "/api2/v2/posts", False), ("DELETE", "/api2/v2/trials/5", False),

@@ -90,11 +90,6 @@ SERVICE_DIR = Path(__file__).resolve().parent.parent / "service"
 if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
-# THE SAME marker and horizon the shipping code uses, imported rather than
-# copied. A probe with its own spelling is a carrier that vault_upload.sweep
-# cannot find — and a probe carrier is a real scheduled post on a real feed.
-# `CARRIER_DAYS` is far enough out that no realistic cleanup delay lets it fire,
-# near enough that it is inside whatever scheduling horizon OF enforces.
 from of_client import CARRIER_DAYS, VAULT_MARKER as MARKER  # noqa: E402
 
 POLL_INTERVAL_S = 3
@@ -148,7 +143,6 @@ def _future_iso(days: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
 
-# ── probes ────────────────────────────────────────────────────────────────────
 
 def probe_shape(client, args) -> dict:
     """Ask signed/create for a 3-part upload and look at what comes back.
@@ -257,9 +251,6 @@ def probe_post(client, args, up: dict | None = None) -> dict:
         while time.time() < deadline:
             detail = client.get_post(post_id)
             media = detail.get("media") or []
-            # OF exposes readiness as `isReady` on chat media; on a post it may
-            # be absent entirely, in which case an id present at all is the only
-            # signal available.
             ready = [m for m in media
                      if m.get("id") is not None and m.get("isReady") is not False]
             if media and len(ready) == len(media):
@@ -273,9 +264,6 @@ def probe_post(client, args, up: dict | None = None) -> dict:
             _log("  TIMED OUT waiting for media ids on the post.")
     finally:
         if args.keep:
-            # Deliberately left in place so a human can confirm in the OF UI
-            # that an unpublished scheduled post really is invisible to fans.
-            # The breadcrumb stays, so --cleanup can still remove it later.
             _log(f"── KEEPING carrier post {post_id} (--keep) ──")
             _log(f"  It is scheduled for {posted_at} and WILL PUBLISH then if left.")
             _log(f"  Remove it with:  --account {args.account} --cleanup")

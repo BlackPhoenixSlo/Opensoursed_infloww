@@ -334,7 +334,9 @@ def persist_session(user_id: str, *,
     `static_param_source` (paste-curl: override | curl | rev_lookup) tells
     sign_rules a typed-in static_param never lends its rules to others.
     """
+    import platforms
     adir = account_registry.account_dir(user_id)
+    account_registry.ensure_platform(user_id, platforms.ONLYFANS.key)
     adir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     chunk_file = f"chunk_2313_{ts}.js"

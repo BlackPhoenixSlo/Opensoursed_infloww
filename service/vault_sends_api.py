@@ -25,8 +25,8 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-import accounts as account_registry
 import of_pacing
+import platforms
 from auth import assert_account_owned
 from of_coerce import cents_or_zero
 from relay_host import load_client as _load_client
@@ -197,7 +197,7 @@ def _session_user_id(account_id: str, client: Any) -> int | None:
     always 500'd there."""
     # ASSUMPTION: Fansly keeps today's 500 (rung 2, ticket "same 500 as today"; no Fansly wall-media path found).
     # Overturned when Fansly wall media becomes a supported path (FanslyShimClient.user_posts walks /timelinenew).
-    if account_registry.get_platform(account_id) == "fansly":
+    if platforms.Lack.WALL_MEDIA in platforms.for_account(account_id).lacks:
         return None
     s = str(client.user_id)
     if not (s.isascii() and s.isdigit()):

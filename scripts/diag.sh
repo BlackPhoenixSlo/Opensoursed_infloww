@@ -1,18 +1,6 @@
 #!/usr/bin/env bash
-# One-shot health + failure triage. Run this FIRST when something is off.
 #
-# Prints everything you need to triage in under 2 seconds:
-#   - process tree + ports
-#   - health probes (relay + UI)
-#   - supervisor restart history (caught a Turbopack crash overnight? you'll see)
-#   - last errors + warnings from each log
-#   - slow API calls in the last hour
-#   - recent abnormal repeat-request rates (the "popout loop" signal)
-#   - image-proxy live stats
 #
-# Usage:
-#   ./scripts/diag.sh           # human-readable
-#   ./scripts/diag.sh -q        # quiet — only failures + anomalies
 
 set -u
 cd "$(dirname "$0")/.."
@@ -20,7 +8,6 @@ cd "$(dirname "$0")/.."
 QUIET=false
 [[ "${1:-}" == "-q" ]] && QUIET=true
 
-# Color codes — bash with no TTY (cron) doesn't get them.
 if [[ -t 1 ]]; then
   R=$'\033[31m'; Y=$'\033[33m'; G=$'\033[32m'; B=$'\033[34m'; D=$'\033[2m'; N=$'\033[0m'
 else
@@ -35,8 +22,6 @@ section() { $QUIET || echo; $QUIET || echo "${B}━━━ $1 ━━━${N}"; }
 problems=0
 inc() { problems=$((problems + 1)); }
 
-# ── 1. supervisors + children ─────────────────────────────────
-# Parallel arrays because Apple's bash 3.2 has no associative arrays.
 section "processes"
 PID_FILES=(/tmp/of-relay.pid /tmp/of-inbox.pid /tmp/of-rotator.pid)
 PID_NAMES=(relay-supervisor next-supervisor log-rotator)
@@ -50,7 +35,6 @@ for i in 0 1 2; do
   $QUIET || ok "$name (pid $PID) children: ${CHILDREN:-none}"
 done
 
-# ── 2. ports ──────────────────────────────────────────────────
 section "ports"
 for PORT in 8787 3001; do
   LISTENER=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -1)
@@ -62,7 +46,6 @@ for PORT in 8787 3001; do
   fi
 done
 
-# ── 3. health probes ──────────────────────────────────────────
 section "health"
 TOK="${SHARE_TOKEN:-}"
 for url in \
@@ -79,7 +62,6 @@ for url in \
   fi
 done
 
-# ── 4. supervisor restart history ─────────────────────────────
 section "supervisor restarts (last 24h)"
 RELAY_R=$(grep -c "\[relay-sup\] launching" /tmp/of-relay.log 2>/dev/null || echo 0)
 NEXT_R=$(grep -c "\[next-sup\] launching" /tmp/of-inbox.log 2>/dev/null || echo 0)
@@ -87,7 +69,6 @@ NEXT_R=$(grep -c "\[next-sup\] launching" /tmp/of-inbox.log 2>/dev/null || echo 
 [[ "$NEXT_R" -gt 5 ]] && warn "next supervisor relaunched $NEXT_R times — possible flapping" && inc
 $QUIET || ok "relay-sup launches: $RELAY_R   next-sup launches: $NEXT_R"
 
-# ── 5. last errors / exceptions ────────────────────────────────
 section "errors (last 5 per service)"
 for f in /tmp/of-relay.log /tmp/of-inbox.log; do
   [[ ! -f $f ]] && continue
@@ -101,7 +82,6 @@ for f in /tmp/of-relay.log /tmp/of-inbox.log; do
   fi
 done
 
-# ── 6. slow API calls (last 30 min, >2s) ──────────────────────
 section "slow API calls (>2s, last 30 min)"
 if [[ -f /tmp/of-api.log ]]; then
   CUTOFF=$(date -v -30M +"%Y-%m-%dT%H:%M" 2>/dev/null || date -d '30 min ago' +"%Y-%m-%dT%H:%M" 2>/dev/null || echo "")
@@ -116,10 +96,8 @@ if [[ -f /tmp/of-api.log ]]; then
   fi
 fi
 
-# ── 7. repeat-request anomalies (popout-loop signal) ───────────
 section "repeat-request rates"
 if [[ -f /tmp/of-inbox.log ]]; then
-  # Strip timing, find any URL hit > 50 times in the recent tail
   REPEATS=$(tail -2000 /tmp/of-inbox.log 2>/dev/null \
     | awk '/^ GET / { print $2 }' \
     | sort | uniq -c | sort -rn | awk '$1>50 { print }' | head -5)
@@ -132,7 +110,6 @@ if [[ -f /tmp/of-inbox.log ]]; then
   fi
 fi
 
-# ── 8. log sizes (rotator working?) ───────────────────────────
 section "log sizes"
 for f in /tmp/of-relay.log /tmp/of-inbox.log /tmp/of-api.log; do
   [[ ! -f $f ]] && continue
@@ -143,14 +120,12 @@ for f in /tmp/of-relay.log /tmp/of-inbox.log /tmp/of-api.log; do
   fi
 done
 
-# ── 9. image cache live stats ─────────────────────────────────
 section "image cache"
 stats=$(curl -sS --max-time 3 "http://127.0.0.1:8787/admin/img-cache/stats?t=$TOK" 2>/dev/null)
 if [[ -n "$stats" ]]; then
   $QUIET || echo "  $stats"
 fi
 
-# ── verdict ────────────────────────────────────────────────────
 echo
 if [[ "$problems" -eq 0 ]]; then
   echo "${G}═══ ALL CLEAR ═══${N}"

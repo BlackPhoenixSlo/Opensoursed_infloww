@@ -55,8 +55,8 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
-import accounts as account_registry
 import of_ws
+import platforms
 import relay_cache
 import shared_refresher
 import unread_total_decide as decide
@@ -287,14 +287,14 @@ def on_reply(account_id: str, fan_id: int, at: int) -> None:
 
 def snapshot(account_id: str) -> dict[str, Any] | None:
     aid = str(account_id)
-    if not ENABLED or account_registry.get_platform(aid) == "fansly":
+    if not ENABLED or platforms.Lack.UNREAD_TOTAL in platforms.for_account(aid).lacks:
         return None
     with _lock:
         return {**_shown.get(aid, _UNSEEDED), "v": _v.get(aid, 0)}
 
 
 def on_tick(account_id: str) -> None:
-    if ENABLED and account_registry.get_platform(account_id) != "fansly":
+    if ENABLED and platforms.Lack.UNREAD_TOTAL not in platforms.for_account(account_id).lacks:
         with _lock:
             _moved(account_id)
 

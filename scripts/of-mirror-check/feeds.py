@@ -1,81 +1,3 @@
-"""Single-Creator scope: the OF mirror's feed pages show the Creator's real rows (app/lib/ofMirrorData.ts, Phase 4).
-
-Mocks the login (as data.py), the Creator list the top bar's scope switcher reads (accounts 1 and 2), the relay's
-GET /api/of/v2/users/me per account ({"id": 1, ...} for account 1, {"id": 2, ...} for account 2) and
-GET /api/of/v2/users/<id>/posts with SYNTHETIC posts ("Alpha One" ..., pictures on https://cdn.example.invalid/), and
-GET /api/of/v2/users/<id>/posts/photos and /posts/videos with synthetic media posts (one post in both lists),
-GET /api/of/v2/posts/bookmarks/all with synthetic bookmarked posts by other authors (one without an avatar),
-GET /api/of/v2/schedules, /schedules/later/post and /schedules/later/chat with synthetic queue items,
-GET /api/of/v2/users/notifications per account with synthetic notifications of four types (filtered by its `type`),
-GET /api/of/v2/users/notifications/count for account 1 with synthetic counts (and newTagsCount 2 on its /users/me),
-GET /api/of/v2/users/1/streams with synthetic past live streams (one without media),
-GET /api/of/v2/payouts/transactions with 12 synthetic earning transactions in OF's shape (done, pending, a deleted
-fan's; app/lib/__fixtures__/of/statements-transactions.json), paged by its limit and offset with OF's hasMore,
-GET /api/of/v2/payouts/requests and /payouts/requests/referral with synthetic payout requests (done, approved, rejected
-with and without a reason, pending),
-the relay's /img proxy with a generated 1x1 PNG; every unmocked /api/** returns [] and any request to a host other
-than localhost is aborted and fails the check (even one whose path a mock matches). Checks in the frame:
-1. Scope `model:1`, on `profile` and `profile/state-more-menu`: exactly account 1's posts are shown, in order
-   ([text, date] per post); no `Fan N`, `@fanN` or `Lorem` text in the post list; every row picture has an /img? src
-   with account_id=1 and loaded (naturalWidth > 0); every relay call but the creator column's (COLUMN_READS) carries X-Account-Id: 1 and every posts request
-   limit=20; a post's More click (dispatched on the state page, whose open menu's backdrop covers the posts) opens the
-   own-post menu (pin, edit, archive, delete; ofMirrorHome) with no note, the button carries no data-oi-wired, and
-   nothing but GETs is ever sent.
-   On `profile/media`: the grid shows exactly account 1's merged media posts, newest first, the shared post once, three
-   to a row ([picture url, account_id, loaded, media count] per tile: every picture through /img? with account_id=1 and
-   loaded, the still-less post with no picture, the zero-count post with no badge); the sidebar's recent strip shows
-   the 3 newest; both /posts/photos and /posts/videos are requested, each with limit=24.
-   On `collections/bookmarks/all`: exactly account 1's bookmarked posts in order ([author name, @handle, text, date]
-   per post), the author links their OF profile (https://onlyfans.com/<handle>, in a new tab), "No bookmarks yet" hidden, no `Fan N`/`@fanN`/`Lorem`/placeholder text in the
-   rows; every row picture (avatar and post media) through /img? with account_id=1 and loaded, the avatar-less author
-   with none; the bookmarks request carries limit=20; the borrowed post row is one same-origin GET of
-   /of-mirror/pages/profile/index.html (and no other page is fetched); every bookmark's More (another creator's post)
-   is disabled with the tooltip "Not available in Inflowwww yet" and a click shows no note.
-   On `collections`: "Create new list" is wired (ofMirrorCollections): its click opens OF's "Create new list" dialog, no note.
-   On `statements/earnings`: exactly account 1's transactions in order ([date, time, amount, fee, net, description,
-   [[status tip label, icon]]] per row: OF's money ("$1,234.50"), the fan link as text, the done rows "Complete", the
-   pending row "Earning will become available in 5 days"), the deleted fan's description greyed (m-disabled-username),
-   all before the table's loading row; OF's pages of 10: the first page, then (its loading row in view) the second;
-   no `Fan N`, `@fanN` or `Lorem` text in the table; two transactions requests, limit=10 with offset=0 and offset=10.
-   On `statements/payouts` and `statements/referrals`: exactly account 1's payout requests in order ([date, time, invoice,
-   amount, status class, status text, status icon] per row, OF's fields invoiceId/state/rejectReason: approved "Payout
-   has been processed", rejected the rejected row with its "Reason:" line the payout's reason or no line, pending OF's
-   pending mark (its loading icon, no text)); Payouts' rows sit
-   before its loading row, Referrals' hide "This list is empty"; "Request withdrawal" stays disabled; no `Fan N`, `@fanN`
-   or `Lorem` text in the table; one request each (/payouts/requests, /payouts/requests/referral), exactly limit=20;
-   Payouts fetches no page, Referrals borrows its row by one same-origin GET of /of-mirror/pages/statements/payouts.html.
-2. Creator switch on `profile` (top bar switcher, no reload): account 2 shows only account 2's posts and every relay
-   call after the switch carries X-Account-Id: 2.
-3. Scope `model:1`, browser time zone Europe/Ljubljana, the clock fixed at 2026-10-12 12:00, on the six queue pages:
-   the list view and the saved-for-later pages exactly the synthetic items, by day soonest first ([day, [[colour mark,
-   time, text] per item]] per section), each mark painted in OF's colour, "Media" for a media-only item, a stream its
-   description; the three calendar pages each day's OF event bar per type with its count ([day, type, "1"] per
-   bar, painted in OF's colour) and nothing under the calendar; the November message dropped; the Messages tab only the
-   messages, the Streams tab (Messages and Streams selected) the messages and the stream; the right column listing
-   Oct 12's items; the list view's and the saved-for-later pages' empty states hidden; no `Fan N`/`@fanN`/`Lorem`. /schedules carries publish_date=2026-10-01,
-   publish_date_end=2026-10-31, time_zone=Europe/Ljubljana and limit=50, the other two routes limit=50, all
-   X-Account-Id: 1; each page requests only its own route; the month and saved-for-later pages borrow the agenda block
-   by one same-origin GET of /of-mirror/pages/queue/state-list-view.html each, the list view none.
-4. Scope `model:1`, on `notifications`, `notifications/subscribed`, `notifications/commented`,
-   `notifications/mentioned` and `notifications/tip`: exactly account 1's notifications of the tab's type, in order ([name, @handle, text,
-   date, unread, badge icon] per row: replace pairs applied, the unread mark only on unread ones, the follow and price
-   badges only on subscriptions and tips); no `Fan N`, `@fanN` or `Lorem` text in the list; every fan avatar through
-   /img? with account_id=1 and loaded, the avatar-less fan with none; each tab's notifications request carries exactly
-   limit=20 and its type (none on All); a tab OF captured empty (Comments, Mentions) hides "No notifications currently!"
-   and drops its centring layout while rows show. On `notifications` the tab bar shows account 1's counts (All "99+",
-   Subscriptions 3, Tips 1, Tags 2, the rest none). On `streaming/dashboard` one thumb per past stream with media
-   ([/img? u, account_id, loaded], "Viewers: n", date), one /users/1/streams request with limit=8.
-   Creator switch on `notifications`: account 2 shows only account 2's notifications and every relay call after the
-   switch carries X-Account-Id: 2. Nothing is written but OF's mark-read (POST /users/notifications/read) on the All
-   tab's open (app/lib/ofMirrorNotifsRead.ts), exactly one per open with that Creator's X-Account-Id.
-   The other tabs (Purchases, Likes, Promotions, OnlyFans: their type; Tags: /release-forms/mentions, limit=20 and no
-   type), with no notification of theirs: OF's empty tab, no row, no example text.
-5. (Retired) No All-models pass: OF Manager has no All scope (a saved "all" shows the first live creator, owner
-   2026-11-20, origin/main 77e5df419; phase_check.py's one_creator checks it).
-6. No console errors.
-Prints one {"check","want","got"} line per check. Screenshots: /tmp/of-mirror-shots/inapp-feeds-*.png. Exit 1 on a
-failed check.
-"""
 import json, os, re, struct, sys, zlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -93,7 +15,6 @@ def png_1x1():
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"\x00\x00\xaf\xf0")) + chunk(b"IEND", b"")
 PIXEL=png_1x1()
 def pic(name): return [{"id":1,"type":"photo","files":{"preview":{"url":f"https://cdn.example.invalid/{name}.jpg"}}}]
-# Local times (no Z): the dates read the same in every time zone. Newest first, as the relay sends them.
 ME={"1":{"id":1,"username":"livemodel","name":"Live Model","newTagsCount":2},"2":{"id":2,"username":"livemodel2","name":"Live Model Two"}}
 POSTS={
     "1":[{"id":11,"text":"<p>Alpha One wall post</p>","postedAt":"2026-10-10T10:05:00","isPinned":True,"likesCount":7,"commentsCount":2,"media":pic("p11")},
@@ -104,26 +25,22 @@ POSTS={
 }
 WANT={"1":[["Alpha One wall post","Oct 10"],["Alpha Two wall post","Oct 9"],["Alpha Three wall post","Oct 8"]],
       "2":[["Beta One wall post","Oct 7"],["Beta Two wall post","Oct 6"]]}
-# My profile's Media tab: photo posts and video posts (post 31 in both), not in date order.
 PHOTOS={"1":[{"id":31,"postedAt":"2026-10-10T10:05:00","mediaCount":2,"media":pic("m31")},
              {"id":34,"postedAt":"2026-10-07T10:00:00","mediaCount":1,"media":pic("m34")},
              {"id":36,"postedAt":"2026-10-05T10:00:00","mediaCount":0,"media":pic("m36")}]}
 VIDEOS={"1":[{"id":35,"postedAt":"2026-10-08T10:00:00","mediaCount":1,"media":[{"id":2,"type":"video","files":{"full":{"url":"https://cdn.example.invalid/v35.mp4"}}}]},
              {"id":33,"postedAt":"2026-10-09T10:00:00","media":pic("m33")*3},
              {"id":31,"postedAt":"2026-10-10T10:05:00","mediaCount":2,"media":pic("m31")}]}
-# All bookmarks: other creators' posts (the third author has no avatar).
 def author(i, name, handle, avatar=True): return {"id":i,"name":name,"username":handle,**({"avatar":f"https://cdn.example.invalid/a{i}.jpg"} if avatar else {})}
 BOOKMARKS={"1":[{"id":41,"text":"Alpha One bookmarked","postedAt":"2026-10-10T10:05:00","likesCount":4,"commentsCount":1,"media":pic("b41"),"author":author(61,"Alpha One","alphaone")},
                 {"id":42,"text":"Alpha Two bookmarked","postedAt":"2026-10-09T21:30:00","media":[],"author":author(62,"Alpha Two","alphatwo")},
                 {"id":43,"text":"Alpha Three bookmarked","postedAt":"2026-10-08T08:00:00","media":pic("b43"),"author":author(63,"Alpha Three","alphathree",False)}]}
 WANT_BOOKMARKS=[["Alpha One","@alphaone","Alpha One bookmarked","Oct 10"],["Alpha Two","@alphatwo","Alpha Two bookmarked","Oct 9"],
                 ["Alpha Three","@alphathree","Alpha Three bookmarked","Oct 8"]]
-BROW=".l-main-content.m-r-side .g-page-content__body [data-oi-data]"  # in its recycle scroller since 0e848c84
-# [author name, @handle, text, date] per bookmark row shown.
+BROW=".l-main-content.m-r-side .g-page-content__body [data-oi-data]"
 BROWS=f"""[...document.querySelectorAll('{BROW}')].filter(e => e.checkVisibility())
   .map(e => [e.querySelector('.b-username .g-user-name')?.textContent.trim() ?? '', e.querySelector('.g-user-username')?.textContent.trim() ?? '',
              e.querySelector('.b-post__text')?.textContent.trim() ?? '', e.querySelector('.b-post__date > span')?.textContent.trim() ?? ''])"""
-# Per bookmark row: [[the /img? u param, account_id, loaded with a size] per picture (avatar first), [[author link href, target]]].
 BPICS=f"""[...document.querySelectorAll('{BROW}')].filter(e => e.checkVisibility())
   .map(e => [[...e.querySelectorAll('.b-post__avatar img, .post_media img.b-post__media__img')].map(i => {{ const s = i.getAttribute('src');
       const q = s?.startsWith('/img?') ? new URLSearchParams(s.slice(5)) : null; return [q ? q.get('u') : s, q?.get('account_id') ?? null, i.complete && i.naturalWidth > 0]; }}),
@@ -135,7 +52,6 @@ BLEFTOVER=f"""[...document.querySelectorAll('{BROW} *')].filter(e => !e.children
   .map(e => e.textContent.trim()).filter(t => /Fan \\d|@fan\\d|Lorem|Your Model|@yourmodel/.test(t))"""
 EMPTY_SHOWN="[...document.querySelectorAll('.l-main-content.m-r-side .g-page-content__body > .empty-message')].filter(e => e.checkVisibility()).map(e => e.textContent.trim())"
 CREATE="button[aria-label='Create new list']"
-# The queue. Local times (no Z), read in the context's time zone; not in order.
 TZ="Europe/Ljubljana"
 QUEUE={
     "/api/of/v2/schedules":[{"type":"chat","publishDateTime":"2026-10-14T18:30:00","entity":{"scheduledAt":"2026-10-14T18:30:00","text":"<p>Alpha One message</p>"}},
@@ -147,17 +63,14 @@ QUEUE={
     "/api/of/v2/schedules/later/post":[{"id":5,"text":"Alpha saved post"},{"id":6,"text":"","mediaCount":1}],
     "/api/of/v2/schedules/later/chat":[{"id":7,"text":"<p>Alpha saved message</p>"},{"id":8,"text":"Alpha saved message two"}],
 }
-# The clock: Oct 12 noon in TZ (the calendar opens on today; the right column lists today's items).
 NOW=datetime(2026,10,12,12,0,tzinfo=ZoneInfo(TZ))
 WANT_SCHEDULES=[["Oct 3",[["chat-indicator","12:00 pm","Media"]]],
                 ["Oct 12",[["post-indicator","9:05 am","Alpha Two post"]]],
                 ["Oct 14",[["post-indicator","8:00 am","Media"],["chat-indicator","6:30 pm","Alpha One message"]]],
                 ["Oct 20",[["stream-indicator","7:00 pm","Alpha live stream"]]]]
 WANT_CHATS=[["Oct 3",[["chat-indicator","12:00 pm","Media"]]],["Oct 14",[["chat-indicator","6:30 pm","Alpha One message"]]]]
-# The calendar's event bars: [day, type, count text] per bar.
 BARS_CHATS=[["2026-10-03","chat","1"],["2026-10-14","chat","1"]]
 BARS_ALL=[["2026-10-03","chat","1"],["2026-10-12","post","1"],["2026-10-14","post","1"],["2026-10-14","chat","1"],["2026-10-20","stream","1"]]
-# path, frame page, its route, the items wanted (the agenda's sections, or a calendar page's day bars), whether it is a calendar page.
 QUEUE_PAGES=[("queue","queue/index","/api/of/v2/schedules",BARS_ALL,True),
              ("queue/state-list-view","queue/state-list-view","/api/of/v2/schedules",WANT_SCHEDULES,False),
              ("queue/state-tab-messages","queue/state-tab-messages","/api/of/v2/schedules",BARS_CHATS,True),
@@ -166,38 +79,28 @@ QUEUE_PAGES=[("queue","queue/index","/api/of/v2/schedules",BARS_ALL,True),
               [["sfl-post","Alpha saved post"],["sfl-post","Media"]],False),
              ("queue/saved-for-later-messages","queue/saved-for-later-messages","/api/of/v2/schedules/later/chat",
               [["sfl-message","Alpha saved message"],["sfl-message","Alpha saved message two"]],False)]
-# The right column on Oct 12 (the clock's day) per calendar page.
 SIDE_OCT12={"queue/index":[["post-indicator","9:05 am","Alpha Two post"]],"queue/state-tab-messages":[],"queue/state-tab-streams":[]}
-# The colour mark OF's queue stylesheet paints per indicator class (its ::before bar).
 PAINT={"post-indicator":"rgb(0, 175, 240)","stream-indicator":"rgb(236, 64, 122)","chat-indicator":"rgb(253, 160, 0)","sfl-post-indicator":"rgba(0, 175, 240, 0.5)","sfl-chat-indicator":"rgba(253, 160, 0, 0.5)"}
-# [day, [[indicator class, time, text] per item]] per agenda section shown.
 AGENDA="""[...document.querySelectorAll('.b-agenda__section')].filter(e => e.checkVisibility())
   .map(s => [s.querySelector('.b-agenda__section-date').textContent, [...s.querySelectorAll('a.b-agenda__area-events__item')]
     .map(a => [[...a.classList].filter(c => c.endsWith('-indicator')).join(' '), a.querySelector('.b-agenda__area-events__item-details').textContent,
                a.querySelector('.b-agenda__area-events__item-inward').textContent])])"""
-# [indicator class, its painted ::before colour] per item shown outside the right column.
 PAINTED="""[...document.querySelectorAll('a.b-agenda__area-events__item')].filter(e => e.checkVisibility() && !e.closest('.l-wrapper__sidebar'))
   .map(a => [[...a.classList].filter(c => c.endsWith('-indicator')).join(' '), getComputedStyle(a, '::before').backgroundColor])"""
-# The saved-for-later pages' OF cards (ScheduleEventDayView): [its kind class, its text] per card shown.
 CARDS="""[...document.querySelectorAll('.saved-for-later > .b-post.m-queue-post')].filter(e => e.checkVisibility())
   .map(c => [['sfl-post','sfl-message'].find(k => c.classList.contains(k)), c.querySelector('.b-post__text').textContent])"""
-# OF's card stylesheet is linked: its queue row lays the date and the More button out in one flex row.
 CARD_STYLED="[...document.querySelectorAll('.saved-for-later > .b-post.m-queue-post .b-post__queue-row')].slice(0, 1).map(r => getComputedStyle(r).display)"
 QEMPTY="[...document.querySelectorAll('.b-agenda > .empty-message, .saved-for-later > .empty-message')].filter(e => e.checkVisibility()).map(e => e.textContent.trim())"
-# The right column's day's items: [indicator class, time, text] per item.
 SIDE="""[...document.querySelectorAll('.l-wrapper__sidebar a.b-agenda__area-events__item')].filter(e => e.checkVisibility())
   .map(a => [[...a.classList].filter(c => c.endsWith('-indicator')).join(' '), a.querySelector('.b-agenda__area-events__item-details').textContent,
              a.querySelector('.b-agenda__area-events__item-inward').textContent])"""
-# Nothing under the calendar (OF's month view lists the month only in its list view).
 UNDER_CALENDAR="document.querySelector('.v-calendar')?.nextElementSibling?.outerHTML ?? null"
-# [day, type, count text] per event bar on the calendar's days; and [type, its painted colour] per bar.
 BARS="""[...document.querySelectorAll('.v-calendar-monthly .v-event[data-oi-data]')].filter(e => e.checkVisibility())
   .map(b => [b.dataset.date, ['post','chat','stream'].find(c => b.classList.contains(c)), b.textContent])"""
 BAR_PAINT_JS="""[...document.querySelectorAll('.v-calendar-monthly .v-event[data-oi-data]')].map(b => getComputedStyle(b).backgroundColor)"""
 BAR_PAINT={"post":"rgb(0, 175, 240)","chat":"rgb(253, 160, 0)","stream":"rgb(236, 64, 122)"}
 QLEFTOVER="""[...document.querySelectorAll('.b-agenda *')].filter(e => !e.children.length && e.checkVisibility())
   .map(e => e.textContent.trim()).filter(t => /Fan \\d|@fan\\d|Lorem/.test(t))"""
-# Notifications, newest first (local times, no Z). The relay passes `type` to OF, which filters: the mock does the same.
 def nfan(i, name, handle, avatar=True): return {"id":i,"name":name,"username":handle,**({"avatar":f"https://cdn.example.invalid/n{i}.jpg"} if avatar else {})}
 NOTIFS={"1":[{"id":1,"type":"subscribed","isRead":False,"createdAt":"2026-10-10T10:05:00","text":"subscribed to your profile","user":nfan(71,"Alpha One","alphaone")},
              {"id":2,"type":"tip","isRead":True,"createdAt":"2026-10-09T21:30:00","text":"<p>tipped you <b>{AMOUNT}</b></p>","replacePairs":{"{AMOUNT}":"$5.00"},"fromUser":nfan(72,"Alpha Two","alphatwo")},
@@ -210,18 +113,15 @@ WANT_N={1:["Alpha One","@alphaone","subscribed to your profile","Oct 10",True,"i
         3:["Alpha Three","@alphathree","commented: nice post","Oct 8",True,None],
         4:["Alpha Four","@alphafour","mentioned you in a comment","Oct 7",False,None]}
 def npic(i): return [[f"https://cdn.example.invalid/n{i}.jpg","1",True]]
-# path, frame page, the type requested (None: All), the rows wanted, their avatars wanted.
 NOTIF_TABS=[("notifications","notifications/index",None,[WANT_N[i] for i in (1,2,3,4)],[npic(71),npic(72),[],npic(74)]),
             ("notifications/subscribed","notifications/subscribed","subscribed",[WANT_N[1]],[npic(71)]),
             ("notifications/commented","notifications/commented","commented",[WANT_N[3]],[[]]),
             ("notifications/mentioned","notifications/mentioned","mentioned",[WANT_N[4]],[npic(74)]),
             ("notifications/tip","notifications/tip","tip",[WANT_N[2]],[npic(72)])]
 NCOUNT_ROUTE="/api/of/v2/users/notifications/count"
-# OF Manager's creator column reads these for every listed creator (its avatar and its notification badge).
 COLUMN_READS={NCOUNT_ROUTE, "/api/of/v2/users/me"}
 def accts(cs): return sorted({c[3] for c in cs if c[1] not in COLUMN_READS}, key=str)
 NCOUNTS={"1":{"all":120,"subscribed":3,"tip":1,"purchases":0}}
-# {tab href: [the count shown]} per tab shown.
 NTABS="""Object.fromEntries([...document.querySelectorAll("a.b-tabs__nav__link[href^='/of-manager/notifications']")].filter(e => e.checkVisibility())
   .map(a => [a.getAttribute('href'), [...a.querySelectorAll('.b-tabs__nav__count')].filter(c => c.checkVisibility()).map(c => c.textContent.trim())]))"""
 WANT_NTABS={f"/of-manager/notifications{t}":c for t, c in [("",["99+"]),("/subscribed",["3"]),("/purchases",[]),("/tip",["1"]),("/tags",["2"]),
@@ -229,7 +129,6 @@ WANT_NTABS={f"/of-manager/notifications{t}":c for t, c in [("",["99+"]),("/subsc
 STREAMS_ROUTE="/api/of/v2/users/1/streams"
 STREAMS=[{"id":1,"media":{"files":{"thumb":{"url":"https://cdn.example.invalid/s1.jpg"}}},"viewsCount":7,"startedAt":"2026-10-09T21:30:00"},
          {"id":2,"media":None,"viewsCount":1,"startedAt":"2026-10-08T10:00:00"}]
-# [[the /img? u param, account_id, loaded], viewers, date] per past stream thumb shown.
 STHUMBS="""[...document.querySelectorAll('.b-s-dashboard__thumb-holder')].filter(e => e.checkVisibility()).map(t => {
   const i = t.querySelector('img'), s = i?.getAttribute('src'), q = s?.startsWith('/img?') ? new URLSearchParams(s.slice(5)) : null;
   return [[q ? q.get('u') : s, q?.get('account_id') ?? null, !!i && i.complete && i.naturalWidth > 0],
@@ -237,13 +136,11 @@ STHUMBS="""[...document.querySelectorAll('.b-s-dashboard__thumb-holder')].filter
 WANT_STHUMBS=[[["https://cdn.example.invalid/s1.jpg","1",True],"Viewers: 7","Oct 9"]]
 WANT_N2=[["Beta One","@betaone","subscribed to your profile","Oct 6",True,"icon-follow"],["Beta Two","@betatwo","mentioned you","Oct 5",False,None]]
 NROW=".b-notifications__list .vue-recycle-scroller__item-view"
-# [name, @handle, text, date, unread, badge icon] per notification row shown.
 NROWS=f"""[...document.querySelectorAll('{NROW}')].filter(e => e.checkVisibility())
   .map(e => [e.querySelector('.b-username .g-user-name')?.textContent.trim() ?? '', e.querySelector('.g-user-username')?.textContent.trim() ?? '',
              e.querySelector('.b-notifications__list__item__text')?.textContent.trim() ?? '', e.querySelector('.g-date > span')?.textContent.trim() ?? '',
              e.querySelector('.b-notifications__list__item')?.classList.contains('m-unread') ?? null,
              e.querySelector('.b-notifications__avatar__icon svg')?.getAttribute('data-icon-name') ?? null])"""
-# [[the /img? u param, account_id, loaded with a size] per avatar picture] per notification row shown.
 NPICS=f"""[...document.querySelectorAll('{NROW}')].filter(e => e.checkVisibility())
   .map(e => [...e.querySelectorAll('.g-avatar img')].map(i => {{ const s = i.getAttribute('src');
       const q = s?.startsWith('/img?') ? new URLSearchParams(s.slice(5)) : null; return [q ? q.get('u') : s, q?.get('account_id') ?? null, i.complete && i.naturalWidth > 0]; }}))"""
@@ -251,14 +148,11 @@ NLEFTOVER=f"""[...document.querySelectorAll('.b-notifications__list *')].filter(
   .map(e => e.textContent.trim()).filter(t => /Fan \\d|@fan\\d|Lorem/.test(t))"""
 NNAMES=f"[...document.querySelectorAll('{NROW}')].filter(e => e.checkVisibility()).map(e => e.querySelector('.g-user-name')?.textContent.trim())"
 NOTIF_ROUTE="/api/of/v2/users/notifications"
-# [the shown empty-tab messages, whether OF's empty-tab layout (which centres the list) is on].
 NEMPTY="""[[...document.querySelectorAll('.b-notifications__list .empty-message')].filter(e => e.checkVisibility()).map(e => e.textContent.trim()),
   !!document.querySelector('.b-notifications.m-empty-page')]"""
 EMPTY_TAB=[["No notifications currently!"],True]
-# The tabs the mock has no notification for: path, frame page, the route and query requested.
 NOTIF_EMPTY_TABS=[(f"notifications/{t}",f"notifications/{t}",NOTIF_ROUTE,{"limit":["20"],"type":[t]}) for t in ("purchases","favorited","message","deactivated_media")]+[
                   ("notifications/tags","notifications/tags","/api/of/v2/release-forms/mentions",{"limit":["20"]})]
-# Statements' Earnings, newest first (local times, no Z), in OF's shape (app/lib/__fixtures__/of/statements-transactions.json).
 TXN_ROUTE="/api/of/v2/payouts/transactions"
 def txn(i, day, amount, desc, status="done", deleted=False, **more):
     return {"id":f"t{i}","createdAt":day,"amount":amount,"fee":round(amount*0.2,2),"net":round(amount*0.8,2),"currency":"USD",
@@ -273,21 +167,16 @@ WANT_TXNS=[["Oct 10, 2026","10:05 am","$5.00","$1.00","$4.00","Subscription from
            ["Oct 9, 2026","9:30 pm","$12.50","$2.50","$10.00","Tip from Alpha Two",[["Earning will become available in 5 days","icon-loading"]]],
            ["Oct 8, 2026","8:00 am","$1,234.50","$246.90","$987.60","Payment for message from Alpha Three",COMPLETE],
            *[[f"Sep {30-i}, 2026","12:00 pm","$3.00","$0.60","$2.40",f"Tip from Alpha {i}",COMPLETE] for i in range(4,13)]]
-# Whether each shown transaction's description is OF's greyed name (a deleted or inactive fan).
 TGREY="[...document.querySelectorAll('.b-table tbody > tr')].filter(e => e.checkVisibility() && e.querySelector('.b-table__date')).map(e => e.querySelector('.b-field-subscription').classList.contains('m-disabled-username'))"
-# [date, time, amount, fee, net, description, [[label, icon] per status-column tip]] per transaction row shown.
 TROWS="""[...document.querySelectorAll('.b-table tbody > tr')].filter(e => e.checkVisibility() && e.querySelector('.b-table__date'))
   .map(e => [...['.b-table__date__date > span', '.b-table__date__time > span', '.b-table__amount > span', '.b-table__fee > span',
                  '.b-table__net strong > span', '.b-table__desc .b-field-subscription'].map(s => e.querySelector(s)?.textContent.trim() ?? null),
              [...e.querySelectorAll('.b-table__status .b-table__status-tip')].map(t => [t.getAttribute('aria-label'), t.querySelector('svg')?.getAttribute('data-icon-name') ?? null])])"""
-# Whether each displayed table row is the loading row, in table order.
 TORDER="[...document.querySelectorAll('.b-table tbody > tr')].filter(e => getComputedStyle(e).display !== 'none').map(e => !!e.querySelector('.infinite-loading-container'))"
 TLEFTOVER="""[...document.querySelectorAll('.b-table tbody *')].filter(e => !e.children.length && e.checkVisibility())
   .map(e => e.textContent.trim()).filter(t => /Fan \\d|@fan\\d|Lorem/.test(t))"""
-# Statements' Payouts and Referrals, newest first (local times, no Z).
 PAYOUT_ROUTE="/api/of/v2/payouts/requests"
 REFERRAL_ROUTE="/api/of/v2/payouts/requests/referral"
-# OF's own field names and states (statements-payout.js): invoiceId, state (approved, new/pending, rejected), rejectReason.
 PAYOUTS={PAYOUT_ROUTE:{"1":[{"id":"r1","createdAt":"2026-10-10T10:05:00","invoiceId":"INV-1001","amount":120,"state":"approved"},
                             {"id":"r2","createdAt":"2026-10-09T21:30:00","invoiceId":"INV-1002","amount":45.5,"state":"rejected","rejectReason":"Alpha One's bank details are wrong"},
                             {"id":"r3","createdAt":"2026-10-08T08:00:00","invoiceId":"INV-1003","amount":20,"state":"pending"}]},
@@ -300,7 +189,6 @@ WANT_PAYOUTS={"statements/payouts":[["Oct 10, 2026","10:05 am","INV-1001","$120.
                                     ["Oct 8, 2026","8:00 am","INV-1003","$20.00","pending","","#icon-loading"]],
               "statements/referrals":[["Oct 5, 2026","12:00 pm","REF-2001","$15.00",*PROCESSED],
                                       ["Oct 4, 2026","9:00 am","REF-2002","$7.25","rejected",RETURNED,"#icon-alert"]]}
-# [date, time, invoice, amount, status span class, its text, its icon] per payout row shown.
 PROWS="""[...document.querySelectorAll('.b-table tbody > tr')].filter(e => e.checkVisibility() && e.querySelector('.b-table__date'))
   .map(e => { const s = e.querySelector('.b-table__desc > span');
     return [...['.b-table__date__date > span', '.b-table__date__time > span', '.b-table__invoice', '.b-table__amount strong > span']
@@ -310,29 +198,23 @@ PEMPTY="[...document.querySelectorAll('.b-table tbody .empty-message')].filter(e
 WITHDRAW="[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Request withdrawal').map(b => b.disabled)"
 def tile(name, count): return [f"https://cdn.example.invalid/{name}.jpg", "1", True, count]
 WANT_MEDIA=[tile("m31","2"), tile("m33","3"), [None, None, False, "1"], tile("m34","1"), tile("m36", None)]
-# [picture url (the /img? u param), its account_id, loaded with a size, media count badge] per grid tile shown.
 TILES="""[...document.querySelectorAll('.b-photos.vue-recycle-scroller .b-photos__item')].filter(e => e.checkVisibility())
   .map(e => { const i = e.querySelector('img.b-photos__item__img'); const s = i?.getAttribute('src');
     const q = s?.startsWith('/img?') ? new URLSearchParams(s.slice(5)) : null;
     return [q ? q.get('u') : s ?? null, q?.get('account_id') ?? null, !!i && i.complete && i.naturalWidth > 0,
             e.querySelector('.b-purchase__list-item__count')?.textContent.trim() ?? null]; })"""
 GRID=".b-photos.vue-recycle-scroller"
-# Tiles per grid row shown, and tiles in the sidebar's recent strip shown.
 GRID_ROWS="""[...document.querySelectorAll('.b-photos.vue-recycle-scroller .vue-recycle-scroller__item-view')].filter(e => e.checkVisibility())
   .map(r => r.querySelectorAll('.b-photos__item').length)"""
 COUNTS="""['.b-photos.vue-recycle-scroller', '.b-photos.m-recent-list']
   .map(g => [...document.querySelectorAll(`${g} .b-photos__item`)].filter(e => e.checkVisibility()).length)"""
-# [text, date] per post row the page shows (hidden examples excluded; rows below the fold included).
 ROWS="""[...document.querySelectorAll('.user_posts .b-post')].filter(e => e.checkVisibility())
   .map(e => [e.querySelector('.b-post__text')?.textContent.trim() ?? '', e.querySelector('.b-post__date > span')?.textContent.trim() ?? ''])"""
-# Example text left in the shown post list.
 LEFTOVER="""[...document.querySelectorAll('.user_posts *')].filter(e => !e.children.length && e.checkVisibility())
   .map(e => e.textContent.trim()).filter(t => /Fan \\d|@fan\\d|Lorem/.test(t))"""
-# [src under /img? with account_id=<n>, loaded with a size] per row picture.
 IMAGES="""n => [...document.querySelectorAll('.user_posts .post_media img.b-post__media__img')].filter(e => e.checkVisibility())
   .map(e => { const s = e.getAttribute('src'); return [s.startsWith('/img?') && new URLSearchParams(s.slice(5)).get('account_id') === n, e.complete && e.naturalWidth > 0]; })"""
 NOTE="document.getElementById('oi-note')?.textContent ?? null"
-# My profile's wall or Media grid: its "No posts yet" when shown.
 WALL_EMPTY="[...document.querySelectorAll('.user_posts [data-oi-empty]')].filter(e => e.checkVisibility()).map(e => e.textContent.trim())"
 MORE=".user_posts .b-post__tools__more button[aria-label='More']"
 failures=[]
@@ -381,7 +263,7 @@ def session(b, scope_js, tz=None, clock=None):
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**","**/img?**"]: pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     pg.on("pageerror", lambda e: errs.append(f"uncaught: {e}"))
     fetched=[]
@@ -394,7 +276,6 @@ def frame(pg, page):
         pg.wait_for_timeout(250)
     failures.append(f"{page}: NO IFRAME (url {pg.url})"); return None
 def settle(pg, fr, want, js=ROWS):
-    """Wait until `js` (default: the shown post rows) gives `want` (the relay data has landed); returns its last value."""
     for _ in range(60):
         got=fr.evaluate(js)
         if got==want: break
@@ -405,7 +286,6 @@ def open_page(pg, path):
     card=pg.get_by_text("Tim", exact=True)
     if card.count(): card.first.click(); pg.wait_for_timeout(1500)
 def images(pg, fr, n):
-    """The row pictures once they all loaded (or after 5s)."""
     fr.evaluate("document.querySelectorAll('.user_posts .post_media img').forEach(i => i.loading = 'eager')")
     for _ in range(20):
         got=fr.evaluate(IMAGES, n)
@@ -413,14 +293,12 @@ def images(pg, fr, n):
         pg.wait_for_timeout(250)
     return got
 def scope_to(pg, current, label):
-    """Pick `label` in OF Manager's creator column; `current` is the creator shown."""
     pg.locator("aside[aria-label='Creators']").get_by_role("button", name=label).first.click()
     pg.wait_for_timeout(500)
 
 with sync_playwright() as p:
     b=p.chromium.launch()
 
-    # 1. Scope model:1 on both profile pages.
     pg, calls, errs, fetched=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     for path, page in [("profile","profile/index"),("profile/state-more-menu","profile/state-more-menu")]:
         open_page(pg, path)
@@ -432,11 +310,9 @@ with sync_playwright() as p:
         pg.screenshot(path=f"{SHOTS}/inapp-feeds-{page.replace('/','-')}.png")
         more=fr.locator(MORE).filter(visible=True).first
         more.scroll_into_view_if_needed()
-        # The state page's open menu lays a backdrop over the posts (a real click closes the menu): the click is dispatched.
         if page=="profile/index": more.click()
         else: more.dispatch_event("click")
         pg.wait_for_timeout(300)
-        # The Creator's own post: More opens OF's post menu (ofMirrorHome), no note.
         check(f"{page}: a post's More click opens the own-post menu", fr.evaluate("[...document.querySelectorAll('[data-oi-post-menu] [data-oi-action]')].map(e => e.dataset.oiAction)"), ["pin","edit","archive","delete"])
         check(f"{page}: a post's More click shows no note", fr.evaluate(NOTE), None)
         check(f"{page}: the More button is not marked wired", more.get_attribute("data-oi-wired"), None)
@@ -513,7 +389,6 @@ with sync_playwright() as p:
     print("model 1 console errors:", [e[:160] for e in errs][:8])
     check("model 1: no console errors", errs, [])
 
-    # 2. Creator switch on profile: account 1 -> 2, with no reload.
     pg, calls, errs, fetched=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     open_page(pg, "profile")
     fr=frame(pg, "profile/index")
@@ -521,7 +396,7 @@ with sync_playwright() as p:
         check("switch: account 1's posts first", settle(pg, fr, WANT["1"]), WANT["1"])
         before=len(calls)
         scope_to(pg, "Model One", "Model Two")
-        fr=frame(pg, "profile/index")  # a pick remounts the view (OfManagerChrome's viewKey)
+        fr=frame(pg, "profile/index")
         check("switch: only account 2's posts after the switch", settle(pg, fr, WANT["2"]), WANT["2"])
         check("switch: account 2's row pictures through /img with account_id=2, loaded", images(pg, fr, "2"), [[True, True]])
         check("switch: every relay call after the switch carries X-Account-Id: 2", accts(calls[before:]), ["2"])
@@ -530,7 +405,6 @@ with sync_playwright() as p:
     print("switch console errors:", [e[:160] for e in errs][:8])
     check("switch: no console errors", errs, [])
 
-    # 3. Scope model:1 on the queue pages.
     pg, calls, errs, fetched=session(b, "localStorage.setItem('chatterly:scope','model:1')", TZ, NOW)
     for path, page, route, want, calendar in QUEUE_PAGES:
         before, pages_before=len(calls), len(fetched)
@@ -564,7 +438,6 @@ with sync_playwright() as p:
     print("queue console errors:", [e[:160] for e in errs][:8])
     check("queue: no console errors", errs, [])
 
-    # 4. Scope model:1 on the notifications tabs, then the Creator switch on All.
     pg, calls, errs, fetched=session(b, "localStorage.setItem('chatterly:scope','model:1')")
     for path, page, kind, want, pics in NOTIF_TABS:
         before=len(calls)
@@ -612,8 +485,6 @@ with sync_playwright() as p:
         check(f"{page}: its request's query", [c[2] for c in calls[before:] if c[1]==route][:1], [query])
         check(f"{page}: X-Account-Id: 1", accts(calls[before:]), ["1"])
         pg.screenshot(path=f"{SHOTS}/inapp-feeds-{page.replace('/','-')}.png")
-    # OF's mark-read on the All tab's open (app/lib/ofMirrorNotifsRead.ts), one per Creator per open: the tab check's and
-    # the switch's opens as account 1, then account 2 after the switch; nothing else written.
     READ="/api/of/v2/users/notifications/read"
     check("notifications: nothing but GETs and one mark-read per All tab open", [(c[0], c[1], c[3]) for c in calls if c[0]!="GET"],
           [("POST", READ, "1"), ("POST", READ, "1"), ("POST", READ, "2")])

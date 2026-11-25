@@ -19,7 +19,6 @@ if (realFetch) {
     return realFetch.call(this, input, init);
   };
 }
-// request(url[, options][, cb]) or request(options[, cb]); options override the url, and no host means localhost.
 function target(args, proto) {
   let host = "localhost", where = proto + "//localhost";
   const a = args[0];

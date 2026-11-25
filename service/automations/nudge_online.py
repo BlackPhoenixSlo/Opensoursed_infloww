@@ -1,30 +1,3 @@
-"""service/automations/nudge_online.py — message a fan when they come online.
-
-Spec: library/NUDGE_ONLINE_PLAN.md. Two automations cooperate:
-
-  • nudge_online (THIS file) — the interval DETECTOR (every ~60s). Fetches the
-    online set via of_client.iter_online_subscribers (OF's native
-    filter[online]=1), diffs it against per-fan NudgeState.last_seen_online_at to
-    find `newly_online`, runs the cheap-first gate sequence, and ENQUEUES a
-    delayed `nudge_online_fire` one-shot per qualifying fan. It sends NOTHING
-    itself.
-  • nudge_online_fire (sibling file) — the one-shot that RE-VALIDATES at fire
-    time and actually sends.
-
-Three load-bearing behaviours (the sanity-pass fixes):
-  1. WARM-UP — on the first tick for an account (no NudgeState rows yet) we seed
-     last_seen for every online fan and send nothing, so enabling the automation
-     doesn't stampede every already-online fan.
-  2. CAP DEFERS, never drops — only the first `max_per_tick` newly-online fans are
-     handled; the overflow's last_seen is deliberately left STALE so they
-     re-qualify next tick (touch last_seen only for online MINUS overflow).
-  3. Fully async — nudge NEVER sets the shared fans.automation_paused_until
-     cooldown; it gates only on its own NudgeState cap, so the chat engines
-     are never frozen by a nudge. The fan_lease is taken only at fire.
-
-This module also owns the shared config / gate / compose helpers that the
-fire-job imports (so the gate sequence and content composition are defined once).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -36,52 +9,40 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-import automation_executor as ax  # enqueue_job / _make_client / lease seams
+import automation_executor as ax
 from automation_registry import kind_family, register
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, AutomationRule, Blacklist, Fan, FanLease, Message, NudgeState,
     SkipList, Transaction, WelcomeSent,
 )
-from . import welcome_compose  # reuse _slot_key / _resolve_welcome_name / _model_hour
+from . import welcome_compose
 from ._fan_notes import substitute_placeholders
 from ._knobs import bool_knob
 
 log = logging.getLogger("of-relay.automation.nudge_online")
 
 
-# ── Built-in config (per-account override via account_ai_config.nudge_config_json) ──
-# The seed tease pools are intentionally generous per slot so repeat_mode=new
-# rotation doesn't loop quickly. Operators expand these via the Settings UI (P3).
 _DEFAULT_NUDGE_CONFIG: dict = {
     "enabled": True,
-    # A nudge sends ONE message: a time-of-day greeting from the slot pools, with
-    # the slot image. Set nudge_line_text=False for an image-only opener. (The old
-    # second "info line" — a Q&A/tease from the fan's profile — was dropped; any
-    # send_info_line / info_line_* / send_nudge_line keys in a saved config are
-    # ignored.)
-    "nudge_line_text": True,      # False → image-only opener (no text)
-    "nudge_line_image": True,     # attach the slot image to the nudge line
-    "repeat_mode": "new",         # new (rotate) | same (resend prior line)
+    "nudge_line_text": True,
+    "nudge_line_image": True,
+    "repeat_mode": "new",
     "delay_minutes": 4,
     "jitter_minutes": 3,
-    "gap_minutes": 5,             # online-gap before a fan re-qualifies as "newly online"
+    "gap_minutes": 5,
     "min_hours_between_nudges": 12,
     "max_per_tick": 25,
-    "max_online_scan": 200,       # how many online fans one tick pulls
-    "online_recent_minutes": 5,   # fire-time recency re-validate window
-    "quiet_hours": [0, 7],        # creator-local [start, end) — no nudges in this band
-    # Gate knobs (own defaults; tune via config):
-    "require_welcomed": True,     # only nudge fans we've already welcomed (while Welcome is on)
-    "welcome_grace_hours": 1,     # …and not within this many hours (welcome+nudge collision)
-    "active_convo_hours": 6,      # recent outbound / unanswered inbound ⇒ mid-thread, skip
-    "max_no_reply": 3,            # stop after this many nudges with no reply since
-    # Spend tier (optional; null = off). Lifetime reads Fan.lifetime_spend_cents;
-    # the rolling window sums Transaction.amount_cents over the last N days. Set a
-    # min to target spenders, a max to target low/keep-warm fans, or both.
+    "max_online_scan": 200,
+    "online_recent_minutes": 5,
+    "quiet_hours": [0, 7],
+    "require_welcomed": True,
+    "welcome_grace_hours": 1,
+    "active_convo_hours": 6,
+    "max_no_reply": 3,
     "min_lifetime_spend_cents": None,
     "max_lifetime_spend_cents": None,
-    "recent_spend_days": 30,      # the Y-day window for the recent-spend bounds
+    "recent_spend_days": 30,
     "min_recent_spend_cents": None,
     "max_recent_spend_cents": None,
     "slots": {
@@ -156,16 +117,11 @@ _DEFAULT_NUDGE_CONFIG: dict = {
 }
 
 
-# ── Config load (merged: defaults ← account_ai_config.nudge_config_json) ──
 
 async def _load_nudge_config(account_id: str) -> dict:
-    """Built-in defaults overlaid with the account's `nudge_config_json` (shallow:
-    a provided `slots` replaces the default pools wholesale). Also pulls
-    `utc_offset` + `time_images` off account_ai_config so the compose/quiet-hours
-    helpers don't need a second read."""
     async with get_session() as s:
         cfg_row = await s.get(AccountAiConfig, str(account_id))
-    merged = json.loads(json.dumps(_DEFAULT_NUDGE_CONFIG))  # deep copy
+    merged = json.loads(json.dumps(_DEFAULT_NUDGE_CONFIG))
     utc_offset = 0
     time_images: dict = {}
     if cfg_row is not None:
@@ -187,9 +143,6 @@ async def _load_nudge_config(account_id: str) -> dict:
     return merged
 
 
-# ── Gate sequence (cheapest-first; mirrors send_welcome.py:522) ──────
-# Runs at DETECT and is re-checked at FIRE (gate 4 especially — a convo may have
-# started during the delay). fan_lease (gate 9) is taken only at fire.
 
 def _in_quiet_hours(cfg: dict) -> bool:
     qh = cfg.get("quiet_hours")
@@ -204,11 +157,10 @@ def _in_quiet_hours(cfg: dict) -> bool:
     hour = welcome_compose._model_hour(cfg.get("utc_offset") or 0)
     if start < end:
         return start <= hour < end
-    return hour >= start or hour < end  # wraps past midnight
+    return hour >= start or hour < end
 
 
 def _spend_bound(v) -> int | None:
-    """Coerce a config spend bound to int cents, or None when unset/off."""
     if v is None or isinstance(v, bool):
         return None
     try:
@@ -220,10 +172,6 @@ def _spend_bound(v) -> int | None:
 async def _spend_gate_reason(
     s, account_id: str, fan_id: int, fan, cfg: dict, now: datetime,
 ) -> str | None:
-    """Optional spend tier: lifetime (Fan.lifetime_spend_cents) + a rolling Y-day
-    window (sum of Transaction.amount_cents over `recent_spend_days`), each with
-    min/max bounds. All bounds null → no filtering. Uses the caller's session so
-    it adds at most ONE extra query, and only when a recent bound is set."""
     life = int(getattr(fan, "lifetime_spend_cents", 0) or 0) if fan is not None else 0
     lo, hi = _spend_bound(cfg.get("min_lifetime_spend_cents")), _spend_bound(cfg.get("max_lifetime_spend_cents"))
     if lo is not None and life < lo:
@@ -248,7 +196,6 @@ async def _spend_gate_reason(
 
 
 async def _welcome_on(s, account_id: str) -> bool:
-    """Whether the account's Welcome automation (send_welcome rule) is switched on."""
     return (await s.execute(select(AutomationRule.id).where(
         AutomationRule.account_id == str(account_id),
         AutomationRule.kind.in_(kind_family("send_welcome")),
@@ -259,13 +206,6 @@ async def _gate_skip_reason(
     account_id: str, fan_id: int, cfg: dict, now: datetime,
     *, fan_obj: dict | None = None, at_fire: bool = False,
 ) -> str | None:
-    """Return a skip-reason string, or None if the fan passes every gate.
-
-    1 is_bot · 2 blacklist/skiplist · 2b spend tier (lifetime + recent window) ·
-    3 welcomed-grace · 4 active-convo (live lease / recent outbound / unanswered
-    inbound) · 5 re-engagement cap · 6 no-reply backoff · 7 muted (detect only —
-    needs the online object) · 8 quiet hours. The fan_lease (9) is acquired by the
-    fire-job, not here."""
     async with get_session() as s:
         fan = await s.get(Fan, (str(account_id), int(fan_id)))
         if fan is not None and fan.is_bot:
@@ -279,8 +219,6 @@ async def _gate_skip_reason(
         if spend_reason:
             return spend_reason
 
-        # Only while the Welcome automation runs: it alone writes WelcomeSent, so
-        # with it off the gate would skip every fan, with no welcome to collide with.
         if cfg.get("require_welcomed", True) and await _welcome_on(s, account_id):
             ws = await s.get(WelcomeSent, (str(account_id), int(fan_id)))
             if ws is None:
@@ -289,13 +227,10 @@ async def _gate_skip_reason(
                     hours=cfg.get("welcome_grace_hours", 1)):
                 return "welcome_recent"
 
-        # 4a: another automation holds this fan's send-lease → it's being handled.
         lease = await s.get(FanLease, (str(account_id), int(fan_id)))
         if lease is not None and lease.leased_until > now:
             return "active_lease"
 
-        # 4b/4c: recent outbound, or an unanswered inbound (fan spoke last) → we'd
-        # be barging into a live thread; a nudge there reads as a bot.
         acv = timedelta(hours=cfg.get("active_convo_hours", 6))
         last_out = (await s.execute(select(func.max(Message.created_at)).where(
             Message.account_id == str(account_id), Message.fan_id == int(fan_id),
@@ -314,8 +249,6 @@ async def _gate_skip_reason(
             if st.last_nudged_at and (now - st.last_nudged_at) < timedelta(
                     hours=cfg.get("min_hours_between_nudges", 12)):
                 return "reengagement_cap"
-            # No-reply backoff: stop only if the streak is high AND they still
-            # haven't replied since the last nudge (auto-recovers on a reply).
             if (st.no_reply_streak or 0) >= cfg.get("max_no_reply", 3):
                 replied = (last_in is not None and st.last_nudged_at is not None
                            and last_in > st.last_nudged_at)
@@ -329,17 +262,11 @@ async def _gate_skip_reason(
     return None
 
 
-# ── Content composition (tease pools) ────────────────────────────────
 
 _DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
 def _pick_pool(slots: dict, slot: str, weekday_name: str) -> dict:
-    """Day-bucket lookup for this time-slot, per FIELD: the lines come from the
-    most specific bucket that has lines and the images from the most specific
-    that has images — per-day (e.g. 'friday') → weekend/weekday → default. So a
-    day can swap just its image (or just its lines) and keep the rest. Always
-    returns a non-empty 'text' list (generic fallback if no bucket has lines)."""
     wd = (weekday_name or "").lower()
     is_weekend = wd in ("saturday", "sunday")
     entries = [b[slot] for b in (slots.get(k) for k in (wd, "weekend" if is_weekend else "weekday", "default"))
@@ -350,8 +277,6 @@ def _pick_pool(slots: dict, slot: str, weekday_name: str) -> dict:
 
 
 def _choose_idx(st, fan_id: int, pool_len: int, repeat_mode: str) -> int:
-    """repeat_mode rotation. Never nudged (no last_slot) → deterministic seed off
-    the fan id; `same` → reuse the last index; `new` → advance one (wraps)."""
     if pool_len <= 0:
         return 0
     if st is None or st.last_slot is None or st.last_variation_idx is None:
@@ -362,8 +287,6 @@ def _choose_idx(st, fan_id: int, pool_len: int, repeat_mode: str) -> int:
 
 
 def _image_idx(st, fan_id: int, n: int, repeat_mode: str) -> int:
-    """An image pool whose size differs from the lines' rotates on its own: the
-    fan's seed, plus one per nudge he got (`new`); `same` holds the seed's."""
     base = int(fan_id) % n
     if repeat_mode == "same" or st is None:
         return base
@@ -371,8 +294,6 @@ def _image_idx(st, fan_id: int, n: int, repeat_mode: str) -> int:
 
 
 class _SampleFan:
-    """A stand-in fan for previews when no real fan is picked — so the preview
-    shows personalization even on a brand-new account."""
     of_display_name = "Jack"
     of_username = "jack"
     real_name = "Jack"
@@ -383,13 +304,11 @@ class _SampleFan:
     hobbies = "trail running"
     pets = '[{"kind": "dog", "name": "Rex"}]'
 
-    def __getattr__(self, _n):  # any other Fan column → None
+    def __getattr__(self, _n):
         return None
 
 
 def _slot_media(cfg: dict, pool: dict, hour: int, idx: int) -> list[int]:
-    """One image id for a part: the slot pool's image (rotated), else the
-    account's per-slot time_images id, else none."""
     imgs = pool.get("image") or []
     if imgs:
         return [int(imgs[idx % len(imgs)])]
@@ -401,21 +320,11 @@ async def _compose_messages(
     account_id: str, fan_id: int | None, cfg: dict, fan_obj: dict | None, st,
     *, hour: int | None = None, weekday: str | None = None, randomize: bool = False,
 ) -> tuple[list[dict], str]:
-    """Build the list of messages a nudge would send, plus the slot. SIDE-EFFECT
-    FREE. Each message: {kind, text, media, idx}. Today that is at most ONE: the
-    nudge line — a time-of-day greeting (+ image), text off for image-only.
-
-    `fan_id` None → a sample fan (for previews). `hour` / `weekday` override the
-    slot clock / the model's day (the preview's pickers).
-    `randomize` → pick a RANDOM line (the preview uses this so each click shows a
-    different sample); real sends use repeat_mode rotation."""
     off = cfg.get("utc_offset") or 0
     h = (int(hour) if hour is not None else welcome_compose._model_hour(off)) % 24
     slot = welcome_compose._slot_key(h)
     weekday = weekday or welcome_compose._model_weekday(off)
     if slot == "night" and h < 5:
-        # The night slot runs 21-5: its small hours belong to the night that began
-        # the day before (Friday 02:00 = Thursday night's lines).
         weekday = _DAYS[(_DAYS.index(weekday.lower()) - 1) % 7] if weekday.lower() in _DAYS else weekday
 
     if fan_id is not None:
@@ -438,12 +347,9 @@ async def _compose_messages(
         nidx = _choose_idx(st, seed, len(texts), cfg.get("repeat_mode", "new"))
     out: list[dict] = []
 
-    # The nudge line — greeting (+ image).
     text = ""
     if cfg.get("nudge_line_text", True) and texts:
         text = substitute_placeholders(texts[nidx], fan, name=name)
-    # As many images as lines: line i rides with image i. Else (a day's own images
-    # under inherited lines) the image rotates by itself, never pinned to one.
     imgs = pool.get("image") or []
     if not imgs or len(imgs) == len(texts):
         iidx = nidx
@@ -462,8 +368,6 @@ async def preview_compose(
     account_id: str, cfg: dict, *, fan_id: int | None = None, hour: int | None = None,
     weekday: str | None = None,
 ) -> dict:
-    """Preview the full message list a nudge would send (NO send, NO state write).
-    Randomized so each click shows a different sample line."""
     msgs, slot = await _compose_messages(account_id, fan_id, cfg, None, None,
                                          hour=hour, weekday=weekday, randomize=True)
     name = "Jack"
@@ -474,11 +378,8 @@ async def preview_compose(
             "messages": [{"kind": m["kind"], "text": m["text"], "media": m["media"]} for m in msgs]}
 
 
-# ── Detector state helpers ────────────────────────────────────────────
 
 async def _account_warmed(account_id: str) -> bool:
-    """True once the account has ANY NudgeState row — the cheap warm-up flag
-    (no extra column). The first tick that sees online fans seeds them silently."""
     async with get_session() as s:
         row = (await s.execute(
             select(NudgeState.fan_id).where(NudgeState.account_id == str(account_id)).limit(1)
@@ -525,7 +426,6 @@ async def _set_pending(account_id: str, fan_id: int, job_id: int, now: datetime)
         )
 
 
-# ── The detector ─────────────────────────────────────────────────────
 
 @register("nudge_online")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
@@ -538,10 +438,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     with_image = bool_knob(payload, "with_image",
                            bool_knob(cfg, "with_image", True))
 
-    # Test/live scope: pin to exactly ONE fan, bypassing the online scan. Used by
-    # the founder<->Ava live driver so a real run can never target anyone else.
-    # `test_force` additionally skips the gates (welcomed/active-convo) for a clean
-    # one-shot; the online-recency re-validate still runs (we seed last_seen now).
     test_fan = payload.get("test_fan")
     if test_fan is not None:
         try:
@@ -581,7 +477,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     online_ids = list(online_objs.keys())
     now = datetime.utcnow()
 
-    # WARM-UP: no state yet → seed last_seen for the whole online set, send nothing.
     if not await _account_warmed(account_id):
         if online_ids:
             await _upsert_last_seen(account_id, online_ids, now)
@@ -597,10 +492,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         or (now - st.last_seen_online_at) > gap
     ]
 
-    # Include-only audience: filter the producer so fenced fans never even get a
-    # fire-job enqueued. The firer re-checks at fire time regardless (jobs sit
-    # in the queue through the delay+jitter window, so a producer-only gate
-    # would leak every in-flight job across a mode flip).
     import audience_include as _audiences
     audience_stats: dict = {}
     newly = await _audiences.filter_candidates(
@@ -609,8 +500,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     max_per = int(cfg.get("max_per_tick", 25))
     handled = newly[:max_per]
     overflow = set(newly[max_per:])
-    # Refresh last_seen for everyone online EXCEPT the deferred overflow, so the
-    # overflow re-qualifies next tick (cap defers, never drops).
     refresh = [fid for fid in online_ids if fid not in overflow]
     await _upsert_last_seen(account_id, refresh, now)
 
@@ -622,7 +511,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     for fid in handled:
         st = states.get(fid)
-        # Dedup: a fire-job is already pending for this fan.
         if st is not None and st.pending_job_id is not None:
             skipped += 1
             skip_reasons["pending"] = skip_reasons.get("pending", 0) + 1

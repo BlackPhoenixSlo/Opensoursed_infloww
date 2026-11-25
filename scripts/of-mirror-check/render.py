@@ -3,14 +3,11 @@ from playwright.sync_api import sync_playwright
 BASE=f"http://localhost:{os.environ.get('PORT','3091')}"
 SHOTS="/tmp/of-mirror-shots"
 os.makedirs(SHOTS, exist_ok=True)
-# A full path ("/of-manager/statistics", "/of-manager/messages/chat") or, as before, a settings page ("fans", "account/2fa").
 def target(a):
     if a.startswith("/of-manager/"):
         section, _, sub = a[len("/of-manager/"):].strip("/").partition("/")
     else:
         section, sub = "settings", a.strip("/")
-    # The section root shows its index page (SECTION_INDEX in scripts/of-mirror.mjs; Statistics redirects to Statements ›
-    # Earnings, app/next.config.ts); the others' index.html.
     index = {"settings": "profile", "statistics": "statements/earnings"}.get(section, "index")
     return section, sub, f"/of-manager/{section}" + (f"/{sub}" if sub else ""), f"/of-mirror/pages/{section}/{sub or index}.html"
 pages=sys.argv[1:] or ["fans"]
@@ -20,14 +17,14 @@ with sync_playwright() as p:
     def mock(route):
         u=route.request.url
         if "/auth/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps(user))
-        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')  # creators: none shows OfNotHaveModel
+        elif u.split("?")[0].endswith("/admin/accounts"): route.fulfill(status=200, content_type="application/json", body='{"accounts":[{"id":"acc1","nickname":"Model One","has_session":true},{"id":"1","nickname":"Model Two","has_session":true}],"active_account_id":null}')
         elif "/chatter/me/accounts" in u: route.fulfill(status=200, content_type="application/json", body="[]")
         elif "/admin/employees" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"employees":[{"id":1,"display_name":"Tim","color":"#a78bfa","is_active":True,"chatter_id":None}]}))
         elif "/chatter/me" in u: route.fulfill(status=200, content_type="application/json", body=json.dumps({"chatter":None,"owners":[]}))
         else: route.fulfill(status=200, content_type="application/json", body="[]")
     for pat in ["**/auth/**","**/chatter/**","**/admin/**","**/accounts**","**/api/**"]:
         pg.route(pat, mock)
-    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))  # no Relay: an empty stream, not a 500
+    pg.route("**/events?**", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=""))
     errs=[]; pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     failures=[]
     for s in pages:

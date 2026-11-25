@@ -1,13 +1,3 @@
-"""Phase 3's proof list (`proofs/phase3.py`, Phase 2's command line through `proof_list.main`): ids, the record check
-and the sweep check on Phase 3's planted proofs (the generic rules are test_proof_list.py's), and the shipped command
-on today's tree.
-
-Expected behaviour from docs/spec/ofm-not-yet/phase-03-settings-privacy-links.md (Acceptance, the `--check-sweep`
-ASSUMPTION) and ticket 57: `--ids` prints the comma-joined ids; `--check-records <dir>` exits 1 unless every proof has
-one capture record whose verdict is `pass`, or `parked` with a reason; `--check-sweep <sweep> <dir>` exits 1 if a
-proof whose record shows `kind: live, verdict: pass` keeps the Not-yet title in the sweep, or one without that pass
-lost it (D1). The Mocked proofs of Close all sessions / Reset stream key never drop the title (D3/D12).
-"""
 import json
 import subprocess
 import sys
@@ -22,7 +12,6 @@ HERE = Path(__file__).parent
 ROOT = HERE.parent.parent
 PHASE3 = HERE / "proofs" / "phase3.py"
 SWEEP_2026_11_20 = ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-20.json"
-# The pages re-swept after the 2026-11-21 Live passes un-greyed their controls (D1), over the frozen dated file.
 LIVE_OVERLAY = ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-21-live.json"
 CAPTURES = ROOT / "docs" / "of-manager" / "captures"
 
@@ -58,8 +47,6 @@ def run(argv, capsys):
     return code, capsys.readouterr().out
 
 
-# The generic record and sweep rules are test_proof_list.py's; these are Phase 3's cases: a Lockout control's Live
-# proof and the parked Mocked proof of a write that cannot be undone (D3/D12).
 def test_record_check_on_phase3_proofs(tmp_path, capsys):
     assert run(["--check-records", str(write(tmp_path / "c", record(IP, **PASS), record(RESET, **PARKED)))], capsys) == \
         (0, "check-records: 2 proofs, 0 problems\n")
@@ -68,9 +55,9 @@ def test_record_check_on_phase3_proofs(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("ny, who", [
-    ({"settings/security/block_by_ip": [], "settings/streaming": ["Copy key", "Reset"]}, None),               # clean
-    ({"settings/security/block_by_ip": ["[TEXTAREA]"], "settings/streaming": ["Reset"]}, "p3.block-by-ip"),  # Lockout pass, title kept
-    ({"settings/security/block_by_ip": [], "settings/streaming": []}, "p3.reset-stream-key"),                 # parked Mocked, title gone
+    ({"settings/security/block_by_ip": [], "settings/streaming": ["Copy key", "Reset"]}, None),
+    ({"settings/security/block_by_ip": ["[TEXTAREA]"], "settings/streaming": ["Reset"]}, "p3.block-by-ip"),
+    ({"settings/security/block_by_ip": [], "settings/streaming": []}, "p3.reset-stream-key"),
 ])
 def test_sweep_check_on_phase3_proofs(tmp_path, capsys, ny, who):
     d = write(tmp_path / "c", record(IP, **PASS), record(RESET, **PARKED))
@@ -93,7 +80,6 @@ def test_the_shipped_command_runs_isolated_on_todays_tree(tmp_path):
 
 
 def test_the_overlay_replaces_only_its_own_pages_and_the_bare_dated_file_still_fails(tmp_path):
-    # D1 holds both ways: without the re-sweep the Live passes still show the title (the guard is not relaxed).
     out = _cli("--check-sweep", str(SWEEP_2026_11_20), str(CAPTURES), cwd=tmp_path)
     assert out.returncode == 1 and "still has the Not-yet title" in out.stdout, out.stdout
     base, ov = json.loads(SWEEP_2026_11_20.read_text()), dict(json.loads(LIVE_OVERLAY.read_text()))
@@ -108,8 +94,6 @@ def test_phase3_proofs_are_known_to_the_driver():
     assert all(ALL[p.id] is p and p.phase == 3 for p in phase3.PROOFS)
 
 
-# ticket 64: trial Create link is already Wired (no Not-yet title), so its proof sits outside PROOFS (the sweep check
-# would demand the title) but the driver still runs it and its capture record is checked here.
 def test_wired_trial_create_proof_is_known_and_recorded():
     from proofs import ALL, phase3
     assert [p.id for p in phase3.WIRED_PROOFS] == ["settings--trial-create-link"]
@@ -118,10 +102,10 @@ def test_wired_trial_create_proof_is_known_and_recorded():
 
 
 @pytest.mark.parametrize("after, effect, found", [
-    ([("9", "oi-proof-M", 1, 1)], True, "9"),                             # the one marked link, smallest offer
-    ([("9", "oi-proof-M", 1, 7)], False, "9"),                            # wrong offer: not the declared effect
-    ([("9", "someone else", 1, 1)], False, None),                         # unmarked: not ours
-    ([("9", "oi-proof-M", 1, 1), ("10", "oi-proof-M", 1, 1)], False, None),  # two new: ambiguous, never guess
+    ([("9", "oi-proof-M", 1, 1)], True, "9"),
+    ([("9", "oi-proof-M", 1, 7)], False, "9"),
+    ([("9", "someone else", 1, 1)], False, None),
+    ([("9", "oi-proof-M", 1, 1), ("10", "oi-proof-M", 1, 1)], False, None),
 ])
 def test_trial_effect_and_finder(after, effect, found):
     from proofs import phase3
@@ -130,8 +114,6 @@ def test_trial_effect_and_finder(after, effect, found):
     assert phase3.find_marked_trial(before, before + after, "oi-proof-M") == found
 
 
-# ticket 70: OF's GET /users/links item, measured live 2026-11-21: `url` holds the link, there is no `link` key. A
-# reader keyed on `link` found no id, so the live proof's undo never ran.
 def _liked(i, url):
     return {"id": i, "sort": 0, "url": url, "title": " - YouTube", "description": "a page's meta description",
             "image": {"src": "", "thumbs": {"c50": "", "c144": ""}, "width": 0, "height": 0}}
@@ -151,8 +133,6 @@ def test_liked_link_without_link_key_is_read_and_found_by_its_url():
     assert phase3.find_marked_link(before, after, "oi-proof-other") is None
 
 
-# ticket 67: the Proof Creator has a cover (measured 2026-11-21), so the cover proof's undo uploads the before read's
-# picture again and PATCHes its new item; `{header: ""}` would delete the owner's cover.
 _OLD = {"header": "https://public.onlyfans.com/files/e/ef/old/header.jpg", "headerSize": {"width": 1280, "height": 720}}
 _NEW = "https://public.onlyfans.com/files/a/ab/new/header.jpg"
 _BACK = "https://public.onlyfans.com/files/b/bc/back/header.jpg"
@@ -170,7 +150,6 @@ _ITEM = (200, json.dumps({"processId": "p9", "host": "convert.onlyfans.com"}).en
 
 
 def _cover_call(pictures, calls, upload=_ITEM):
-    """A Relay client: /img answers `pictures[url]`, the upload route `upload`, anything else 200 {}."""
     from urllib.parse import unquote
 
     def call(method, route, data=None, account=None, form=None):
@@ -185,10 +164,10 @@ def _cover_call(pictures, calls, upload=_ITEM):
 
 
 @pytest.mark.parametrize("after_undo, back", [
-    ({"header": None, "headerSize": {"width": 1280, "height": 720}}, False),   # the cover left empty
+    ({"header": None, "headerSize": {"width": 1280, "height": 720}}, False),
     ({"header": "", "headerSize": None}, False),
-    (None, False),                                                              # no after-undo read
-    ({"header": _NEW, "headerSize": {"width": 1, "height": 1}}, True),          # a cover: its bytes decide (below)
+    (None, False),
+    ({"header": _NEW, "headerSize": {"width": 1, "height": 1}}, True),
 ])
 def test_cover_undo_holds_only_with_a_cover_back(after_undo, back):
     from proofs import phase3
@@ -201,13 +180,10 @@ def test_cover_undo_holds_only_with_a_cover_back(after_undo, back):
 
 
 def _wire_after_patch(wire, calls):
-    """The Relay's wire log: the undo's PATCH line once a PATCH went out (an /img GET adds none)."""
     return lambda: wire if any(c[0] == "PATCH" for c in calls) else []
 
 
 def _cover_undo(tmp_path, pictures, after_undo, *, arm=3, after=None, upload=None, reads=None, clock=None):
-    """One COVER row's undo through undo_driver.settle_rows: (closed row, Relay calls, res). `reads`: the after-undo
-    reads in turn (the last repeats), else `after_undo` every time; `clock`: [now], advanced by the injected sleep."""
     import undo_driver
     from proofs import phase3
     calls = []
@@ -231,8 +207,6 @@ def _cover_undo(tmp_path, pictures, after_undo, *, arm=3, after=None, upload=Non
 
 
 def test_cover_undo_does_not_pass_the_kept_bytes_themselves_after_a_re_upload(tmp_path):
-    """OF re-encodes every upload: a new URL serving the kept bytes unchanged is not the re-upload, so it never passes;
-    the row closes FAILED at the deadline."""
     import undo_driver
     clock = [0.0]
     closed, _, res = _cover_undo(tmp_path, {_OLD["header"]: _KEPT, _BACK: _KEPT}, {**_OLD, "header": _BACK},
@@ -242,9 +216,6 @@ def test_cover_undo_does_not_pass_the_kept_bytes_themselves_after_a_re_upload(tm
     assert clock[0] >= undo_driver.RESTORE_WAIT
 
 
-# ticket 67 follow-up: live OF re-encodes a re-uploaded cover and applies it late (measured: the header URL changed again
-# after the after-undo read; mean abs pixel diff vs the kept original 1.45 / 3.83 / 4.47, vs the grey test picture
-# 61-64), so the undo waits for a cover URL other than the before and after-write ones that is the kept picture.
 def _pic(kind="gradient", size=(64, 36), fmt="JPEG", quality=95):
     import io
     from PIL import Image
@@ -270,11 +241,11 @@ _GREY = _pic("grey")
 
 
 @pytest.mark.parametrize("got, ok, why", [
-    (_ORIG, True, None),                                      # the kept bytes: passes without decoding (reverify)
-    (_reencode(_ORIG), True, None),                           # OF's re-encode: other bytes, same picture
-    (_pic(fmt="PNG"), True, None),                            # same picture, another format
-    (_GREY, False, "mean abs pixel diff"),                    # another picture of the same size
-    (_pic(size=(32, 18)), False, "size 32x18, kept 64x36"),   # the same picture at another size
+    (_ORIG, True, None),
+    (_reencode(_ORIG), True, None),
+    (_pic(fmt="PNG"), True, None),
+    (_GREY, False, "mean abs pixel diff"),
+    (_pic(size=(32, 18)), False, "size 32x18, kept 64x36"),
     (b"\xff\xd8\xff not a picture", False, "does not decode"),
 ])
 def test_picture_match_is_same_size_and_close_pixels(got, ok, why):
@@ -306,8 +277,6 @@ def _old_kept(pictures):
 
 
 def test_cover_undo_waits_out_a_stale_cover_then_passes_a_re_encoded_restore(tmp_path):
-    """(a) The after-undo reads show the after-write cover for a while (OF applies the restore late), then a new URL
-    with OF's re-encode of the kept picture: the row closes undone, both sha256 recorded."""
     import hashlib
     stale = {**_OLD, "header": _NEW}
     back = _reencode(_ORIG)
@@ -319,14 +288,12 @@ def test_cover_undo_waits_out_a_stale_cover_then_passes_a_re_encoded_restore(tmp
     assert pic["kept"]["sha256"] == hashlib.sha256(_ORIG).hexdigest()
     assert pic["restored"]["sha256"] == hashlib.sha256(back).hexdigest() != pic["kept"]["sha256"]
     assert pic["mean_abs_diff"] < 12 and pic["polls"] == 3 and 0 < clock[0] < 60
-    assert closed["reads"]["after_undo"]["header"] == _BACK   # the settled read is the one recorded
+    assert closed["reads"]["after_undo"]["header"] == _BACK
     assert (tmp_path / "undo-3-after.jpg").read_bytes() == back
     assert "settings--profile-cover-avatar/undo-3-after.jpg" in closed["evidence"]
 
 
 def test_cover_undo_fails_a_restore_that_serves_another_picture(tmp_path):
-    """(b) The cover changes after the undo, but to another picture (same size): never passed; the new URL is fetched
-    once, and the row closes FAILED at the deadline."""
     import undo_driver
     from urllib.parse import quote
     clock = [0.0]
@@ -338,7 +305,6 @@ def test_cover_undo_fails_a_restore_that_serves_another_picture(tmp_path):
 
 
 def test_cover_undo_fails_when_the_cover_never_leaves_the_after_write_picture(tmp_path):
-    """(c) The served cover stays the after-write picture: never fetched, the wait is bounded, then FAILED."""
     import undo_driver
     clock = [0.0]
     closed, calls, res = _cover_undo(tmp_path, _old_kept({_NEW: _GREY}), {**_OLD, "header": _NEW}, clock=clock)
@@ -349,8 +315,6 @@ def test_cover_undo_fails_when_the_cover_never_leaves_the_after_write_picture(tm
 
 
 def test_a_later_cover_row_passes_on_the_restore_already_served(tmp_path):
-    """A later row (the PATCH already sent, once) reads the restored cover at its new URL and passes without a wait;
-    the after-write cover is never fetched."""
     import undo_driver
     from proofs import phase3
     calls = []
@@ -371,8 +335,8 @@ def test_a_later_cover_row_passes_on_the_restore_already_served(tmp_path):
 
 
 @pytest.mark.parametrize("restored", [
-    _png(1, 1),                       # the proof's 1x1 left in place
-    _png(1280, 720, b"re-encoded"),   # other bytes that do not decode
+    _png(1, 1),
+    _png(1280, 720, b"re-encoded"),
 ])
 def test_cover_undo_fails_a_restore_that_is_not_the_kept_picture(tmp_path, restored):
     closed, _, res = _cover_undo(tmp_path, {_OLD["header"]: _KEPT, _BACK: restored}, {**_OLD, "header": _BACK})
@@ -381,11 +345,10 @@ def test_cover_undo_fails_a_restore_that_is_not_the_kept_picture(tmp_path, resto
 
 
 def test_cover_undo_fails_when_the_restored_picture_does_not_read_back(tmp_path):
-    closed, _, res = _cover_undo(tmp_path, {_OLD["header"]: _KEPT}, {**_OLD, "header": _BACK})   # /img 404
+    closed, _, res = _cover_undo(tmp_path, {_OLD["header"]: _KEPT}, {**_OLD, "header": _BACK})
     assert closed["state"] == "FAILED" and any("did not read back" in p for p in res["problems"])
 
 
-# ticket 67 follow-up: the read-only re-verify (`run.sh --of live --session-dir <dir> reverify --evidence <folder>`)
 def _evidence(tmp_path, data=_ORIG, name="undo-3-before.jpg"):
     d = tmp_path / "ev" / "settings--profile-cover-avatar"
     d.mkdir(parents=True)
@@ -413,7 +376,6 @@ def test_reverify_compares_the_served_cover_with_the_kept_one_and_writes_nothing
     ({**_OLD, "header": _NEW}, "answered 404"),
 ])
 def test_reverify_fails_without_a_served_picture(tmp_path, read, why):
-    """A folder without a kept picture is prove.py's refusal (test_live_entry), before any read."""
     import undo_driver
     from proofs import phase3
     got = undo_driver.reverify(phase3.COVER, _evidence(tmp_path), lambda: read, _cover_call({_BACK: _ORIG}, []), "c1")
@@ -434,13 +396,11 @@ def test_picture_size_decodes_png_jpeg_and_gif():
 def test_cover_effect_needs_a_prior_cover_that_changed():
     from proofs import phase3
     assert phase3.cover_set(_OLD, {**_OLD, "header": _NEW}) is True
-    assert phase3.cover_set(_OLD, _OLD) is False                                   # nothing changed
-    assert phase3.cover_set({"header": None, "headerSize": None}, {**_OLD, "header": _NEW}) is False   # no cover
+    assert phase3.cover_set(_OLD, _OLD) is False
+    assert phase3.cover_set({"header": None, "headerSize": None}, {**_OLD, "header": _NEW}) is False
 
 
 def test_cover_undo_uploads_the_kept_picture_and_patches_its_item(tmp_path):
-    """The undo never sends `header: ""`: it posts the picture kept before the trigger to the app's own upload route,
-    then the PATCH carries the item that route answered."""
     import undo_driver
     from proofs import phase3
     calls = []
@@ -463,8 +423,8 @@ def test_cover_undo_uploads_the_kept_picture_and_patches_its_item(tmp_path):
 
 
 @pytest.mark.parametrize("upload", [
-    (502, b"{}"),                                  # refused
-    (200, b"null"), (200, b'""'), (200, b"{}"),    # 200 without an item: PATCH {header: null|""|{}} would clear it
+    (502, b"{}"),
+    (200, b"null"), (200, b'""'), (200, b"{}"),
     (200, b'{"processId": ""}'), (200, b'{"processId": null}'), (200, b"[]"), (200, b"<html>"),
 ])
 def test_cover_undo_refused_upload_sends_no_patch(tmp_path, upload):
@@ -475,11 +435,11 @@ def test_cover_undo_refused_upload_sends_no_patch(tmp_path, upload):
     i = len(phase3.COVER.undo) - 1
     (revs, _), = undo_driver._send_all(phase3.COVER, [{"row": 1, "arm": 3}], call, lambda: [],
                                        lambda r: {"account": "c1"}, {}, "c1", _OLD, {i: ("x.png", _KEPT, "image/png")})
-    assert [c[1] for c in calls] == ["/api/of/v2/users/me/profile-image"]   # no PATCH
+    assert [c[1] for c in calls] == ["/api/of/v2/users/me/profile-image"]
     assert revs[0]["seq"] is None and revs[0]["relay_status"] == upload[0] and revs[0]["refused"]
 
 
-_LATE = {   # after-undo reads in turn (the last repeats) -> state, polls (None: until the deadline)
+_LATE = {
     "stale prior cover, then the re-encoded restore": ([_OLD, _OLD, {**_OLD, "header": _BACK}], "undone", 3),
     "stale prior cover until the deadline": ([_OLD], "FAILED", None),
     "the late test cover, then the restore": ([_OLD, {**_OLD, "header": _NEW}, {**_OLD, "header": _BACK}], "undone", 3),
@@ -489,9 +449,6 @@ _LATE = {   # after-undo reads in turn (the last repeats) -> state, polls (None:
 @pytest.mark.parametrize("arm", [0, 1, 2, 3])
 @pytest.mark.parametrize("case", list(_LATE))
 def test_cover_undo_re_uploads_and_waits_when_the_after_write_read_shows_the_prior_cover(tmp_path, arm, case):
-    """The write lands late (Save timed out, the app raised, OF applied it after the after-write read): that read still
-    shows the prior cover, yet the kept picture goes up again with its PATCH, and the row closes `undone` only once an
-    after-undo read names a new cover that is the kept picture re-encoded; the late test cover is no verdict."""
     import undo_driver
     from urllib.parse import unquote
     reads, state, polls = _LATE[case]
@@ -512,10 +469,10 @@ def test_cover_undo_re_uploads_and_waits_when_the_after_write_read_shows_the_pri
 
 
 @pytest.mark.parametrize("before, img", [
-    ({"header": None, "headerSize": None}, (200, b"\x89PNG\r\n\x1a\n")),   # no cover: nothing to put back
-    (_OLD, (403, b"")),                                                    # the CDN refused
-    (_OLD, (200, b"<html>")),                                              # not a picture
-    (_OLD, (200, b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024))),             # over the route's 5 MB
+    ({"header": None, "headerSize": None}, (200, b"\x89PNG\r\n\x1a\n")),
+    (_OLD, (403, b"")),
+    (_OLD, (200, b"<html>")),
+    (_OLD, (200, b"\xff\xd8\xff" + b"0" * (5 * 1024 * 1024))),
 ])
 def test_cover_proof_stops_before_its_trigger_without_a_picture_to_put_back(tmp_path, before, img):
     import undo_driver
@@ -546,8 +503,6 @@ def _hit(t, m, p, body=None):
 
 
 def test_cover_fake_row_check_tells_the_undo_from_the_write_by_time():
-    """FakeOF sees the cover's upload and PATCH twice (the write, then the undo's): the row check counts the hits
-    before the undo went out as the write's, the rest as its undo's; a write after that no undo sent is a problem."""
     import undo_driver
     from proofs import phase3
     t0 = 1_000.0
@@ -558,15 +513,13 @@ def test_cover_fake_row_check_tells_the_undo_from_the_write_by_time():
              "write": {"method": m, "path": p}} for n, arm, m, p in [(1, 0, "POST", "/api2/v2/upload/signed/create"),
                                                                        (2, 3, "PATCH", "/api2/v2/users/me")]]
     assert [undo_driver.row_problem(phase3.COVER, c, rows, plain) for c in rows] == [None, None]
-    no_undo = [{**c, "reversals": [{**rev, "at": t0 + 30}]} for c in rows]   # the undo never reached FakeOF
+    no_undo = [{**c, "reversals": [{**rev, "at": t0 + 30}]} for c in rows]
     assert all(undo_driver.row_problem(phase3.COVER, c, no_undo, plain[:2]) for c in no_undo)
-    late = plain + [_hit(t0 + 14, "PATCH", "/api2/v2/users/me")]   # the app's PATCH landed after the undo's
+    late = plain + [_hit(t0 + 14, "PATCH", "/api2/v2/users/me")]
     assert undo_driver.row_problem(phase3.COVER, rows[1], rows, late)
 
 
 def test_fake_row_check_finds_a_late_write_for_any_proof():
-    """The time rule is every proof's (ticket 60's setting put back by the same PATCH): the write before the undo went
-    out, the undo after; a duplicate write after it is a problem, no longer dropped."""
     import undo_driver
     from proofs import phase3
     p = next(x for x in phase3.PROOFS if x.undo and callable(x.undo[0].relay_body) and x.undo[0].reverses is None
@@ -582,26 +535,22 @@ def test_fake_row_check_finds_a_late_write_for_any_proof():
 
 
 def _timing_rows(t0, spec):
-    """Closed rows from (row, arm, write method, write path, of_id, reversals, keys), each open t0+row .. t0+20."""
     return [{"row": n, "arm": arm, "of_id": oid, "opened": _iso(t0 + n), "closed": _iso(t0 + 20), "reversals": revs,
              "write": {"method": m, "path": p}, **({"keys": keys} if keys else {})}
             for n, arm, m, p, oid, revs, keys in spec]
 
 
 def _timing_case(name):
-    """(proof, closed rows, FakeOF hits that pass, the same hits with one late or duplicate write) for the time rule's
-    other shapes: ticket 34 (the trigger's own DELETE is the record, no `at`), vault.more.rename (one DELETE for both
-    rows), ticket 30 (the post's DELETE and one hide the upload rows share)."""
     from proofs import phase2
     t0, lists = 1_000.0, "/api2/v2/vault/lists"
     by_id = {p.id: p for p in phase2.PROOFS}
     if name == "ticket 34":
-        rec = {"method": "DELETE", "path": f"{lists}/f1", "status": 200, "seq": 7, "by": "trigger"}   # no `at`
+        rec = {"method": "DELETE", "path": f"{lists}/f1", "status": 200, "seq": 7, "by": "trigger"}
         rows = _timing_rows(t0, [(1, 0, "POST", lists, "f1", [rec], None)])
         ok = [_hit(t0 + 2, "POST", lists), _hit(t0 + 5, "DELETE", f"{lists}/f1")]
         return by_id["vault.more.delete"], rows, ok, ok + [_hit(t0 + 6, "POST", lists)]
     if name == "vault.more.rename":
-        rec = {"method": "DELETE", "path": f"{lists}/f1", "status": 200, "seq": 9, "at": t0 + 10}   # sent once
+        rec = {"method": "DELETE", "path": f"{lists}/f1", "status": 200, "seq": 9, "at": t0 + 10}
         rows = _timing_rows(t0, [(1, 0, "POST", lists, "f1", [rec], None),
                                  (2, 1, "PATCH", f"{lists}/f1", "f1", [rec], None)])
         ok = [_hit(t0 + 2, "POST", lists), _hit(t0 + 4, "PATCH", f"{lists}/f1"), _hit(t0 + 11, "DELETE", f"{lists}/f1")]
@@ -609,7 +558,7 @@ def _timing_case(name):
     assert name == "ticket 30"
     hidden = "/api2/v2/vault/media/hidden"
     delete = {"method": "DELETE", "path": "/api2/v2/posts/p1", "status": 200, "seq": 9, "at": t0 + 10}
-    hide = {"method": "PUT", "path": hidden, "status": 200, "seq": 10, "at": t0 + 10.5}   # the upload rows take it
+    hide = {"method": "PUT", "path": hidden, "status": 200, "seq": 10, "at": t0 + 10.5}
     keys = {"media": "m1"}
     rows = _timing_rows(t0, [(1, 0, "POST", "/api2/v2/upload/signed/create", None, [hide], keys),
                              (2, 2, "POST", "/file/upload", None, [hide], keys),
@@ -622,20 +571,16 @@ def _timing_case(name):
 
 @pytest.mark.parametrize("name, late_row", [("ticket 34", 1), ("vault.more.rename", 2), ("ticket 30", 2)])
 def test_fake_row_check_time_rule_table(name, late_row):
-    """Every row of each shape passes on its write then its undo; one write more (after the undo went out, or a
-    duplicate where the undo has no `at`) fails the row it lands on."""
     import undo_driver
     proof, rows, ok, bad = _timing_case(name)
     assert [undo_driver.row_problem(proof, c, rows, ok) for c in rows] == [None] * len(rows)
     row = next(c for c in rows if c["row"] == late_row)
     assert undo_driver.row_problem(proof, row, rows, bad)
-# ticket 61 (live 2026-11-21): the sort proofs' waits are OnlyFans's own sorted read (`Expect`), never FakeOF's names.
 T61_IDS = ("settings--tracking-links-sort", "settings--tracking-links-sort-modal", "settings--tracking-links-sort-radios",
            "settings--trial-links-sort-radios")
 
 
 def _fake_get(start=None):
-    """A signed GET on an in-process FakeOF, as the driver's Relay read hands it on; `start(fake)` sets its start."""
     import time
     from urllib.parse import urlencode
     from starlette.testclient import TestClient
@@ -672,8 +617,6 @@ def test_ticket_61_sort_waits_hold_no_fixed_row_name():
     ("settings--trial-links-sort-radios", {"settled": "Alpha trial"}),
 ])
 def test_ticket_61_sort_waits_resolve_from_fakeofs_sorted_read(pid, want):
-    """FakeOF stores Mid, Zeta, Alpha (soak/fake_of/links.py): its unsorted first row is Mid, so each sort moves it;
-    its trials' unsorted first is a synthetic link, claims_count desc's is Alpha trial."""
     from expects import expect_waits, resolve_expects
     from proofs import ALL
     assert resolve_expects(expect_waits(ALL[pid]), _fake_get()) == want
@@ -685,30 +628,29 @@ def test_ticket_61_sort_parks_when_onlyfans_unsorted_order_has_the_same_first_ro
     waits = expect_waits(ALL["settings--tracking-links-sort-radios"])
     real = _fake_get()
 
-    def get(path, query):   # OnlyFans answering its unsorted read in name-desc order
+    def get(path, query):
         return real(path, {**query, "field": "name", "sort": "desc"} if "sort" not in query else query)
     with pytest.raises(Park, match="is first in /api2/v2/campaigns unsorted too"):
         resolve_expects(waits, get)
 
 
-# ticket 60: Update frequency needs Email notifications and New Likes Summary on; neither switch body is captured
 _BOTH = "parked — needs capture (ticket 12 sitting): Email notifications switch body, New Likes Summary switch body"
 
 
 @pytest.mark.parametrize("before, why", [
-    ({"email": False, "isEnabled": False, "value": 0}, _BOTH),   # the live account (sitting 2026-11-21)
+    ({"email": False, "isEnabled": False, "value": 0}, _BOTH),
     ({"email": True, "isEnabled": False, "value": 0},
      "parked — needs capture (ticket 12 sitting): New Likes Summary switch body"),
     ({"email": False, "isEnabled": True, "value": 12},
      "parked — needs capture (ticket 12 sitting): Email notifications switch body"),
-    (None, TypeError),                                                # no New Likes Summary item: a shape change
-    ({"isEnabled": False, "value": 0}, KeyError),                     # no master switch read: never a green park
+    (None, TypeError),
+    ({"isEnabled": False, "value": 0}, KeyError),
     ({"email": True, "isEnabled": True, "value": 24}, "parked — New Likes Summary is at 24 hours"),
     ({"email": True, "isEnabled": True, "value": 12}, None),
 ])
 def test_ticket_60_frequency_parks_unless_both_switches_are_on_below_24_hours(before, why):
     from proofs.phase3 import FREQUENCY
-    if isinstance(why, type):   # raised: run_proof's generic handler fails the proof
+    if isinstance(why, type):
         with pytest.raises(why):
             FREQUENCY.ready(before)
         return
@@ -741,10 +683,10 @@ def test_ticket_60_email_off_is_a_start_state_whose_run_passes_only_when_frequen
     from proofs.phase3 import FREQUENCY
     from soak.fake_of.app import FakeOF
     from soak.world import World
-    assert "email-off" not in FAULTS   # it faults no request
+    assert "email-off" not in FAULTS
     start, pid = STATES["email-off"]
     assert pid == FREQUENCY.id and FREQUENCY.of_read(_fake_get(start), None) == {"isEnabled": False, "value": 0, "email": False}
-    with pytest.raises(ValueError):   # the Recorder never takes a start state as a request fault
+    with pytest.raises(ValueError):
         Recorder(FakeOF(World(seed=1)).build(), "email-off")
     assert start_state_problems("email-off", [{"proof": pid, "reason": "parked — ..."}]) == []
     assert start_state_problems("email-off", []) == ["start state email-off: settings--email-update-frequency did not park"]
@@ -753,11 +695,10 @@ def test_ticket_60_email_off_is_a_start_state_whose_run_passes_only_when_frequen
 
 
 def test_the_proof_picture_is_an_intact_png_and_fakeof_refuses_a_corrupt_one():
-    """Live 2026-11-21: OF's convert answered 400 "Image is corrupted" to the old hand-typed 1x1 (IDAT CRC wrong)."""
     import prove
     import undo_driver
     from soak.fake_of.posts import png_intact
     assert png_intact(prove.PIXEL_PNG) and undo_driver.picture_size(prove.PIXEL_PNG) == (1280, 720)
     bad = bytearray(prove.PIXEL_PNG)
-    bad[-20] ^= 0xFF   # inside IDAT
+    bad[-20] ^= 0xFF
     assert not png_intact(bytes(bad)) and not png_intact(prove.PIXEL_PNG[:-6]) and png_intact(b"\xff\xd8\xff jpeg")

@@ -46,7 +46,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-sys.path.append(str(Path(__file__).resolve().parent))   # `-I` drops the script's dir; stdlib stays first
+sys.path.append(str(Path(__file__).resolve().parent))
 import rollout_core as core  # noqa: E402
 import rollout_decide as rd  # noqa: E402
 import rollout_fill  # noqa: E402
@@ -67,7 +67,7 @@ class Paused(Exception):
 def cap_of(plan: dict) -> dict:
     cap = dict(plan.get("cap") or {})
     keep = {k: cap.get(k) for k in ("spent_millicents", "cap_millicents", "capped", "key_missing")}
-    keep["day"] = cap.get("day") or utc_day()   # the ledger's UTC day (llm_client.cap_state), else ours
+    keep["day"] = cap.get("day") or utc_day()
     return keep
 
 
@@ -93,7 +93,6 @@ def read_roster(ctx: Ctx) -> int:
     return len(ok)
 
 
-# ── measure ─────────────────────────────────────────────────────────────────
 
 def mode_measure(ctx: Ctx) -> int:
     """Read-only, per Creator: vault size, mirror complete, described, target remaining, cap state, Sequences."""
@@ -120,7 +119,6 @@ def mode_measure(ctx: Ctx) -> int:
     return EXIT_DONE
 
 
-# ── collect ─────────────────────────────────────────────────────────────────
 
 def mode_collect(ctx: Ctx) -> int:
     """One Collect per run for each Creator whose mirror is not complete: answer its pauses, wait, re-read
@@ -184,7 +182,7 @@ def _await_collect(ctx: Ctx, cid: str) -> tuple[str, dict, int]:
                     return "done", run, pauses
                 fails = 0
                 continue
-            if pauses >= rd.COLLECT_PAUSE_BUDGET:   # a Collect that never stops pausing ends this run's wait
+            if pauses >= rd.COLLECT_PAUSE_BUDGET:
                 return "open:collect_paused", run, pauses
             bad = ctx.relay.call("POST", f"{VAULT}/collect/continue", {"account_id": cid})
             if bad.ok:
@@ -198,7 +196,6 @@ def _await_collect(ctx: Ctx, cid: str) -> tuple[str, dict, int]:
             return f"open:collect_unreadable_{bad.status}", run, pauses
 
 
-# ── describe ────────────────────────────────────────────────────────────────
 
 def _ceiling(ctx: Ctx, st: dict, eligible_n: int) -> int:
     if ctx.args.ceiling_cents is not None:
@@ -256,9 +253,9 @@ class Wave:
         self.window: dict[str, Any] = {"livez": None, "stops": [], "jev": [], "errors_in_a_row": 0}
         self.running: dict[str, dict] = {}
         self.pending: list[str] = []
-        self.retry: list[str] = []            # failed reads / starts: back in `pending` only after a POLL_S sleep
-        self.fails: dict[str, int] = {}       # a Creator's failed calls in a row (rd.RETRY_BUDGET)
-        self.unsettled: dict[str, str] = {}   # sweeps left in flight in the journal -> an rd.UNSETTLED code
+        self.retry: list[str] = []
+        self.fails: dict[str, int] = {}
+        self.unsettled: dict[str, str] = {}
         self.deferred: set[str] = set()
         self.zero: dict[str, int] = {}
         self.pausing: str | None = None
@@ -266,7 +263,7 @@ class Wave:
         self.scope = {str(a.get("id")) for a in ctx.scoped}
         for cid, c in crs.items():
             self.zero[cid] = int(c.get("zero_sweeps") or 0)
-        for cid in in_flight(self.st, ctx):   # a sweep still running on the server: await it
+        for cid in in_flight(self.st, ctx):
             sw = dict(crs[cid]["sweep"])
             sw["zero_sweeps"] = self.zero[cid]
             self.running[cid] = sw
@@ -314,11 +311,10 @@ class Wave:
         self.unsettled[cid] = "recount_unreadable"
         say(f"{what} {cid}: unreadable (HTTP {st}); its sweep stays in flight in the journal for the next run")
 
-    # settle a Creator's next state
     def settle(self, cid: str, outcome: str, detail: str | None = None) -> None:
         if outcome == "continue":
-            if cid in self.scope:   # an awaited out-of-scope sweep is not stepped on
-                self.pending.insert(0, cid)   # its next step takes the freed slot first
+            if cid in self.scope:
+                self.pending.insert(0, cid)
         elif outcome == "done":
             say(f"done {cid}")
         elif outcome == "defer":
@@ -333,7 +329,7 @@ class Wave:
         """Pre-check one Creator and start its next sweep, or settle it."""
         ctx = self.ctx
         s = ctx.summary(cid)
-        if s is None:   # classified on the summary's own status: no plan read may overwrite `last_status`
+        if s is None:
             return self.retry_or_open(cid)
         p = ctx.plan(cid, rd.DESCRIBE_TARGET)
         if p is None:
@@ -352,7 +348,7 @@ class Wave:
             return self.settle(cid, t)
         goal = before["goal"]
         before["target"] = t
-        reserved = len(self.running) + len(self.unsettled)   # an unsettled sweep's spend is not journaled yet
+        reserved = len(self.running) + len(self.unsettled)
         if not rd.may_sweep(self.spent, reserved, self.ceiling, rd.STEP, self.item_mc):
             self.pending.insert(0, cid)
             self.pausing = "ceiling"
@@ -363,8 +359,6 @@ class Wave:
         sw = {"target": t, "before": before["described"], "cap_before": cap, "started": started,
               "goal": goal, "complete": before["complete"], "zero_sweeps": before["zero_sweeps"],
               "remaining_before": p.get("target_remaining")}
-        # The reservation is journaled BEFORE the paid POST: a kill after the relay accepted it leaves this
-        # sweep_start in flight, so the next run awaits it and recounts its spend from `cap_before` (W30 F5).
         self.j.write("sweep_start", cid, target=t, before=sw["before"], cap_before=cap, started=started,
                      goal=goal, complete=sw["complete"], remaining_before=sw["remaining_before"])
         say(f"sweep {cid}: target {t} (described {before['described']}, goal {goal}, {rem} to describe)")
@@ -376,16 +370,11 @@ class Wave:
         r = self.relay.call("POST", f"{VAULT}/describe-all", body={"account_id": cid, "target": sw["target"]})
         sw = {k: v for k, v in sw.items() if k not in ("lost_start", "repost", "cap_seen")}
         if rd.retry_class(r.status) == "retry":
-            # Unknown answer (transport error, 5xx): the relay may have accepted the start, and may claim and
-            # bill it only later (its POST reads coverage before the claim, while status still says idle). The
-            # reservation stays in flight, journaled as lost so a re-run knows it too (W30 F37), and is only ever
-            # settled against ITS `cap_before` (W30 F34/F40).
             say(f"sweep {cid}: start answer lost (HTTP {r.status}); polling it as running")
             self.j.write("lost_start", cid, http=r.status, cap_before=sw.get("cap_before") or {})
             self.running[cid] = {**sw, "lost_start": r.status}
             return
         if r.status not in (200, 409):
-            # A clear refusal: close the reservation (`not_started`: no sweep, no zero-progress count).
             self.j.write("sweep", cid, target=sw["target"], before=sw["before"], after=sw["before"], progress={},
                          cap_before=sw.get("cap_before") or {}, cap_after=cap, started=sw.get("started"),
                          ended=now(), outcome="not_started", http=r.status)
@@ -400,7 +389,7 @@ class Wave:
         self.j.write("start_answer", cid, http=r.status)
         if r.status == 409:
             say(f"sweep {cid}: one already runs, awaiting it")
-        if r.status == 200 and (r.json or {}).get("status") == "done":   # met on the server: zero work
+        if r.status == 200 and (r.json or {}).get("status") == "done":
             sw["done_now"] = True
         self.running[cid] = sw
 
@@ -416,11 +405,6 @@ class Wave:
         lost = sw.get("lost_start")
         if (lost is not None and after["described"] <= int(sw.get("before") or 0)
                 and rd.sweep_spend(sw.get("cap_before") or {}, cap_after) == 0):
-            # A lost start answer, recounted: nothing described, nothing spent YET — the relay may still claim
-            # it. Never closed here and never re-baselined: the same reservation's start is POSTed again after a
-            # poll sleep (409 = the lost one claimed; 200 = this one did; the relay runs one sweep per Creator),
-            # so whatever runs is recounted from the original `cap_before` (W30 F40). Out of retries: left in
-            # flight in the journal (lost), the run pauses.
             if self.failed(cid, lost):
                 self.running[cid] = {**sw, "repost": True, "cap_seen": cap_after}
             else:
@@ -463,7 +447,7 @@ class Wave:
                 answered = True
                 self.finish(cid, {})
                 continue
-            if sw.get("repost"):   # a lost start that recounted at zero: its start again, same reservation
+            if sw.get("repost"):
                 answered = True
                 self.post(cid, self.running.pop(cid), sw.get("cap_seen") or {})
                 continue
@@ -472,16 +456,14 @@ class Wave:
                 answered = True
                 if r.json.get("running"):
                     self.fails.pop(cid, None)
-                    # per start: each sweep's `sw` is a new dict, so a Creator's next step starts its own clock
                     if time.monotonic() - sw.setdefault("seen_running", time.monotonic()) >= rd.DESCRIBE_WAIT_S:
-                        # W30 F44: a stranded flag answers running forever; no sweep line, so the reservation stays
                         self.unsettled[cid] = "describe_still_running"
                         self.running.pop(cid)
                         say(f"sweep {cid}: still running after {rd.DESCRIBE_WAIT_S // 3600} h; left in flight")
                 else:
                     self.finish(cid, r.json.get("progress") or {})
             else:
-                answered = answered or rd.retry_class(r.status) == "open"   # a 4xx is the relay answering
+                answered = answered or rd.retry_class(r.status) == "open"
                 self.keep_or_unsettle(cid, self.running.pop(cid), "status", any_status=True)
         return answered
 
@@ -504,17 +486,15 @@ class Wave:
             if not self.running and (not self.retry or self.pausing):
                 break
             if self.pausing in RELAY_SICK and not answered:
-                break   # the running sweeps stay journaled in flight; the next run awaits them
+                break
             time.sleep(core.POLL_S)
-            self.pending.extend(self.retry)   # a failed start comes back only after a poll interval
+            self.pending.extend(self.retry)
             self.retry.clear()
             answered = self.poll() if self.running else True
             self.window["errors_in_a_row"] = self.relay.errors_in_a_row
             if self.pausing is None and self.relay.errors_in_a_row >= rd.ERRORS_IN_A_ROW:
                 self.pausing = "errors"
         if self.pausing or self.unsettled:
-            # ASSUMPTION (rung 4): an unreadable sweep end pauses the run (exit 3, `recount_unreadable`): its spend
-            # is unmeasured, so neither done nor the Fleet ceiling can be trusted until a re-run recounts it.
             reason = self.pausing or rd.unsettled_pause(self.unsettled.values())
             left = sorted(self.running) + sorted(self.unsettled)
             self.j.write("pause", None, reason=reason, running=left)
@@ -560,14 +540,12 @@ def describe_dry(ctx: Ctx, eligible_n: int) -> int:
             if kind == "settle":
                 out = t
         if out == "continue":
-            running = min(flying + would, int(ctx.args.slots) - 1)   # the live run reserves its running sweeps
+            running = min(flying + would, int(ctx.args.slots) - 1)
             if not rd.may_sweep(spent, running, ceiling, rd.STEP, ctx.args.item_mc):
                 say(f"describe {cid}: would pause (ceiling {rd.dollars(ceiling)}, spent {rd.dollars(spent)}, "
                     f"{running} running sweep(s) reserved)")
                 code = EXIT_PAUSED
                 continue
-            # No free slot: the live run starts it only after a sweep ahead ends, and only if that sweep's real
-            # spend still leaves the ceiling room (W30 F13), so the line says it is conditional.
             queued = flying + would >= int(ctx.args.slots)
             would += 1
             say(f"describe {cid}: would "
@@ -587,7 +565,6 @@ def mode_describe(ctx: Ctx, eligible_n: int) -> int:
     return Wave(ctx, eligible_n).run()
 
 
-# ── report ──────────────────────────────────────────────────────────────────
 
 def _spend(ctx: Ctx, cid: str, since: str) -> dict:
     r = ctx.relay.call("GET", "/admin/stats/grok-calls",
@@ -656,7 +633,6 @@ def mode_report(ctx: Ctx, eligible_n: int) -> int:
     return EXIT_DONE
 
 
-# ── CLI ─────────────────────────────────────────────────────────────────────
 
 def _slots(v: str) -> int:
     n = int(v)

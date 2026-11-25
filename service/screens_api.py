@@ -71,6 +71,7 @@ import accounts_admin_api
 import auth
 import chatters
 import permissions
+import platforms
 import relay_cache
 import relay_host
 import settings_api
@@ -298,7 +299,7 @@ def _inbox_ids(accounts: Any) -> list[str]:
     """The Creators the All Models Fan List fans out to (usePlatformAccounts on OnlyFans:
     a session, active, not Fansly; a dead session still counts)."""
     return [a["id"] for a in _rows(accounts)
-            if a["has_session"] and a["is_active"] and a.get("platform") != "fansly"]
+            if a["has_session"] and a["is_active"] and platforms.get(a.get("platform")) is platforms.ONLYFANS]
 
 
 def _narrow(ids: list[str], wanted: str | None) -> tuple[list[str], list[dict]]:

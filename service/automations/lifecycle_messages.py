@@ -1,96 +1,3 @@
-"""service/automations/lifecycle_messages.py — Smart Messages' lifecycle Triggers.
-
-Four of Infloww's Smart Messages Triggers (index.9f50f370.js, static read:
-`SmartMessageAutoRulesType` FansAboutToExpire=5, FansSubscriptionExpired=6,
-FansResubscribe=7, FansOnTheirBirthday=8), one kind each, all on the send path
-`purchase_followup` (Trigger 3) uses:
-
-  expiry_message       "Fan's subscription near expiry within [N] hour(s)"
-                       N 1..120, default 24. Fans listed active whose
-                       subscription ends within N hours and will NOT renew
-                       (subscribedOnData.status is not "active").
-  expired_message      "Fan's subscription expired [N] hour(s) ago"
-                       N 12..120, default 24. Fans the roster listed active
-                       before and no longer lists, once N hours have passed
-                       since their expiredAt.
-  resubscribe_message  A fan back after his subscription lapsed: listed active
-                       again after a complete crawl that did not list him, on a
-                       newer subscribeAt — or, the first time the crawl sees
-                       him, a subscription that began in the last day by a fan
-                       we already knew a day before it (and no renewedAt).
-  birthday_message     Fans whose Fan insights "Birthday" (MM-DD, `fans.birthday`)
-                       is today, UTC.
-
-Infloww's 4th Trigger, "Not Purchased", is only a list label there: its rules
-enum and its create menu have no such rule, so it has no sender here either.
-Infloww's "after delay" option is not wired (a 1..60 minute delay is noise on
-a 30-minute sweep).
-
-Messages (Infloww's Smart Messages model, 06 M5): a Trigger holds up to
-`MAX_MESSAGES` messages and "the system will randomly select one" per event;
-each message is a collection of variants, one picked per send; both picks are
-seeded on (fan, event), so a re-run of the same event picks the same text. The
-rule's media, price, frequency, window and Auto-unsend ride on whichever
-message goes out. A message may carry follow-ups, a sequence sent
-`delay_minutes` apart, each its own scheduled job of this kind (`follow_up`
-payload, `run_follow_up`), claimed per (fan, event, step) before the wire as a
-message is, that stops for good once the fan says something after the first
-message. Nearing expiry may also give the fan a personal subscription discount
-before the message (`DISCOUNT_KINDS`; the config route holds the percent to
-OnlyFans' cap for the page's price); Expired may not, as what OnlyFans does
-with a discount for a fan whose subscription has ended is unverified.
-send_welcome reuses the picks and the follow-ups (`pick`, `follow_ups_of`,
-`schedule_follow_ups`, `run_follow_up`).
-
-Expired fans are followed first (D12): before an Expired message the fan is
-followed through auto_follow's money-gated `gated_follow`, as Infloww does
-("Auto-follow is enabled when messaging expired fans"). If OnlyFans still
-refuses the DM, the fan is counted `refused_expired` and NOT quarantined as
-unreachable: a lapsed fan is reachable again the day he comes back.
-ASSUMPTION (D12, needs a live check): an unfollowed expired fan refuses DMs.
-
-Roster: the expiry, expired and resubscribe kinds share ONE crawl of the active
-subscriber list (`subscriber_snapshot`), refreshed at most every
-`_CRAWL_TTL_S` by whichever sweep comes first. A truncated or empty crawl
-changes nothing — a fan missing from a short read is not an expired fan.
-ASSUMPTION (needs a live capture): OF keeps `subscribeAt` across renewals and
-resets it on a new subscription; if a renewal moved it, the first-sighting rule
-would read a renewal as a return, which the renewedAt check is there to stop.
-
-  steps (written by lifecycle_message_config_api):
-    enabled     mirror of the switch; the sweep refuses to send without it
-    messages    [{variants: [text], follow_ups: [{text, delay_minutes}],
-                  discount: {percent, months} | null}]; `{name}` is the fan's
-                name (else "babe")
-    text        the first message's first variant, for list views; a rule
-                saved before `messages` existed is read as that one message
-    hours       expiry / expired only: N above
-    frequency   "every": once per EVENT — each subscription that nears its end or
-                lapses, each return, each birthday (once a year). "once": once
-                per fan, ever, for the kind. Infloww starts every lifecycle
-                Trigger on "once"; a rule saved before the key existed runs on
-                "every", which is what it always did. A `force_ids` run is a
-                test, not the event: it is never held back by "once", and its
-                claims never count toward it.
-    media_ids, price_cents, starts_at, ends_at, unsend_minutes
-                smart_message_extras: media (a PPV at price_cents) sent with the
-                text (a fan who already owns any of it gets the text alone,
-                free), the Effective / Expiry window (events before starts_at are
-                not chased, nothing is sent past ends_at) and Auto-unsend (free
-                messages only).
-    enabled_at  events whose moment came before the switch last went on are never chased
-  job payload: `dry_run` (resolve candidates, send nothing, claim nothing),
-  `force_ids` (these fans are the event, now: no roster read, no date match;
-  every safety gate and the once-per-day claim still apply) and `follow_up`
-  (one follow-up step for one fan, enqueued by a send; see `run_follow_up`).
-
-Safety, as purchase_followup: off by default; at most one message per (kind,
-fan, event), CLAIMED in `lifecycle_message_claims` before the wire and handed
-back only on OF's rate-limit refusal; the include-only audience, hard skip
-list, muted creator, global blacklist, a paused fan and the per-fan lease all
-gate the wire; `of_write_paced` with send_purpose="gated"; a 200 with no id
-quarantines; at most `_LIMIT` sends per sweep; a 45s rest after each send.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -103,7 +10,7 @@ from random import Random
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-import automation_executor as ax        # _make_client / of_write_paced / lease seams
+import automation_executor as ax
 import of_pacing
 import smart_message_extras as extras
 from attribution import write_outbound_attribution
@@ -136,45 +43,33 @@ KINDS: dict[str, str] = {
     EXPIRY: "Nearing expiry", EXPIRED: "Expired",
     RESUBSCRIBE: "Resubscribe", BIRTHDAY: "Birthday",
 }
-# The Triggers Infloww refuses on a free-subscription page (`isPaidAutoRules`,
-# index.9f50f370.js @14441992): a free page has no subscription to expire or renew.
 PAID_ONLY = frozenset({EXPIRY, EXPIRED, RESUBSCRIBE})
 FREE_PAGE_REFUSAL = "is a free subscription profile and is unable to create this message"
-# Infloww's bounds for N (RulesDescriptionWrap) and its default (autoRules.data=24).
 HOURS: dict[str, tuple[int, int]] = {EXPIRY: (1, 120), EXPIRED: (12, 120)}
 DEFAULT_HOURS = 24
-# Infloww's start for all four (`resetTemplateDefaultData`, @14445781 ..
-# @14447069: frequency=1, "Send only once when the fan matches the trigger"),
-# and what a stored rule without the key does (once per event).
 DEFAULT_FREQUENCY = "once"
 STORED_FREQUENCY = "every"
-# The message model's bounds (the config route saves only what `messages_of`
-# keeps whole).
 MAX_MESSAGES = 10
 MAX_VARIANTS = 10
 MAX_FOLLOW_UPS = 5
-TEXT_MAX = 1000          # a message, variant or follow-up text, cut on save
+TEXT_MAX = 1000
 FOLLOW_UP_MINUTES = (1, 7 * 24 * 60)
-# OF's Discount dialog: 5..60 % in steps of 5, for 1..12 months.
 DISCOUNT_PERCENT = (5, 60)
 DISCOUNT_MONTHS = (1, 12)
-# Triggers whose message may carry a discount: the fan is still subscribed with
-# renew off. Expired is left out until OF's handling of a lapsed fan is checked.
 DISCOUNT_KINDS = frozenset({EXPIRY})
 
 _SEND_PURPOSE = "gated"
-_LIMIT = 25                  # fans messaged per sweep; the rest wait for the next
-_COOLDOWN_S = 45             # as purchase_followup: a short rest after a send
-_CRAWL_TTL_S = 25 * 60       # one roster crawl serves every lifecycle sweep this long
-_ROSTER_PAGE = 50            # OF caps subscriber pages low
-_STALE_H = 24                # an event more than a day past its moment is not chased
+_LIMIT = 25
+_COOLDOWN_S = 45
+_CRAWL_TTL_S = 25 * 60
+_ROSTER_PAGE = 50
+_STALE_H = 24
 _KNOWN_BEFORE = timedelta(days=1)
-_BUSY_RETRY = timedelta(minutes=10)   # a follow-up whose fan is busy tries again this much later
+_BUSY_RETRY = timedelta(minutes=10)
 _BUSY_TRIES = 3
 
 
 def _parse_iso(raw) -> datetime | None:
-    """An ISO stamp as naive UTC, or None when absent or unreadable."""
     try:
         ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00")) if raw else None
     except ValueError:
@@ -185,7 +80,6 @@ def _parse_iso(raw) -> datetime | None:
 
 
 def clamp_hours(kind: str, raw) -> int | None:
-    """N for the kind, inside Infloww's bounds; None for a kind without N."""
     if kind not in HOURS:
         return None
     lo, hi = HOURS[kind]
@@ -197,7 +91,6 @@ def clamp_hours(kind: str, raw) -> int | None:
 
 
 async def _live_rule(account_id: str, kind: str) -> dict | None:
-    """Steps of the account's switched-on rule of `kind` as it is NOW, or None."""
     async with get_session() as s:
         rule = (await s.execute(
             select(AutomationRule).where(
@@ -215,7 +108,6 @@ async def _live_rule(account_id: str, kind: str) -> dict | None:
     return steps if isinstance(steps, dict) else {}
 
 
-# ── The roster ────────────────────────────────────────────────────────
 
 def _crawl_blocking(client) -> tuple[list[dict], bool]:
     return _page_all_checked(
@@ -223,7 +115,6 @@ def _crawl_blocking(client) -> tuple[list[dict], bool]:
 
 
 def _sub_data(u: dict) -> tuple[datetime | None, datetime | None, bool | None, bool]:
-    """(subscribe_at, expired_at, renew_on, renewed) off a subscriber row."""
     d = u.get("subscribedOnData") if isinstance(u.get("subscribedOnData"), dict) else {}
     status = d.get("status")
     renew_on = None if status is None else str(status).strip().lower() == "active"
@@ -238,17 +129,10 @@ async def _last_crawl(account_id: str) -> datetime | None:
             .where(SubscriberSnapshot.account_id == str(account_id)))).scalar()
 
 
-# A roster crawl older than this no longer vouches for a fan's renew switch:
-# the lifecycle senders re-crawl every _CRAWL_TTL_S while any of them is on, so
-# a day-old crawl means they were turned off and the snapshot is going stale.
 RENEW_SNAPSHOT_MAX_AGE = timedelta(days=1)
 
 
 async def renew_off_fan_ids(account_id, fan_ids, now: datetime) -> set[int]:
-    """Of `fan_ids`, the fans the account's LAST roster crawl listed active with
-    auto-renew off and an expiry still ahead (or unknown). No crawl, or one
-    older than RENEW_SNAPSHOT_MAX_AGE, vouches for nobody: empty set. The
-    Fan List's "Off" signal (server `_annotate_chat_rows`) reads it."""
     ids = {int(i) for i in fan_ids}
     crawl = await _last_crawl(account_id)
     if not ids or crawl is None or now - crawl > RENEW_SNAPSHOT_MAX_AGE:
@@ -270,14 +154,6 @@ _roster_locks: dict[str, asyncio.Lock] = {}
 
 async def refresh_roster(account_id: str, client, *, now: datetime,
                          force: bool = False) -> dict:
-    """Crawl the active roster into `subscriber_snapshot` unless a complete crawl
-    is younger than `_CRAWL_TTL_S` (`force` skips that check: the admin run-now
-    route, `POST /admin/roster/{account_id}/crawl`). Returns what happened, for
-    the run stats. One crawl per account at a time: the lifecycle sweep and
-    smart_list_sync both call this, and two interleaved crawls would stamp
-    different seen_at. The sweeps' crawl is a background walk (of_pacing: paced per
-    Creator, OF's 429 retried once); the admin run-now is a person's and pages as before,
-    answering {roster: in_progress} at once when a crawl already holds the lock."""
     lock = _roster_locks.setdefault(str(account_id), asyncio.Lock())
     if force and lock.locked():
         return {"roster": "in_progress"}
@@ -298,8 +174,8 @@ async def _refresh_roster(account_id: str, client, *, now: datetime,
             listed[int(u["id"])] = u
         except (KeyError, TypeError, ValueError):
             continue
+    # A short crawl would turn every fan past it into an expired one.
     if truncated or not listed:
-        # A short read would turn every fan past it into an "expired" one.
         log.warning("lifecycle roster crawl unusable account=%s rows=%s truncated=%s",
                     account_id, len(listed), truncated)
         return {"roster": "truncated" if truncated else "empty"}
@@ -316,8 +192,6 @@ async def _refresh_roster(account_id: str, client, *, now: datetime,
             sub, exp, renew_on, renewed = _sub_data(u)
             row = existing.get(fid)
             if row is None:
-                # First sighting: a subscription that began in the last day, by a
-                # fan we knew a day before it, is a fan coming back.
                 known = known_at.get(fid)
                 back = (sub is not None and known is not None and not renewed
                         and known < sub - _KNOWN_BEFORE and sub >= now - timedelta(hours=_STALE_H))
@@ -327,7 +201,6 @@ async def _refresh_roster(account_id: str, client, *, now: datetime,
                     resubscribed_at=sub if back else None))
                 returned += int(back)
                 continue
-            # Absent from the last complete crawl, now listed on a newer start.
             if (last is not None and row.seen_at < last and sub is not None
                     and (row.subscribe_at is None or sub > row.subscribe_at)):
                 row.resubscribed_at = sub
@@ -339,10 +212,6 @@ async def _refresh_roster(account_id: str, client, *, now: datetime,
 
 async def expired_fans(account_id: str, *,
                        ended_by: datetime | None = None) -> dict[int, datetime] | None:
-    """{fan_id: expired_at} for fans the latest complete roster crawl no longer
-    lists, whose subscription ended (at or before `ended_by`, when given). None
-    before the first complete crawl: nobody is known to have expired yet. The
-    Expired Trigger and the mass message's "Expired over" both read this."""
     last = await _last_crawl(account_id)
     if last is None:
         return None
@@ -357,10 +226,8 @@ async def expired_fans(account_id: str, *,
 
 async def _roster_events(account_id: str, kind: str, *, hours: int | None,
                          since: datetime, now: datetime) -> dict[int, str]:
-    """{fan_id: event_key} the snapshot holds for `kind`, events after `since`."""
     if kind == EXPIRED:
         gone = await expired_fans(account_id, ended_by=now - timedelta(hours=hours)) or {}
-        # Not one whose moment came before the switch.
         return {f: exp.isoformat() for f, exp in gone.items()
                 if exp + timedelta(hours=hours) >= since}
     last = await _last_crawl(account_id)
@@ -371,7 +238,7 @@ async def _roster_events(account_id: str, kind: str, *, hours: int | None,
     if kind == EXPIRY:
         q = q.where(S.seen_at == last, S.renew_on.is_(False), S.expired_at.is_not(None),
                     S.expired_at > now, S.expired_at <= now + timedelta(hours=hours))
-    else:  # RESUBSCRIBE
+    else:
         q = q.where(S.seen_at == last, S.resubscribed_at.is_not(None),
                     S.resubscribed_at >= since)
     async with get_session() as s:
@@ -379,7 +246,7 @@ async def _roster_events(account_id: str, kind: str, *, hours: int | None,
     out: dict[int, str] = {}
     for fid, exp, back in rows:
         if kind == EXPIRY:
-            if exp - timedelta(hours=hours) < since:   # inside the window before the switch
+            if exp - timedelta(hours=hours) < since:
                 continue
             out[int(fid)] = exp.isoformat()
         else:
@@ -395,12 +262,9 @@ async def _birthday_events(account_id: str, now: datetime) -> dict[int, str]:
     return {int(f): str(now.year) for f in ids}
 
 
-# ── Claims ────────────────────────────────────────────────────────────
 
 async def _claimed(account_id: str, kind: str, events: dict[int, str], *,
                    once: bool = False) -> set[int]:
-    """Fans among `events` already claimed for that event — or, `once`, for any
-    real one (a `force_ids` claim is a test, and never counts toward "once")."""
     if not events:
         return set()
     async with get_session() as s:
@@ -413,9 +277,11 @@ async def _claimed(account_id: str, kind: str, events: dict[int, str], *,
             if events.get(int(f)) == k or (once and not str(k).startswith(_FORCED))}
 
 
-_FORCED = "forced:"     # the event key of a `force_ids` run's claim
+# A force_ids run is the operator test: its claims never count toward "once".
+_FORCED = "forced:"
 
 
+# A step is claimed before the wire and handed back only on OF's rate-limit refusal, so a job run twice sends it once.
 async def _claim(account_id: str, kind: str, fan_id: int, key: str) -> bool:
     async with get_session() as s:
         res = await s.execute(
@@ -448,7 +314,6 @@ async def _release(account_id: str, kind: str, fan_id: int, key: str) -> None:
 
 
 async def _rest(account_id: str, fan_id: int) -> None:
-    """Rest the fan `_COOLDOWN_S`, only ever LENGTHENING his pause."""
     now = datetime.utcnow()
     until = now + timedelta(seconds=_COOLDOWN_S)
     async with get_session() as s:
@@ -463,15 +328,12 @@ def _skip(reason: str) -> dict:
     return {"status": "skipped", "reason": reason, "sent": 0}
 
 
-# ── Messages, collections and sequences ───────────────────────────────
 
 def pick(options, *seed):
-    """One of `options`, the same one every time for the same seed."""
     return options[Random(":".join(map(str, seed))).randrange(len(options))]
 
 
 def follow_ups_of(raw) -> list[dict]:
-    """The usable steps of a stored follow-up list, [{text, delay_minutes}]."""
     lo, hi = FOLLOW_UP_MINUTES
     out = []
     for step in raw if isinstance(raw, list) else []:
@@ -485,7 +347,6 @@ def follow_ups_of(raw) -> list[dict]:
 
 
 def discount_of(raw) -> dict | None:
-    """A stored discount inside OF's dialog bounds, else None."""
     if not isinstance(raw, dict):
         return None
     pct, months = raw.get("percent"), raw.get("months")
@@ -498,16 +359,12 @@ def discount_of(raw) -> dict | None:
 
 
 def discount_cap(price_cents: int) -> int:
-    """The most percent off OnlyFans grants on a `price_cents` subscription:
-    min(floor(100 * (price - $4.99) / price), 60); 0 on a page at $4.99 or less."""
     if price_cents <= 499:
         return 0
     return min(100 * (price_cents - 499) // price_cents, DISCOUNT_PERCENT[1])
 
 
 def messages_of(steps: dict) -> list[dict]:
-    """The rule's messages, each {variants, follow_ups, discount}. A rule saved
-    before `messages` existed is its `text` as one message of one variant."""
     raw = steps.get("messages")
     if not isinstance(raw, list):
         text = str(steps.get("text") or "").strip()[:TEXT_MAX]
@@ -532,11 +389,6 @@ async def schedule_follow_ups(account_id: str, kind: str, fan_id: int, steps: li
                               anchor: tuple[datetime, int] | None, *, event: str,
                               step: int = 1, tries: int = 0,
                               delay: timedelta | None = None) -> None:
-    """Queue the first of `steps` for `fan_id`, as a job of `kind`, `delay` from
-    now (else its own `delay_minutes`); it queues the rest when it runs. The job
-    carries the rule, so switching the rule off cancels it. `anchor` is the
-    row a reply must be newer than to stop the sequence; `event` names the
-    sequence and `step` this follow-up's place in it (together, its claim)."""
     if not steps:
         return
     when = datetime.utcnow() + (delay or timedelta(minutes=steps[0]["delay_minutes"]))
@@ -546,20 +398,11 @@ async def schedule_follow_ups(account_id: str, kind: str, fan_id: int, steps: li
 
 
 def _follow_up_key(event: str, step: int) -> str:
-    # The event first: a `force_ids` test's follow-ups keep its "forced:" mark,
-    # so they never count toward "once" either.
     return f"{event}|follow_up:{step}"
 
 
 async def run_follow_up(account_id: str, kind: str, job: dict, *,
                         attribution_kind: str | None = None) -> dict:
-    """Send one follow-up step to one fan, then queue the next. The sequence
-    ends for good, sending nothing, once the fan has said something after the
-    anchor (or that cannot be read), or a gate shuts him out; a fan paused or
-    held by another sender right now is tried again `_BUSY_RETRY` later, up to
-    `_BUSY_TRIES` tries in all. The step is CLAIMED before the wire (handed
-    back only on OF's rate-limit refusal), so a job run twice sends it once;
-    anything failing after OF took it is logged and the step counts as done."""
     try:
         fid = int(job["fan_id"])
         step = int(job.get("step") or 1)
@@ -596,7 +439,6 @@ async def run_follow_up(account_id: str, kind: str, job: dict, *,
             or fid not in await _audiences.filter_candidates(account_id, [fid], kind=kind)):
         return _skip("gated")
 
-    # A paused fan (another sender's rest, or the operator's pause) is busy.
     if await ax.fan_on_cooldown(account_id, fid) or \
             not await ax.acquire_fan_lease(account_id, fid, kind):
         tries = int(job.get("tries") or 0) + 1
@@ -651,11 +493,6 @@ async def run_follow_up(account_id: str, kind: str, job: dict, *,
 
 
 async def _follow_first(client, account_id: str, fan_id: int) -> str:
-    """Follow an expired fan before his message (D12), through auto_follow's
-    money gate: a priced profile is skipped, never paid for. The whole gated
-    follow takes one paced write slot, awaited on this loop; a notifying follow
-    stamps the shared ping ledger so auto_follow does not notify him again.
-    Returns the gate's outcome."""
     async def _gated() -> str:
         return await gated_follow(client, int(fan_id), account_id=account_id, money_gate=True)
     outcome = await ax.of_write_paced(account_id, _gated, tries=1, send_purpose=_SEND_PURPOSE)
@@ -664,16 +501,10 @@ async def _follow_first(client, account_id: str, fan_id: int) -> str:
     return outcome
 
 
-# ── The sweep ─────────────────────────────────────────────────────────
 
 def pick_targets(kind: str, account_id: str, events: dict[int, str], messages: list[dict], *,
                  done: set[int], fans: dict, kept: set[int], hard_skip: set[int],
                  blacklist: set[int], now: datetime) -> tuple[list[tuple[int, str, int, str]], int]:
-    """Pure: which of `events` ({fan_id: event_key}) this sweep messages, and
-    with what. Already-claimed fans (`done`) are dropped silently; a fan with no
-    row, outside the audience (`kept`), hard-skipped, blacklisted, paused past
-    `now` or muted-Creator-skipped counts as skipped. Returns
-    ([(fan, event, which message, which variant of it)], skipped), in `events` order."""
     plans: list[tuple[int, str, int, str]] = []
     skipped = 0
     for fid, key in events.items():
@@ -713,14 +544,8 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
         return _skip(outside)
     media, price_cents = extras.media_and_price(cfg)
     unsend_after = extras.unsend_minutes(cfg)
-    # "once" holds back the real events only: a forced run is the operator's test.
     once = extras.frequency(cfg, STORED_FREQUENCY) == "once" and not forced
-    # The Effective date, when set, starts the window later than the switch.
     start = max(enabled_at, extras.window_start(cfg) or enabled_at)
-    # A Nearing expiry event stays live until the subscription ends (the roster
-    # query keeps only expiries still ahead), so the day's look-back does not
-    # apply to it: with N > 24 a fan who switches renewal off late in his window
-    # is still messaged before he lapses.
     since = start if kind == EXPIRY else max(start, now - timedelta(hours=_STALE_H))
     stats: dict = {}
 
@@ -756,8 +581,7 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                 "skipped": skipped, "capped": max(0, len(plans) - _LIMIT), "sent": 0,
                 "candidates": len(events), **stats, **audience_stats}
 
-    # A paid message never re-sells media the fan already owns (ppv_send's
-    # ownership guard): an owner gets the text alone, free.
+    # A paid message never re-sells media the fan already owns: an owner gets the text alone, free.
     owned = await extras.owners(account_id, media, price_cents, [p[0] for p in plans])
     sent = no_id = errors = busy = unreachable = capped = attempted = owners_sent = 0
     refused = discounted = follow_errors = 0
@@ -780,16 +604,15 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
             attempted += 1
             message = messages[idx]
             if kind == EXPIRED:
-                # A failed follow does not stop the message: the DM may still land.
                 try:
                     follows[await _follow_first(client, account_id, fid)] += 1
                 except Exception:  # noqa: BLE001
                     follow_errors += 1
                     log.warning("%s follow-first failed account=%s fan=%s",
                                 kind, account_id, fid, exc_info=True)
+            # The text may promise the discount: no discount, no message.
             discount = message["discount"] if kind in DISCOUNT_KINDS else None
             if discount is not None:
-                # The text may promise the discount, so no discount, no message.
                 try:
                     await ax.of_write_paced(
                         account_id,
@@ -815,7 +638,6 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                     send_purpose=_SEND_PURPOSE, dm=True)
             except Exception as exc:  # noqa: BLE001
                 if kind == EXPIRED and is_unreachable_fan_error(exc):
-                    # Lapsed, not gone: no quarantine (D12).
                     refused += 1
                     log.info("%s refused account=%s fan=%s event=%s",
                              kind, account_id, fid, key)
@@ -831,7 +653,6 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                 continue
             result = outcome.result
             if fan_media and not outcome.media_landed:
-                # OF refused the media (resent text-only): a deleted id leaves the mirror.
                 schedule_recheck_rejected_media(account_id, client, fan_media, log=log)
             msg_id = result.get("id") if isinstance(result, dict) else None
             if not msg_id:
@@ -853,7 +674,6 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                 price_cents=fan_price if outcome.media_landed else 0)
             await _mark_sent(account_id, kind, fid, key, idx)
             await _rest(account_id, fid)
-            # A reply newer than this message ends the sequence.
             await schedule_follow_ups(account_id, kind, fid, message["follow_ups"],
                                       (landed_at, int(msg_id)), event=key)
             sent += 1

@@ -1,31 +1,3 @@
-"""live_entry: the live entry, the preflight and `serve`'s wait (ticket 09; prove.py calls it).
-
-Live entry (stories 2, 43): `--of live` needs an explicit `--session-dir`; no default session is ever read, and the
-refusal (`--session-dir is required`) comes before anything starts. The dir is copied into the run's temp dir as the
-Proof Creator's account dir (relay_guarded.py's redirected `sessions/accounts/80000112`), before the Relay starts; its
-path and contents are never printed, and the copy goes with the temp dir at teardown: prove.py `_prove`'s teardown
-ignores SIGINT and SIGTERM and `Stack.close` deletes the temp dir in a `finally`, so only SIGKILL (or the
-interpreter dying) leaves it. The Creator's `accounts` row and owner link are made the way
-scripts/demo-shots/seed.py makes them, for a throwaway owner registered through the API.
-
-Preflight (driver step 1, story 1), before any proof, both modes; fake mode expects FakeOF's Creator:
-  - the stack is on loopback, the Relay holds exactly one Creator and it is the expected one, the Relay's uncached
-    identity read (`/__proof/session`, the undecorated /users/me) names it and answers alive, and the run lock is held
-    by this run: `preflight` here;
-  - no earlier run's Undo log has a `pending` row: prove.py `earlier_pending`, under the lock before the stack starts;
-  - the capture browser's own identity read names it: capture.py `start` (of_browser `identity_problem`), whenever
-    it opens (on demand only, for `capture` or a proof with capture-browser steps; D27), before any step.
-`--fault wrong-creator` (fake only) makes the run expect a Creator other than the one FakeOF serves, so the
-wrong-Creator refusal is proven without a live stack; `main` resolves it once into the expected Creator, and FakeOF
-never sees it as a fault.
-
-Live proofs fail closed (`live_refusal`): besides proof_core's `not_started` (mocked, stream start, irreversible,
-Proof fan unset, mocked with no trigger), a non-Mocked proof with no trigger is refused (the run fails: a forgotten
-trigger never passes as parked). Ticket 11 built the live OnlyFans-side reader (prove.py `Stack.of_get`, a signed GET
-through the run's Relay), so a proof that writes or reads OnlyFans starts live, unless its steps are capture-browser
-steps (`capture`, or a `fetch` / `hand-off` trigger step): those run only on the fake-mode drill page, and live
-capture steps (clicks on onlyfans.com) are not written, so it is refused before the capture browser opens.
-"""
 from __future__ import annotations
 
 import json
@@ -40,13 +12,12 @@ from urllib.parse import urlsplit
 from of_browser import probe_verdict
 from proof_core import not_started, step_family
 
-PROOF_CREATOR = "80000112"   # the owner's sandbox Creator (D25), the only one a live run touches
+PROOF_CREATOR = "80000112"
 WRONG_CREATOR = "wrong-creator"
 OWNER = "ofmproof"
 
 
 def session_dir_refusal(of: str, session_dir) -> str | None:
-    """The CLI's check before anything starts. Only the dir's listing is looked at, never a file's contents."""
     if of != "live":
         return "--session-dir is live mode only (fake mode bootstraps from FakeOF)" if session_dir else None
     if not session_dir:
@@ -58,8 +29,6 @@ def session_dir_refusal(of: str, session_dir) -> str | None:
 
 
 def expected_creator(of: str, fault: str | None) -> str:
-    """The Creator the run must find: 80000112 live; FakeOF's in fake mode, or under `--fault wrong-creator` the id one
-    past it (every FakeOF seed serves the same Creator), which the stack then does not hold."""
     if of == "live":
         return PROOF_CREATOR
     from fake_layer import creator_id
@@ -72,10 +41,6 @@ NO_TRIGGER = "refused: no trigger (only a Mocked proof may have none)"
 
 
 def live_refusal(proof, of: str, proof_fan, capture=None) -> tuple[str, str] | None:
-    """Why this run never starts `proof`: ("parked", reason) from `not_started` (stories 9, 13, 28, 56, every mode),
-    ("refused", NO_TRIGGER) for a non-Mocked proof with no trigger (every mode), or ("refused", LIVE_BROWSER_STEPS)
-    under --of live for a proof that writes or reads OnlyFans and would play capture-browser steps (`capture`, or a
-    browser trigger step), so the capture browser never signs in for a step that cannot run. None: it starts."""
     why = not_started(proof, of, proof_fan)
     if why:
         return "parked", why
@@ -88,9 +53,6 @@ def live_refusal(proof, of: str, proof_fan, capture=None) -> tuple[str, str] | N
 
 
 def startable(proofs, pending_ids, of: str, proof_fan, rep: dict, capture=None) -> list:
-    """The proofs this run may start, before anything opens (the capture browser included): a PENDING id parks (a Phase
-    lists it, its ticket adds it) and each `live_refusal` lands in rep's `parked` or `refused` with its reason.
-    `capture`: prove.py's (None, "send", "abort")."""
     for i in pending_ids:
         rep["parked"].append({"proof": i, "reason": "no proof definition yet: Live proof pending"})
         print(f"ofm-live-proof: {i}: parked (no proof definition yet: Live proof pending)", flush=True)
@@ -106,8 +68,6 @@ def startable(proofs, pending_ids, of: str, proof_fan, rep: dict, capture=None) 
 
 
 def copy_session(src, tmp: Path, creator: str = PROOF_CREATOR) -> Path:
-    """The session dir copied into the run's temp dir as `sessions/accounts/<creator>` (symlinks copied as files).
-    A `meta.json` is written only when the copy has none (seed.py's fields)."""
     dst = tmp / "sessions" / "accounts" / creator
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst, symlinks=False)
@@ -121,8 +81,6 @@ def copy_session(src, tmp: Path, creator: str = PROOF_CREATOR) -> Path:
 
 
 def register_owner(request, relay: str) -> tuple[str, str]:
-    """The throwaway owner, through the Relay's API: (user_id, password). The password is the loopback stack's own,
-    gone with the temp DB."""
     password = "ofm-proof-" + os.urandom(6).hex()
     r = request.post(f"{relay}/auth/register", data={"username": OWNER, "password": password})
     if not r.ok:
@@ -131,8 +89,6 @@ def register_owner(request, relay: str) -> tuple[str, str]:
 
 
 def link_account(db: Path, user_id: str, creator: str = PROOF_CREATOR) -> None:
-    """The Creator's `accounts` row and owner link, as scripts/demo-shots/seed.py `_accounts` writes them (the Relay
-    may already have mirrored the copied dir into `accounts`: kept as it is)."""
     now = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S.%f")
     con = sqlite3.connect(db, timeout=30)
     try:
@@ -147,8 +103,6 @@ def link_account(db: Path, user_id: str, creator: str = PROOF_CREATOR) -> None:
 
 
 def preflight_problems(urls, account_ids, expected: str, identity: tuple, lock_held: bool) -> list:
-    """Each reason the run is refused before any proof ([] = go). `identity`: (status, body) of the Relay's uncached
-    /users/me; a dead session (OnlyFans's "Wrong user") is named as such."""
     out = [f"not loopback: {u}" for u in urls if urlsplit(u).hostname != "127.0.0.1"]
     if list(account_ids) != [expected]:
         out.append(f"expected one Creator {expected}, the Relay has {list(account_ids)}")
@@ -163,8 +117,6 @@ def preflight_problems(urls, account_ids, expected: str, identity: tuple, lock_h
 
 
 def preflight(request, relay: str, urls, expected: str, lock_held: bool) -> list:
-    """`preflight_problems` over the running stack (`request`: the owner's Playwright request context). The identity
-    read is for the stack's single Creator, so a stack holding another one is named by OnlyFans's own answer."""
     r = request.get(f"{relay}/admin/accounts")
     ids = [str(a.get("id")) for a in (r.json().get("accounts") or [])] if r.ok else [f"<accounts read {r.status}>"]
     r = request.get(f"{relay}/__proof/session", headers={"X-Account-Id": ids[0] if len(ids) == 1 else expected})
@@ -176,8 +128,6 @@ def preflight(request, relay: str, urls, expected: str, lock_held: bool) -> list
 
 
 def serve_wait(app: str, relay: str, login: tuple, sleep=time.sleep) -> None:
-    """`serve` (story 37): print the loopback URLs and the throwaway owner's login, then wait until SIGINT or SIGTERM
-    (prove.py `main` turns SIGTERM into KeyboardInterrupt); the teardown after it ignores both."""
     print(f"ofm-live-proof: serve: app {app}", flush=True)
     print(f"ofm-live-proof: serve: relay {relay}", flush=True)
     print(f"ofm-live-proof: serve: sign in as {login[0]} / {login[1]} (this stack's throwaway owner)", flush=True)
