@@ -159,7 +159,7 @@ def _recording_shim(echo):
 
 
 def case_list_add_sends_recipe_body_and_returns_echoed_ids():
-    a, b, lid = 951237126601601111, 951237126601602222, "900537126601601024"
+    a, b, lid = 900537126601601111, 900537126601602222, "900537126601601024"
     echo = [{"type": 1, "listItem": {"id": str(a), "listId": lid}}]
     shim, calls = _recording_shim(echo)
     r = _call("POST", "/api/of/v2/lists/users", shim, json={lid: [a, b]})
