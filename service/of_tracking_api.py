@@ -151,6 +151,7 @@ def _parse_of_time(v: Any) -> datetime | None:
         d = datetime.fromisoformat(v.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # OF endDate comes zoneless but is UTC (measured on a UTC+2 creator).
     return d.astimezone(timezone.utc).replace(tzinfo=None) if d.tzinfo else d
 
 

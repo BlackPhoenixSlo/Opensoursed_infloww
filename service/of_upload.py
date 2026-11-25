@@ -390,6 +390,8 @@ class UploadMixin:
 
     _VAULT_MARKER = VAULT_MARKER
 
+    # OF has no save-to-vault route (measured): a claim enters the vault only when referenced, so a far-future carrier post (no recipient).
+    # Not a chat message with scheduledDate: OF sends that at once to a real fan.
     def materialize_to_vault(self, send_with: list, *,
                              carrier_days: int = CARRIER_DAYS,
                              timeout_s: int = 600,

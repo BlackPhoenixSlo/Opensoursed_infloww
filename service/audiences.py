@@ -608,6 +608,7 @@ def _add_missing_blocking(client, list_id, members: set[int], ids: set[int]) -> 
             last_err = e
             continue
         members.add(uid)
+    # Judge by coverage, not add success: an un-addable id returns in to_add every tick, so at steady state "every add failed" is routine, not systemic.
     if ids and not (ids & members):
         raise last_err or RuntimeError(
             "auto_exclude: no ids could be listed — exclude guard is empty")

@@ -127,7 +127,7 @@ afterEach(() => {
 });
 
 describe("ChatHeader on a Fansly Creator", () => {
-  it("renders no Gallery, Find, Restrict, Block, Mark as unread or Special offers", async () => {
+  it("renders no Gallery, Find, Restrict, Block, Mark as unread, Special offers or Add to lists", async () => {
     platform.current = "fansly";
     const user = userEvent.setup();
     renderHeader();
@@ -143,7 +143,7 @@ describe("ChatHeader on a Fansly Creator", () => {
     await user.click(screen.getByTitle("Avatar menu"));
     const avatar = await screen.findByRole("menu", { name: "Avatar menu" });
     expect(within(avatar).queryByRole("button", { name: /Special offers/ })).toBeNull();
-    expect(within(avatar).getByRole("button", { name: "Add to lists ▸" })).toBeInTheDocument();
+    expect(within(avatar).queryByRole("button", { name: "Add to lists ▸" })).toBeNull();
   });
 });
 

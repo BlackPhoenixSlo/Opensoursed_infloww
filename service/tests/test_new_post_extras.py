@@ -59,12 +59,13 @@ class _Fake:
 
 def _route(**body):
     fake = _Fake()
-    orig = server._get_client
+    orig, orig_aid = server._get_client, server._current_aid
     server._get_client = lambda: fake
+    server._current_aid = lambda: "of_story_acct"
     try:
         out = asyncio.run(server.of_create_story(server._CreateStoryBody(**body)))
     finally:
-        server._get_client = orig
+        server._get_client, server._current_aid = orig, orig_aid
     return out, fake.calls
 
 

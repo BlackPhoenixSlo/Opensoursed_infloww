@@ -12,9 +12,16 @@ fail=0
 
 echo "──────── Comment budget ────────"
 CPY="$PY"; [ -x "$CPY" ] || CPY=python3
-if [ -f "$ROOT/scripts/comment-budget.json" ]; then
-  "$CPY" "$ROOT/scripts/comment_budget.py" --check || fail=1
-  "$CPY" -m pytest -q "$ROOT/scripts/tests/test_comment_gate.py" || fail=1
+BUDGET_REL=scripts/comment-budget.json
+BUDGET_PROBE_REF="${COMMENT_BASE:-origin/main}"
+if [ -f "$ROOT/$BUDGET_REL" ] || git -C "$ROOT" cat-file -e "HEAD:$BUDGET_REL" 2>/dev/null \
+    || git -C "$ROOT" cat-file -e "$BUDGET_PROBE_REF:$BUDGET_REL" 2>/dev/null; then
+  if [ ! -f "$ROOT/$BUDGET_REL" ]; then
+    echo "✗ $BUDGET_REL missing but tracked in HEAD or $BUDGET_PROBE_REF"; fail=1
+  else
+    "$CPY" "$ROOT/scripts/comment_budget.py" --check || fail=1
+    "$CPY" -m pytest -q "$ROOT/scripts/tests/test_comment_gate.py" "$ROOT/scripts/tests/test_comment_budget.py" || fail=1
+  fi
 else
   echo "no comment budget in this repo; skipped"
 fi

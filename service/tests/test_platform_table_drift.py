@@ -19,7 +19,7 @@ CAP_METHODS: dict[str, tuple[str, ...]] = {
     "chat_search": ("search_chat",),
     "chat_media": ("chat_media",),
     "vault_remove": ("hide_vault_media",),
-    "mass_message": ("send_mass_message", "mass_message_history"),
+    "mass_message": ("send_mass_message", "schedule_mass_message", "mass_message_history"),
     "discount": ("set_subscription_discount",),
     "native_templates": ("message_templates",),
 }
@@ -33,6 +33,7 @@ _STR = re.compile(r'"(\w+)"')
 
 
 def parse(text: str) -> tuple[list[str], list[tuple[str, frozenset[str]]]]:
+    text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*[\s\S]*?\*/', lambda m: m[1] or " ", text)
     caps = _CAPS.search(text)
     table = _PLATFORMS.search(text)
     return (
@@ -66,7 +67,7 @@ def failures(caps: list[str], rows: list[tuple[str, frozenset[str]]], registry) 
         shim = p.backend.Shim
         for cap, names in CAP_METHODS.items():
             verdict = {n: refusal(shim, n) is not None for n in names}
-            if (cap in lacks[p.key]) != all(verdict.values()):
+            if (cap in lacks[p.key]) != any(verdict.values()):
                 verdicts = ", ".join(f"{n}={'refused' if r else 'built'}" for n, r in verdict.items())
                 out.append(f"{p.key}: {cap} {'in' if cap in lacks[p.key] else 'not in'} lacks but Shim has {verdicts}")
     return out
@@ -116,9 +117,23 @@ def case_dropped_lack_fails():
     assert got == ["fake: block not in lacks but Shim has block_user=refused, unblock_user=refused"], got
 
 
-def case_one_built_method_of_a_lacked_cap_fails():
-    got = failures(_ALL_CAPS, _rows(_ALL_CAPS), _registry(_PinBuilt))
-    assert len(got) == 1 and got[0].startswith("fake: pin_message in lacks but Shim has pin_message=built"), got
+def case_commented_lacks_do_not_count():
+    original = TABLE.read_text()
+    entry = '"pin_message",'
+    offset = original.index(entry, original.index("export const PLATFORMS"))
+    for replacement in (f"/* {entry} */", f"// {entry}\n"):
+        caps, rows = parse(original[:offset] + replacement + original[offset + len(entry):])
+        got = failures(caps, rows, platforms.ALL)
+        assert any(problem.startswith("fansly: pin_message not in lacks") for problem in got), got
+
+
+def case_partial_capability_must_be_lacked():
+    got = failures(_ALL_CAPS, _rows(set(_ALL_CAPS) - {"pin_message"}), _registry(_PinBuilt))
+    assert len(got) == 1 and got[0].startswith("fake: pin_message not in lacks"), got
+
+
+def case_partial_lacked_capability_passes():
+    assert failures(_ALL_CAPS, _rows(_ALL_CAPS), _registry(_PinBuilt)) == []
 
 
 def case_unlisted_capability_fails():

@@ -694,6 +694,7 @@ export const CLAIMS_TO_LIST = {
   write(listId: number, kind: "promo" | "trial", claimId: number): { method: "POST"; path: string } {
     return { method: "POST", path: `/api/of/v2/lists/${positive(listId)}/users/${kind}/${positive(claimId)}/claims` };
   },
+  // One DELETE per added user: OF's bulk DELETE /lists/{id}/users clears the whole list.
   undo(listId: number, addedUsers: readonly number[]): { method: "DELETE"; path: string }[] {
     const list = positive(listId);
     return [...new Set(addedUsers)].map((u) => ({ method: "DELETE", path: `/api/of/v2/lists/${list}/users/${positive(u)}` }));

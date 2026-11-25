@@ -1,7 +1,5 @@
 "use client";
 
-/** The grid's floating selection bar (#74, #75) and the drawer's Remove-from-vault control (#76), moved out of
- *  `VaultManagePanel`. */
 
 import { useState } from "react";
 
@@ -11,8 +9,6 @@ import { relay, type VaultMedia } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { selectionText } from "@/components/vault/vaultBrowseReducer";
 
-/** #74, #75: the selection bar, 38px tall, 16px above the grid's foot, 20px left and 24px right: "Selected"
- *  and the count, then move (#77, "Add to category") and delete (#76). Ours follow, each titled as one. */
 export default function VaultSelectionBar({
   count,
   hidden = 0,
@@ -30,7 +26,6 @@ export default function VaultSelectionBar({
   downloadLabel: dlLabel = "Download selected",
 }: {
   count: number;
-  /** Of `count`, the ticks the Photo / Video filter hides (`hiddenByFilter`): every action still takes them. */
   hidden?: number;
   hasFolders: boolean;
   canRemove: boolean;
@@ -41,11 +36,8 @@ export default function VaultSelectionBar({
   onNewFolder: () => void;
   onDescribe: () => void;
   onClear: () => void;
-  /** Ours: save the ticked files (full quality) into a folder the user picks, or (phones) via the share sheet. */
   onDownload?: () => void;
-  /** Why Download is off (no sink here, a download is running, over the phone's cap); shown next to it; "" when on. */
   downloadOff?: string;
-  /** The button's name (`downloadLabel`: "Add selected to queue" while a press queues). */
   downloadLabel?: string;
 }) {
   return (
@@ -59,7 +51,6 @@ export default function VaultSelectionBar({
         </div>
       )}
       {hasFolders && (
-        // #74, #77: the move icon opens the "Add to category" modal.
         <button
           type="button"
           aria-label="Add to category"
@@ -86,8 +77,6 @@ export default function VaultSelectionBar({
       {onDownload && downloadOff && (
         <span data-testid="download-off" className="text-xs text-fg-dim">{downloadOff}</span>
       )}
-      {/* #76: OF's remove is one file at a time here (the drawer's "Remove from vault", which OF cannot
-          undo); a batch of them is not built. */}
       {canRemove && (
         <button
           type="button"
@@ -130,10 +119,7 @@ export default function VaultSelectionBar({
   );
 }
 
-/** POST /admin/vault-ai/items/{id}/hide — OF's own "Remove from vault" (the same
- *  call the duplicates sweep uses). The media is HIDDEN on OF, not destroyed, so
- *  already-sent PPVs and live posts keep working — but OF exposes no unhide,
- *  which is why the UI confirms first. */
+// OF hides the media, it is not destroyed (sent PPVs keep working) and OF has no unhide: the UI confirms first
 async function hideVaultItem(accountId: string, mediaId: number): Promise<void> {
   await relay.post(
     `/admin/vault-ai/items/${mediaId}/hide`,
@@ -142,10 +128,6 @@ async function hideVaultItem(accountId: string, mediaId: number): Promise<void> 
   );
 }
 
-/** Remove-from-vault control. Two-step by design: this calls OF's own "Remove
- *  from vault", and OF exposes NO unhide — so a stray click must never be able
- *  to take media off the vault. The copy says exactly what happens (hidden, not
- *  destroyed; sent PPVs keep working) so the confirm is an informed one. */
 export function VaultDeleteButton({
   media,
   accountId,

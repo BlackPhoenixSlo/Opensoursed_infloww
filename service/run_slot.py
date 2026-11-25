@@ -291,6 +291,7 @@ async def borrowed(*, budget_s: float) -> AsyncIterator[None]:
             slot.idle()
 
 
+# Never call while holding a lock another run may wait on (e.g. broadcast_lock): the take-back can deadlock against slot holders queued on that lock.
 @contextlib.asynccontextmanager
 async def released(seconds: float, *, budget_s: float) -> AsyncIterator[None]:
     b = _borrow()
@@ -325,6 +326,7 @@ async def released(seconds: float, *, budget_s: float) -> AsyncIterator[None]:
         raise
 
 
+# `aw` must not call OF (of_pacing sizes OF calls by the slots) nor hold a lock another run waits on.
 async def freed(aw, *, budget_s: float):
     err: Exception | None = None
     res = None

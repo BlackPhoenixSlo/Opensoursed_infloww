@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 
+import platforms
 import relay_coalesce
 from of_client import OFClient
 
@@ -46,11 +47,6 @@ def evict(account_id: str | None = None, *, only: OFClient | None = None) -> boo
     relay_coalesce.forget(account_id)
     for client in retired:
         client.close_signed_sessions()
-    try:
-        # Backends pool their own clients; invalidate them here so a re-capture or proxy edit leaves no stale Shim. Guarded: eviction must not fail on one.
-        import platforms
-    except Exception:
-        return True
     for backend in platforms.backends():
         backend.drop(account_id)
     return True

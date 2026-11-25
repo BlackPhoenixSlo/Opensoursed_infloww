@@ -25,6 +25,7 @@ DEFAULTS: dict[str, Any] = {
     "folders": {"include": [], "exclude": []},   # 03b: Content folders, empty include = all
     "draft_questions": True,    # 03b: DRAFT Router questions count (test + live, ticket 47); Sell group switch "Unasked offers" (on, owner 2026-11-14)
     "writers": ["euryale-v2.3", "euryale-v2.2", "hermes-4-405b", "deepseek-v4-flash"],
+    # Owner rule: give Euryale more time to avoid cutting turns short.
     "writer_timeout_s": 45,
     "writer_timeouts": {},
     "writer_retries": 0,

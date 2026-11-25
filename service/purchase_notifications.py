@@ -1,3 +1,4 @@
+# The ledger alone writes revenue so a purchase notification and its later ledger row only count once.
 from __future__ import annotations
 
 import asyncio
@@ -127,6 +128,7 @@ async def _flip_paid(account_id: str, fan_id: int, message_id: int,
                      created_at: Any = None) -> bool:
     notified = _notified_time(created_at)
     async with get_session() as s:
+        # Recorded whether or not this call flips: the isOpened fast path often flips first stamping now; purchase_followup needs OF's real time.
         if notified is not None:
             await s.execute(
                 sqlite_insert(PurchaseNotice)

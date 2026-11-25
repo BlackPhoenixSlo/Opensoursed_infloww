@@ -4,6 +4,7 @@
 import { useLayoutEffect, useRef, type HTMLAttributes, type RefObject } from "react";
 import { ArrowUpDown, Plus } from "lucide-react";
 
+import { CreatorPlatformBadge } from "@/components/shell/PlatformSwitcher";
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { useScope } from "@/contexts/ScopeContext";
 import { useCreatorWarmUp } from "@/hooks/useCreatorWarmUp";
@@ -207,6 +208,7 @@ function CreatorTab({
             {mark && <MarkDot mark={mark} />}
           </span>
           <span className={cn(G.name, "min-w-0 truncate")}>{name}</span>
+          <CreatorPlatformBadge account={account} always />
           {circle.kind === "count" && <UnreadMiniBadge count={circle.text} />}
           {circle.kind === "grey" && <GreyMiniBadge />}
           {amber.kind !== "none" && <OweMiniBadge count={amber.kind === "count" ? amber.text : null} />}
@@ -274,6 +276,7 @@ function PickerRow({ account, meta, onPick }: { account: AccountMeta; meta: stri
         {mark && <MarkDot mark={mark} />}
       </span>
       <span className="min-w-0 truncate">{account.nickname || account.id}</span>
+      <CreatorPlatformBadge account={account} always />
       {" "}
       <span className={cn(MP.menu.meta, "ml-auto flex-none text-fg-dim")}>{meta}</span>
       <MarkWords mark={mark} />

@@ -51,6 +51,7 @@ export function vaultTileThumb(
 ): string {
   return (
     m._thumb ||
+    // No media id on purpose: with one, a re-sign could fall back to one OF read per tile.
     proxyImage(
       m.files?.thumb?.url || m.files?.squarePreview?.url || m.files?.preview?.url,
       accountId,

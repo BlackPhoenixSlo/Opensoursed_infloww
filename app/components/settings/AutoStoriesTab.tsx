@@ -212,7 +212,7 @@ export default function AutoStoriesTab() {
           <div>
             <div className="mb-2 flex items-center gap-3">
               <IfLabel htmlFor="story-folder" className="mb-0">Vault folder</IfLabel>
-              <FolderRefreshButton refresh={foldersQ.refresh} fetching={foldersQ.isFetching} />
+              <FolderRefreshButton refresh={foldersQ.refresh} fetching={foldersQ.isFetching || foldersQ.isRefreshing} failed={foldersQ.isError || foldersQ.refreshFailed} />
             </div>
             {foldersQ.isLoading ? (
               <Skeleton className="h-9 w-full" />

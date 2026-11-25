@@ -40,6 +40,8 @@ def stats() -> dict[str, Any]:
         }
 
 
+# Never coalesce sends, upstream mutations, or caller-dependent work: waiters share the leader's result.
+# A per-account read puts the account id at key[1]: forget() matches it, and without it two Creators share one answer.
 async def coalesce(key: tuple, fetcher: Callable[[], Awaitable[T]]) -> T:
     assert isinstance(key, tuple) and len(key) >= 1, "key must be a non-empty tuple"
     namespace = str(key[0])

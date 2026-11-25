@@ -1469,6 +1469,7 @@ def _usage(model: str, result: Any | None) -> dict[str, Any]:
             "raw": (getattr(result, "content", None) or "")[:4000]}
 
 
+# Still reserves house cap + writes grok_calls: point DATABASE_URL at a temp DB, never service/chatterly.db.
 async def draft_for_eval(request: str, ctx: EvalContext, model: str,
                          previous: dict | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     request = request.strip()

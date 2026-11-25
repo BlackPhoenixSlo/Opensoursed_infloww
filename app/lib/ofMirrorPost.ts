@@ -1214,6 +1214,7 @@ export function bindActionsOverflow(doc: Document): () => void {
     more.remove();
   };
   const layout = () => {
+    // Only More's own menu: a resize must not close another menu just opened (Text Color's).
     if (more.getAttribute("aria-expanded") === "true") closeMenu(doc);
     restore();
     if (actions.offsetWidth <= box.clientWidth) return;

@@ -267,7 +267,7 @@ class Fan(Base):
     customs_owed_at: Mapped[datetime | None] = mapped_column(DateTime)
     # Settle stamp: customs_watch ignores tips at or before it, else the next sweep re-marks the same tip.
     customs_cleared_at: Mapped[datetime | None] = mapped_column(DateTime)
-    # Retry clock, stamped on refusals too (not a receipt): unstamped, a refusal replays every tick.
+    # Once-per-fan receipt for the closing PPV, stamped right after the send is on the wire; set means never send another.
     gather_close_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     tags: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
@@ -291,7 +291,7 @@ class Fan(Base):
     is_muted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"), default=False)
     joined_date: Mapped[str | None] = mapped_column(String)
 
-    # Dead columns of the removed deep_convo engine: dropping a SQLite column rewrites the table and has corrupted the live WAL DB; drop only in its own deploy with a backup.
+    # Dead columns of the removed deep_convo engine: dropping a SQLite column rewrites the table, which can corrupt the live WAL DB; drop only in its own deploy with a backup.
     deep_convo_state: Mapped[str] = mapped_column(String, nullable=False, default="missing")
     deep_convo_skip_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     deep_convo_skip_remaining: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1108,7 +1108,7 @@ class MassRun(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default=MASS_RUN_RUNNING)
     discovery_closed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
-    # List-audience sends write no per-fan messages row; body/sent_at let readers see the mass.
+    # List-audience sends may write no per-fan messages row; body/sent_at let readers see the mass.
     body: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     unsent_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -1816,7 +1816,7 @@ class UserLlmKey(Base):
     user_id: Mapped[str] = mapped_column(
         String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
-    # Validated on write against llm_providers.PROVIDERS, not a CHECK: a renamed provider must not silently fall over to the house key (owner's bill).
+    # Validated against TENANT_KEY_PROVIDERS on write because unknown names never match a lookup.
     provider: Mapped[str] = mapped_column(String, primary_key=True)
     api_key: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = _ts_now()

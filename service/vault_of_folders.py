@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, select, update
 
 import automation_executor as ax
 import relay_host
+from side_effect_gate import refuse_if_platform_lacks
 import vault_cache
 import vault_dupes
 import vault_pack_picker
@@ -352,6 +353,7 @@ async def publish_folder_to_of(folder_id: int, payload: dict = Body(...)) -> dic
         raise HTTPException(status_code=400, detail={
             "error": "folder_empty", "skipped_unsafe": skipped_unsafe, "skipped_videos": skipped_videos})
 
+    # Stored folder members can include another account's media IDs.
     await _reject_foreign_media(account_id, members)
 
     client = await asyncio.to_thread(ax._make_client, account_id)
@@ -510,7 +512,7 @@ async def hide_duplicates(payload: dict = Body(...)) -> dict[str, Any]:
     done: list[int] = []
     of_error: str | None = None
     if approved:
-        relay_host.refuse_if_platform_lacks(account_id, "hide_vault_media", "remove from vault")
+        refuse_if_platform_lacks(account_id, "hide_vault_media", "remove from vault")
         client = await asyncio.to_thread(ax._make_client, account_id)
         for chunk in chunks(approved, _OF_HIDE_CHUNK):
             try:
@@ -553,6 +555,7 @@ async def hide_duplicates(payload: dict = Body(...)) -> dict[str, Any]:
     return out
 
 
+# Create/add/remove and manual publish check visibility, then membership if the account mirror has rows.
 async def _reject_foreign_media(account_id: str, media_ids: list[int]) -> None:
     if not media_ids:
         return

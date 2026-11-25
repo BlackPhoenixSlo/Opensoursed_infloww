@@ -396,6 +396,7 @@ export function localSeq(): number {
   return lastSeq;
 }
 
+// Every live chats write goes here: the journal replays in order, so it must hold them all.
 export function patchChatCaches(qc: QueryClient, accountId: string, patch: ChatsPatch): void {
   const floor = Date.now() - JOURNAL_MS;
   const journal = (journals.get(qc) ?? []).filter((f) => f.seq > floor).slice(-(JOURNAL_MAX - 1));
@@ -502,6 +503,7 @@ export function preserveChatRows<T extends ChatPages | undefined>(
   return pages.every((page, i) => page === next.pages[i]) ? next : { ...next, pages };
 }
 
+// Every chats query, prefetch too, must set this as structuralSharing (a query keeps its last fetch's options), or an in-flight read undoes a live write.
 export function commitChatPages(qc: QueryClient, key: readonly unknown[], share: (prev: unknown, next: unknown) => unknown) {
   return (prev: unknown, next: unknown): unknown => {
     const replayed = replayJournal(qc, key, next) as ChatPages | undefined;

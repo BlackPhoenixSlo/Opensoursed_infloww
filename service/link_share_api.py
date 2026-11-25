@@ -168,6 +168,7 @@ async def revoke_link_share(share_id: int, account_id: str = Query(...)) -> dict
 
 
 
+# No rate limit on purpose: one primary-key read, never OF or the ledger.
 @router.get("/share/{key}/data")
 async def share_data(key: str, response: Response) -> dict[str, Any]:
     """The report behind a share link, for anyone holding the URL: 404 unless

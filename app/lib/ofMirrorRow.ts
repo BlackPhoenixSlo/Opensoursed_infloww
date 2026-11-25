@@ -39,6 +39,7 @@ export function parseRow(value: string | null): Row | null {
 
 export const basePage = (page: string) => page.replace(/\/(?:state|modal)-[^/]+$/, "");
 
+// Here, not in ofMirrorData/ofMirrorPost: they import each other and both read these while loading.
 export const VAULT_DIALOG = "new-post/state-vault";
 export const HOME_VAULT = "home/state-vault";
 export const homeDraft = (accountId: string) => `home:${accountId}`;

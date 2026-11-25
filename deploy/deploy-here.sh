@@ -63,7 +63,7 @@ grep -q '^SESSION_SECRET=.\+'         .env || upsert SESSION_SECRET "$(gen_secre
 grep -q '^CHATTER_SESSION_SECRET=.\+' .env || upsert CHATTER_SESSION_SECRET "$(gen_secret)"
 # empty SHARE_TOKEN = friend-auth only
 grep -q '^SHARE_TOKEN='               .env || echo 'SHARE_TOKEN=' >> .env
-# VAPID key is minted by the relay on first start (service/secrets); never rotate it. Subject needs a real host (Apple refuses localhost)
+# VAPID key is minted by the relay on first use (service/secrets); never rotate it. Subject needs a real host (Apple refuses localhost)
 if [ -n "${DOMAIN:-}" ] && ! grep -q '^VAPID_SUBJECT=.\+' .env; then upsert VAPID_SUBJECT "mailto:admin@$DOMAIN"; fi
 [ -n "${DEEPSEEK_API_KEY:-}" ] && upsert DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
 grep -q '^DEEPSEEK_API_KEY=' .env || echo 'DEEPSEEK_API_KEY=' >> .env

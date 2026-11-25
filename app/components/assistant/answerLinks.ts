@@ -60,7 +60,6 @@ const NAMED: Array<[string, Place]> = (() => {
   return [...seen].flatMap(([l, p]): Array<[string, Place]> => (p && !heads.has(l) ? [[l, { ...p, bare: true }]] : []));
 })();
 
-// Case-sensitive on purpose: keeps "the growth of an account" plain text.
 const SECTIONS: Record<string, Place> = Object.fromEntries([
   ...NAMED,
   ...TOP,
@@ -71,6 +70,7 @@ const NAMES = new Set(Object.values(SECTIONS).flatMap((p) => Object.keys(p.child
 const PREV_WORD_RE = /(\S+)[^\S\n]$/;
 
 const esc = (l: string) => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Case-sensitive on purpose: keeps "the growth of an account" plain text.
 const HEAD_RE = new RegExp(
   `\\b(${Object.keys(SECTIONS).sort((a, b) => b.length - a.length).map(esc).join("|")})\\b`, "g");
 const ARROW = "→|->";

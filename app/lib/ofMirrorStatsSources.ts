@@ -175,6 +175,7 @@ export function pagedRoute(source: StatSource, offset: number, type: EarningsTyp
   return `/api/of/v2/${path}?${q}`;
 }
 
+// OF's own first marker: period end in unix s, shifted by its UTC offset unless it ends today.
 export function firstMarker(p: Pick<Period, "end" | "now" | "tz">): number {
   const end = Math.floor(p.end.getTime() / 1000);
   const e = wallOf(p.end, p.tz);

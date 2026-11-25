@@ -113,6 +113,9 @@
   {
    "path": "/api/v1/lists/commands",
    "check": "152ed2bf59f1c8",
+   "expected_result": {
+    "900000000000000201": ["900000000000000002", "900000000000000003"]
+   },
    "body": {
     "listCommands": [
      {

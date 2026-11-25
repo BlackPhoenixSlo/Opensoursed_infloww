@@ -32,7 +32,8 @@ from db.engine import get_session
 from db.models import (
     AutomationRule, Blacklist, Fan, LifecycleMessageClaim, SubscriberSnapshot,
 )
-from side_effect_gate import refusal
+import platforms
+from side_effect_gate import PLATFORM_LACKS_PREFIX
 
 log = logging.getLogger("of-relay.automation.lifecycle_messages")
 
@@ -57,6 +58,7 @@ TEXT_MAX = 1000
 FOLLOW_UP_MINUTES = (1, 7 * 24 * 60)
 DISCOUNT_PERCENT = (5, 60)
 DISCOUNT_MONTHS = (1, 12)
+# Expired is left out: what OF does with a discount for a lapsed subscription is unverified.
 DISCOUNT_KINDS = frozenset({EXPIRY})
 
 _SEND_PURPOSE = "gated"
@@ -533,6 +535,11 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
     messages = messages_of(cfg)
     if not messages:
         return _skip("no_text")
+    discount_reason = f"{PLATFORM_LACKS_PREFIX}set_subscription_discount"
+    discount_refused = kind in DISCOUNT_KINDS and platforms.refusal_for_account(
+        account_id, "set_subscription_discount")
+    if discount_refused and all(m["discount"] is not None for m in messages):
+        return _skip(discount_reason)
     enabled_at = _parse_iso(cfg.get("enabled_at"))
     if enabled_at is None:
         return _skip("no_enabled_at")
@@ -577,6 +584,13 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
     plans, skipped = pick_targets(kind, account_id, events, messages, done=done, fans=fans,
                                   kept=kept, hard_skip=hard_skip, blacklist=blacklist, now=now)
 
+    if discount_refused:
+        plain = [p for p in plans if messages[p[2]]["discount"] is None]
+        if len(plain) != len(plans):
+            skipped += len(plans) - len(plain)
+            stats["discount_skipped"] = discount_reason
+            plans = plain
+
     if dry_run:
         return {"status": "ok", "dry_run": True, "would_send": min(len(plans), _LIMIT),
                 "skipped": skipped, "capped": max(0, len(plans) - _LIMIT), "sent": 0,
@@ -589,11 +603,6 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
     follows: Counter = Counter()
     if plans and client is None:
         client = await asyncio.to_thread(ax._make_client, account_id)
-    lacks_discount = 0
-    if plans and kind in DISCOUNT_KINDS and refusal(client, "set_subscription_discount"):
-        plain = [p for p in plans if messages[p[2]]["discount"] is None]
-        lacks_discount, plans = len(plans) - len(plain), plain
-        skipped += lacks_discount
     for i, (fid, key, idx, template) in enumerate(plans):
         if attempted >= _LIMIT:
             capped = len(plans) - i
@@ -698,8 +707,6 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                    follow_errors=follow_errors)
     if kind in DISCOUNT_KINDS:
         out["discounted"] = discounted
-    if lacks_discount:
-        out["discount_skipped"] = "platform_lacks:set_subscription_discount"
     return out
 
 

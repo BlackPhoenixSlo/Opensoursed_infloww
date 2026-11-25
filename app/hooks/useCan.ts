@@ -6,7 +6,7 @@ import type { ChatterFlatAccountDTO } from "@/contexts/ChatterContext";
 import { useOptionalUser } from "@/contexts/UserContext";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
 import { ownerAccountsQuery, type AccountsResp } from "@/lib/ownerAccounts";
-import { accountPlatform, can, type Capability, type Platform } from "@/lib/platform";
+import { accountPlatform, can, useFallbackPlatform, type Capability, type Platform } from "@/lib/platform";
 
 export function useAccountPlatform(accountId: string | null | undefined): Platform | null {
   const user = useOptionalUser()?.user;
@@ -18,9 +18,15 @@ export function useAccountPlatform(accountId: string | null | undefined): Platfo
     return a ? accountPlatform(a) : null;
   }
   const r = chatter?.find((x) => x.account_id === accountId);
-  return r ? accountPlatform(r) : null;
+  return r?.platform === undefined ? null : accountPlatform(r);
 }
 
 export function useCan(accountId: string | null | undefined, cap: Capability): boolean {
   return can(useAccountPlatform(accountId), cap);
+}
+
+// D7 keeps OnlyFans toolbar and mass controls visible while the Creator roster loads.
+export function useCanOrFallback(accountId: string | null | undefined, cap: Capability): boolean {
+  const fallback = useFallbackPlatform();
+  return can(useAccountPlatform(accountId) ?? fallback, cap);
 }

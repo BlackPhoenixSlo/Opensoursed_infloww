@@ -6,6 +6,8 @@ import _harness
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 import tempfile  # noqa: E402
 import uuid  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -21,7 +23,7 @@ account_registry.MIGRATED_MARKER = Path(_TMP.name) / ".migrated"
 import read_flip  # noqa: E402
 import server  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, User, UserAccount  # noqa: E402
+from db.models import Account, Fan, User, UserAccount  # noqa: E402
 from fansly_client import FanslySession  # noqa: E402
 from fansly_shim import FanslyShimClient  # noqa: E402
 from side_effect_gate import refusal  # noqa: E402
@@ -81,27 +83,27 @@ async def _astatus(coro) -> int:
 
 
 def case_fansly_pin_unpin_answer_501():
-    server._get_client = lambda *a, **k: _shim  # type: ignore[assignment]
-    assert _status(lambda: server.of_pin_message(77, FAN)) == 501
-    assert _status(lambda: server.of_unpin_message(77, FAN)) == 501
+    with patch.object(server, "_get_client", return_value=_shim):
+        assert _status(lambda: server.of_pin_message(77, FAN)) == 501
+        assert _status(lambda: server.of_unpin_message(77, FAN)) == 501
 
 
 async def case_fansly_mark_unread_answers_501_and_flips_nothing_locally():
-    server._get_client = lambda *a, **k: _shim  # type: ignore[assignment]
-    _local.clear()
-    assert await _astatus(server.of_mark_chat_unread(FAN)) == 501
-    assert _local == [], f"a 501 still flipped the local unread badge: {_local}"
+    with patch.object(server, "_get_client", return_value=_shim):
+        _local.clear()
+        assert await _astatus(server.of_mark_chat_unread(FAN)) == 501
+        assert _local == [], f"a 501 still flipped the local unread badge: {_local}"
 
 
 async def case_of_client_still_reaches_the_writes():
     fake = _FakeOF()
-    server._get_client = lambda *a, **k: fake  # type: ignore[assignment]
-    _local.clear()
-    assert server.of_pin_message(77, FAN) == {"success": True}
-    assert server.of_unpin_message(77, FAN) == {"success": True}
-    assert await server.of_mark_chat_unread(FAN) == {"success": True}
-    assert fake.writes == [("pin", 77, FAN), ("unpin", 77, FAN), ("unread", FAN)], fake.writes
-    assert _local == [(_AID, FAN, 1)], _local
+    with patch.object(server, "_get_client", return_value=fake):
+        _local.clear()
+        assert server.of_pin_message(77, FAN) == {"success": True}
+        assert server.of_unpin_message(77, FAN) == {"success": True}
+        assert await server.of_mark_chat_unread(FAN) == {"success": True}
+        assert fake.writes == [("pin", 77, FAN), ("unpin", 77, FAN), ("unread", FAN)], fake.writes
+        assert _local == [(_AID, FAN, 1)], _local
 
 
 def case_shim_methods_carry_the_marker():
@@ -123,8 +125,8 @@ assert http.post("/auth/login", json={"username": "boss", "password": "pw"}).sta
 
 
 def _call(method: str, path: str, client, **kw):
-    server._get_client = lambda *a, **k: client  # type: ignore[assignment]
-    return http.request(method, path, headers={"X-Account-Id": _AID}, **kw)
+    with patch.object(server, "_get_client", return_value=client):
+        return http.request(method, path, headers={"X-Account-Id": _AID}, **kw)
 
 
 def case_table_routes_answer_501_with_their_reason():
@@ -191,7 +193,8 @@ class _SideEffects:
     def __init__(self) -> None:
         self.seen: list[tuple] = []
 
-    def install(self) -> None:
+    @contextmanager
+    def installed(self):
         import automation_executor
 
         async def send(_req, user_id, body):
@@ -206,10 +209,14 @@ class _SideEffects:
             self.seen.append(("pacer", aid))
             return await asyncio.to_thread(fn)
 
-        server.send_message = send                                     # type: ignore[assignment]
-        server.of_mark_chat_read = mark_read                           # type: ignore[assignment]
-        automation_executor.of_write_paced = paced                     # type: ignore[assignment]
-        read_flip.bust_chat_list_and_badges = lambda aid, chat_id=None: self.seen.append(("bust", chat_id))
+        def bust(aid, chat_id=None):
+            self.seen.append(("bust", chat_id))
+
+        with (patch.object(server, "send_message", send),
+              patch.object(server, "of_mark_chat_read", mark_read),
+              patch.object(automation_executor, "of_write_paced", paced),
+              patch.object(read_flip, "bust_chat_list_and_badges", bust)):
+            yield
 
 
 def _on(platform: str) -> None:
@@ -238,14 +245,14 @@ _CHAT_ROUTES = (
 def case_fansly_restrict_answers_501_before_ack_read_or_skip_row():
     _on("fansly")
     fx = _SideEffects()
-    fx.install()
-    r = _call("POST", f"/api/of/v2/users/{FAN}/restrict", _shim)
-    assert r.status_code == 501 and r.json()["detail"] == "restrict user: not on this platform", (r.status_code, r.text)
-    assert fx.seen == [], f"restrict acted before refusing: {fx.seen}"
-    assert FAN not in _restricted()
-    r = _call("DELETE", f"/api/of/v2/users/{FAN}/restrict", _shim)
-    assert r.status_code == 501 and r.json()["detail"] == "unrestrict user: not on this platform", (r.status_code, r.text)
-    assert fx.seen == [], fx.seen
+    with fx.installed():
+        r = _call("POST", f"/api/of/v2/users/{FAN}/restrict", _shim)
+        assert r.status_code == 501 and r.json()["detail"] == "restrict user: not on this platform", (r.status_code, r.text)
+        assert fx.seen == [], f"restrict acted before refusing: {fx.seen}"
+        assert FAN not in _restricted()
+        r = _call("DELETE", f"/api/of/v2/users/{FAN}/restrict", _shim)
+        assert r.status_code == 501 and r.json()["detail"] == "unrestrict user: not on this platform", (r.status_code, r.text)
+        assert fx.seen == [], fx.seen
 
 
 def case_fansly_chat_routes_answer_501():
@@ -258,26 +265,26 @@ def case_fansly_chat_routes_answer_501():
 def case_fansly_delete_chat_answers_501_with_no_pacer_slot_or_bust():
     _on("fansly")
     fx = _SideEffects()
-    fx.install()
-    r = _call("DELETE", f"/api/of/v2/chats/{FAN}", _shim)
-    assert r.status_code == 501 and r.json()["detail"] == "delete chat: not on this platform", (r.status_code, r.text)
-    assert fx.seen == [], f"delete chat acted before refusing: {fx.seen}"
+    with fx.installed():
+        r = _call("DELETE", f"/api/of/v2/chats/{FAN}", _shim)
+        assert r.status_code == 501 and r.json()["detail"] == "delete chat: not on this platform", (r.status_code, r.text)
+        assert fx.seen == [], f"delete chat acted before refusing: {fx.seen}"
 
 
 def case_of_restrict_and_unrestrict_still_act():
     _on("onlyfans")
     fx = _SideEffects()
-    fx.install()
-    fake = _ChatOF()
-    r = _call("POST", f"/api/of/v2/users/{FAN}/restrict", fake)
-    assert r.status_code == 200 and r.json()["restricted"] is True, (r.status_code, r.text)
-    assert fx.seen == [("send", FAN, "."), ("mark_read", FAN)], fx.seen
-    assert [w[0] for w in fake.writes] == ["restrict_user", "hide_chat"], fake.writes
-    assert FAN in _restricted()
-    r = _call("DELETE", f"/api/of/v2/users/{FAN}/restrict", fake)
-    assert r.status_code == 200 and r.json()["restricted"] is False, (r.status_code, r.text)
-    assert [w[0] for w in fake.writes][2:] == ["unrestrict_user", "unhide_chat"], fake.writes
-    assert FAN not in _restricted()
+    with fx.installed():
+        fake = _ChatOF()
+        r = _call("POST", f"/api/of/v2/users/{FAN}/restrict", fake)
+        assert r.status_code == 200 and r.json()["restricted"] is True, (r.status_code, r.text)
+        assert fx.seen == [("send", FAN, "."), ("mark_read", FAN)], fx.seen
+        assert [w[0] for w in fake.writes] == ["restrict_user", "hide_chat"], fake.writes
+        assert FAN in _restricted()
+        r = _call("DELETE", f"/api/of/v2/users/{FAN}/restrict", fake)
+        assert r.status_code == 200 and r.json()["restricted"] is False, (r.status_code, r.text)
+        assert [w[0] for w in fake.writes][2:] == ["unrestrict_user", "unhide_chat"], fake.writes
+        assert FAN not in _restricted()
 
 
 def case_of_chat_routes_still_reach_the_client():
@@ -292,32 +299,32 @@ def case_of_chat_routes_still_reach_the_client():
 def case_of_delete_chat_paced_and_busted():
     _on("onlyfans")
     fx = _SideEffects()
-    fx.install()
-    fake = _ChatOF()
-    r = _call("DELETE", f"/api/of/v2/chats/{FAN}", fake)
-    assert r.status_code == 200, (r.status_code, r.text)
-    assert fake.writes == [("delete_chat", FAN)], fake.writes
-    assert fx.seen == [("pacer", _AID), ("bust", FAN)], fx.seen
+    with fx.installed():
+        fake = _ChatOF()
+        r = _call("DELETE", f"/api/of/v2/chats/{FAN}", fake)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert fake.writes == [("delete_chat", FAN)], fake.writes
+        assert fx.seen == [("pacer", _AID), ("bust", FAN)], fx.seen
 
 
 def case_of_no_session_restrict_still_tries_ack_and_read():
     _on("onlyfans")
     fx = _SideEffects()
-    fx.install()
-    server._get_client = _no_session  # type: ignore[assignment]
-    r = http.post(f"/api/of/v2/users/{FAN}/restrict", headers={"X-Account-Id": _AID})
-    assert r.status_code == 503, (r.status_code, r.text)
-    assert fx.seen == [("send", FAN, "."), ("mark_read", FAN)], fx.seen
+    with fx.installed():
+        with patch.object(server, "_get_client", side_effect=_no_session):
+            r = http.post(f"/api/of/v2/users/{FAN}/restrict", headers={"X-Account-Id": _AID})
+            assert r.status_code == 503, (r.status_code, r.text)
+            assert fx.seen == [("send", FAN, "."), ("mark_read", FAN)], fx.seen
 
 
 def case_of_no_session_delete_chat_still_takes_a_pacer_slot():
     _on("onlyfans")
     fx = _SideEffects()
-    fx.install()
-    server._get_client = _no_session  # type: ignore[assignment]
-    r = http.delete(f"/api/of/v2/chats/{FAN}", headers={"X-Account-Id": _AID})
-    assert r.status_code == 503, (r.status_code, r.text)
-    assert fx.seen == [("pacer", _AID)], fx.seen
+    with fx.installed():
+        with patch.object(server, "_get_client", side_effect=_no_session):
+            r = http.delete(f"/api/of/v2/chats/{FAN}", headers={"X-Account-Id": _AID})
+            assert r.status_code == 503, (r.status_code, r.text)
+            assert fx.seen == [("pacer", _AID)], fx.seen
 
 
 _GROUP = {"startDate": "2026-01-01 00:00:00", "endDate": "2026-02-01 00:00:00"}
@@ -336,11 +343,11 @@ _QUEUE = ("GET", "/api/of/v2/messages/queue", {}, None, "scheduled messages", ("
 def case_fansly_list_discount_and_group_feed_answer_501():
     _on("fansly")
     busted: list[str] = []
-    server._invalidate_chat_folders = lambda *a, **k: busted.append("folders")  # type: ignore[assignment]
-    server._bust_chat_list_cache = lambda *a, **k: busted.append("chat_list")   # type: ignore[assignment]
-    for method, path, params, body, what, _ in _OWNER_ROUTES:
-        r = _call(method, path, _shim, params=params, json=body)
-        assert r.status_code == 501 and r.json()["detail"] == f"{what}: not on this platform", (path, r.status_code, r.text)
+    with (patch.object(server, "_invalidate_chat_folders", side_effect=lambda *a, **k: busted.append("folders")),
+          patch.object(server, "_bust_chat_list_cache", side_effect=lambda *a, **k: busted.append("chat_list"))):
+        for method, path, params, body, what, _ in _OWNER_ROUTES:
+            r = _call(method, path, _shim, params=params, json=body)
+            assert r.status_code == 501 and r.json()["detail"] == f"{what}: not on this platform", (path, r.status_code, r.text)
     assert busted == [], f"a refused route still dropped a cache: {busted}"
 
 
@@ -360,9 +367,9 @@ def case_of_list_discount_queue_and_group_feed_still_reach_the_client():
 
 
 def _admin_mass(client, aid: str = _AID):
-    server._load_client = lambda _aid: client  # type: ignore[assignment]
-    q = {"account_id": aid}
-    return http.get("/admin/mass-messages", params=q), http.post("/admin/mass-messages/refresh", params=q)
+    with patch.object(server, "_load_client", return_value=client):
+        q = {"account_id": aid}
+        return http.get("/admin/mass-messages", params=q), http.post("/admin/mass-messages/refresh", params=q)
 
 
 def case_fansly_admin_mass_messages_and_refresh_answer_501_on_an_empty_cache():
@@ -383,11 +390,11 @@ def case_of_admin_mass_messages_and_refresh_still_reach_the_client():
 
 def case_of_no_session_admin_mass_messages_unchanged():
     _on("onlyfans")
-    server._load_client = _no_session  # type: ignore[assignment]
-    got = http.get("/admin/mass-messages", params={"account_id": _AID})
-    refreshed = http.post("/admin/mass-messages/refresh", params={"account_id": _AID})
-    assert got.status_code == 200 and got.json()["items"] == [], (got.status_code, got.text)
-    assert refreshed.status_code == 503, (refreshed.status_code, refreshed.text)
+    with patch.object(server, "_load_client", side_effect=_no_session):
+        got = http.get("/admin/mass-messages", params={"account_id": _AID})
+        refreshed = http.post("/admin/mass-messages/refresh", params={"account_id": _AID})
+        assert got.status_code == 200 and got.json()["items"] == [], (got.status_code, got.text)
+        assert refreshed.status_code == 503, (refreshed.status_code, refreshed.text)
 
 
 async def _seed_vault(*media: tuple[int, str | None, int]) -> None:
@@ -413,8 +420,8 @@ async def _removed_at(media_id: int):
 
 def _vault_hide(client, path: str, body: dict):
     import automation_executor
-    automation_executor._make_client = lambda *a, **k: client  # type: ignore[assignment]
-    return http.post(path, json={"account_id": _AID, **body})
+    with patch.object(automation_executor, "_make_client", return_value=client):
+        return http.post(path, json={"account_id": _AID, **body})
 
 
 def _dupe_pair(original: int, copy: int, md5: str) -> None:
@@ -469,8 +476,8 @@ async def _synced_at(fan: int):
 
 
 def _backfill(client, fan: int):
-    server._load_client = lambda _aid: client  # type: ignore[assignment]
-    return http.post("/admin/vault/fan-history/sync", json={"account_id": _AID, "fan_id": fan})
+    with patch.object(server, "_load_client", return_value=client):
+        return http.post("/admin/vault/fan-history/sync", json={"account_id": _AID, "fan_id": fan})
 
 
 def case_fansly_vault_backfill_answers_not_synced_and_leaves_synced_at_null():
@@ -508,28 +515,28 @@ _MASS_BODIES = (_MASS, {**_MASS, "scheduled_date": "2026-12-01T10:00:00.000Z"}, 
 import audiences  # noqa: E402
 import mass_queue_api  # noqa: E402
 
-_REAL_RESERVE, _REAL_RESOLVE = mass_queue_api._reserve_send, audiences.resolve_mass_audience
-
-
-def _mass_spies() -> list[str]:
+@contextmanager
+def _mass_spies():
     seen: list[str] = []
+    real_reserve = mass_queue_api._reserve_send
+    real_resolve = audiences.resolve_mass_audience
 
     def reserve(key):
         seen.append("reserve")
-        _REAL_RESERVE(key)
+        real_reserve(key)
 
     async def resolve(*a, **k):
         seen.append("audience")
-        return await _REAL_RESOLVE(*a, **k)
+        return await real_resolve(*a, **k)
 
     async def exclude_list(*_a, **_k):
         seen.append("exclude_list")
         return 4242
 
-    mass_queue_api._reserve_send = reserve             # type: ignore[assignment]
-    audiences.resolve_mass_audience = resolve          # type: ignore[assignment]
-    audiences.ensure_exclude_list = exclude_list       # type: ignore[assignment]
-    return seen
+    with (patch.object(mass_queue_api, "_reserve_send", reserve),
+          patch.object(audiences, "resolve_mass_audience", resolve),
+          patch.object(audiences, "ensure_exclude_list", exclude_list)):
+        yield seen
 
 
 async def _mass_runs() -> int:
@@ -543,35 +550,156 @@ async def _mass_runs() -> int:
 def case_fansly_mass_route_answers_501_before_key_audience_exclude_list_or_run():
     _on("fansly")
     for body, what in zip(_MASS_BODIES, ("mass message", "scheduled mass message", "scheduled mass message")):
-        seen = _mass_spies()
-        runs = asyncio.run(_mass_runs())
-        r = _call("POST", "/api/of/v2/messages/queue", _shim, json=body)
-        assert r.status_code == 501 and r.json()["detail"] == f"{what}: not on this platform", (body, r.status_code, r.text)
-        assert seen == [], (body, seen)
-        assert mass_queue_api._send_keys == {} and asyncio.run(_mass_runs()) == runs, body
+        with _mass_spies() as seen:
+            runs = asyncio.run(_mass_runs())
+            r = _call("POST", "/api/of/v2/messages/queue", _shim, json=body)
+            assert r.status_code == 501 and r.json()["detail"] == f"{what}: not on this platform", (body, r.status_code, r.text)
+            assert seen == [], (body, seen)
+            assert mass_queue_api._send_keys == {} and asyncio.run(_mass_runs()) == runs, body
 
 
 def case_of_mass_route_still_resolves_syncs_mints_and_posts():
     _on("onlyfans")
     for body, post in zip(_MASS_BODIES, ("send_mass_message", "schedule_mass_message", "schedule_mass_message")):
-        seen = _mass_spies()
-        runs = asyncio.run(_mass_runs())
-        fake = _MassOF()
-        r = _call("POST", "/api/of/v2/messages/queue", fake, json=body)
-        assert r.status_code == 200, (body, r.status_code, r.text)
-        assert seen == ["reserve", "audience", "exclude_list"], (body, seen)
-        assert fake.writes == [(post, [4242])], (body, fake.writes)
-        assert asyncio.run(_mass_runs()) == runs + 1 and mass_queue_api._send_keys == {}, body
+        with _mass_spies() as seen:
+            runs = asyncio.run(_mass_runs())
+            fake = _MassOF()
+            r = _call("POST", "/api/of/v2/messages/queue", fake, json=body)
+            assert r.status_code == 200, (body, r.status_code, r.text)
+            assert seen == ["reserve", "audience", "exclude_list"], (body, seen)
+            assert fake.writes == [(post, [4242])], (body, fake.writes)
+            assert asyncio.run(_mass_runs()) == runs + 1 and mass_queue_api._send_keys == {}, body
 
 
 def case_of_no_session_mass_route_still_reserves_and_resolves_first():
     _on("onlyfans")
-    seen = _mass_spies()
-    server._get_client = _no_session  # type: ignore[assignment]
-    r = http.post("/api/of/v2/messages/queue", headers={"X-Account-Id": _AID}, json=_MASS)
-    assert r.status_code == 503, (r.status_code, r.text)
-    assert seen == ["reserve", "audience"], seen
-    assert mass_queue_api._send_keys == {}
+    with _mass_spies() as seen:
+        with patch.object(server, "_get_client", side_effect=_no_session):
+            r = http.post("/api/of/v2/messages/queue", headers={"X-Account-Id": _AID}, json=_MASS)
+            assert r.status_code == 503, (r.status_code, r.text)
+            assert seen == ["reserve", "audience"], seen
+            assert mass_queue_api._send_keys == {}
+
+
+def case_fansly_settings_and_templates_refuse_before_client_load():
+    _on("fansly")
+    with patch.object(server, "_get_client", return_value=_shim) as load:
+        for path in ("/api/of/v2/users/me/settings", "/api/of/v2/messages/templates"):
+            r = http.get(path, headers={"X-Account-Id": _AID})
+            assert r.status_code == 501 and r.json()["detail"], r.text
+        load.assert_not_called()
+
+
+async def _seed_smart_list_fan():
+    async with get_session() as s:
+        s.add(Fan(account_id=_AID, fan_id=9189, lifetime_spend_cents=20000))
+
+
+def case_fansly_smart_list_resolves_locally_but_refuses_activation():
+    _on("fansly")
+    asyncio.run(_seed_smart_list_fan())
+    body = {"account_id": _AID, "name": "Whales",
+            "rules": {"rules": [{"field": "lifetime_spend", "op": ">=", "value": 10000}]}}
+    r = _call("POST", "/admin/smart-lists", _shim, json=body)
+    assert r.status_code == 200, r.text
+    list_id = r.json()["id"]
+    base = f"/admin/smart-lists/{list_id}"
+    r = _call("GET", f"{base}/resolve", _shim)
+    assert r.status_code == 200 and 9189 in r.json()["fan_ids"], r.text
+    before = _call("GET", "/admin/smart-lists", _shim, params={"account_id": _AID}).json()
+
+    r = _call("POST", f"{base}/activate", _shim, json={})
+    assert r.status_code == 501 and r.json()["detail"], r.text
+    after = _call("GET", "/admin/smart-lists", _shim, params={"account_id": _AID}).json()
+    assert after == before, after
+
+
+def case_account_gate_does_not_load_relay_server():
+    import relay_host
+    from side_effect_gate import refuse_if_platform_lacks
+
+    _on("fansly")
+    with patch.object(relay_host, "live_server", side_effect=AssertionError("server loaded")):
+        assert _status(lambda: refuse_if_platform_lacks(_AID, "mass_message_history", "mass history")) == 501
+
+
+def case_client_and_side_effect_stubs_are_scoped():
+    original = server._get_client, server._load_client, server.send_message
+    _on("fansly")
+    _call("GET", _QUEUE[1], _shim)
+    _admin_mass(_shim)
+    with _SideEffects().installed():
+        assert server.send_message is not original[2]
+    assert (server._get_client, server._load_client, server.send_message) == original
+
+
+def case_fansly_story_create_refuses_before_client_load():
+    _on("fansly")
+    with patch.object(server, "_get_client", return_value=_shim) as load:
+        for path, data in (
+            ("/stories", {"json": {"media_url": "https://example.invalid/story.jpg"}}),
+            ("/stories", {"json": {"media_files": [42]}}),
+            ("/stories/upload", {"files": {"file": ("story.jpg", b"image", "image/jpeg")}}),
+        ):
+            r = http.post(f"/api/of/v2{path}", headers={"X-Account-Id": _AID}, **data)
+            assert r.status_code == 501 and r.json()["detail"], r.text
+        load.assert_not_called()
+
+
+async def _seed_legacy_smart_lists():
+    from db.models import SmartList
+
+    async with get_session() as s:
+        active = SmartList(account_id=_AID, name="Active", is_active=True)
+        mirrored = SmartList(account_id=_AID, name="Mirror", of_list_id=42)
+        s.add_all([active, mirrored])
+        await s.flush()
+        return active.id, mirrored.id
+
+
+async def _smart_list_job_ids():
+    from sqlalchemy import select
+    from db.models import ScheduledJob
+
+    async with get_session() as s:
+        return (await s.execute(select(ScheduledJob.id).where(
+            ScheduledJob.account_id == _AID, ScheduledJob.kind == "smart_list_sync"))).scalars().all()
+
+
+def case_fansly_smart_list_syncing_edits_and_deletes_refuse():
+    _on("fansly")
+    active, mirrored = asyncio.run(_seed_legacy_smart_lists())
+    base = "/admin/smart-lists"
+    before = _call("GET", base, _shim, params={"account_id": _AID}).json()
+    jobs = asyncio.run(_smart_list_job_ids())
+    for method, path, kwargs in (
+        ("PATCH", f"{base}/{active}", {"json": {"name": "Changed"}}),
+        ("DELETE", f"{base}/{mirrored}", {"params": {"delete_of_list": True}}),
+    ):
+        r = _call(method, path, _shim, **kwargs)
+        assert r.status_code == 501 and r.json()["detail"], r.text
+        assert _call("GET", base, _shim, params={"account_id": _AID}).json() == before
+        assert asyncio.run(_smart_list_job_ids()) == jobs
+
+    r = _call("PATCH", f"{base}/{mirrored}", _shim, json={"name": "Local edit"})
+    assert r.status_code == 200 and r.json()["name"] == "Local edit", r.text
+    r = _call("DELETE", f"{base}/{mirrored}", _shim)
+    assert r.status_code == 200 and r.json()["of_list_delete_queued"] is False, r.text
+    assert asyncio.run(_smart_list_job_ids()) == jobs
+
+
+def case_fansly_pin_unpin_leave_pinned_cache_untouched():
+    _on("fansly")
+    path = f"/api/of/v2/messages/77/pin/user/{FAN}"
+    with (patch.object(server, "_get_client", return_value=_shim) as load,
+          patch.object(server.relay_cache, "invalidate") as invalidate,
+          patch.object(server, "_bust_chat_detail") as bust):
+        for method in ("POST", "DELETE"):
+            r = http.request(method, path, headers={"X-Account-Id": _AID})
+            assert r.status_code == 501 and r.json()["detail"], r.text
+        invalidate.assert_not_called()
+        bust.assert_not_called()
+        load.assert_not_called()
 
 
 _harness.run()

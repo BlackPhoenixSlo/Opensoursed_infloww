@@ -492,6 +492,7 @@ def _mirror_landed(state: dict,
         got = on_landed(ids, landed_meta(state))
         if isinstance(got, dict):
             state["details_saved"] = got
+    # The mirror hook waits on another thread; loop shutdown can interrupt the readback.
     except BaseException as e:  # noqa: BLE001 — see the docstring: nothing this
         # Deliberately NOT re-raised: re-raising skipped _cleanup_carriers and left the account claimed in _live.
         log.warning("vault run %s: mirror hook failed: %s: %s",

@@ -71,6 +71,7 @@ const nextConfig: NextConfig = {
       to("/automations", "/growth/auto-post"),
     ];
   },
+  // Keep dev rewrites aligned with Traefik, where /admin/manage goes to Next.
   async rewrites() {
     return [
       { source: "/health",       destination: `${RELAY_URL}/health` },

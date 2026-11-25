@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio  # noqa: F401  (test_pacing patches _common.asyncio.sleep — the global module)
 
+# Patch the name the caller reads, including re-exports used by _language.
 from ._knobs import (  # noqa: F401
     bool_knob, coerce_ids, test_mode,
 )

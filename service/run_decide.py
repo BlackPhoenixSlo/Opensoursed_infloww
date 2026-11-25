@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Literal, assert_never
 
 from automation_registry import canonical_kind, kind_family
+from side_effect_gate import PLATFORM_LACKS_PREFIX
 
 JOB_RETRY = "retry"
 FOLLOWUP_MARK = "_followup"
@@ -133,9 +134,14 @@ def one_shot_family() -> tuple[str, ...]:
 
 
 def outcome(kind: RunKind, guard_status: str | None, err: str | None = None, *,
-            once: bool = False, wrote: WriteState = "none") -> tuple[str, str, str | None]:
+            once: bool = False, wrote: WriteState = "none",
+            plugin_reason: object = None) -> tuple[str, str, str | None]:
     match kind:
         case "ok" | "words_blocked":
+            if guard_status == "skipped":
+                return "skipped", "done", "sensitive_words"
+            if isinstance(plugin_reason, str) and plugin_reason.startswith(PLATFORM_LACKS_PREFIX):
+                return "skipped", "done", plugin_reason
             return (guard_status if guard_status is not None else "ok"), "done", err
         case "cancelled" | "exception":
             if not once:

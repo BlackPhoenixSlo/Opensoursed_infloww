@@ -189,6 +189,7 @@ function genReqId(): string {
 function spawnGroupTab(accountId: string, fanId: FanId, overflow: boolean): void {
   const spawnToken = genReqId();
   const url = `/group?add=${encodeURIComponent(accountId)}:${fanId}&spawn=${encodeURIComponent(spawnToken)}`;
+  // Listen before spawning: the new tab's `claim` may arrive before any later broadcast opens the channel.
   ensureSourceChannel();
   if (overflow) {
     const win = window.open(url, "_blank");

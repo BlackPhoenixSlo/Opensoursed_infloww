@@ -49,6 +49,7 @@ export function referralsTotal(r: ReferralsResp | undefined): number {
   return (r?.rows ?? []).reduce((a, row) => a + row.total_cents, 0);
 }
 
+// Referral earnings are OF's payout, so net == gross; OF buckets days in its own zone, hours off the ledger's.
 export function referralsAsRevenue(r: ReferralsResp | undefined) {
   const row = (cents: number) => ({ kind: "referral", total_cents: cents, net_cents: cents, count: 0 });
   const days = new Map<string, number>();

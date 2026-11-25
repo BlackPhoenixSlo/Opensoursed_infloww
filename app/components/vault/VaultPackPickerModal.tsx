@@ -118,6 +118,7 @@ function Tile({
   }, [visible]);
 
   const [failed, setFailed] = useState(false);
+  // Full frame, not the thumb: the thumb is a 300x300 centre crop and feet sit at the edge it discards.
   const { src, settle } = useImageSlot(mirrorFullSrc(accountId, item.media_id), visible);
   const isVideo = item.kind !== "photo";
 
@@ -404,6 +405,7 @@ export default function VaultPackPickerModal({
     let staleN = 0;
     const step = (name: string) => `publishing ${name} to OF… (${done.length + 1}/${stocked.length})`;
     try {
+      // Publish sequentially to limit OF write and read-back bursts.
       for (const f of stocked) {
         dispatchStatus({ type: "start", busy: step(f.name) });
         const res = await publishFolderToOf(accountId, f.folder_id!);

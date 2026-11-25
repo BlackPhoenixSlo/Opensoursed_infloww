@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * PostComposer — modal for creating a public feed post via
- * POST /api/of/v2/posts. Mirrors OF's own "Create post" surface in the
- * minimum-viable shape:
- *   • text body
- *   • media from vault (reuses the chat VaultPicker — same picker, no
- *     fan-scope so the per-fan badges/MRU just stay neutral)
- *   • price (0 = free; >0 = PPV)
- *
- * Deliberately deferred to v2:
- *   • Polls — no captured curl yet; would be guesswork.
- */
 
 import { useCallback, useId, useReducer, useRef, useState } from "react";
 import { Lock } from "lucide-react";
@@ -31,7 +19,7 @@ import { IfButton, IfHelp, IfInput, IfLabel, IfModal } from "@/components/ui/inf
 import { sanitizePriceInput } from "@/lib/priceInput";
 
 import { MediaTray } from "./MediaTray";
-import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
+import { useCanOrFallback } from "@/hooks/useCan";
 import { AaButton, ComposeTextBox, type ComposeTextBoxHandle } from "./ComposeTextBox";
 import { ScheduleField } from "./ScheduleField";
 import { FanOutResults, FanOutStatus } from "./FanOutResults";
@@ -47,8 +35,6 @@ import { ifConfirm } from "@/components/ui/ifConfirm";
 
 interface CreatePostResp {
   id?: number;
-  // OF returns the full post shape; we only need a success signal so the
-  // rest stays loose.
   [k: string]: unknown;
 }
 
@@ -59,60 +45,32 @@ export function PostComposer({
 }: {
   open: boolean;
   onClose: () => void;
-  /** Fired whenever a post went live — a single create, a full fan-out (before
-   *  the modal closes) or a partial one's posted models (the modal stays open
-   *  for the retry) — so a caller surface, e.g. the feed tab, can refetch its
-   *  own list. */
   onSuccess?: () => void;
 }) {
   const qc = useQueryClient();
   const activeAccounts = usePlatformAccounts();
-  // The composers' shared include set (useAllModelsInclude) — a model
-  // un-checked in any composer's chip strip is omitted from a broadcast here.
   const { isIncluded } = useAllModelsInclude();
-  // The whole form (postComposerReducer).
   const [form, rawDispatch] = useReducer(postComposerReducer, null, initPostForm);
-  // The user's dispatch: any action but the picker's first account touches the form (Escape then keeps it).
   const { touched, dispatch } = useTouched(form, rawDispatch, isAudienceSeed);
   const { allModels, text, attached, price, previewCount, schedule, progress, results, taggedCreators } = form;
-  // The account a one-account post goes to; null while all-models is on
-  // (postComposerReducer `sendAccount`).
   const accountId = sendAccount(form);
-  // A round in flight, or a model took this post: the content is locked (compose/fanOut).
   const locked = fanOutLocked(form);
   const set = <K extends PostField>(k: K) => (v: PostForm[K]) => dispatch(postFieldAction(k, v));
-  // Stable: AccountPicker's auto-seed effect depends on it.
   const setAccountId = useCallback((id: string) => dispatch({ type: "setAccount", id }), [dispatch]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const textRef = useRef<ComposeTextBoxHandle | null>(null);
-  // OF rich text: OnlyFans accounts only (all-models: the first row's).
-  const allowRich = useOfRichAllowed(allModels ? activeAccounts[0]?.id : accountId);
-  // A subscription page has no paid-post lane on OF, so the price field is not
-  // an option there and its price reads as 0 (postComposerReducer `postPrice`)
-  // — a typed or template price can't block or ride into the post. The relay
-  // refuses a priced post for one anyway (409).
+  const allowRich = useCanOrFallback(allModels ? activeAccounts[0]?.id : accountId, "rich_text");
   const { isPaidPage } = usePaidPage(accountId);
 
-  // Honour the shared include set: models the user unchecked in a
-  // composer's chip strip are dropped from the broadcast fan-out; a model
-  // that already took this post (a partial fan-out's success) is not re-posted.
   const { targets } = includedTargets(activeAccounts, isIncluded, results);
 
-  // The one validity check — the Post button, its reason line and the
-  // mutation all read it.
   const invalid = validatePost(form, { broadcastCount: targets.length, paidPage: isPaidPage });
 
-  // The created post is visible: the wall-media query backs the vault
-  // picker's blue ring (nuking it flips freshly-posted media on next open),
-  // and the caller (the feed tab) refetches its list.
   function posted() {
     qc.invalidateQueries({ queryKey: ["wall-media"] });
     onSuccess?.();
   }
 
-  // Resolves to whether the modal may close (every model took it); only a
-  // refused form or a one-account failure throws (the footer shows
-  // `create.error`).
   const create = useMutation({
     mutationFn: async (): Promise<boolean> => {
       if (invalid) throw new Error(invalid);
@@ -129,8 +87,6 @@ export function PostComposer({
       }
       const round = await runFanOut(targets, postTo, (p) => rawDispatch({ type: "progress", ...p }));
       rawDispatch({ type: "results", v: round });
-      // A partial round: the models that took it show it now; the composer
-      // stays open, locked, so the retry posts the same post to the failed ones.
       if (round.some((r) => r.ok)) posted();
       return round.every((r) => r.ok);
     },
@@ -139,7 +95,6 @@ export function PostComposer({
     },
   });
 
-  // Mounted only while open (MyFeedTab), so closing drops the form.
   function close() {
     if (!create.isPending) onClose();
   }
@@ -150,9 +105,6 @@ export function PostComposer({
   }
 
   function onPickTemplate(t: PickedTemplate) {
-    // Snapshot semantics (lib/composeDraft applyTemplate): text, media,
-    // preview count and price are replaced wholesale.
-    // An OnlyFans account keeps a formatted script's markup; Fansly gets its plain text.
     dispatch({ type: "pickTemplate", t, rich: allowRich });
     setTimeout(() => textRef.current?.focus(), 0);
   }
@@ -171,7 +123,6 @@ export function PostComposer({
         width={535}
         size="editor"
         onClose={close}
-        // Escape never drops a draft the user touched; × and Cancel still close.
         keyboard={!touched}
         footer={<>
           <FanOutStatus
@@ -202,7 +153,6 @@ export function PostComposer({
             accountId={accountId} onAccount={setAccountId}
           />
 
-          {/* The content — locked (disabled) once a model took the post. */}
           <fieldset disabled={locked} className="min-w-0 space-y-4 disabled:opacity-60">
           <div className="space-y-2">
             <ComposeTextBox
@@ -215,7 +165,6 @@ export function PostComposer({
               toolbar={form.mode.toolbar}
               disabled={locked}
             />
-            {/* The pickers portal above the dialog: Escape in their search boxes is theirs (useModalFocus). */}
             <div className="flex items-center gap-1.5 flex-wrap">
               <EmojiQuickRow onInsert={onEmoji} />
               <EmojiPickerButton align="left" onInsert={onEmoji} />
@@ -250,7 +199,6 @@ export function PostComposer({
             />
           )}
 
-          {/* All-models posts are text-only: no price (postComposerReducer). */}
           {!allModels && (
             <div>
               <IfLabel htmlFor={priceId}>Price (USD)</IfLabel>

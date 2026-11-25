@@ -30,6 +30,7 @@ export type GateNote = {
 export function loadGateNote(q: {
   data: unknown; isError: boolean; isSuccess: boolean;
 }): GateNote | null {
+  // An empty 200 ("") and JSON null both leave the form unseeded.
   if (q.data) {
     return q.isSuccess ? null : {
       text: "Couldn't refresh these settings — what's on screen is still yours.",

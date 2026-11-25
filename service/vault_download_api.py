@@ -81,6 +81,7 @@ def _u_ok(u: str, row: dict | None, unrestricted: bool) -> bool:
 async def download_info(account_id: str = Query(..., min_length=1)) -> dict[str, Any]:
     """Whether the browser may fetch this account's CDN urls itself: only when the account has no proxy."""
     assert_account_owned(account_id)
+    # OF signs each url for the egress that listed it (AWS:SourceIp): with a proxy a direct fetch 403s and shows OF the operator's IP.
     eg = proxy_registry.egress(proxy_registry.registry(), account_id)
     return {"direct": isinstance(eg, proxy_registry.Direct)}
 
@@ -160,6 +161,7 @@ async def download(
         log.info("vault_download account=%s media=%s status=%s bytes=%s resigned=%s",
                  account_id, media_id, out["status"], out["sent"], resigned)
 
+    # No await: completes under cancellation.
     async def release() -> None:
         nonlocal released
         if released:
@@ -226,6 +228,7 @@ async def download(
     return _SlotStream(body(), release, media_type=resp_ct, headers=headers)
 
 
+# Release in __call__ too: if the client disconnects before the body starts, its finally never runs and leaks a slot.
 class _SlotStream(StreamingResponse):
 
     def __init__(self, content: Any, release: Callable[[], Awaitable[None]], **kw: Any) -> None:

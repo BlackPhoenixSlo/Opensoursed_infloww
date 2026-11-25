@@ -1,28 +1,5 @@
 "use client";
 
-/**
- * ChatterContext — second principal alongside UserContext.
- *
- * A chatter signs in once at /chatter-login and sees the SET UNION of
- * every linked owner's UserAccount rows in the picker. Switching between
- * accounts in the picker swaps the per-account view; WebSocket
- * subscriptions for previously-opened accounts stay alive so coming back
- * is instant (see Todo.txt STEP 8 constraint 5).
- *
- * Two React Query keys hydrate this context:
- *   ["chatter", "self"]            → /chatter/me      (chatter + owners)
- *   ["chatter", "self", "accounts"] → /chatter/me/accounts (flat list)
- *
- * Both run with `placeholderData: keepPreviousData` so the picker
- * dropdown does NOT block during a background refetch — a chatter
- * never sees the picker collapse while we re-fetch their owners.
- *
- * The active principal (User vs Chatter) is decided ONCE at the
- * provider layer: if a User cookie is set (UserContext.user is truthy),
- * the owner perspective wins everywhere. The Chatter context still
- * fires its queries so the chatter-login flow can complete, but the
- * picker / shell reads from UserContext until logout.
- */
 
 import {
   createContext,
@@ -61,7 +38,6 @@ export interface ChatterMeDTO {
   display_name: string | null;
   color: string | null;
   owners: ChatterOwnerDTO[];
-  /** When this chatter registered (ISO, UTC); the free trial counts from it. */
   created_at?: string | null;
 }
 
@@ -71,35 +47,22 @@ export interface ChatterFlatAccountDTO {
   color: string | null;
   owner_id: string;
   owner_username: string;
-  /** Set while this model's OF session is dead — every automation for it is
-   *  paused (service/account_health.py). A chatter can't repair it, but the
-   *  picker must not show a parked model as a normal one. */
+  /** Session dead: automations paused; the picker must not show a parked model as normal. */
   session_dead_at?: string | null;
   session_dead_reason?: string | null;
-  /** False while the owner has the Creator deactivated: the picker drops it. */
   is_active: boolean;
-  /** "watcher" on a watcher account: useAccounts lists it under `watchers` (OF Manager only), never as a Creator. */
   role?: "watcher" | null;
   platform?: string | null;
-  /** The Shared refresher's snapshot of this Creator (lib/creatorFreshness), with its Knob on; absent off or on a
-   *  watcher. useAccounts keeps it on the normalized row. */
   freshness?: Freshness;
 }
 
 interface ChatterContextValue {
   chatter: ChatterMeDTO | null;
-  /** Flat list with owner_* denormalised — what the picker should render. */
   accounts: ChatterFlatAccountDTO[];
-  /** Same data grouped by owner for the picker's owner headers. */
   groupedAccounts: ChatterOwnerDTO[];
-  /** True until the first /chatter/me fetch resolves — gate render with this. */
   loading: boolean;
-  /** Drop the cached answer and ask /chatter/me again; `loading` covers the
-   *  refetch (the gate's Retry: a cached null may be an outage's). */
   reprobe: () => void;
-  /** Sign in with a username/password. Throws Error on 4xx. */
   login: (username: string, password: string) => Promise<ChatterMeDTO>;
-  /** Sign up + auto-link via an owner-issued invite token. */
   register: (
     username: string,
     password: string,
@@ -112,10 +75,7 @@ interface ChatterContextValue {
 const ChatterContext = createContext<ChatterContextValue | null>(null);
 
 function wipeNonChatterCaches(queryClient: ReturnType<typeof useQueryClient>) {
-  // Cancel in-flight queries from the previous identity so their resolved
-  // payloads don't race the clear and re-seed the cache. Chatter family
-  // is freshly seeded by login() right before this call — cancelQueries
-  // doesn't touch synchronous setQueryData, so the seed survives.
+  // Cancel in-flight queries so stale payloads don't re-seed after the clear; the sync setQueryData seed survives.
   try {
     queryClient.cancelQueries({
       predicate: (q) => {
@@ -123,15 +83,8 @@ function wipeNonChatterCaches(queryClient: ReturnType<typeof useQueryClient>) {
         return !(typeof head === "string" && head === "chatter");
       },
     });
-  } catch { /* ignore */ }
-  // Drop every previous-identity query EXCEPT the `chatter` family. The
-  // order matters: ChatterContext.login() seeds ["chatter", "self"]
-  // BEFORE calling this, and any predicate-based removal that included
-  // the chatter family would briefly null it back out, causing the
-  // AuthGate to flash Landing for one render between the seed and the
-  // next setQueryData notification. (Symptom: "click login does nothing,
-  // refresh works.") Removing only non-chatter queries keeps the
-  // freshly-seeded chatter state stable across the navigation.
+  } catch { }
+  // Keep the chatter family: login() seeds it first and removing it would null it, flashing Landing before the next notification.
   try {
     queryClient.removeQueries({
       predicate: (q) => {
@@ -139,11 +92,8 @@ function wipeNonChatterCaches(queryClient: ReturnType<typeof useQueryClient>) {
         return !(typeof head === "string" && head === "chatter");
       },
     });
-  } catch { /* ignore */ }
-  // Unsent messages and refused schedules are the previous identity's.
+  } catch { }
   clearIdentityMemory();
-  // Wipe identity-bound localStorage + sessionStorage. Shared helper with
-  // UserContext so both principals get the same aggressive sweep.
   void wipeIdentityStorage();
 }
 
@@ -164,8 +114,6 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
     },
     staleTime: 5 * 60_000,
     placeholderData: keepPreviousData,
-    // Identity transitions should refetch eagerly so the AuthGate
-    // resolves the new principal without a hard reload.
     refetchOnMount: true,
   });
 
@@ -173,8 +121,6 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
     ...chatterAccountsQuery,
     staleTime: 5 * 60_000,
     placeholderData: keepPreviousData,
-    // Disable until we know the chatter is signed in — saves a wasted
-    // 401 fetch on every owner-side page load.
     enabled: !!meQ.data,
   });
 
@@ -182,18 +128,14 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
   const chatter = meQ.data ?? null;
   const groupedAccounts = chatter?.owners ?? [];
 
-  // A reset (not an invalidate): with no data left, `isLoading` holds until it answers.
   const reprobe = useCallback(() => {
     void queryClient.resetQueries({ queryKey: ["chatter", "self"], exact: true });
   }, [queryClient]);
 
   const login = useCallback(async (username: string, password: string) => {
     const dto = await postAuthJSON<ChatterMeDTO | TwoFactorChallenge>("/chatter/login", { username, password });
-    // 2FA on, or the Agency requires it: no cookie yet (TwoFactorStep).
     if (isTwoFactorChallenge(dto)) throw new TwoFactorRequired(dto);
-    // Seed FIRST so the chatter principal is visible the instant any
-    // observer re-renders, then wipe the rest of the cache. Reversed
-    // order caused the "have to refresh" bug.
+    // Seed BEFORE wiping the rest; the reverse order needed a manual refresh.
     queryClient.setQueryData(["chatter", "self"], dto);
     wipeNonChatterCaches(queryClient);
     return dto;
@@ -205,7 +147,6 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
       const dto = await postAuthJSON<ChatterMeDTO | TwoFactorChallenge>(url, {
         username, password, display_name: displayName,
       });
-      // The inviting Agency requires 2FA: set it up before the first session.
       if (isTwoFactorChallenge(dto)) throw new TwoFactorRequired(dto);
       queryClient.setQueryData(["chatter", "self"], dto);
       wipeNonChatterCaches(queryClient);
@@ -215,25 +156,15 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    // Push stops counting as live here; the relay's logout deletes the rows.
     forgetPush();
-    try { await postAuthJSON<unknown>("/chatter/logout", {}); } catch { /* best effort */ }
-    // Full wipe — including the chatter family — because logout is the
-    // "start over" moment. cancelQueries first so resolving fetches
-    // don't repopulate the cache we're about to drop.
-    try { queryClient.cancelQueries(); } catch { /* ignore */ }
-    try { queryClient.clear(); } catch { /* ignore */ }
+    try { await postAuthJSON<unknown>("/chatter/logout", {}); } catch { }
+    try { queryClient.cancelQueries(); } catch { }
+    try { queryClient.clear(); } catch { }
     queryClient.setQueryData(["chatter", "self"], null);
     queryClient.setQueryData(chatterAccountsQuery.queryKey, []);
     // The snapshot delete must commit before the navigation tears the page down.
     await wipeIdentityStorage();
-    // Hard navigate so AuthGate evaluates with no cookies and no
-    // lingering React state. The previous setState-only path lost a
-    // race with the meQ observer's implicit refetch (which surfaced the
-    // previous chatter via `placeholderData: keepPreviousData` for the
-    // next render), forcing users to manually reload after clicking
-    // logout. A `.replace()` rather than `.assign()` so the back button
-    // doesn't return them to the signed-in URL.
+    // Hard navigate via replace(): a setState-only path lost a race with meQ's refetch, which resurfaced the previous chatter.
     if (typeof window !== "undefined") {
       window.location.replace("/");
     }
@@ -259,9 +190,6 @@ export function useChatter(): ChatterContextValue {
   return ctx;
 }
 
-/** Non-throwing variant: returns null outside <ChatterProvider>. See
- *  useOptionalUser — same rationale (per-principal cache key without forcing
- *  every consumer to mount the auth providers). */
 export function useOptionalChatter(): ChatterContextValue | null {
   return useContext(ChatterContext);
 }

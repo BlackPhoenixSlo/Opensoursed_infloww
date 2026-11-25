@@ -1,17 +1,3 @@
-/**
- * prepass — the composer's deterministic commands (spec D12), run before any
- * LLM call in both Q&A and do-mode.
- *
- * "open settings", "dark mode", "chat with @lena" need no model: the words name
- * the thing. An imperative verb plus a page label the session may see
- * (`visibleLinks`) navigates; the theme words set the theme; "open/chat with
- * @handle" opens that fan's chat when the session may open Messages Pro
- * (`canOpenChats`), else it goes on to the LLM. Anything else — a question above all ("how do
- * I open settings?") — returns null and goes to the LLM unchanged.
- *
- * Pure: the caller passes the visible links and runs the hit.
- */
-
 import {
   isDivider, isGroup, SETTINGS_TABS, SIDEBAR, SIDEBAR_FOOTER, visibleLinks, visibleSidebar,
   type NavFilter, type NavLink,
@@ -22,7 +8,6 @@ export type PrepassHit =
   | { kind: "theme"; theme: "light" | "dark" | "toggle" }
   | { kind: "chat"; handle: string };
 
-/** Lowercase, drop emoji/punctuation, collapse runs (answerLinks' `norm`). */
 const norm = (s: string): string =>
   s.toLowerCase().replace(/[^a-z0-9&'\s-]/g, " ").replace(/\s+/g, " ").trim();
 
@@ -35,10 +20,8 @@ const TOGGLE_RE = /^(?:toggle|switch|flip|change)\s+(?:the\s+)?(?:theme|dark mod
 const CHAT_RE =
   /^(?:open|chat with|message|dm|go to)\s+(?:(?:the\s+)?chat\s+(?:with\s+)?)?@([a-z0-9_.-]{1,64})(?:'s\s+chat|\s+chat)?$/;
 
-/** The session may open a fan's chat: Messages Pro is among its pages. */
 export const canOpenChats = (links: readonly NavLink[]): boolean => links.some((l) => l.href === "/messages-pro");
 
-/** The command `raw` names, or null to send it on. */
 export function prepass(raw: string, links: readonly NavLink[]): PrepassHit | null {
   if (raw.includes("?") || raw.includes("\n")) return null;
   const t = raw
@@ -55,7 +38,6 @@ export function prepass(raw: string, links: readonly NavLink[]): PrepassHit | nu
 
   const chat = CHAT_RE.exec(t);
   if (chat && canOpenChats(links)) {
-    // The handle as typed (OF handles are case-insensitive, but keep it).
     const typed = /@([A-Za-z0-9_.-]{1,64})/.exec(raw);
     return { kind: "chat", handle: typed ? typed[1] : chat[1] };
   }
@@ -67,14 +49,8 @@ export function prepass(raw: string, links: readonly NavLink[]): PrepassHit | nu
   return hit ? { kind: "navigate", href: hit.href, label: hit.label } : null;
 }
 
-/** Where "/settings" lands (app/next.config.ts redirects it): a tab a Chatter can't open. */
 const SETTINGS_LANDING = "/settings/account";
 
-/** The pages a command may open: the sidebar, footer and Settings tabs as
- *  this session sees them (a hidden group hides its pages too). "Settings"
- *  opens the first Settings tab the session may open when the redirect's tab
- *  is not one (rwl W30 C5: a Chatter was told "Opened Settings" onto a denied
- *  page); no such tab, no Settings. */
 export function commandLinks(f: NavFilter): NavLink[] {
   const side = visibleSidebar(SIDEBAR, f).flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]));
   const tabs = visibleLinks(SETTINGS_TABS, f);
@@ -84,8 +60,6 @@ export function commandLinks(f: NavFilter): NavLink[] {
   return [...side, ...footer, ...tabs];
 }
 
-/** Every page this session may open — what an answer may link (rwl W30 F10): the commands' pages, plus a page drawn as
- *  another's tab (`tabOf`) while that page is open to it (it rides the tab, so no entry of its own). */
 export function openablePages(f: NavFilter): ReadonlySet<string> {
   const pages = new Set(commandLinks(f).map((l) => l.href));
   const all = SIDEBAR.flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]));
@@ -95,7 +69,6 @@ export function openablePages(f: NavFilter): ReadonlySet<string> {
   return pages;
 }
 
-/** The thread's confirmation line for a hit that ran. */
 export function confirmation(hit: PrepassHit, theme?: "light" | "dark"): string {
   if (hit.kind === "navigate") return `Opened ${hit.label}.`;
   if (hit.kind === "chat") return `Opened @${hit.handle}'s chat.`;

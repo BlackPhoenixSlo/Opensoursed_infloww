@@ -81,6 +81,7 @@ function GetToKnowFans({ accountId, creators }: { accountId: string; creators: C
           </p>
         ) : null}
 
+        {/* Not keyed by rule: the switch creating or parking the rule must never re-seed typed settings. */}
         {rulesQ.data !== undefined && meta && <RuleSettings accountId={accountId} rule={rule} meta={meta} />}
 
         <ModelInfoBlock accountId={accountId} />

@@ -16,11 +16,14 @@ vi.mock("@/contexts/ChatterContext", () => ({
   useOptionalChatter: () => ({ chatter: mockChatter }),
 }));
 
-import { useAccounts, useActiveAccounts, useOfManagerAccounts, useWatcherAccounts } from "@/hooks/useAccounts";
+import {
+  useAccounts, useActiveAccounts, useOfManagerAccounts, usePlatformAccounts, useWatcherAccounts,
+} from "@/hooks/useAccounts";
 import { useCreatorFreshness } from "@/hooks/useCreatorFreshness";
 import { relay } from "@/lib/relay";
 import { useAccountPlatform, useCan } from "@/hooks/useCan";
-import { PLATFORMS } from "@/lib/platform";
+import { useCanOrFallback } from "@/hooks/useCan";
+import { AllPlatformsContext, PLATFORMS, resetPlatformForTests, setPlatform } from "@/lib/platform";
 const relayGet = relay.get as unknown as Mock;
 
 let client: QueryClient;
@@ -85,19 +88,19 @@ describe("watchers", () => {
   it("a chatter's roster rows keep `platform`, and useCan on a Fansly row is false for every Capability Fansly lacks", async () => {
     mockChatter = { id: "ch1" };
     vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: true, json: async () => [{ ...row("c1"), platform: "fansly" }, row("c2")],
+      ok: true, json: async () => [{ ...row("c1"), platform: "fansly" }, { ...row("c2"), platform: "onlyfans" }],
     })));
     const fansly = PLATFORMS.find((p) => p.key === "fansly")!;
     try {
       const { result } = renderHook(() => ({
         all: useAccounts().data,
         can: Object.fromEntries(fansly.lacks.map((cap) => [cap, useCan("c1", cap)])),
-        legacy: useAccountPlatform("c2"),
+        onlyfans: useAccountPlatform("c2"),
       }), { wrapper });
       await waitFor(() => expect(result.current.all?.accounts.length).toBe(2));
-      expect(result.current.all?.accounts.map((a) => [a.id, a.platform])).toEqual([["c1", "fansly"], ["c2", undefined]]);
+      expect(result.current.all?.accounts.map((a) => [a.id, a.platform])).toEqual([["c1", "fansly"], ["c2", "onlyfans"]]);
       expect(result.current.can).toEqual(Object.fromEntries(fansly.lacks.map((cap) => [cap, false])));
-      expect(result.current.legacy).toBe("onlyfans");
+      expect(result.current.onlyfans).toBe("onlyfans");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -219,5 +222,80 @@ describe("freshness (the Shared refresher's snapshot on each row)", () => {
     expect(result.current.data?.accounts).toEqual([{ id: "c1", has_session: true, is_active: true }]);
     await new Promise((r) => setTimeout(r, 0));
     expect(client.getQueryCache().findAll({ queryKey: ["creator-freshness"] })).toEqual([]);
+  });
+});
+
+describe("usePlatformAccounts (the Platform switch's Creators; every Platform's inside Combined Messages Pro)", () => {
+  const allPlatforms = ({ children }: { children: ReactNode }) =>
+    wrapper({ children: <AllPlatformsContext value={true}>{children}</AllPlatformsContext> });
+  const ids = (rows: { id: string }[]) => rows.map((a) => a.id);
+  beforeEach(() => {
+    window.localStorage.clear();
+    resetPlatformForTests();
+    setPlatform("onlyfans");
+  });
+  afterEach(() => {
+    window.localStorage.clear();
+    resetPlatformForTests();
+  });
+
+  it("owner rows: the switch's Platform without the context, every Platform with it", async () => {
+    relayGet.mockResolvedValue({
+      accounts: [
+        { id: "of1", has_session: true, platform: "onlyfans" },
+        { id: "fy1", has_session: true, platform: "fansly" },
+        { id: "legacy", has_session: true },
+      ],
+      active_account_id: "of1",
+    });
+    mockUser = { user_id: "owner-A", username: "owner-a" };
+    const shell = renderHook(() => usePlatformAccounts(), { wrapper });
+    const win = renderHook(() => usePlatformAccounts(), { wrapper: allPlatforms });
+    await waitFor(() => expect(ids(win.result.current)).toEqual(["of1", "fy1", "legacy"]));
+    expect(ids(shell.result.current)).toEqual(["of1", "legacy"]);
+    setPlatform("fansly");
+    await waitFor(() => expect(ids(shell.result.current)).toEqual(["fy1"]));
+    expect(ids(win.result.current)).toEqual(["of1", "fy1", "legacy"]);
+  });
+
+  it("chatter rows: a granted Fansly Creator and a legacy OnlyFans row follow the same rule; a watcher is in neither", async () => {
+    mockChatter = { id: "ch1" };
+    const row = (id: string, extra: Record<string, unknown> = {}) => ({
+      account_id: id, nickname: id, color: null, owner_id: "o", owner_username: "o", is_active: true, ...extra,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true, json: async () => [row("fy1", { platform: "fansly" }), row("legacy"), row("w1", { role: "watcher" })],
+    })));
+    try {
+      const shell = renderHook(() => usePlatformAccounts(), { wrapper });
+      const win = renderHook(() => usePlatformAccounts(), { wrapper: allPlatforms });
+      await waitFor(() => expect(ids(win.result.current)).toEqual(["fy1", "legacy"]));
+      expect(ids(shell.result.current)).toEqual(["legacy"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("useOfManagerAccounts under the OnlyFans switch has no Fansly Creator; its watchers stay", async () => {
+    relayGet.mockResolvedValue({
+      accounts: [
+        { id: "of1", has_session: true, platform: "onlyfans" },
+        { id: "fy1", has_session: true, platform: "fansly" },
+        { id: "legacy", has_session: true },
+      ],
+      active_account_id: "fy1",
+      watchers: [{ id: "w1", has_session: true }, { id: "w2", has_session: false }],
+    });
+    mockUser = { user_id: "owner-A", username: "owner-a" };
+    const { result } = renderHook(() => useOfManagerAccounts(), { wrapper });
+    await waitFor(() => expect(ids(result.current)).toEqual(["of1", "legacy", "w1"]));
+  });
+
+  it("a Creator the roster lacks reads as the switch's Platform in the shell, as OnlyFans inside the window", () => {
+    mockUser = { user_id: "owner-A", username: "owner-a" };
+    setPlatform("fansly");
+    const read = () => ({ rich: useCanOrFallback("cold", "rich_text"), mass: useCanOrFallback("cold", "mass_message") });
+    expect(renderHook(read, { wrapper }).result.current).toEqual({ rich: false, mass: false });
+    expect(renderHook(read, { wrapper: allPlatforms }).result.current).toEqual({ rich: true, mass: true });
   });
 });

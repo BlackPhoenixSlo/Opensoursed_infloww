@@ -86,6 +86,7 @@ export function inboxGate(
 export interface ScopeSplit {
   config: SplitInboxConfig | null;
   myGroup: number | null;
+  failed?: boolean;
 }
 
 export interface InboxScope {
@@ -93,6 +94,8 @@ export interface InboxScope {
   locked: number | null;
   of: ((accountId: string, fanId: FanId) => boolean) | null;
   allLoaded: boolean;
+  pending: ReadonlySet<string>;
+  failed: ReadonlySet<string>;
 }
 
 export function inboxScope(splits: ReadonlyMap<string, ScopeSplit>, picked: number | null): InboxScope {
@@ -101,13 +104,21 @@ export function inboxScope(splits: ReadonlyMap<string, ScopeSplit>, picked: numb
   const groupCount = Math.max(1, ...loaded.map((c) => c.group_count));
   const locks = all.map((s) => lockedGroup(s.config, s.myGroup));
   const locked = locks.length > 0 && locks.every((g) => g != null && g === locks[0]) ? locks[0] : null;
-  const of = picked == null && locks.every((g) => g == null)
-    ? null
-    : (aid: string, fanId: FanId) => {
-      const s = splits.get(aid);
-      const g = lockedGroup(s?.config ?? null, s?.myGroup) ?? picked;
-      if (g == null) return true;
-      return s?.config ? groupOf(fanId, s.config) === g : false;
-    };
-  return { groupCount, locked, of, allLoaded: loaded.length === all.length };
+  const selected = locked ?? picked;
+  const picks: Record<string, number> = {};
+  const reads = new Map<string, InboxSplit>();
+  const conflicts = new Set<string>();
+  for (const [aid, split] of splits) {
+    const lock = lockedGroup(split.config, split.myGroup);
+    if (selected != null && lock != null && lock !== selected) conflicts.add(aid);
+    const group = selected ?? lock;
+    if (group != null) picks[aid] = group;
+    reads.set(aid, split.config
+      ? { status: "success", config: split.config }
+      : { status: split.failed ? "error" : "pending" });
+  }
+  const gate = inboxGate(picks, reads);
+  const of = Object.keys(picks).length === 0 ? null : (aid: string, fanId: FanId) =>
+    !conflicts.has(aid) && (picked == null || reads.has(aid)) && gate.of(aid, fanId) === "in";
+  return { groupCount, locked, of, allLoaded: loaded.length === all.length, pending: gate.pending, failed: gate.failed };
 }

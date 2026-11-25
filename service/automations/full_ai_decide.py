@@ -32,12 +32,12 @@ never a no_send. `gif_fits` and `declines_buying` are never read (owner 2026-11-
 routes nothing in any Mode; the Writer may joke about it).
 
 DRAFT gate (ticket 47): counter_offer and offer_moment count only with
-`draft_on` (test Mode and config `draft_questions`; Shadow and live pass
-false whatever the config says). A DRAFT id that fired and did not count is
+`draft_on` (test or live Mode with `draft_questions` enabled; Shadow
+always passes false). A DRAFT id that fired and did not count is
 dropped by its id at its row's place, and routing goes on as without it.
 Test Mode's fired set carries them (`fired(answers, mode)`, ticket 47 B2).
 
-Sext scene (`scene`: test Mode and config `sext_scene`, owner 2026-11-14): the sext row
+Sext scene (`scene`: test or live Mode and config `sext_scene`, owner 2026-11-14): the sext row
 also matches on `scene_on` alone (row `scene_on`); row `scene_offer` -> sell_now needs
 `scene_offer` and (`sexual_now` or `scene_on`), the sell flag, and a drop names nothing
 (as offer_moment). Without `scene` both ids are ignored, not recorded: they are never
@@ -46,7 +46,7 @@ ADR-0032 named exception (owner-ordered "some save states for few messages"): th
 scene state (`full_ai_scene`) feeds Jev's state (`scene`, `purchases`) and the Writer's
 stage/heat floor only; it never enters this table, which stays pure over Jev's answers.
 
-Chat tease (`chat_tease`: test Mode and config `chat_tease`, owner 2026-11-14): row `chat_tease`
+Chat tease (`chat_tease`: test or live Mode and config `chat_tease`, owner 2026-11-14): row `chat_tease`
 -> sell_now on Jev's `chat_tease`, the last flagged row (after sext), so an ask, haggle, tease,
 offer_moment, scene_offer and any sext Turn win and it only ever replaces a chat row; the sell
 flag drops it and the drop names nothing (as offer_moment). Without the flag the id is ignored,
@@ -94,9 +94,9 @@ class Facts:
     sell_on: bool = True
     sext_on: bool = True
     open_offer: bool = False    # a priced Offer with no outcome (test fold, 03b)
-    draft_on: bool = False      # DRAFT ids count: test Mode and config draft_questions
-    scene: bool = False         # sext scene ids count: test Mode and config sext_scene
-    chat_tease: bool = False    # `chat_tease` counts: test Mode and config chat_tease
+    draft_on: bool = False      # DRAFT ids count: test or live Mode with draft_questions
+    scene: bool = False         # sext scene ids count: test or live Mode and config sext_scene
+    chat_tease: bool = False    # `chat_tease` counts: test or live Mode and config chat_tease
     offer_details: bool = False  # `asks_offer_details` counts: test / live Mode (`full_ai_turn._route`)
 
 

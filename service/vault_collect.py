@@ -48,6 +48,7 @@ ERROR_BACKOFF_S = 3600
 PREEMPT_WAIT_S = 10
 THUMB_GAP_S = 0.5
 
+# Match app/hooks/useVaultMedia.ts (LISTS_PAGE 50, PAGE 24): the warm writes under the picker's own cache keys.
 LISTS_PAGE = 50
 LISTS_MAX_PAGES = 20
 PICKER_PAGE = 24

@@ -16,7 +16,7 @@ One registry module lists OnlyFans and Fansly. Client, Live connection, eviction
 5. As a developer, I want `client_pool.evict` to drop the cached client of every registered Backend module, so that a re-capture never leaves a stale Shim.
 6. As a chatter, I want a Fansly write the Shim refuses to answer 502 with `{"ok": false, "error": "fansly", "detail": …}` on the very first request, so that the reason reaches the UI.
 7. As a developer, I want the startup loop to register each Backend module's API error, so that a new Platform's errors map the same way without a server edit.
-8. As a developer, I want each per-Platform policy as its own Lacks flag (`FOCUS`, `REFERRALS`, `WALL_MEDIA`, `SERVER_SCHEDULE`, `NEAR_SCHEDULE_MEDIA`, `HISTORY_UNREAD_GATE`, `UNREAD_TOTAL`, `SHARED_REFRESH`), so that a Platform opts out of one policy without dragging others.
+8. As a developer, I want each per-Platform policy as its own Lacks flag (`REFERRALS`, `WALL_MEDIA`, `SERVER_SCHEDULE`, `NEAR_SCHEDULE_MEDIA`, `HISTORY_UNREAD_GATE`, `UNREAD_TOTAL`, `SHARED_REFRESH`), so that a Platform opts out of one policy without dragging others.
 9. As the owner, I want free follow to be an opt-in flag true only for Fansly, so that a new Platform never skips the follow price check by default.
 10. As a chatter, I want a long-delay Fansly schedule still checked by the Backend module's send check, and a short-delay one with media or price still refused, so that a deferred send never fails silently.
 11. As a chatter, I want a Fansly Creator with only `fansly_session.json` to count as having a session in the switcher, roster and active-account fallback, so that linking doesn't hide it.
@@ -39,13 +39,13 @@ One registry module lists OnlyFans and Fansly. Client, Live connection, eviction
 - **Owns.** New `platforms` module. Modified: `fansly_backend`, `server` (startup error loop, `_load_client`, `_ws_pump_for_account`, the two schedule gates), `automation_executor._make_client`, `client_pool.evict`, `transaction_ingest`, `purchase_poll`, `automations.scrape_chats`, `automations.auto_follow`, `unread_total`, `of_stats_api`, `shared_refresher`, `vault_sends_api`, `push_api`, `accounts`, `accounts_admin_api`, `session_bootstrap`, `remote_login` (collision check before `bind_proxy`), `fansly_revenue` (its docstring's stale `is_fansly` pointer only), and the item-7 plain checks `of_live_window`, `of_stats_daily`, `screens_api`. New doc: the Platform recipe. Tests listed under Testing Decisions.
 - **Interfaces.** `platforms` exposes:
   ```python
-  class Lack(str, Enum): FOCUS = "FOCUS"; REFERRALS = "REFERRALS"; ...   # value == name, eight members:
+  class Lack(str, Enum): REFERRALS = "REFERRALS"; ...   # value == name, seven members:
                          # WALL_MEDIA SERVER_SCHEDULE NEAR_SCHEDULE_MEDIA HISTORY_UNREAD_GATE UNREAD_TOTAL SHARED_REFRESH
   @dataclass(frozen=True)
   class Platform: key: str; label: str; session_file: str
                   backend: ModuleType | None; lacks: frozenset[Lack]; free_follow: bool = False
   ONLYFANS = Platform("onlyfans", "OF", "latest.json", None, frozenset())
-  FANSLY   = Platform("fansly", "Fansly", fansly_backend.SESSION_FILENAME, fansly_backend, <all eight>, free_follow=True)
+  FANSLY   = Platform("fansly", "Fansly", fansly_backend.SESSION_FILENAME, fansly_backend, <all seven>, free_follow=True)
   ALL: tuple[Platform, ...]; KEYS: tuple[str, ...]; SESSION_FILES: tuple[str, ...]
   def get(key: str | None) -> Platform          # unknown / None -> ONLYFANS
   def for_account(aid: str) -> Platform          # get(accounts.get_platform(aid)), looked up at call time

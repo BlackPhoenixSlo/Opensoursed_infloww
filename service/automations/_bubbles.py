@@ -179,7 +179,7 @@ def _dedupe_lead_reaction(parts: list[str], recent_out: list[str]) -> list[str]:
 def split_for_bubbles(text: str, max_bubbles: int = 2, rng=None,
                       force_single: bool = False) -> list[str]:
     """Make one generated reply read like real texting, and NO em-dash ever survives
-    (every return path runs _strip_dash). Content is NEVER dropped:
+    (every return path runs _strip_dash). Non-style mode caps the number of lines:
 
       • style mode (max_bubbles ≥ 3) → walk the model's OWN line breaks, then split
         each line on commas + sentence boundaries + dash + (for a long chunk) emoji /

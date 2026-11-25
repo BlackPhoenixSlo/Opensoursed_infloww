@@ -1,5 +1,7 @@
 "use client";
 
+
+import { CreatorPlatformBadge } from "@/components/shell/PlatformSwitcher";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { IfHelp } from "@/components/ui/infloww";
 import type { AccountMeta } from "@/lib/relay";
@@ -56,6 +58,7 @@ export function IncludeModelsChips({
                     style={{ background: a.color || "#666" }}
                   />
                   <span>{a.nickname || a.id}</span>
+                  <CreatorPlatformBadge account={a} />
                 </button>
               );
             })}

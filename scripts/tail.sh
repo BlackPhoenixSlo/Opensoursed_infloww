@@ -38,8 +38,13 @@ else
   RELAY_C=""; NEXT_C=""; API_C=""; R=""; G=""; N=""
 fi
 
+# Common filter for "errors" mode. /img request-spam lines that 200 are
+# never interesting; explicitly drop them so the signal isn't drowned.
 errors_filter='ERROR|Traceback|Exception|RangeError|EADDRINUSE|ELIFECYCLE|WARNING|warn:|timeout|upstream_(timeout|network|unreachable)|503 |502 |500 |499 |429 |404 '
 
+# Slow filter for /tmp/of-api.log. The log line shape is:
+#   2026-05-20T16:30:00.000Z GET    200  3275ms https://…
+# So column $4 is the duration with "ms" suffix.
 slow_awk='/[0-9]+ms / { gsub(/ms/,"",$4); if ($4+0 > 2000) print }'
 
 prefix_relay() { sed -u "s|^|${RELAY_C}[relay]${N} |"; }
@@ -64,6 +69,7 @@ run() {
   fi
 }
 
+# Make sure background tails die when this script does.
 trap 'kill $(jobs -p) 2>/dev/null' EXIT
 
 case "$MODE" in

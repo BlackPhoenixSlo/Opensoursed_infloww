@@ -18,6 +18,7 @@ from db.models import (
     User, UserAccount,
 )
 from isotime import iso_plain
+from side_effect_gate import refuse_if_platform_lacks
 from smart_list_rules import (  # noqa: F401
     _LEDGER_MONEY, _SUM_FIELDS, _validate_rules, _windows_in_rules, resolve,
     uses_subscription_facts,
@@ -358,6 +359,8 @@ class _UpdateBody(BaseModel):
 async def update_smart_list(list_id: int, body: _UpdateBody = Body(...)) -> dict[str, Any]:
     async with get_session() as s:
         row = await _owned_row(s, list_id)
+        if row.is_active:
+            refuse_if_platform_lacks(row.account_id, "list_users_in", "smart list sync")
         values: dict[str, Any] = {"updated_at": datetime.utcnow()}
         if body.name is not None:
             nm = body.name.strip()
@@ -392,6 +395,7 @@ async def delete_smart_list(list_id: int, delete_of_list: bool = Query(False)) -
         account_id, of_list_id = row.account_id, row.of_list_id
         queued = bool(delete_of_list and of_list_id)
         if queued:
+            refuse_if_platform_lacks(account_id, "list_users_in", "smart list sync")
             stmt = (update(SmartList).where(SmartList.id == list_id, _NOT_SYNCING)
                     .values(sync_state=DELETING, is_active=False,
                             name=f"{row.name} (deleting #{list_id})"))
@@ -414,6 +418,7 @@ async def activate_smart_list(list_id: int) -> dict[str, Any]:
     from automation_rules_api import ensure_kind_rule
     async with get_session() as s:
         row = await _owned_row(s, list_id)
+        refuse_if_platform_lacks(row.account_id, "list_users_in", "smart list sync")
         if not row.is_active:
             cap = _max_active()
             active = (select(func.count()).select_from(SmartList)

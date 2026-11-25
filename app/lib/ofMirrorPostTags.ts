@@ -18,6 +18,7 @@ export interface PostLabel {
 }
 export type PostLabelsResp = { list?: PostLabel[]; hasMore?: boolean } | PostLabel[];
 export const labelsOf = (r: PostLabelsResp): PostLabel[] => (Array.isArray(r) ? r : (r.list ?? []));
+// Numeric ids only: OF's Archive and Private Archive labels are not offered.
 export const postLabelsOf = (r: PostLabelsResp): PostLabel[] => labelsOf(r).filter((l) => Number.isInteger(Number(l.id)));
 
 export const LIST_ROW = "label.b-rows-lists__item";

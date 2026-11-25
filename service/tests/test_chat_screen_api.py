@@ -187,4 +187,4 @@ def case_the_backfill_answers_the_new_history():
 try:
     _harness.run()
 finally:
-    _LOOP.close()  # the portal's loop thread, else the exit waits on it
+    _LOOP.close()  # the portal's loop thread

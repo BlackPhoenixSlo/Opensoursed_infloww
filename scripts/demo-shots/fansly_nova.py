@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -11,10 +12,11 @@ _FANSLY = str(Path(__file__).resolve().parents[2] / "fansly")
 if _FANSLY not in sys.path:
     sys.path.append(_FANSLY)
 
-from dataset import Dataset, asset  # noqa: E402
+from dataset import Dataset, asset, ts  # noqa: E402
 from fansly_client import FanslyAPIError, FanslySession  # noqa: E402
 from fansly_shim import FanslyShimClient  # noqa: E402
 from fixtures import Fixtures  # noqa: E402
+from seed import write_chats, write_chatter_grants, write_fans, write_messages  # noqa: E402
 
 ACCOUNT = "900539700124344320"
 FAN = "900539700124344321"
@@ -46,6 +48,27 @@ def add(d: Dataset) -> None:
         "created_at": d.now - timedelta(days=90), "online": True, "posts": 12, "media": len(VAULT_FILES),
         "likes": 900, "platform": "fansly", "fansly_session": SESSION,
     })
+
+
+def seed_db(db: Path, d: Dataset, user_id: str, chatter_username: str) -> None:
+    rows = [(FIRST_MESSAGE + i, "in" if from_fan else "out", "Miles B." if from_fan else NAME, text,
+             0 if m is None else 1, d.now - timedelta(minutes=minutes))
+            for i, (minutes, from_fan, text, m) in enumerate(LINES)]
+    last = rows[-1]
+    fan = int(FAN)
+    con = sqlite3.connect(db, timeout=30)
+    con.execute("PRAGMA foreign_keys=ON")
+    with con:
+        write_fans(con, [(ACCOUNT, fan, "milesb", "Miles B.", asset("avatars/fan-12.jpg"), 0, "[]", 0, 0, "[]", "[]",
+                          "[]", "{}", 0, 0, 0, ts(max(r[5] for r in rows if r[1] == "in")),
+                          ts(max(r[5] for r in rows if r[1] == "out")), ts(d.now), ts(d.now - timedelta(days=30)),
+                          None, "active", 0, "idle", 0, 0, "demo-shots", ts(d.now - timedelta(days=30)), ts(d.now))])
+        write_messages(con, [(ACCOUNT, fan, mid, direction, sender, body, "[]", media, 0, 0, None, None, ts(at), ts(at))
+                             for mid, direction, sender, body, media, at in rows])
+        write_chats(con, [(ACCOUNT, fan, last[0], ts(last[5]), last[3][:120], 1 if last[1] == "in" else 0)])
+        (chatter_id,) = con.execute("SELECT id FROM chatters WHERE username=?", (chatter_username,)).fetchone()
+        write_chatter_grants(con, [(chatter_id, user_id, ACCOUNT, ts(d.now))])
+    con.close()
 
 
 def raw_payloads(now: datetime) -> dict[str, Any]:

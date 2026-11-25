@@ -11,20 +11,21 @@ import {
 } from "./massMessageReducer";
 
 export function useMassSend({
-  form, dispatch, online, included, invalid, employeeId, onClose,
+  form, dispatch, online, invalid, employeeId, onClose, isEligible,
 }: {
   form: MassForm;
   dispatch: Dispatch<MassAction>;
   online: boolean;
-  included: string[];
   invalid: string | null;
   employeeId: number | undefined;
   onClose: () => void;
+  isEligible: (id: string) => boolean;
 }) {
   const qc = useQueryClient();
-  const { allModels, accountId, schedule, smartInclude, smartExclude, pickedGifs } = form;
+  const { allModels, schedule, smartInclude, smartExclude, pickedGifs } = form;
 
   async function post(forAccountId: string, body: Record<string, unknown>) {
+    if (!isEligible(forAccountId)) throw new Error("Creator is no longer eligible to broadcast");
     const resp = await relay.post(
       "/api/of/v2/messages/queue",
       body,
@@ -50,15 +51,15 @@ export function useMassSend({
   }
 
   return useMutation({
-    mutationFn: async (): Promise<boolean> => {
+    mutationFn: async (targets: string[]): Promise<boolean> => {
       if (invalid) throw new Error(invalid);
 
       if (allModels) {
-        const round = await massFanOutRound(form, included, online, post, dispatch);
+        const round = await massFanOutRound(form, targets, online, post, dispatch);
         return round.every((r) => r.ok);
       }
 
-      const aid = accountId!;
+      const aid = targets[0];
       const resolved = await resolveSegments();
       await post(aid, buildMassBody(form, online, resolved));
       // The main send landed: a GIF failure must spend the form, not re-arm Broadcast and repeat the paid broadcast.
@@ -74,8 +75,8 @@ export function useMassSend({
       dispatch({ type: "gifSendsFailed", failed });
       return false;
     },
-    onSettled: () => {
-      const sentFrom = new Set(allModels ? included : accountId ? [accountId] : []);
+    onSettled: (_data, _error, targets) => {
+      const sentFrom = new Set(targets);
       qc.invalidateQueries({
         predicate: (q) => {
           const key = q.queryKey;

@@ -56,6 +56,7 @@ function normalize(raw: unknown): OFPost[] {
   return [];
 }
 
+// /posts is OF's subscriptions home timeline (other creators mixed in); the model's own wall is useMyFeed.
 export function usePosts(accountId: string | null) {
   return useInfiniteQuery<PostsPage>({
     queryKey: ["my-posts", accountId],

@@ -230,6 +230,7 @@ function guardNavigation(event, url) {
     curHost = new URL(event.sender.getURL()).hostname;
   } catch {
   }
+  // Matching the last two hostname labels keeps OF capture login redirects in-window.
   if (curHost && u.hostname && regDomain(u.hostname) === regDomain(curHost)) return;
   event.preventDefault();
   if (EXTERNAL_SCHEMES.has(u.protocol)) shell.openExternal(url);
@@ -461,6 +462,7 @@ function createMainWindow() {
     else showLoadProblem("The app stopped responding.", "");
   };
   wc.on("render-process-gone", (_e, details) => {
+    // A tick later: an event fired mid-destroy (logout) must see isDestroyed and never revive the window.
     if (details && details.reason !== "clean-exit") setImmediate(recover);
   });
   wc.on("unresponsive", recover);

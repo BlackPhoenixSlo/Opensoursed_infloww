@@ -14,7 +14,6 @@ from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
-import fansly_backend  # noqa: F401
 import platforms
 from automations.scrape_chats_decide import history_plan, hold_ascending, inbound_since, new_unread_marker
 from automation_executor import _media_ids, _parse_iso, _strip_html, _to_cents

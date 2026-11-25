@@ -402,10 +402,11 @@ def daemon(rid: str):
             return route.fulfill(status=200, headers={"content-type": "text/event-stream"}, body=body)
         if request.method != "GET" and path.startswith("api/"):
             of_writes.append({"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "method": request.method,
-                              "path": "/" + path, "body": (request.post_data or "")[:4000]})
+                              "path": "/" + path, "account": request.headers.get("x-account-id"),
+                              "body": (request.post_data or "")[:4000]})
         elif path.startswith("api/"):
             reads.append({"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "path": path,
-                          "url": request.url.split("/", 3)[-1]})
+                          "url": request.url.split("/", 3)[-1], "account": request.headers.get("x-account-id")})
         return plain_handle(route, request)
     pw = sync_playwright().start()
     browser = pw.chromium.launch(args=LAUNCH_ARGS)
@@ -415,6 +416,9 @@ def daemon(rid: str):
         raise SystemExit(f"register -> {r.status} {r.text()[:200]}")
     seed(d, db=Path(s["tmp"]) / "relay.db", sessions=Path(s["tmp"]) / "sessions", user_id=r.json()["user_id"],
          api=Api(boot.request, app))
+    if os.environ.get("VERIFY_APP_FANSLY_NOW"):
+        fansly_nova.seed_db(Path(s["tmp"]) / "relay.db", d, r.json()["user_id"],
+                            d.employees[ROLES["chatter"]]["username"])
     states = {"owner": boot.storage_state(), "anon": None}
     boot.close()
     logins = {"owner": {"username": dataset.OWNER_USERNAME, "password": PASSWORD, "form": "/login"}}
@@ -567,7 +571,7 @@ def daemon(rid: str):
             return {"ok": True, "fan": r["withUser"]["id"], "text": q["text"]}
         if cmd == "reads":
             m = q.get("match")
-            hits = [{"t": r["t"], "url": r["url"]} for r in reads
+            hits = [{"t": r["t"], "url": r["url"], "account": r["account"]} for r in reads
                     if (m in r["url"] if m else r["path"].startswith("api/of/v2/chats") and r["path"].rstrip("/").endswith("chats"))]
             return {"ok": True, "count": len(hits), "reads": hits[-q.get("last", 50):]}
         if cmd == "visibility":

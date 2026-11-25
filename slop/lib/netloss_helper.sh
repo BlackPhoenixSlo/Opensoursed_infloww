@@ -60,7 +60,6 @@ rules() {
   done
   for p in "${PORTS[@]}"; do
     # `out` only: a loopback packet passes pf out and in, matching both would shape it twice
-    # `out` only: a loopback packet passes pf out and in, matching both would shape it twice
     echo "dummynet out quick on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 port $p pipe $PIPE_UP"
     echo "dummynet out quick on lo0 inet proto tcp from 127.0.0.1 port $p to 127.0.0.1 pipe $PIPE_DOWN"
   done

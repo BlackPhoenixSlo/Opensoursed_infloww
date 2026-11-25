@@ -127,6 +127,7 @@ export default async function RootLayout({
   return (
     <html lang="en" className={ui.variable} suppressHydrationWarning>
       <body className="min-h-dvh bg-bg text-fg antialiased" suppressHydrationWarning>
+        {/* Boot scripts sit in <body>: App Router's <head> can drop inline scripts in dev. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: SHELL_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: VVH_BOOT_SCRIPT }} />

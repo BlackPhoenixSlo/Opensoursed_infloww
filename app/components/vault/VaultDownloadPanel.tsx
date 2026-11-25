@@ -59,6 +59,7 @@ export function useVaultDownload(): VaultDownload {
     abort.current?.abort();
     send({ type: "stop" });
   };
+  // Downloads stop on provider unmount, so they survive navigation within the signed-in shell. Slop matches this effect line.
   useEffect(() => () => stopRunAndQueue(), []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const why = (e: unknown) => (e as Error)?.message || String(e);

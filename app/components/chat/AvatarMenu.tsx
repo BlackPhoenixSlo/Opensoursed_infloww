@@ -31,6 +31,7 @@ export function FanAvatarMenu({ id, accountId, fanId }: { id: string; accountId:
   const fan = useOFUser(accountId, fanId).data;
   const sub = fan?.subscribedOnData;
   useAllChatFolders(accountId);
+  const listsShown = useCan(accountId, "filter_folders");
   const offersShown = useCan(accountId, "discount");
   const { subscribePrice: price } = usePaidPage(offersShown ? accountId : null);
   const loaded = !!fan && price !== null;
@@ -45,7 +46,7 @@ export function FanAvatarMenu({ id, accountId, fanId }: { id: string; accountId:
       aria-label="Avatar menu"
       className={cn(MENU, MP.ours.FanAvatarMenu.place)}
     >
-      {submenu === "lists" ? (
+      {submenu === "lists" && listsShown ? (
         <ToggleListsSubmenu
           accountId={accountId}
           fanId={fanId}
@@ -85,13 +86,15 @@ export function FanAvatarMenu({ id, accountId, fanId }: { id: string; accountId:
               Special offers ▸
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => setSubmenu("lists")}
-            className={cn(MENU_ROW, "hover:bg-bg-elev-1")}
-          >
-            Add to lists ▸
-          </button>
+          {listsShown && (
+            <button
+              type="button"
+              onClick={() => setSubmenu("lists")}
+              className={cn(MENU_ROW, "hover:bg-bg-elev-1")}
+            >
+              Add to lists ▸
+            </button>
+          )}
         </>
       )}
       <MenuStatusLine status={status} />

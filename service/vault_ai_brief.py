@@ -36,6 +36,7 @@ VIS_REGIONS: tuple[str, ...] = ("vulva_vis", "breasts_vis", "anus_vis")
 
 FLAG_KEYS: tuple[str, ...] = ("underwear_visible", *VIS_REGIONS)
 
+# Bump whenever flags wording could move an answer: without it, old- and new-wording rows look alike once stored, so a partial re-run reads as finished.
 FLAGS_VERSION = 3
 
 OVER_KEYS: dict[str, str] = {"breasts_vis": "over_breasts",
@@ -226,6 +227,8 @@ def _contradictions(fields: dict[str, Any] | None) -> list[str]:
 
 
 
+# Owner rule: passes disagree -> read the item the least harmful way, never in a free lane. Read-time only, never written back:
+# a re-run can still settle it, and locked_fields keeps meaning "a human decided".
 SETTLED_KEY = "_settled"
 
 _PAID_TIERS = ("explicit", "hardcore")

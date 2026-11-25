@@ -1,27 +1,7 @@
 "use client";
 
-/**
- * The platform the app shell is switched to: OnlyFans or Fansly, Infloww's
- * sidebar platform selector (`SelectPlatform`, index.9f50f370.js @11125100).
- *
- * Infloww keeps the choice in a zustand store persisted to localStorage
- * (`useMultiPlatformStore`, `persist(..., {name:"platform"})`, @11121052),
- * OnlyFans by default. Ours persists the same way the app persists the
- * current scope (ScopeContext's `chatterly:scope`): one localStorage key,
- * read after hydration. It is a module store read through
- * useSyncExternalStore, so it needs no provider, and a `storage` event keeps
- * the other windows (a second tab, Messages Pro) on the platform one switched
- * to; each window's PlatformSync then fixes its own scope and page.
- *
- * What the platform drives (code judo: a filter on the existing account
- * scope plus a nav map, not a second app):
- *   - usePlatformAccounts keeps only the platform's accounts, so the creator
- *     switcher, the chat-list fan-out, Messages Pro and the composers follow
- *     it (the notification listeners keep every platform's);
- *   - lib/nav's `sidebarFor` swaps the sidebar to the platform's page set.
- */
 
-import { useSyncExternalStore } from "react";
+import { createContext, useContext, useSyncExternalStore } from "react";
 
 import type { AccountMeta } from "@/lib/relay";
 
@@ -31,9 +11,6 @@ export const CAPABILITIES = [
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
-/** The selector's platforms, in Infloww's order. Infloww's mym and Fanvue
- *  (behind `featureInfo.mymEnter` / `fanvueEnter`, @11128150) are not
- *  platforms here: PlatformSwitcher lists them as disabled "Coming soon" rows. */
 export const PLATFORMS = [
   { key: "onlyfans", label: "OnlyFans", lacks: [] },
   { key: "fansly", label: "Fansly", lacks: [
@@ -47,15 +24,22 @@ export type Platform = (typeof PLATFORMS)[number]["key"];
 export const PLATFORM_NAME = Object.fromEntries(PLATFORMS.map((p) => [p.key, p.label])) as Record<Platform, string>;
 
 export const PLATFORM_KEY = "chatterly:platform";
-const DEFAULT: Platform = "onlyfans";
+export const DEFAULT_PLATFORM: Platform = "onlyfans";
 
 const isPlatform = (raw: unknown): raw is Platform => PLATFORMS.some((p) => p.key === raw);
 
-const parse = (raw: string | null): Platform => (isPlatform(raw) ? raw : DEFAULT);
+const parse = (raw: string | null): Platform => (isPlatform(raw) ? raw : DEFAULT_PLATFORM);
 
-/** An account's platform; one with no `platform` predates the field and is OnlyFans. */
 export const accountPlatform = (a: Pick<AccountMeta, "platform">): Platform =>
-  isPlatform(a.platform) ? a.platform : DEFAULT;
+  isPlatform(a.platform) ? a.platform : DEFAULT_PLATFORM;
+
+export function foreignCreator(
+  accounts: readonly Pick<AccountMeta, "id" | "platform">[] | undefined,
+  id: string | null,
+  platform: Platform,
+): boolean {
+  return !!id && !!accounts?.some((a) => a.id === id && accountPlatform(a) !== platform);
+}
 
 const LACKS = new Map<Platform, ReadonlySet<Capability>>(
   PLATFORMS.map((p): [Platform, ReadonlySet<Capability>] => [p.key, new Set<Capability>(p.lacks)]),
@@ -76,7 +60,7 @@ function read(): Platform {
     try {
       current = parse(window.localStorage.getItem(PLATFORM_KEY));
     } catch {
-      current = DEFAULT;
+      current = DEFAULT_PLATFORM;
     }
   }
   return current;
@@ -88,8 +72,6 @@ function apply(p: Platform): void {
   for (const fn of changeListeners) fn(p);
 }
 
-/** One `storage` listener per window: another window (a second tab, Messages
- *  Pro) switched, and this one follows it as a change of its own. */
 function hookStorage(): void {
   if (storageHooked || typeof window === "undefined") return;
   storageHooked = true;
@@ -108,7 +90,6 @@ function subscribe(fn: () => void): () => void {
   };
 }
 
-/** The current platform, outside React. */
 export const getPlatform = (): Platform => read();
 
 export function setPlatform(p: Platform): void {
@@ -119,11 +100,6 @@ export function setPlatform(p: Platform): void {
   apply(p);
 }
 
-/**
- * Hears every switch, in this window (the selector, a route) or another
- * (`storage`), but not the first read after load. PlatformSync reconciles the
- * window's scope and page on it.
- */
 export function onPlatformChange(fn: (p: Platform) => void): () => void {
   hookStorage();
   changeListeners.add(fn);
@@ -132,12 +108,19 @@ export function onPlatformChange(fn: (p: Platform) => void): () => void {
   };
 }
 
-/** The current platform; the server render and hydration read OnlyFans. */
+/** Server render and hydration read OnlyFans. */
 export function usePlatform(): Platform {
-  return useSyncExternalStore(subscribe, read, () => DEFAULT);
+  return useSyncExternalStore(subscribe, read, () => DEFAULT_PLATFORM);
 }
 
-/** Test seam: forget the cached value so the next read goes to localStorage. */
+export const AllPlatformsContext = createContext(false);
+
+export function useFallbackPlatform(): Platform {
+  const all = useContext(AllPlatformsContext);
+  const sidebar = usePlatform();
+  return all ? DEFAULT_PLATFORM : sidebar;
+}
+
 export function resetPlatformForTests(): void {
   current = null;
 }

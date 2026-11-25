@@ -31,6 +31,7 @@ export function fanIdFromParam(param: string | null | undefined): FanId | null {
   return Number.isSafeInteger(n) && String(n) === raw ? n : raw;
 }
 
+// The relay's owe-reply badge (unread_total_decide.amber_count) folds this same last-sender rule: change both.
 export function lastMessageFromFan(
   chat: { lastMessage?: { fromUser?: { id?: FanId } } | null } | null | undefined,
   accountId: string | null | undefined,

@@ -164,6 +164,7 @@ async def _merge_pools(account_id: str, client, sources: list[str],
     seen: set[int] = set()
     pool: list[int] = []
     for name in sources:
+        # Explicit fan_ids bypass the cooldown filter as an operator override.
         skip = set() if name == "fan_ids" else exclude
         try:
             if name == "expired":

@@ -27,7 +27,7 @@ from db.models import (
 from of_client import OUTBOUND_TEXT_GUARD, OFClient, proxy_refused
 import client_pool
 import of_call_counter
-import accounts as account_registry  # noqa: F401  (automations.auto_follow reads ax.account_registry)
+import accounts as account_registry  # noqa: F401
 import platforms
 from automation_registry import (get_automation, canonical_kind,
                                  kind_family, load_automation_plugins,
@@ -464,6 +464,7 @@ async def _probe_dead_sessions() -> None:
         for aid in aids:
             await account_health.stamp_probe(aid)
             try:
+                # Evict, don't bypass the pool: a fresh-client probe would clear the flag while runs keep the stale pooled client, fail, and re-flag forever.
                 client_pool.evict(aid)
                 client = _make_client(aid)
                 me = await asyncio.to_thread(client.me)
@@ -581,13 +582,21 @@ async def run_once(
             if guard is not None and guard.blocked:
                 stats.update(guard.summary())
                 guard_status = guard.run_status()
-            status, job_status, _ = run_decide.outcome(ran, guard_status)
+            status, job_status, skip_reason = run_decide.outcome(
+                ran, guard_status, plugin_reason=stats.get("reason"))
+            platform_skipped = status == "skipped" and guard_status != "skipped"
+            if platform_skipped:
+                stats.update(status="skipped", reason=skip_reason)
             await _finalize_run(run_id, status, stats, None, job_id=job_id, job_status=job_status)
             if status == "skipped":
-                log.info("automation_run_skipped account=%s kind=%s run_id=%s job=%s "
-                         "blocked word(s) %r", account_id, kind, run_id, job_id, guard.hits)
-                return {"status": "skipped", "reason": "sensitive_words",
-                        "run_id": run_id, "job_id": job_id, **stats}
+                if not platform_skipped:
+                    log.info("automation_run_skipped account=%s kind=%s run_id=%s job=%s "
+                             "blocked word(s) %r", account_id, kind, run_id, job_id, guard.hits)
+                    return {"status": "skipped", "reason": "sensitive_words",
+                            "run_id": run_id, "job_id": job_id, **stats}
+                log.info("automation_run_skipped account=%s kind=%s run_id=%s job=%s reason=%s",
+                         account_id, kind, run_id, job_id, skip_reason)
+                return {**stats, "run_id": run_id, "job_id": job_id}
             log.info(
                 "automation_run_ok account=%s kind=%s run_id=%s job=%s stats=%s",
                 account_id, kind, run_id, job_id, stats,

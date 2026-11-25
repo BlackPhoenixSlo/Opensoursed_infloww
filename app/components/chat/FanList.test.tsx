@@ -8,6 +8,7 @@ vi.mock("@/hooks/useCan", async () => {
   const of = (id: unknown) => (typeof id === "string" && id in platform.byId ? platform.byId[id] : platform.current);
   return {
     useCan: (id: unknown, cap: Parameters<typeof can>[1]) => can(of(id), cap),
+    useCanOrFallback: (id: unknown, cap: Parameters<typeof can>[1]) => can(of(id), cap),
     useAccountPlatform: (id: string | null | undefined) => (id ? of(id) : null),
   };
 });
@@ -18,7 +19,7 @@ import { useState } from "react";
 
 import { relay, type AccountMeta, type OFChatItem } from "@/lib/relay";
 import { UNREAD_VIEW_MAX_AGE_MS } from "@/lib/chatsCache";
-import { PLATFORM_KEY, resetPlatformForTests, setPlatform } from "@/lib/platform";
+import { AllPlatformsContext, PLATFORM_KEY, resetPlatformForTests, setPlatform } from "@/lib/platform";
 import { renderWithProviders, settled } from "@/test-utils";
 import { useChatMessages } from "@/hooks/useChatMessages";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
@@ -137,9 +138,10 @@ function serveTransactions(rows: Array<{ fan: (typeof FANS)[number]; description
   }));
 }
 
-function renderFanList(props: Partial<Parameters<typeof FanList>[0]> = {}) {
+function renderFanList(props: Partial<Parameters<typeof FanList>[0]> = {}, { allPlatforms = false } = {}) {
+  const list = <FanList selected={null} onSelect={vi.fn()} {...props} />;
   return renderWithProviders(
-    <FanList selected={null} onSelect={vi.fn()} {...props} />,
+    allPlatforms ? <AllPlatformsContext value>{list}</AllPlatformsContext> : list,
     new QueryClient({ defaultOptions: { queries: { retry: false } } }),
   );
 }
@@ -880,6 +882,113 @@ describe("FanList", () => {
     expect(within(newMenu()).getAllByText(/\S/, { selector: "button, a" }).map((e) => e.textContent)).toEqual(["Post"]);
   });
 
+  it("in Combined Messages Pro All Models reads its Creators' Platforms, never the switch", async () => {
+    scopeKind = "all";
+    ACCOUNTS = [{ ...CREATOR_ACCOUNT, platform: "fansly" }, { ...OTHER_ACCOUNT, platform: "fansly" }];
+    serveChats([]);
+    renderFanList({}, { allPlatforms: true });
+    const chips = within(await screen.findByRole("group", { name: "Fan List filters" })).getAllByRole("button");
+    expect(chips.map((b) => (b.textContent ?? "").replace(/\s*\d+$/, ""))).toEqual(["All", "Owe reply", "Unread"]);
+
+    cleanup();
+    resetComposerHarness();
+    vi.stubGlobal("IntersectionObserver", observerStub);
+    setPlatform("fansly");
+    ACCOUNTS = [CREATOR_ACCOUNT, { ...OTHER_ACCOUNT, platform: "fansly" }];
+    serveChats([]);
+    renderFanList({}, { allPlatforms: true });
+    await screen.findByRole("group", { name: "Fan List filters" });
+    for (const name of ["Pinned", "With Tips", "Priority"]) expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    expect(within(header()).getByRole("button", { name: "Gallery" })).toBeInTheDocument();
+  });
+
+  it("in Combined Messages Pro All Models, With Tips and Pinned send no Fansly read and show no Fansly row; OnlyFans rows still load", async () => {
+    const user = userEvent.setup();
+    scopeKind = "all";
+    ACCOUNTS = [CREATOR_ACCOUNT, { ...OTHER_ACCOUNT, platform: "fansly" }];
+    routeRelay("/admin/accounts", () => ({ accounts: ACCOUNTS }));
+    routeRelay("/api/of/v2/chats?", (path, ctx) => {
+      const head = new URLSearchParams(path.split("?")[1]).get("offset") === "0";
+      const own = ctx?.accountId === ACCOUNT_ID ? [CHATS[0]] : [answered(FAN_FOUR, 30)];
+      return { list: head ? own : [], hasMore: false };
+    });
+    renderFanList({}, { allPlatforms: true });
+    await rowOf("Fixture Fan Four");
+    for (const [chip, filter] of [["With Tips", "who_tipped"], ["Pinned", "pinned"]]) {
+      relayGet.mockClear();
+      await user.click(screen.getByRole("button", { name: chip }));
+      await vi.waitFor(() => expect(chatRequests().map(([p]) => p)).toContain(
+        `/api/of/v2/chats?limit=25&offset=0&order=recent&filter=${filter}`,
+      ));
+      await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Four/ })).toBeNull());
+      await rowOf("Fixture Fan One");
+      expect(chatRequests()).toEqual([[`/api/of/v2/chats?limit=25&offset=0&order=recent&filter=${filter}`, { refresh: false }]]);
+    }
+  });
+
+  it("keeps only the OnlyFans cold seed when Pinned is selected in a mixed All Models inbox", async () => {
+    scopeKind = "all";
+    ACCOUNTS = [CREATOR_ACCOUNT, { ...OTHER_ACCOUNT, platform: "fansly" }];
+    routeRelay("/admin/accounts", () => ({ accounts: ACCOUNTS }));
+    routeRelay("/api/of/v2/chats?", () => new Promise(() => {}));
+    let releaseSeed!: (value: { list: OFChatItem[]; source: string }) => void;
+    const seed = new Promise<{ list: OFChatItem[]; source: string }>((resolve) => { releaseSeed = resolve; });
+    routeRelay("/admin/chats/recent", () => seed);
+    renderFanList({}, { allPlatforms: true });
+    await userEvent.click(screen.getByRole("button", { name: "Pinned" }));
+    await act(async () => releaseSeed({
+      list: [
+        { ...CHATS[0], __accountId: ACCOUNT_ID },
+        { ...answered(FAN_FOUR, 30), __accountId: OTHER_ACCOUNT.id },
+      ],
+      source: "local-db",
+    }));
+    await rowOf("Fixture Fan One");
+    expect(rowOrder()).toEqual(["Fixture Fan One"]);
+  });
+
+  it("keeps a known parked OnlyFans Creator's cold seed under Pinned", async () => {
+    scopeKind = "all";
+    ACCOUNTS = [CREATOR_ACCOUNT];
+    routeRelay("/admin/accounts", () => ({
+      accounts: [CREATOR_ACCOUNT, { ...OTHER_ACCOUNT, is_active: false }],
+    }));
+    routeRelay("/api/of/v2/chats?", () => new Promise(() => {}));
+    routeRelay("/admin/chats/recent", () => ({
+      list: [{ ...answered(FAN_FOUR, 30), __accountId: OTHER_ACCOUNT.id }],
+      source: "local-db",
+    }));
+    const { queryClient } = renderFanList({}, { allPlatforms: true });
+    await rowOf("Fixture Fan Four");
+    await vi.waitFor(() => expect(queryClient.getQueryState(["accounts", "anon"])?.status).toBe("success"));
+    await userEvent.click(screen.getByRole("button", { name: "Pinned" }));
+    expect(rowOrder()).toEqual(["Fixture Fan Four"]);
+  });
+
+  it("shows no cold seed row of a Creator not on the roster yet when Pinned is selected in All Models", async () => {
+    scopeKind = "all";
+    ACCOUNTS = [];
+    routeRelay("/api/of/v2/chats?", () => new Promise(() => {}));
+    routeRelay("/admin/chats/recent", () => ({
+      list: [{ ...answered(FAN_FOUR, 30), __accountId: OTHER_ACCOUNT.id }],
+      source: "local-db",
+    }));
+    renderFanList({}, { allPlatforms: true });
+    await rowOf("Fixture Fan Four");
+    await userEvent.click(screen.getByRole("button", { name: "Pinned" }));
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Four/ })).toBeNull());
+    expect(chatRequests()).toEqual([]);
+  });
+
+  it("in Combined Messages Pro an OnlyFans Creator not loaded yet keeps her chips while the switch says Fansly", async () => {
+    setPlatform("fansly");
+    platform.byId = { [ACCOUNT_ID]: null };
+    serveChats(CHATS);
+    renderFanList({}, { allPlatforms: true });
+    await rowOf("Fixture Fan Three");
+    for (const name of ["Pinned", "With Tips", "Priority"]) expect(screen.getByRole("button", { name })).toBeInTheDocument();
+  });
+
   it("an OnlyFans Creator not loaded yet keeps Pinned, With Tips and Priority, and a picked Pinned stays once she loads", async () => {
     const user = userEvent.setup();
     platform.byId = { [ACCOUNT_ID]: null };
@@ -897,17 +1006,35 @@ describe("FanList", () => {
     expect(screen.getByRole("button", { name: /^Pinned/ })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("skips the account-specific seed read for Pinned while the Creator is unknown", async () => {
+    platform.byId = { [ACCOUNT_ID]: null };
+    routeRelay("/admin/accounts", () => new Promise(() => {}));
+    serveChats(CHATS);
+    const { queryClient } = renderFanList();
+    await rowOf("Fixture Fan Three");
+    queryClient.removeQueries({ queryKey: ["chats-local-seed"] });
+    relayGet.mockClear();
+
+    await userEvent.click(screen.getByRole("button", { name: "Pinned" }));
+    await settled();
+
+    expect(chatRequests()).toEqual([]);
+    expect(relayGet.mock.calls.filter(([path]) => path.startsWith("/admin/chats/recent"))).toEqual([]);
+  });
+
   it("All Models with no accounts loaded yet keeps Pinned, With Tips and Priority, and a picked Pinned stays once they fill in", async () => {
     const user = userEvent.setup();
     scopeKind = "all";
     ACCOUNTS = [];
+    routeRelay("/admin/accounts", () => new Promise(() => {}));
     serveChats(CHATS);
-    const { rerender } = renderFanList();
+    const { rerender, queryClient } = renderFanList();
     const chipRow = await screen.findByRole("group", { name: "Fan List filters" });
     for (const name of ["Pinned", "With Tips", "Priority"]) expect(within(chipRow).getByRole("button", { name })).toBeInTheDocument();
     await user.click(within(chipRow).getByRole("button", { name: "Pinned" }));
 
     ACCOUNTS = [CREATOR_ACCOUNT];
+    act(() => queryClient.setQueryData(["accounts", "anon"], { accounts: ACCOUNTS }));
     rerender(<FanList selected={null} onSelect={vi.fn()} />);
     await rowOf("Fixture Fan Three");
     expect(screen.getByRole("button", { name: /^Pinned/ })).toHaveAttribute("aria-pressed", "true");
@@ -1595,6 +1722,27 @@ describe("FanList", () => {
       await vi.waitFor(() => expect(shownFans()).toEqual([]));
     });
 
+    it("reports the Creator held by a failed split read when an inbox is picked", async () => {
+      scopeKind = "all";
+      ACCOUNTS = [CREATOR_ACCOUNT, OTHER_ACCOUNT];
+      routeRelay("/admin/split-inbox?", (path) => {
+        const aid = new URLSearchParams(path.split("?")[1]).get("account_id");
+        if (aid === OTHER_ACCOUNT.id) throw new Error("split unavailable");
+        return { account_id: aid, config: { group_count: 2, assignments: { [FANS[0].id]: 1 } } };
+      });
+      routeRelay("/api/of/v2/chats?", (_path, ctx) => ({
+        list: ctx?.accountId === OTHER_ACCOUNT.id ? [answered(FAN_FOUR, 30)] : CHATS,
+        hasMore: false,
+      }));
+      const user = userEvent.setup();
+      renderFanList();
+      await rowOf("Fixture Fan Four");
+
+      await chooseInbox(user, "Inbox 1");
+      expect(await screen.findByRole("alert")).toHaveTextContent("Could not load inbox groups for 1 model");
+      expect(screen.queryByRole("button", { name: /Fixture Fan Four/ })).not.toBeInTheDocument();
+    });
+
     it("with no match on the first page, the list keeps asking the relay for pages until the group's Fan beyond page one shows", async () => {
       serveSplit(2, { [FANS[0].id]: 1, [FANS[1].id]: 1, [FANS[2].id]: 1, [FAN_FOUR.id]: 2 });
       let answerPageTwo: (body: unknown) => void = () => {};
@@ -1856,6 +2004,20 @@ describe("FanList", () => {
 
     expect(within(filterRow()).getByRole("button", { name: "All inboxes" })).toBeInTheDocument();
     expect(shownFans()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
+  });
+
+  it("hides Add to lists in Fansly select mode", async () => {
+    platform.current = "fansly";
+    serveChats(CHATS);
+    const user = userEvent.setup();
+    renderFanList();
+    await rowOf("Fixture Fan Three");
+    await openSettings(user);
+    await user.click(screen.getByRole("button", { name: /Select chats/ }));
+    await user.click(await rowOf("Fixture Fan One"));
+    const bar = within(screen.getByRole("toolbar", { name: "Selected chats" }));
+    expect(bar.getByText("1 selected")).toBeInTheDocument();
+    expect(bar.queryByRole("button", { name: /Add to lists/ })).toBeNull();
   });
 
   it("select mode counts only the picks on screen: a chip or Creator switch hides the others from the bar, and they return with their rows", async () => {

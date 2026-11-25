@@ -169,7 +169,6 @@ def case_a_one_off_shifts_this_shift_delete_cancels_it():
 def case_a_scope_from_an_instant_that_is_no_occurrence_is_422():
     aid, emp = _creator(), _employee("scope_bad")
     sid = _series(emp, aid)["shift_id"]
-    # 12 concurrent "this" deletes each rewrite cancelled_dates: none may write from a stale read
     for body in ({"scope": "this", "occurrence_start": "2026-03-03T09:00:00Z"},
                  {"scope": "this", "occurrence_start": "2026-03-09T10:00:00Z"},
                  {"scope": "following"},

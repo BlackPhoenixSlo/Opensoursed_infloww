@@ -785,7 +785,7 @@ describe("mergeTopPage", () => {
 
   it("Fansly string ids never bound the page span, so a row unsent upstream is kept (known gap)", () => {
     const [a, b, c] = ["900539700124344400", "900539700124344401", "900539700124344402"];
-    expect(ids(mergeTopPage([msg(a), msg(b), msg(c)], [msg(a), msg(c)]))).toEqual([b, a, c]);
+    expect(ids(mergeTopPage([msg(a), msg(b), msg(c)], [msg(a), msg(c)]))).toEqual([a, b, c]);
     expect(ids(mergeOlderPage([msg(a), msg(b), msg(c)], [msg(a), msg(c)]))).toContain(b);
   });
 
@@ -951,4 +951,11 @@ describe("peek: background reads never mark the chat read on OF", () => {
     expect(urls()).toHaveLength(2);
     expect(urls().every((u) => u.includes("peek=1"))).toBe(true);
   });
+});
+
+it("orders equal-time Fansly messages by their exact ids", () => {
+  const older = msg("900539700124344321");
+  const newer = msg("900539700124344322");
+  expect(orderThread([newer, older])).toEqual([older, newer]);
+  expect(mergeOlderPage([newer], [older])).toEqual([older, newer]);
 });

@@ -92,6 +92,7 @@ export function useRailDock(surface: Surface) {
     dispatch({ type: "load", dock: readDock(surface), viewportH: window.innerHeight });
   }, [surface]);
 
+  // Keyed on `saves` alone: a surface change only loads, so it never writes the old surface's dock under the new one's key.
   useEffect(() => {
     if (saves > 0) writeDock(surface, dock);
     // eslint-disable-next-line react-hooks/exhaustive-deps

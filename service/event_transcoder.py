@@ -81,6 +81,7 @@ def blasted_within(account_id: Any, *, seconds: float) -> bool:
     return td.blasted(_queue_finishes.get(str(account_id), ()), time.monotonic(), seconds)
 
 
+# Money-feed bust lives here, not in the "other" lane: typing/online frames dwarf all others there and would keep the money feeds cold.
 async def _transcode_toast(account_id: Any, payload: Any) -> None:
     await _touch_fan_from_event(account_id, payload)
     if account_id:

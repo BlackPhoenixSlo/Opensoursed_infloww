@@ -150,9 +150,10 @@ def load_meta(account_id: str) -> dict[str, Any] | None:
     if p is None or not p.exists():
         return None
     try:
-        return json.loads(p.read_text())
+        meta = json.loads(p.read_text())
     except Exception:
         return None
+    return meta if isinstance(meta, dict) else None
 
 
 def save_meta(account_id: str, meta: dict[str, Any]) -> None:
@@ -280,15 +281,17 @@ def ensure_platform(account_id: str, key: str) -> None:
     if adir is None or not adir.is_dir():
         return
     meta = load_meta(account_id)
-    if isinstance(meta, dict):
-        held = platforms.get(meta.get("platform"))
-    else:
-        held = next((p for p in platforms.ALL if (adir / p.session_file).exists()), None)
+    meta_platform = platforms.get(meta.get("platform")) if meta is not None else None
     wanted = platforms.get(key)
-    if held is not None and held is not wanted:
-        raise PlatformCollision(
-            f"account {account_id} is already a {held.label} Creator; "
-            f"a {wanted.label} session can't be linked to it")
+    for held in platforms.ALL:
+        if held is wanted:
+            continue
+        if (held is meta_platform
+                or (adir / held.session_file).exists()
+                or (held is platforms.ONLYFANS and any(adir.glob("session_*.json")))):
+            raise PlatformCollision(
+                f"account {account_id} is already a {held.label} Creator; "
+                f"a {wanted.label} session can't be linked to it")
 
 
 def delete_account(account_id: str) -> bool:

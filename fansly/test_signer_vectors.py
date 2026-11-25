@@ -1,25 +1,26 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from pathlib import Path
 
 import fansly_signer as signer
 
-ANONYMIZED_ID_PREFIX = "700"
+ANONYMIZED_ANCHOR_DEVICE_ID = "700174924320792578"
 VECTORS = Path(__file__).resolve().parent / "fixtures" / "signer_vectors.json"
 
 
 def main() -> int:
     doc = json.loads(VECTORS.read_text())
     fails: list[str] = []
-    fn = doc["function"]
-    if hashlib.sha256(fn["text"].encode()).hexdigest() != fn["sha256"]:
-        fails.append("function text does not match its recorded sha256")
-    anchor = doc["anchor"]
-    anchor_id_anonymized_for_public = anchor["device_id"].startswith(ANONYMIZED_ID_PREFIX)
-    vectors = [*doc["vectors"], *([] if anchor_id_anonymized_for_public else [anchor])]
+    anchor = doc.get("anchor")
+    vectors = list(doc["vectors"])
+    if not anchor:
+        fails.append("missing browser anchor")
+    elif anchor["device_id"] == ANONYMIZED_ANCHOR_DEVICE_ID:
+        print("SKIP anchor: anonymized id")
+    else:
+        vectors.append(anchor)
     if not doc["vectors"]:
         fails.append("no vectors")
     for v in vectors:

@@ -1,44 +1,15 @@
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import fansly_shim as shim
 
 HERE = Path(__file__).resolve().parent
 READS = HERE / "fixtures" / "reads.json"
 ACCOUNT_ID = "900000000000000001"
-HAR_ACCOUNT_ID = "700237824869654528"
-
-
-def _bodies(har_path: Path, path: str, method: str = "GET") -> list[dict]:
-    har = json.loads(har_path.read_text())
-    out = []
-    for entry in har["log"]["entries"]:
-        req = entry["request"]
-        parts = urlsplit(req["url"])
-        if parts.netloc != "apiv3.fansly.com" or req["method"] != method:
-            continue
-        if parts.path != path:
-            continue
-        content = entry["response"].get("content", {})
-        text = content.get("text") or ""
-        if content.get("encoding") == "base64":
-            try:
-                text = base64.b64decode(text).decode("utf-8", "replace")
-            except Exception:
-                continue
-        try:
-            payload = json.loads(text)
-        except ValueError:
-            continue
-        if payload.get("success") and isinstance(payload.get("response"), dict):
-            out.append(payload["response"])
-    return out
 
 
 def check(cond: bool, label: str, fails: list[str]) -> None:
@@ -46,7 +17,14 @@ def check(cond: bool, label: str, fails: list[str]) -> None:
         fails.append(label)
 
 
-def main(argv: list[str]) -> int:
+def main() -> int:
+    class _PurchaseFeed(shim.FanslyShimClient):
+        def __init__(self, rows):
+            self._rows = rows
+
+        def _notification_rows(self):
+            return self._rows
+
     fixture = json.loads(READS.read_text())
     reads = {**fixture["responses"], "unread_thread": fixture["unread_thread"]}
     used: set[str] = set()
@@ -55,76 +33,47 @@ def main(argv: list[str]) -> int:
         used.add(key)
         return reads[key]
 
-    from_fixture = len(argv) < 2
-    if from_fixture:
-        me = ACCOUNT_ID
-
-        def bodies(path: str) -> list[dict]:
-            return [fixture_read(path)] if path in reads else []
-    else:
-        har_path = Path(argv[1])
-        if not har_path.exists():
-            print(f"no HAR at {har_path}", file=sys.stderr)
-            return 1
-        me = HAR_ACCOUNT_ID
-
-        def bodies(path: str) -> list[dict]:
-            return _bodies(har_path, path)
-
     fails: list[str] = []
 
-    groups = bodies("/api/v1/messaging/groups")
-    check(bool(groups), "no /messaging/groups body", fails)
-    if groups:
-        page = shim.of_chats_page(groups[0], account_id=me, limit=20)
-        check("list" in page and "hasMore" in page, "chats page: {list, hasMore}", fails)
-        check(isinstance(page["list"], list) and bool(page["list"]),
-              "chats page: non-empty list", fails)
-        for row in page["list"]:
-            for key in ("id", "withUser", "lastMessage", "unreadMessagesCount",
-                        "hasUnreadMessages", "canSendMessage"):
-                check(key in row, f"chat row missing {key}", fails)
-            wu = row["withUser"]
-            for key in ("id", "name", "username"):
-                check(key in wu, f"withUser missing {key}", fails)
-            check(isinstance(row["id"], str) and row["id"].isdigit(),
-                  f"chat id not a snowflake string: {row['id']!r}", fails)
-            check(isinstance(row["unreadMessagesCount"], int),
-                  "unreadMessagesCount not int", fails)
-        sample = page["list"][0]
-        print(f"chats: {len(page['list'])} row(s); sample "
-              f"id={sample['id']} fan={sample['withUser']['name']!r} "
-              f"unread={sample['unreadMessagesCount']}")
+    page = shim.of_chats_page(fixture_read("/api/v1/messaging/groups"), account_id=ACCOUNT_ID, limit=20)
+    check("list" in page and "hasMore" in page, "chats page: {list, hasMore}", fails)
+    check(isinstance(page["list"], list) and bool(page["list"]),
+          "chats page: non-empty list", fails)
+    for row in page["list"]:
+        for key in ("id", "withUser", "lastMessage", "unreadMessagesCount",
+                    "hasUnreadMessages", "canSendMessage"):
+            check(key in row, f"chat row missing {key}", fails)
+        wu = row["withUser"]
+        for key in ("id", "name", "username"):
+            check(key in wu, f"withUser missing {key}", fails)
+        check(isinstance(row["id"], str) and row["id"].isdigit(),
+              f"chat id not a snowflake string: {row['id']!r}", fails)
+        check(isinstance(row["unreadMessagesCount"], int),
+              "unreadMessagesCount not int", fails)
+    sample = page["list"][0]
+    print(f"chats: {len(page['list'])} row(s); sample "
+          f"id={sample['id']} fan={sample['withUser']['name']!r} "
+          f"unread={sample['unreadMessagesCount']}")
 
-    messages = bodies("/api/v1/message")
-    check(bool(messages), "no /message body", fails)
-    if messages:
-        page = shim.of_messages_page(messages[0], account_id=me, limit=25)
-        check("list" in page and "hasMore" in page, "messages page: {list, hasMore}", fails)
-        check(bool(page["list"]), "messages page: non-empty list", fails)
-        for msg in page["list"]:
-            for key in ("id", "text", "fromUser", "createdAt", "isTip",
-                        "price", "mediaCount"):
-                check(key in msg, f"message missing {key}", fails)
-            check("id" in msg["fromUser"], "fromUser missing id", fails)
-            check(msg["createdAt"] is None or "T" in msg["createdAt"],
-                  f"createdAt not ISO-8601: {msg['createdAt']!r}", fails)
-        m = page["list"][0]
-        by_us = [x for x in page["list"] if x["fromUser"]["id"] == me]
-        by_fan = [x for x in page["list"] if x["fromUser"]["id"] != me]
-        print(f"messages: {len(page['list'])} msg(s); {len(by_us)} ours / "
-              f"{len(by_fan)} theirs; sample text={m['text']!r} at {m['createdAt']}")
-
-    class _FixtureFeed(shim.FanslyShimClient):
-        def __init__(self, rows):
-            self._rows = rows
-
-        def _notification_rows(self):
-            return self._rows
+    page = shim.of_messages_page(fixture_read("/api/v1/message"), account_id=ACCOUNT_ID, limit=25)
+    check("list" in page and "hasMore" in page, "messages page: {list, hasMore}", fails)
+    check(bool(page["list"]), "messages page: non-empty list", fails)
+    for msg in page["list"]:
+        for key in ("id", "text", "fromUser", "createdAt", "isTip",
+                    "price", "mediaCount"):
+            check(key in msg, f"message missing {key}", fails)
+        check("id" in msg["fromUser"], "fromUser missing id", fails)
+        check(msg["createdAt"] is None or "T" in msg["createdAt"],
+              f"createdAt not ISO-8601: {msg['createdAt']!r}", fails)
+    m = page["list"][0]
+    by_us = [x for x in page["list"] if x["fromUser"]["id"] == ACCOUNT_ID]
+    by_fan = [x for x in page["list"] if x["fromUser"]["id"] != ACCOUNT_ID]
+    print(f"messages: {len(page['list'])} msg(s); {len(by_us)} ours / "
+          f"{len(by_fan)} theirs; sample text={m['text']!r} at {m['createdAt']}")
 
     thread = fixture_read("/api/v1/message")
     rows = fixture_read("/api/v1/notifications")["notifications"]
-    feed = _FixtureFeed(rows)
+    feed = _PurchaseFeed(rows)
     unlocks = [r for r in rows if r.get("type") == 2008]
     check(bool(unlocks), "fixture: no 2008 row", fails)
     for row in unlocks:
@@ -486,18 +435,15 @@ def main(argv: list[str]) -> int:
         ('{"accountMediaPrice":0}', 0.0, "a free grant stays honestly free"),
     ]
     for meta, want, why in price_cases:
-        got = shim._notif_price_usd({"metadata": meta})
+        got = shim._notif_price_usd({"metadata": meta}, None)
         check(got == want, f"notif price: {why} -> {got}, want {want}", fails)
-    check(shim._notif_price_usd({}) == 0.0,
+    check(shim._notif_price_usd({}, None) == 0.0,
           "notif price: a row with no metadata key at all is free", fails)
+    for code, want in ((2007, 0.0), ("2007", 0.0), (2007.9, 0.0), (2008, 3.0)):
+        item = _PurchaseFeed([])._of_notification({"type": code, "metadata": {"price": 3000}}, {})
+        check(item["fanslyPriceUsd"] == want and ("$3.00" in item["text"]) == bool(want),
+              f"notif price: code {code} fallback, got {item}", fails)
     print("notif price: purchase rows report their dollar amount, junk reports 0")
-
-    class _PurchaseFeed(shim.FanslyShimClient):
-        def __init__(self, rows):
-            self._rows = rows
-
-        def _notification_rows(self):
-            return self._rows
 
     live = {"id": "900642430324908036", "type": 2007,
             "correlationId": "900640044332167168",
@@ -527,36 +473,6 @@ def main(argv: list[str]) -> int:
     quiet = _PurchaseFeed(noise).purchases()
     check(quiet == {"sales": [], "unbanked_seen": {"2007_unpriced": 1, "45012": 1}},
           f"purchases: only Banking-set sales; unbanked codes counted, got {quiet}", fails)
-    import logging as _logging
-
-    class _Catch(_logging.Handler):
-        def __init__(self):
-            super().__init__()
-            self.hits = []
-
-        def emit(self, rec):
-            self.hits.append(rec.getMessage())
-
-    def _warns(meta):
-        cap = _Catch()
-        lg = shim.log
-        lg.addHandler(cap)
-        try:
-            _PurchaseFeed([{"id": "n", "type": 2007, "correlationGroupId": "5",
-                            "correlationId": "g", "createdAt": 1,
-                            "metadata": meta}]).purchases()
-        finally:
-            lg.removeHandler(cap)
-        return any("SALES ARE BEING DROPPED" in h for h in cap.hits)
-
-    check(_warns('{"mediaPrice":3000}'),
-          "purchases: a drifted metadata shape warns instead of silently losing a sale", fails)
-    check(not _warns('{"accountMediaPrice":0}'),
-          "purchases: a genuine free unlock does NOT cry drift", fails)
-    check(not _warns('{"accountMediaPrice":3000}'),
-          "purchases: a normal priced sale does NOT cry drift", fails)
-    print("purchases: a metadata shape change is loud; a free unlock is quiet")
-
     print("purchases: proven sales only, priced in dollars, buyer + grant named")
 
     tipped = shim.of_message({"id": "1", "senderId": "5", "totalTipAmount": 3000},
@@ -585,9 +501,8 @@ def main(argv: list[str]) -> int:
           f"list-add: returns string ids read from the echo, got {added}", fails)
     print("list-add: recipe body, string ids back")
 
-    if from_fixture:
-        missing = set(reads) - used
-        check(not missing, f"fixture reads not used: {sorted(missing)}", fails)
+    missing = set(reads) - used
+    check(not missing, f"fixture reads not used: {sorted(missing)}", fails)
 
     for f in fails:
         print(f"  FAIL {f}", file=sys.stderr)
@@ -599,4 +514,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(main())

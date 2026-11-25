@@ -20,7 +20,7 @@ export type Send = (a: Action) => void;
 
 // Below the relay's 30 s low-speed abort, so an upstream stall reads as stalled too.
 export const STALL_MS = 20000;
-// Outlasts the relay's worst wait before its first byte (slot 45 s + a re-sign up to 10 s), else a busy relay read as a stall.
+// Outlasts the relay's worst wait before its first byte (45 s slot wait plus URL refresh), else a busy relay reads as a stall.
 export const HEAD_MS = 90000;
 export const SETUP_MS = HEAD_MS;
 

@@ -698,6 +698,7 @@ class _ActivateBody(BaseModel):
 @router.post("/admin/accounts/active")
 def admin_accounts_activate(body: _ActivateBody = Body(...)) -> dict[str, Any]:
     """Flip which account is the default (no X-Account-Id header → this one)."""
+    # Body-carried id: the isolation middleware never sees it.
     assert_account_owned(body.account_id if body.account_id is not None
                          else account_registry.get_stored_active_account_id())
     if body.account_id is not None and account_registry.get_account(body.account_id) is None:

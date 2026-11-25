@@ -1,34 +1,5 @@
 "use client";
 
-/**
- * FanslyPasteSessionCard — the Fansly analogue of PasteCurlCard.
- *
- * OnlyFans is bootstrapped from a copied cURL; Fansly can't be, because its
- * signing needs the live session blob (token + device id + session id + the
- * exact user-agent), not a replayable request. So the flow is: install the
- * Chatterly Login Capture extension, sign in to Fansly, click
- * "Copy Fansly session," and paste the JSON blob here. We POST it to
- * /admin/session/fansly, which writes the session, probes me() for a name, and
- * registers the account with platform="fansly".
- *
- * The pasted blob is exactly what loginExtensionMulti/fansly_bridge.js copies:
- *   { platform, token, id, accountId, device_id, user_agent,
- *     accept_language, capturedAt, origin }
- * We only forward the fields the relay needs; extras (platform, capturedAt,
- * origin) are ignored.
- *
- * Infloww's Fansly sign-in (`FanslyLogin`, index.9f50f370.js @12411710)
- * words its failures `creators0187` (the bind failed), `creators0416` (the
- * account info read failed, @12412209) and `creators0310` (no Fansly sign-in
- * yet); ours maps a blob that is not a signed-in session to the last, the
- * relay's 400 (the token does not prove the account) to the second and any
- * other refusal (409: the id is another Platform's Creator) to the first.
- * Inside the Add creator flow (`formId`) the flow's footer Done
- * submits it, as Infloww's Done does, and the card draws no button of its own.
- *
- * Deliberately simpler than the OF card — no proxy/static_param/onboard
- * machinery is wired on the Fansly side yet (YAGNI: add when asked).
- */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -36,16 +7,13 @@ import { useState } from "react";
 import { relay, type FanslySessionResponse, RelayError } from "@/lib/relay";
 import { Button, Card, Input, Textarea } from "@/components/ui/primitives";
 
-/** Infloww's Fansly sign-in strings. */
 export const FANSLY_T = {
-  loginFailed: "Login failed. Please check your credentials and try again.", //  creators0187
-  mustLogIn: "You must be logged in to Fansly to continue", //                 creators0310
-  accountInfoError: "An error occurred getting account information", //        creators0416
-  /** fansly0003: Infloww's `handleFanslyError` on a 401 (index.9f50f370.js @16347074) before it marks the bind expired. */
+  loginFailed: "Login failed. Please check your credentials and try again.",
+  mustLogIn: "You must be logged in to Fansly to continue",
+  accountInfoError: "An error occurred getting account information",
   rebind: "Authorization failed, please rebind the account",
 } as const;
 
-/** The Add creator flow's Done submits the card through this form id. */
 export const FANSLY_FORM_ID = "fansly-session-form";
 
 interface FanslySessionBody {
@@ -60,8 +28,6 @@ interface FanslySessionBody {
   make_active?: boolean;
 }
 
-/** Inside the Add creator flow, `onLinked` hears the new account, the flow's Nickname comes in as
- *  `initialNickname`, and `formId` lets the flow's Done submit it. */
 export default function FanslyPasteSessionCard({ onLinked, initialNickname = "", formId, expectedAccountId }: {
   onLinked?: (accountId: string) => void;
   initialNickname?: string;
@@ -84,10 +50,7 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
 
     let parsed: Record<string, unknown>;
     try {
-      // Pre-quote 16+ digit integers so 64-bit snowflake ids (device_id etc.)
-      // survive as exact strings instead of being rounded by JSON.parse. (The
-      // extension already emits them as strings; this protects hand-pasted or
-      // older blobs.) Precision already lost upstream can't be recovered here.
+      // Pre-quote 16+ digit integers so 64-bit snowflake ids survive JSON.parse; precision already lost upstream can't be recovered
       const safe = blob.replace(/:(\s*)(-?\d{16,})(\s*[,}\]])/g, ':$1"$2"$3');
       parsed = JSON.parse(safe) as Record<string, unknown>;
     } catch {
@@ -98,7 +61,6 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
       return;
     }
 
-    // The extension uses camelCase (accountId); tolerate snake_case too.
     const token = (parsed.token ?? "") as string;
     const accountId = (parsed.accountId ?? parsed.account_id ?? "") as string;
     const userAgent = (parsed.user_agent ?? parsed.userAgent ?? "") as string;
@@ -122,8 +84,7 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
       return;
     }
 
-    // Every id must reach the backend as a string (it types them str; a raw
-    // number 422s, as we learned).
+    // Ids must reach the backend as strings: a raw number 422s
     const asId = (v: unknown): string | null =>
       v === null || v === undefined || v === "" ? null : String(v);
 
@@ -150,8 +111,6 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
           `\n\nOpen the inbox — it now reads from Fansly.`,
       });
       setBlob("");
-      // Same caches the OF path invalidates, so the account shows up in the
-      // switcher / accounts table immediately.
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["health-all"] });
       if (data.account_id) onLinked?.(data.account_id);

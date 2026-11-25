@@ -16,9 +16,10 @@ from automations.send_mass_decide import audience_filter_json, echoed_of
 from relay_host import (
     get_client as _get_client,
     proxy as _proxy,
-    refuse_if_platform_lacks,
     resolve_account_id as _resolve_account_id,
 )
+
+from side_effect_gate import refuse_if_platform_lacks
 
 log = logging.getLogger("of-relay")
 
@@ -274,6 +275,7 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
     from audiences import (MASSDMEXCLUDE_LIST, THRESHOLD_IDS_MAX,
                            AudienceUnknown, resolve_mass_audience)
     _aid = _resolve_account_id(request)
+    # Even plain blasts need MASSDMEXCLUDE and dedup against explicit recipients in pending local send jobs.
     try:
         resolved = await resolve_mass_audience(
             _aid,

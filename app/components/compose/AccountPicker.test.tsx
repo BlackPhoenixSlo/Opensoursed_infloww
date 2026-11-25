@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 
 import type { AccountMeta } from "@/lib/relay";
 
@@ -9,9 +9,11 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock("@/hooks/useAccounts", () => ({ usePlatformAccounts: () => h.platformAccounts }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ scope: h.scope }) }));
-vi.mock("@/hooks/useAllModelsInclude", () => ({ useAllModelsInclude: () => ({ isIncluded: () => true }) }));
+vi.mock("@/hooks/useAllModelsInclude", () => ({ useAllModelsInclude: () => ({ isIncluded: () => true, toggle: vi.fn() }) }));
 
+import { AllPlatformsContext } from "@/lib/platform";
 import { AccountPicker } from "./AccountPicker";
+import { IncludeModelsChips } from "./IncludeModelsChips";
 import { massSenders } from "./massSenders";
 
 const acct = (id: string, platform?: string): AccountMeta =>
@@ -39,5 +41,25 @@ describe("AccountPicker auto-seed", () => {
     render(<AccountPicker value={null} onChange={onChange} accounts={accounts} />);
     if (want) expect(onChange).toHaveBeenCalledWith(want);
     else expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("the composer's picker and chips carry the Platform badge in the window", () => {
+  const options = () => within(screen.getByLabelText("Post as")).getAllByRole("option").map((o) => o.textContent);
+  const chips = (allModels: boolean, window: boolean) => {
+    const ui = (
+      <IncludeModelsChips noun="broadcast" accounts={[of1, fs1]} allModels={allModels} locked={false}
+        onAllModels={vi.fn()} accountId="of1" onAccount={vi.fn()} />
+    );
+    render(window ? <AllPlatformsContext value>{ui}</AllPlatformsContext> : ui);
+  };
+  it.each([[true, ["of1", "fs1 · Fansly"]], [false, ["of1", "fs1"]]])("window %s: picker options %j", (window, want) => {
+    chips(false, window);
+    expect(options()).toEqual(want);
+  });
+  it.each([[true, 1], [false, 0]])("window %s: %i Fansly logo on the chips, none on OnlyFans", (window, logos) => {
+    chips(true, window);
+    expect(within(screen.getByRole("button", { name: /fs1/ })).queryAllByTestId("platform-logo-fansly")).toHaveLength(logos);
+    expect(within(screen.getByRole("button", { name: /of1/ })).queryAllByTestId(/platform-logo/)).toHaveLength(0);
   });
 });

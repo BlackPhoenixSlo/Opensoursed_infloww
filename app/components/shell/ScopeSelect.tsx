@@ -1,6 +1,7 @@
 "use client";
 
 
+import { CreatorPlatformBadge, useCreatorPlatformName } from "@/components/shell/PlatformSwitcher";
 import { useScope } from "@/contexts/ScopeContext";
 import { IfSelect, type IfOption } from "@/components/ui/infloww";
 import type { AccountMeta } from "@/lib/relay";
@@ -15,9 +16,14 @@ export function ScopeSelect({ accounts, pickAll, onPicked, className }: {
   className?: string;
 }) {
   const { scope, setScope } = useScope();
+  const platformName = useCreatorPlatformName();
   const options: IfOption[] = [
     ...(pickAll ? [{ value: ALL, label: "All creators" }] : []),
-    ...accounts.map((a) => ({ value: a.id, label: `${a.nickname || a.name || a.id}${a.role === "watcher" ? " (watcher)" : ""}` })),
+    ...accounts.map((a) => {
+      const text = `${a.nickname || a.name || a.id}${a.role === "watcher" ? " (watcher)" : ""}`;
+      if (!platformName(a)) return { value: a.id, label: text };
+      return { value: a.id, text, label: <span className="inline-flex items-center gap-1">{text}<CreatorPlatformBadge account={a} /></span> };
+    }),
   ];
   return (
     <IfSelect

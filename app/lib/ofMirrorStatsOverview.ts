@@ -247,6 +247,7 @@ function topMessage(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
     const bought = num(m.purchasedCount);
     if (bought && !m.isFree) {
       const s = el("span", "b-dot-item b-summary-list__item m-lowercase g-md-text m-default-font-weight d-inline-block m-current");
+      // OF's own figure: the reply carries no sum, OF's footer shows purchasedCount * price.
       const sum = usd(bought * (num(m.price) ?? 0));
       s.append(x.v2 && m.id !== undefined ? usersLink(doc, sum, "buyers", m.id) : el("span", "", sum), doc.createTextNode(" purchases "));
       inner.append(s);

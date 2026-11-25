@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * Infloww's two edit modals (index.9f50f370.js, `UpdateCreator` and `EditCreators`), with Infloww's English
- * (creatorFlow.tsx's `T`):
- *
- *   EditAccountModal  "Edit account details", an account row's pencil or its ⋮ Edit: the Creator details, then
- *                     Account details: Platform, Linked account (Unlink when Connected, else Link account), Proxy
- *                     connection (OnlyFans: its status and proxy, Change, Delete), the account details form; Save.
- *   EditDraftModal    "Edit creator details", a Creator row with no account: the Creator details; Save.
- *
- * Wired: Change proxy (unbind, bind, reload session), the nickname, Assigned employees (Creator access), and the
- * Creator details, Tag and Internal notes (the `creators` profile). Not wired: Unlink and Delete connection (the Relay
- * cannot drop a session and keep its account; Delete on the row removes both).
- */
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -31,15 +18,12 @@ import { type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
 const NOT_WIRED = "not wired";
-/** A linked-account / proxy box: HB's #161616 fill, 8px corners, no border. */
 const BOX = "flex items-center justify-between gap-2 rounded-lg bg-[#161616] p-3 [html[data-theme=light]_&]:bg-black/5";
 
 export function EditAccountModal({ account, conn, onClose, onLink }: {
   account: AccountMeta;
-  /** The row's connectivity label (creators-manage#40). */
   conn: string;
   onClose: () => void;
-  /** Link account: the Add creator modal at the sign-in that relinks this platform. */
   onLink?: (at: SectionKey, expectedAccountId?: string) => void;
 }) {
   const profiles = useCreatorProfiles();
@@ -56,12 +40,10 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
     nickname: account.nickname ?? "", tag: profile.tag ?? "", employeeIds: assignedIds(roster, account.id), notes: profile.notes ?? "",
   };
   const [changing, setChanging] = useState(false);
-  // Fansly reads through the relay's Fansly shim, the same /users/me.
   const me = useAccountAvatar(account.id).data;
   const proxiesQ = useProxyList();
   const bound = currentProxy(proxiesQ.data, account.id);
   const connected = conn === "Connected";
-  // A creator without a name is the only thing the profile's form refuses; an empty gender is an older account.
   const err = creatorDetailsError({ ...creator, gender: creator.gender || "Female" });
 
   return (
@@ -122,7 +104,6 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
               </span>
               <span className="flex shrink-0 gap-2">
                 {!connected && <FlowButton onClick={() => { onClose(); onLink?.("browserbase"); }}>{T.linkAccount}</FlowButton>}
-                {/* Until the proxies read answers, `bound` is a guess ("No proxy") that Save would act on. */}
                 <FlowButton disabled={!proxiesQ.isSuccess} onClick={() => setChanging(true)}>{T.change}</FlowButton>
                 <FlowButton disabled title={NOT_WIRED}>{T.del}</FlowButton>
               </span>
@@ -136,7 +117,6 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
   );
 }
 
-/** "Change proxy" (creators0054): the Proxy selection, then the account's proxy is switched and its session reloaded. */
 function ChangeProxyModal({ accountId, current, onClose }: { accountId: string; current: ProxyChoice; onClose: () => void }) {
   const qc = useQueryClient();
   const [choice, setChoice] = useState<ProxyChoice>(current);

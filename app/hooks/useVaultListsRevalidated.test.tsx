@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { ReactNode } from "react";
-import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), post: vi.fn() } }));
 
-import { useVaultListsRevalidated, vaultListsKey } from "@/hooks/useVaultMedia";
+import { useVaultLists, useVaultListsRevalidated, vaultListsKey } from "@/hooks/useVaultMedia";
 import { relay } from "@/lib/relay";
 
 const relayGet = relay.get as unknown as Mock;
@@ -52,5 +52,33 @@ describe("useVaultListsRevalidated", () => {
     const { result } = renderHook(() => useVaultListsRevalidated(AID), { wrapper });
     await waitFor(() => expect(relayGet).toHaveBeenCalledTimes(1));
     expect(names(result.current.data)).toEqual(["Old"]);
+  });
+});
+
+
+it.each([false, true])("manual refresh retries with cache bypass (persistent failure: %s)", async (persistent) => {
+  client.setDefaultOptions({ mutations: { retryDelay: 0 } });
+  client.setQueryData(vaultListsKey(AID), { list: [OLD], hasMore: false });
+  relayGet.mockImplementation((url: string) => Promise.resolve({
+    list: url.includes("refresh=1") ? [NEW] : [OLD], hasMore: false,
+  }));
+  let rejectFirst!: (error: Error) => void;
+  relayGet.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }));
+  if (persistent) relayGet.mockRejectedValueOnce(new Error("502"));
+
+  const { result } = renderHook(() => useVaultLists(AID), { wrapper });
+  act(() => result.current.refresh());
+  await waitFor(() => {
+    expect(result.current.isRefreshing).toBe(true);
+    expect(urls()).toHaveLength(1);
+  });
+  const second = renderHook(() => useVaultLists(AID), { wrapper });
+  act(() => rejectFirst(new Error("502")));
+  await waitFor(() => expect(result.current.isRefreshing).toBe(false));
+  expect(urls()).toHaveLength(2);
+  expect(urls().every((url) => url.includes("refresh=1"))).toBe(true);
+  await waitFor(() => {
+    expect(result.current.refreshFailed).toBe(persistent);
+    expect(names(second.result.current.data)).toEqual(persistent ? ["Old"] : ["New"]);
   });
 });

@@ -29,7 +29,7 @@ import { isOfHtml, OF_TEXT_MAX, ofPreviewText } from "@/lib/ofRichText";
 import { editorPlain } from "@/lib/ofRichTextEditor";
 import { PLAIN_MODE, richMode } from "@/lib/ofRichMode";
 import { OfRichTextEditor, type OfRichTextEditorHandle } from "@/components/ui/OfRichTextEditor";
-import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
+import { useCanOrFallback } from "@/hooks/useCan";
 import { TagCreatorsPicker, TaggedCreatorChips, type TaggedCreatorChoice } from "./TagCreatorsPicker";
 import {
   EMPTY_DRAFT, afterRefusedSchedule, buildSendArgs, richFromEditor, richText, canBeFreePreview, canSend, composerDraft, isEmptyLiveDraft,
@@ -94,7 +94,7 @@ export function Composer({
   const [text, setText] = useChatDraft(accountId, fanId);
   const [slashClosedFor, setSlashClosedFor] = useState<string | null>(null);
   const slashQuery = /^\/\S*$/.test(text) && text !== slashClosedFor ? text.slice(1) : null;
-  const allowRich = useOfRichAllowed(accountId);
+  const allowRich = useCanOrFallback(accountId, "rich_text");
   const [draft, act] = useReducer(composerDraft, null, () => {
     const rich = allowRich ? readChatRich(accountId, fanId) : null;
     return { ...EMPTY_DRAFT, rich, mode: richMode(PLAIN_MODE, { type: "loaded", formatted: !!rich, allowed: allowRich }) };

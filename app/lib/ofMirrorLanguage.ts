@@ -5,6 +5,7 @@ import { useEffect, type RefObject } from "react";
 
 export const LANGUAGE_PAGE = "settings/display/language";
 const DISPLAY_PAGE = "settings/display";
+// OF keeps the language browser-side only (lang cookie, no /api2 write), so local storage here too.
 const KEY = "of-mirror:lang";
 const DEFAULT = "en";
 

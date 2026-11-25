@@ -584,6 +584,7 @@ export function useCreateLinkShare(accountId: string | null) {
   return useMutation<LinkShare, Error, { kind: EditableKind; name: string; of_ids: number[]; include_earnings: boolean }>({
     mutationFn: (body) => relay.post<LinkShare>("/admin/link-shares", { account_id: accountId, ...body }),
     onSuccess: async (_r, body) => {
+      // A share's rows fill from the owner's links reads: refetch now so a new share gets rows sooner, then list the shares.
       await qc.refetchQueries({
         queryKey: body.kind === "trial" ? [TRIAL_KEY, accountId] : [OF_TRACK_KEY, accountId, "earnings"], exact: true,
       });

@@ -37,6 +37,7 @@ SESSIONS_DIR = HERE / "sessions"
 sys.path.insert(0, str(HERE))
 
 import accounts as account_registry  # noqa: E402
+import platforms  # noqa: E402
 from of_signer import derive_rules_from_chunk, verify_rules  # noqa: E402
 
 from of_origin import OF_API_ORIGIN  # noqa: E402  (ADR 0024 test seam; "" = real CDN)
@@ -178,6 +179,7 @@ def from_request(parsed: dict, *,
         )
 
     user_id = h["user-id"]
+    account_registry.ensure_platform(user_id, platforms.ONLYFANS.key)
     x_bc = h["x-bc"]
     x_of_rev = h["x-of-rev"]
     user_agent = h["user-agent"]
@@ -310,7 +312,6 @@ def persist_session(user_id: str, *,
     `static_param_source` (paste-curl: override | curl | rev_lookup) tells
     sign_rules a typed-in static_param never lends its rules to others.
     """
-    import platforms
     adir = account_registry.account_dir(user_id)
     account_registry.ensure_platform(user_id, platforms.ONLYFANS.key)
     adir.mkdir(parents=True, exist_ok=True)

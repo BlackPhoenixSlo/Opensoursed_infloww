@@ -326,6 +326,7 @@ function Section({
   );
 }
 
+// Deliberately cross-account and outside the page's date range: a debt stays owed whatever the window.
 export default function CustomsTab() {
   const [rows, setRows] = useState<CustomRow[] | null>(null);
   const [untracked, setUntracked] = useState<UntrackedRow[]>([]);

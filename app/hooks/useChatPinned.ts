@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * useChatPinned — a chat's pinned messages, asked of OnlyFans directly.
- *
- * The rail used to derive its pins by filtering the LOADED BACKLOG for
- * `isPinned`, which silently undercounts: a pin older than the first page is
- * invisible, so a thread holding two renders "Pinned · 1". Verified live
- * 2026-07-27 — a real thread's only pin sat outside the head page and the rail
- * showed none at all.
- *
- * ONE request, no pagination — OF's `hasMore` lies on the pinned filter (see
- * of_client.get_pinned_messages). Pinned sets are a handful of messages, so the
- * whole thing arrives in one page or not at all.
- */
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -33,12 +20,10 @@ export function useChatPinned(
   return useQuery<OFMessage[]>({
     queryKey: ["chat-pinned", accountId ?? "", String(fanId ?? "")],
     enabled: !!accountId && !!fanId && enabled && allowed,
-    // Pins change when a human clicks pin/unpin or the AI writes one — neither
-    // is frequent, and neither is urgent enough to justify refetching per
-    // render. A minute keeps an operator's own pin from looking like it failed.
     staleTime: 60_000,
     queryFn: async (): Promise<OFMessage[]> => {
       if (!accountId || !fanId) return [];
+      // One request, no paging: OF's hasMore lies on the pinned filter (of_client.get_pinned_messages)
       const r = await relay.get<PinnedResp>(
         `/api/of/v2/chats/${fanId}/pinned`,
         { accountId },

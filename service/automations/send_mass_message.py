@@ -19,7 +19,8 @@ from automations import send_mass_decide as smd
 from automations._pools import int_list
 from of_client import proxy_refused
 from of_write import _may_have_sent
-from side_effect_gate import refusal
+import platforms
+from side_effect_gate import PLATFORM_LACKS_PREFIX
 from automations._wordfilter import (
     banned_hit_summary, filter_banned, load_banned_words,
 )
@@ -143,6 +144,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
 
 async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
+    if platforms.refusal_for_account(account_id, "send_mass_message"):
+        return {"status": "skipped", "reason": f"{PLATFORM_LACKS_PREFIX}send_mass_message"}
     attr_kind = str(payload.get("automation_kind") or "send_mass_message")
     attr_ref = payload.get("automation_ref")
 
@@ -217,8 +220,6 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
     from audiences import broadcast_lock, ensure_exclude_list
     import audience_include as _audiences
     client = await asyncio.to_thread(ax._make_client, account_id)
-    if refusal(client, "send_mass_message"):
-        return {"status": "skipped", "reason": "platform_lacks:send_mass_message"}
     is_list_audience = p.is_list_audience
 
     audience_stats: dict = {}

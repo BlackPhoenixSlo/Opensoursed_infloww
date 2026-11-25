@@ -5,8 +5,9 @@ import { createContext, useContext, useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
 import { useUser } from "@/contexts/UserContext";
-import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
+import { useAccounts, usePlatformAccounts } from "@/hooks/useAccounts";
 import { relay, type AccountMeta } from "@/lib/relay";
+import type { Platform } from "@/lib/platform";
 import { liveSession } from "@/lib/sessionConnectivity";
 import { proxyImage } from "@/lib/mediaUrl";
 import { stillUrl } from "@/lib/ofMedia";
@@ -27,28 +28,31 @@ export function standInPick(accounts: readonly StandInCandidate[]): string | nul
   return (accounts.find(liveSession) ?? accounts[0])?.id ?? null;
 }
 
-export const AutoPickContext = createContext<string | null>(null);
+export const AutoPickContext = createContext<{ platform: Platform; accountId: string | null } | null>(null);
 
 export function standInModel(
-  src: string, accountId: string | null, accounts: readonly StandInCandidate[],
+  src: string, accountId: string | null, accounts: readonly StandInCandidate[], auto: string | null = null,
 ): string | null {
-  return !accountId && STAND_IN_SRC.test(src) ? standInPick(accounts) : null;
+  return !accountId && STAND_IN_SRC.test(src) ? auto ?? standInPick(accounts) : null;
 }
 
 const lastStandIn = new Map<string, string>();
 
 export function useStandIn(src: string): string | null {
   const { accountId: scoped } = useScope();
-  const auto = useContext(AutoPickContext);
+  const route = useContext(AutoPickContext);
+  const auto = route?.accountId ?? null;
   const accountId = auto !== null && scoped === auto ? null : scoped;
   const principal = useUser().user?.user_id ?? "";
   const accounts = useAccounts().data?.accounts;
-  const standIn = standInModel(src, accountId, useActiveAccounts());
+  const routeAccounts = usePlatformAccounts(route?.platform);
+  const cacheKey = JSON.stringify([principal, route?.platform ?? null]);
+  const cached = accounts?.length ? null : lastStandIn.get(cacheKey) ?? null;
+  const standIn = standInModel(src, accountId, routeAccounts, auto ?? cached);
   useEffect(() => {
-    if (standIn) lastStandIn.set(principal, standIn);
-  }, [principal, standIn]);
-  if (standIn || accountId || !STAND_IN_SRC.test(src) || accounts?.length) return standIn;
-  return lastStandIn.get(principal) ?? null;
+    if (standIn) lastStandIn.set(cacheKey, standIn);
+  }, [cacheKey, standIn]);
+  return standIn;
 }
 
 export const PROFILE_CHANGE = "oi-profile-change";

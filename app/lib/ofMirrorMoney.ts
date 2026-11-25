@@ -136,6 +136,7 @@ export const TEXTS = {
 } as const;
 const fill = (text: string, vars: Record<string, string>) => text.replace(/\{(\w+)\}/g, (all, k: string) => vars[k] ?? all);
 
+// Raw JS comparison on purpose, as OF's: absent compares false, null as 0.
 const lt = (a: unknown, b: unknown) => (a as number) < (b as number);
 const hasBalances = (b: Balances | null | undefined): b is Balances => !!b && typeof b === "object" && Object.keys(b).length > 0;
 

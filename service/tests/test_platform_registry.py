@@ -11,14 +11,15 @@ import accounts  # noqa: E402
 import fansly_backend  # noqa: E402
 import platforms  # noqa: E402
 
-LACK_NAMES = {"FOCUS", "REFERRALS", "WALL_MEDIA", "SERVER_SCHEDULE", "NEAR_SCHEDULE_MEDIA",
+LACK_NAMES = {"REFERRALS", "WALL_MEDIA", "SERVER_SCHEDULE", "NEAR_SCHEDULE_MEDIA",
               "HISTORY_UNREAD_GATE", "UNREAD_TOTAL", "SHARED_REFRESH"}
 
 
 def case_get_resolves_every_key():
     for key, want in [(None, platforms.ONLYFANS), ("", platforms.ONLYFANS),
                       ("onlyfans", platforms.ONLYFANS), ("fansly", platforms.FANSLY),
-                      ("myspace", platforms.ONLYFANS)]:
+                      ("myspace", platforms.ONLYFANS), (["onlyfans"], platforms.ONLYFANS),
+                      ({"key": "fansly"}, platforms.ONLYFANS), (42, platforms.ONLYFANS)]:
         assert platforms.get(key) is want, (key, platforms.get(key))
 
 

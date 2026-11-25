@@ -77,6 +77,7 @@ class CopyRules:
                                      if len(f) >= _BROADCAST_MIN_FANS)
         return self._bodies
 
+    # OF stamps a queueId on 1:1 sends too (AE: most chatter rows carry one): only a queue a mass or another fan's row carries marks a broadcast copy.
     async def shared_queue(self, qid: int, at: datetime) -> bool:
         if self._queues is None:
             self._queues = await self._read_queues()

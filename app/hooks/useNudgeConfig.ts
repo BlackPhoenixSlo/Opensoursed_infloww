@@ -84,6 +84,7 @@ export function useSaveNudgeConfig() {
       });
       return relay.put(`/admin/nudge-config`, vars);
     },
+    // Draft ack lives on the mutation, not mutate(): it must run after unmount; the stash drops only if still this PUT's.
     onSuccess: (echo, vars) => {
       const key = nudgeDraftKey(vars.account_id);
       const kept = clearDraft(key, vars.config) ? null : readDraft<NudgeConfig>(key);

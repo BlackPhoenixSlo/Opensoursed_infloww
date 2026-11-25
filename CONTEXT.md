@@ -1080,11 +1080,11 @@ The thread read cursor `id=9223372036854775807`: OnlyFans returns the newest pag
 _Avoid_: max id, silent fetch, no-read fetch
 
 **Background read**:
-Any OF thread read not made because an Employee opened that chat in Messages Pro: scrape sweep, after-blast scrape, convo review, the app's unread, hover and Focus prefetch. Every one uses the Peek cursor.
+Any OF thread read not made because an Employee opened that chat in Messages Pro: scrape sweep, after-blast scrape, convo review, the app's unread and hover prefetch. Every one uses the Peek cursor.
 _Avoid_: scrape (one kind of it), silent read, prefetch on its own
 
 **Click read**:
-An Employee opening a chat in Messages Pro, any Creator; it marks the chat read on OnlyFans through the Relay, which records a Write intent first. Focus mode marks read only after the first send.
+An Employee opening a chat in Messages Pro, any Creator; it marks the chat read on OnlyFans through the Relay, which records a Write intent first.
 _Avoid_: open, mark seen, Background read
 
 **Badge version**:
@@ -1122,7 +1122,7 @@ A Platform's client that answers the OnlyFans client's methods, in OnlyFans's re
 _Avoid_: adapter, translator, wrapper, client (OnlyFans's own)
 
 **Lacks flag**:
-A named Relay policy a registry entry opts out of because its Platform cannot meet it, one flag per observed policy (`FOCUS`, `REFERRALS`, `SERVER_SCHEDULE`, …). Free follow is the one positive opt-in.
+A named Relay policy a registry entry opts out of because its Platform cannot meet it, one flag per observed policy (`REFERRALS`, `SERVER_SCHEDULE`, …). Free follow is the one positive opt-in.
 _Avoid_: feature flag, Setting flag, Knob, Capability (the app's)
 
 **Capability**:

@@ -565,6 +565,7 @@ async def update_promotion(mirror_id: int, body: _PatchBody = Body(...)) -> dict
 
 
 async def _untick(s, row: PromoCampaign) -> None:
+    # Take the SQLite write lock first. Assigning False to a stale False ORM row can skip the UPDATE and lose to a concurrent re-tick.
     await s.execute(update(PromoCampaign).where(PromoCampaign.id == row.id)
                     .values(auto_reactivate=False))
     still = (await s.execute(select(PromoCampaign.id).where(
@@ -589,6 +590,7 @@ async def untick_kept_promo(account_id: str, of_promo_id: int) -> None:
 @router.delete("/admin/promotions/{mirror_id}")
 async def delete_promotion(mirror_id: int) -> dict[str, Any]:
     async with get_session() as s:
+        # No-op write takes SQLite's write lock first: the open-create check and untick cannot interleave with a re-create.
         await s.execute(update(PromoCampaign).where(PromoCampaign.id == mirror_id)
                         .values(auto_reactivate=PromoCampaign.auto_reactivate))
         row = await s.get(PromoCampaign, mirror_id)

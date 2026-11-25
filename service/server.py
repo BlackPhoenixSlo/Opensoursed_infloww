@@ -776,7 +776,7 @@ async def _persist_unhandled_errors(request: Request, call_next):
                 await s.commit()
         except Exception:
             log.exception("failed to persist server-side error to app_errors")
-        # OF's 'Wrong user.' (creator unlinked) pauses the account and drops the pooled client so a re-captured session loads on the next request.
+        # A session-dead error (wrong user, OTP required, no session) pauses the account and drops the pooled client so a re-captured session loads on the next request.
         try:
             dead_reason = account_health.is_session_dead_error(exc)
             aid = (request.headers.get("x-account-id")
@@ -1955,7 +1955,8 @@ def _proxy(call, *, client: OFClient | None = None, send: bool = False, started:
                 try:
                     return call()
                 except OFSessionRetired as e:
-                    # A busy pool was not evicted: a re-run would wait on the same handles again.
+                    # Retry only GETs since a write may have partially reached OF and could repeat a send.
+                    # A busy pool was never evicted, so a retry would wait on the same handles.
                     if isinstance(e, OFSignedPoolBusy) or req is None or req.method != "GET":
                         raise
                     log.info("client evicted mid-read account=%s: re-run on the current client", aid)
@@ -2814,15 +2815,8 @@ def _proxy_message_write(fn: Callable[[], Any]) -> Any:
 
 def _platform_call(name: str, what: str) -> Callable[..., Any]:
     client = _get_client()
-    if side_effect_gate.refusal(client, name) is not None:
-        raise HTTPException(status_code=501, detail=f"{what}: not on this platform")
+    side_effect_gate.raise_if_refused(side_effect_gate.refusal(client, name), what)
     return getattr(client, name)
-
-
-def _refuse_if_platform_lacks(aid: str, name: str, what: str) -> None:
-    if platforms.refusal_for_account(aid, name) is not None:
-        raise HTTPException(status_code=501, detail=f"{what}: not on this platform")
-
 
 
 # Static /users/list before the dynamic /users/{...}, else FastAPI matches 'list' as a username.
@@ -3357,6 +3351,7 @@ async def of_my_settings(
     staleness** in that case; callers can force a fresh fetch via ?refresh=1.
     """
     aid = _current_aid()
+    side_effect_gate.refuse_if_platform_lacks(aid, "my_settings", "account settings")
     coalesce_key = ("my_settings", aid)
     async def _fetch():
         return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
@@ -4063,7 +4058,7 @@ async def admin_mass_messages_list(
     silently when no-one clicks Refresh."""
     import mass_broadcast_cache as cache
     aid = account_id or _resolve_account_id(request)
-    _refuse_if_platform_lacks(aid, "mass_message_history", "mass message history")
+    side_effect_gate.refuse_if_platform_lacks(aid, "mass_message_history", "mass message history")
     if await cache.is_stale(aid):
         try:
             end = datetime.utcnow()
@@ -4072,13 +4067,13 @@ async def admin_mass_messages_list(
             client = _load_client(aid)
 
             def _fetch():
-                # Blocking OF round-trip off the event loop so a stale-cache refresh can't freeze vault-open / chat-click for everyone.
                 with _priority_lane(aid):
                     return client.mass_message_history(
                         start_date=start.strftime(fmt),
                         end_date=end.strftime(fmt),
                         limit=limit, offset=0,
                     )
+            # Blocking OF round-trip off the event loop so a stale-cache refresh can't freeze vault-open / chat-click for everyone.
             resp = await asyncio.to_thread(_fetch)
             items = (resp.get("items") if isinstance(resp, dict) else None) or []
             await cache.upsert_many(aid, items)
@@ -4103,7 +4098,7 @@ async def admin_mass_messages_refresh(
     so the UI gets the new state in one roundtrip."""
     import mass_broadcast_cache as cache
     aid = account_id or _resolve_account_id(request)
-    _refuse_if_platform_lacks(aid, "mass_message_history", "mass message history")
+    side_effect_gate.refuse_if_platform_lacks(aid, "mass_message_history", "mass message history")
     end = datetime.utcnow()
     start = end - timedelta(days=days_back)
     fmt = "%Y-%m-%d %H:%M:%S"
@@ -4270,12 +4265,14 @@ def of_pin_message(message_id: int, user_id: int):
     """Pin a message inside a chat. Path mirrors OF's wire shape
     (`/messages/{msg}/pin/user/{chat_partner}`) — the shorter `/pin` form
     didn't reliably pin to the chat's visible pinned list."""
+    side_effect_gate.refuse_if_platform_lacks(_current_aid(), "pin_message", "pin message")
     result = _proxy_message_write(lambda: _platform_call("pin_message", "pin message")(message_id, user_id))
     _bust_chat_detail(None, user_id)
     return result
 
 @app.delete("/api/of/v2/messages/{message_id}/pin/user/{user_id}")
 def of_unpin_message(message_id: int, user_id: int):
+    side_effect_gate.refuse_if_platform_lacks(_current_aid(), "unpin_message", "unpin message")
     result = _proxy_message_write(lambda: _platform_call("unpin_message", "unpin message")(message_id, user_id))
     _bust_chat_detail(None, user_id)
     return result
@@ -4376,7 +4373,7 @@ async def of_delete_chat(chat_id: int):
     joins ids with commas, but no live capture vouches for it). Busts the cached
     chat list and the roster badge so the row and its count go on the next read."""
     aid = _current_aid()
-    _refuse_if_platform_lacks(aid, "delete_chat", "delete chat")
+    side_effect_gate.refuse_if_platform_lacks(aid, "delete_chat", "delete chat")
     r = await _paced_of_write(aid, lambda: _get_client().delete_chat(chat_id))
     _bust_chat_list_and_badges(aid, chat_id)
     return r
@@ -4530,7 +4527,7 @@ async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(Tru
     already in the durable registry (a second click must not send another dot)."""
     from automations._common import load_of_restricted_ids, set_of_restricted_skip
     account_id = _resolve_account_id(request)
-    _refuse_if_platform_lacks(account_id, "restrict_user", "restrict user")
+    side_effect_gate.refuse_if_platform_lacks(account_id, "restrict_user", "restrict user")
     acked = False
     if ack and int(user_id) not in await load_of_restricted_ids(account_id):
         try:
@@ -4606,6 +4603,7 @@ def of_gif_search(q: str = Query(..., min_length=1),
 @app.get("/api/of/v2/messages/templates")
 def of_message_templates(template: str | None = Query(None, description="filter, e.g. 'reply_on_subscribe'")):
     """Saved replies + welcome message. `template=reply_on_subscribe` filters to the welcome message."""
+    side_effect_gate.refuse_if_platform_lacks(_current_aid(), "message_templates", "message templates")
     return _proxy(lambda: _get_client().message_templates(template=template))
 
 
@@ -4919,7 +4917,7 @@ def of_close_all_sessions():
     `_denied` backstop still refuses it (403 refused_by_relay, nothing sent) until the owner's go (ticket 81)."""
     return _settings_write(lambda: _get_client().close_all_sessions())
 
-# OF's own security PUT with only that control's keys, each on its own route; never the general security PUT.
+# Each block-list route sends only its own control's keys, allowlisted and type-checked, to OF's shared security PUT.
 def _list_body(body: dict, kinds: dict[str, type]) -> dict:
     body = _allowed_body(body, frozenset(kinds))
     for key, kind in kinds.items():
@@ -5518,12 +5516,14 @@ async def of_create_story(body: _CreateStoryBody = Body(...)):
                      (its `send_with`); posted as-is.
     """
     if body.media_files:
+        side_effect_gate.refuse_if_platform_lacks(_current_aid(), "create_story", "create story")
         return _proxy(lambda: _get_client().create_story(
             body.media_files,
             caption=body.caption, mention=body.mention, question=body.question,
         ))
     if not body.media_url:
         raise HTTPException(400, "provide media_url or media_files")
+    side_effect_gate.refuse_if_platform_lacks(_current_aid(), "post_story_from_url", "create story")
     return _proxy(lambda: _get_client().post_story_from_url(
         body.media_url, watermark_text=body.watermark_text,
         caption=body.caption, mention=body.mention, question=body.question,
@@ -5533,6 +5533,7 @@ async def of_create_story(body: _CreateStoryBody = Body(...)):
 async def of_create_story_upload(file: UploadFile = File(...)):
     """Publish a directly-uploaded file as a story. Multipart field: `file`."""
     import tempfile, shutil
+    side_effect_gate.refuse_if_platform_lacks(_current_aid(), "post_story", "create story")
     suffix = os.path.splitext(file.filename or "story.jpg")[1] or ".jpg"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         shutil.copyfileobj(file.file, tmp)

@@ -11,6 +11,7 @@ import logging  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
 import uuid  # noqa: E402
+from itertools import count  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import accounts  # noqa: E402
@@ -317,11 +318,12 @@ import relay_cache  # noqa: E402
 import shared_refresher  # noqa: E402
 import unread_total  # noqa: E402
 import view_lease  # noqa: E402
-from automations import auto_follow  # noqa: E402
+from automations import auto_follow, scrape_chats  # noqa: E402
 from db.models import ScheduledJob  # noqa: E402
 
 Lack = platforms.Lack
 RUN_AT = "2030-01-01T00:00:00Z"
+_history_fan_ids = count(10000)
 
 
 class _Reached(Exception):
@@ -344,6 +346,12 @@ class _ProbeClient:
 
     def user_posts(self, user_id, **kw):
         self.calls.append("user_posts")
+        return {"list": []}
+
+    def get_messages(self, chat_id, *, order, **kw):
+        self.calls.append(order)
+        if order == "desc":
+            return {"list": [{"id": chat_id * 10, "fromUser": {"id": chat_id}}], "hasMore": True}
         return {"list": []}
 
 
@@ -447,9 +455,20 @@ async def _server_schedule_on(client: _ProbeClient) -> bool:
     return client.calls == ["schedule_message"]
 
 
+async def _history_unread_gate_on(client: _ProbeClient) -> bool:
+    client.calls.clear()
+    await scrape_chats._scrape_one_chat(
+        AID, client.user_id, client, next(_history_fan_ids), None,
+        page_size=1, max_pages=1, of_unread=True,
+    )
+    assert client.calls in (["desc"], ["desc", "asc"]), client.calls
+    return client.calls == ["desc"]
+
+
 PROBES = {
     Lack.REFERRALS: _referrals_on,
     Lack.WALL_MEDIA: _wall_media_on,
+    Lack.HISTORY_UNREAD_GATE: _history_unread_gate_on,
     Lack.UNREAD_TOTAL: _unread_total_on,
     Lack.SHARED_REFRESH: _shared_refresh_on,
     Lack.NEAR_SCHEDULE_MEDIA: _near_schedule_media_on,
@@ -462,6 +481,7 @@ async def _probe_all(client: _ProbeClient) -> dict:
 
 
 async def case_onlyfans_keeps_every_policy_and_fansly_lacks_every_one():
+    assert set(PROBES) == set(Lack)
     client = _ProbeClient()
     with _patched(client_pool, get=lambda aid: client), \
             _patched(fansly_backend, get_client=lambda aid: client):

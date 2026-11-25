@@ -1,42 +1,35 @@
-/**
- * MassMessageComposer on the rendered form:
- *   • the Broadcast button is disabled while the form is invalid and its
- *     `title` says why — but a phone has no hover, so the footer shows the same
- *     reason and clears once the form is valid;
- *   • the button and the send read the ONE validateMass result: an invalid
- *     form never POSTs, a valid one POSTs exactly its body once;
- *   • the all-models switch resets the Smart List picks with the rest of the
- *     audience (the reducer owns them), and disables the segment query;
- *   • a trailing GIF send that fails after the broadcast landed leaves the
- *     form spent: the failure is listed and Broadcast stays off, so the paid
- *     broadcast can't be sent twice;
- *   • an all-models partial failure locks the content and the retry sends
- *     the same body from the failed model only.
- */
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
-import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
+import { makeTestQueryClient, renderWithProviders as render } from "@/test-utils";
 import { relay } from "@/lib/relay";
 import { MassMessageComposer } from "@/components/compose/MassMessageComposer";
 import { MASS_ONE_GIF_ALL_MODELS } from "@/components/compose/massMessageReducer";
+import CreateMessage from "@/components/growth/CreateMessagePopUp";
+import { ownerAccountsQuery } from "@/lib/ownerAccounts";
+import { IfConfirmHost } from "@/components/ui/ifConfirm";
 import { PRICE_NOTE } from "@/lib/sendGuards";
-import { resetPlatformForTests, setPlatform } from "@/lib/platform";
+import { AllPlatformsContext, resetPlatformForTests, setPlatform } from "@/lib/platform";
 
 type Fixture = { id: string; nickname: string; color: string; platform?: string };
 const BASE: Fixture[] = [{ id: "acct1", nickname: "A", color: "#fff" }, { id: "acct2", nickname: "B", color: "#fff" }];
-const fixtures = vi.hoisted(() => ({ accounts: [] as Fixture[] }));
-vi.mock("@/hooks/useCan", async () => {
-  const { accountPlatform, can } = await import("@/lib/platform");
-  const useAccountPlatform = (id: string | null | undefined) => {
-    const a = fixtures.accounts.find((x) => x.id === id);
-    return a ? accountPlatform(a) : null;
-  };
-  return {
-    useAccountPlatform,
-    useCan: (id: string | null | undefined, cap: Parameters<typeof can>[1]) => can(useAccountPlatform(id), cap),
-  };
-});
+const fixtures = vi.hoisted(() => ({
+  accounts: [] as Fixture[],
+  scope: { scope: { kind: "all" } } as { scope: { kind: "all" } | { kind: "model"; accountId: string } },
+}));
+vi.mock("@/contexts/UserContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/contexts/UserContext")>(),
+  useOptionalUser: () => ({ user: { user_id: "mass-owner" } }),
+}));
+
+function renderWithRoster(ui: ReactElement, client = makeTestQueryClient()) {
+  client.setQueryData(ownerAccountsQuery("mass-owner").queryKey, {
+    accounts: fixtures.accounts,
+    active_account_id: null,
+  });
+  return render(ui, client);
+}
 
 const postSpy = vi.fn(async (..._a: unknown[]) => ({}));
 vi.mock("@/lib/relay", async (importOriginal) => {
@@ -44,19 +37,17 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   return { ...mod, relay: { ...mod.relay, post: (...a: unknown[]) => postSpy(...a), get: vi.fn(async () => []) } };
 });
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: { id: 1 } }) }));
-vi.mock("@/contexts/ScopeContext", () => {
-  const all = { scope: { kind: "all" } };
-  return { useScope: () => all };
-});
+vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => fixtures.scope }));
 vi.mock("@/hooks/useAccounts", async () => {
-  const { useMemo } = await import("react");
-  const { accountPlatform, usePlatform } = await import("@/lib/platform");
+  const { useContext, useMemo } = await import("react");
+  const { accountPlatform, AllPlatformsContext, usePlatform } = await import("@/lib/platform");
   return {
     useActiveAccounts: () => fixtures.accounts,
     usePlatformAccounts: () => {
       const platform = usePlatform();
+      const every = useContext(AllPlatformsContext);
       const all = fixtures.accounts;
-      return useMemo(() => all.filter((a) => accountPlatform(a) === platform), [all, platform]);
+      return useMemo(() => (every ? all : all.filter((a) => accountPlatform(a) === platform)), [all, platform, every]);
     },
     ownerAccountsQuery: (u?: string) => ({ queryKey: ["accounts", u ?? "anon"], queryFn: async () => ({ accounts: fixtures.accounts }) }),
   };
@@ -76,7 +67,6 @@ vi.mock("@/hooks/useSmartLists", () => {
   };
 });
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
-// The GIF strip as one button per GIF (the real one searches a GIF API).
 vi.mock("@/components/chat/GifPicker", () => ({
   GifPickerButton: ({ onToggle }: { onToggle: () => void }) => <button type="button" onClick={onToggle}>GIF</button>,
   GifPickerStrip: ({ onPick }: { onPick: (g: { id: string; thumbUrl: string; fullUrl: string; title: string }) => void }) => (
@@ -92,6 +82,7 @@ vi.mock("@/components/chat/GifPicker", () => ({
 
 beforeEach(() => {
   fixtures.accounts = BASE;
+  fixtures.scope = { scope: { kind: "all" } };
 });
 afterEach(() => {
   cleanup();
@@ -108,7 +99,7 @@ const typePrice = (v: string) => fireEvent.change(screen.getByPlaceholderText("0
 
 describe("MassMessageComposer — why the button is disabled, visible without hover", () => {
   it("an empty draft shows the reason; typing clears it", async () => {
-    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    renderWithRoster(<MassMessageComposer onClose={() => {}} />);
     const btn = broadcast();
     await waitFor(() => expect(btn).toHaveProperty("disabled", true));
     expect(btn.getAttribute("title")).toBe(REASON);
@@ -129,7 +120,7 @@ describe("MassMessageComposer — the button and the send read one check", () =>
     ["a price under $3", "hello", "2", PRICE_NOTE],
   ])("%s: Broadcast is off, says why, and a click POSTs nothing", async (_n, text, price, reason) => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    renderWithRoster(<MassMessageComposer onClose={() => {}} />);
     typeText(text);
     typePrice(price);
     const btn = broadcast();
@@ -143,7 +134,7 @@ describe("MassMessageComposer — the button and the send read one check", () =>
   it("a valid draft POSTs its body once, then closes", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const onClose = vi.fn();
-    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    renderWithRoster(<MassMessageComposer onClose={onClose} />);
     typeText("hello");
     typePrice("5");
     const btn = broadcast();
@@ -159,13 +150,57 @@ describe("MassMessageComposer — the button and the send read one check", () =>
 
   it("a cancelled confirm sends nothing", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
-    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    renderWithRoster(<MassMessageComposer onClose={() => {}} />);
     typeText("hello");
     const btn = broadcast();
     await waitFor(() => expect(btn).toHaveProperty("disabled", false));
     fireEvent.click(btn);
     await new Promise((r) => setTimeout(r, 20));
     expect(postSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("CreateMessage", () => {
+  it("a cold Fansly page with the OnlyFans sidebar never POSTs a broadcast", async () => {
+    const client = makeTestQueryClient();
+    const rosterKey = ownerAccountsQuery("mass-owner").queryKey;
+    const fansly = { id: "900539700124344320", nickname: "Nova", color: "#fff", platform: "fansly" };
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const onClose = vi.fn();
+    const popup = render(<CreateMessage open accountId={fansly.id} onClose={onClose} />, client);
+    fireEvent.click(screen.getByRole("button", { name: /OF mass message/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    popup.rerender(<CreateMessage open={false} accountId={fansly.id} onClose={onClose} />);
+    await screen.findByPlaceholderText("What's the broadcast?");
+    typeText("keep this draft");
+    await act(async () => { fireEvent.click(broadcast()); });
+    expect(postSpy.mock.calls).toEqual([]);
+    expect(broadcast()).toBeDisabled();
+
+    await act(async () => { client.setQueryData(rosterKey, { accounts: [BASE[0], fansly] }); });
+    await waitFor(() => expect(screen.getByPlaceholderText("What's the broadcast?")).toHaveValue("keep this draft"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Broadcast from ALL models/ }));
+    fireEvent.click(broadcast());
+    expect(broadcast()).toBeDisabled();
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it("hides all three broadcast cards for a known Fansly page Creator", () => {
+    fixtures.accounts = [BASE[0], { id: "fs1", nickname: "Nova", color: "#fff", platform: "fansly" }];
+    renderWithRoster(<CreateMessage open accountId="fs1" onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /mass message|Message online fans/i })).toBeNull();
+  });
+
+  it("shows all three cards on a cold OnlyFans page and opens the page Creator as sender", async () => {
+    fixtures.accounts = [BASE[1], BASE[0]];
+    const onClose = vi.fn();
+    const popup = render(<CreateMessage open accountId="acct1" onClose={onClose} />);
+    expect(screen.getByRole("button", { name: /Priority mass message/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Message online fans/ })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /OF mass message/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    popup.rerender(<CreateMessage open={false} accountId="acct1" onClose={onClose} />);
+    expect(await screen.findByLabelText("Post as")).toHaveValue("acct1");
   });
 });
 
@@ -176,7 +211,7 @@ describe("MassMessageComposer — only massSenders send", () => {
 
   it("a Fansly Creator is no option and no All-models chip; the OnlyFans ones stay, in order", async () => {
     fixtures.accounts = [BASE[0], NOVA, BASE[1]];
-    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    renderWithRoster(<MassMessageComposer onClose={() => {}} />);
     expect(options()).toEqual(["A", "B"]);
     allModels();
     expect(screen.getByText("(2/2 included)")).toBeInTheDocument();
@@ -186,7 +221,7 @@ describe("MassMessageComposer — only massSenders send", () => {
   it("a forced Fansly id is no sender: Broadcast refuses and POSTs nothing", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fixtures.accounts = [BASE[0], NOVA];
-    renderWithProviders(<MassMessageComposer forcedAccountId="fs1" onClose={() => {}} />);
+    renderWithRoster(<MassMessageComposer forcedAccountId="fs1" onClose={() => {}} />);
     typeText("hello");
     const btn = broadcast();
     await waitFor(() => expect(btn.getAttribute("title")).toBe("Pick an account"));
@@ -198,7 +233,11 @@ describe("MassMessageComposer — only massSenders send", () => {
   it("a forced OnlyFans Creator with no session still POSTs from her id", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const onClose = vi.fn();
-    renderWithProviders(<MassMessageComposer forcedAccountId="ofX" onClose={onClose} />);
+    const client = makeTestQueryClient();
+    renderWithRoster(<MassMessageComposer forcedAccountId="ofX" onClose={onClose} />, client);
+    client.setQueryData(ownerAccountsQuery("mass-owner").queryKey, {
+      accounts: [...fixtures.accounts, { id: "ofX", platform: "onlyfans", has_session: false }],
+    });
     typeText("hello");
     const btn = broadcast();
     await waitFor(() => expect(btn).toHaveProperty("disabled", false));
@@ -211,7 +250,7 @@ describe("MassMessageComposer — only massSenders send", () => {
   it("in Fansly mode there is no sender at all", async () => {
     setPlatform("fansly");
     fixtures.accounts = [NOVA];
-    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    renderWithRoster(<MassMessageComposer onClose={() => {}} />);
     expect(options()).toEqual(["(no active sessions)"]);
     typeText("hello");
     await waitFor(() => expect(broadcast().getAttribute("title")).toBe("Pick an account"));
@@ -220,12 +259,130 @@ describe("MassMessageComposer — only massSenders send", () => {
     expect(screen.queryByRole("button", { name: "Aa" })).toBeNull();
   });
 
+  it("in Combined Messages Pro with the switch on Fansly the OnlyFans Creators still send, with Aa", async () => {
+    setPlatform("fansly");
+    fixtures.accounts = [NOVA, BASE[0], BASE[1]];
+    renderWithRoster(<AllPlatformsContext value><MassMessageComposer onClose={() => {}} /></AllPlatformsContext>);
+    expect(options()).toEqual(["A", "B"]);
+    allModels();
+    expect(screen.getByText("(2/2 included)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Aa" })).toBeInTheDocument();
+  });
+
+  const inWindow = (ui: ReactElement) => renderWithRoster(<AllPlatformsContext value>{ui}</AllPlatformsContext>);
+  const posted = () => postSpy.mock.calls.map((c) => (c[2] as { accountId: string }).accountId);
+
+  it("in the window an All-models send on a mixed list confirms and POSTs only the OnlyFans Creators", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const onClose = vi.fn();
+    fixtures.accounts = [BASE[0], NOVA, BASE[1]];
+    inWindow(<MassMessageComposer onClose={onClose} />);
+    typeText("hello all");
+    allModels();
+    expect(screen.getByText("(2/2 included)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Nova/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Aa" })).toBeInTheDocument();
+    const btn = broadcast();
+    await waitFor(() => expect(btn).toHaveProperty("disabled", false));
+    fireEvent.click(btn);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(confirmSpy).toHaveBeenLastCalledWith("Broadcast from 2 models?");
+    expect(posted()).toEqual(["acct1", "acct2"]);
+  });
+
+  it("aborts confirmation when an eligible Creator changes Platform", async () => {
+    const onClose = vi.fn();
+    const view = () => (
+      <AllPlatformsContext value>
+        <MassMessageComposer onClose={onClose} />
+        <IfConfirmHost />
+      </AllPlatformsContext>
+    );
+    const { rerender } = renderWithRoster(view());
+    typeText("hello all");
+    allModels();
+    fireEvent.click(broadcast());
+    expect(screen.getByText("Broadcast from 2 models?")).toBeInTheDocument();
+
+    fixtures.accounts = [BASE[0], { ...BASE[1], platform: "fansly" }];
+    rerender(view());
+    expect(screen.getByText("(1/1 included)")).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "OK" })));
+
+    expect(posted()).toEqual([]);
+    expect(broadcast()).toBeEnabled();
+  });
+
+  it("rechecks eligible Creators before each POST in a broadcast", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    let finish!: (value: object) => void;
+    postSpy.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = <MassMessageComposer onClose={vi.fn()} />;
+    const { rerender } = renderWithRoster(view);
+    typeText("hello all");
+    allModels();
+    fireEvent.click(broadcast());
+    await waitFor(() => expect(posted()).toEqual(["acct1"]));
+
+    fixtures.accounts = [BASE[0], { ...BASE[1], platform: "fansly" }];
+    rerender(<MassMessageComposer onClose={vi.fn()} />);
+    await act(async () => finish({}));
+
+    expect(posted()).toEqual(["acct1"]);
+  });
+
+  it("a confirmed broadcast still reaches every Creator when the composer unmounts mid-send", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    let finish!: (value: object) => void;
+    postSpy.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const { unmount } = renderWithRoster(<MassMessageComposer onClose={vi.fn()} />);
+    typeText("hello all");
+    allModels();
+    fireEvent.click(broadcast());
+    await waitFor(() => expect(posted()).toEqual(["acct1"]));
+
+    unmount();
+    await act(async () => finish({}));
+
+    await waitFor(() => expect(posted()).toEqual(["acct1", "acct2"]));
+  });
+
+  it("in the window a scoped OnlyFans Creator opens an OnlyFans composer: picker and chips skip Nova", () => {
+    fixtures.accounts = [NOVA, BASE[0], BASE[1]];
+    inWindow(<MassMessageComposer forcedAccountId="acct2" onClose={() => {}} />);
+    expect(options()).toEqual(["A", "B"]);
+    expect((screen.getByLabelText("Post as") as HTMLSelectElement).value).toBe("acct2");
+    allModels();
+    expect(screen.getByText("(2/2 included)")).toBeInTheDocument();
+  });
+
+  it("in the window a scoped Fansly Creator opens a Fansly composer, which has no sender at all", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fixtures.accounts = [BASE[0], NOVA];
+    inWindow(<MassMessageComposer forcedAccountId="fs1" onClose={() => {}} />);
+    expect(options()).toEqual(["(no active sessions)"]);
+    typeText("hello");
+    await waitFor(() => expect(broadcast().getAttribute("title")).toBe("Pick an account"));
+    allModels();
+    expect(screen.getByText("No active sessions.")).toBeInTheDocument();
+    fireEvent.click(broadcast());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it("in the window the picker seeding a scoped Fansly Creator moves the composer to Fansly: no OnlyFans sender is left", () => {
+    fixtures.accounts = [BASE[0], NOVA];
+    fixtures.scope = { scope: { kind: "model", accountId: "fs1" } };
+    inWindow(<MassMessageComposer onClose={() => {}} />);
+    expect(options()).toEqual(["(no active sessions)"]);
+  });
+
   it.each<[string, Fixture[], boolean]>([
     ["OnlyFans All-models keeps Aa", [BASE[0], BASE[1]], true],
     ["a leading Fansly row is skipped for the first OnlyFans sender", [NOVA, BASE[0]], true],
   ])("All-models rich text follows the first sender: %s", async (_label, accounts, aa) => {
     fixtures.accounts = accounts;
-    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    renderWithRoster(<MassMessageComposer onClose={() => {}} />);
     allModels();
     expect(!!screen.queryByRole("button", { name: "Aa" })).toBe(aa);
   });
@@ -233,7 +390,7 @@ describe("MassMessageComposer — only massSenders send", () => {
 
 describe("MassMessageComposer — all-models resets the Smart List picks", () => {
   it("a picked Smart List is cleared by all-models on → off", async () => {
-    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    renderWithRoster(<MassMessageComposer onClose={() => {}} />);
     const chip = () => screen.getAllByRole("button", { name: "Whales" })[0];
     await waitFor(() => expect(chip()).toBeTruthy());
     fireEvent.click(chip());
@@ -258,7 +415,7 @@ describe("MassMessageComposer — a failed trailing GIF send never re-arms the b
       .mockImplementationOnce(async () => ({}))
       .mockImplementationOnce(async () => { throw new Error("OF said no"); });
     const onClose = vi.fn();
-    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    renderWithRoster(<MassMessageComposer onClose={onClose} />);
     typeText("hello");
     typePrice("5");
     for (const t of ["one", "two"]) {
@@ -273,7 +430,6 @@ describe("MassMessageComposer — a failed trailing GIF send never re-arms the b
     expect(alert.textContent).toContain("1 of 1 extra GIF send failed");
     expect(alert.textContent).toContain("GIF two — OF said no");
     expect(broadcast()).toHaveProperty("disabled", true);
-    // The footer's Cancel reads Close (the modal's × is the other "Close").
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(2);
     expect(onClose).not.toHaveBeenCalled();
@@ -295,7 +451,7 @@ describe("MassMessageComposer — all-models partial failure", () => {
       return {};
     });
     const onClose = vi.fn();
-    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    renderWithRoster(<MassMessageComposer onClose={onClose} />);
     typeText("hello all");
     fireEvent.click(screen.getByRole("checkbox", { name: /Broadcast from ALL models/ }));
     const btn = broadcast();
@@ -319,7 +475,7 @@ describe("MassMessageComposer — all-models partial failure", () => {
 
 describe("MassMessageComposer — all-models takes one GIF", () => {
   it("BUG: a 2nd GIF disables Broadcast with its reason (was: only the first sent, the rest dropped)", async () => {
-    renderWithProviders(<MassMessageComposer onClose={vi.fn()} />);
+    renderWithRoster(<MassMessageComposer onClose={vi.fn()} />);
     typeText("hello all");
     fireEvent.click(screen.getByRole("checkbox", { name: /Broadcast from ALL models/ }));
     for (const t of ["one", "two"]) {
@@ -342,7 +498,6 @@ describe("MassMessageComposer — once touched, Escape stays off until it closes
   const MASSDM = { id: 502, name: "MASSDMEXCLUDE", type: "custom", usersCount: 2 };
   const box = (name: string, side: 0 | 1) => screen.getAllByRole("checkbox", { name: new RegExp(`^${name}`) })[side];
   it("a custom exclusion ticked before the seeding lands stays an edit after it", async () => {
-    // acct1's lists are cached (stale) and refetching: the seed waits, the cached lists are already tickable.
     let land!: (v: unknown) => void;
     const pending = new Promise((r) => { land = r; });
     const get = vi.mocked(relay.get);
@@ -351,7 +506,7 @@ describe("MassMessageComposer — once touched, Escape stays off until it closes
       const qc = makeTestQueryClient();
       qc.setQueryData(["fan-lists", "acct1"], [VIP, MASSDM], { updatedAt: 0 });
       const onClose = vi.fn();
-      renderWithProviders(<MassMessageComposer forcedAccountId="acct1" onClose={onClose} />, qc);
+      renderWithRoster(<MassMessageComposer forcedAccountId="acct1" onClose={onClose} />, qc);
       fireEvent.click(box("VIP", 1));
       expect(box("MASSDMEXCLUDE", 1)).not.toBeChecked();
       land({ list: [VIP, MASSDM], hasMore: false });
@@ -365,7 +520,7 @@ describe("MassMessageComposer — once touched, Escape stays off until it closes
   });
   it("typed then cleared: Escape still does nothing (declared), × closes", () => {
     const onClose = vi.fn();
-    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    renderWithRoster(<MassMessageComposer onClose={onClose} />);
     typeText("hello");
     typeText("");
     escape();
@@ -379,20 +534,19 @@ describe("MassMessageComposer — Escape never drops a typed draft", () => {
   const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
   it("clean: Escape closes", () => {
     const onClose = vi.fn();
-    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    renderWithRoster(<MassMessageComposer onClose={onClose} />);
     escape();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
   it("dirty: Escape does nothing", () => {
     const onClose = vi.fn();
-    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    renderWithRoster(<MassMessageComposer onClose={onClose} />);
     typeText("hello");
     escape();
     expect(onClose).not.toHaveBeenCalled();
   });
-  /** Open, and wait for the seeding (the picker's first account, its lists read, the Smart Lists). */
   async function seeded(onClose: () => void) {
-    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    renderWithRoster(<MassMessageComposer onClose={onClose} />);
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Whales" })[0]).toBeTruthy());
   }
   it("seeded and untouched: Escape still closes", async () => {
@@ -413,7 +567,7 @@ describe("MassMessageComposer — Escape never drops a typed draft", () => {
   });
   it("Mass Online: only a targeting limit set: Escape does nothing", async () => {
     const onClose = vi.fn();
-    renderWithProviders(<MassMessageComposer mode="online" onClose={onClose} />);
+    renderWithRoster(<MassMessageComposer mode="online" onClose={onClose} />);
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Whales" })[0]).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/Include fans with unread msgs/), { target: { value: "50" } });
     escape();
@@ -421,11 +575,10 @@ describe("MassMessageComposer — Escape never drops a typed draft", () => {
   });
 });
 
-// The pickers portal above the dialog; Escape in their search box is theirs, never the composer's (useModalFocus).
 describe("MassMessageComposer — Escape in a picker's search box leaves even a clean composer open", () => {
   it.each([["Emoji picker"], ["Insert saved template"], ["Tag other creators in this message"]])("%s", async (name) => {
     const onClose = vi.fn();
-    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    renderWithRoster(<MassMessageComposer onClose={onClose} />);
     fireEvent.click(screen.getByTitle(name));
     const input = await waitFor(() => {
       const el = [...document.querySelectorAll<HTMLInputElement>("input[type=text], input[type=search]")]

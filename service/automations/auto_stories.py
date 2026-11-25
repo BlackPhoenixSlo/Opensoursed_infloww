@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 
 import automation_executor as ax
 import media_cotag
+import platforms
+from side_effect_gate import PLATFORM_LACKS_PREFIX
 from automation_registry import register
 from ._common import bool_knob
 from automations._pools import has_media_source, pick_media
@@ -50,6 +52,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     with `media_count` (falls back to `per_run`) sampled per fire. The legacy
     single-folder shape (`folder_id`) still works — it maps onto the pool's
     `media_folder_id`."""
+    if platforms.refusal_for_account(account_id, "post_story_from_url"):
+        return {"status": "skipped", "reason": f"{PLATFORM_LACKS_PREFIX}post_story_from_url"}
     payload = payload or {}
 
     folder_id = payload.get("media_folder_id")

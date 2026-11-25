@@ -11,13 +11,15 @@ import json
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from sqlalchemy import select
 
 import fansly_backend
 from db.engine import get_session
 from db.models import Transaction, TransactionScanHistory
+from fansly_client import FanslyAPIError
+from fansly_shim import _BANKING_SET
 
 log = logging.getLogger("of-relay.fansly_revenue")
 
@@ -76,13 +78,15 @@ class Sale(NamedTuple):
     raw_json: str
 
 
-def parse_purchase(row: dict) -> Sale | None:
+def parse_purchase(row: dict) -> Sale | Literal["unpriced", "malformed"]:
+    amount_cents = _cents(row.get("price_usd"))
+    if amount_cents is None:
+        return "unpriced"
     provider_id = str(row.get("id") or "").strip()
     fan_id = _fan_id(row.get("fan_id"))
-    amount_cents = _cents(row.get("price_usd"))
     occurred_at = _occurred_at(row.get("created_at"))
-    if not provider_id or fan_id is None or amount_cents is None or occurred_at is None:
-        return None
+    if not provider_id or fan_id is None or occurred_at is None:
+        return "malformed"
     return Sale(
         provider_id=provider_id,
         fan_id=fan_id,
@@ -121,24 +125,39 @@ async def _mark_scanned(account_id: str, *, inserted: int) -> None:
 async def run_one_tick(account_id: str) -> TickResult:
     inserted = 0
     try:
-        client = await asyncio.to_thread(fansly_backend.get_client, account_id)
-    except FileNotFoundError:
-        return TickResult(rows_inserted=0, error="no_session")
-
-    try:
+        try:
+            client = await asyncio.to_thread(fansly_backend.get_client, account_id)
+        except FileNotFoundError:
+            return TickResult(rows_inserted=0, error="no_session")
         # to_thread: the shim is synchronous requests and this holds the per-account tick lock; inline it stalls the relay event loop.
         feed = await asyncio.to_thread(client.purchases)
+    except FanslyAPIError as exc:
+        status = getattr(exc.response, "status_code", None)
+        log.warning("fansly_revenue_feed_failed account=%s error=%s status=%s",
+                    account_id, type(exc).__name__, status)
+        raise FanslyAPIError(f"status={status}") from None
     except Exception:
         # Raise, don't swallow: the supervisor's own except records the failure, so recording here would double-count and trip the 3-strike pause after 2.
         log.warning("fansly_revenue_feed_failed account=%s", account_id, exc_info=True)
         raise
 
-    seen = feed["unbanked_seen"]
+    seen = dict(feed["unbanked_seen"])
+    dropped = any(seen.get(f"{code}_{reason}")
+                  for code in _BANKING_SET for reason in ("unpriced", "malformed"))
+    sales: list[Sale] = []
+    for row in feed["sales"]:
+        parsed = parse_purchase(row)
+        if isinstance(parsed, Sale):
+            sales.append(parsed)
+        else:
+            dropped = True
+            key = f"{row['code']}_{parsed}"
+            seen[key] = seen.get(key, 0) + 1
     if _last_seen.get(account_id, {}) != seen:
-        _last_seen[account_id] = dict(seen)
-        log.info("fansly_revenue_unbanked_seen account=%s counts=%s",
-                 account_id, json.dumps(seen, sort_keys=True))
-    sales = [x for x in (parse_purchase(r) for r in feed["sales"]) if x is not None]
+        _last_seen[account_id] = seen
+        level = logging.WARNING if dropped else logging.INFO
+        log.log(level, "fansly_revenue_unbanked_seen account=%s counts=%s",
+                account_id, json.dumps(seen, sort_keys=True))
     if not sales:
         await _mark_scanned(account_id, inserted=0)
         return TickResult(rows_inserted=0)

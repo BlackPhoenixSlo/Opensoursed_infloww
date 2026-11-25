@@ -4,12 +4,12 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { useScope } from "@/contexts/ScopeContext";
+import { useScope, useScopeHydrated } from "@/contexts/ScopeContext";
 import { useAccounts } from "@/hooks/useAccounts";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
 import { firstPage, isPlatformPage, platformOfPath } from "@/lib/nav";
 import {
-  accountPlatform, getPlatform, onPlatformChange, setPlatform, usePlatform, type Platform,
+  accountPlatform, foreignCreator, getPlatform, onPlatformChange, setPlatform, usePlatform,
 } from "@/lib/platform";
 
 const loadAddCreatorModal = () => import("@/components/setup/AddCreatorModal").then((m) => m.default);
@@ -24,9 +24,11 @@ export const LOAD_FAILED_LINE = "Couldn't load the login — reload the page.";
 export function PlatformSync() {
   const pathname = usePathname() ?? "/";
   const router = useRouter();
-  const accounts = useAccounts().data?.accounts;
+  const { data, isSuccess, isPlaceholderData } = useAccounts();
+  const accounts = data?.accounts;
   const { scope, setScope } = useScope();
-  const [owed, setOwed] = useState<Platform | null>(null);
+  const hydrated = useScopeHydrated();
+  const [owed, setOwed] = useState(true);
   const pathRef = useRef(pathname);
   useEffect(() => {
     pathRef.current = pathname;
@@ -35,7 +37,7 @@ export function PlatformSync() {
   useEffect(
     () =>
       onPlatformChange((p) => {
-        setOwed(p);
+        setOwed(true);
         const owner = platformOfPath(pathRef.current);
         if (owner && owner !== p) router.push(firstPage(p));
       }),
@@ -48,12 +50,11 @@ export function PlatformSync() {
   }, [pathname]);
 
   useEffect(() => {
-    if (!owed || !accounts) return;
-    setOwed(null);
-    if (owed !== getPlatform() || scope.kind !== "model") return;
-    const a = accounts.find((x) => x.id === scope.accountId);
-    if (a && accountPlatform(a) !== owed) setScope({ kind: "all" });
-  }, [owed, accounts, scope, setScope]);
+    if (!owed || !isSuccess || isPlaceholderData || !accounts || !hydrated) return;
+    setOwed(false);
+    if (scope.kind !== "model") return;
+    if (foreignCreator(accounts, scope.accountId, getPlatform())) setScope({ kind: "all" }, { persist: false });
+  }, [owed, isSuccess, isPlaceholderData, accounts, hydrated, scope, setScope]);
 
   return null;
 }

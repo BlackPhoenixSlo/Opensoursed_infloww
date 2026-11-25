@@ -1,9 +1,9 @@
 "use client";
 
 
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import {
-  infiniteQueryOptions, useInfiniteQuery, useQuery, useQueryClient, type InfiniteData, type QueryClient, type QueryKey,
+  infiniteQueryOptions, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient, type QueryKey,
 } from "@tanstack/react-query";
 
 import { relay, type RelayContext, type VaultList, type VaultListsResp, type VaultMedia, type VaultTypeCounts, type VaultMediaResp } from "@/lib/relay";
@@ -68,6 +68,7 @@ export async function fetchAllVaultLists(
   return { list: merged.map((l) => stableCovers(l, ctx.accountId)), hasMore: false, ...(all && { all }) };
 }
 
+// vault-lists is persisted: OF-signed cover urls are IP-bound and expire, so covers use the relay's stable thumb.
 export function stableCovers(l: VaultList, accountId: string | null | undefined): VaultList {
   if (!l.medias) return l;
   const medias = accountId
@@ -84,25 +85,25 @@ export function vaultMediaKey(accountId: string | null) {
   return ["vault-media", accountId] as const;
 }
 
+async function readVaultLists(accountId: string | null, refresh = false): Promise<VaultListsResp> {
+  const opId = perfOpId("vault.lists");
+  perfLog(opId, "vault.lists", "requested", { accountId });
+  try {
+    const result = await fetchAllVaultLists({ accountId: accountId ?? undefined }, { refresh });
+    perfDelivered(opId, "vault.lists", { count: (result.list ?? []).length });
+    return result;
+  } catch (err) {
+    perfError(opId, "vault.lists", { message: (err as Error)?.message });
+    throw err;
+  }
+}
+
 export function useVaultLists(accountId: string | null, enabled = true, includeEmpty = false) {
-  const bypassRef = useRef(false);
+  const qc = useQueryClient();
   const q = useQuery<VaultListsResp>({
     queryKey: vaultListsKey(accountId),
     enabled: enabled && !!accountId,
-    queryFn: async () => {
-      const opId = perfOpId("vault.lists");
-      perfLog(opId, "vault.lists", "requested", { accountId });
-      try {
-        const refresh = bypassRef.current;
-        bypassRef.current = false;
-        const r = await fetchAllVaultLists({ accountId: accountId ?? undefined }, { refresh });
-        perfDelivered(opId, "vault.lists", { count: (r.list ?? []).length });
-        return r;
-      } catch (err) {
-        perfError(opId, "vault.lists", { message: (err as Error)?.message });
-        throw err;
-      }
-    },
+    queryFn: () => readVaultLists(accountId),
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
     select: (d) => ({
@@ -112,12 +113,22 @@ export function useVaultLists(accountId: string | null, enabled = true, includeE
       all: d.all,
     }),
   });
-  const { refetch } = q;
-  const refresh = useCallback(() => {
-    bypassRef.current = true;
-    return refetch();
-  }, [refetch]);
-  return Object.assign(q, { refresh });
+  const manual = useMutation({
+    mutationFn: (id: string) => readVaultLists(id, true),
+    retry: 1,
+    onSuccess: async (data, id) => {
+      const queryKey = vaultListsKey(id);
+      await qc.cancelQueries({ queryKey, exact: true });
+      qc.setQueryData(queryKey, data);
+    },
+  });
+  const currentRefresh = manual.variables === accountId;
+  return {
+    ...q,
+    refresh: () => { if (accountId) manual.mutate(accountId); },
+    isRefreshing: currentRefresh && manual.isPending,
+    refreshFailed: currentRefresh && manual.isError,
+  };
 }
 
 export interface UseVaultMediaOpts {

@@ -8,6 +8,7 @@ import automation_executor as ax
 from automation_registry import register
 from automations._pools import has_media_source, pick_media, pick_text
 import platforms
+from side_effect_gate import PLATFORM_LACKS_PREFIX
 
 log = logging.getLogger("of-relay.automation.mass_premade")
 
@@ -73,7 +74,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         return {"dry_run": True, "messages": len(messages), "plan": plan, "sent": 0}
 
     if platforms.refusal_for_account(account_id, "send_mass_message"):
-        return {"status": "skipped", "reason": "platform_lacks:send_mass_message"}
+        return {"status": "skipped", "reason": f"{PLATFORM_LACKS_PREFIX}send_mass_message"}
 
     spec = messages[0] if isinstance(messages[0], dict) else {}
     rest = messages[1:]
@@ -115,6 +116,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         unsend_after = _pos_float(spec.get("unsend_after_hours"))
         if unsend_after and queue_id is not None:
             unsend_at = now + timedelta(hours=unsend_after)
+            # Plain enqueue_job, not enqueue_followup: a rule switched off still takes its sent mass down.
             unsend_job_id = await ax.enqueue_job(
                 account_id, "unsend_messages",
                 payload={"targets": [{"queue_id": int(queue_id), "mass_run_id": mass_run_id}]},

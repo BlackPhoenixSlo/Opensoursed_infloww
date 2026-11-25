@@ -29,7 +29,7 @@ router = APIRouter(tags=["lane-config"])
 
 # Long enough for the 200 (with the budget the panel renders) to reach the browser before the process goes away.
 _RESTART_DELAY_S = 0.5
-# Graceful shutdown waits for in-flight requests, then for any automation run that claimed a mass send (DRAIN_S); the hard exit waits past both, since cutting the drain turns a clean stop into a crash.
+# Graceful shutdown waits for in-flight requests, then for sends registered with begin_send() (DRAIN_S); the hard exit waits past both, since cutting the drain turns a clean stop into a crash.
 _RESTART_GRACE_S = 25.0 + float(os.environ.get("RELAY_DRAIN_S", "45"))
 # Identifies this process: polling the port alone can land before the SIGTERM and report a restart that had not happened.
 _BOOT_ID = f"{os.getpid()}-{time.time():.3f}"

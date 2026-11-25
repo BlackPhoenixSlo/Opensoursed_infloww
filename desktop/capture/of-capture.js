@@ -6,6 +6,7 @@ const ofUa = require("../lib/of-ua");
 const { chromeMajor } = ofUa;
 
 const OF_URL = "https://onlyfans.com/";
+// Omit `persist:` to keep the Electron capture partition in memory.
 const CAPTURE_PARTITION = "of-capture";
 const APP_TOKEN = "33d57ade8c02dbc5a333db99ff9ae26a";
 const REQUIRED_HDRS = ["user-id", "x-bc", "x-of-rev", "sign", "time"];

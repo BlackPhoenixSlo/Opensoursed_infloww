@@ -67,11 +67,12 @@ describe("useAccountPlatform / useCan read the cached Creator list", () => {
   });
 
   it.each<[string, string, Platform | null]>([
-    ["a roster row with no `platform`", "c1", "onlyfans"],
+    ["a stale roster row with no `platform`", "c1", null],
     ["a Fansly roster row", "c2", "fansly"],
+    ["an OnlyFans roster row", "c3", "onlyfans"],
     ["an id outside the roster", "c9", null],
   ])("chatter: %s", (_, id, platform) => {
-    client.setQueryData(chatterAccountsQuery.queryKey, [chatterRow("c1"), chatterRow("c2", { platform: "fansly" })]);
+    client.setQueryData(chatterAccountsQuery.queryKey, [chatterRow("c1"), chatterRow("c2", { platform: "fansly" }), chatterRow("c3", { platform: "onlyfans" })]);
     expect(read(id).platform).toBe(platform);
   });
 

@@ -56,7 +56,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             auto_tag=(purpose != "manual"),
         ),
         send_purpose=purpose,
-        # An operator run: never waits on the DM rate.
+        # An automation run waits for a DM-rate slot; an operator run never does.
         dm=True,
     )
 

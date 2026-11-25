@@ -68,12 +68,14 @@ def _sessions() -> list[tuple[str, Any, dict]]:
 def _donor(sessions: list[tuple[str, Any, dict]], rev: str) -> tuple[str, dict] | None:
     best: tuple[str, str, dict] | None = None
     for aid, _sp, s in sessions:
+        # Signing rules are tied to the OF build (x-of-rev).
         if (s.get("headers") or {}).get("x_of_rev") != rev:
             continue
         signing = s.get("signing") or {}
         rules, samples = signing.get("rules"), signing.get("samples") or []
         if not _complete(rules) or not samples:
             continue
+        # Samples verify checksum indexes and constant. A signed 2xx validates static_param/start/end.
         if not signing.get("signed_ok_at") or signing.get("static_param_source") == "override":
             continue
         try:

@@ -237,6 +237,7 @@ def js_safe_id(fid: int) -> int | str:
     return fid if abs(fid) <= _JS_SAFE_INT else str(fid)
 
 
+# Call after the writer's commit. Never put an amount in `fields`: every session of the Creator gets it, chatters whose role hides revenue too.
 async def announce_transaction(
     account_id: object, fan_id: int, *, occurred_at: datetime | None = None, capped: bool = False,
     **fields: object,

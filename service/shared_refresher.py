@@ -140,6 +140,7 @@ def _wanted(planned_last: float | None) -> Callable[[str], Awaitable[bool]]:
         why = "untracked" if account_id not in events.open_tab_accounts() else None
         if why is None and account_id not in set(await transaction_ingest.live_account_ids()):
             why = "unreadable"
+        # After the await: a read landing during live_account_ids() must still drop this job.
         if why is None and _state.last.get(account_id) != planned_last:
             why = "refreshed"
         if why is not None:

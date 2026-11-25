@@ -15,9 +15,12 @@ import re
 import subprocess
 import sys
 
+from functools import partial
+
+from comment_budget import load_budget
 from comment_equality import check_js, check_native
-from comment_lang import (JS_EXTS, MARK, git, pmap, py_context, py_scan, read_text, scan_files,
-                          sh_scan, state, texts_at, tracked, write_text)
+from comment_lang import (MARK, ROOT, PyContext, git, has_bom, native_scan, pmap, py_context_at, read_text,
+                          scan_files, source_langs, tracked, write_text)
 
 GH_REMOTE = re.compile(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?$")
 
@@ -62,21 +65,20 @@ def apply(text: str, spans: list[tuple[int, int, str]]) -> str:
             line += cr
         out.append(line)
     res = "\n".join(out)
-    if not re.match(r"﻿?\r?\n", text):
-        bom = "﻿" if res.startswith("﻿") else ""
+    if not re.match(r"\ufeff?\r?\n", text):
+        bom = "\ufeff" if has_bom(res) else ""
         res = bom + re.sub(r"^(?:[ \t]*\r?\n)+", "", res[len(bom):])
     return res
 
 
-def _strip_native(item: tuple[str, str]):
-    p, text = item
-    ctx = state()
+def _strip_native(ctx: PyContext, item: tuple[str, str, str]):
+    p, lang, text = item
     try:
-        scan = py_scan(p, text, ctx) if p.endswith(".py") else sh_scan(p, text)
+        scan = native_scan(p, lang, text, ctx)
         new = apply(text, scan.prunable)
         if new == text:
             return p, None, None, scan.partial
-        err = check_native(p, text, new, ctx, ctx)
+        err = check_native(p, lang, text, new, ctx, ctx)
         return p, (None if err else new), err, scan.partial
     except Exception as e:
         return p, None, f"unparsable: {type(e).__name__}: {e}", 0
@@ -95,32 +97,32 @@ def main() -> int:
             skip.update({line.strip(): f"skip-file {f}" for line in fh if line.strip()})
     if not a.no_pr_skip:
         skip.update(open_pr_paths(remote_repos() + a.pr_repo))
+    skip.update({p: "budget --allow reason" for p in load_budget()["allow"]})
     all_files = tracked(a.paths)
+    skip.update({p: "symlink" for p in all_files if (ROOT / p).is_symlink()})
     for p in all_files:
         if p in skip:
             print(f"SKIP {p}: {skip[p]}")
     files = [p for p in all_files if p not in skip]
     texts = {p: read_text(p) for p in files}
-    failed: dict[str, str] = {}
-    for p, t in texts.items():
-        if MARK in t:
-            failed[p] = "NUL byte in file"
+    langs, failed = source_langs(texts)
+    failed.update({p: "NUL byte in file" for p in langs if MARK in texts[p]})
     texts = {p: t for p, t in texts.items() if p not in failed}
 
-    ctx = py_context(list(texts_at(None, only_py=True).values()))
+    ctx = py_context_at(None)
     new: dict[str, str] = {}
-    partial: dict[str, int] = {}
-    native = [(p, t) for p, t in texts.items() if not p.endswith(JS_EXTS)]
-    for p, n, err, part in pmap(_strip_native, native, ctx):
+    parts: dict[str, int] = {}
+    native = [(p, langs[p], t) for p, t in texts.items() if langs[p] != "js"]
+    for p, n, err, part in pmap(partial(_strip_native, ctx), native):
         if err:
             failed[p] = err
         elif n is not None:
             new[p] = n
         if part:
-            partial[p] = part
+            parts[p] = part
 
-    js = {p: t for p, t in texts.items() if p.endswith(JS_EXTS)}
-    scans, errors = scan_files(js, ctx, "ranges")
+    js = {p: t for p, t in texts.items() if langs[p] == "js"}
+    scans, errors = scan_files({p: ("js", t) for p, t in js.items()}, ctx, "ranges")
     failed.update({p: f"unparsable: {e}" for p, e in errors.items()})
     js_pairs = {}
     for p, s in scans.items():
@@ -135,11 +137,11 @@ def main() -> int:
         write_text(p, n)
     for p, e in sorted(failed.items()):
         print(f"LEFT {p}: {e}", file=sys.stderr)
-    for p, n in sorted(partial.items()):
+    for p, n in sorted(parts.items()):
         print(f"PARTIAL {p}: {n} docstring(s) share a line with code, kept", file=sys.stderr)
-    print(f"stripped {len(new)} files; {len(failed)} left for hand edit; {len(partial)} partial; "
+    print(f"stripped {len(new)} files; {len(failed)} left for hand edit; {len(parts)} partial; "
           f"{len(files) - len(new) - len(failed)} had nothing")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager, useQuery } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() }, relayFocus: () => null }));
 vi.mock("@/lib/perfLog", () => ({
@@ -15,7 +15,7 @@ vi.mock("@/lib/perfLog", () => ({
 
 let mockScope: { kind: "model"; accountId: string } | { kind: "all" } =
   { kind: "model", accountId: "acct-a" };
-let mockAccounts: { id: string }[] = [{ id: "acct-a" }];
+let mockAccounts: { id: string; platform?: string }[] = [{ id: "acct-a" }];
 
 vi.mock("@/contexts/ScopeContext", () => ({
   useScope: () => ({
@@ -26,6 +26,12 @@ vi.mock("@/contexts/ScopeContext", () => ({
   }),
 }));
 vi.mock("@/hooks/useAccounts", () => ({
+  useAccounts: () => {
+    const roster = useQuery<{ account_id: string; platform?: string }[]>({
+      queryKey: ["chatter", "self", "accounts"], enabled: false,
+    }).data;
+    return { data: { accounts: mockScope.kind === "all" ? mockAccounts : roster?.map((a) => ({ id: a.account_id, platform: a.platform })) } };
+  },
   useActiveAccounts: () => mockAccounts,
   usePlatformAccounts: () => mockAccounts,
 }));
@@ -48,13 +54,16 @@ vi.mock("@/hooks/useServerScheduledSends", () => ({
   scheduledSendsKey: (a: string, f: number) => ["scheduled-sends", a, f],
 }));
 
-import { IDLE_POLL_MS, chatsQueryKey, headPollDelay, shareChatPages, useCachedChatPages, useChatList } from "@/hooks/useChatList";
+import {
+  IDLE_POLL_MS, chatsQueryKey, headPollDelay, shareChatPages, useCachedChatPages, useChatList, type ChatListFilter,
+} from "@/hooks/useChatList";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
 import { applyCachedReply } from "@/hooks/useInboxRealtime";
 import { patchChatListAfterSend } from "@/hooks/useSendMessage";
 import { setRelayOffset } from "@/lib/ageClock";
 import { relay, type OFChatItem } from "@/lib/relay";
+import { PLATFORM_KEY, resetPlatformForTests, setPlatform } from "@/lib/platform";
 const relayGet = relay.get as unknown as Mock;
 
 const POLL_MS = 90_000;
@@ -117,6 +126,7 @@ beforeEach(() => {
   sseHandlers.clear();
   ssePaused = false;
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["chatter", "self", "accounts"], [{ account_id: "acct-a", platform: "onlyfans" }]);
   mockScope = { kind: "model", accountId: "acct-a" };
   mockAccounts = [{ id: "acct-a" }];
   serve = () => ({ list: [], hasMore: false });
@@ -591,6 +601,156 @@ describe("useChatList OF params: order, OF's own filters, enabled (the OF mirror
   });
 });
 
+describe("useChatList: a filter a Creator's Platform cannot honour reads nothing for her", () => {
+  const GATED: Array<[string, ChatListFilter | null, string | null]> = [
+    ["pinned", "pinned", null], ["priority", "priority", null], ["who_tipped", "who_tipped", null],
+    ["unread_tips", "unread_tips", null], ["a folder", null, "700000001"],
+  ];
+  const OPEN: Array<[string, ChatListFilter | null, string | null]> = [["All", null, null], ["unread", "unread", null]];
+  const FAN_OF: Record<string, number> = { "acct-a": 1, "acct-b": 2, "acct-f": 3 };
+  const sent = () => relayGet.mock.calls
+    .filter((c) => String(c[0]).startsWith("/api/of/v2/chats"))
+    .map((c) => [c[0], c[1]]);
+  const asFansly = (id: string) => client.setQueryData(["chatter", "self", "accounts"], [{ account_id: id, platform: "fansly" }]);
+  beforeEach(() => {
+    serve = (aid) => ({ list: [row(FAN_OF[aid], "2026-08-25T10:00:00Z")], hasMore: false });
+  });
+  afterEach(() => {
+    window.localStorage.removeItem(PLATFORM_KEY);
+    resetPlatformForTests();
+  });
+
+  it("waits for the roster before reading cold Pinned, then uses the original OnlyFans key and request", async () => {
+    client.removeQueries({ queryKey: ["chatter", "self", "accounts"] });
+    const h = renderHook(() => useChatList({ filter: "pinned" }), { wrapper });
+    await settle();
+    expect(sent()).toEqual([]);
+
+    act(() => { client.setQueryData(["chatter", "self", "accounts"], [{ account_id: "acct-a", platform: "onlyfans" }]); });
+    await until("OnlyFans rows", () => h.result.current.data.length === 1);
+    expect(sent()).toEqual([["/api/of/v2/chats?limit=25&offset=0&order=recent&filter=pinned", { accountId: "acct-a", priority: "user" }]]);
+    expect(client.getQueryData(["chats", "model", "acct-a", "pinned", null, null, 25])).toBeDefined();
+  });
+
+  it("reads Pinned with the original key and request for a legacy chatter Creator", async () => {
+    client.setQueryData(["chatter", "self", "accounts"], [{ account_id: "acct-a" }]);
+    const h = renderHook(() => useChatList({ filter: "pinned" }), { wrapper });
+    await settle();
+    expect(sent()).toEqual([["/api/of/v2/chats?limit=25&offset=0&order=recent&filter=pinned", { accountId: "acct-a", priority: "user" }]]);
+    expect(client.getQueryData(["chats", "model", "acct-a", "pinned", null, null, 25])).toBeDefined();
+    expect(h.result.current.data.map((c) => c.withUser.id)).toEqual([1]);
+  });
+
+  it("reads nothing and settles empty when a cold Pinned Creator resolves to Fansly", async () => {
+    client.removeQueries({ queryKey: ["chatter", "self", "accounts"] });
+    const h = renderHook(() => useChatList({ filter: "pinned" }), { wrapper });
+    await settle();
+    act(() => { asFansly("acct-a"); });
+    await settle(POLL_MS);
+    expect(sent()).toEqual([]);
+    expect(h.result.current.isSuccess).toBe(true);
+    expect(h.result.current.data).toEqual([]);
+    expect(h.result.current.hasMore).toBe(false);
+  });
+
+  it.each(GATED)("an OnlyFans Creator while the switch says Fansly, %s: read as before", async (_n, filter, listId) => {
+    setPlatform("fansly");
+    const h = renderHook(() => useChatList({ filter, listId }), { wrapper });
+    await until("row", () => h.result.current.data.length === 1);
+    const qs = new URLSearchParams({ limit: "25", offset: "0", order: "recent" });
+    if (filter) qs.set("filter", filter);
+    if (listId) qs.set("list_id", listId);
+    expect(sent()).toEqual([[`/api/of/v2/chats?${qs.toString()}`, { accountId: "acct-a", priority: "user" }]]);
+    expect(client.getQueryData(chatsQueryKey("model", "acct-a", { filter, listId }))).toBeDefined();
+  });
+
+  it.each(GATED)("a Fansly Creator whose Platform resolves after two pages were read, %s: none of her rows remain", async (_n, filter, listId) => {
+    mockScope = { kind: "model", accountId: "acct-f" };
+    mockAccounts = [{ id: "acct-f", platform: "fansly" }];
+    client.setQueryData(["chatter", "self", "accounts"], [{ account_id: "acct-f", platform: "onlyfans" }]);
+    serve = (_aid, offset) => offset === 0
+      ? { list: [row(3, "2026-08-25T10:00:00Z")], hasMore: true }
+      : { list: [row(4, "2026-08-25T09:00:00Z")], hasMore: false };
+    const h = renderHook(() => useChatList({ filter, listId }), { wrapper });
+    await until("page 0", () => h.result.current.data.length === 1);
+    await act(async () => { await h.result.current.loadMore(); });
+    await until("page 1", () => h.result.current.data.length === 2);
+    relayGet.mockClear();
+
+    act(() => { asFansly("acct-f"); });
+    await until("emptied", () => h.result.current.data.length === 0 && !h.result.current.isPlaceholderData);
+    expect(h.result.current.hasMore).toBe(false);
+    expect(h.result.current.isFetching).toBe(false);
+    await settle(POLL_MS);
+    expect(h.result.current.data).toEqual([]);
+    expect(sent()).toEqual([]);
+  });
+
+  it.each(GATED)("All Models, %s: no Fansly request or row on load and poll; OnlyFans reads exactly as without her", async (_n, filter, listId) => {
+    mockScope = { kind: "all" };
+    mockAccounts = [{ id: "acct-a" }, { id: "acct-b", platform: "onlyfans" }];
+    const ofOnly = renderHook(() => useChatList({ filter, listId }), { wrapper });
+    await until("OnlyFans-only list", () => ofOnly.result.current.isSuccess);
+    const want = sent();
+    expect(want.map(([, ctx]) => (ctx as { accountId: string }).accountId)).toEqual(["acct-a", "acct-b"]);
+    ofOnly.unmount();
+    client.clear();
+    relayGet.mockClear();
+
+    mockAccounts = [{ id: "acct-a" }, { id: "acct-f", platform: "fansly" }, { id: "acct-b", platform: "onlyfans" }];
+    const h = renderHook(() => useChatList({ filter, listId }), { wrapper });
+    await until("mixed list", () => h.result.current.isSuccess);
+    expect(sent()).toEqual(want);
+    expect(h.result.current.data.map((c) => c.__accountId).sort()).toEqual(["acct-a", "acct-b"]);
+    expect(h.result.current.hasMore).toBe(false);
+    expect(h.result.current.isFetching).toBe(false);
+    relayGet.mockClear();
+    await settle(POLL_MS);
+    expect(sent().map(([, ctx]) => (ctx as { accountId: string }).accountId).sort()).toEqual(["acct-a", "acct-b"]);
+  });
+
+  it.each(OPEN)("All Models, %s: the Fansly Creator is read", async (_n, filter, listId) => {
+    mockScope = { kind: "all" };
+    mockAccounts = [{ id: "acct-a" }, { id: "acct-f", platform: "fansly" }];
+    const h = renderHook(() => useChatList({ filter, listId }), { wrapper });
+    await until("list", () => h.result.current.data.length === 2);
+    expect(sent().map(([, ctx]) => (ctx as { accountId: string }).accountId)).toEqual(["acct-a", "acct-f"]);
+  });
+
+  it.each(GATED)("one Fansly Creator, %s: no request on load or poll, an empty settled page", async (_n, filter, listId) => {
+    mockScope = { kind: "model", accountId: "acct-f" };
+    mockAccounts = [{ id: "acct-f", platform: "fansly" }];
+    asFansly("acct-f");
+    const h = renderHook(() => useChatList({ filter, listId }), { wrapper });
+    await until("settled", () => h.result.current.isSuccess);
+    expect(h.result.current.data).toEqual([]);
+    expect(h.result.current.hasMore).toBe(false);
+    expect(h.result.current.isFetching).toBe(false);
+    expect(h.result.current.fetchedLive).toBe(true);
+    await settle(POLL_MS);
+    expect(sent()).toEqual([]);
+  });
+
+  it.each(OPEN)("one Fansly Creator, %s: she is read", async (_n, filter, listId) => {
+    mockScope = { kind: "model", accountId: "acct-f" };
+    mockAccounts = [{ id: "acct-f", platform: "fansly" }];
+    asFansly("acct-f");
+    const h = renderHook(() => useChatList({ filter, listId }), { wrapper });
+    await until("row", () => h.result.current.data.length === 1);
+    expect(sent().map(([, ctx]) => (ctx as { accountId: string }).accountId)).toEqual(["acct-f"]);
+  });
+
+  it.each([...OPEN, ...GATED])("one OnlyFans Creator, %s: the same request and rows as before", async (_n, filter, listId) => {
+    const h = renderHook(() => useChatList({ filter, listId }), { wrapper });
+    await until("row", () => h.result.current.data.length === 1);
+    const qs = new URLSearchParams({ limit: "25", offset: "0", order: "recent" });
+    if (filter) qs.set("filter", filter);
+    if (listId) qs.set("list_id", listId);
+    expect(sent()).toEqual([[`/api/of/v2/chats?${qs.toString()}`, { accountId: "acct-a", priority: "user" }]]);
+    expect(h.result.current.data.map((c) => [c.__accountId, c.withUser.id])).toEqual([["acct-a", 1]]);
+  });
+});
+
 describe("useChatList fetchedLive: rows read from OF in this page load", () => {
   const unread = (id: number) => ({ ...row(id, `2026-08-25T${String(20 - id).padStart(2, "0")}:00:00Z`), unreadMessagesCount: 1 }) as OFChatItem;
   function restore(pages: OFChatItem[][], updatedAt = Date.now()) {
@@ -691,6 +851,20 @@ describe("useChatList fetchedLive: rows read from OF in this page load", () => {
 });
 
 describe("useChatList placeholderData: which previous rows stand in", () => {
+  it("keeps only OnlyFans placeholder rows while Pinned loads in a mixed All Models inbox", async () => {
+    mockScope = { kind: "all" };
+    mockAccounts = [{ id: "acct-a" }, { id: "acct-f", platform: "fansly" }];
+    serve = (aid) => ({ list: [row(aid === "acct-a" ? 1 : 2, "2026-08-25T10:00:00Z")], hasMore: false });
+    const h = renderHook(({ filter }) => useChatList({ filter }), {
+      wrapper, initialProps: { filter: null as ChatListFilter | null },
+    });
+    await until("both Creators", () => h.result.current.data.length === 2);
+    serve = () => new Promise(() => {}) as unknown as ReturnType<typeof serve>;
+    h.rerender({ filter: "pinned" });
+    expect(h.result.current.data.map((c) => c.__accountId)).toEqual(["acct-a"]);
+    expect(h.result.current.isPlaceholderData).toBe(true);
+  });
+
   it("All Models keeps the previous rows while a session drops out of the set", async () => {
     mockScope = { kind: "all" };
     mockAccounts = [{ id: "acct-a" }, { id: "acct-b" }];

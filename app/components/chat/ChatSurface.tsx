@@ -160,6 +160,7 @@ export function ChatSurface({
     );
   }, [seedQ.rows, accountId, fanId, qc]);
 
+  // Once OF supplies a cursor, deeper seed rows cannot move it into a gap.
   const loadOlderSeeded = useCallback(async () => {
     if (handle.isLoadingOlder) return handle.loadOlder();
     const cursor = handle.olderCursor();
@@ -307,6 +308,7 @@ export function ChatSurface({
         sent_at: m.createdAt || null,
       });
     }
+    // Keyed by id + bought: a PPV the fan unlocks later is sent again so the backend flips its row.
     const keyOf = (c: (typeof candidates)[number]) => `${c.message_id}:${c.was_purchased ? 1 : 0}`;
     const firstByKey = new Map<string, (typeof candidates)[number]>();
     for (const c of candidates) if (!firstByKey.has(keyOf(c))) firstByKey.set(keyOf(c), c);
@@ -583,6 +585,7 @@ export function ChatSurface({
         }}
         inflight={sender.inflight}
         canSend={
+          // canSend uses liveChat because the click-time prop can keep the composer locked after a scope switch.
           liveChat ? liveChat.canSendMessage !== false : true
         }
         cannotSendReason={liveChat?.canNotSendReason ?? null}

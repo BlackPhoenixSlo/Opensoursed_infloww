@@ -4,7 +4,7 @@ import { useAppliedSettings, type FeatureFlags } from "@/lib/appliedSettings";
 
 const NO_FLAGS: FeatureFlags = { fansly_manager: false };
 
-// undefined until the first read answers; every flag off on error so a dark page never shows by accident.
+// undefined until the first read answers; every flag off when no data arrived, so a dark page never shows by accident.
 export function useFlags(): FeatureFlags | undefined {
   const q = useAppliedSettings();
   if (q.isPending) return undefined;

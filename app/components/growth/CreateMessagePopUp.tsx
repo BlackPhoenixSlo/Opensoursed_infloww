@@ -1,31 +1,10 @@
 "use client";
 
-/**
- * Smart Messages' one "Create message" pop-up (#103 to #111 of
- * `docs/infloww-layouts/growth-smart-messages.md`; labels and sources in
- * `smartMessagesControls`), opened by the page's New Message, and the mass
- * composer it opens. Phase 2b of
- * docs/spec/infloww-parity-round-2/phase-02b-auto-mass-messages.md builds it;
- * it lives apart from `SmartMessagesPage` so that the page imports no mass
- * component directly (phase-02-growth-pages.md, "Mass tabs on Smart Messages").
- *
- * Its Mass messages section holds "Priority mass message" (one direct message
- * per fan, `PriorityMassComposer`), "OF mass message" (the mass composer's
- * standard mode) and "Message online fans" (its online mode, an Inflowwww
- * extra). A card picks, Next opens it, as the bundle's `xConfirmDisabled`
- * waits for a pick. Its Automated messages section is Phase 2's slot
- * (`automatedMessageCards`), after Mass messages as the bundle renders them;
- * empty, it renders nothing. The bundle puts "Start from scratch" and its
- * template line inside that section, so they are Phase 2's too. A card in the
- * slot (`AutomatedCard`) joins the same one pick, so Next opens whichever card
- * was picked last, Mass or Automated, as the bundle's one `qt` pick does
- * (index.9f50f370.js @14711600 onwards).
- */
 
+import { useCanOrFallback } from "@/hooks/useCan";
 import { createContext, useContext, useState, type ReactNode } from "react";
 
 import { LazyMassMessageComposer } from "@/components/compose/LazyMassMessageComposer";
-import { useMassAllowed } from "@/hooks/useMassAllowed";
 import { IfButton, IfModal } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -34,50 +13,44 @@ import { cn } from "@/lib/utils";
 import { PriorityMassComposer } from "./PriorityMass";
 import { SM } from "./smartMessagesControls";
 
-/** The mass composer's modes, and "priority" for the Priority mass composer. */
 type ComposerMode = "standard" | "online" | "priority";
 
-/** The pop-up while `open`, and the composer its Next opens. */
 export default function CreateMessage({
   open, onClose, automatedMessageCards, accountId = null,
 }: {
   open: boolean;
   onClose: () => void;
-  /** The page's Creator: every mass composer's "Post as" on open, the mass one's only while it may send. */
   accountId?: string | null;
-  /** Phase 2's cards for the "Automated messages" section, placed after "Mass messages". */
   automatedMessageCards?: ReactNode;
 }) {
-  const [composer, setComposer] = useState<ComposerMode | null>(null);
-  const massSeed = useMassAllowed(accountId) ? accountId : null;
+  const [composer, setComposer] = useState<{ mode: ComposerMode; accountId: string | null } | null>(null);
+  const massAllowed = useCanOrFallback(accountId, "mass_message");
   return (
     <>
       {open && (
         <CreateMessagePopUp
+          massAllowed={massAllowed}
           automatedMessageCards={automatedMessageCards}
           onClose={onClose}
-          onNext={(mode) => { onClose(); setComposer(mode); }}
+          onNext={(mode) => {
+            onClose();
+            setComposer({ mode, accountId });
+          }}
         />
       )}
-      {composer === "priority" && <PriorityMassComposer open initialAccountId={accountId} onClose={() => setComposer(null)} />}
-      {composer && composer !== "priority" && (
+      {composer?.mode === "priority" && <PriorityMassComposer open initialAccountId={composer.accountId} onClose={() => setComposer(null)} />}
+      {composer && composer.mode !== "priority" && (
         <LazyMassMessageComposer
-          mode={composer} labelExtras forcedAccountId={massSeed ?? undefined} onClose={() => setComposer(null)}
+          mode={composer.mode} labelExtras forcedAccountId={composer.accountId ?? undefined} onClose={() => setComposer(null)}
         />
       )}
     </>
   );
 }
 
-/** The pop-up's one pick, shared with the cards in the Automated messages
- *  slot: the picked card's key, and what Next does for it. */
 type Pick = { key: string; next: () => void };
 const PickContext = createContext<{ picked: string | null; pick: (p: Pick) => void } | null>(null);
 
-/** A card of the Automated messages section. Wired (`onNext`), a click picks
- *  it and Next closes the pop-up and calls `onNext`; without `onNext` it is Not
- *  wired: `disabled`, `title="not wired"`, and it picks nothing. With a
- *  `refusal` (the bundle's free-page message) it is disabled and says why. */
 export function AutomatedCard({
   title, desc, tag, onNext, refusal,
 }: {
@@ -102,8 +75,6 @@ export function AutomatedCard({
   );
 }
 
-/** One card of the pop-up: its title, second line and tag, as the bundle's
- *  card renders them, picked with a click. */
 function PopUpCard({
   title, desc, tag, picked, onPick, disabled, extra, refusal,
 }: {
@@ -149,42 +120,39 @@ function PopUpSection({ id, title, children }: { id: string; title: string; chil
   );
 }
 
-/** The one "Create message" pop-up (#103), 722px wide. */
 function CreateMessagePopUp({
-  automatedMessageCards, onClose, onNext,
+  automatedMessageCards, massAllowed, onClose, onNext,
 }: {
+  massAllowed: boolean;
   automatedMessageCards?: ReactNode;
   onClose: () => void;
   onNext: (mode: ComposerMode) => void;
 }) {
-  const [pick, setPick] = useState<Pick | null>(null);
+  const [pick, setPick] = useState<Pick | { key: ComposerMode; mode: ComposerMode } | null>(null);
   const picked = pick?.key ?? null;
-  const pickMode = (mode: ComposerMode) => setPick({ key: mode, next: () => onNext(mode) });
-  // An Automated card's Next closes the pop-up first, as a Mass card's does.
-  // Its key is its title, which no Mass card's mode equals.
+  const pickMode = (mode: ComposerMode) => setPick({ key: mode, mode });
+  const next = pick && ("mode" in pick ? (massAllowed ? () => onNext(pick.mode) : null) : pick.next);
   const pickAutomated = (p: Pick) => setPick({ key: p.key, next: () => { onClose(); p.next(); } });
   return (
-    // antd's modal at the bundle's 722px (`xTitle:"Create message"`).
     <IfModal
       width={722}
       title={SM.popUpTitle.label}
       onClose={onClose}
       footer={(
-        // XModal's footer: Cancel then the confirm, right-aligned
-        // (index.9f50f370.js @6780736, @6780813).
         <>
           <IfButton onClick={onClose}>{SM.popUpCancel.label}</IfButton>
-          <IfButton variant="primary" disabled={!pick} onClick={() => pick?.next()}>{SM.popUpNext.label}</IfButton>
+          <IfButton variant="primary" disabled={!next} onClick={next ?? undefined}>{SM.popUpNext.label}</IfButton>
         </>
       )}
     >
       <div className="space-y-6">
-        <PopUpSection id="sm-create-mass" title={SM.popUpMass.label}>
-          <PopUpCard title={SM.cardPriority.label} desc={SM.cardPriority.desc} picked={picked === "priority"} onPick={() => pickMode("priority")} />
-          <PopUpCard title={SM.cardOf.label} desc={SM.cardOf.desc} picked={picked === "standard"} onPick={() => pickMode("standard")} />
-          {/* Ours, after the bundle's two. */}
-          <PopUpCard title="Message online fans" picked={picked === "online"} onPick={() => pickMode("online")} extra />
-        </PopUpSection>
+        {massAllowed && (
+          <PopUpSection id="sm-create-mass" title={SM.popUpMass.label}>
+            <PopUpCard title={SM.cardPriority.label} desc={SM.cardPriority.desc} picked={picked === "priority"} onPick={() => pickMode("priority")} />
+            <PopUpCard title={SM.cardOf.label} desc={SM.cardOf.desc} picked={picked === "standard"} onPick={() => pickMode("standard")} />
+            <PopUpCard title="Message online fans" picked={picked === "online"} onPick={() => pickMode("online")} extra />
+          </PopUpSection>
+        )}
         {automatedMessageCards && (
           <PickContext.Provider value={{ picked, pick: pickAutomated }}>
             <PopUpSection id="sm-create-automated" title={SM.popUpAutomated.label}>

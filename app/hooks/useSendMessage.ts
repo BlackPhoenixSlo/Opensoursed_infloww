@@ -357,6 +357,7 @@ function recordVaultSends(
   server: OFMessage,
   priceDollars: number,
 ): void {
+  // Ids from OF's reply, not the body: a fresh claim has no id until OF assigns one, and an upload may collapse onto an existing item.
   const mediaIds = (server.media ?? [])
     .map((m) => (typeof m.id === "number" ? m.id : Number(m.id)))
     .filter((n) => Number.isFinite(n) && n > 0);

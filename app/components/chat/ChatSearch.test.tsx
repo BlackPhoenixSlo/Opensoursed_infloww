@@ -1,7 +1,3 @@
-/**
- * ChatSearch's Esc: it closes Find and spends the key (`preventDefault`), so
- * a page acting on an Esc nothing took (e.g. leaving a mode) stays put.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 const platform = vi.hoisted(() => ({ current: "onlyfans" as "onlyfans" | "fansly" }));
 vi.mock("@/hooks/useCan", async () => {
@@ -29,9 +25,6 @@ describe("ChatSearch", () => {
   });
 });
 
-// loadOlder rejects on a failed / timed-out (15s) page: search must clear its
-// "Loading…" states, never leak the rejection, stop auto-firing while
-// olderFailed, and offer Retry.
 describe("ChatSearch when an older page fails", () => {
   const timedOut = () => Promise.reject(new DOMException("older page timed out", "TimeoutError"));
 
@@ -53,7 +46,7 @@ describe("ChatSearch when an older page fails", () => {
     await waitFor(() => expect(screen.queryByText("Loading top previews…")).toBeNull());
 
     rerender(<ChatSearch {...props} olderFailed />);
-    expect(onLoadOlder).toHaveBeenCalledTimes(1);   // no re-fire into the failure
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(onLoadOlder).toHaveBeenCalledTimes(2));
   });
@@ -61,7 +54,7 @@ describe("ChatSearch when an older page fails", () => {
   it("picking a not-loaded match: context label clears, no jump, says it failed", async () => {
     const onLoadOlder = vi.fn(timedOut);
     const { props } = setup(onLoadOlder);
-    await waitFor(() => expect(onLoadOlder).toHaveBeenCalledTimes(1));   // auto-fill tried
+    await waitFor(() => expect(onLoadOlder).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByText("Loading top previews…")).toBeNull());
     fireEvent.click(screen.getAllByText("Click to load context…")[0]);
     await waitFor(() => expect(screen.getByText("Couldn’t load older messages to reach that match.")).toBeTruthy());
@@ -76,16 +69,18 @@ describe("ChatSearch on a Fansly Creator", () => {
     vi.useRealTimers();
   });
 
-  it("sends no search request", () => {
-    platform.current = "fansly";
+  it("hides search and sends no request when capability is lost before debounce", () => {
     vi.useFakeTimers();
     vi.mocked(relay.get).mockClear();
-    render(
-      <ChatSearch accountId="a" fanId={1 as FanId} messages={[]} ownerUserId={null}
-        hasOlder={false} loadingOlder={false} onLoadOlder={vi.fn()} onPick={vi.fn()} onClose={vi.fn()} />,
-    );
+    const search = <ChatSearch accountId="a" fanId={1 as FanId} messages={[]} ownerUserId={null}
+      hasOlder={false} loadingOlder={false} onLoadOlder={vi.fn()} onPick={vi.fn()} onClose={vi.fn()} />;
+    const { rerender } = render(search);
     fireEvent.change(screen.getByPlaceholderText("Search this conversation…"), { target: { value: "hey" } });
+    platform.current = "fansly";
+    rerender(<ChatSearch {...search.props} />);
+    expect(screen.queryByPlaceholderText("Search this conversation…")).toBeNull();
     act(() => { vi.advanceTimersByTime(1000); });
     expect(relay.get).not.toHaveBeenCalled();
+    expect(screen.queryByText(/matches across the full chat history/)).toBeNull();
   });
 });

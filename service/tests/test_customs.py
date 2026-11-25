@@ -126,7 +126,7 @@ def case_a_second_order_on_another_day_is_not_swallowed():
     assert got[0][1] > got[1][1]
     assert got[0][2] == 501
 
-    # BURST_MINUTES must not widen: tips in the window are one order, the amount buys length
+    # Tips inside BURST_MINUTES are one order; the summed amount buys length.
     stacked = CU.bursts_per_fan(rows((6_000, 0, 2), (6_000, 5, 1)))[("a", 1)]
     assert stacked == [(12_000, now, 2)], stacked
 

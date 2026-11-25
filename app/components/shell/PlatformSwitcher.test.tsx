@@ -15,13 +15,15 @@ vi.mock("@/lib/relay", async (importOriginal) => ({
   relay: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn() },
 }));
 const owner = { user_id: "u1", username: "owner" };
+let chatterOnly = false;
+const chatter = { chatter_id: "c1" };
 vi.mock("@/contexts/UserContext", () => ({
-  useUser: () => ({ user: owner, loading: false, logout: vi.fn() }),
-  useOptionalUser: () => ({ user: owner }),
+  useUser: () => ({ user: chatterOnly ? null : owner, loading: false, logout: vi.fn() }),
+  useOptionalUser: () => ({ user: chatterOnly ? null : owner }),
 }));
 vi.mock("@/contexts/ChatterContext", () => ({
-  useChatter: () => ({ chatter: null }),
-  useOptionalChatter: () => ({ chatter: null }),
+  useChatter: () => ({ chatter: chatterOnly ? chatter : null }),
+  useOptionalChatter: () => ({ chatter: chatterOnly ? chatter : null }),
 }));
 let counts: Record<string, { unread: number; owe_reply: number }> = {};
 vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCounts: () => counts }));
@@ -61,6 +63,7 @@ beforeEach(() => {
   window.localStorage.clear();
   resetPlatformForTests();
   pathname = "/";
+  chatterOnly = false;
   push.mockReset();
   counts = {};
   accounts = [
@@ -250,6 +253,77 @@ describe("PlatformSync: a platform change from another window", () => {
     otherTabPicks("onlyfans");
     await waitFor(() => expect(probe()).toBe("onlyfans fy-1"));
     expect(push).not.toHaveBeenCalled();
+  });
+});
+
+describe("PlatformSync: the scope fix-up stays in memory, so Messages Pro keeps its saved Creator", () => {
+  const SCOPE_KEY = "chatterly:scope";
+  const cookie = () => document.cookie.match(/(?:^|; )chatterly_scope=([^;]*)/)?.[1];
+  afterEach(() => { document.cookie = "chatterly_scope=; path=/; max-age=0"; });
+
+  it("waits for a delayed chatter roster before dropping a foreign saved Creator", async () => {
+    chatterOnly = true;
+    localStorage.setItem(SCOPE_KEY, "model:fy-1");
+    let answer!: (response: Response) => void;
+    const roster = new Promise<Response>((resolve) => { answer = resolve; });
+    const fetch = vi.fn(() => roster);
+    vi.stubGlobal("fetch", fetch);
+    try {
+      render(<Providers><PlatformSync /><Probe /></Providers>);
+      await waitFor(() => expect(fetch).toHaveBeenCalledWith("/chatter/me/accounts", expect.anything()));
+      expect(probe()).toBe("onlyfans fy-1");
+      answer(Response.json([{ account_id: "fy-1", platform: "fansly" }]));
+      await waitFor(() => expect(probe()).toBe("onlyfans all"));
+      expect(localStorage.getItem(SCOPE_KEY)).toBe("model:fy-1");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([["fetched", false], ["already cached", true]])("on load (accounts %s), a saved Creator from the other Platform drops to All; the saved scope and the boot cookie keep their value", async (_, cached) => {
+    if (cached) client.setQueryData(["accounts", "u1"], { accounts, active_account_id: null });
+    window.localStorage.setItem(SCOPE_KEY, "model:fy-1");
+    pathname = "/growth/scripts";
+    render(<Providers><PlatformSync /><Probe /></Providers>);
+    await waitFor(() => expect(cookie()).toBe("model"));
+    await waitFor(() => expect(probe()).toBe("onlyfans all"));
+    expect(window.localStorage.getItem(SCOPE_KEY)).toBe("model:fy-1");
+    expect(cookie()).toBe("model");
+  });
+
+  it.each([
+    ["the selector", () => { fireEvent.click(screen.getByRole("button", { name: /OnlyFans/ })); fireEvent.click(screen.getByRole("menuitemradio", { name: /^Fansly/ })); }],
+    ["another tab", () => act(() => {
+      window.localStorage.setItem(PLATFORM_KEY, "fansly");
+      window.dispatchEvent(new StorageEvent("storage", { key: PLATFORM_KEY, newValue: "fansly" }));
+    })],
+  ])("on a switch from %s, a Creator from the other Platform drops to All without a write", async (_, pick) => {
+    window.localStorage.setItem(SCOPE_KEY, "model:of-1");
+    pathname = "/growth/scripts";
+    render(<Providers><PlatformSync /><PlatformSwitcher /><Probe /></Providers>);
+    await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/accounts"));
+    await waitFor(() => expect(probe()).toBe("onlyfans of-1"));
+    pick();
+    await waitFor(() => expect(probe()).toBe("fansly all"));
+    expect(window.localStorage.getItem(SCOPE_KEY)).toBe("model:of-1");
+    expect(cookie()).toBe("model");
+  });
+
+  it("OnlyFans only: a saved OnlyFans Creator stays on load and nothing is written", async () => {
+    accounts = accounts.filter((a) => a.platform !== "fansly");
+    window.localStorage.setItem(SCOPE_KEY, "model:of-2");
+    pathname = "/of-manager/new-post";
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    try {
+      render(<Providers><PlatformSync /><Probe /></Providers>);
+      await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/accounts"));
+      await act(async () => { await client.refetchQueries({ queryKey: ["accounts"] }); });
+      expect(probe()).toBe("onlyfans of-2");
+      expect(setItem).not.toHaveBeenCalled();
+      expect(cookie()).toBe("model");
+    } finally {
+      setItem.mockRestore();
+    }
   });
 });
 

@@ -91,6 +91,7 @@ export function periodOf(key: PeriodKey, now: Date, tz: string | null, userStart
   }
   if (userStart && start < userStart) start = userStart;
   if (end > now) end = now;
+  // OF's PeriodDatepicker: startDate in the owner's wall time (24h: UTC); endDate in UTC when it ends today, else wall time.
   const sw = wallOf(start, key === "24h" ? "UTC" : tz);
   const ew = wallOf(end, tz);
   const timed = key === "24h" || key[0] === "c";

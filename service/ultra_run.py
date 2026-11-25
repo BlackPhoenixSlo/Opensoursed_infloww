@@ -325,6 +325,7 @@ async def _run(plan_id: str, owner_user_id: str, plan: ud.Plan, creds: toolbox.C
                     status = "failed"
                     break
             start = ud.started(step, args)
+            # Checkpoint before the call so recovery marks an unfinished step uncertain instead of replaying it.
             await _save(plan_id, [*states[:i], start, *states[i + 1:]])
             if plan_id in _CANCEL:
                 status = "cancelled"

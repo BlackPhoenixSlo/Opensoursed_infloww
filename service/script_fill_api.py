@@ -213,6 +213,7 @@ async def _plan_inputs(s: Any, account_id: str, sequence: str, agency: str | Non
 
 async def _plan(inputs: _PlanInputs, vault: _Vault, cov: dict[str, Any], blocked: str | None,
                 account_id: str) -> dict[str, Any]:
+    # Only the pure plan moves to the thread: aiosqlite sessions are loop-bound, so it touches no session.
     return await asyncio.to_thread(
         decide.plan_over_vault, [_row_dict(r) for r in inputs.recs], vault.items, inputs.used, vault.groups,
         vault.prints, cov, blocked, account_id=account_id, standard_folders=vault.standard_folders,
@@ -240,6 +241,7 @@ async def fill_apply(body: _ApplyBody = Body(...), account_id: str = Query("")) 
     account_id = await _gate(account_id)
     cov, blocked = await _describe_inputs(account_id)
     agency = await _agency(account_id)
+    # Plan gate before the write lock, never the reverse (fill_plan never takes it).
     async with _plan_gate(), immediate_session() as s:
         inputs = await _plan_inputs(s, account_id, body.sequence, agency)
         recs = inputs.recs

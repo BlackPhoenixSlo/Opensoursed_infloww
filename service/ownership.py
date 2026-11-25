@@ -33,6 +33,7 @@ def item_media(item: Any) -> list[int]:
         return []
 
 
+# Owned only, despite the name: a VaultSend's price_cents is the asked price, not proof of purchase; sent media stays resellable.
 async def owned_or_seen_media(account_id: str, fan_id: int) -> set[int]:
     out: set[int] = set()
     async with get_session() as s:

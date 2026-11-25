@@ -20,11 +20,12 @@ import { useGrantedPages } from "@/components/shell/useGrantedPages";
 import { EmptyState } from "@/components/ui/infloww";
 import { usePageCreator } from "@/contexts/PageCreatorContext";
 import { ScopeOverride, useScope, WatcherScope } from "@/contexts/ScopeContext";
-import { ofManagerWatcher, useAccounts, useActiveAccounts, useOfManagerAccounts, useWatcherAccounts } from "@/hooks/useAccounts";
+import { ofManagerWatcher, useAccounts, useOfManagerAccounts, usePlatformAccounts, useWatcherAccounts } from "@/hooks/useAccounts";
 import { findFanChatRow } from "@/hooks/useInboxRealtime";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { fanIdFromParam, type FanId } from "@/lib/fanId";
-import { deniedPage, findNavLink } from "@/lib/nav";
+import { deniedPage, findNavLink, platformOfPath } from "@/lib/nav";
+import { DEFAULT_PLATFORM, foreignCreator, type Platform } from "@/lib/platform";
 import { applyScript, type PickedScript } from "@/lib/ofMirrorChat";
 import { OF_INSIGHTS_ATTR } from "@/lib/ofMirrorChrome";
 import { mirrorQuery } from "@/lib/ofMirrorData";
@@ -78,12 +79,20 @@ export function OfManagerChrome({ children }: { children: React.ReactNode }) {
   );
 }
 
+function routePlatform(pathname: string): Platform {
+  return platformOfPath(pathname) ?? DEFAULT_PLATFORM;
+}
+
 function OneCreator({ children }: { children: React.ReactNode }) {
   const { accountId } = useScope();
-  const creators = useActiveAccounts();
-  const auto = accountId ? null : standInPick(creators);
+  const platform = routePlatform(usePathname() ?? "/");
+  const creators = usePlatformAccounts(platform);
+  const known = useAccounts().data?.accounts;
+  const foreign = foreignCreator(known, accountId, platform);
+  const auto = accountId && !foreign ? null : standInPick(creators);
+  const autoPick = useMemo(() => ({ platform, accountId: auto }), [platform, auto]);
   return (
-    <AutoPickContext.Provider value={auto}>
+    <AutoPickContext.Provider value={autoPick}>
       <ScopeOverride accountId={auto}>{children}</ScopeOverride>
     </AutoPickContext.Provider>
   );
@@ -100,6 +109,7 @@ function Chrome({ children }: { children: React.ReactNode }) {
   const { scope, setScope } = useScope();
   usePageCreator(scope.kind === "model" ? scope.accountId : null);
   const known = accountsQ.data;
+  const platform = routePlatform(pathname);
   const popped = useRef(false);
   useEffect(() => {
     if (popped.current) return;
@@ -107,8 +117,9 @@ function Chrome({ children }: { children: React.ReactNode }) {
     const id = new URL(window.location.href).searchParams.get("account");
     if (!popoutReady(id, knownIds, accountsQ.isSuccess)) return;
     popped.current = true;
-    if (id) setScope({ kind: "model", accountId: id }, { persist: false });
-  }, [setScope, known, accountsQ.isSuccess]);
+    const foreign = foreignCreator(known?.accounts, id, platform);
+    if (id && !foreign) setScope({ kind: "model", accountId: id }, { persist: false });
+  }, [setScope, known, accountsQ.isSuccess, platform]);
   const scoped = scope.kind === "model" ? accounts.find((a) => a.id === scope.accountId) : undefined;
   const sessionGone = !!scoped && !liveSession(scoped);
   const viewTools = !!scoped && !sessionGone;

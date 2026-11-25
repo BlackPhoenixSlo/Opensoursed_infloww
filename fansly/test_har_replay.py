@@ -86,9 +86,9 @@ def load_writes(har_path: Path) -> list[dict]:
 def load_fixture_writes(path: Path) -> list[dict]:
     doc = json.loads(path.read_text())
     return [
-        {"path": w["path"], "query": {},
+        {**w, "query": {},
          "headers": {**doc["headers"], "fansly-client-check": w["check"]},
-         "body": w["body"], "payload": w["payload"], "status": 200}
+         "status": 200}
         for w in doc["writes"]
     ]
 
@@ -180,10 +180,12 @@ def main(argv: list[str]) -> int:
             "PinnedClock", (), {"value": lambda _self: int(write["headers"]["fansly-client-ts"])}
         )()
 
+        raised = False
+        result = None
         try:
-            replay(client, write)
+            result = replay(client, write)
         except fc.FanslyAPIError:
-            pass
+            raised = True
 
         label = f"{write['path']}"
         if not http.calls:
@@ -191,7 +193,14 @@ def main(argv: list[str]) -> int:
             continue
 
         replayed += 1
-        call = http.calls[-1]
+        check(len(http.calls) == 1, f"{label}: expected 1 request, got {len(http.calls)}", failures)
+        expected_error = not write["payload"].get("success") or write["status"] >= 400
+        check(raised == expected_error,
+              f"{label}: expected {'API error' if expected_error else 'success'}", failures)
+        if "expected_result" in write:
+            check(not raised and result == write["expected_result"],
+                  f"{label}: expected result {write['expected_result']!r}, got {result!r}", failures)
+        call = http.calls[0]
 
         check(call["method"] == "POST", f"{label}: method", failures)
         check(

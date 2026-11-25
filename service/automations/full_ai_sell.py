@@ -403,13 +403,13 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     ASSUMPTION: the free fallback ("no match -> lowest-lane unseen item", ticket 10 r3) ignores
     subject and format. Overturned if a gift must keep the asked format.
 
-    `nearest=True` (config `sell_nearest` "plain" / "note", a fresh test-Mode sell_now Pick only):
+    `nearest=True` (config `sell_nearest` "plain" / "note", a fresh test- or live-Mode sell_now Pick only):
     no match relaxes (`_nearest`) instead of Refusal("no_match"), then the same lane / shoot /
     preview logic runs on the relaxed rows (nothing priced there is still no_priced_items). The
     Pick's `facts["asked"]` = {subject, format} records his ask and `facts["nearest"]` the step;
     an exact match records neither. Ignored with `free`.
 
-    `bundle="fill"` (config `sell_bundle`, a fresh test-Mode sell_now photo Pick only, phase 03d
+    `bundle="fill"` (config `sell_bundle`, a fresh test- or live-Mode sell_now photo Pick only, phase 03d
     Bundle): up to 4 shoot mates (5 photos at most); under 3 photos, it fills to 3 with other
     matching priced photos at or under the anchor's price (sorted by media id, shuffled after the
     mates), never Owned and never two of a dupe group (both already out of `pool`). Subject
@@ -419,13 +419,11 @@ def pick(pool: list[dict[str, Any]], shoots: list[dict[str, Any]], ask: Ask, *,
     ASSUMPTION (spec 03d): near-dupe `prints` are not checked.
     Ignored with `free`.
 
-    `ride=True` (config `chat_tease`, a fresh test-Mode Chat tease Turn): photos only
+    `ride=True` (config `chat_tease`, a fresh test- or live-Mode Chat tease Turn): photos only
     (the ask's format is photo, so a video `asks_format` never refuses or relaxes a ride; the
-    pool's videos are dropped too, so `nearest` cannot relax into one), at most 2: the anchor and one shoot mate ("shoot"), or under
-    2 filled to 2 ("fill", the fill rules above); never a free preview. The Pick's
-    `facts["ride"]` = True marks it (`full_ai_writers.is_ride`).
-    ASSUMPTION: a ride carries no free preview, so the bubble shows at most 2 photos. Overturned if
-    the owner wants the old ladder's free first rung back.
+    pool's videos are dropped too, so `nearest` cannot relax into one). The anchor and shoot
+    mates are capped at `ride_max`. The "fill" rules above can fill up to that cap. A ride carries
+    no free preview. The Pick's `facts["ride"]` = True marks it (`full_ai_writers.is_ride`).
     `ride_max` (ride only, default 2): the most photos a ride holds; Chat tease passes
     `tease_photos` of Jev's price.
     Ignored with `free`.

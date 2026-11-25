@@ -120,6 +120,7 @@ def _may_have_sent(e: BaseException) -> bool:
 # Accepted risk: the x-hash warm-up GET of a fresh client runs inside fn, so its read timeout counts as maybe sent (one GET per pooled client).
 def _tracked(fn, cell: run_decide.RunWrites):
     async def attempt():
+        # Restoring `before` is exact only because a run's writes are sequential; concurrent writes in one run could undo an "accepted" (send-once).
         before = cell.state
         if before == "none":
             cell.state = "unanswered"

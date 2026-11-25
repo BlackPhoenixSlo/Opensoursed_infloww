@@ -47,6 +47,7 @@ class Read:
     aid: str | None
     path: str
     query: dict[str, Any]
+    # Call the route function with every argument explicit: a FastAPI Query(...) default is a truthy FieldInfo when called directly.
     call: Callable[[], Awaitable[Any]]
     reuse: bool = False
 

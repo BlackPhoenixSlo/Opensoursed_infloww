@@ -105,6 +105,14 @@ describe("inboxScope", () => {
   const b = { group_count: 3, assignments: { f1: 3, f2: 1 } };
   const loaded = (cfg: typeof config | typeof b, myGroup: number | null = null): ScopeSplit => ({ config: cfg, myGroup });
   const none: ScopeSplit = { config: null, myGroup: null };
+  it("reports pending and failed Creators while filtering a picked group", () => {
+    const scope = inboxScope(new Map([["a", loaded(config)], ["b", none], ["c", { ...none, failed: true }]]), 1);
+    expect([...scope.pending]).toEqual(["b"]);
+    expect([...scope.failed]).toEqual(["c"]);
+    expect(scope.of?.("b", "f1")).toBe(false);
+    expect(scope.of?.("c", "f1")).toBe(false);
+  });
+
   it.each<[string, [string, ScopeSplit][], number | null, {
     count: number; locked: number | null; in: string[] | "no filter"; allLoaded: boolean;
   }]>([
@@ -125,10 +133,12 @@ describe("inboxScope", () => {
       { count: 2, locked: null, in: "no filter", allLoaded: false }],
     ["same lock everywhere: locked", [["a", loaded(config, 2)], ["b", loaded(b, 2)]], null,
       { count: 3, locked: 2, in: ["a:f2"], allLoaded: true }],
+    ["unanimous lock overrides an earlier pick", [["a", loaded(config, 2)], ["b", loaded(b, 2)]], 1,
+      { count: 3, locked: 2, in: ["a:f2"], allLoaded: true }],
     ["one Creator locked, other unpicked: only its Fans narrowed", [["a", loaded(config, 2)], ["b", loaded(b)]], null,
       { count: 3, locked: null, in: ["a:f2", "b:f1", "b:f2"], allLoaded: true }],
-    ["lock beats the pick for its Creator", [["a", loaded(config, 2)], ["b", loaded(b)]], 1,
-      { count: 3, locked: null, in: ["a:f2", "b:f2"], allLoaded: true }],
+    ["conflicting lock excludes its Creator", [["a", loaded(config, 2)], ["b", loaded(b)]], 1,
+      { count: 3, locked: null, in: ["b:f2"], allLoaded: true }],
     ["different locks: not locked", [["a", loaded(config, 1)], ["b", loaded(b, 2)]], null,
       { count: 3, locked: null, in: ["a:f1", "a:f3"], allLoaded: true }],
   ])("%s", (_name, splits, picked, want) => {

@@ -34,6 +34,7 @@ _storyboard_locks_lock = threading.Lock()
 _storyboard_total_built: int = 0
 _storyboard_total_served: int = 0
 _storyboard_build_failures: int = 0
+# Key by hover session so a late cancel from a previous hover cannot abort a new build of the same video.
 _storyboard_cancel_events: dict[str, threading.Event] = {}
 _storyboard_cancel_events_lock = threading.Lock()
 # A cancel after this fraction of bytes has landed is ignored: finish the file already paid for so the next hover is warm.

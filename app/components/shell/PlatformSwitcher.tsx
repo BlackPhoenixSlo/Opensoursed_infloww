@@ -23,14 +23,14 @@
  * the other platform shows, as it does for a switch from another window.
  */
 
-import { useMemo } from "react";
+import { useContext, useMemo } from "react";
 import { Check, ChevronDown, ChevronUp } from "lucide-react";
 
 import { useOutsideClose } from "@/components/ui/Menu";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useRosterCounts, type RosterCount } from "@/hooks/useRosterCounts";
 import { rosterUnreadText } from "@/lib/format";
-import { PLATFORMS, PLATFORM_NAME, accountPlatform, setPlatform, usePlatform, type Platform } from "@/lib/platform";
+import { DEFAULT_PLATFORM, AllPlatformsContext, PLATFORMS, PLATFORM_NAME, accountPlatform, setPlatform, usePlatform, type Platform } from "@/lib/platform";
 import type { AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
@@ -66,6 +66,29 @@ export function PlatformLogo({ platform, className }: { platform: Platform; clas
   );
 }
 
+function creatorPlatformName(account: Pick<AccountMeta, "platform">): string | null {
+  const platform = accountPlatform(account);
+  return platform === DEFAULT_PLATFORM ? null : PLATFORM_NAME[platform];
+}
+
+const noPlatformName = () => null;
+
+export function useCreatorPlatformName(): (account: Pick<AccountMeta, "platform">) => string | null {
+  return useContext(AllPlatformsContext) ? creatorPlatformName : noPlatformName;
+}
+
+export function CreatorPlatformBadge({ account, always = false }: { account: Pick<AccountMeta, "platform">; always?: boolean }) {
+  const scopedName = useCreatorPlatformName();
+  const name = (always ? creatorPlatformName : scopedName)(account);
+  if (!name) return null;
+  return (
+    <>
+      <PlatformLogo platform={accountPlatform(account)} className="h-3.5 w-3.5" />
+      <span className="sr-only">{` ${name}`}</span>
+    </>
+  );
+}
+
 /** Infloww's two flagged platforms, listed disabled. Their marks are drawn after
  *  Infloww's rows (mym's white wordmark, Fanvue's green tile), not its paths. */
 const COMING_SOON = [
@@ -88,7 +111,6 @@ const COMING_SOON = [
   },
 ] as const;
 
-/** A platform's unread: the sum of its Creators' counts. */
 export interface PlatformUnread { count: number }
 
 /** Unread per platform: the roster's unread summed over that platform's accounts with a session. */

@@ -116,6 +116,7 @@ async def live_window_session(request: Request):
         raise
     cookies = session_cookies(client.http.cookies.jar)
     x_bc = getattr(client, "x_bc", "") or ""
+    # x_bc seeds OF's localStorage bcTokenSha; a cookie copy without it got the session killed ("Wrong user", measured).
     if not x_bc or not any(c["name"] == "sess" for c in cookies):
         raise HTTPException(status_code=503, detail="this Creator has no usable OnlyFans session")
     log.info("live_window_session account=%s principal=%s cookies=%d", aid, key, len(cookies))

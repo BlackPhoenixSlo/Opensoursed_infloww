@@ -298,6 +298,7 @@ export function useMoneyRailFeed({
       readNotifHistory(),
       targetAccountIds,
     ),
+    // `snapshot` stays a dep: placeholder rows arrive via q.data without moving dataUpdatedAt (dataSig).
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [dataSig, queryDefs, targetAccountIds, historyTick, snapshot],
   );

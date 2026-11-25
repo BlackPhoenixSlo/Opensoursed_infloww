@@ -812,6 +812,7 @@ async def resolve_outbound_employee_id(
 def remember_chatter_employee(request: Request, chatter, account_id: str | None,
                               employee_id: int | None) -> None:
     # request.state, never a module or ContextVar cache, so it cannot cross requests.
+    # Callers pass an employee_id resolved for the same agency as resolve_chatter_employee_id.
     if employee_id is not None:
         request.state.chatter_employee = (chatter.id, account_id, employee_id)
 

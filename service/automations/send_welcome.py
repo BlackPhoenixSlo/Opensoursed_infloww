@@ -775,6 +775,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     strip_emoji_on = await load_strip_emojis(account_id)
     typing_wpm = await load_typing_wpm(account_id)
     typing_on = await load_typing_indicator(account_id)
+    # Absent stays False on purpose (editor saves stamp the catalog's True): a True read default would turn every legacy rule clock-only.
     time_only = bool_knob(payload, "time_only", False)
     skip_time_bubble = bool_knob(payload, "skip_time_bubble", False)
     question = str(payload.get("question") or "").strip()

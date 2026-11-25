@@ -8,6 +8,7 @@ import {
 } from "@/components/compose/massMessageReducer";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
 import { TEXT_TOO_LONG } from "@/lib/ofRichText";
+import { PLAIN_MODE } from "@/lib/ofRichMode";
 import { PRICE_NOTE } from "@/lib/sendGuards";
 import { SENSITIVE_BLOCK_MESSAGE } from "@/lib/sensitiveWords";
 
@@ -39,6 +40,48 @@ describe("initMassForm", () => {
     expect(f.onlineOnly).toBe(true);
     expect(f.accountId).toBe("acc1");
     expect(initMassForm().accountId).toBeNull();
+  });
+});
+
+describe("massMessageReducer — the composer's Platform", () => {
+  const RICH = "<p><strong>hi</strong> there</p>";
+  const TOOLBAR = { toolbar: true, rich: true };
+  it("a blank form is on OnlyFans unless the opener's Platform says otherwise", () => {
+    expect(initMassForm().platform).toBe("onlyfans");
+    expect(initMassForm("fs1", "fansly").platform).toBe("fansly");
+  });
+
+  it.each<[string, Partial<MassForm>, MassAction, Partial<MassForm>]>([
+    ["same-Platform pick keeps the rich text", { platform: "onlyfans", text: RICH, mode: TOOLBAR },
+      { type: "setAccount", id: "acc2", platform: "onlyfans" }, { platform: "onlyfans", text: RICH, mode: TOOLBAR }],
+    ["a pick with no known Platform keeps it", { platform: "onlyfans", text: RICH, mode: TOOLBAR },
+      { type: "setAccount", id: "ofX" }, { platform: "onlyfans", text: RICH, mode: TOOLBAR }],
+    ["cross-Platform pick gives plain text", { platform: "onlyfans", text: RICH, mode: TOOLBAR },
+      { type: "setAccount", id: "fs1", platform: "fansly" }, { platform: "fansly", text: "hi there", mode: PLAIN_MODE }],
+    ["cross-Platform first pick (null → A) gives plain text", { accountId: null, platform: "onlyfans", text: RICH, mode: TOOLBAR },
+      { type: "setAccount", id: "fs1", platform: "fansly" }, { accountId: "fs1", platform: "fansly", text: "hi there", mode: PLAIN_MODE }],
+    ["cross-Platform pick leaves plain text as typed", { platform: "fansly", text: "a <b> c" },
+      { type: "setAccount", id: "acc2", platform: "onlyfans" }, { platform: "onlyfans", text: "a <b> c", mode: PLAIN_MODE }],
+  ])("%s", (_n, over, action, want) => {
+    expect(massMessageReducer(form(over), action)).toMatchObject(want);
+  });
+
+  it("a cross-Platform switch is also the account reset, in the same step", () => {
+    const s = run(form({ text: RICH, attached: [media(1)], previewCount: 1, taggedCreators: [tag(1)] }),
+      { type: "toggleInclude", id: "L" }, { type: "toggleSmartInclude", id: 1 });
+    const next = massMessageReducer(s, { type: "setAccount", id: "fs1", platform: "fansly" });
+    expect(audience(next)).toEqual(DEFAULT_AUDIENCE);
+    expect(next).toMatchObject({ accountId: "fs1", platform: "fansly", text: "hi there", attached: [], previewCount: 0, taggedCreators: [] });
+  });
+
+  it("a locked form refuses the switch", () => {
+    const s = form({ text: RICH, results: [ok("acc1")] });
+    expect(massMessageReducer(s, { type: "setAccount", id: "fs1", platform: "fansly" })).toBe(s);
+  });
+
+  it("all-models keeps the Platform", () => {
+    expect(run(form({ platform: "fansly" }), { type: "setAllModels", on: true }, { type: "setAllModels", on: false }).platform)
+      .toBe("fansly");
   });
 });
 
@@ -394,4 +437,16 @@ describe("OF rich text in the mass composer (item 2)", () => {
     const s = run(form(), { type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }), rich: true });
     expect(buildMassBody(s, false).text).toBe(F);
   });
+});
+
+it("records a resolved launch without reseeding the same sender", () => {
+  const seeded = massMessageReducer(initMassForm("saved"), {
+    type: "seedExclude", accountId: "saved", listId: "exclude",
+  });
+  const unticked = massMessageReducer(seeded, { type: "toggleExclude", id: "exclude" });
+  const resolved = massMessageReducer(unticked, { type: "launchPlatform", platform: "fansly" });
+  expect(resolved).toMatchObject({ launch: "fansly", platform: "fansly", seededFor: "saved" });
+  expect(massMessageReducer(resolved, {
+    type: "seedExclude", accountId: "saved", listId: "exclude",
+  }).excludes.size).toBe(0);
 });

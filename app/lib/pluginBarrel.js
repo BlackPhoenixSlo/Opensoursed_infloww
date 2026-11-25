@@ -1,3 +1,4 @@
+// CommonJS: next.config.ts requires this while its config runs, after Next's TS hook for the config file is gone.
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS on purpose (above) */
 const fs = require("node:fs");
 const path = require("node:path");

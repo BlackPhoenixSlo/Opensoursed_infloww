@@ -87,6 +87,7 @@ const serve = (routes: Record<string, unknown> = {}) =>
   });
 
 beforeEach(() => {
+  platform.current = "onlyfans";
   relayPost.mockReset().mockResolvedValue({});
   relayDelete.mockReset().mockResolvedValue({});
   relayPut.mockReset().mockResolvedValue({});
@@ -126,6 +127,15 @@ describe("ChatHeader", () => {
       expect(screen.getByText("Fixture Fan One").compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(document.querySelector("header img")).toBeNull();
       expect(relayGet).not.toHaveBeenCalledWith(USER, expect.anything());
+    });
+
+    it("hides Add to lists in the Fansly Avatar menu", async () => {
+      platform.current = "fansly";
+      relayWith({ id: FAN_ID });
+      renderHeader();
+      const menu = await openAvatarMenu(userEvent.setup());
+      expect(within(menu).queryByRole("button", { name: /Add to lists/ })).toBeNull();
+      expect(relayGet.mock.calls.some(([path]) => path.startsWith("/api/of/v2/chats/folders"))).toBe(false);
     });
 
     it('the name opens the Avatar menu, not Fan insights: Subscription status, Earnings, Special offers and "Add to lists ▸" in that order; seeded values show as the status and dollars, no status with a past expiry reads "Expired", and missing values read "—"', async () => {

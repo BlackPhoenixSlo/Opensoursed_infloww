@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useLayoutEffect } from "react";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -24,7 +25,7 @@ vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: { user_id: "o
 const TAGS = { tab: "account", config: { creators: { profiles: { "2": { tag: "VIP" } } } } };
 const get = vi.fn(async (path: string, _opts?: unknown): Promise<unknown> => (path === "/admin/settings/account" ? TAGS : { all: 250 }));
 vi.mock("@/lib/relay", () => ({ relay: { get: (path: string, opts?: unknown) => get(path, opts) }, RelayError: class extends Error {} }));
-let accounts: { id: string; nickname: string; has_session: boolean; session_dead_at?: string }[] = [];
+let accounts: { id: string; nickname: string; platform?: string; has_session: boolean; session_dead_at?: string }[] = [];
 let granted: Set<string> | null = null;
 vi.mock("@/components/shell/useGrantedPages", () => ({ useGrantedPages: () => granted }));
 let rosterCounts: Record<string, { unread: number; owe_reply: number }> = {};
@@ -33,7 +34,7 @@ let watchers: { id: string; nickname?: string | null; name?: string | null; has_
 let readFailed = false;
 vi.mock("@/hooks/useAccounts", () => ({
   useAccounts: () => (readFailed ? { isSuccess: false, isError: true, data: undefined } : { isSuccess: true, data: { accounts, watchers } }),
-  useActiveAccounts: () => accounts,
+  usePlatformAccounts: (platform = getPlatform()) => accounts.filter((a) => (a.platform ?? "onlyfans") === platform),
   useWatcherAccounts: () => watchers,
   useOfManagerAccounts: () => [...accounts, ...watchers.filter((w) => w.has_session)],
   ofManagerWatcher: (w: { has_session?: boolean; is_active?: boolean }) => !!w.has_session && w.is_active !== false,
@@ -42,6 +43,7 @@ vi.mock("@/hooks/useAccounts", () => ({
 import { renderWithProviders } from "@/test-utils";
 import { ScopeProvider, useScope } from "@/contexts/ScopeContext";
 import { chatDraftKey } from "@/lib/ofMirrorChat";
+import { getPlatform, resetPlatformForTests, setPlatform } from "@/lib/platform";
 import { useStandIn } from "@/lib/ofMirrorProfile";
 import { resetReadGate } from "@/lib/ofReadGate";
 import { holdLease } from "@/lib/viewLease";
@@ -51,10 +53,28 @@ import { OfManagerChrome } from "./OfManagerChrome";
 const ui = () => renderWithProviders(<ScopeProvider><OfManagerChrome><p>OF view</p></OfManagerChrome></ScopeProvider>);
 
 let release: () => void = () => {};
-beforeEach(() => { localStorage.clear(); watchers = []; readFailed = false; granted = null; rosterCounts = {}; nav.path = "/of-manager/home"; nav.search = ""; media.desktop = true; resetReadGate(); release = holdLease("test", ["1", "2", "3"]); });
+beforeEach(() => { localStorage.clear(); resetPlatformForTests(); watchers = []; readFailed = false; granted = null; rosterCounts = {}; nav.path = "/of-manager/home"; nav.search = ""; media.desktop = true; resetReadGate(); release = holdLease("test", ["1", "2", "3"]); });
 afterEach(() => { cleanup(); get.mockClear(); release(); });
 
 describe("OfManagerChrome", () => {
+  it("commits an OnlyFans New Post stand-in from the first render with the switch on Fansly", () => {
+    setPlatform("fansly");
+    nav.path = "/of-manager/new-post";
+    accounts = [
+      { id: "2", nickname: "Fansly Creator", platform: "fansly", has_session: true },
+      { id: "1", nickname: "OnlyFans Creator", has_session: true },
+    ];
+    const committed: (string | null)[][] = [];
+    function Probe() {
+      const { accountId } = useScope();
+      const standIn = useStandIn("/of-mirror/pages/new-post/index.html");
+      useLayoutEffect(() => { committed.push([accountId, standIn]); }, [accountId, standIn]);
+      return null;
+    }
+    renderWithProviders(<ScopeProvider><OfManagerChrome><Probe /></OfManagerChrome></ScopeProvider>);
+    expect(committed[0]).toEqual(["1", "1"]);
+  });
+
   it("heads the page with the section and lists the creators with their OF notification count", async () => {
     accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }];
     ui();

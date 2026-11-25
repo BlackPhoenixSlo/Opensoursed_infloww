@@ -30,6 +30,7 @@ from llm_models import LLMModel, MODELS  # noqa: E402,F401
 
 _CHARS_PER_TOKEN = 4
 _ASSUMED_OUTPUT_TOKENS = 1024
+# grok_calls / grok_*daily_cost `cost_cents` hold MILLICENTS (cents x100): whole cents floored sub-cent DeepSeek calls to 0.
 _MILLICENTS_PER_CENT = 100
 _DEFAULT_CAP_CENTS = 100
 _REQUEST_TIMEOUT_S = 120.0
@@ -276,6 +277,7 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
                 f"account {account_id!r} has more than one owner with a "
                 f"{prov.name!r} key — cannot tell which agency to bill"
             )
+    # House key only for ownerless accounts: an owned one never falls through to it.
     if not owners:
         key = house_key(prov.name)
         if not key:
@@ -304,6 +306,7 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
 
 
 async def _user_api_key(user_id: str, prov: LLMProvider, purpose: str) -> str:
+    # Never house_key here: the asker is a tenant, so it would make the deployment pay for anything any signup sends.
     key = await tenant_keys.get_key(user_id, prov.name) or fallback_key(purpose, prov.name)
     if key:
         return key

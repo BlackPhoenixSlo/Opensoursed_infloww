@@ -2,6 +2,7 @@ name: Comment budget
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 jobs:
   check:
@@ -11,7 +12,12 @@ jobs:
         with:
           fetch-depth: 0
       - id: gate
-        run: if [ -f scripts/comment-budget.json ]; then echo "on=1" >> "$GITHUB_OUTPUT"; else echo "gate off in this repo"; fi
+        run: |
+          if git cat-file -e "origin/$GITHUB_BASE_REF:scripts/comment-budget.json" 2>/dev/null || [ -f scripts/comment-budget.json ]; then
+            echo "on=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "gate off in this repo"
+          fi
       - if: steps.gate.outputs.on == '1'
         uses: actions/setup-node@v4
         with:
@@ -27,18 +33,27 @@ jobs:
           test -n "$TS"
           npm i --no-save --prefix /tmp/ts "typescript@$TS"
           curl -fsSL -o /usr/local/bin/shfmt https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64
+          echo "76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf  /usr/local/bin/shfmt" | sha256sum -c -
           chmod +x /usr/local/bin/shfmt
-          pip install -q pytest
+          pip install -q pytest pytest-xdist
       - name: Check
         if: steps.gate.outputs.on == '1'
         env:
           COMMENT_TOOLS_TS: /tmp/ts/node_modules/typescript
+          COMMENT_BASE: origin/${{ github.base_ref }}
         run: |
-          python3 scripts/comment_budget.py --check
-          python3 scripts/comment_budget.py --growth "origin/$GITHUB_BASE_REF"
-          python3 -m pytest -q scripts/tests/test_comment_gate.py
+          test -f scripts/comment-budget.json || { echo "::error::scripts/comment-budget.json removed"; exit 1; }
+          python3 -m pytest -q -n auto scripts/tests/test_comment_gate.py scripts/tests/test_comment_budget.py > /tmp/gate-tests.log 2>&1 &
+          tests=$!
+          rc=0
+          python3 scripts/comment_budget.py --check || rc=1
+          wait "$tests" || rc=1
+          cat /tmp/gate-tests.log
+          exit "$rc"
       - name: Equality (prune batches)
-        if: steps.gate.outputs.on == '1' && startsWith(github.head_ref, 'chore/comment-prune-')
+        if: >-
+          steps.gate.outputs.on == '1' && (startsWith(github.head_ref, 'chore/comment-')
+          || startsWith(github.event.pull_request.title, 'chore(comments)'))
         env:
           COMMENT_TOOLS_TS: /tmp/ts/node_modules/typescript
         run: python3 scripts/comment_equality.py "origin/$GITHUB_BASE_REF" HEAD

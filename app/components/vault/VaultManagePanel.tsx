@@ -174,6 +174,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
 
   const lists = useVaultLists(accountId, true, true);
   const ofFoldersMirror = useOfFoldersMirror(accountId, useLocal);
+  // OF's live folder list drops some folders and miscounts: mirror counts win and its extra folders are added.
   const folders = useMemo<VaultList[]>(() => {
     const live = (lists.data?.list ?? []) as VaultList[];
     const mir = (ofFoldersMirror.data?.list ?? []).filter((f) => !f.builtin);

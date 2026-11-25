@@ -1,4 +1,5 @@
-import { can, type Capability, type Platform } from "@/lib/platform";
+import { platformHonours, type ChatListFilter } from "@/lib/chatFilters";
+import type { Platform } from "@/lib/platform";
 
 import type { ActiveChip } from "./FanListFilters";
 
@@ -17,12 +18,12 @@ export function fanListChips({ platforms, tipsEnabled, pinnedFolderIds, active }
   pinnedFolderIds: readonly string[];
   active: ActiveChip;
 }): { chips: FanListChipSet; active: ActiveChip } {
-  const any = (cap: Capability) => platforms.some((p) => can(p, cap));
+  const any = (filter: ChatListFilter) => platforms.some((p) => platformHonours(p, filter, null));
   const chips: FanListChipSet = {
-    pinned: any("pin_message"),
-    who_tipped: any("filter_tips"),
-    unread_tips: any("filter_tips") && tipsEnabled,
-    priority: any("filter_priority"),
+    pinned: any("pinned"),
+    who_tipped: any("who_tipped"),
+    unread_tips: any("unread_tips") && tipsEnabled,
+    priority: any("priority"),
   };
   let shown: boolean;
   if (active.kind === "folder") shown = pinnedFolderIds.includes(active.listId);

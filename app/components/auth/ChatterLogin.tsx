@@ -20,6 +20,7 @@ interface InvitePreview {
   used: boolean;
 }
 
+// The edge's /chatter/ prefix keeps relay traffic separate from /chatter-login.
 export default function ChatterLogin() {
   const router = useRouter();
   const sp = useSearchParams();

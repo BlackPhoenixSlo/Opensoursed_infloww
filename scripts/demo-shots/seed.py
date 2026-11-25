@@ -108,6 +108,40 @@ def _fill_fan_columns(con, account_ids: list[str]) -> None:
     fill_fan_columns(con, account_ids)
 
 
+def write_fans(con, rows: list[tuple]) -> None:
+    con.executemany(
+        "INSERT INTO fans(account_id, fan_id, of_username, of_display_name, avatar_url, is_name_real, recent_events, "
+        "likes_boobs, likes_ass, family_names, pets, communication_style, custom_fields, lifetime_spend_cents, is_bot, "
+        "turn_counter, last_message_received_at, last_message_sent_at, last_online_at, subscribed_at, "
+        "subscription_expires_at, subscription_status, is_followed, "
+        "deep_convo_state, deep_convo_skip_level, deep_convo_skip_remaining, source, created_at, updated_at, tags) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
+
+
+def write_messages(con, rows: list[tuple]) -> None:
+    msg_triggers = con.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='messages' "
+                               "AND name LIKE 'trg\\_msg\\_credit\\_%' ESCAPE '\\'").fetchall()
+    for name, _ in msg_triggers:
+        con.execute(f'DROP TRIGGER "{name}"')
+    con.executemany(
+        "INSERT INTO messages(account_id, fan_id, message_id, direction, sender_name, body, media_ids, media_count, "
+        "price_cents, is_paid, is_tip, purchased_at, is_unsent, is_promise, sent_by_employee_id, created_at, "
+        "ingested_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?,0,0,?,?,?)", rows)
+    for _, sql in msg_triggers:
+        con.execute(sql)
+
+
+def write_chats(con, rows: list[tuple]) -> None:
+    con.executemany(
+        "INSERT INTO chats(account_id, fan_id, last_message_id, last_message_at, last_message_preview, unread_count, "
+        "is_pinned, is_priority, hidden_locally, list_ids) VALUES (?,?,?,?,?,?,0,0,0,'[]')", rows)
+
+
+def write_chatter_grants(con, rows: list[tuple]) -> None:
+    con.executemany("INSERT OR IGNORE INTO chatter_account_access(chatter_id, user_id, account_id, created_at) "
+                    "VALUES (?,?,?,?)", rows)
+
+
 def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
     now = d.now
     spend: dict[tuple[str, int], int] = {}
@@ -132,32 +166,17 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
                      ts(last_out[k]) if k in last_out else None, ts(now - timedelta(minutes=(f["id"] % 3000))),
                      ts(s["subscribed_at"]), ts(s["expires_at"]),
                      s["status"], 0, "idle", 0, 0, "demo-shots", ts(s["subscribed_at"]), ts(now)))
-    con.executemany(
-        "INSERT INTO fans(account_id, fan_id, of_username, of_display_name, avatar_url, is_name_real, recent_events, "
-        "likes_boobs, likes_ass, family_names, pets, communication_style, custom_fields, lifetime_spend_cents, is_bot, "
-        "turn_counter, last_message_received_at, last_message_sent_at, last_online_at, subscribed_at, "
-        "subscription_expires_at, subscription_status, is_followed, "
-        "deep_convo_state, deep_convo_skip_level, deep_convo_skip_remaining, source, created_at, updated_at, tags) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
+    write_fans(con, rows)
     _fill_fan_columns(con, sorted({s["account_id"] for s in d.subs}))
 
     assert con.execute("SELECT 1 FROM transactions LIMIT 1").fetchone() is None
-    msg_triggers = con.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='messages' "
-                               "AND name LIKE 'trg\\_msg\\_credit\\_%' ESCAPE '\\'").fetchall()
-    for name, _ in msg_triggers:
-        con.execute(f'DROP TRIGGER "{name}"')
-    con.executemany(
-        "INSERT INTO messages(account_id, fan_id, message_id, direction, sender_name, body, media_ids, media_count, "
-        "price_cents, is_paid, is_tip, purchased_at, is_unsent, is_promise, sent_by_employee_id, created_at, "
-        "ingested_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?,0,0,?,?,?)",
-        [(m["account_id"], m["fan_id"], m["message_id"], m["direction"],
-          d.fans[m["fan_id"]]["name"] if m["direction"] == "in" else d.creator(m["account_id"])["name"],
-          m["body"], "[]", m["media_count"], m["price_cents"], m["is_paid"],
-          ts(m["purchased_at"]) if m["purchased_at"] else None,
-          emp[m["employee"]] if m["employee"] is not None else None, ts(m["created_at"]), ts(m["created_at"]))
-         for m in sorted(d.messages, key=lambda m: m["created_at"])])
-    for _, sql in msg_triggers:
-        con.execute(sql)
+    write_messages(con, [
+        (m["account_id"], m["fan_id"], m["message_id"], m["direction"],
+         d.fans[m["fan_id"]]["name"] if m["direction"] == "in" else d.creator(m["account_id"])["name"],
+         m["body"], "[]", m["media_count"], m["price_cents"], m["is_paid"],
+         ts(m["purchased_at"]) if m["purchased_at"] else None,
+         emp[m["employee"]] if m["employee"] is not None else None, ts(m["created_at"]), ts(m["created_at"]))
+        for m in sorted(d.messages, key=lambda m: m["created_at"])])
 
     desc = {"subscription": "Subscription from ", "rebill": "Recurring subscription from ",
             "ppv_message": "Payment for message from ", "custom": "Custom request from ", "ppv_post": "Post purchase by ",
@@ -183,11 +202,8 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         k = (m["account_id"], m["fan_id"])
         if k not in latest or m["created_at"] > latest[k]["created_at"]:
             latest[k] = m
-    con.executemany(
-        "INSERT INTO chats(account_id, fan_id, last_message_id, last_message_at, last_message_preview, unread_count, "
-        "is_pinned, is_priority, hidden_locally, list_ids) VALUES (?,?,?,?,?,?,0,0,0,'[]')",
-        [(a, f, m["message_id"], ts(m["created_at"]), m["body"][:120], 1 if m["direction"] == "in" else 0)
-         for (a, f), m in latest.items()])
+    write_chats(con, [(a, f, m["message_id"], ts(m["created_at"]), m["body"][:120], 1 if m["direction"] == "in" else 0)
+                      for (a, f), m in latest.items()])
 
     day0 = (now - timedelta(days=14)).replace(hour=0, minute=0, second=0)
     seats: dict[tuple[int, int], list[str]] = {}
@@ -211,8 +227,7 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         aids = sorted({a for (a, s), x in d.coverage.items() if x == e["index"]})
         if e["role"] == "manager":
             continue
-        con.executemany("INSERT OR IGNORE INTO chatter_account_access(chatter_id, user_id, account_id, created_at) "
-                        "VALUES (?,?,?,?)", [(cid, user_id, a, ts(now - timedelta(days=120))) for a in aids])
+        write_chatter_grants(con, [(cid, user_id, a, ts(now - timedelta(days=120))) for a in aids])
     con.executemany(
         "INSERT INTO clock_events(agency_user_id, employee_id, account_id, shift_id, in_utc, out_utc, close_reason, "
         "last_seen_utc) VALUES (?,?,?,?,?,?,?,?)",

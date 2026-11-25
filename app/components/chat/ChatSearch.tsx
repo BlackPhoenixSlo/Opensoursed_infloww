@@ -30,11 +30,15 @@ const MAX_PAGES_TO_LOAD = 12;
 const AUTO_FILL_COUNT = 3;
 
 export function ChatSearch(props: ChatSearchProps) {
+  const allowed = useCan(props.accountId, "chat_search");
+  return allowed ? <ChatSearchPanel {...props} /> : null;
+}
+
+function ChatSearchPanel(props: ChatSearchProps) {
   const {
     accountId, fanId, messages, ownerUserId,
     hasOlder, loadingOlder, olderFailed = false, onLoadOlder, onPick, onClose,
   } = props;
-  const allowed = useCan(accountId, "chat_search");
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [ids, setIds] = useState<number[]>([]);
@@ -62,7 +66,7 @@ export function ChatSearch(props: ChatSearchProps) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!debounced || !allowed) {
+    if (!debounced) {
       setIds([]);
       setError(null);
       setSearching(false);
@@ -98,7 +102,7 @@ export function ChatSearch(props: ChatSearchProps) {
         if (!cancelled) setSearching(false);
       });
     return () => { cancelled = true; };
-  }, [debounced, accountId, fanId, allowed]);
+  }, [debounced, accountId, fanId]);
 
   const byId = useMemo(() => {
     const m = new Map<number, OFMessage>();

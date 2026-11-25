@@ -16,22 +16,16 @@ function loadTs() {
 }
 const ts = loadTs();
 
-const ALLOW_SUBSTR = [
-  "eslint-disable", "eslint-enable", "@ts-", "prettier-ignore", "istanbul ignore", "c8 ignore",
-  "v8 ignore", "biome-ignore", "webpackChunkName", "webpackIgnore", "webpackPrefetch",
-  "webpackPreload", "webpackMode", "webpackExports", "webpackInclude", "webpackExclude",
-  "webpackFetchPriority", "turbopack", "@vite-ignore", "#__PURE__", "@__PURE__",
-  "@__NO_SIDE_EFFECTS__", "@jsx", "@refresh", "@vitest-environment", "@jest-environment",
-  "@license", "@preserve", "SPDX-License-Identifier",
-];
+const DIRECTIVE = /^(eslint-(disable|enable|env)|@ts-|prettier-ignore|(istanbul|c8|v8) ignore|biome-ignore|oxlint-(disable|enable)|deno-(lint|fmt)-ignore|webpack[A-Z]|turbopack[A-Z]|@vite-ignore|[#@]__PURE__|@__NO_SIDE_EFFECTS__|@jsx|@refresh|@(vitest|jest)-environment|@license|@preserve|SPDX-License-Identifier)/;
+const BLOCK_DIRECTIVE = /^(eslint|globals?|exported)(\s|$)/;
 const ALLOW_RE = [
   /^\/\/\/\s*<(reference|amd-)/,
   /^\/\/[#@]\s*source(Mapping)?URL=/,
-  /^(\/\/|\/\*)\s*(eslint(-[a-z-]+)?|globals?|exported)(\s|\*\/|$)/,
+  /^\/[*/]![^]*(@license|@preserve|Copyright|SPDX-License-Identifier|\(c\))/i,
 ];
-const FILE_SCOPED = /^\/\/\/\s*<|^\/\/[#@]\s*source(Mapping)?URL=|@ts-(nocheck|check)\b|@license|@preserve|SPDX-License-Identifier|@jsx|@refresh|@(vitest|jest)-environment|eslint-(disable|enable)(?![-\w])|^(\/\/|\/\*)\s*(eslint|globals?|exported)(\s|\*\/|$)/;
-const lineScoped = (path, body) => isAllowed(path, body) && !FILE_SCOPED.test(body);
-const JSDOC_TYPES = /@(type|typedef|template|callback|satisfies|enum|implements|extends|augments)\b|@(param|returns?|property|prop|this)\s*\{/;
+const FILE_SCOPED = /^(@ts-(nocheck|check)\b|@license|@preserve|SPDX-License-Identifier|@jsx|@refresh|@(vitest|jest)-environment|(eslint|oxlint)-(disable|enable)(?![-\w])|deno-lint-ignore-file)/;
+const JSDOC_TYPES = /@(type|typedef|template|callback|satisfies|enum|implements|extends|augments|import)\b|@(param|returns?|property|prop|this)\s*\{/;
+const isPlainJs = (path) => /\.(m?js|cjs|jsx)$/.test(path);
 
 function kindOf(path) {
   if (path.endsWith(".tsx")) return ts.ScriptKind.TSX;
@@ -39,10 +33,20 @@ function kindOf(path) {
   return ts.ScriptKind.JSX;
 }
 
-function isAllowed(path, body) {
-  if (ALLOW_SUBSTR.some((s) => body.includes(s)) || ALLOW_RE.some((r) => r.test(body))) return true;
-  return /\.(m?js|cjs|jsx)$/.test(path) && body.startsWith("/**") && JSDOC_TYPES.test(body);
+function contentLines(body) {
+  return body.startsWith("/*")
+    ? body.slice(2, -2).split(/\r\n|\n|\r/).map((l) => l.replace(/^\s*\*+/, "").trimStart())
+    : [body.replace(/^\/+/, "").trimStart()];
 }
+
+function scopeOf(path, body) {
+  if (ALLOW_RE.some((r) => r.test(body))) return "file";
+  const lines = contentLines(body);
+  if (body.startsWith("/*") && BLOCK_DIRECTIVE.test(lines.find((l) => l.trim()) ?? "")) return "file";
+  if (lines.some((l) => DIRECTIVE.test(l))) return lines.some((l) => FILE_SCOPED.test(l)) ? "file" : "line";
+  return isPlainJs(path) && body.startsWith("/**") && JSDOC_TYPES.test(body) ? "line" : null;
+}
+const isAllowed = (path, body) => scopeOf(path, body) !== null;
 
 const K = ts.SyntaxKind;
 const isJsDoc = (n) => n.kind >= K.FirstJSDocNode && n.kind <= K.LastJSDocNode;
@@ -59,6 +63,12 @@ function jsxTextStarts(sf) {
   };
   visit(sf);
   return out;
+}
+
+function hasJsx(sf) {
+  const visit = (n) => n.kind === K.JsxElement || n.kind === K.JsxSelfClosingElement || n.kind === K.JsxFragment
+    || ts.forEachChild(n, visit);
+  return !!visit(sf);
 }
 
 function lastAtOrBefore(sorted, x, key = (v) => v) {
@@ -169,7 +179,7 @@ function prunableRanges(sf, path, comments, leaves) {
   const wrapped = new Map();
   const keep = new Set();
   for (const r of comments) {
-    if (!lineScoped(path, text.slice(r.pos, r.end))) continue;
+    if (scopeOf(path, text.slice(r.pos, r.end)) !== "line") continue;
     const next = leaves[lastAtOrBefore(leaves, r.end - 1) + 1] ?? Infinity;
     for (const o of comments) if (o.pos >= r.end && o.pos < next) keep.add(o.pos);
   }
@@ -211,7 +221,9 @@ function prunableRanges(sf, path, comments, leaves) {
   return out;
 }
 
-const printer = ts.createPrinter({ removeComments: true });
+const EMIT = { removeComments: true, jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext };
+const transpile = (path, text) => ts.transpileModule(text, { fileName: path, compilerOptions: EMIT, reportDiagnostics: true });
+const diagText = (ds) => ds.slice(0, 2).map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n")).join("; ");
 const input = JSON.parse(readFileSync(0, "utf8"));
 const mode = process.argv[2] || "count";
 const result = {};
@@ -219,6 +231,10 @@ function scanFile(path, text) {
   const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, kindOf(path));
   const diags = (sf.parseDiagnostics || []).map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
   if (diags.length) return { error: `TS parse: ${diags.slice(0, 2).join("; ")}` };
+  if (/\.[mc]js$/.test(path) && hasJsx(sf)) return { error: "JSX in .mjs/.cjs: node cannot parse it" };
+  const emits = !/\.d\.[mc]?ts$/.test(path);
+  const out = (mode === "dump" && emits) || isPlainJs(path) ? transpile(path, text) : null;
+  if (out && out.diagnostics.length) return { error: `TS parse: ${diagText(out.diagnostics)}` };
   const cp = codePointMap(text);
   const lineOf = (pos) => sf.getLineAndCharacterOfPosition(pos).line + 1;
   const leaves = leafStarts(sf);
@@ -231,14 +247,14 @@ function scanFile(path, text) {
     const allowed = isAllowed(path, body);
     const own = /^[ \t]*$/.test(text.slice(text.lastIndexOf("\n", r.pos - 1) + 1, r.pos));
     const anchor = lastAtOrBefore(leaves, r.pos - 1) + 1;
-    const gap = lineScoped(path, body) ? (anchor < leaves.length ? lineOf(leaves[anchor]) - lineOf(r.end) : -1) : 0;
+    const gap = scopeOf(path, body) === "line" ? (anchor < leaves.length ? lineOf(leaves[anchor]) - lineOf(r.end) : -1) : 0;
     rows.push([cp(r.pos), cp(r.end), lineOf(r.pos), lineOf(r.end), allowed, anchor, own, allowed ? body : "", gap]);
   }
   const entry = { comments: rows };
   if (mode === "ranges") entry.ranges = prunableRanges(sf, path, comments, leaves).map(([a, b]) => [cp(a), cp(b)]);
   if (mode === "dump") {
     entry.sig = signature(sf);
-    entry.printed = printer.printFile(sf);
+    entry.emit = out ? out.outputText : "";
   }
   return entry;
 }

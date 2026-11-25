@@ -391,6 +391,7 @@ def shape_result(tool: Tool, status: int, body: Any, *, base: str | None = None)
         data[sh.rows] = data[sh.rows][:len(data[sh.rows]) // 2]
         meta["truncated"] = True
     if _size(data) > MAX_CHARS:
+        # A send's 2xx already went out: never an error (the executor would mark it failed); keep the ids that prove it.
         if tool.effect == "send":
             return {**{k: data[k] for k in SEND_KEEP if k in data}, "truncated": True}
         return error(413, "result too large for one tool call; narrow the request")

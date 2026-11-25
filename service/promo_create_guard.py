@@ -499,7 +499,8 @@ def _audience(v: Any) -> frozenset[str]:
     return frozenset(str(p).strip() for p in parts if str(p).strip()) or frozenset({"all"})
 
 
-# OF echoes no discount: match on an id unknown before the send, made after it, same cap (null = 0), message and audience.
+# OF echoes no discount: match a new ID by cap (null = 0), message and audience, allowing up to 5s before sent_at.
+# Match subscribeDays only for discount 100 because OF stores 0 otherwise.
 def _candidate(r: PromoCreateReservation, p: dict, held: set[int], now: datetime) -> bool:
     if r.pre_ids_json is None or r.sent_at is None:
         return False

@@ -36,7 +36,6 @@ mkdir -p "$OUT"
 for name in "${OUTPUTS[@]}"; do rm -f "$OUT/$name.png"; done
 rm -f "$OUT/$REPORT_NAME"
 
-# Importing secrets_store copies the legacy secrets.json before any redirect can run.
 if [ -f "$ROOT/service/secrets.json" ] && [ ! -e "$ROOT/service/secrets/secrets.json" ]; then
   echo "ui-shots: service/secrets.json exists and service/secrets/secrets.json does not." >&2
   echo "ui-shots: starting the relay would copy your stored keys before the harness can redirect" >&2

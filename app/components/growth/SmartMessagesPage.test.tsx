@@ -653,13 +653,12 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
     expect(screen.getByRole("dialog", { name: title })).toHaveAttribute("data-account", B.id);
   });
 
-  it("on a Fansly Creator the mass composer opens unseeded: she is no sender", async () => {
+  it("hides all broadcast cards on a Fansly Creator's page", async () => {
     await mount("/growth/smart-messages", { fanslyB: true });
     await pickCreator(B.nickname);
     await openPopUp();
-    await act(async () => { fireEvent.click(within(popUp()).getByRole("button", { name: new RegExp(`^${valueOf(108).split(" / ")[0]}`) })); });
-    await act(async () => { fireEvent.click(nextButton()); });
-    expect(screen.getByRole("dialog", { name: "mass composer standard" })).toHaveAttribute("data-account", "");
+    expect(within(popUp()).queryByRole("button", { name: /mass message|Message online fans/i })).toBeNull();
+    expect(nextButton()).toBeDisabled();
   });
 
   it("Start from scratch is disabled, titled not wired, picks nothing and calls nothing; every card is wired", async () => {

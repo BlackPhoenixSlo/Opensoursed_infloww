@@ -504,6 +504,7 @@ export function chatToolWrites(accountId: string, fan: string, qc: QueryClient):
     note: (text) => relay.put(`/api/of/v2/subscriptions/${f}/note`, { note: text }, opts).then(refresh),
     list: (id, on) => (on ? relay.post(`/api/of/v2/lists/${encodeURIComponent(id)}/users/${f}`, undefined, opts) : relay.delete(`/api/of/v2/lists/${encodeURIComponent(id)}/users/${f}`, opts)).then(refresh),
     discount: (discount, period) => putFanDiscount(accountId, fan, discount, period).then(refresh),
+    // Without ack=false&hide=false the Relay's restrict sends the fan "." and hides the chat; OF's Restrict does neither.
     restrict: (on) => (on ? relay.post(`/api/of/v2/users/${f}/restrict?ack=false&hide=false`, undefined, opts) : relay.delete(`/api/of/v2/users/${f}/restrict?unhide=false`, opts)).then(refresh),
     block: (on) => (on ? relay.post(`/api/of/v2/users/${f}/block`, undefined, opts) : relay.delete(`/api/of/v2/users/${f}/block`, opts)).then(refresh),
   };

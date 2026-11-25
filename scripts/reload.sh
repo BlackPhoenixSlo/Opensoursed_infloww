@@ -22,7 +22,6 @@
 # Run ./scripts/start.sh first if the supervisors aren't up yet.
 
 set -u
-cd "$(dirname "$0")/.."
 
 HOST="${HOST:-127.0.0.1}"
 RELAY_PORT="${PORT:-8787}"
@@ -36,10 +35,12 @@ for arg in "$@"; do
     --relay|--relay-only) do_next=false ;;
     --next|--next-only)   do_relay=false ;;
     --no-wait)            do_wait=false ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "[reload] unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
+
+cd "$(dirname "$0")/.."
 
 bounce() {
   local port="$1" label="$2"

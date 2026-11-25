@@ -75,6 +75,7 @@ async def _emit_typing_for(account_id: str, fan_id: int, seconds: float) -> None
         remaining -= step
 
 
+# Lends the run's slot for the hold: never call under a lock another run may wait on; SlotLost after = send nothing more, record landed bubbles.
 async def hold_with_typing(account_id: str, fan_id: int, seconds: float,
                            *, typing_indicator: bool = False,
                            quiet_s: float = 0.0,

@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("of-relay.automation.customs")
 
+# Below ASK_MIN_CENTS on purpose: the watch also books the lowball tip a chatter never quoted.
 MIN_CENTS = 5_000
 
 ASK_MIN_CENTS = 10_000

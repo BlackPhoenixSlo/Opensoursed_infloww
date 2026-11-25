@@ -140,6 +140,7 @@ async def after_write(aid: str, fan_id: int | None, unread: int, result: Any, *,
     acked = acked_fans(result) if fan_id is None else None
     for fid in ([fan_id] if acked is None else acked):
         await set_local_unread(aid, fan_id=fid, value=unread, at=at)
+        # Before the bust: unread_total and Amber read/patch the cached window it drops.
         _move_unread_total(aid, fid, unread, at)
         badge_reads.on_read_flip(aid, fid, unread, at)
         _move_amber(aid, fid, unread, at)

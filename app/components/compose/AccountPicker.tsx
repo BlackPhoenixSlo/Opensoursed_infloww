@@ -7,6 +7,7 @@ import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { useScope } from "@/contexts/ScopeContext";
 import { IfLabel, IfNativeSelect } from "@/components/ui/infloww";
+import { useCreatorPlatformName } from "@/components/shell/PlatformSwitcher";
 import type { AccountMeta } from "@/lib/relay";
 
 export function AccountPicker({
@@ -20,6 +21,7 @@ export function AccountPicker({
   const accounts = senders ?? platformAccounts;
   const { isIncluded } = useAllModelsInclude();
   const { scope } = useScope();
+  const platformName = useCreatorPlatformName();
 
   const visibleAccounts = useMemo(
     () => accounts.filter((a) => isIncluded(a.id) || a.id === value),
@@ -43,11 +45,14 @@ export function AccountPicker({
         className="w-full"
       >
         {visibleAccounts.length === 0 && <option value="">(no active sessions)</option>}
-        {visibleAccounts.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.nickname || a.id}
-          </option>
-        ))}
+        {visibleAccounts.map((a) => {
+          const badge = platformName(a);
+          return (
+            <option key={a.id} value={a.id}>
+              {badge ? `${a.nickname || a.id} · ${badge}` : a.nickname || a.id}
+            </option>
+          );
+        })}
       </IfNativeSelect>
     </div>
   );

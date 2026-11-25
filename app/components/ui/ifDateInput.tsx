@@ -65,6 +65,7 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
     const top = below + box.offsetHeight > window.innerHeight - 8 && r.top - 4 - box.offsetHeight >= 8
       ? r.top - 4 - box.offsetHeight : below;
     const left = Math.max(8, Math.min(r.left, window.innerWidth - box.offsetWidth - 8));
+    // A transformed ancestor (a modal's pop-in) becomes the fixed box's frame: still at 0,0, its rect is that frame's offset, hence `- frame.top/left`.
     const frame = box.getBoundingClientRect();
     box.style.top = `${top - frame.top}px`;
     box.style.left = `${left - frame.left}px`;

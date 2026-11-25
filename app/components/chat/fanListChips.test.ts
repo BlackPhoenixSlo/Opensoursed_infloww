@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { platformHonours, type ChatListFilter } from "@/lib/chatFilters";
 import type { Platform } from "@/lib/platform";
 
 import type { ActiveChip } from "./FanListFilters";
@@ -60,5 +61,15 @@ describe("fanListChips: the filter kept", () => {
   it("a kept filter is the same object, so the write-back settles", () => {
     const active = folder("8");
     expect(fanListChips({ platforms: OF, tipsEnabled: false, pinnedFolderIds: ["8"], active }).active).toBe(active);
+  });
+});
+
+describe("platformHonours: the Capability each list filter needs", () => {
+  it.each<[ChatListFilter | null, string | null, boolean]>([
+    [null, null, true], ["unread", null, true], ["pinned", null, false], ["priority", null, false],
+    ["who_tipped", null, false], ["unread_tips", null, false], [null, "7", false], ["unread", "7", false],
+  ])("filter %s, folder %s: OnlyFans yes, Fansly %s", (filter, listId, fansly) => {
+    expect(platformHonours("onlyfans", filter, listId)).toBe(true);
+    expect(platformHonours("fansly", filter, listId)).toBe(fansly);
   });
 });

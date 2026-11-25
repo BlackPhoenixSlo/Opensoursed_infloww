@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * FanListFilters — the Fan List's filter row (the "All inboxes" selector,
- * the gear with the list settings, the sort control, the pencil that pins
- * OF lists, and the sort line's refresh icon) and chip row (the OF lists
- * among the chips). Stateless: the parent
- * (FanList) owns the active filter, counts, folders, sort and gear settings
- * and passes them in with their callbacks
- * (docs/spec/phase-02-fan-list-pane.md, Interfaces).
- */
 
 import { ChevronDown, ListFilter, Mail, Pencil, RotateCw, Settings } from "lucide-react";
 import type { BlurMode } from "@/hooks/useBlurMode";
@@ -25,37 +16,22 @@ import { useFanListMenu } from "./useFanListMenu";
 const G = MP.fanList;
 const O = MP.ours.FanListFilters;
 
-/** A settings checkbox row. */
 const SETTINGS_ROW = cn(MENU_ITEM, "cursor-pointer select-none");
 
-/** A menu row's sub-line under its name: a sort order's explanation. */
 const MENU_SUB_LINE = cn(O.menuSubLine, "text-fg-dim");
 
-/** A chip scroller: the chips sideways, with no scrollbar instead of
- *  wrapping (mh:141-142). The chip row's and the folder row's. */
 const CHIP_SCROLLER = cn(O.chipScroller, "flex min-w-0 items-center overflow-x-auto no-scrollbar");
 
-/** A filter row icon button after the gear, the gear's bordered square;
- *  each adds its colours. */
 const ICON_BUTTON = cn(G.gear, O.gear, "grid place-items-center border-border");
-/** An icon button at rest, as the gear. */
 const ICON_IDLE = "text-fg-dim hover:text-fg hover:bg-bg-elev-1";
-/** An icon button whose setting is off its default (the sort, off Newest
- *  first), as an active chip looks. */
 const ICON_ACTIVE = "bg-accent text-white border-accent";
 
-/** The pencil's name: it opens the folder picker. */
 const PIN_LISTS = "Pin lists as chips";
 
-/** A Fan List menu divider, `.pop .pdiv` (mh:371). The New menu's too. */
 export function MenuDivider() {
   return <div role="separator" className={cn(MP.menu.divider, "bg-border")} />;
 }
 
-/** The Fan List's sort orders. "Newest first" is Infloww's; the others are
- *  Inflowwww's, after it under the same "Sort by" header (spec, Filters). `sub`
- *  explains an order under its name; `old` is the old gear option's
- *  tooltip, its extra tooltip's second line. */
 const SORT_ORDERS: Record<ChatSortMode, { label: string; sub?: string; old?: string }> = {
   recent: { label: "Newest first" },
   spend: { label: "Amount spent" },
@@ -68,34 +44,24 @@ const SORT_ORDERS: Record<ChatSortMode, { label: string; sub?: string; old?: str
     old: "Spend × decay. Half-life: idle 1h, owe-reply 2h, unread 3h. Below $3 effective, unread wins.",
   },
 };
-/** Infloww's order, the sort control's first. */
 const NEWEST_FIRST: ChatSortMode = "recent";
-/** Inflowwww's orders, after Newest first in the sort control, in this order. */
 const EXTRA_SORT_ORDERS = (["spend", "spend-unread", "hybrid"] as const)
   .map((key) => ({ key, ...SORT_ORDERS[key] }));
 
-/** The order in force and its callback. */
 type SortChoice = {
   sortMode: ChatSortMode;
   onSortModeChange: (next: ChatSortMode) => void;
 };
 
-/** Built-in OF chat filters — most are server-side filters supported
- *  by /chats. `owe-reply` is its own chip and is CLIENT-SIDE only: there's no OF filter for
- *  "fan sent last and we haven't replied," so FanList fetches ALL and
- *  filters locally.
- */
+// `owe-reply` is client-side only: OF has no filter for "fan sent last, we haven't replied", so FanList fetches all and filters locally.
 type BuiltinFilter = "all" | "unread" | "pinned" | "who_tipped" | "unread_tips" | "priority" | "owe-reply";
 
-/** Active selection: either a built-in filter or a custom folder by id. */
 export type ActiveChip =
   | { kind: "builtin"; key: BuiltinFilter }
   | { kind: "folder"; listId: string };
 
-/** The gear's list settings and their callbacks. */
 type GearSettings = {
   markingAll: boolean;
-  /** Some loaded chat is unread, so "Mark all as read" has work to do. */
   hasUnread: boolean;
   onMarkAllRead: () => void;
   keepDrawerOpen: boolean;
@@ -104,7 +70,6 @@ type GearSettings = {
   onBlurModeChange: (next: BlurMode) => void;
   compactMedia: boolean;
   onCompactMediaChange: (next: boolean) => void;
-  /** Enter the Fan List's select mode (`FanListBulkBar`). */
   onSelectChats: () => void;
 };
 
@@ -116,45 +81,25 @@ export function FanListFilters({
 }: {
   active: ActiveChip;
   onActiveChange: (next: ActiveChip) => void;
-  /** Unread chats in the cached All set; the Unread chip always shows it. */
   unreadCount: number;
-  /** The Unread count's age once a Creator it counts is late (components/chat/dataAge `badgeAge`): "as of 4 min"
-   *  after the label, the long form as the chip's title. Absent: today's chip. */
   unreadAge?: ChipAge | null;
-  /** Chats needing attention in the active filter's rows. */
   activeCount: number;
   oweReplyCount: number;
   pinnedFolders: ChatFolder[];
-  /** The Creator has an OF list, so the pencil shows (Gap row 16, mj:3067).
-   *  Lists are per Creator, so All Models has none. */
   hasLists: boolean;
   onOpenFolderPicker: () => void;
-  /** The "All inboxes" selector is per Creator, so All Models hides it. */
   showInboxSelector: boolean;
-  /** The Creator's Split Inbox group count; above 1 the selector offers
-   *  "Inbox 1" to "Inbox N". */
   groupCount: number;
-  /** The chosen group, or null for "All inboxes". */
   group: number | null;
-  /** A chatter the owner bound to `group`: the selector shows it and offers nothing else. */
   groupLocked?: boolean;
   onGroupChange: (group: number | null) => void;
-  /** Open the Split Inbox dialog, offered as "Split Inbox settings". Null
-   *  for a chatter-only session, which is not offered it (the relay refuses
-   *  a chatter's save anyway). */
   onOpenSplitInbox: (() => void) | null;
-  /** The chat list is fetching: the refresh icon spins, disabled. */
   fetching: boolean;
-  /** Fetch a fresh list past the relay cache. */
   onRefresh: () => void;
-  /** The gated chips the scope's Platforms back (`fanListChips`); "Unread with tips" also needs the Creator's tips on. */
   chips: FanListChipSet;
 } & SortChoice & GearSettings) {
   return (
     <>
-      {/* The filter row (Gap row 7): selector, gear, sort, pencil (with an
-       *  OF list), spacer, sort line. It anchors the sort's
-       *  menu, and the gear's below md. */}
       <div role="group" aria-label="Inbox, settings and sort" className={cn(G.filters, "relative flex flex-wrap items-center")}>
         {showInboxSelector && (
           <InboxSelector
@@ -167,8 +112,6 @@ export function FanListFilters({
         )}
         <GearMenu {...gear} />
         <SortControl sortMode={sortMode} onSortModeChange={onSortModeChange} />
-        {/* "✎ Lists" (Gap row 16, mj:3067) as an icon: only while the
-         *  Creator has an OF list. */}
         {hasLists && (
           <button
             type="button"
@@ -181,7 +124,6 @@ export function FanListFilters({
           </button>
         )}
         <div className="flex-1" />
-        {/* The sort line (Gap row 10): refresh. */}
         <div className={cn(G.sort, "flex items-center text-fg-dim")}>
           <button
             type="button"
@@ -195,13 +137,6 @@ export function FanListFilters({
           </button>
         </div>
       </div>
-      {/* The chip row in one sideways scroller: All, then Owe reply (an
-       *  Inflowwww extra, its count always in amber), then Infloww's order
-       *  (2026-10-18 capture): Pinned, Unread, With Tips (then OF's "Unread
-       *  with tips" while the Creator has tips on), then the Creator's pinned
-       *  OF lists as plain chips (Gap row 15), then Priority, an Inflowwww
-       *  extra. All carries no badge: the attention count lives in the tab
-       *  title. */}
       <div role="group" aria-label="Fan List filters" className={cn(G.chips, O.rowPull, "flex items-center")}>
         <div className={CHIP_SCROLLER}>
           <BuiltinChip filter="all" active={active} onActiveChange={onActiveChange}>All</BuiltinChip>
@@ -226,12 +161,10 @@ export function FanListFilters({
               <FilterChip
                 key={id}
                 active={isActive}
-                // Re-clicking the active folder clears it (mj:3076).
                 onClick={() => onActiveChange(isActive ? { kind: "builtin", key: "all" } : { kind: "folder", listId: id })}
                 title={f.name || `List #${id}`}
                 count={isActive ? activeCount : null}
               >
-                {/* Reads "Folder <name>"; Infloww's list chip shows the name only. */}
                 <span className="sr-only">Folder</span>{" "}{f.name || `List #${id}`}
               </FilterChip>
             );
@@ -248,12 +181,6 @@ export function FanListFilters({
   );
 }
 
-/** The "All inboxes" selector (Gap row 8). With no Split Inbox it offers
- *  only "All inboxes" as a group (story 10); a split Creator adds "Inbox 1"
- *  to "Inbox N", and the label shows the chosen entry (story 9). Owners also
- *  get "Split Inbox settings" after the groups (story 49); `onOpenSettings`
- *  is null for a chatter-only session. `locked`: a bound chatter's group,
- *  shown disabled. */
 function InboxSelector({
   groupCount, group, locked, onGroupChange, onOpenSettings,
 }: {
@@ -309,7 +236,6 @@ function InboxSelector({
   );
 }
 
-/** The icon-only gear (Gap row 9) and its list settings menu. */
 function GearMenu({
   markingAll, hasUnread, onMarkAllRead,
   keepDrawerOpen, onKeepDrawerOpenChange, blurMode, onBlurModeChange,
@@ -317,7 +243,6 @@ function GearMenu({
 }: GearSettings) {
   const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
   return (
-    // Below md the menu is placed against the filter row (`gearMenuPlace`).
     <div ref={ref} className="md:relative">
       <button
         type="button"
@@ -354,10 +279,6 @@ function GearMenu({
             <span>Keep fan info panel open</span>
           </label>
           <MenuDivider />
-          {/* Image-blur mode. Two checkboxes for the two non-default
-           *  modes; checking one unchecks the other so the user
-           *  always sees the live state. Applied to chat media tiles
-           *  + vault thumbnails via the useBlurMode hook. */}
           <label className={cn(SETTINGS_ROW, "hidden md:flex")}>
             <input
               type="checkbox"
@@ -392,10 +313,6 @@ function GearMenu({
   );
 }
 
-/** The sort control (Gap row 10): an icon button after the gear, named by
- *  the order in force, and active while that order is not Infloww's
- *  "Newest first". Its menu lists, under "Sort by", Newest first and then
- *  Inflowwww's extra orders, the order in force marked ✓ (spec, Filters). */
 function SortControl({ sortMode, onSortModeChange }: SortChoice) {
   const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
   const label = `Sort: ${SORT_ORDERS[sortMode].label}`;
@@ -405,7 +322,6 @@ function SortControl({ sortMode, onSortModeChange }: SortChoice) {
     <span aria-hidden className="w-4 shrink-0 text-center">{sortMode === key ? "✓" : ""}</span>
   );
   return (
-    // Not positioned: the menu is placed against the filter row.
     <div ref={ref}>
       <button
         type="button"
@@ -438,8 +354,6 @@ function SortControl({ sortMode, onSortModeChange }: SortChoice) {
               onClick={() => choose(opt.key)}
             >
               {mark(opt.key)}
-              {/* The sub-line explains the order; the space reads it apart
-               *  from the name and adds no width in the flex column. */}
               <span className="flex flex-col">
                 <span>{opt.label}</span>
                 {opt.sub && " "}
@@ -453,9 +367,6 @@ function SortControl({ sortMode, onSortModeChange }: SortChoice) {
   );
 }
 
-/** A built-in filter's chip. `count` is shown always (Unread's, Owe
- *  reply's in `amber`); `activeCount` only while the chip is the active
- *  filter. */
 function BuiltinChip({
   filter, active, onActiveChange, count, activeCount, title, amber, age, children,
 }: {
@@ -482,7 +393,6 @@ function BuiltinChip({
   );
 }
 
-/** A chip count's age: the short text after the label and the chip's title. */
 type ChipAge = { text: string; title: string };
 
 function FilterChip({
@@ -493,10 +403,7 @@ function FilterChip({
   children: React.ReactNode;
   title?: string;
   count?: number | null;
-  /** The Clone's `.cbadge.amber` (mh:146): the owe-reply count. */
   amber?: boolean;
-  /** Its count's age (the Unread chip's "as of"): small dim text after the count, read last ("Unread 12 as of 4
-   *  min"); its title replaces the chip's. No live region: an age ticking is never announced. */
   age?: ChipAge | null;
 }) {
   const showCount = count != null && count > 0;
@@ -513,11 +420,8 @@ function FilterChip({
       )}
     >
       {children}
-      {/* The space makes the name read "Unread 4"; a flex container
-       *  drops whitespace-only text, so it adds no width. */}
       {showCount && " "}
       {showCount && (
-        // Unread is `info` like every unread count; owe stays `warn` (spec D6).
         <span className={cn(G.chipBadge, O.chipBadge, "absolute grid place-items-center", amber ? "bg-warn text-bg" : "bg-err text-white")}>
           {count}
         </span>

@@ -10,7 +10,6 @@ from side_effect_gate import refusal
 
 
 class Lack(str, Enum):
-    FOCUS = "FOCUS"
     REFERRALS = "REFERRALS"
     WALL_MEDIA = "WALL_MEDIA"
     SERVER_SCHEDULE = "SERVER_SCHEDULE"
@@ -41,8 +40,8 @@ SESSION_FILES: tuple[str, ...] = tuple(p.session_file for p in ALL)
 _BY_KEY = {p.key: p for p in ALL}
 
 
-def get(key: str | None) -> Platform:
-    return _BY_KEY.get(key or "", ONLYFANS)
+def get(key: object) -> Platform:
+    return _BY_KEY.get(key, ONLYFANS) if isinstance(key, str) else ONLYFANS
 
 
 def for_account(aid: str) -> Platform:

@@ -19,5 +19,6 @@ export const ownerAccountsQuery = (userId: string | undefined) => ({
   // Keyed by principal: unauthenticated /admin/accounts returns the full multi-tenant registry and would bleed into the next owner's session.
   queryKey: ["accounts", userId ?? "anon"],
   queryFn: fetchAccounts,
+  // A short staleTime is cheap because this read stays on the relay.
   staleTime: 60_000,
 });

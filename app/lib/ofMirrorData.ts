@@ -385,6 +385,7 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       doc?.removeEventListener("scroll", check, true);
       doc = frame.contentDocument;
       doc?.addEventListener("scroll", check, true);
+      // No auto-check on attach after a failed page: it would re-fire the failure each time loading settles.
       if (!olderFailed) check();
     };
     if (frame.contentDocument?.readyState === "complete") attach();

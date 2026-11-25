@@ -96,6 +96,7 @@ def parse_date(
     return parse_bound(s, field, zone, offset_min)
 
 
+# Clamp each id: the isolation middleware sees "a,b" as one non-account id and lets it through, so this is the only tenant check.
 def scope_ids(account_id: str | None) -> tuple[list[str] | None, str | None]:
     ids = split_account_ids(account_id)
     if not ids:

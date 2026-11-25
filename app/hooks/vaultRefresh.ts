@@ -10,6 +10,7 @@ export function ofUnreachable(e: unknown): boolean {
   return !(e instanceof RelayError) || e.status === 502 || e.status === 504;
 }
 
+// Syncs from OF, not just a mirror re-read: stored URLs carry the signature and proxy IP of the Collect that wrote them.
 export async function refreshVaultFromOf(
   qc: QueryClient, accountId: string, ofFolderId: FanId | null,
 ): Promise<boolean> {
@@ -43,6 +44,7 @@ export function vaultPickerSource(summary: { data?: SourceSummary; isLoading: bo
   return summary.data === undefined && summary.isLoading && !waitedOut ? "pending" : vaultWholeSource(summary.data);
 }
 
+// Mirror once it holds anything: AI tags, describe results and folder order live only there.
 export function vaultBrowseSource(summary: SourceSummary): VaultSource {
   return (summary?.count ?? 0) > 0 ? "mirror" : "live";
 }

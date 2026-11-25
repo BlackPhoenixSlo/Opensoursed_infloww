@@ -146,6 +146,7 @@ function handoff(target: string, fields: Record<string, string>): Response {
   });
 }
 
+// Not under /auth/*: the edge routes that prefix directly to the relay.
 export async function POST(req: Request): Promise<Response> {
   // Origin check trusts the whole site origin; only the configured site may sign a visitor in.
   const origin = req.headers.get("origin");

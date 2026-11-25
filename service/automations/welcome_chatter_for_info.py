@@ -520,6 +520,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
            "sending — he only sees the gif)." if _sticker_block else "")
         + _language.output_language_directive(lang)
     )
+    # Per-fan, so it rides the user message: in the system prompt it would fragment the shared cached prefix.
     claims_block = fan_claims_block(f)
     day_user = day.user_block(
         f, (c.last_body or "") if c.last_dir == "in" else "")
@@ -1386,6 +1387,7 @@ async def _turn(cfg: _RunConfig, c: _Candidate, fan_row: Fan | None,
         raw, presented = gen
         raw, sticker_tag = await _turn_tag_and_finalize(t, raw, sticker_mode)
         if not cfg.dry_run:
+            # Before the send on purpose: _MAX_TURNS counts attempts, so an undeliverable fan still graduates.
             await _bump_attempt(account_id, fan_id, now)
         parts = await _turn_shape(t, raw, fan_lang, sticker_tag)
         if parts is None:
@@ -1484,6 +1486,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if cfg.llm_capped:
         candidates = [c for c in candidates if c.closing_cut]
 
+    # Loaded even with factground off: openers read these rows, and next_for(None) graduates the fan.
     profiles: dict[int, FanProfile] = await _load_profiles(
         account_id, [c.fan_id for c in candidates])
 

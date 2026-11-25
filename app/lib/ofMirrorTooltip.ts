@@ -4,6 +4,7 @@
 import { useEffect, type RefObject } from "react";
 import { BRAND_NAME } from "@/lib/brand";
 
+// Lives here because this module imports no other mirror module; keep it that way (import cycles).
 export const NOT_YET = `Not available in ${BRAND_NAME} yet`;
 
 export function markWired(el: Element, live: boolean): void {

@@ -152,6 +152,7 @@ async def _gather_candidates(
                 c = counts[fan_id] = gen_info_plan.Candidate(int(fan_id))
             c.total_msg_n += 1
             text = gen_info_plan.strip_html(body)[:gen_info_plan.MSG_CLIP]
+            # WCFI can count media descriptions. Gen Info applies the same predicate to message text alone.
             if direction == "in" and is_substantive_msg(text):
                 c.fan_msg_n += 1
             if direction == "out" and is_paid and (price_cents or 0) > 0:

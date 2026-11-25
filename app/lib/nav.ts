@@ -101,9 +101,7 @@ export interface NavLink {
   flag?: FeatureFlag;
   permission?: string;
   tabOf?: string;
-  /** Not drawn in the sidebar; still a Permission page like any other (`drawnSidebar`). */
   hidden?: boolean;
-  /** In a `chatterOptIn` group, a page a role grants like any other (not opt-in). */
   notOptIn?: boolean;
 }
 
@@ -124,14 +122,6 @@ export type NavNode = NavLink | NavGroup | NavDivider;
 export const isGroup = (n: NavNode): n is NavGroup => "children" in n;
 export const isDivider = (n: NavNode): n is NavDivider => "divider" in n;
 
-/**
- * OnlyFans mode's own pages: Infloww's sidebar draws the current platform's
- * menu, a divider, then the menus with no platform (`groupMenuByType`,
- * index.9f50f370.js @10731800; `DesignLayout`, @11133300). Which of Infloww's
- * menus are OnlyFans' comes from its server's menu list (`platformType:M.type`,
- * @10731434); its Fansly rail shows only Creators and Employees below the
- * divider, so everything above it here is OnlyFans'.
- */
 export const ONLYFANS_NAV: NavNode[] = withSlotLinks([
   { label: "Dashboard", href: "/", icon: Grid01Line },
   {
@@ -146,7 +136,6 @@ export const ONLYFANS_NAV: NavNode[] = withSlotLinks([
       { label: "Vault", href: "/of-manager/vault" },
       { label: "Queue", href: "/of-manager/queue" },
       { label: "Collections", href: "/of-manager/collections" },
-      // Infloww's own menu (id 6, /my/collections/bookmarks/all), so its own Permission-editor page.
       { label: "Bookmarks", href: "/of-manager/collections/bookmarks/all" },
       { label: "Statements", href: "/of-manager/statements" },
       { label: "Statistics", href: "/of-manager/statistics" },
@@ -164,12 +153,10 @@ export const ONLYFANS_NAV: NavNode[] = withSlotLinks([
       { label: "Employee reports", href: "/analytics/employee-reports" },
       { label: "Fan reports", href: "/analytics/fan-reports" },
       { label: "Message dashboard", href: "/analytics/message-dashboard" },
-      // Employee reports' second tab (live 07-analytics-menu.png: four entries); its URL and Permission page stay.
       { label: "Sales records", href: "/analytics/sales-records", tabOf: "/analytics/employee-reports" },
     ],
   },
   { label: "Messages Pro", href: "/messages-pro", icon: MessagesProLine, popout: true },
-  // Out of Growth, under Messages Pro (owner 11-08); its /growth/ route and Permission page stay.
   { label: "Vault Pro", href: "/growth/vault-pro", icon: Images, chatterHidden: true },
   {
     label: "Growth",
@@ -182,10 +169,8 @@ export const ONLYFANS_NAV: NavNode[] = withSlotLinks([
       { label: "Profile promotion", href: "/growth/profile-promotion", chatterHidden: true },
       { label: "Free trial links", href: "/growth/free-trial-links", chatterHidden: true },
       { label: "Tracking links", href: "/growth/tracking-links", chatterHidden: true },
-      // Tracking links' former tabs (owner 11-12): their Permission page stays Tracking links. Bio pages is owner-only.
       { label: "Redirect links", href: "/growth/redirect-links", chatterHidden: true, permission: "/growth/tracking-links" },
       { label: "Bio pages", href: "/growth/bio-pages", chatterHidden: true, permission: "/growth/tracking-links" },
-      // Infloww's Growth > Sensitive words (menu 87). Its writes are owner-only.
       { label: "Sensitive words", href: "/growth/sensitive-words", chatterHidden: true },
     ],
   },
@@ -193,15 +178,13 @@ export const ONLYFANS_NAV: NavNode[] = withSlotLinks([
     label: "Share for Share",
     icon: SwitchHorizontal01Line,
     children: [
-      // Owner-only (docs/spec/phase-03-share-for-share.md): the relay 403s a chatter on /admin/s4s.
+      // Owner-only: the relay 403s a chatter on /admin/s4s
       { label: "Discover creators", href: "/share-for-share/discover-creators", chatterHidden: true },
       { label: "Requests", href: "/share-for-share/requests", chatterHidden: true },
       { label: "S4S schedule", href: "/share-for-share/schedule", chatterHidden: true },
-      // Infloww menu 55: a page, not a drawer.
       { label: "S4S settings", href: "/share-for-share/settings", chatterHidden: true },
     ],
   },
-  // Ours, not Infloww (VISION.md). Routes per docs/infloww-screens.md §4.1.
   {
     label: "My Automations",
     icon: CalendarClock,
@@ -226,13 +209,11 @@ export const ONLYFANS_NAV: NavNode[] = withSlotLinks([
     chatterOptIn: true,
     children: [
       { label: "Auto-reply", href: "/growth/auto-reply", hidden: true },
-      // Its Model info is the account's, so a role grants it like any page (service/permissions.py PAGE_MAP).
       { label: "Get to know fans", href: "/growth/get-to-know-fans", notOptIn: true, hidden: true },
     ],
   },
 ]);
 
-/** `nodes` with the plugins' links (lib/chatSlots.ts `navLinks`) in their groups. */
 function withSlotLinks(nodes: NavNode[]): NavNode[] {
   return nodes.map((n) => {
     const adds = isGroup(n) ? NAV_LINK_SLOTS.filter((s) => s.group === n.label) : [];
@@ -242,7 +223,6 @@ function withSlotLinks(nodes: NavNode[]): NavNode[] {
   });
 }
 
-/** The menus every platform shows, below the divider. */
 const COMMON_NAV: NavNode[] = [
   {
     label: "Creators",
@@ -269,11 +249,10 @@ const COMMON_NAV: NavNode[] = [
  * @10699639), in the order its Fansly rail draws them (Fansly Manager,
  * Scripts, Message pro, Vault pro). Scripts, Message pro and Vault pro are
  * our built pages, which serve a Fansly account through the relay's Fansly
- * shim (they read the platform-scoped account list). Of the Fansly Manager
- * pages (Infloww's embedded fansly.com), only Scheduled Posts, Lists,
- * Notifications and Earning Statistics are ours over the shim, behind the
- * `fansly_manager` flag (roadmap 8.1), each answering to its OnlyFans
- * counterpart's Permission page (`permission`).
+ * shim (they read the platform-scoped account list). Infloww embeds
+ * fansly.com for the Fansly Manager pages; we build only the flagged ones
+ * below, gated by their OnlyFans counterpart's permission so existing grants
+ * cover both platforms.
  */
 export const FANSLY_NAV: NavNode[] = [
   {
@@ -291,13 +270,10 @@ export const FANSLY_NAV: NavNode[] = [
   { label: "Vault pro", href: "/growth/vault-pro", icon: Images, chatterHidden: true }, // Infloww: /fansly/vault-pro
 ];
 
-/** Each platform's own pages. */
 export const PLATFORM_NAV: Record<Platform, NavNode[]> = { onlyfans: ONLYFANS_NAV, fansly: FANSLY_NAV };
 
-/** The OnlyFans sidebar: the tree the Permission editor and the route tests read. */
 export const SIDEBAR: NavNode[] = [...ONLYFANS_NAV, { divider: true }, ...COMMON_NAV];
 
-/** The sidebar of one platform: its own pages, the divider, the common ones. */
 export function sidebarFor(platform: Platform): NavNode[] {
   return platform === "onlyfans" ? SIDEBAR : [...PLATFORM_NAV[platform], { divider: true }, ...COMMON_NAV];
 }
@@ -308,17 +284,10 @@ const navHrefs = (nodes: NavNode[]): string[] =>
 const under = (pathname: string, href: string) =>
   href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 
-/** Whether `pathname` is one of `platform`'s own pages (a common page is not). */
 export function isPlatformPage(platform: Platform, pathname: string): boolean {
   return navHrefs(PLATFORM_NAV[platform]).some((h) => under(pathname, h));
 }
 
-/**
- * The platform whose own pages alone hold `pathname`, else null (a common
- * page, or one both platforms show, such as Scripts). Infloww switches the
- * platform to the one the visited page belongs to (`DesignLayout`'s route
- * effect, index.9f50f370.js @11131400).
- */
 export function platformOfPath(pathname: string): Platform | null {
   const owners = (Object.keys(PLATFORM_NAV) as Platform[]).filter((p) => isPlatformPage(p, pathname));
   return owners.length === 1 ? owners[0] : null;
@@ -341,12 +310,8 @@ export const SIDEBAR_FOOTER: NavLink[] = [
   { label: "Help center", href: "/help-center", icon: HelpCircleLine },
 ];
 
-/** Settings > left tab list (§3.10). */
 export const SETTINGS_TABS: NavLink[] = [
-  // Icons as Infloww draws them (live capture, page-parity ticket 20). The six
-  // Blob tabs are hidden from a Chatter: their Settings blob route 401s one.
-  // So is Security (organization): its Employee list is owner-only (/admin/employees).
-  // SettingsShell refuses a hidden tab opened by URL.
+  // The six Blob tabs are hidden from a Chatter (their route 401s one), as is Security (owner-only /admin/employees); SettingsShell refuses a hidden tab opened by URL
   { label: "Your Account", href: "/settings/account", icon: User, chatterHidden: true },
   { label: "Your Preferences", href: "/settings/preferences", icon: Heart, chatterHidden: true },
   { label: "Security (organization)", href: "/settings/security-org", icon: ShieldCheck, chatterHidden: true },
@@ -356,81 +321,43 @@ export const SETTINGS_TABS: NavLink[] = [
   { label: "Sales Settings", href: "/settings/sales", icon: ChartColumn, chatterHidden: true },
   { label: "Time tracking", href: "/settings/time-tracking", icon: AlarmClockCheck, chatterHidden: true },
   { label: "Messaging settings", href: "/settings/messaging", icon: MessageCircle, chatterHidden: true },
-  // Who a creator's media sends @-tag (account config, owner-only route): mass messages, posts,
-  // automations and stories. Blank = no tag, the default.
   { label: "Co-creator tag", href: "/settings/cotag", icon: AtSign, chatterHidden: true },
-  // A creator's "Auto-accept OnlyFans consent" switch (owner-only PUT); a consent notice links here.
   { label: "OnlyFans consent", href: "/settings/consent", icon: FileCheck, chatterHidden: true },
-  // A creator's OF Manager new writes force-off (owner-only PUT): the server's env turns them on, this only keeps
-  // them off for one creator.
   { label: "OF Manager writes", href: "/settings/ofm-writes", icon: PenLine, chatterHidden: true },
   { label: "AI keys", href: "/settings/ai-keys", icon: KeyRound, chatterHidden: true },
-  // The `actions` log with readable names and a date filter (roadmap W6 6.16); its route is owner-only.
   { label: "Audit log", href: "/settings/audit", icon: History, chatterHidden: true },
   { label: `About ${BRAND_NAME}`, href: "/settings/about", icon: Info },
-  // The master's ops back-office: house keys, automation on/off, run log. Never
-  // drawn for an owner, employee or chatter; the Panel 404s them too.
+  // Master's ops back-office: never drawn for owner/employee/chatter; the Panel 404s them too
   { label: "System", href: "/settings/system", icon: ServerCog, masterOnly: true },
 ];
 
 export interface NavFilter {
   chatterOnly: boolean;
-  /** The pages the session's Permission role grants, from the Applied
-   *  settings read; `null` is every page. Only Permission-editor pages
-   *  (`PERMISSION_PAGES`) are ever hidden by it. */
   grantedPages: Set<string> | null;
-  /** The session is the deployment master (users.is_admin). Absent ≡ false, so
-   *  a `masterOnly` link is hidden unless a caller proves the role. */
   master?: boolean;
-  /** The Agency's feature flags (`useFlags`). Absent ≡ every flag off, so a
-   *  `flag` link is hidden unless a caller passes its flag on. */
   flags?: FeatureFlags;
 }
 
-// The "Permission-gated Settings tabs" (spec phase-04, story 33) are none
-// today, by observation: PERMISSION_PAGES takes pages from SIDEBAR only and
-// no SETTINGS_TABS or SIDEBAR_FOOTER href is among them (nav.test.ts asserts
-// the filter leaves them alone), so SettingsNav passes `grantedPages: null`.
-// When a Settings tab joins the Permission editor, pass the granted pages in
-// SettingsNav as Sidebar does.
 
-/** A SIDEBAR link that is a Permission-editor page of its own: one
- *  answering to no other page (`permission`) — top-level or a group's child
- *  alike. The Permission editor's tabs and the Relay's drift check
- *  (test_role_enforcement `_nav_pages`) apply the same rule. */
 export function isPermissionPage(l: NavLink): boolean {
   return !l.permission;
 }
 
-/** Every page a Permission role grants or denies, keyed by href in its
- *  `permissions`: the SIDEBAR links `isPermissionPage` keeps, in nav order.
- *  The one list; the Permission editor's `PAGE_HREFS` reads it. */
 export const PERMISSION_PAGES: ReadonlySet<string> = new Set(
   SIDEBAR.flatMap((n) =>
     isDivider(n) ? [] : (isGroup(n) ? n.children : [n]).filter(isPermissionPage).map((l) => l.href),
   ),
 );
 
-/** A `permission` link's href to the Permission-editor page it answers to. */
 const PERMISSION_OF: ReadonlyMap<string, string> = new Map(
   [...SIDEBAR, ...FANSLY_NAV].flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]))
     .flatMap((l) => (l.permission ? [[l.href, l.permission] as const] : [])),
 );
 
-/** The chatterOptIn groups' pages (My Automations, My AI Chatter): a chatter's only when an
- *  enforcing role grants them (`sessionGrantedPages`). */
 export const CHATTER_OPT_IN_PAGES: ReadonlySet<string> = new Set(
   SIDEBAR.flatMap((n) => (isGroup(n) && n.chatterOptIn ? n.children.filter((c) => !c.notOptIn).map((c) => c.href) : [])),
 );
 
-/**
- * The pages a session may open, from its Applied settings `permissions`:
- * null for every page. An owner gets the read's `pages` as they are. A
- * chatter-only session always gets a set: its `pages` (every page when null)
- * with the `CHATTER_OPT_IN_PAGES` swapped for the read's `opt_in`, so while
- * the read loads or fails it gets every page but those. The nav filter never
- * shows a chatter an opt-in page the set lacks, a null set included.
- */
 export function sessionGrantedPages(
   chatterOnly: boolean,
   permissions: { pages?: string[] | null; opt_in?: string[] } | undefined,
@@ -447,7 +374,6 @@ function keep(
   n: { chatterHidden?: boolean; masterOnly?: boolean; href?: string; flag?: FeatureFlag; permission?: string; tabOf?: string },
   f: NavFilter,
 ): boolean {
-  // A tab of a page the role grants rides that page; without it, it is an entry of its own.
   if (n.tabOf && (!f.grantedPages || f.grantedPages.has(n.tabOf))) return false;
   if (n.masterOnly && (!f.master || f.chatterOnly)) return false;
   if (n.flag && !f.flags?.[n.flag]) return false;
@@ -458,12 +384,6 @@ function keep(
   return true;
 }
 
-/**
- * The Permission-editor page `pathname` sits under (the longest matching
- * href, or the `permission` of the link at or above `pathname`) when the role does not
- * grant it, else null: the shell renders the denied-page panel instead of that
- * page. `grantedPages: null` denies nothing.
- */
 export function deniedPage(pathname: string, grantedPages: Set<string> | null): string | null {
   if (!grantedPages) return null;
   const alias = PERMISSION_OF.get(pathname)
@@ -477,8 +397,6 @@ export function deniedPage(pathname: string, grantedPages: Set<string> | null): 
   return page && !grantedPages.has(page) ? page : null;
 }
 
-/** The path the sidebar highlights for `pathname`: a `tabOf` link's route (or below it) answers as its page's,
- *  while the role grants that page (else the tab is a sidebar entry of its own, `keep`). */
 export function sidebarHref(pathname: string, grantedPages: Set<string> | null = null): string {
   for (const n of SIDEBAR) {
     for (const l of isDivider(n) ? [] : isGroup(n) ? n.children : [n]) {
@@ -489,12 +407,10 @@ export function sidebarHref(pathname: string, grantedPages: Set<string> | null =
   return pathname;
 }
 
-/** The links one principal may see. */
 export function visibleLinks(links: NavLink[], f: NavFilter): NavLink[] {
   return links.filter((l) => keep(l, f));
 }
 
-/** The sidebar one principal may see: hidden items dropped, empty groups dropped. */
 export function visibleSidebar(nodes: NavNode[], f: NavFilter): NavNode[] {
   const out: NavNode[] = [];
   for (const n of nodes) {
@@ -511,18 +427,15 @@ export function visibleSidebar(nodes: NavNode[], f: NavFilter): NavNode[] {
   return out;
 }
 
-/** The rows the sidebar draws: `visibleSidebar` without the `hidden` links, and the groups they empty. */
 export function drawnSidebar(nodes: NavNode[], f: NavFilter): NavNode[] {
   const shown = nodes.flatMap((n): NavNode[] =>
     isDivider(n) ? [n] : isGroup(n) ? [{ ...n, children: n.children.filter((c) => !c.hidden) }] : n.hidden ? [] : [n]);
   return visibleSidebar(shown, f);
 }
 
-/** Every link in the tree, flattened (both platforms' sidebars, footer, settings tabs). */
 export function allNavLinks(): NavLink[] {
   const links: NavLink[] = [];
   const seen = new Set<string>();
-  // Fansly's Scripts, Message pro and Vault pro are OnlyFans' pages: one route each.
   for (const n of [...SIDEBAR, ...FANSLY_NAV]) {
     for (const l of isDivider(n) ? [] : isGroup(n) ? n.children : [n]) {
       if (seen.has(l.href)) continue;
@@ -537,42 +450,22 @@ export function findNavLink(href: string): NavLink | undefined {
   return allNavLinks().find((l) => l.href === href);
 }
 
-/** A Deep link: Messages Pro with this Fan selected (Phase 0). */
 export function fanDeepLinkHref(accountId: string, fanId: FanId): string {
   return `/messages-pro/${encodeURIComponent(accountId)}/${fanId}`;
 }
 
-/**
- * A `popout` link's route or any route under it: Messages Pro and its Deep
- * links. The shell renders only the page there, as a window of its own, with
- * no top bar, sidebar or drawer (ADR-0002); old `?window=1` URLs and in-app
- * links land in the same layout.
- */
 export function isPopoutRoute(pathname: string): boolean {
   return allNavLinks().some((l) => l.popout && (pathname === l.href || pathname.startsWith(`${l.href}/`)));
 }
 
-/** The routes with the creator column (OF Manager), where it is the creator switch from lg up. */
 export function hasCreatorColumn(pathname: string): boolean {
   return pathname === "/of-manager" || pathname.startsWith("/of-manager/");
 }
 
-/** The one Messages Pro window's name, so every open reuses it. */
 export const POPOUT_WINDOW = "messages-pro";
-/** Infloww's Messages Pro window size; a phone opens a tab instead. */
 export const POPOUT_FEATURES = "popup,width=1470,height=915";
 
-/**
- * Open `href` (Messages Pro or a Deep link into it) in the Messages Pro
- * window, as Infloww does, leaving this page where it is. A second open finds
- * the window by name and focuses it, moving it only when `href` names another
- * place than the Messages Pro it already shows (a Deep link), or when it is
- * Messages Pro itself and the window shows a mode route (lib/chatSlots.ts
- * `popoutModeRoutes`: that link names the inbox; a Deep link's fan stays put).
- * Same-origin, so the opener keeps the handle (no `noopener`). The desktop app
- * refuses a new blank window (its open handler allows only the app's own
- * origin), so with none open yet the window opens on `href` itself.
- */
+// Same-origin so the opener keeps the handle (no noopener); the desktop app refuses a new blank window, so with none open the window opens on href itself
 export function openPopout(href: string): void {
   const w = window.open("", POPOUT_WINDOW, POPOUT_FEATURES);
   if (!w) {
@@ -585,9 +478,6 @@ export function openPopout(href: string): void {
   w.focus();
 }
 
-/** A left click on a link into Messages Pro: open it with `openPopout`
- *  instead of navigating this page. Modified clicks keep the browser's own
- *  behaviour (a new tab, which renders the same window layout). */
 export function onPopoutClick(e: MouseEvent, href: string): void {
   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   e.preventDefault();

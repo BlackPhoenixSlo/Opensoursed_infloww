@@ -17,7 +17,7 @@ from messages import (
     mark_unsent,
 )
 import platforms
-from side_effect_gate import refusal
+from side_effect_gate import PLATFORM_LACKS_PREFIX
 
 UNSENT_REASON = "automation:unsend_messages"
 
@@ -259,6 +259,7 @@ class _PageCursor:
     seen_qids: frozenset[int] = frozenset()
 
 
+# /stats/messages/group can ignore offset, so switch to endDate when a page yields no new IDs.
 def next_history_page(cur: _PageCursor, resp: object,
                       start: datetime) -> tuple[list[dict], _PageCursor | None]:
     items = (resp.get("items") if isinstance(resp, dict) else None) or []
@@ -450,28 +451,47 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     targets = _norm_targets(payload.get("targets"))
     client = None
     mass_refresh_failed = False
-    mass_skipped = None
-    wants_mass = any(t.get("kind") == "mass" for t in targets)
-    if not targets:
-        policy = payload.get("policy") or {}
-        plan = sweep_policy(policy)
+    plan = None if targets else sweep_policy(payload.get("policy") or {})
+    requested = {t["kind"] for t in targets}
+    if plan is not None:
+        if plan.per_chat:
+            requested.add("chat")
+        if plan.mass:
+            requested.add("mass")
         if plan.price_floored_from is not None:
             log.info("unsend mass_price_hours=%.1f floored to %d (a priced PPV lands 47%% "
                      "of its revenue >4h after send)", plan.price_floored_from,
                      _MIN_MASS_PRICE_HOURS)
-        wants_mass = plan.mass
+
+    refused = {}
+    for kind, capabilities in (
+        ("mass", ("mass_message_history",)),
+        ("story", ("delete_story",)),
+        ("hide_upload", ("vault_media_lookup_hash", "hide_vault_media")),
+    ):
+        if kind in requested:
+            for capability in capabilities:
+                if platforms.refusal_for_account(account_id, capability):
+                    refused[kind] = f"{PLATFORM_LACKS_PREFIX}{capability}"
+                    break
+
+    allowed = requested - refused.keys()
+    wants_mass = "mass" in allowed
+    skipped = {}
+    if refused:
+        targets = [t for t in targets if t["kind"] in allowed]
+        skipped["target_skips"] = refused
+        if not allowed:
+            skipped.update(status="skipped", reason=next(iter(refused.values())))
+
+    if plan is not None:
         if plan.per_chat:
             targets += await _sweep_targets(account_id, plan)
         if wants_mass:
             if not payload.get("dry_run"):
                 client = await asyncio.to_thread(ax._make_client, account_id)
-                if refusal(client, "mass_message_history"):
-                    mass_skipped = "platform_lacks:mass_message_history"
-                    wants_mass = False
-                else:
-                    mass_refresh_failed = not await _refresh_mass_cache(account_id, client)
-            if wants_mass:
-                targets += await _sweep_mass_targets(account_id, plan)
+                mass_refresh_failed = not await _refresh_mass_cache(account_id, client)
+            targets += await _sweep_mass_targets(account_id, plan)
 
     if payload.get("dry_run"):
         return {
@@ -481,20 +501,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "unsent": 0,
             "failed": 0,
             "rows_flipped": 0,
+            **skipped,
         }
-
-    if wants_mass and client is None:
-        if platforms.refusal_for_account(account_id, "mass_message_history"):
-            mass_skipped = "platform_lacks:mass_message_history"
-            wants_mass = False
-            targets = [t for t in targets if t["kind"] != "mass"]
 
     copies_flipped = 0
     if wants_mass:
         # Runs even with no targets: a queue is a target once, so the cancel-vs-scrape race can only be repaired on a tick with none.
         copies_flipped += await _reapply_recent_unsends(account_id)
 
-    skipped = {"mass_skipped": mass_skipped} if mass_skipped else {}
     if not targets:
         return {"targets": 0, "unsent": 0, "failed": 0, "rows_flipped": 0,
                 "copies_flipped": copies_flipped,

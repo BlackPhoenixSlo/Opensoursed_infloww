@@ -221,6 +221,7 @@ interface Campaign {
   countSubscribers?: number | null;
 }
 
+// /campaigns/stats endDate is zoneless; OF shows the date as written, so read as UTC and shown in UTC.
 function endOf(v: string | null | undefined): Date | null {
   const m = /^(\d{4})-(\d\d)-(\d\d)[ T](\d\d):(\d\d)(?::(\d\d))?$/.exec(v ?? "");
   return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] ?? 0))) : dateOf(v ?? undefined);

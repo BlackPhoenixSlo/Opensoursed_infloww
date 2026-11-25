@@ -141,6 +141,7 @@ class VaultMixin:
         ids = [str(m) for m in media_ids if m]
         if not ids:
             return []
+        # Treat a failed readback GET as missing media so an already-delivered send stays successful.
         try:
             rows = self._request("GET", "/media", params={"ids": ",".join(ids)}) or []
         except Exception:

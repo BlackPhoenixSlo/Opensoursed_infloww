@@ -38,10 +38,10 @@
  * Outside Messages Pro an expired free trial shows its nag once per
  * mount, i.e. once per app start (`FreeTrialExpiredModal`).
  *
- * In every window PlatformSync keeps the platform, the page and the scope
- * agreeing (a route, the selector, another window's switch); outside Messages
- * Pro PlatformGate prompts a Fansly login in Fansly mode when no Fansly
- * account has a session.
+ * Outside Messages Pro PlatformSync keeps the platform, the page and the scope
+ * agreeing (a route, the selector, another window's switch), and PlatformGate
+ * prompts a Fansly login in Fansly mode when no Fansly account has a session.
+ * Messages Pro lists every platform's Creators (AllPlatformsContext).
  *
  * Either way the page sits behind `DeniedPageGate`: a page the Permission
  * role denies renders the denied-page panel instead (spec phase-04, story 34).
@@ -63,6 +63,7 @@ import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useExitGhost } from "@/hooks/useExitGhost";
 import { OPEN_DIALOG, OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
 import { hasCreatorColumn, isPopoutRoute, openPopout, POPOUT_WINDOW } from "@/lib/nav";
+import { AllPlatformsContext } from "@/lib/platform";
 
 const SIDEBAR_ID = "app-sidebar";
 const DRAWER_ID = "app-sidebar-drawer";
@@ -94,9 +95,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return (
       <main className="messages-pro-viewport min-w-0" style={{ ["--shell-top" as string]: "0px" }}>
         <LeaveDesktopMainWindow pathname={pathname} />
-        <PlatformSync />
         <ClockHeartbeat />
-        <DeniedPageGate>{children}</DeniedPageGate>
+        <AllPlatformsContext value>
+          <DeniedPageGate>{children}</DeniedPageGate>
+        </AllPlatformsContext>
       </main>
     );
   }

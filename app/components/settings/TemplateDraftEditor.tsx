@@ -21,7 +21,7 @@ import { ScriptTagsField } from "@/components/settings/ScriptTagsField";
 import { OfRichTextEditor, type OfRichTextEditorHandle } from "@/components/ui/OfRichTextEditor";
 import { isOfHtml, ofPlainText } from "@/lib/ofRichText";
 import { plainLength } from "@/lib/ofRichTextEditor";
-import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
+import { useCanOrFallback } from "@/hooks/useCan";
 
 export { extractError } from "@/components/settings/extractError";
 export { MediaStrip } from "@/components/settings/MediaStrip";
@@ -93,7 +93,7 @@ export function TemplateDraftEditor({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
   const richRef = useRef<OfRichTextEditorHandle>(null);
-  const rich = useOfRichAllowed(accountId) && script;
+  const rich = useCanOrFallback(accountId, "rich_text") && script;
   const priceNum = Number(draft.price);
   const belowMin = script && priceNote(priceNum) !== null;
   const sensitiveHits = useSensitiveHits(isOfHtml(draft.text) ? ofPlainText(draft.text) : draft.text, accountId);

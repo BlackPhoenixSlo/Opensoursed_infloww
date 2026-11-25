@@ -21,6 +21,7 @@ import vault_mirror
 import vault_of_folders
 import relay_coalesce
 import relay_host
+from side_effect_gate import refuse_if_platform_lacks
 import vault_ingest
 import vault_jev_flags
 import vault_jev_manual
@@ -159,7 +160,7 @@ class _Sweep:
             fresh.add(mid)
             if vals.get("thumb_url"):
                 thumbs.append((mid, vals["thumb_url"]))
-            # The full-FRAME preview: once OF's signature expires it can't be fetched, so a lazily-filled store loses whatever nobody opened.
+            # The full-FRAME preview, warmed while the listed URL is still signed: a lazy miss later costs an OF re-lookup.
             still = vault_frames.describe_image_of(
                 m.get("files") if isinstance(m.get("files"), dict) else {})
             if still:
@@ -557,7 +558,7 @@ def _ai_fields_view(item: VaultItem) -> dict[str, Any] | None:
     ai = load_json(item.ai_fields_json, None)
     if not isinstance(ai, dict):
         return None
-    # a clip's per-frame Jev answers (~10 KB, read only by the rules) and the picks' undo record: never sent
+    # a clip's per-frame Jev answers (~10 KB, server-side only) and the picks' undo record: never sent
     jev = ai.get(vault_jev_rules.JEV_KEY)
     if isinstance(jev, dict) and ("frames" in jev or "undo" in jev):
         ai = {**ai, vault_jev_rules.JEV_KEY: {k: v for k, v in jev.items() if k not in ("frames", "undo")}}
@@ -1611,7 +1612,7 @@ async def hide_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail={"error": "account_id_required"})
     await vault_of_folders._reject_foreign_media(account_id, [int(media_id)])
 
-    relay_host.refuse_if_platform_lacks(account_id, "hide_vault_media", "remove from vault")
+    refuse_if_platform_lacks(account_id, "hide_vault_media", "remove from vault")
     client = await asyncio.to_thread(ax._make_client, account_id)
     try:
         await asyncio.to_thread(client.hide_vault_media, [int(media_id)])

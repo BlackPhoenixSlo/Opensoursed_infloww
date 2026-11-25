@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 
-// The nav without plugins (lib/chatSlots.ts): their links are their own tests', in plugins/<name>/.
 vi.mock("@/lib/plugins.generated.register", () => ({ PLUGINS: [] }));
 
 import {
@@ -32,7 +31,6 @@ import { mirrorPageOfHref } from "@/lib/of-mirror-route";
 
 const OWNER = { chatterOnly: false, grantedPages: null };
 
-/** "Label" for links, "Label: Sub / Sub" for groups, "—" for the divider. */
 function outline(nodes: NavNode[]): string[] {
   return nodes.map((n) =>
     isDivider(n) ? "—" : isGroup(n) ? `${n.label}: ${n.children.map((c) => c.label).join(" / ")}` : n.label,
@@ -44,7 +42,6 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(outline(drawnSidebar(SIDEBAR, OWNER))).toEqual([
       "Dashboard",
       "OF Manager: Home / Go live / New post / Notifications / Messages Basic / Vault / Queue / Collections / Bookmarks / Statements / Statistics / Bank / My profile / Release forms / OF settings",
-      // Four entries, as live 07-analytics-menu.png: Sales records is Employee reports' tab (page-parity ticket 27).
       "Analytics: Creator reports / Employee reports / Fan reports / Message dashboard",
       "Messages Pro",
       "Vault Pro",
@@ -66,7 +63,6 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     for (const f of [OWNER, everything]) {
       for (const gone of ["My AI Chatter", "Auto-reply", "Get to know fans", "AI rules"]) expect(labels(f)).not.toContain(gone);
     }
-    // Still Permission pages with their opt-in standing, routes and denied panels, as before.
     for (const href of ["/growth/auto-reply", "/growth/get-to-know-fans", "/full-ai-chatter", "/ai-rules"]) {
       expect(PERMISSION_PAGES.has(href)).toBe(true);
       expect(findNavLink(href)).toBeDefined();
@@ -75,7 +71,6 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     }
     expect(CHATTER_OPT_IN_PAGES.has("/growth/auto-reply")).toBe(true);
     for (const href of ["/growth/get-to-know-fans", "/full-ai-chatter", "/ai-rules"]) expect(CHATTER_OPT_IN_PAGES.has(href)).toBe(false);
-    // /ai-rules by URL lights Full AI Chat; a role granting AI rules without Full AI Chat gets it as an entry.
     expect(sidebarHref("/ai-rules")).toBe("/full-ai-chatter");
     expect(outline(drawnSidebar(SIDEBAR, { chatterOnly: false, grantedPages: new Set(["/ai-rules"]) }))).toEqual(["AI rules", "—"]);
   });
@@ -118,7 +113,6 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
   it("hides owner-only sections from a chatter-only session", () => {
     const labels = outline(visibleSidebar(SIDEBAR, { chatterOnly: true, grantedPages: null }));
     expect(labels).not.toContain("Creators: Manage creators / Custom proxy");
-    // Only its `notOptIn` page, whose Model info is the account's.
     expect(labels).toContain("My AI Chatter: Get to know fans");
     expect(labels.some((l) => l.startsWith("My Automations"))).toBe(false);
     expect(labels).toContain("Growth: Smart Messages / Scripts");
@@ -129,7 +123,6 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "/growth/auto-mass", "/growth/auto-post", "/growth/auto-story",
       "/growth/auto-funnel", "/growth/gen-info", "/growth/auto-reply",
     ]);
-    // Both opt-in groups' sidebar lines, "" for a group dropped.
     const automations = (chatterOnly: boolean, permissions?: { pages: string[] | null; opt_in?: string[] }) => {
       const lines = outline(visibleSidebar(SIDEBAR, {
         chatterOnly, grantedPages: sessionGrantedPages(chatterOnly, permissions),
@@ -137,26 +130,20 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       return ["My Automations", "My AI Chatter"].map((g) => lines.find((l) => l.startsWith(`${g}:`)) ?? "");
     };
     const onlyGtkf = ["", "My AI Chatter: Get to know fans"];
-    // Enforcement off, the read not answered yet, or the unstored built-in Admin (`pages: null`,
-    // `opt_in: []`): the opt-in pages hidden, Get to know fans (not opt-in) granted like any page.
     expect(automations(true, { pages: null, opt_in: [] })).toEqual(onlyGtkf);
     expect(automations(true, undefined)).toEqual(onlyGtkf);
     expect(automations(true, { pages: ["/growth/get-to-know-fans"], opt_in: [] })).toEqual(onlyGtkf);
-    // A role granting nothing of them, then one ticking Auto Mass and Auto-reply only (`opt_in`, the relay's word).
     expect(automations(true, { pages: ["/messages-pro"], opt_in: [] })).toEqual(["", ""]);
     const ticked = ["/growth/auto-mass", "/growth/auto-reply"];
     expect(automations(true, { pages: ["/messages-pro", ...ticked], opt_in: ticked }))
       .toEqual(["My Automations: Auto Mass", "My AI Chatter: Auto-reply"]);
-    // `pages` alone grants none: a two-agency chatter's `opt_in` is the union, `pages` is not.
     expect(automations(true, { pages: ticked })).toEqual(["", ""]);
     expect(automations(true, { pages: ["/messages-pro"], opt_in: ["/growth/auto-mass"] }))
       .toEqual(["My Automations: Auto Mass", ""]);
-    // An owner always sees them all.
     expect(automations(false, { pages: null })).toEqual([
       "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
       "My AI Chatter: Auto-reply / Get to know fans",
     ]);
-    // Opened by URL: denied to the chatter without the grant, every other page open.
     const off = sessionGrantedPages(true, { pages: null, opt_in: [] });
     expect(deniedPage("/growth/auto-mass", off)).toBe("/growth/auto-mass");
     expect(deniedPage("/growth/smart-messages", off)).toBeNull();
@@ -213,7 +200,6 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(visibleLinks([sales!], OWNER)).toEqual([]);
     expect(deniedPage("/analytics/sales-records", new Set(["/analytics/employee-reports"])))
       .toBe("/analytics/sales-records");
-    // Its route lights Employee reports in the sidebar; every other path answers as itself.
     expect(sidebarHref("/analytics/sales-records")).toBe("/analytics/employee-reports");
     expect(sidebarHref("/analytics/fan-reports")).toBe("/analytics/fan-reports");
   });
@@ -226,9 +212,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "/analytics/sales-records",
     ]);
     expect(deniedPage("/analytics/sales-records", grantedPages)).toBeNull();
-    // Its route lights its own entry, as Employee reports is not drawn.
     expect(sidebarHref("/analytics/sales-records", grantedPages)).toBe("/analytics/sales-records");
-    // Granted both, it rides Employee reports again.
     const both = new Set([...grantedPages, "/analytics/employee-reports"]);
     expect(visibleLinks(SIDEBAR.flatMap((n) => (isGroup(n) ? n.children : [])), { ...f, grantedPages: both })
       .some((l) => l.href === "/analytics/sales-records")).toBe(false);
@@ -278,12 +262,10 @@ describe("granted pages (spec phase-04, stories 33-34)", () => {
     const granted = new Set(["/", "/employees/shifts"]);
     expect(deniedPage("/messages-pro/acc-1/42", granted)).toBe("/messages-pro");
     expect(deniedPage("/employees", granted)).toBe("/employees");
-    // The old Organization Chart route (now a redirect to /employees) is guarded by Manage employees' permission.
     expect(deniedPage("/employees/org-chart", granted)).toBe("/employees");
     expect(deniedPage("/employees/shifts", granted)).toBeNull();
     expect(deniedPage("/", granted)).toBeNull();
     expect(deniedPage("/settings/about", granted)).toBeNull();
-    // The full Notifications page (top bar bell > "See all") is not a Permission-editor page.
     expect(deniedPage("/notifications", granted)).toBeNull();
     expect(deniedPage("/messages-pro", null)).toBeNull();
   });
@@ -329,14 +311,12 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
       expect(deniedPage(href, new Set([permission]))).toBeNull();
       expect(deniedPage(href, null)).toBeNull();
     }
-    // Tracking links' former tabs answer to it, on their routes and below (the bio editor).
     const noTracking = new Set([...PERMISSION_PAGES].filter((p) => p !== "/growth/tracking-links"));
     for (const href of ["/growth/redirect-links", "/growth/bio-pages", "/growth/bio-pages/p00000000000001"]) {
       expect(deniedPage(href, noTracking)).toBe("/growth/tracking-links");
       expect(deniedPage(href, new Set(["/growth/tracking-links"]))).toBeNull();
     }
     expect(deniedPage("/growth/bio-pagesx", noTracking)).toBeNull();
-    // A Messages Pro grant alone opens none of them.
     const mp = { chatterOnly: true, grantedPages: new Set(["/messages-pro"]), flags: on };
     expect(outline(visibleSidebar(sidebarFor("fansly"), mp))[0]).not.toMatch(/Scheduled Posts|Lists|Notifications|Earning Statistics/);
   });
@@ -403,7 +383,6 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
 });
 
 describe("openPopout", () => {
-  /** The Messages Pro window already open, showing `path`; what it was sent to and whether it was focused. */
   function popoutOn(path: string) {
     const [pathname, search = ""] = path.split("?");
     const win = { location: { pathname, search: search && `?${search}`, href: path }, focus: vi.fn() };

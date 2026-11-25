@@ -24,6 +24,7 @@ export function AccessEditor({ chatterId }: { chatterId: string }) {
     staleTime: 5_000,
   });
 
+  // data before error: a failed background refetch keeps the draft mounted; it is seeded once, so a refetch never wipes edits.
   if (accessQ.data) {
     return <AccessDraft key={chatterId} chatterId={chatterId} initial={accessQ.data} />;
   }

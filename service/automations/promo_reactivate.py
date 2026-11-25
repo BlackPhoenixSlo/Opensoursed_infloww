@@ -92,6 +92,7 @@ def should_poke(account_id: str, n_toasts: int) -> bool:
     return g.trigger is not None and g.claims + len(seen) >= g.trigger - 1
 
 
+# 0 is meaningful to OF (subscribe_counts: unlimited claims; subscribe_days: a percent discount), so only None takes the default.
 def _kept(value: int | None, default: int) -> int:
     return default if value is None else int(value)
 

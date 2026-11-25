@@ -23,8 +23,11 @@ import {
   chatRowKey, commitChatPages, compareChats, completeUnreadView, decodeChatsKey, isLiveView, localSeq, type StampedPage, type UnreadView,
 } from "@/lib/chatsCache";
 import { relayNow, relayOffsetKnown } from "@/lib/ageClock";
+import { platformHonours, type ChatListFilter } from "@/lib/chatFilters";
+import { accountPlatform } from "@/lib/platform";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
-import { usePlatformAccounts } from "./useAccounts";
+import { useAccounts, usePlatformAccounts } from "./useAccounts";
+import { useAccountPlatform } from "./useCan";
 import { avatarThumb, mergeOFUserName, ofUserNameKey, type OFUserName } from "./useOFUser";
 
 const PAGE_SIZE = CHATS_PAGE;
@@ -69,7 +72,7 @@ export function headPollDelay(s: { paused: boolean; hidden: boolean; connected: 
   return s.hidden || s.connected ? HIDDEN_POLL_MS : POLL_MS;
 }
 
-export type ChatListFilter = "unread" | "pinned" | "priority" | "who_tipped" | "unread_tips";
+export type { ChatListFilter } from "@/lib/chatFilters";
 export type ChatListOrder = "recent" | "old";
 
 interface ChatListParams {
@@ -171,6 +174,7 @@ export async function enrichWithUsers(
   const missing = ids.filter((id) => !byId.has(id));
   if (missing.length > 0) {
     const chunks: FanId[][] = [];
+    // /users/list takes at most ~50 ids per call (OF's batch cap).
     for (let i = 0; i < missing.length; i += 50) chunks.push(missing.slice(i, i + 50));
 
     const fetchChunk = async (chunk: FanId[]) => {
@@ -214,6 +218,7 @@ export async function enrichWithUsers(
       }
     };
 
+    // Serialize enrichment batches to reduce contention with the vault picker.
     await fetchChunk(chunks[0]);
     for (let i = 1; i < chunks.length; i++) {
       // eslint-disable-next-line no-await-in-loop
@@ -265,7 +270,7 @@ function readChatPage(resp: ScannedChatsResponse, accountId: string, qc: QueryCl
 
 async function fetchPage(
   scope: ReturnType<typeof useScope>["scope"],
-  accounts: ReturnType<typeof usePlatformAccounts>,
+  readFrom: readonly string[],
   offset: number,
   filter: ChatListParams["filter"],
   listId: ChatListParams["listId"],
@@ -278,7 +283,7 @@ async function fetchPage(
     priority?: "user" | "background";
     order?: ChatListOrder;
     signal?: AbortSignal;
-  } = {},
+  },
 ): Promise<StampedPage> {
   const qs = new URLSearchParams();
   qs.set("limit", String(limit));
@@ -290,25 +295,27 @@ async function fetchPage(
   if (query) qs.set("query", query);
   const path = `/api/of/v2/chats?${qs.toString()}`;
   const stamp = { session: SESSION, askedAt: relayNow(), askedSeq: localSeq(), ...(relayOffsetKnown() ? {} : { askedAtGuess: true as const }) };
+  if (readFrom.length === 0) return { rows: [], hasMore: false, moreAccounts: [], scanned: 0, ...stamp };
 
   const opId = perfOpId("chat.list");
   perfLog(opId, "chat.list", "requested", {
     scope: scope.kind, offset, limit, filter, listId, query,
     phase: offset === 0 ? "initial" : "page",
-    accountCount: scope.kind === "all" ? accounts.length : 1,
+    accountCount: scope.kind === "all" ? readFrom.length : 1,
   });
   if (offset === 0 && priority === "user") {
     perfPaintPending(listPaintKey(scope, filter, listId, query), opId);
   }
 
   if (scope.kind === "model") {
+    const [accountId] = readFrom;
     try {
       const resp = await relay.get<ScannedChatsResponse>(
-        path, { accountId: scope.accountId, priority }, signal, { refresh },
+        path, { accountId, priority }, signal, { refresh },
       );
-      const page = readChatPage(resp, scope.accountId, qc);
+      const page = readChatPage(resp, accountId, qc);
       perfDelivered(opId, "chat.list", { count: page.rows.length, hasMore: page.hasMore });
-      return { ...page, rows: page.rows.sort(sort), moreAccounts: page.hasMore ? [scope.accountId] : [], ...stamp };
+      return { ...page, rows: page.rows.sort(sort), moreAccounts: page.hasMore ? [accountId] : [], ...stamp };
     } catch (err) {
       perfError(opId, "chat.list", { message: (err as Error)?.message });
       throw err;
@@ -317,11 +324,11 @@ async function fetchPage(
 
   const focus = relayFocus();
   const results = await Promise.allSettled(
-    accounts.map(async (acc) => {
+    readFrom.map(async (accountId) => {
       const r = await relay.get<ScannedChatsResponse>(
-        path, { accountId: acc.id, priority: acc.id === focus ? priority : "background" }, signal, { refresh },
+        path, { accountId, priority: accountId === focus ? priority : "background" }, signal, { refresh },
       );
-      return readChatPage(r, acc.id, qc);
+      return readChatPage(r, accountId, qc);
     }),
   );
   signal?.throwIfAborted();
@@ -333,15 +340,15 @@ async function fetchPage(
     if (r.status === "fulfilled") {
       merged.push(...r.value.rows);
       scanned += r.value.scanned;
-      if (r.value.hasMore) moreAccounts.push(accounts[i].id);
+      if (r.value.hasMore) moreAccounts.push(readFrom[i]);
     } else {
-      missing.push(accounts[i].id);
+      missing.push(readFrom[i]);
     }
   });
   const failed = missing.length;
   const anyMore = moreAccounts.length > 0;
   perfDelivered(opId, "chat.list", {
-    count: merged.length, hasMore: anyMore, accountCount: accounts.length, failed,
+    count: merged.length, hasMore: anyMore, accountCount: readFrom.length, failed,
   });
   return {
     rows: merged.sort(sort), hasMore: anyMore, moreAccounts, scanned, ...stamp,
@@ -362,7 +369,7 @@ export function prefetchModelChatList(
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       fetchPage(
-        scope, [], (pageParam as number) ?? 0, null, null, null, limit, qc,
+        scope, [accountId], (pageParam as number) ?? 0, null, null, null, limit, qc,
         { priority: "background" },
       ),
     // MUST mirror useChatList's infinite-query config: same key, a missing getNextPageParam fails the list to load.
@@ -475,23 +482,39 @@ export function chatListAccountKey(scope: Scope, accounts: ReadonlyArray<{ id: s
 
 export function chatsQueryKey(
   scopeKind: Scope["kind"], accountKey: string,
-  { filter = null, listId = null, query = null, limit = PAGE_SIZE, order = "recent" }: Omit<ChatListParams, "enabled"> = {},
+  { filter = null, listId = null, query = null, limit = PAGE_SIZE, order = "recent", gated = false }:
+    Omit<ChatListParams, "enabled"> & { gated?: boolean } = {},
 ) {
   return ["chats", scopeKind, accountKey, filter ?? null, listId ?? null, query ?? null, limit,
-    ...(order === "recent" ? [] : [order])] as const;
+    ...(order === "recent" && !gated ? [] : [order]), ...(gated ? [true] as const : [])] as const;
 }
 
 export function useChatList(params: ChatListParams = {}) {
   const { scope } = useScope();
   const accounts = usePlatformAccounts();
+  const scopedId = scope.kind === "model" ? scope.accountId : null;
+  const knownAccounts = useAccounts().data?.accounts;
+  const scopedAccount = scopedId ? knownAccounts?.find((a) => a.id === scopedId) : undefined;
+  const scopedPlatform = useAccountPlatform(scopedId) ?? (scopedAccount ? accountPlatform(scopedAccount) : null);
   const qc = useQueryClient();
   const { filter, listId, query, limit = PAGE_SIZE, order = "recent", enabled: wanted = true } = params;
+  const rosterPlatforms = useMemo(() => new Map(knownAccounts?.map((a) => [a.id, accountPlatform(a)])), [knownAccounts]);
+  const honours = useCallback((accountId: string | undefined) => platformHonours(
+    scope.kind === "model" ? scopedPlatform : rosterPlatforms.get(accountId ?? "") ?? null, filter, listId,
+  ), [scope.kind, scopedPlatform, rosterPlatforms, filter, listId]);
+  const readFrom = (scope.kind === "model" ? [scope.accountId] : accounts.map((a) => a.id)).filter(honours);
+  const gated = scope.kind === "model" && readFrom.length === 0;
+
+  const eligibleFallbackRows = useCallback((rows: OFChatItem[]) => {
+    const kept = rows.filter((row) => honours(row.__accountId));
+    return kept.length === rows.length ? rows : kept;
+  }, [honours]);
 
   const accountKey = chatListAccountKey(scope, accounts);
 
   const scopeKey = ["chats", scope.kind, accountKey] as const;
 
-  const queryKey = chatsQueryKey(scope.kind, accountKey, { filter, listId, query, limit, order });
+  const queryKey = chatsQueryKey(scope.kind, accountKey, { filter, listId, query, limit, order, gated });
 
   const refreshOnceRef = useRef(false);
 
@@ -509,7 +532,7 @@ export function useChatList(params: ChatListParams = {}) {
       const offset = (ctx.pageParam as number) ?? 0;
       const bypass = refreshOnceRef.current && offset === 0;
       return fetchPage(
-        scope, accounts, offset, filter, listId, query, limit, qc,
+        scope, readFrom, offset, filter, listId, query, limit, qc,
         // Only a search may read ctx.signal: React Query cancels a fetch whose signal was read once its key loses its last observer, dropping a next page in flight.
         { refresh: bypass, order, signal: query ? ctx.signal : undefined },
       );
@@ -517,19 +540,26 @@ export function useChatList(params: ChatListParams = {}) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
     placeholderData: (prev, prevQuery) => {
+      if (gated) return undefined;
       const prevKey = prevQuery?.queryKey;
       const sameScope =
         prevKey?.[0] === scopeKey[0] &&
         prevKey[1] === scopeKey[1] &&
         (scope.kind !== "model" || prevKey[2] === scopeKey[2]);
-      return sameScope ? keepPreviousData(prev) : undefined;
+      const previous = sameScope ? keepPreviousData(prev) : undefined;
+      if (!previous) return previous;
+      const pages = previous.pages.map((page) => {
+        const rows = eligibleFallbackRows(page.rows);
+        return rows === page.rows ? page : { ...page, rows };
+      });
+      return pages.every((page, i) => page === previous.pages[i]) ? previous : { ...previous, pages };
     },
     structuralSharing: commitChatPages(qc, queryKey, shareChatPages),
   });
 
   const fetchHead = () =>
     fetchPage(
-      scope, accounts, 0, filter, listId, query, limit, qc,
+      scope, readFrom, 0, filter, listId, query, limit, qc,
       { priority: "background", order },
     );
 
@@ -568,5 +598,7 @@ export function useChatList(params: ChatListParams = {}) {
     isFetchingMore: q.isFetchingNextPage,
     refresh,
     fetchedLive,
+    eligibleFallbackRows,
+    canUseSeed: q.isPending && !gated,
   };
 }

@@ -199,11 +199,11 @@ describe("SplitInbox", () => {
       });
     });
 
-    it("applies to every Creator: largest count, no reassign section, chatters across Creators with Mixed", async () => {
+    it("applies to every Creator: mixed count, no reassign section, chatters across Creators with Mixed", async () => {
       rosterMock.rows = ROSTER;
       renderWithProviders(<AllHost />);
       const count = await countSelect();
-      expect(count).toHaveValue("3");
+      expect(count).toHaveValue("");
       expect(screen.getByText("Applies to all 2 models")).toBeInTheDocument();
       expect(screen.getByText("Move single fans from a model's own tab.")).toBeInTheDocument();
       expect(screen.queryByRole("region", { name: "Reassign fans to different groups" })).not.toBeInTheDocument();
@@ -212,10 +212,20 @@ describe("SplitInbox", () => {
         .toEqual(["Fixture Chatter A", "Fixture Chatter B", "Fixture Chatter X"]);
       const a = within(region).getByRole("combobox", { name: "Fixture Chatter A" });
       expect(a).toHaveValue("mixed");
-      expect(optionsOf(a)).toEqual(["All", "Mixed", "Inbox 1", "Inbox 2", "Inbox 3"]);
+      expect(optionsOf(a)).toEqual(["All", "Mixed", "Inbox 1", "Inbox 2"]);
       expect(within(a).getByRole("option", { name: "Mixed" })).toBeDisabled();
       expect(within(region).getByRole("combobox", { name: "Fixture Chatter B" })).toHaveValue("");
       expect(within(region).getByRole("combobox", { name: "Fixture Chatter X" })).toHaveValue("1");
+    });
+
+    it("closes on no-op Save without a PUT", async () => {
+      const user = userEvent.setup();
+      relayMock.put.mockResolvedValue({});
+      renderWithProviders(<AllHost />);
+      await countSelect();
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
+      expect(relayMock.put).not.toHaveBeenCalled();
     });
 
     it("Save PUTs once per Creator, each keeping its own moves, and closes", async () => {
@@ -243,19 +253,21 @@ describe("SplitInbox", () => {
       await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
     });
 
-    it("a failed PUT keeps the dialog open naming the Creator it failed for", async () => {
+    it.each([false, true])("failed PUTs name affected Creators (all failed: %s)", async (allFailed) => {
       const user = userEvent.setup();
       relayMock.put.mockImplementation((_path: string, body: { account_id: string; config: unknown }) =>
-        body.account_id === OTHER_ID ? Promise.reject(new RelayError(502, null, "upstream down")) : Promise.resolve(body));
+        allFailed || body.account_id === OTHER_ID ? Promise.reject(new RelayError(502, null, "upstream down")) : Promise.resolve(body));
       renderWithProviders(<AllHost />);
-      await user.selectOptions(await countSelect(), "2");
+      await user.selectOptions(await countSelect(), "4");
       await user.click(screen.getByRole("button", { name: "Save" }));
 
-      expect(await screen.findByRole("alert"))
-        .toHaveTextContent("Not saved for Fixture Creator Nine: upstream down. The other models were saved.");
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(/Not saved for .*Fixture Creator Nine: upstream down\./);
+      expect(alert).toHaveTextContent(/upstream down\.$|upstream down\. 1 model saved\.$/);
+      expect(alert.textContent?.includes("1 model saved.")).toBe(!allFailed);
       expect(relayMock.put).toHaveBeenCalledTimes(2);
       expect(dialog()).toBeInTheDocument();
-      expect(await countSelect()).toHaveValue("2");
+      expect(await countSelect()).toHaveValue("4");
     });
   });
 });

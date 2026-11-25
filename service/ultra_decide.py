@@ -278,6 +278,7 @@ def digest(plan_json: Mapping[str, Any], plan_id: str) -> str:
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
+# An unanswered send or 5xx (e.g. failed echo check) may have landed, so never retry it.
 def outcome(effect: str, result: Mapping[str, Any] | None) -> StepState:
     status = None if result is None else (result.get("error") or {}).get("status")
     if result is not None and status is None:

@@ -3,6 +3,7 @@ import type { PlanView } from "./ultraRunReducer";
 
 export const ULTRA_PLAN_KEY = "chatterly:ultra_plan";
 
+// Module-level, outliving the panel: a remount while the start is out follows it instead of paying for a second planner run.
 let pending: Promise<PlanView> | null = null;
 
 export function keepPlanId(id: string | null): void {

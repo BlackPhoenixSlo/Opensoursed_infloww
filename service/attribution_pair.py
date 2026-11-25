@@ -17,6 +17,7 @@ _WS_RE = re.compile(r"\s+")
 def _norm_body(body: str | None) -> str:
     if not body:
         return ""
+    # Strip tags before unescape: unescaping first turns an escaped `<` into a strippable tag; a wrong pair deletes a real send's stamp.
     txt = unescape(_TAG_RE.sub(" ", body))
     txt = unicodedata.normalize("NFC", txt)
     return _WS_RE.sub(" ", txt).strip()

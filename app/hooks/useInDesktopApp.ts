@@ -20,6 +20,7 @@ export function useInDesktopApp(): boolean {
   return useSyncExternalStore(
     subscribe,
     () => window.fasttShell?.isDesktop === true,
+    // Server renders as in-app: web-only links appear after hydration on the web, never flash inside the app.
     () => true,
   );
 }

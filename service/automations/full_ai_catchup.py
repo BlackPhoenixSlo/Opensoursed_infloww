@@ -145,6 +145,7 @@ def start(account_id: str, delay_s: float = 0) -> asyncio.Task:
     return task
 
 
+# OF's socket replays nothing after a drop: DMs sent meanwhile never arrive as frames.
 def reconnected(account_id: str) -> None:
     if str(account_id) in _tasks:
         start(account_id, RECONNECT_DELAY_S)

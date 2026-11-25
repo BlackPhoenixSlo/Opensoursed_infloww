@@ -70,6 +70,7 @@ def due(state: PollState | None, t: Tier, now: float) -> bool:
 
 
 def ladder_s(step: int) -> float:
+    # Exponent capped: past ~1025 failures 2**step overflows the float before BACKOFF_MAX_S clamps it.
     return min(BACKOFF_BASE_S * 2 ** min(max(0, step - 1), 60), BACKOFF_MAX_S)
 
 

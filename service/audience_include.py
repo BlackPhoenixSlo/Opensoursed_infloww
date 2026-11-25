@@ -269,7 +269,6 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
     return {"size": len(effective), "unaddable": len(unaddable)}
 
 
-# Stored id is authoritative after first build; a short lists read halts, never mints a second AUTOFENCE
 def _find_or_create_fence_blocking(client) -> int:
     try:
         lid = of_paging.find_list_id(client, AUTOFENCE_LIST_NAME)
@@ -345,6 +344,7 @@ async def ensure_autofence(
         )).scalars().first()
         of_lid = int(row.of_list_id) if (row is not None and row.of_list_id) else None
     try:
+        # Scheduled OF sends reference the stored AUTOFENCE ID in excludedLists.
         if of_lid is None:
             of_lid = await asyncio.to_thread(_find_or_create_fence_blocking, c)
         built = await asyncio.to_thread(_build_autofence_blocking, c, of_lid, target)

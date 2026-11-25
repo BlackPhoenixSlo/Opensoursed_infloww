@@ -8,6 +8,7 @@ import { relay } from "@/lib/relay";
 
 export type OnlineSubscribersResp = { id: FanId }[] | { list?: { id: FanId }[]; hasMore?: boolean };
 
+// OF caps this list at 20 whatever limit asks, so a full page means more may be online.
 export const ONLINE_PAGE = 20;
 
 export interface OnlineSubscribers {
@@ -20,7 +21,6 @@ export function useOnlineSubscribers(accountId: string | null, refetchInterval?:
     queryKey: ["of-online-subscribers", accountId],
     queryFn: accountId ? async () => {
       const resp = await relay.get<OnlineSubscribersResp>(
-        // OF caps limit at 20 for this list: limit=50 returns 20 at most.
         "/api/of/v2/subscribers?type=active&online=1&limit=50",
         { accountId },
       );

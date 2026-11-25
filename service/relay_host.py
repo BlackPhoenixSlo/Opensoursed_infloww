@@ -37,10 +37,6 @@ def load_client(account_id: str):
     return live_server()._load_client(account_id)
 
 
-def refuse_if_platform_lacks(account_id: str, name: str, what: str) -> None:
-    live_server()._refuse_if_platform_lacks(account_id, name, what)
-
-
 def periodic(label: str, interval_s: float, work: Callable[[], Awaitable[None]],
              *, first_after_s: float | None = None):
     return live_server()._periodic(label, interval_s, work, first_after_s=first_after_s)

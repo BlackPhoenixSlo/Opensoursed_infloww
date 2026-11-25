@@ -1,13 +1,6 @@
 "use client";
 
-/**
- * Fansly Manager v1 (roadmap 8.1): our own pages for four of Infloww's embedded fansly.com pages (Notifications,
- * Lists, Scheduled Posts, Earning Statistics), over the Relay's Fansly shim (`/api/of/v2/*` answered in OF's shapes)
- * and, for earnings, our own ledger. Behind the `fansly_manager` flag (lib/nav `flag`): with it off the sidebar hides
- * the links and a direct visit gets "not available". The flag is UI only; the Relay checks every data route anyway.
- *
- * The page's creator is `?creator=` (`useCreatorParam`) over the session's Fansly creators with a session.
- */
+// The fansly_manager flag is UI only; the Relay checks every data route anyway.
 
 import Link from "next/link";
 import { useMemo } from "react";
@@ -23,7 +16,6 @@ import type { NavLink } from "@/lib/nav";
 import { accountPlatform } from "@/lib/platform";
 import { TableSkeleton } from "@/components/ui/Skeleton";
 
-/** Each page's body, by its nav href: the route (app/fansly-manager/[page]) renders this page only for a nav link. */
 export const BODIES: Record<string, (p: { accountId: string }) => React.ReactNode> = {
   "/fansly-manager/notifications": FanslyNotifications,
   "/fansly-manager/lists": FanslyLists,
@@ -31,7 +23,6 @@ export const BODIES: Record<string, (p: { accountId: string }) => React.ReactNod
   "/fansly-manager/earning-statistics": FanslyEarnings,
 };
 
-/** `link`: the built nav link the route resolved (its label, flag and href; no icon, so it crosses to the client). */
 export function FanslyManagerPage({ link }: { link: Pick<NavLink, "href" | "label" | "flag"> }) {
   const flags = useFlags();
   const loaded = useAccounts().isSuccess;
@@ -40,7 +31,6 @@ export function FanslyManagerPage({ link }: { link: Pick<NavLink, "href" | "labe
   const [accountId, setAccountId] = useCreatorParam(accounts);
   const Body = BODIES[link.href];
 
-  // Wait for the flags rather than flash "not available" on a page that is on: the page's rows as placeholder bars.
   if (link.flag && !flags) return <div className="p-4"><TableSkeleton rows={6} /></div>;
   if (link.flag && !flags?.[link.flag]) {
     return (

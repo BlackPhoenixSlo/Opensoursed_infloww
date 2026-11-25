@@ -1,26 +1,12 @@
 "use client";
 
-/**
- * MassMessageComposer — modal for broadcasting a single message to many
- * fans via POST /api/of/v2/messages/queue. With `scheduled_date` the
- * relay routes to schedule_mass_message; without it, send_mass_message
- * fires immediately.
- *
- * Audience mirrors the desktop app: include vs exclude columns. Include
- * accepts any combination of OF's five system audiences (fans / recent /
- * following / rebill_off / tagged) and any of the model's custom fan
- * lists. Exclude is custom-lists-only (OF doesn't accept system audience
- * names in excludeUserLists).
- *
- * Callers mount it only while the modal is open and unmount it on close, so
- * closing it is the reset: nothing carries over to the next open.
- */
 
-import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Lock, X } from "lucide-react";
 
 import { usePlatformAccounts } from "@/hooks/useAccounts";
-import { usePlatform } from "@/lib/platform";
+import { useAccountPlatform, useCanOrFallback } from "@/hooks/useCan";
+import { accountPlatform, useFallbackPlatform } from "@/lib/platform";
 import { onlineCountLabel, useOnlineSubscribers } from "@/hooks/useOnlineSubscribers";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { useSmartLists } from "@/hooks/useSmartLists";
@@ -43,11 +29,9 @@ import { sanitizePriceInput } from "@/lib/priceInput";
 import { AudiencePanel } from "./AudiencePanel";
 import { FanOutResults, FanOutStatus } from "./FanOutResults";
 import { IncludeModelsChips } from "./IncludeModelsChips";
-import { massSenders } from "./massSenders";
-import { fanOutLocked, includedTargets } from "./fanOut";
+import { massSendFrom, massSenders } from "./massSenders";
+import { fanOutLocked } from "./fanOut";
 import { MediaTray } from "./MediaTray";
-import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
-import { useMassAllowed } from "@/hooks/useMassAllowed";
 import { AaButton, ComposeTextBox, type ComposeTextBoxHandle } from "./ComposeTextBox";
 import { OnlineTargetingPanel } from "./OnlineTargetingPanel";
 import { ScheduleField } from "./ScheduleField";
@@ -62,22 +46,11 @@ import { ifConfirm } from "@/components/ui/ifConfirm";
 
 interface MassMessageComposerProps {
   onClose: () => void;
-  /** "online" reveals the live-targeting panel (online-only, unread, recent-
-   *  chat include, recent-activity excludes, auto-unsend) and titles the modal
-   *  "Mass Online". "standard" is the classic list-based broadcast. */
   mode?: "standard" | "online";
-  /** The account the form opens on (a single-Creator scope's); the picker,
-   *  all-models switch and schedule field stay. */
   forcedAccountId?: string;
-  /** Tag what Infloww's OF mass message lacks as "Inflowwww extra": the
-   *  per-broadcast Auto-unsend (Infloww offers per-message Auto-unsend on
-   *  Priority mass and Automated messages only). Growth > Smart Messages
-   *  asks; Messages Pro's New menu does not, because its extras audit admits
-   *  only catalogued names (lib/openinflowwwwExtras). */
   labelExtras?: boolean;
 }
 
-/** The form's automatic actions (no user edit): the audience seeding and the GIF strip opening. */
 const isMassSeed = (a: MassAction, s: MassForm) =>
   isAudienceSeed(a, s) || (a.type === "field" && a.k === "gifPickerOpen");
 
@@ -89,106 +62,79 @@ export function MassMessageComposer({
 }: MassMessageComposerProps) {
   const online = mode === "online";
   const platformAccounts = usePlatformAccounts();
-  const platform = usePlatform();
-  const activeAccounts = useMemo(() => massSenders(platformAccounts, platform), [platformAccounts, platform]);
-  // The composers' shared include set (useAllModelsInclude) — a model
-  // un-checked in any composer's chip strip is omitted from a broadcast here.
+  const fallbackPlatform = useFallbackPlatform();
+  const launchPlatform = useAccountPlatform(forcedAccountId);
+  const launch = forcedAccountId ? launchPlatform ?? "unknown" : null;
+  const openPlatform = launchPlatform ?? fallbackPlatform;
   const { isIncluded } = useAllModelsInclude();
-  // Sends without an explicit employeeId attribute to the Automation system
-  // employee (id=2). See memory: project_x_employee_id_pipeline.md — relay's
-  // X-Employee-Id header is opt-in per call, no global injector.
+  // No explicit employeeId attributes the send to the Automation system employee (id=2); X-Employee-Id is opt-in per call.
   const { current: currentEmployee } = useEmployee();
-  // The whole form (massMessageReducer).
-  const [form, rawDispatch] = useReducer(massMessageReducer, forcedAccountId ?? null, initMassForm);
-  // The user's dispatch: anything but the seeding and the GIF strip's open/close touches the form (Escape keeps it).
+  const [form, rawDispatch] = useReducer(massMessageReducer, null, () => initMassForm(forcedAccountId ?? null, openPlatform, launch));
   const { touched, dispatch } = useTouched(form, rawDispatch, isMassSeed);
+  useEffect(() => {
+    rawDispatch({ type: "launchPlatform", platform: launch });
+  }, [launch]);
+  const activeAccounts = useMemo(() => massSenders(platformAccounts, form.platform), [platformAccounts, form.platform]);
   const {
     allModels, accountId, text, attached, price, previewCount, lockedText, schedule, funnelId, progress, results,
     gifFailures, taggedCreators, pickedGifs, gifPickerOpen,
   } = form;
-  // A round in flight, or a model sent this broadcast: the content is locked (compose/fanOut).
   const locked = fanOutLocked(form);
-  // The one setter for plain fields: `set("price")(v)`.
   const set = useCallback(
     <K extends MassField>(k: K) => (v: MassForm[K]) => dispatch(fieldAction(k, v)),
     [dispatch],
   );
-  // Stable: AccountPicker's auto-seed effect depends on it.
-  const setAccountId = useCallback((id: string) => dispatch({ type: "setAccount", id }), [dispatch]);
-  // Optional funnel: when set, the send_mass_message automation walks this
-  // funnel's reply/PPV steps per replying fan after the opener lands. Resolved
-  // server-side by funnel_id (send_mass_message._resolve_funnel) — only the
-  // opener (this message) is sent now. Inert on the live OF-queue path.
+  // Stable per roster: AccountPicker's auto-seed effect depends on it.
+  const setAccountId = useCallback((id: string) => {
+    const a = platformAccounts.find((x) => x.id === id);
+    dispatch({ type: "setAccount", id, platform: a ? accountPlatform(a) : undefined });
+  }, [dispatch, platformAccounts]);
+  // Funnel steps run server-side per replying fan after the opener; inert on the live OF-queue path.
   const funnelsQ = useFunnels();
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Live online count: OnlyFans' online subscribers list (Messages Pro's
-  // Online Fans read, same cache), one page re-read every minute while the
-  // Mass Online panel is open for one account. "20+" on a full page.
   const onlineCountQ = useOnlineSubscribers(online && !allModels ? accountId : null, 60_000);
   const onlineCount = onlineCountQ.data ? onlineCountLabel(onlineCountQ.data) : null;
   const textRef = useRef<ComposeTextBoxHandle | null>(null);
-  // OF rich text: OnlyFans accounts only (all-models: the first sender's).
-  const allowRich = useOfRichAllowed(allModels ? activeAccounts[0]?.id : accountId);
+  const allowRich = useCanOrFallback(allModels ? activeAccounts[0]?.id : accountId, "rich_text");
   const priceId = useId();
   const funnelSelectId = useId();
 
-  // Shared with the PPV Library broadcast picker: one OF call (same cache key),
-  // one definition of "custom list". `...listsQ` keeps the raw query fields
-  // (data/isLoading/isFetching) this component still reads directly.
   const { customLists, ...listsQ } = useFanLists(accountId);
 
-  // Auto-select the standing MASSDMEXCLUDE list (audience/audienceReducer
-  // `massExcludeListId`) into the exclude set — so every mass send skips it by
-  // default; the operator can untick it for a one-off. The reducer's
-  // `seedExclude` decides (once per account per audience reset, never in
-  // all-models, never a stale account); this only reports the CURRENT
-  // account's lists once they settle (guarded on !isFetching, not stale ones).
+  // The standing MASSDMEXCLUDE list is pre-selected into exclude so mass sends skip it by default; the operator can untick it.
   useEffect(() => {
     if (!accountId || listsQ.isLoading || listsQ.isFetching) return;
     rawDispatch({ type: "seedExclude", accountId, listId: massExcludeListId(listsQ.data ?? []) });
-    // allModels / seededFor: an audience reset re-arms the seed.
   }, [accountId, allModels, form.seededFor, listsQ.isLoading, listsQ.isFetching, listsQ.data]);
 
-  // ── Smart Lists (saved segments) as include/exclude audiences ──────────
-  // A Smart List is an internal fan-id segment (spend/recency/status/tag). On
-  // send we resolve the picked lists to explicit userIds / excludedUsers, so a
-  // saved segment sharpens any blast. The picks are form state (the reducer
-  // resets them with the rest of the audience); the query is the segment list,
-  // disabled in all-models mode (segments are per-account).
   const smartLists = useSmartLists(allModels ? null : accountId).data ?? [];
 
-  // All-models broadcasts force free + unlocked-text (ask #4). For per-employee
-  // sends, a typed price > 0 is the sole paid signal — clearing the field is
-  // how the user opts back into a free send.
+  // All-models broadcasts force free + unlocked text; per-employee, a typed price > 0 is the sole paid signal.
   const priceToSend = effectivePrice(form);
 
-  // No auto-seed: 0 previews is a valid choice on paid broadcasts (every
-  // tile locked). The ± stepper lets the user opt into a leading free
-  // teaser when they want one.
 
-  // Honour the shared include set: models the user unchecked in a
-  // composer's chip strip are dropped from the broadcast fan-out; a model
-  // that already took this broadcast (a partial fan-out's success) is not
-  // sent it again.
-  const { included: broadcastAccounts, targets } = includedTargets(activeAccounts, isIncluded, results);
   // A forced or saved Creator outside the sender list (expired session) still sends, unless her Platform can't mass message.
-  const accountMaySend = useMassAllowed(accountId);
-  const sendFrom = allModels ? targets : accountId && accountMaySend ? [accountId] : [];
+  const accountMaySend = useCanOrFallback(accountId, "mass_message");
+  const sendFrom = massSendFrom(
+    { ...form, launch }, platformAccounts, isIncluded, accountMaySend,
+  );
 
-  // Growth > Sensitive words: like Infloww's mass message and Smart Message
-  // editors, a listed word in the text is shown under it and refuses the send.
   const sensitiveHits = useSensitiveHits(isOfHtml(text) ? ofPlainText(text) : text, allModels ? null : accountId);
 
-  // The one validity check — the footer button, its reason line and the send
-  // mutation all read this result (massMessageReducer `validateMass`).
   const invalid = validateMass(form, {
     broadcastCount: sendFrom.length,
     sensitive: sensitiveHits.length > 0,
   });
 
+  const latestSend = useRef({ targets: sendFrom, platform: form.platform });
+  useLayoutEffect(() => {
+    latestSend.current = { targets: sendFrom, platform: form.platform };
+  }, [sendFrom, form.platform]);
+
   const send = useMassSend({
-    form, dispatch: rawDispatch, online, included: broadcastAccounts.map((a) => a.id), invalid, employeeId: currentEmployee?.id,
+    form, dispatch: rawDispatch, online, invalid, employeeId: currentEmployee?.id,
     onClose,
+    isEligible: (id) => latestSend.current.platform === form.platform && latestSend.current.targets.includes(id),
   });
 
   function close() {
@@ -201,9 +147,6 @@ export function MassMessageComposer({
   }
 
   function onPickTemplate(t: PickedTemplate) {
-    // Snapshot semantics (lib/composeDraft applyTemplate): text, media,
-    // preview count, price + lock and GIF are replaced wholesale.
-    // An OnlyFans account keeps a formatted script's markup; Fansly gets its plain text.
     dispatch({ type: "pickTemplate", t, rich: allowRich });
     setTimeout(() => textRef.current?.focus(), 0);
   }
@@ -218,7 +161,6 @@ export function MassMessageComposer({
         width={722}
         size="editor"
         onClose={close}
-        // Escape never drops a draft the user touched; × and Cancel still close.
         keyboard={!touched}
         footer={<>
           <FanOutStatus
@@ -230,7 +172,11 @@ export function MassMessageComposer({
           <IfButton
             variant="primary"
             onClick={async () => {
-              if (await ifConfirm(confirmPrompt(form, sendFrom.length))) send.mutate();
+              if (!await ifConfirm(confirmPrompt(form, sendFrom.length))) return;
+              const current = latestSend.current;
+              if (current.platform !== form.platform) return;
+              if (current.targets.length !== sendFrom.length || !sendFrom.every((id) => current.targets.includes(id))) return;
+              send.mutate(current.targets);
             }}
             disabled={send.isPending || invalid !== null}
             title={invalid ?? undefined}
@@ -242,16 +188,12 @@ export function MassMessageComposer({
         </>}
       >
         <div className="space-y-4">
-          {/* All-models switch — pivots the modal between single-account
-           *  mode (vault + custom-list audiences) and fan-out mode
-           *  (uploads only + system audiences only). */}
           <IncludeModelsChips
             noun="broadcast" accounts={activeAccounts} allModels={allModels} locked={locked}
             onAllModels={(on) => dispatch({ type: "setAllModels", on })}
             accountId={accountId} onAccount={setAccountId}
           />
 
-          {/* The content — locked (disabled) once a model sent the broadcast. */}
           <fieldset disabled={locked} className="min-w-0 space-y-4 disabled:opacity-60">
           <div className="space-y-2">
             <ComposeTextBox
@@ -265,10 +207,6 @@ export function MassMessageComposer({
               disabled={locked}
             />
             <SensitiveWordWarning hits={sensitiveHits} />
-            {/* Toolbar — same composer features as the chat: recent-
-             *  emojis quick row, full emoji picker, GIF picker,
-             *  saved-template picker, @-tag creators picker. */}
-            {/* The pickers portal above the dialog: Escape in their search boxes is theirs (useModalFocus). */}
             <div className="flex items-center gap-1.5 flex-wrap">
               <EmojiQuickRow onInsert={onEmoji} />
               <EmojiPickerButton align="left" onInsert={onEmoji} />
@@ -378,9 +316,6 @@ export function MassMessageComposer({
             onChange={set("schedule")}
           />
 
-          {/* Funnel — optional automated follow-up. Only the send_mass_message
-           *  automation (compose-into-rule path) walks the steps; a one-off
-           *  live OF-queue broadcast ignores it. */}
           <div>
             <IfLabel htmlFor={funnelSelectId}>Funnel follow-up</IfLabel>
             <IfNativeSelect
@@ -411,7 +346,6 @@ export function MassMessageComposer({
             smartLists={smartLists}
           />
 
-          {/* Online / live-targeting panel — only in "Mass Online" mode. */}
           {online && (
             <OnlineTargetingPanel
               form={form}
@@ -423,7 +357,6 @@ export function MassMessageComposer({
           )}
           </fieldset>
 
-          {/* The broadcast landed but these trailing GIF sends failed. */}
           {gifFailures && (
             <div role="alert" className="space-y-1 rounded-md border border-border p-3 text-[12px]">
               <div className="text-[14px] font-medium">
@@ -436,7 +369,6 @@ export function MassMessageComposer({
             </div>
           )}
 
-          {/* Per-account fan-out summary, shown after a partial-success run. */}
           {results && (
             <FanOutResults
               results={results} noun="broadcast" locked={locked} busy={send.isPending}

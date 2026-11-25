@@ -121,6 +121,7 @@ async def _get_or_make_lock(key: tuple[str, str, tuple]) -> asyncio.Lock:
         return lock
 
 
+# Account-scoped: a response that varies by X-Employee-Id must carry the employee id in key_extras.
 async def get_or_fetch(
     namespace: str,
     account_id: str,
@@ -225,6 +226,7 @@ def peek_fresh(namespace: str, account_id: str, key_extras: tuple) -> Any | None
     return entry[0] if entry is not None and entry[1] > time.monotonic() else None
 
 
+# Call only after the DB commit (same for patch): before it, a concurrent miss can re-cache pre-commit state.
 def invalidate(
     namespace: str,
     account_id: str,

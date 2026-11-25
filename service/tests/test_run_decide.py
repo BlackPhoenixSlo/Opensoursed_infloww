@@ -108,7 +108,7 @@ def case_outcome_table():
     ]
     for kind, guard, want in rows:
         got = outcome(kind, guard, "boom")
-        assert got == (*want, "boom"), (kind, guard, got, want)
+        assert got == (*want, "sensitive_words" if guard == "skipped" else "boom"), (kind, guard, got, want)
     assert outcome("ok", None) == ("ok", "done", None)
     try:
         outcome("nope", None)  # type: ignore[arg-type]
@@ -116,6 +116,20 @@ def case_outcome_table():
         pass
     else:
         raise AssertionError("an unknown outcome kind must raise")
+
+
+def case_platform_outcome_table():
+    lack = "platform_lacks:send_mass_message"
+    rows = [
+        ("ok", None, lack, ("skipped", "done", lack)),
+        ("ok", None, "no_targets", ("ok", "done", None)),
+        ("ok", None, 7, ("ok", "done", None)),
+        ("ok", "skipped", lack, ("skipped", "done", "sensitive_words")),
+        ("words_blocked", "skipped", None, ("skipped", "done", "sensitive_words")),
+        ("ok", "ok", None, ("ok", "done", None)),
+    ]
+    for kind, guard, reason, want in rows:
+        assert outcome(kind, guard, plugin_reason=reason) == want
 
 
 def case_send_once_outcome_table():

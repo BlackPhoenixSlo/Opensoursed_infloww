@@ -328,6 +328,33 @@ def case_fansly_collision_rechecked_after_identify():
     assert _tree() == raced["tree"], "the raced OnlyFans Creator's files or the active pick changed"
 
 
+def case_fansly_on_default_platform_meta_is_409_untouched():
+    _wipe()
+    client = _owner()
+    results = []
+    for aid, meta in (("5400003", {"platform": "myspace"}),
+                      ("5400004", {"platform": ["onlyfans"]}),
+                      ("5400005", {"platform": {"key": "fansly"}}),
+                      ("5400006", {"platform": None}),
+                      ("5400007", {})):
+        _seed(aid, {"meta.json": json.dumps(meta)})
+        assert platforms.for_account(aid) is platforms.ONLYFANS
+        before = _tree()
+        with _patched(fansly_backend, identify=lambda s: ({"id": aid, "name": "Fan"}, s)), \
+                _patched(server, post_bootstrap_hooks=lambda *_: None):
+            response = client.post("/admin/session/fansly", json=_blob(aid))
+        results.append((response.status_code, _tree() == before))
+    assert results == [(409, True)] * 5, results
+
+
+def case_non_object_meta_dispatches_as_onlyfans():
+    _wipe()
+    aid = "5400008"
+    _seed(aid, {"meta.json": "[1, 2]"})
+    assert platforms.for_account(aid) is platforms.ONLYFANS
+    assert account_registry.load_meta(aid) is None
+
+
 def case_fansly_success_writes_0600_meta_and_runs_hooks():
     _wipe()
     aid = "5500001"
@@ -485,7 +512,12 @@ def case_bootstrap_on_fansly_creator_is_409_untouched():
     aid = "4300001"
     _fansly_creator(aid)
     before = _tree()
-    r, hooks = _bootstrap(aid)
+
+    def chunk_timeout(*args, **kwargs):
+        raise TimeoutError("signing chunk timed out")
+
+    with _patched(urllib.request, urlopen=chunk_timeout):
+        r, hooks = _bootstrap(aid)
     assert r.status_code == 409, (r.status_code, r.text)
     assert r.json()["detail"], r.text
     assert hooks == [], hooks
@@ -505,19 +537,29 @@ def case_ensure_platform_passes_and_raises_by_table():
     _fansly_creator("6000006")
     _seed("6000007", {"fansly_session.json": "{}"})
     _seed("6000008", {"meta.json": "[1, 2]", "fansly_session.json": "{}"})
+    _seed("6000009", {"meta.json": '{"platform": "weird"}', "fansly_session.json": "{}"})
+    _seed("6000010", {"meta.json": "{not json", "latest.json": "{}", "fansly_session.json": "{}"})
+    _seed("6000011", {"meta.json": '{"id": "6000011"}'})
+    _seed("6000012", {"meta.json": "{not json"})
+    _seed("6000013", {"meta.json": '{"platform": ["onlyfans"]}'})
     before = _tree()
-    for aid in ("6999999", "6000001", "6000002", "6000003", "6000004", "6000005", ".."):
+    for aid in ("6999999", "6000001", "6000002", "6000003", "6000004", "6000005", "6000011", "6000012",
+                "6000013", ".."):
         account_registry.ensure_platform(aid, of)
-    for aid in ("6999999", "6000006", "6000007", "6000008"):
+    for aid in ("6999999", "6000006", "6000007", "6000008", "6000012"):
         account_registry.ensure_platform(aid, fan)
-    for aid, key in (("6000006", of), ("6000007", of), ("6000008", of),
-                     ("6000001", fan), ("6000002", fan), ("6000003", fan), ("6000005", fan)):
+    accepted = []
+    for aid, key in (("6000006", of), ("6000007", of), ("6000008", of), ("6000009", of),
+                     ("6000010", of), ("6000010", fan), ("6000011", fan),
+                     ("6000001", fan), ("6000002", fan), ("6000003", fan), ("6000004", fan), ("6000005", fan),
+                     ("6000009", fan), ("6000013", fan)):
         try:
             account_registry.ensure_platform(aid, key)
         except account_registry.PlatformCollision as e:
             assert str(e), aid
         else:
-            raise AssertionError(f"{aid} as {key}: no collision")
+            accepted.append((aid, key))
+    assert not accepted, accepted
     assert _tree() == before, "ensure_platform wrote"
 
 

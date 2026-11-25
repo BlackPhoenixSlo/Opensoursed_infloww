@@ -19,7 +19,7 @@ inventory_unknown): a Pick reaches the Writer and lands on the row (`full_ai_tes
 sell_now it rides the last text bubble as its PPV, a tease row keeps it priceless with no PPV); a
 Refusal gives chat + its need-line (`reply_json.refusal`). A sell inside a Pending tease
 (`TurnFacts.tease`) sells the teased piece, else its subject and format, never another. A haggle
-row (DRAFT `counter_offer`, test Mode with `draft_questions` only) re-offers the open Offer's piece
+row (DRAFT `counter_offer`, test or live Mode with `draft_questions`) re-offers the open Offer's piece
 (`TurnFacts.offer_piece`), else the Pending tease's, at his clamped quote. On
 make_right after a Buy in the session (`TurnFacts.spent`) it picks one unseen Free item (price 0,
 row kind `free`, its PPV on the last bubble); a Refusal there keeps the apology with no item. A leak
@@ -316,6 +316,7 @@ async def _chain(raw: str, facts: TurnFacts, reply: dict, *, single: bool = Fals
     return parts
 
 
+# make_right sells the Free item only to a fan who has spent before, never to a bare complainer.
 def _sells(route: str, facts: TurnFacts) -> bool:
     if route in ("sell_now", "tease"):
         return True

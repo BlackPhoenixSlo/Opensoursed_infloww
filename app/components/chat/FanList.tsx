@@ -41,7 +41,7 @@ import { useAccountPlatform } from "@/hooks/useCan";
 import { useScope } from "@/contexts/ScopeContext";
 import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import { MP } from "@/lib/messagesPro";
-import { usePlatform } from "@/lib/platform";
+import { accountPlatform, can, useFallbackPlatform } from "@/lib/platform";
 import { ofMeQuery } from "@/lib/ofMe";
 import { CHATS_PAGE } from "@/lib/screenBundle";
 import { cn } from "@/lib/utils";
@@ -67,7 +67,7 @@ import { SplitInbox } from "./SplitInbox";
 import { isFanOnline } from "./isFanOnline";
 import { totalSpendOf } from "./totalSpend";
 import { useFanListMarkRead } from "./useFanListMarkRead";
-import { useInboxGroup } from "./useInboxGroup";
+import { chatAccountOf, useInboxGroup } from "./useInboxGroup";
 import { badgeReady, badgeUnread, todaysUnread, totalsOn, unreadBadgeSources, type AccountsAnswer } from "./unreadBadge";
 import { BRAND_NAME } from "@/lib/brand";
 
@@ -149,7 +149,7 @@ export function FanList({
     [scope, accounts],
   );
   // The Split Inbox group chosen in "All inboxes"; session state per Creator set.
-  const inbox = useInboxGroup(shownCreators);
+  const inbox = useInboxGroup(shownCreators, singleAcctId);
   const pinnedFolders = useChatFolders(foldersReady ? singleAcctId : null).data ?? [];
   // The pencil ("Pin lists as chips") shows once the Creator has any OF list (mj:3067); same fetch.
   const hasLists = !!useAllChatFolders(foldersReady ? singleAcctId : null).data?.length;
@@ -160,8 +160,11 @@ export function FanList({
     select: (me) => me.tipsEnabled === true,
   }).data ?? false;
   const scopedPlatform = useAccountPlatform(singleAcctId);
-  const platform = usePlatform();
-  const scopePlatforms = useMemo(() => [scopedPlatform ?? platform], [scopedPlatform, platform]);
+  const fallback = useFallbackPlatform();
+  const scopePlatforms = useMemo(() => {
+    if (singleAcctId || accounts.length === 0) return [scopedPlatform ?? fallback];
+    return [...new Set(accounts.map(accountPlatform))];
+  }, [scopedPlatform, singleAcctId, accounts, fallback]);
   // The filter the list runs: a chip the scope hides reads as All in this render, so no request carries it.
   const { chips, active } = fanListChips({
     platforms: scopePlatforms, tipsEnabled, pinnedFolderIds: pinnedFolders.map((f) => String(f.id)), active: picked,
@@ -332,8 +335,9 @@ export function FanList({
   // other accounts' chats. Enabled only while pending so the seed
   // query doesn't keep running once the real list is in cache.
   const seedAccountId = scope.kind === "model" ? scope.accountId : null;
+  const { canUseSeed } = q;
   const seedQ = useRecentChatsLocal({
-    enabled: q.isPending,
+    enabled: canUseSeed,
     limit: 25,
     accountId: seedAccountId,
   });
@@ -347,9 +351,9 @@ export function FanList({
   // it shows only while that filter is on.
   const showOweDots = oweReplyActive;
   const isUnresponded = useCallback((c: OFChatItem) => {
-    const accountId = c.__accountId ?? (scope.kind === "model" ? scope.accountId : "");
+    const accountId = chatAccountOf(c, singleAcctId) ?? "";
     return lastMessageFromFan(c, accountId);
-  }, [scope]);
+  }, [singleAcctId]);
   // Badge-excluded chats (relay stamp withUser.badgeExcluded) never count as
   // owe-reply: the same predicate as the server-side roster-badge fold.
   const chipRows = useMemo(() => {
@@ -379,12 +383,13 @@ export function FanList({
   // Unit B's autofill effect from terminating against the seed's
   // visual overflow — otherwise loadMore would never fire even when
   // the real list is empty and `hasMore` is true.
-  const isFromSeed = q.isPending && allRows.length === 0 && seedQ.rows.length > 0;
+  const seedRows = useMemo(() => q.eligibleFallbackRows(seedQ.rows), [q.eligibleFallbackRows, seedQ.rows]);
+  const isFromSeed = canUseSeed && allRows.length === 0 && seedRows.length > 0;
   const displayRows: OFChatItem[] = useMemo(() => {
     if (!isFromSeed) return rows;
-    const seed = oweReplyActive ? seedQ.rows.filter(isUnresponded) : seedQ.rows;
+    const seed = oweReplyActive ? seedRows.filter(isUnresponded) : seedRows;
     return inbox.inGroup ? seed.filter(inbox.inGroup) : seed;
-  }, [isFromSeed, rows, oweReplyActive, seedQ.rows, isUnresponded, inbox.inGroup]);
+  }, [isFromSeed, rows, oweReplyActive, seedRows, isUnresponded, inbox.inGroup]);
 
   // The rail on screen. Paint attribution is keyed by it.
   const listKey = listPaintKey(scope, serverFilter, serverListId, query || null);
@@ -475,11 +480,11 @@ export function FanList({
     if (!badgeIsReady && holdsCopyOnly && !accountsFetching) void refetchAccounts({ cancelRefetch: false });
   }, [badgeIsReady, holdsCopyOnly, accountsFetching, refetchAccounts]);
   const unreadBadge = useMemo(() => {
-    const accountOf = (c: OFChatItem) => c.__accountId ?? (scope.kind === "model" ? scope.accountId : "");
+    const accountOf = (c: OFChatItem) => chatAccountOf(c, singleAcctId) ?? "";
     const fallback = (creators: ReadonlySet<string> | null) =>
       todaysUnread(allChipBase, unreadView, { isOwed: isUnresponded }, creators, accountOf);
     return badgeUnread(freshness, shownCreators, fallback, { ready: badgeIsReady, search: !!query });
-  }, [freshness, shownCreators, allChipBase, unreadView, isUnresponded, scope, badgeIsReady, query]);
+  }, [freshness, shownCreators, allChipBase, unreadView, isUnresponded, singleAcctId, badgeIsReady, query]);
   const unreadCount = unreadBadge.n;
   // Its "as of" (dataAge `badgeAge`): only the Creators counted from a held total, none under a search or before a
   // number; a Dead-session Creator is left out.
@@ -803,7 +808,7 @@ export function FanList({
           <FanListBulkBar
             picked={pickedRows}
             shownCount={shownRows.length}
-            listsAccountId={singleAcctId}
+            listsAccountId={scopePlatforms.some((p) => can(p, "filter_folders")) ? singleAcctId : null}
             onSelectAll={() => setPicks(new Set(shownRows.map(chatRowKey)))}
             onPickOnly={(rows) => setPicks(new Set(rows.map(chatRowKey)))}
             onDone={() => setPicks(null)}
@@ -834,7 +839,14 @@ export function FanList({
             {describeLoadError(q.error as Error)}
           </div>
         )}
-        {!q.isError && rows.length === 0 && q.isFetched && !groupFilling && <FanListEmpty />}
+        {inbox.failed.size > 0 && (
+          <p role="alert" className="p-4 text-xs text-err">Could not load inbox groups for {inbox.failed.size} {inbox.failed.size === 1 ? "model" : "models"}.</p>
+        )}
+        {inbox.pending.size > 0 && (
+          <p role="status" className="p-4 text-xs text-fg-dim">Loading inbox groups…</p>
+        )}
+        {!q.isError && rows.length === 0 && q.isFetched && !groupFilling &&
+          inbox.failed.size === 0 && inbox.pending.size === 0 && <FanListEmpty />}
         {!q.isError && noneOnline && <FanListEmpty text="No Fans online now" />}
         {/* Skeleton rows during the cold first fetch — only when we have
          *  NO seed rows to render in their place. With the local-DB seed
@@ -842,7 +854,7 @@ export function FanList({
          *  and skeletons would just flash in front of them. */}
         {!q.isError && rows.length === 0 && !q.isFetched && !isFromSeed && <FanListSkeleton />}
         {renderedRows.map((c) => {
-          const accountId = c.__accountId ?? (scope.kind === "model" ? scope.accountId : "");
+          const accountId = chatAccountOf(c, singleAcctId) ?? "";
           const key = `${accountId}:${c.withUser.id}`;
           const spend = spendMap.get(key);
           return (

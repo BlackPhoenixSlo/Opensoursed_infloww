@@ -9,6 +9,7 @@ import json  # noqa: E402
 import tempfile  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from pathlib import Path  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 from sqlalchemy import select  # noqa: E402
 
@@ -25,7 +26,7 @@ from automations import send_welcome  # noqa: E402
 from automations.auto_follow import gated_follow  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, AutomationRule, Fan, LifecycleMessageClaim, MassBroadcastCache, MassRun, Message,
+    Account, Action, AutomationRun, AutomationRule, Fan, LifecycleMessageClaim, MassBroadcastCache, MassRun, Message,
     ScheduledJob, SmartList, WelcomeSent,
 )
 from fansly_shim import FanslyShimClient  # noqa: E402
@@ -178,6 +179,7 @@ _UNSEND_POLICY = {"policy": {"text_hours": 1, "mass_text_hours": 8}}
 
 async def case_fansly_unsend_drops_the_mass_lane_and_runs_per_chat():
     aid = "8803101"
+    account_registry.save_meta(aid, {"platform": "fansly"})
     await _seed_unsend(aid)
     fake = _use(_Fansly())
     try:
@@ -185,7 +187,8 @@ async def case_fansly_unsend_drops_the_mass_lane_and_runs_per_chat():
     finally:
         _restore()
     assert fake.calls == [("unsend", _CHAT_MID, _CHAT_FAN)], fake.calls
-    assert r.get("mass_skipped") == "platform_lacks:mass_message_history", r
+    assert r.get("target_skips") == {"mass": "platform_lacks:mass_message_history"}, r
+    assert r["status"] == "ok" and "reason" not in r, r
     assert not r.get("mass_refresh_failed"), r
     assert await _unsend_state(aid) == (False, True, False), await _unsend_state(aid)
 
@@ -200,7 +203,7 @@ async def case_of_unsend_still_sweeps_mass_and_per_chat():
         _restore()
     assert ("history",) in fake.calls and ("cancel", _CAST) in fake.calls, fake.calls
     assert ("unsend", _CHAT_MID, _CHAT_FAN) in fake.calls, fake.calls
-    assert "mass_skipped" not in r, r
+    assert "target_skips" not in r, r
     assert await _unsend_state(aid) == (True, True, True), await _unsend_state(aid)
 
 
@@ -217,7 +220,7 @@ async def case_fansly_unsend_drops_explicit_mass_targets():
     finally:
         _restore()
     assert fake.calls == [("unsend", _CHAT_MID, _CHAT_FAN)], fake.calls
-    assert r.get("mass_skipped") == "platform_lacks:mass_message_history", r
+    assert r.get("target_skips") == {"mass": "platform_lacks:mass_message_history"}, r
     assert await _unsend_state(aid) == (False, True, False), await _unsend_state(aid)
 
 
@@ -230,7 +233,7 @@ async def case_of_unsend_still_cancels_explicit_mass_targets():
     finally:
         _restore()
     assert fake.calls == [("cancel", _OLD_CAST), ("unsend", _CHAT_MID, _CHAT_FAN)], fake.calls
-    assert "mass_skipped" not in r, r
+    assert "target_skips" not in r, r
     assert await _unsend_state(aid) == (False, True, True), await _unsend_state(aid)
 
 
@@ -268,6 +271,7 @@ async def _claimed_fans(aid: str) -> set[int]:
 async def case_fansly_expiry_drops_only_the_discounted_plan():
     aid = "8803201"
     discounted, plain = await _seed_expiry(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
     fake = _use(_Fansly())
     try:
         r = await lm.sweep(lm.EXPIRY, aid, {"force_ids": [discounted, plain]})
@@ -276,6 +280,7 @@ async def case_fansly_expiry_drops_only_the_discounted_plan():
     assert fake.calls == [("send", plain, "see you soon")], fake.calls
     assert await _claimed_fans(aid) == {plain}, await _claimed_fans(aid)
     assert r["sent"] == 1 and r["errors"] == 0 and r["discounted"] == 0, r
+    assert r["discount_skipped"] == "platform_lacks:set_subscription_discount", r
 
 
 async def case_of_expiry_discounts_then_sends_both():
@@ -419,6 +424,7 @@ async def _broadcast(aid: str, fake) -> dict:
 
 async def case_fansly_mass_message_skips_before_list_write_or_run():
     aid = "8803601"
+    account_registry.save_meta(aid, {"platform": "fansly"})
     fake = _Fansly()
     r = await _broadcast(aid, fake)
     assert {k: r.get(k) for k in _LACKS_MASS} == _LACKS_MASS, r
@@ -467,5 +473,199 @@ async def case_of_premade_reads_the_folder_sends_and_drips_the_rest():
     assert fake.calls[:2] == [("client",), ("vault", 5)], fake.calls
     assert [c[:2] for c in fake.calls if c[0] == "mass"] == [("mass", "m1")], fake.calls
     assert await _mass_state(aid) == (1, ["mass_premade"]), await _mass_state(aid)
+
+async def case_fansly_unread_limited_mass_refuses_before_audience():
+    from automations import send_mass_message
+
+    aid = "8803603"
+    account_registry.save_meta(aid, {"platform": "fansly"})
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("attempted audience resolution or client load")
+
+    with patch.object(audiences, "resolve_mass_audience", unexpected), patch.object(ax, "_make_client", unexpected):
+        assert await send_mass_message.run(aid, {**_BROADCAST, "unread_limit": 1}, run_id=0) == _LACKS_MASS
+
+
+async def case_fansly_premade_records_skipped_run_and_terminal_job():
+    aid = "8803703"
+    await _account(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    job_id = await ax.enqueue_job(aid, "mass_premade", payload=_PREMADE)
+    result = await run_once(aid, "mass_premade")
+    assert result["status"] == "skipped" and result["reason"] == _LACKS_MASS["reason"], result
+    async with get_session() as s:
+        run = await s.get(AutomationRun, result["run_id"])
+        job = await s.get(ScheduledJob, job_id)
+        assert run.status == "skipped", run.status
+        assert json.loads(run.stats_json)["reason"] == _LACKS_MASS["reason"]
+        assert job.status == "done" and job.attempts == 1, (job.status, job.attempts)
+    assert (await run_once(aid, "mass_premade"))["reason"] == "no_job"
+
+
+async def case_fansly_story_and_upload_unsend_refuse_before_dispatch():
+    aid = "8803105"
+    await _account(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    with patch.object(ax, "_make_client", side_effect=AssertionError("client loaded")) as load:
+        for target, capability in (
+            ({"story_id": 123}, "delete_story"),
+            ({"hide_upload": {"md5": "abc", "size": 1}}, "vault_media_lookup_hash"),
+        ):
+            result = await run_once(aid, "unsend_messages", payload={"targets": [target]})
+            assert result["unsent"] == 0, result
+            assert result["reason"] == f"platform_lacks:{capability}", result
+        load.assert_not_called()
+    async with get_session() as s:
+        assert (await s.execute(select(Action).where(Action.account_id == aid))).scalars().all() == []
+
+
+async def case_of_unsend_keeps_story_and_upload_accounting():
+    aid = "8803107"
+    await _account(aid)
+
+    class Client(_OF):
+        def delete_story(self, story_id):
+            return {"success": False}
+
+        def vault_media_lookup_hash(self, md5, size):
+            return None if md5 == "miss" else {"id": 44}
+
+        def hide_vault_media(self, ids):
+            self.calls.append(("hide", ids))
+            return {"success": False}
+
+    targets = [
+        {"story_id": 123},
+        {"hide_upload": {"md5": "miss", "size": 1}},
+        {"hide_upload": {"md5": "collision", "size": 1, "exclude_ids": [44]}},
+        {"hide_upload": {"md5": "hide", "size": 1}},
+    ]
+    client = Client()
+    with patch.object(ax, "_make_client", return_value=client):
+        result = await run_once(aid, "unsend_messages", payload={"targets": targets})
+    assert client.calls == [("hide", [44])], client.calls
+    assert (result["unsent"], result["failed"], result["rows_flipped"]) == (4, 0, 1), result
+    async with get_session() as s:
+        actions = (await s.execute(select(Action).where(Action.account_id == aid))).scalars().all()
+        assert {a.target_id for a in actions} == {"123", "miss", "collision", "44"}
+
+
+async def case_fansly_unsend_only_skips_if_all_lanes_refused():
+    aid = "8803108"
+    await _account(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    reason = "platform_lacks:mass_message_history"
+    with patch.object(ax, "_make_client", side_effect=AssertionError("client loaded")) as load:
+        for policy, want in (
+            ({"mass_text_hours": 8}, "skipped"),
+            ({"mass_text_hours": 8, "text_hours": 1}, "ok"),
+        ):
+            result = await run_once(aid, "unsend_messages", payload={"policy": policy})
+            assert result["status"] == want and result["targets"] == 0, result
+            assert result.get("reason") == (reason if want == "skipped" else None), result
+            assert result["target_skips"] == {"mass": reason}, result
+            async with get_session() as s:
+                run = await s.get(AutomationRun, result["run_id"])
+                assert run.status == want, run.status
+        load.assert_not_called()
+
+
+async def case_fansly_unsend_dry_run_excludes_mass_targets():
+    aid = "8803106"
+    await _seed_unsend(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    for payload in (_EXPLICIT, _UNSEND_POLICY):
+        result = await run_once(aid, "unsend_messages", payload={**payload, "dry_run": True})
+        assert result["target_skips"] == {"mass": "platform_lacks:mass_message_history"}, result
+        assert [t["kind"] for t in result["would_unsend"]] == ["chat"], result
+
+
+async def case_fansly_discount_only_expiry_refuses_before_roster_refresh():
+    aid = "8803203"
+    await _seed_expiry(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    async with get_session() as s:
+        rule = (await s.execute(select(AutomationRule).where(AutomationRule.account_id == aid))).scalar_one()
+        cfg = json.loads(rule.steps_json)
+        rule.steps_json = json.dumps({**cfg, "messages": _LM_MESSAGES[:1]})
+
+    with patch.object(ax, "_make_client", side_effect=AssertionError("client loaded")) as load:
+        result = await lm.sweep(lm.EXPIRY, aid, {})
+        load.assert_not_called()
+    assert result == {"status": "skipped", "reason": "platform_lacks:set_subscription_discount", "sent": 0}, result
+    assert await _claimed_fans(aid) == set()
+
+
+async def _assert_terminal_refusal(aid, kind, payload, reason):
+    job_id = await ax.enqueue_job(aid, kind, payload=payload)
+    result = await run_once(aid, kind)
+    assert (result["status"], result.get("reason")) == ("skipped", reason), result
+    async with get_session() as s:
+        run = await s.get(AutomationRun, result["run_id"])
+        job = await s.get(ScheduledJob, job_id)
+        assert run.status == "skipped"
+        assert (job.status, job.attempts) == ("done", 1), (job.status, job.attempts)
+        return json.loads(run.stats_json)
+
+
+async def case_fansly_story_job_skips_before_media_lookup():
+    aid = "8803802"
+    await _account(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    with patch.object(ax, "_make_client", side_effect=AssertionError("client loaded")) as load:
+        await _assert_terminal_refusal(aid, "auto_stories", {"media_files": [901]},
+                                       "platform_lacks:post_story_from_url")
+        load.assert_not_called()
+
+
+async def case_of_word_guard_skip_keeps_plugin_return_precedence():
+    from automations import _wordfilter
+
+    aid = "8803803"
+    await _account(aid)
+    stats = {"status": "plugin_status", "reason": "plugin_reason", "job_id": "plugin_job"}
+
+    async def plugin(_aid, _payload, *, run_id):
+        try:
+            ax.OUTBOUND_TEXT_GUARD.get()("telegram")
+        except _wordfilter.OutboundWordsBlocked:
+            return stats.copy()
+        raise AssertionError("word guard allowed blocked text")
+
+    with (patch.object(ax, "get_automation", return_value=plugin),
+          patch.object(_wordfilter, "load_banned_words", return_value=(["telegram"], "block"))):
+        result = await run_once(aid, "mass_premade", payload={})
+    assert {key: result[key] for key in stats} == stats, result
+    async with get_session() as s:
+        run = await s.get(AutomationRun, result["run_id"])
+        assert run.status == "skipped"
+
+
+async def case_fansly_expiry_preview_excludes_discounted_plan():
+    aid = "8803204"
+    discounted, plain = await _seed_expiry(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    with patch.object(ax, "_make_client", side_effect=AssertionError("client loaded")) as load:
+        result = await lm.sweep(lm.EXPIRY, aid, {"dry_run": True, "force_ids": [discounted]})
+        assert result["would_send"] == 0 and result["skipped"] == 1, result
+        assert result["discount_skipped"] == "platform_lacks:set_subscription_discount", result
+        result = await lm.sweep(lm.EXPIRY, aid, {"dry_run": True, "force_ids": [discounted, plain]})
+        assert result["would_send"] == 1 and result["sent"] == 0, result
+        load.assert_not_called()
+    assert await _claimed_fans(aid) == set()
+
+
+async def case_fansly_expiry_with_only_discounted_candidates_skips_client_load():
+    aid = "8803205"
+    discounted, _ = await _seed_expiry(aid)
+    account_registry.save_meta(aid, {"platform": "fansly"})
+    with patch.object(ax, "_make_client", side_effect=AssertionError("client loaded")) as load:
+        result = await lm.sweep(lm.EXPIRY, aid, {"force_ids": [discounted]})
+        load.assert_not_called()
+    assert result["status"] == "ok" and result["sent"] == 0 and result["skipped"] == 1, result
+    assert result["discount_skipped"] == "platform_lacks:set_subscription_discount", result
+    assert await _claimed_fans(aid) == set()
+
 
 _harness.run()

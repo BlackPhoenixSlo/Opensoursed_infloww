@@ -161,6 +161,7 @@ export interface CachedNotification {
   respondedBy?: string;
 }
 
+// OF's /users/notifications omits likes (measured: [] with favorited=51); SSE toasts carry them, so recent ones are kept here.
 const HISTORY_KEY = "chatterly:notif-history:v1";
 const HISTORY_MAX_PER_ACCOUNT = 100;
 const HISTORY_TTL_MS = 7 * 24 * 60 * 60 * 1000;

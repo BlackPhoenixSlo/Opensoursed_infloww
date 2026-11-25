@@ -98,6 +98,8 @@ export function useScope(): ScopeContextValue {
   return ctx;
 }
 
+export const useScopeHydrated = (): boolean => useContext(ScopeHydratedContext);
+
 export function useEventScopeOverride(scope: EventScope): void {
   const setEventScopeOverride = useContext(EventOverrideContext);
   if (!setEventScopeOverride) throw new Error("useEventScopeOverride must be used inside <ScopeProvider>");
@@ -138,6 +140,7 @@ function readWatcherPick(): WatcherPick | null {
   }
 }
 
+// A watcher (fan account) pick lives here only, never in the outer scope: that drives SSE, composers and the assistant, none of which may act as a watcher.
 export function WatcherScope({ watcherIds, pickable, loaded, children }: {
   watcherIds: readonly string[];
   pickable: readonly string[];

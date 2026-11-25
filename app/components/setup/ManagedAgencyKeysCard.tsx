@@ -37,7 +37,7 @@ export default function ManagedAgencyKeysCard() {
       );
       setAgencies(data.agencies);
     } catch (err) {
-      // Only 401/403 mean not-a-founder; any other failure must stay visible, since load also runs after a save.
+      // Only 401/403 hide the card; any other failure must stay visible, since load also runs after a save.
       if (err instanceof RelayError && (err.status === 401 || err.status === 403)) {
         setForbidden(true);
         return;

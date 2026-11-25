@@ -209,7 +209,7 @@ def _counted(rows: list) -> int:
     return sum(1 for r in rows if of_counts(r))
 
 
-# Two frames can cancel out and two pages can drop a row; one frame on a one-page list still judges.
+# Two frames can cancel out and two pages can drop a row; one frame on a one-page list with a counter still judges.
 def _judgeable(calls: int, has_more: bool, counter: int | None, frames_since_ask: int) -> bool:
     return frames_since_ask == 0 or (frames_since_ask == 1 and calls == 1 and not has_more and counter is not None)
 

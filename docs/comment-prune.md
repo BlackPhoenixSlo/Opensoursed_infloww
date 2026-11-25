@@ -1,5 +1,7 @@
 # Comment prune tracker
 
+**Closed 2026-11-25: 190,452 → 15,212 (8.0%), target ≤19,045 met.** After the stricter counting rules from the gate-tooling review (#1086), the same tree counts 15,556 (8.2%), and the budget is set to that.
+
 Owner GO 2026-11-24. Goal: comment + docstring lines ≤10% of the start recount, zero behaviour change. Each session: read this, continue from the first unfinished batch.
 
 ## Baseline
@@ -22,16 +24,39 @@ Recount 2026-11-24 at 672e58bca (`scripts/comment_budget.py --report`): **190,45
 | .claude | 363 | 14 |
 | web | 53 | 2 |
 
+## Final recount
+
+`--report` at 156841d28:
+
+| dir | start | final |
+|---|---:|---:|
+| service | 100,831 | 7,697 |
+| app | 49,478 | 2,387 |
+| slop | 20,638 | 4,422 |
+| scripts | 10,749 | 207 |
+| fansly | 2,502 | 124 |
+| soak | 1,954 | 41 |
+| deploy | 1,431 | 163 |
+| desktop | 893 | 56 |
+| demo | 652 | 56 |
+| loginExtensionMulti | 469 | 36 |
+| .scratch | 439 | 3 |
+| .claude | 363 | 15 |
+| web | 53 | 5 |
+| **total** | **190,452** | **15,212** |
+
+Budget (`scripts/comment-budget.json`) is lowered to these counts; CI `comment-budget.yml` runs `--check`.
+
 ## Tooling
 
-- `scripts/comment_lang.py` — shared per-file comment/docstring spans (py tokenize+ast, sh shfmt, ts via `comment_tools.mjs`) and the repo-wide runtime-docstring context.
-- `scripts/comment_budget.py` — report by default; `--check` (run-tests.sh + CI `comment-budget.yml`) fails on growth, new commented files and unparsed files; `--growth BASE` (CI) fails on a raised budget without a new `--allow` reason; `--lower [paths]` after each batch; `--allow FILE --reason`; `--rebaseline` after tool changes.
-- `scripts/comment_equality.py <base> [<head>]` — merge gate (CI on `chore/comment-prune-*`): py AST / TS AST + printer / shfmt AST; allowlisted comments identical at the same code position; runtime docstrings, line endings, BOM, modes unchanged; only modified tracked files.
-- `scripts/comment_strip.py <paths>` — strips every prunable comment, self-gates (LEFT = untouched), reports PARTIAL docstrings sharing a line with code, skips open-PR files of every GitHub remote (+ `--pr-repo`) and `--skip-file` lists.
+- `scripts/comment_lang.py` — shared per-file comment/docstring spans (py tokenize+ast, sh shfmt, ts via `comment_tools.mjs`; extensionless bash/sh/python shebang scripts included) and the repo-wide runtime-docstring context.
+- `scripts/comment_budget.py` — report by default; `--check` (run-tests.sh + CI `comment-budget.yml`) fails on growth, new commented files and unparsed files; `--check` compares changed files to the merge base of HEAD and `${COMMENT_BASE:-origin/main}` and requires a new `--allow` reason for growth; invalid manifests (non-integer limits, blank reasons) exit 1; `--lower [paths]` after each batch; `--allow FILE --reason`; `--rebaseline` initializes a missing manifest. An intentional replacement requires `--force`.
+- `scripts/comment_equality.py <base> [<head>]` — merge gate (CI on `chore/comment-*` branches or `chore(comments)…` PR titles — W-batch rwl PRs that restore whys must use a `chore(comments)` title or equality never runs; gate on when the base has `scripts/comment-budget.json`): py AST + compile / TS AST + transpile emit / bash -n + shfmt AST; allowlisted comments identical, in order, at the same code position; runtime docstrings, line endings, BOM, regular modes unchanged; files reading their own source or `$LINENO` untouched; only modified tracked files.
+- `scripts/comment_strip.py <paths>` — strips every prunable comment, self-gates (LEFT = untouched, exit 1), reports PARTIAL docstrings sharing a line with code, skips open-PR files of every GitHub remote (+ `--pr-repo`), `--skip-file` lists, budget `--allow` files and symlinks.
 
 ## Batch flow
 
-1. `git switch -c chore/comment-prune-Bnn origin/main`; `grep -h '^+++ b/' .claude/skills/public-sync/*.d/*.patch | cut -c7- > /tmp/pinned.txt`; `python3 scripts/comment_strip.py <dirs> --skip-file /tmp/pinned.txt [--pr-repo OWNER/NAME for each sibling repo whose remote isn't a GitHub URL] > /tmp/Bnn-strip.txt 2>&1` (SKIP lines → skipped table; LEFT/PARTIAL → hand edit).
+1. `git switch -c chore/comment-prune-Bnn origin/main`; `grep -h '^+++ b/' .claude/skills/public-sync/*.d/*.patch | cut -c7- > /tmp/pinned.txt`; `python3 scripts/comment_strip.py <dirs> --skip-file /tmp/pinned.txt [--pr-repo OWNER/NAME for each sibling repo whose remote isn't a GitHub URL] > /tmp/Bnn-strip.txt 2>&1` (SKIP lines → skipped table; LEFT/PARTIAL → hand edit; strip exits 1 whenever anything is LEFT, which is expected, so read the summary rather than the exit code).
 2. Sonnet workers (Agent `model: sonnet`, effort medium), ~50 files each: read `git diff` of their files, restore only non-obvious whys as one terse line (OF quirk, owner decision, invariant, workaround with reason). Comment-only edits.
 3. Opus: `comment_equality.py origin/main`, sample 30 files of deletions, tests (vitest related / pytest per CLAUDE.md; full `run-tests.sh` every 4 batches), `comment_budget.py --lower <dirs>`, PR, merge when green.
 4. Every 3 merged batches: deploy-all. Every 4 PRs: rwl (scope = tooling + sampled deletions).
@@ -64,9 +89,13 @@ Recount 2026-11-24 at 672e58bca (`scripts/comment_budget.py --report`): **190,45
 | B21 | slop scenarios, actors, seed, root | 164 | 10,328 | 187 | #1069 | 12c098418 |
 | B22 | fansly, desktop, deploy, soak, demo | 171 | 5,827 | 234 | #1070 | 60e6d6e1b |
 | B23 | rest dirs + previously skipped files | 200 | 6,909 | 876 | #1073 | 6c6e0313e |
-| B24 | Twin/public-PR-skipped files (server.py, models.py, …) | 55 | 8,414 | 940 | #1076 | |
+| B24 | Twin/public-PR-skipped files (server.py, models.py, …) | 55 | 8,414 | 940 | #1076 | ab8ef02df |
 | COMB | service/tests/test_[s-z]*, app/lib, app/hooks, app/components, app/app + contexts (B09–B19) | 1733 | 57,941 | 1,785 | #1063 | 63bb88ec3 |
-| B25 | skipped-file sweep | | | | | |
+| B25 | files deferred from earlier batches (nav, relayTypes, hooks, fansly shim, …) | 35 | 3,852 | 270 | #1078 | 2d8920348 |
+| W | rwl window: restored-whys fixes | 23 | — | — | #1079 | 51bd7b30c |
+| W | rwl window: blind-spots (test message) | — | — | — | #1080 | |
+| F | Fansly fixture ids for public leak gate | — | — | — | #1077 | 41ff79d35 |
+| D | deploy-all doc: Twin worktree path | — | — | — | #1051 | |
 
 ## Skipped (open PRs / pinned)
 
@@ -129,15 +158,25 @@ Pinned: files patched by public-sync's strip patches (`.claude/skills/public-syn
 - 2026-11-25 B05: test_of_rich_text perf case (761 ms) and ScriptsPage.test fail only under full-suite load (~50); pass alone.
 - 2026-11-25 Twin gate is per hunk (Fable): prune hunks whose public replay would conflict merging into Twin main stay; B02's 24 already-conflicting service/automations files got those hunks back (budget --allow "Twin-adjacent"). _router_jev.py conflicts for a non-comment reason.
 - 2026-11-25 B09–B19 tested together in one full run-tests (comment_equality proves code identical), shipped as one PR
+- 2026-11-25 Fable endgame: target met; pinned/open-PR/NUL files recorded as exceptions; one rwl window, three themes (restored whys, gate tooling, blind spots).
 - 2026-11-25 Fable (B23 check): prune files touched only by Twin/public-repo PRs now (they never git-merge into private); pinned public-sync targets with a strip-patch regen in the same PR; files of the owner-held nightly slop-fix PRs last.
 
 ## Exceptions kept
 
 | file | comment | why |
 |---|---|---|
+| public-sync strip-patch targets (27 files, 816 lines) | all | patch context must keep applying; prune needs a hand PR with `strip-regen.sh` |
+| files of open owner-held nightly slop-fix PRs #1020–#1045 (slop/scenarios, slop/lib, tabs) | all | prune after they merge (sweep) |
+| app/hooks/useStillLadder.ts | all (44) | NUL byte; TS parser path skips it |
+| service/tests/test_welcome_chatter_for_info.py, reply_mass_funnel.py, wcfi_decide.py | all | tests diff them vs origin/main |
+| service/bio_pages/public/script.js | all | md5-pinned by test_bio_decide |
+| hunks conflicting with Twin main (B02/B04/B05/B24 files) | those hunks | merge into Twin would conflict |
 | service/automations/_router_jev.py | `asks_offer_details 0.6 measured 2026-11-17` | test_full_ai_offer_details_route asserts the text |
 
 ## Restored after review
 
 | batch | file | line | why |
 |---|---|---|---|
+| B23 | several (Fable sample) | — | Fable check restored dropped whys |
+| B24 | service/runtime_switches.py | `_lock` | lock/cache invariant |
+| W | 23 files | 35 lines | rwl: wrong/misplaced restored whys fixed (#1079) |

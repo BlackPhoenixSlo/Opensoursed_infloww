@@ -74,7 +74,7 @@ export function PremadeFields({
       <MediaPool
         idPrefix={`pm-${kind}`}
         folderSelect={(id) => folderSelect(id, r.folderId, (v) => patchRow({ folderId: v }))}
-        folderRefresh={<FolderRefreshButton refresh={foldersQ.refresh} fetching={foldersQ.isFetching} />}
+        folderRefresh={<FolderRefreshButton refresh={foldersQ.refresh} fetching={foldersQ.isFetching || foldersQ.isRefreshing} failed={foldersQ.isError || foldersQ.refreshFailed} />}
         picked={r.media.length}
         pickLabel="Pick image pool"
         pickedLabel={`${r.media.length} in pool`}

@@ -142,6 +142,7 @@ async def _load(account_id: str, fan_id: int | None):
     return rows, msgs, notices, claimed
 
 
+# `bought`: the purchase stamp may have run before these rows existed, so they are written already paid.
 async def record_vault_sends(s, account_id: str, fan_id: int, message_id: int, row, *, bought: bool = False) -> None:
     locked = sorted(_ids(row.offer_media_json, "locked"))
     if not locked:

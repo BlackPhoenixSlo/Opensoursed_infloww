@@ -24,6 +24,7 @@ export function useHotkeys(bindings: Hotkey[]): void {
     if (e.isComposing) return;
     const hit = bindings.find((b) => matchesHotkey(b.keys, e));
     if (!hit) return;
+    // Claim every match, repeats too: else the Electron menu's Ctrl+W closes the window.
     e.preventDefault();
     if (!e.repeat) hit.run(e);
   });

@@ -110,7 +110,7 @@ export function useNotificationDelta(): void {
         if (!inScope && !isMoney(typeKey)) continue;
         if (user.id != null) seedName(qc, aid, user.id, user);
 
-        // No notif-list refetch: the payload is seeded into the rail list; re-reading OF cost 2 calls per model per event.
+        // No notif-list refetch: arrivals are mirrored locally; re-reading OF would cost 2 calls per model per event.
         mirrorNotification(arrival);
         if (inScope && claimUnseen(aid, id)) pingNotification(settingsFor(aid), arrival);
         if (inScope) playSaleSound(settingsFor(aid), arrival);

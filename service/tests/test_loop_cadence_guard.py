@@ -85,7 +85,9 @@ def case_no_unguarded_computed_sleeps() -> None:
             offenders.append(f"{p.relative_to(_SERVICE)}:{lineno}  {text}")
     _expect(f"no unguarded computed sleeps ({scanned} modules scanned)",
             not offenders,
-            detail="\n      " + "\n      ".join(offenders))
+            detail="\n      " + "\n      ".join(offenders)
+            + "\n      wrap the delay in max(FLOOR, ...), or for a deliberate exception put"
+            " `# cadence-ok: <reason>` on the sleep line")
 
 
 def case_guard_actually_detects_the_2026_08_21_bug() -> None:
